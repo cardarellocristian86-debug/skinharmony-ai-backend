@@ -1,0 +1,259 @@
+{
+  "metadata": {
+    "library_id": "skinharmony_protocol_library_beta_v1",
+    "version": "0.1.0-beta",
+    "status": "provvisorio_da_validare",
+    "brand_positioning": "ecosistema modulabile: tecnologia, protocolli, formazione, marketing, siti e supporto operativo",
+    "rules": [
+      "Non usare questa libreria come fonte di claim medici.",
+      "I pacchetti sedute sono benchmark beta e richiedono validazione del tecnico estetista SkinHarmony.",
+      "L'assistente deve usare solo protocolli compatibili con le tecnologie dichiarate dal partner.",
+      "L'assistente deve poter degradare l'output a bozza parziale se mancano dati critici."
+    ]
+  },
+  "protocol_schema": {
+    "required_partner_inputs": [
+      "zona",
+      "problematica",
+      "foto",
+      "tecnologie_disponibili"
+    ],
+    "optional_partner_inputs": [
+      "prodotti_cabina",
+      "tempo_medio_seduta",
+      "livello_operatore",
+      "foto_followup",
+      "protocollo_partner_personalizzato"
+    ],
+    "required_output_blocks": [
+      "sintesi_caso",
+      "spiegazione_sintetica",
+      "protocollo_seduta",
+      "pacchetto_sedute",
+      "controlli_operatore",
+      "limiti"
+    ]
+  },
+  "protocols": [
+    {
+      "protocol_id": "body_cellulite_skinpro_pressoterapia_v1",
+      "status": "beta_provvisorio",
+      "title": "Protocollo progressivo corpo - superficie e tono",
+      "target": {
+        "area": "corpo",
+        "issue": "cellulite",
+        "suitable_tech": [
+          "Skin Pro",
+          "Pressoterapia",
+          "Manualita",
+          "Radiofrequenza"
+        ]
+      },
+      "classification_summary_template": "Il caso mostra segnali compatibili con cellulite o irregolarita della superficie corporea. La bozza va confermata da lettura professionale in cabina.",
+      "explanation_template": "L'obiettivo del percorso e lavorare su uniformita visiva, tono e ordine della superficie, mantenendo il protocollo compatibile con le tecnologie realmente presenti nel centro.",
+      "session_structure": {
+        "single_session_duration_minutes": 45,
+        "core_steps": [
+          "Acquisizione foto iniziale e verifica della zona.",
+          "Fase principale con Skin Pro oppure tecnologia primaria compatibile disponibile.",
+          "Fase di supporto con drenaggio o supporto meccanico se realmente presente nel centro.",
+          "Controllo finale della risposta della zona e salvataggio foto comparabile."
+        ]
+      },
+      "packages": [
+        {
+          "package_id": "starter_6",
+          "label": "Pacchetto iniziale",
+          "sessions": 6,
+          "cadence": "1 seduta a settimana",
+          "review_point": "dopo la seduta 3",
+          "status": "benchmark_beta"
+        },
+        {
+          "package_id": "intensive_10",
+          "label": "Pacchetto intensivo",
+          "sessions": 10,
+          "cadence": "1-2 sedute a settimana in base all'organizzazione del centro",
+          "review_point": "dopo la seduta 4",
+          "status": "benchmark_beta"
+        }
+      ],
+      "notes": [
+        "Il benchmark 6-10 sedute deriva da pattern di mercato su trattamenti corpo/cellulite, non da protocollo tecnico definitivo SkinHarmony."
+      ]
+    },
+    {
+      "protocol_id": "body_face_laxity_skinpro_rf_v1",
+      "status": "beta_provvisorio",
+      "title": "Protocollo progressivo tono e compattezza",
+      "target": {
+        "area": "viso_corpo",
+        "issue": "lassita_tono",
+        "suitable_tech": [
+          "Skin Pro",
+          "Radiofrequenza",
+          "Manualita"
+        ]
+      },
+      "classification_summary_template": "Il caso appare compatibile con lassita o riduzione del tono della superficie trattata. La sintesi resta orientativa e richiede verifica professionale.",
+      "explanation_template": "L'obiettivo del percorso e impostare un lavoro progressivo su tono, compattezza apparente e qualita della superficie, senza introdurre passaggi non gestibili dal partner.",
+      "session_structure": {
+        "single_session_duration_minutes": 45,
+        "core_steps": [
+          "Documentazione fotografica di partenza.",
+          "Fase principale con Skin Pro o tecnologia candidata primaria.",
+          "Supporto con manualita o radiofrequenza se realmente disponibile.",
+          "Verifica finale con confronto fotografico progressivo."
+        ]
+      },
+      "packages": [
+        {
+          "package_id": "starter_4",
+          "label": "Pacchetto breve",
+          "sessions": 4,
+          "cadence": "1 seduta ogni 7-10 giorni",
+          "review_point": "dopo la seduta 2",
+          "status": "benchmark_beta"
+        },
+        {
+          "package_id": "core_6",
+          "label": "Pacchetto base",
+          "sessions": 6,
+          "cadence": "1 seduta a settimana",
+          "review_point": "dopo la seduta 3",
+          "status": "benchmark_beta"
+        }
+      ]
+    },
+    {
+      "protocol_id": "face_body_texture_skinpro_v1",
+      "status": "beta_provvisorio",
+      "title": "Protocollo progressivo texture e uniformita",
+      "target": {
+        "area": "viso_corpo",
+        "issue": "texture_superficie",
+        "suitable_tech": [
+          "Skin Pro",
+          "Manualita",
+          "Radiofrequenza"
+        ]
+      },
+      "classification_summary_template": "Il caso appare compatibile con disomogeneita della texture o irregolarita superficiale della pelle.",
+      "explanation_template": "Il percorso punta a migliorare ordine visivo e qualita della superficie con una sequenza semplice, tracciabile e facilmente personalizzabile.",
+      "session_structure": {
+        "single_session_duration_minutes": 40,
+        "core_steps": [
+          "Acquisizione foto iniziale.",
+          "Fase tecnologia principale su area selezionata.",
+          "Eventuale supporto con manualita o tecnologia secondaria dichiarata.",
+          "Controllo finale e aggiornamento scheda caso."
+        ]
+      },
+      "packages": [
+        {
+          "package_id": "starter_4",
+          "label": "Pacchetto breve",
+          "sessions": 4,
+          "cadence": "1 seduta ogni 7-10 giorni",
+          "review_point": "dopo la seduta 2",
+          "status": "benchmark_beta"
+        },
+        {
+          "package_id": "extended_6",
+          "label": "Pacchetto esteso",
+          "sessions": 6,
+          "cadence": "1 seduta a settimana",
+          "review_point": "dopo la seduta 3",
+          "status": "benchmark_beta"
+        }
+      ]
+    },
+    {
+      "protocol_id": "face_body_hydration_skinpro_v1",
+      "status": "beta_provvisorio",
+      "title": "Protocollo progressivo comfort e qualita superficiale",
+      "target": {
+        "area": "viso_corpo",
+        "issue": "disidratazione",
+        "suitable_tech": [
+          "Skin Pro",
+          "Manualita"
+        ]
+      },
+      "classification_summary_template": "Il caso appare compatibile con disidratazione o superficie spenta, da verificare professionalmente in cabina.",
+      "explanation_template": "Il percorso mira a sostenere comfort e qualita superficiale con una sequenza essenziale e ripetibile.",
+      "session_structure": {
+        "single_session_duration_minutes": 35,
+        "core_steps": [
+          "Foto iniziale e verifica leggibilita della zona.",
+          "Fase centrale con Skin Pro o tecnologia primaria compatibile.",
+          "Supporto manuale se disponibile.",
+          "Controllo visivo finale."
+        ]
+      },
+      "packages": [
+        {
+          "package_id": "starter_4",
+          "label": "Pacchetto breve",
+          "sessions": 4,
+          "cadence": "1 seduta ogni 7 giorni",
+          "review_point": "dopo la seduta 2",
+          "status": "benchmark_beta"
+        },
+        {
+          "package_id": "core_6",
+          "label": "Pacchetto base",
+          "sessions": 6,
+          "cadence": "1 seduta a settimana",
+          "review_point": "dopo la seduta 3",
+          "status": "benchmark_beta"
+        }
+      ]
+    },
+    {
+      "protocol_id": "scalp_balance_o3_v1",
+      "status": "beta_provvisorio",
+      "title": "Protocollo progressivo riequilibrio scalp",
+      "target": {
+        "area": "scalp",
+        "issue": "sebo_o_cute",
+        "suitable_tech": [
+          "O3 System",
+          "Manualita"
+        ]
+      },
+      "classification_summary_template": "Il caso appare compatibile con squilibrio del cuoio capelluto, da confermare con osservazione professionale.",
+      "explanation_template": "Il percorso punta a detossinare, ossigenare e riequilibrare il cuoio capelluto con una sequenza semplice e progressiva.",
+      "session_structure": {
+        "single_session_duration_minutes": 30,
+        "core_steps": [
+          "Valutazione iniziale e foto scalp.",
+          "Detersione o preparazione se prevista dal partner.",
+          "Fase centrale con O3 System.",
+          "Controllo finale del comfort e pianificazione follow-up."
+        ]
+      },
+      "packages": [
+        {
+          "package_id": "starter_6",
+          "label": "Percorso riequilibrio",
+          "sessions": 6,
+          "cadence": "1 seduta a settimana",
+          "review_point": "dopo la seduta 3",
+          "status": "benchmark_beta"
+        },
+        {
+          "package_id": "extended_8",
+          "label": "Percorso esteso",
+          "sessions": 8,
+          "cadence": "1 seduta a settimana per 4 settimane, poi mantenimento",
+          "review_point": "dopo la seduta 4",
+          "status": "benchmark_beta"
+        }
+      ],
+      "notes": [
+        "Per i casi scalp le fonti di mercato evidenziano percorsi progressivi e personalizzati con cadenza settimanale o mensile."
+      ]
+    }
+  ]
+}

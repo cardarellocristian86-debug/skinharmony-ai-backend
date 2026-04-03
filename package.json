@@ -1,0 +1,30 @@
+{
+  "scripts": {
+    "agenda:show": "node agenda_manager.js show",
+    "agenda:sync": "node calendar_manager.js sync",
+    "calendar:list": "node calendar_manager.js list",
+    "protocols:server": "node protocols/server_v1.js",
+    "postinstagram": "node postinstagram.js",
+    "wppage": "node wordpress/wp-page.js",
+    "wpupdatepage": "node wordpress/wp-update-page.js",
+    "wppost": "node wordpress/wp-post.js",
+    "instagram:account": "node instagram_manager.js account",
+    "instagram:inbox": "node instagram_manager.js inbox",
+    "instagram:messages": "node instagram_manager.js messages",
+    "instagram:pages": "node instagram_manager.js pages",
+    "instagram:permissions": "node instagram_manager.js permissions",
+    "instagram:publish-image": "node instagram_manager.js publish-image",
+    "instagram:publish-local-image": "node instagram_manager.js publish-local-image",
+    "instagram:send": "node instagram_manager.js send",
+    "instagram:sync": "node instagram_manager.js sync",
+    "monitor:outreach": "node mail/monitor_campaigns.js",
+    "report:outreach": "node mail/track_outreach.js report"
+  },
+  "dependencies": {
+    "axios": "^1.14.0",
+    "express": "^5.2.1",
+    "imapflow": "^1.2.18",
+    "mailparser": "^3.9.6",
+    "nodemailer": "^8.0.4"
+  }
+}
