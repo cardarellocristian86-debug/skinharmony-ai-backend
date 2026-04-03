@@ -1,5 +1,5 @@
 const axios = require("axios");
-const { loadEnv } = require("../mail/load_env");
+const { loadEnv } = require('./load_env');
 
 loadEnv();
 
