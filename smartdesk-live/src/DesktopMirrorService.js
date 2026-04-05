@@ -1,0 +1,982 @@
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const { JsonFileRepository } = require("./JsonFileRepository");
+
+const DATA_DIR = path.resolve(process.cwd(), "data");
+const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
+
+const defaultSettings = {
+  centerName: "Ecosistema Center",
+  centerType: "Advanced Aesthetic Systems",
+  businessModel: "esthetic",
+  agendaStartHour: "08:00",
+  agendaEndHour: "20:00",
+  agendaSlotMinutes: "30",
+  agendaSoundEnabled: true,
+  agendaPageFlipEnabled: false,
+  defaultView: "day",
+  fullscreenAgenda: true,
+  enableMarketing: false,
+  enableTreatments: true,
+  enableCashdesk: true,
+  enableProtocolsHub: true,
+  enableTrainingHub: true,
+  enableMultiLocation: false,
+  moduleSkinPro: false,
+  moduleO3System: false,
+  moduleTermosauna: false,
+  moduleExternalTech: true,
+  aiMode: "local",
+  aiActionsEnabled: true,
+  backupFrequency: "Ogni 6 ore",
+  syncEnabled: false,
+  membershipEnabled: true,
+  membershipPearlThresholdCents: 30000,
+  membershipSilverThresholdCents: 70000,
+  membershipGoldThresholdCents: 120000,
+  membershipPearlDiscountPercent: 5,
+  membershipSilverDiscountPercent: 10,
+  membershipGoldDiscountPercent: 15
+};
+
+function ensureDir(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true });
+}
+
+function splitName(name = "") {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { firstName: "", lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+function toDateOnly(value) {
+  if (!value) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  }
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value).slice(0, 10);
+  }
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+}
+
+function toDateTime(date, time) {
+  return `${toDateOnly(date)}T${String(time || "09:00").slice(0, 5)}:00`;
+}
+
+function toTimeOnly(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "09:00";
+  }
+  return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+}
+
+function addMinutes(dateTime, minutes) {
+  const base = new Date(dateTime);
+  const next = new Date(base.getTime() + Number(minutes || 0) * 60000);
+  return next.toISOString();
+}
+
+function euro(cents) {
+  return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
+}
+
+function resolveMembership(totalSpentCents, settings) {
+  if (!settings.membershipEnabled) {
+    return null;
+  }
+  if (totalSpentCents >= Number(settings.membershipGoldThresholdCents || 0)) {
+    return { level: "Gold", discountPercent: Number(settings.membershipGoldDiscountPercent || 0) };
+  }
+  if (totalSpentCents >= Number(settings.membershipSilverThresholdCents || 0)) {
+    return { level: "Silver", discountPercent: Number(settings.membershipSilverDiscountPercent || 0) };
+  }
+  if (totalSpentCents >= Number(settings.membershipPearlThresholdCents || 0)) {
+    return { level: "Pearl", discountPercent: Number(settings.membershipPearlDiscountPercent || 0) };
+  }
+  return null;
+}
+
+class DesktopMirrorService {
+  constructor() {
+    this.clientsRepository = new JsonFileRepository(path.join(DATA_DIR, "clients.json"), []);
+    this.appointmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "appointments.json"), []);
+    this.servicesRepository = new JsonFileRepository(path.join(DATA_DIR, "services.json"), []);
+    this.staffRepository = new JsonFileRepository(path.join(DATA_DIR, "staff.json"), []);
+    this.resourcesRepository = new JsonFileRepository(path.join(DATA_DIR, "resources.json"), []);
+    this.paymentsRepository = new JsonFileRepository(path.join(DATA_DIR, "payments.json"), []);
+    this.treatmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "treatments.json"), []);
+    this.settingsRepository = new JsonFileRepository(path.join(DATA_DIR, "settings.json"), defaultSettings);
+    this.centerRepository = new JsonFileRepository(path.join(DATA_DIR, "center.json"), {});
+    this.salesRepository = new JsonFileRepository(path.join(DATA_DIR, "sales.json"), []);
+    this.sessions = new Map();
+  }
+
+  listClients(search = "") {
+    const normalizedSearch = String(search || "").trim().toLowerCase();
+    return this.clientsRepository
+      .list()
+      .filter((client) => {
+        if (!normalizedSearch) return true;
+        return [client.name, client.phone, client.email].filter(Boolean).some((field) => String(field).toLowerCase().includes(normalizedSearch));
+      })
+      .map((client) => this.mapClient(client));
+  }
+
+  saveClient(payload) {
+    const next = this.toClientEntity(payload);
+    if (payload.id) {
+      const updated = this.clientsRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+      return this.mapClient(updated || next);
+    }
+    this.clientsRepository.create(next);
+    return this.mapClient(next);
+  }
+
+  getClientDetail(id) {
+    const client = this.clientsRepository.findById(id);
+    if (!client) {
+      throw new Error("Cliente non trovato");
+    }
+    const appointments = this.listAppointments("month", new Date().toISOString(), true).filter((item) => item.clientId === id);
+    const treatments = this.listTreatments(id);
+    const payments = this.listPayments(id);
+    const settings = this.getSettings();
+    const services = this.listServices();
+    const servicesById = new Map(services.map((service) => [service.id, service]));
+    const completedAppointments = appointments.filter((item) => item.status === "completed");
+    const totalSpentCents = completedAppointments.reduce((sum, appointment) => {
+      const serviceIds = Array.isArray(appointment.serviceIds) && appointment.serviceIds.length > 0
+        ? appointment.serviceIds
+        : appointment.serviceId ? [appointment.serviceId] : [];
+      return sum + serviceIds.reduce((serviceSum, serviceId) => serviceSum + Number(servicesById.get(serviceId)?.priceCents || 0), 0);
+    }, 0);
+    const lastCompletedAppointment = completedAppointments
+      .slice()
+      .sort((a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime())[0] || null;
+    const daysSinceLastVisit = lastCompletedAppointment ? Math.max(0, Math.floor((Date.now() - new Date(lastCompletedAppointment.startAt).getTime()) / 86400000)) : null;
+    const clientTags = [
+      ...(completedAppointments.length > 5 ? ["cliente frequente"] : []),
+      ...(totalSpentCents >= 50000 ? ["cliente premium"] : []),
+      ...(typeof daysSinceLastVisit === "number" && daysSinceLastVisit >= 30 ? ["cliente inattivo"] : [])
+    ];
+    const membership = resolveMembership(totalSpentCents, settings);
+    return {
+      client: this.mapClient(client),
+      appointments,
+      treatments,
+      payments,
+      clientTags,
+      membership,
+      businessSummary: {
+        completedVisits: completedAppointments.length,
+        totalSpentCents,
+        daysSinceLastVisit
+      }
+    };
+  }
+
+  getClientConsultation(id) {
+    const detail = this.getClientDetail(id);
+    const revenueCents = detail.payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    const appointments = detail.appointments;
+    const completed = appointments.filter((item) => item.status === "completed").length;
+    const cancelled = appointments.filter((item) => item.status === "cancelled").length;
+    const lastAppointment = appointments[0];
+    const summary = [
+      `${detail.client.firstName} ${detail.client.lastName} ha ${appointments.length} appuntamenti registrati.`,
+      completed ? `${completed} appuntamenti risultano completati.` : "Non risultano appuntamenti completati.",
+      revenueCents ? `Incasso storico cliente: ${euro(revenueCents)}.` : "Nessun pagamento registrato."
+    ];
+    const missingData = [];
+    if (!detail.client.phone) missingData.push("telefono mancante");
+    if (!detail.client.email) missingData.push("email mancante");
+    if (!detail.client.notes) missingData.push("note cliente assenti");
+    return {
+      clientName: `${detail.client.firstName} ${detail.client.lastName}`.trim(),
+      summary,
+      protocolBrief: detail.treatments.length ? `Trattamenti registrati: ${detail.treatments.length}.` : "Nessun trattamento registrato.",
+      technologyBrief: detail.treatments.length ? "Storico tecnico disponibile." : "Storico tecnico non disponibile.",
+      missingData,
+      nextActions: [
+        !detail.client.phone ? "raccogliere telefono per follow-up rapido" : "telefono cliente aggiornato",
+        cancelled ? "verificare cause di annullamento o no-show" : "nessuna criticita evidente da annullamenti",
+        lastAppointment ? `ripartire dall'ultima visita del ${new Date(lastAppointment.startAt).toLocaleDateString("it-IT")}` : "programmarea una prima visita completa"
+      ],
+      drafts: {
+        note: `Briefing AI ${new Date().toLocaleString("it-IT")}\n${summary.join("\n")}\nDati mancanti: ${missingData.join(", ") || "nessuno."}`,
+        protocol: "Bozza protocollo AI: usare lo storico reale del cliente e definire il prossimo step in cabina.",
+        nextStep: {
+          serviceId: lastAppointment?.serviceId || null,
+          serviceName: lastAppointment?.serviceName || null,
+          notes: "Preparare il prossimo appuntamento partendo dallo storico cliente reale."
+        }
+      },
+      metrics: {
+        appointments: appointments.length,
+        completedAppointments: completed,
+        payments: detail.payments.length,
+        totalRevenueCents: revenueCents,
+        treatments: detail.treatments.length
+      }
+    };
+  }
+
+  listAppointments(view = "day", anchorDate = new Date().toISOString(), includeAll = false) {
+    const anchor = new Date(anchorDate);
+    const anchorKey = toDateOnly(anchorDate);
+    const start = new Date(anchor);
+    const end = new Date(anchor);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    if (view === "week") {
+      start.setDate(anchor.getDate() - anchor.getDay() + 1);
+      end.setDate(start.getDate() + 6);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
+    } else if (view === "month") {
+      start.setDate(1);
+      end.setMonth(anchor.getMonth() + 1, 0);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
+    }
+    const clients = this.clientsRepository.list();
+    const services = this.servicesRepository.list();
+    const staff = this.staffRepository.list();
+    const resources = this.resourcesRepository.list();
+    const items = this.appointmentsRepository.list().map((item) => {
+      const mapped = this.mapAppointment(item, clients, services, staff, resources);
+      const date = new Date(mapped.startAt);
+      return { mapped, date };
+    });
+    return items
+      .filter(({ mapped, date }) => includeAll || (date >= start && date <= end) || (view === "day" && toDateOnly(mapped.startAt) === anchorKey))
+      .sort((a, b) => new Date(a.mapped.startAt).getTime() - new Date(b.mapped.startAt).getTime())
+      .map(({ mapped }) => mapped);
+  }
+
+  saveAppointment(payload) {
+    if (payload.id) {
+      const updated = this.appointmentsRepository.update(payload.id, (current) => {
+        const next = this.toAppointmentEntity({
+          ...current,
+          ...payload,
+          id: current.id,
+          createdAt: current.createdAt,
+          locked: payload.locked ?? current.locked ?? 0
+        });
+        return { ...current, ...next, id: current.id };
+      });
+      return this.mapAppointment(updated || this.toAppointmentEntity(payload));
+    }
+    const next = this.toAppointmentEntity(payload);
+    this.appointmentsRepository.create(next);
+    return this.mapAppointment(next);
+  }
+
+  listServices() {
+    return this.servicesRepository.list().map((item) => ({
+      id: item.id,
+      name: item.name,
+      category: item.category || "",
+      colorTag: item.colorTag || null,
+      durationMin: Number(item.durationMin ?? item.duration ?? 60),
+      priceCents: Number(item.priceCents ?? Math.round(Number(item.price || 0) * 100)),
+      active: Number(item.active ?? 1),
+      createdAt: item.createdAt || new Date().toISOString(),
+      updatedAt: item.updatedAt || new Date().toISOString()
+    }));
+  }
+
+  saveService(payload) {
+    const next = {
+      id: payload.id || `srv_${Date.now()}`,
+      name: payload.name || "Servizio",
+      category: payload.category || "",
+      colorTag: payload.colorTag || null,
+      duration: Number(payload.durationMin ?? payload.duration ?? 60),
+      durationMin: Number(payload.durationMin ?? payload.duration ?? 60),
+      price: Number(payload.priceCents ?? payload.price ?? 0) / (payload.priceCents ? 100 : 1),
+      priceCents: Number(payload.priceCents ?? Math.round(Number(payload.price || 0) * 100)),
+      operatorType: payload.operatorType || "",
+      room: payload.room || "",
+      active: Number(payload.active ?? 1),
+      createdAt: payload.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    if (payload.id) {
+      this.servicesRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+    } else {
+      this.servicesRepository.create(next);
+    }
+    return this.listServices().find((item) => item.id === next.id) || next;
+  }
+
+  deleteService(id) {
+    return { success: this.servicesRepository.delete(id) };
+  }
+
+  listStaff() {
+    return this.staffRepository.list().map((item) => ({
+      id: item.id,
+      name: item.name,
+      colorTag: item.colorTag || null,
+      role: item.role || "",
+      shift: item.shift || "",
+      targetProgress: Number(item.targetProgress || 0),
+      active: Number(item.active === false ? 0 : item.active ?? 1),
+      createdAt: item.createdAt || new Date().toISOString()
+    }));
+  }
+
+  saveStaff(payload) {
+    const next = {
+      id: payload.id || `st_${Date.now()}`,
+      name: payload.name || "Operatore",
+      colorTag: payload.colorTag || null,
+      role: payload.role || "",
+      shift: payload.shift || "",
+      targetProgress: Number(payload.targetProgress || 0),
+      active: Number(payload.active ?? 1),
+      createdAt: payload.createdAt || new Date().toISOString()
+    };
+    if (payload.id) {
+      this.staffRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+    } else {
+      this.staffRepository.create(next);
+    }
+    return this.listStaff().find((item) => item.id === next.id) || next;
+  }
+
+  deleteStaff(id) {
+    return { success: this.staffRepository.delete(id) };
+  }
+
+  listResources() {
+    return this.resourcesRepository.list().map((item) => ({
+      id: item.id,
+      name: item.name,
+      type: item.type || null,
+      active: Number(item.active ?? 1),
+      createdAt: item.createdAt || new Date().toISOString()
+    }));
+  }
+
+  saveResource(payload) {
+    const next = {
+      id: payload.id || `res_${Date.now()}`,
+      name: payload.name || "Risorsa",
+      type: payload.type || "cabina",
+      active: Number(payload.active ?? 1),
+      createdAt: payload.createdAt || new Date().toISOString()
+    };
+    if (payload.id) {
+      this.resourcesRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+    } else {
+      this.resourcesRepository.create(next);
+    }
+    return this.listResources().find((item) => item.id === next.id) || next;
+  }
+
+  deleteResource(id) {
+    return { success: this.resourcesRepository.delete(id) };
+  }
+
+  listTreatments(clientId) {
+    return this.treatmentsRepository
+      .list()
+      .filter((item) => !clientId || item.clientId === clientId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((item) => ({
+        id: item.id,
+        clientId: item.clientId,
+        appointmentId: item.appointmentId || null,
+        serviceId: item.serviceId || null,
+        operatorName: item.operatorName || "",
+        productsUsed: item.productsUsed || "",
+        technologyUsed: item.technologyUsed || "",
+        protocolUsed: item.protocolUsed || "",
+        resultNotes: item.resultNotes || "",
+        photoPath: item.photoPath || "",
+        createdAt: item.createdAt || new Date().toISOString()
+      }));
+  }
+
+  createTreatment(payload) {
+    const item = {
+      id: `trt_${Date.now()}`,
+      clientId: payload.clientId,
+      appointmentId: payload.appointmentId || null,
+      serviceId: payload.serviceId || null,
+      operatorName: payload.operatorName || "",
+      productsUsed: payload.productsUsed || "",
+      technologyUsed: payload.technologyUsed || "",
+      protocolUsed: payload.protocolUsed || "",
+      resultNotes: payload.resultNotes || "",
+      photoPath: payload.photoPath || "",
+      createdAt: new Date().toISOString()
+    };
+    this.treatmentsRepository.create(item);
+    return item;
+  }
+
+  listPayments(clientId) {
+    return this.paymentsRepository
+      .list()
+      .filter((item) => !clientId || item.clientId === clientId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .map((item) => ({
+        id: item.id,
+        clientId: item.clientId,
+        appointmentId: item.appointmentId || null,
+        amountCents: Number(item.amountCents || 0),
+        method: item.method || "card",
+        description: item.description || "",
+        createdAt: item.createdAt || new Date().toISOString()
+      }));
+  }
+
+  createPayment(payload) {
+    const item = {
+      id: `pay_${Date.now()}`,
+      clientId: payload.clientId,
+      appointmentId: payload.appointmentId || null,
+      amountCents: Number(payload.amountCents || 0),
+      method: payload.method || "card",
+      description: payload.description || "",
+      createdAt: new Date().toISOString()
+    };
+    this.paymentsRepository.create(item);
+    if (item.appointmentId) {
+      this.appointmentsRepository.update(item.appointmentId, (current) => ({
+        ...current,
+        locked: 1,
+        status: current.status === "cancelled" || current.status === "no_show" ? current.status : "completed",
+        updatedAt: new Date().toISOString()
+      }));
+    }
+    return item;
+  }
+
+  getSettings() {
+    return { ...defaultSettings, ...this.settingsRepository.list() };
+  }
+
+  saveSettings(payload) {
+    const next = { ...defaultSettings, ...payload };
+    this.settingsRepository.write(next);
+    return next;
+  }
+
+  resetSettings() {
+    this.settingsRepository.write(defaultSettings);
+    return defaultSettings;
+  }
+
+  login({ username, password }) {
+    if (username !== "admin" || password !== "admin1234") {
+      throw new Error("Credenziali non valide");
+    }
+    const token = crypto.randomBytes(24).toString("hex");
+    const session = {
+      username: "admin",
+      role: "owner",
+      savedAt: new Date().toISOString()
+    };
+    this.sessions.set(token, session);
+    return { success: true, token, username: session.username, role: session.role };
+  }
+
+  getSession(token) {
+    if (!token || !this.sessions.has(token)) return null;
+    return this.sessions.get(token);
+  }
+
+  logout(token) {
+    if (token) this.sessions.delete(token);
+    return { success: true };
+  }
+
+  getDashboardStats() {
+    const appointments = this.listAppointments("month", new Date().toISOString(), true);
+    const payments = this.listPayments();
+    const services = this.listServices();
+    const servicesById = new Map(services.map((service) => [service.id, service]));
+    const clients = this.clientsRepository.list();
+    const today = toDateOnly(new Date().toISOString());
+    const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
+    const completedAppointments = appointments.filter((item) => item.status === "completed");
+    const spendByClient = new Map();
+    const visitsByClient = new Map();
+    const lastVisitByClient = new Map();
+    const servicePerformance = new Map();
+
+    completedAppointments.forEach((item) => {
+      visitsByClient.set(item.clientId, (visitsByClient.get(item.clientId) || 0) + 1);
+      const prev = lastVisitByClient.get(item.clientId);
+      if (!prev || new Date(item.startAt).getTime() > new Date(prev).getTime()) {
+        lastVisitByClient.set(item.clientId, item.startAt);
+      }
+      const serviceIds = Array.isArray(item.serviceIds) && item.serviceIds.length > 0
+        ? item.serviceIds
+        : item.serviceId ? [item.serviceId] : [];
+      const appointmentValue = serviceIds.reduce((sum, serviceId) => sum + Number(servicesById.get(serviceId)?.priceCents || 0), 0);
+      spendByClient.set(item.clientId, (spendByClient.get(item.clientId) || 0) + appointmentValue);
+      serviceIds.forEach((serviceId) => {
+        const service = servicesById.get(serviceId);
+        const current = servicePerformance.get(serviceId) || {
+          serviceId,
+          name: service?.name || "Servizio",
+          appointments: 0,
+          revenueCents: 0,
+          colorTag: service?.colorTag || null
+        };
+        current.appointments += 1;
+        current.revenueCents += Number(service?.priceCents || 0);
+        servicePerformance.set(serviceId, current);
+      });
+    });
+
+    const topClients = clients
+      .map((client) => ({
+        clientId: client.id,
+        name: client.name || "Cliente",
+        visits: visitsByClient.get(client.id) || 0,
+        totalSpentCents: spendByClient.get(client.id) || 0
+      }))
+      .filter((client) => client.visits > 0 || client.totalSpentCents > 0)
+      .sort((a, b) => b.totalSpentCents - a.totalSpentCents || b.visits - a.visits)
+      .slice(0, 5);
+
+    const profitableServices = [...servicePerformance.values()]
+      .sort((a, b) => b.revenueCents - a.revenueCents || b.appointments - a.appointments)
+      .slice(0, 5);
+
+    const lowPerformingServices = [...servicePerformance.values()]
+      .filter((service) => service.appointments > 0)
+      .sort((a, b) => a.appointments - b.appointments || a.revenueCents - b.revenueCents)
+      .slice(0, 5);
+
+    const inactiveClients = clients
+      .map((client) => {
+        const lastVisitAt = lastVisitByClient.get(client.id) || client.lastVisit || null;
+        const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((Date.now() - new Date(lastVisitAt).getTime()) / 86400000)) : -1;
+        return {
+          clientId: client.id,
+          name: client.name || "Cliente",
+          phone: client.phone || "",
+          daysSinceLastVisit
+        };
+      })
+      .filter((client) => client.daysSinceLastVisit >= 30)
+      .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
+      .slice(0, 5);
+
+    const agendaLoad = todayAppointments.filter((item) => item.status !== "cancelled" && item.status !== "no_show").length;
+    const alerts = [
+      ...(inactiveClients.length > 0 ? [`Hai ${inactiveClients.length} clienti inattivi`] : []),
+      ...(agendaLoad <= 3 ? ["Agenda leggera oggi"] : [])
+    ];
+
+    const nextAppointments = appointments
+      .filter((item) => new Date(item.startAt).getTime() >= Date.now())
+      .slice(0, 6)
+      .map((item) => ({
+        id: item.id,
+        clientName: item.clientName,
+        serviceName: item.serviceName,
+        staffName: item.staffName,
+        startAt: item.startAt,
+        status: item.status,
+        locked: item.locked || 0
+      }));
+    return {
+      todayAppointments: todayAppointments.length,
+      confirmedAppointments: todayAppointments.filter((item) => item.status === "confirmed").length,
+      arrivedAppointments: todayAppointments.filter((item) => item.status === "arrived").length,
+      inProgressAppointments: todayAppointments.filter((item) => item.status === "in_progress").length,
+      readyCheckoutAppointments: todayAppointments.filter((item) => item.status === "ready_checkout").length,
+      completedAppointments: todayAppointments.filter((item) => item.status === "completed").length,
+      todayRevenueCents: payments.filter((item) => toDateOnly(item.createdAt) === today).reduce((sum, item) => sum + item.amountCents, 0),
+      activeClients: clients.length,
+      upcomingAppointments: appointments.filter((item) => {
+        const diff = new Date(item.startAt).getTime() - Date.now();
+        return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;
+      }).length,
+      activeStaff: this.staffRepository.list().filter((item) => item.active !== false).length,
+      activeServices: services.filter((item) => item.active !== false).length,
+      pendingConfirmations: todayAppointments.filter((item) => item.status === "requested" || item.status === "booked").length,
+      inactiveClientsCount: inactiveClients.length,
+      alerts,
+      topClients,
+      profitableServices,
+      lowPerformingServices,
+      inactiveClients,
+      nextAppointments
+    };
+  }
+
+  getOperationalReport(period = "day") {
+    const appointments = this.listAppointments("month", new Date().toISOString(), true);
+    const payments = this.listPayments();
+    const services = this.listServices();
+    const staff = this.listStaff();
+    const clients = this.clientsRepository.list();
+    const treatments = this.listTreatments();
+    const resources = this.listResources();
+    const now = new Date();
+    let start = new Date(now);
+    if (period === "week") {
+      start.setDate(now.getDate() - 7);
+    } else if (period === "month") {
+      start.setMonth(now.getMonth() - 1);
+    } else {
+      start.setHours(0, 0, 0, 0);
+    }
+    const scopedAppointments = appointments.filter((item) => new Date(item.startAt).getTime() >= start.getTime());
+    const scopedPayments = payments.filter((item) => new Date(item.createdAt).getTime() >= start.getTime());
+
+    const spendByClient = new Map();
+    const visitByClient = new Map();
+    const lastVisitByClient = new Map();
+    scopedAppointments.forEach((item) => {
+      if (item.clientId) {
+        spendByClient.set(item.clientId, (spendByClient.get(item.clientId) || 0) + scopedPayments.filter((payment) => payment.appointmentId === item.id).reduce((sum, payment) => sum + payment.amountCents, 0));
+        visitByClient.set(item.clientId, (visitByClient.get(item.clientId) || 0) + 1);
+        const prev = lastVisitByClient.get(item.clientId);
+        if (!prev || new Date(item.startAt).getTime() > new Date(prev).getTime()) {
+          lastVisitByClient.set(item.clientId, item.startAt);
+        }
+      }
+    });
+
+    const totals = {
+      appointments: scopedAppointments.length,
+      completedAppointments: scopedAppointments.filter((item) => item.status === "completed").length,
+      cancelledAppointments: scopedAppointments.filter((item) => item.status === "cancelled").length,
+      noShowAppointments: scopedAppointments.filter((item) => item.status === "no_show").length,
+      revenueCents: scopedPayments.reduce((sum, item) => sum + item.amountCents, 0),
+      averageTicketCents: scopedAppointments.filter((item) => item.status === "completed").length
+        ? Math.round(scopedPayments.reduce((sum, item) => sum + item.amountCents, 0) / scopedAppointments.filter((item) => item.status === "completed").length)
+        : 0,
+      activeClients: clients.length,
+      returningClients: clients.filter((item) => Number(item.totalValue || 0) >= 500).length,
+      occasionalClients: clients.filter((item) => Number(item.totalValue || 0) < 500).length,
+      rebookingRate: scopedAppointments.length ? Math.round((scopedAppointments.filter((item) => item.status === "confirmed" || item.status === "completed").length / scopedAppointments.length) * 100) : 0
+    };
+
+    const topOperators = staff.map((operator) => {
+      const operatorAppointments = scopedAppointments.filter((item) => item.staffId === operator.id);
+      const revenueCents = scopedPayments
+        .filter((payment) => operatorAppointments.some((appointment) => appointment.id === payment.appointmentId))
+        .reduce((sum, payment) => sum + payment.amountCents, 0);
+      return {
+        staffId: operator.id,
+        name: operator.name,
+        appointments: operatorAppointments.length,
+        completed: operatorAppointments.filter((item) => item.status === "completed").length,
+        revenueCents,
+        colorTag: operator.colorTag || null
+      };
+    }).sort((a, b) => b.revenueCents - a.revenueCents);
+
+    const topServices = services.map((service) => {
+      const serviceAppointments = scopedAppointments.filter((item) => item.serviceId === service.id || item.serviceIds?.includes?.(service.id));
+      const revenueCents = scopedPayments
+        .filter((payment) => serviceAppointments.some((appointment) => appointment.id === payment.appointmentId))
+        .reduce((sum, payment) => sum + payment.amountCents, 0);
+      return {
+        serviceId: service.id,
+        name: service.name,
+        appointments: serviceAppointments.length,
+        revenueCents,
+        colorTag: service.colorTag || null
+      };
+    }).sort((a, b) => b.appointments - a.appointments);
+
+    const lowServices = services.map((service) => {
+      const serviceAppointments = scopedAppointments.filter((item) => item.serviceId === service.id || item.serviceIds?.includes?.(service.id));
+      const revenueCents = scopedPayments
+        .filter((payment) => serviceAppointments.some((appointment) => appointment.id === payment.appointmentId))
+        .reduce((sum, payment) => sum + payment.amountCents, 0);
+      return {
+        serviceId: service.id,
+        name: service.name,
+        appointments: serviceAppointments.length,
+        revenueCents,
+        colorTag: service.colorTag || null
+      };
+    }).filter((item) => item.appointments > 0).sort((a, b) => a.appointments - b.appointments);
+
+    const technologyMap = new Map();
+    treatments.forEach((item) => {
+      String(item.technologyUsed || "").split(/[,\n;/]+/).map((token) => token.trim()).filter(Boolean).forEach((name) => {
+        technologyMap.set(name, (technologyMap.get(name) || 0) + 1);
+      });
+    });
+    scopedAppointments.forEach((item) => {
+      const resource = resources.find((resourceItem) => resourceItem.id === item.resourceId);
+      if (resource && (resource.type === "tecnologia" || resource.type === "macchinario")) {
+        technologyMap.set(resource.name, (technologyMap.get(resource.name) || 0) + 1);
+      }
+    });
+    const technologyUsage = [...technologyMap.entries()].map(([name, uses]) => ({ name, uses })).sort((a, b) => b.uses - a.uses).slice(0, 5);
+    const lowTechnologyUsage = [...technologyMap.entries()].map(([name, uses]) => ({ name, uses })).filter((item) => item.uses > 0).sort((a, b) => a.uses - b.uses).slice(0, 5);
+
+    const paymentBreakdown = ["cash", "card", "mixed", "bank_transfer"].map((method) => ({
+      method,
+      amountCents: scopedPayments.filter((item) => item.method === method).reduce((sum, item) => sum + item.amountCents, 0),
+      count: scopedPayments.filter((item) => item.method === method).length
+    }));
+
+    const topClientsBySpend = clients
+      .map((client) => ({
+        clientId: client.id,
+        name: client.name || "Cliente",
+        visits: visitByClient.get(client.id) || 0,
+        amountCents: spendByClient.get(client.id) || 0
+      }))
+      .filter((item) => item.amountCents > 0)
+      .sort((a, b) => b.amountCents - a.amountCents)
+      .slice(0, 5);
+
+    const frequentClients = clients
+      .map((client) => ({
+        clientId: client.id,
+        name: client.name || "Cliente",
+        visits: visitByClient.get(client.id) || 0
+      }))
+      .filter((item) => item.visits > 0)
+      .sort((a, b) => b.visits - a.visits)
+      .slice(0, 5);
+
+    const inactiveClients = clients
+      .map((client) => {
+        const lastVisitAt = lastVisitByClient.get(client.id) || client.lastVisit || null;
+        const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((Date.now() - new Date(lastVisitAt).getTime()) / 86400000)) : 999;
+        return {
+          clientId: client.id,
+          name: client.name || "Cliente",
+          phone: client.phone || "",
+          daysSinceLastVisit,
+          lastVisitAt
+        };
+      })
+      .filter((item) => item.daysSinceLastVisit >= 30)
+      .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
+      .slice(0, 5);
+
+    const timelineMap = new Map();
+    const labelFormat = period === "day" ? "hour" : "date";
+    scopedAppointments.forEach((item) => {
+      const d = new Date(item.startAt);
+      const label = labelFormat === "hour"
+        ? `${String(d.getHours()).padStart(2, "0")}:00`
+        : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const current = timelineMap.get(label) || { label, appointments: 0, revenueCents: 0 };
+      current.appointments += 1;
+      current.revenueCents += scopedPayments.filter((payment) => payment.appointmentId === item.id).reduce((sum, payment) => sum + payment.amountCents, 0);
+      timelineMap.set(label, current);
+    });
+    const timeline = [...timelineMap.values()].sort((a, b) => a.label.localeCompare(b.label));
+    const insights = [
+      `Servizio più richiesto: ${topServices[0]?.name || "Nessun dato"}`,
+      `Cliente più attivo: ${frequentClients[0]?.name || "Nessun dato"}`,
+      `Tecnologia meno utilizzata: ${lowTechnologyUsage[0]?.name || "Nessun dato"}`
+    ];
+
+    return {
+      period,
+      generatedAt: new Date().toISOString(),
+      dateLabel: period === "day" ? "Oggi" : period === "week" ? "Ultimi 7 giorni" : "Ultimi 30 giorni",
+      totals,
+      timeline,
+      topOperators,
+      topServices,
+      lowServices,
+      clientSegments: [
+        { label: "Attivi", value: totals.activeClients, note: "Clienti con scheda presente" },
+        { label: "Ritorno", value: totals.returningClients, note: "Clienti con valore consolidato" },
+        { label: "Occasionali", value: totals.occasionalClients, note: "Clienti ancora a bassa frequenza" }
+      ],
+      topClientsBySpend,
+      frequentClients,
+      inactiveClients,
+      technologyUsage,
+      lowTechnologyUsage,
+      insights,
+      paymentBreakdown
+    };
+  }
+
+  exportOperationalReport(period = "day", format = "pdf") {
+    ensureDir(EXPORTS_DIR);
+    const report = this.getOperationalReport(period);
+    const fileName = `operational-report-${period}-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Report operativo</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#163047}h1,h2{color:#236eb8}table{width:100%;border-collapse:collapse;margin-top:16px}td,th{border:1px solid #dfe8f3;padding:10px;text-align:left}</style></head><body><h1>Report operativo</h1><p>${report.dateLabel}</p><h2>Totali</h2><table><tr><th>Appuntamenti</th><th>Completati</th><th>Incasso</th></tr><tr><td>${report.totals.appointments}</td><td>${report.totals.completedAppointments}</td><td>${euro(report.totals.revenueCents)}</td></tr></table></body></html>`;
+    fs.writeFileSync(filePath, html);
+    return {
+      path: filePath,
+      format,
+      url: `/exports/${fileName}`
+    };
+  }
+
+  openExportsFolder() {
+    ensureDir(EXPORTS_DIR);
+    const entries = fs.readdirSync(EXPORTS_DIR).sort().reverse();
+    return {
+      success: true,
+      url: entries[0] ? `/exports/${entries[0]}` : null
+    };
+  }
+
+  toClientEntity(payload) {
+    const now = new Date().toISOString();
+    const fullName = [payload.firstName, payload.lastName].filter(Boolean).join(" ").trim() || payload.fullName || "Nuovo cliente";
+    return {
+      id: payload.id || `cl_${Date.now()}`,
+      name: fullName,
+      type: payload.type || "beauty",
+      phone: payload.phone || "",
+      email: payload.email || "",
+      birthDate: payload.birthDate || "",
+      notes: payload.notes || "",
+      preferences: payload.preferences ? String(payload.preferences).split(",").map((item) => item.trim()).filter(Boolean) : [],
+      allergies: payload.allergies || "",
+      activePlans: payload.packages ? String(payload.packages).split(",").map((item) => item.trim()).filter(Boolean) : [],
+      marketingConsent: Boolean(payload.marketingConsent),
+      recallDue: payload.recallDue || "",
+      recommendedProtocol: payload.recommendedProtocol || "",
+      totalValue: Number(payload.totalValue || 0),
+      photoStatus: payload.photoStatus || "",
+      loyaltyTier: payload.loyaltyTier || "base",
+      lastVisit: payload.lastVisit || "",
+      createdAt: payload.createdAt || now,
+      updatedAt: now
+    };
+  }
+
+  mapClient(client) {
+    const { firstName, lastName } = splitName(client.name);
+    return {
+      id: client.id,
+      firstName,
+      lastName,
+      phone: client.phone || "",
+      email: client.email || "",
+      birthDate: client.birthDate || "",
+      notes: client.notes || "",
+      preferences: Array.isArray(client.preferences) ? client.preferences.join(", ") : client.preferences || "",
+      allergies: client.allergies || "",
+      packages: Array.isArray(client.activePlans) ? client.activePlans.join(", ") : client.packages || "",
+      createdAt: client.createdAt || new Date().toISOString(),
+      updatedAt: client.updatedAt || client.createdAt || new Date().toISOString(),
+      totalValue: Number(client.totalValue || 0)
+    };
+  }
+
+  toAppointmentEntity(payload) {
+    const now = new Date().toISOString();
+    const startAt = payload.startAt || toDateTime(payload.date, payload.time);
+    const durationMin = Number(payload.durationMin || payload.duration || this.findServiceDurationById(payload.serviceId) || 45);
+    const endAt = payload.endAt || addMinutes(startAt, durationMin);
+    return {
+      id: payload.id || `appt_${Date.now()}`,
+      clientId: payload.clientId || this.findClientIdByName(payload.clientName),
+      staffId: payload.staffId || this.findStaffIdByName(payload.staffName),
+      serviceId: payload.serviceId || this.findServiceIdByName(payload.serviceName),
+      serviceIds: Array.isArray(payload.serviceIds) ? payload.serviceIds : payload.serviceId ? [payload.serviceId] : undefined,
+      resourceId: payload.resourceId || this.findResourceIdByName(payload.resourceName),
+      startAt,
+      endAt,
+      date: toDateOnly(startAt),
+      time: toTimeOnly(startAt),
+      client: payload.clientName || this.findClientNameById(payload.clientId) || "Cliente",
+      service: payload.serviceName || this.findServiceNameById(payload.serviceId) || "Servizio",
+      operator: payload.staffName || this.findStaffNameById(payload.staffId) || "Operatore",
+      room: payload.resourceName || this.findResourceNameById(payload.resourceId) || "Postazione",
+      status: payload.status || "requested",
+      day: "scheduled",
+      reminderSent: false,
+      duration: durationMin,
+      notes: payload.notes || "",
+      createdAt: payload.createdAt || now,
+      updatedAt: now,
+      locked: Number(payload.locked || 0)
+    };
+  }
+
+  mapAppointment(item, clients = this.clientsRepository.list(), services = this.servicesRepository.list(), staff = this.staffRepository.list(), resources = this.resourcesRepository.list()) {
+    const client = clients.find((entry) => entry.id === item.clientId || entry.name === item.client);
+    const service = services.find((entry) => entry.id === item.serviceId || entry.name === item.service);
+    const operator = staff.find((entry) => entry.id === item.staffId || entry.name === item.operator);
+    const resource = resources.find((entry) => entry.id === item.resourceId || entry.name === item.room);
+    const startAt = item.startAt || toDateTime(item.date, item.time);
+    const durationMin = Number(item.durationMin || item.duration || service?.durationMin || service?.duration || 45);
+    const candidateEndAt = item.endAt || addMinutes(startAt, durationMin);
+    const endAt = new Date(candidateEndAt).getTime() > new Date(startAt).getTime()
+      ? candidateEndAt
+      : addMinutes(startAt, durationMin);
+    return {
+      id: item.id,
+      clientId: client?.id || item.clientId || "",
+      staffId: operator?.id || item.staffId || null,
+      serviceId: service?.id || item.serviceId || null,
+      serviceIds: Array.isArray(item.serviceIds) ? item.serviceIds : item.serviceId ? [item.serviceId] : service?.id ? [service.id] : [],
+      resourceId: resource?.id || item.resourceId || null,
+      startAt,
+      endAt,
+      status: item.status || "requested",
+      locked: Number(item.locked || 0),
+      notes: item.notes || "",
+      createdAt: item.createdAt || startAt,
+      updatedAt: item.updatedAt || startAt,
+      clientName: client?.name || item.client || "Cliente",
+      serviceName: service?.name || item.service || "Servizio",
+      staffName: operator?.name || item.operator || "Operatore",
+      resourceName: resource?.name || item.room || "Postazione"
+    };
+  }
+
+  findClientIdByName(name) {
+    return this.clientsRepository.list().find((item) => item.name === name)?.id || "";
+  }
+  findStaffIdByName(name) {
+    return this.staffRepository.list().find((item) => item.name === name)?.id || "";
+  }
+  findServiceIdByName(name) {
+    return this.servicesRepository.list().find((item) => item.name === name)?.id || "";
+  }
+  findResourceIdByName(name) {
+    return this.resourcesRepository.list().find((item) => item.name === name)?.id || "";
+  }
+  findClientNameById(id) {
+    return this.clientsRepository.findById(id)?.name || "";
+  }
+  findStaffNameById(id) {
+    return this.staffRepository.findById(id)?.name || "";
+  }
+  findServiceNameById(id) {
+    return this.servicesRepository.findById(id)?.name || "";
+  }
+  findResourceNameById(id) {
+    return this.resourcesRepository.findById(id)?.name || "";
+  }
+  findServiceDurationById(id) {
+    const service = this.servicesRepository.findById(id);
+    return Number(service?.durationMin || service?.duration || 45);
+  }
+}
+
+module.exports = {
+  DesktopMirrorService,
+  defaultSettings
+};

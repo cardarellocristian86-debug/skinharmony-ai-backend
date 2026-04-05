@@ -1,0 +1,9 @@
+{
+  "settings": {
+    "siteBooking": true,
+    "instagramLink": true,
+    "whatsAppBooking": true,
+    "googleSync": false
+  },
+  "requests": []
+}

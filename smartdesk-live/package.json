@@ -1,0 +1,13 @@
+{
+  "name": "skinharmony-smartdesk-live",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Deploy web + API per SkinHarmony Ecosistema Center",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
