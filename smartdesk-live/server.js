@@ -53,6 +53,18 @@ app.post("/api/auth/logout", (req, res) => {
   res.json(service.logout(readToken(req)));
 });
 
+app.get("/api/auth/users", requireAuth, (req, res) => {
+  res.json(service.listAccessUsers(req.session));
+});
+
+app.post("/api/auth/users", requireAuth, (req, res) => {
+  try {
+    res.status(201).json(service.createAccessUser(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile creare l'accesso");
+  }
+});
+
 app.use("/api", (req, res, next) => {
   if (req.path.startsWith("/auth/")) {
     return next();
@@ -60,16 +72,16 @@ app.use("/api", (req, res, next) => {
   return requireAuth(req, res, next);
 });
 
-app.get("/api/dashboard/stats", (_req, res) => {
-  res.json(service.getDashboardStats());
+app.get("/api/dashboard/stats", (req, res) => {
+  res.json(service.getDashboardStats(req.session));
 });
 
 app.get("/api/reports/operational", (req, res) => {
-  res.json(service.getOperationalReport(req.query.period || "day"));
+  res.json(service.getOperationalReport(req.query.period || "day", req.session));
 });
 
 app.get("/api/reports/export", (req, res) => {
-  res.json(service.exportOperationalReport(req.query.period || "day", req.query.format || "pdf"));
+  res.json(service.exportOperationalReport(req.query.period || "day", req.query.format || "pdf", req.session));
 });
 
 app.get("/api/reports/open-exports", (_req, res) => {
@@ -77,20 +89,20 @@ app.get("/api/reports/open-exports", (_req, res) => {
 });
 
 app.get("/api/clients", (req, res) => {
-  res.json(service.listClients(req.query.search));
+  res.json(service.listClients(req.query.search, req.session));
 });
 
 app.post("/api/clients", (req, res) => {
-  res.status(201).json(service.saveClient(req.body || {}));
+  res.status(201).json(service.saveClient(req.body || {}, req.session));
 });
 
 app.put("/api/clients/:id", (req, res) => {
-  res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }));
+  res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
 });
 
 app.get("/api/clients/:id", (req, res) => {
   try {
-    res.json(service.getClientDetail(req.params.id));
+    res.json(service.getClientDetail(req.params.id, req.session));
   } catch (error) {
     res.status(404).send(error instanceof Error ? error.message : "Cliente non trovato");
   }
@@ -98,98 +110,98 @@ app.get("/api/clients/:id", (req, res) => {
 
 app.get("/api/clients/:id/consultation", (req, res) => {
   try {
-    res.json(service.getClientConsultation(req.params.id));
+    res.json(service.getClientConsultation(req.params.id, req.session));
   } catch (error) {
     res.status(404).send(error instanceof Error ? error.message : "Cliente non trovato");
   }
 });
 
 app.get("/api/appointments", (req, res) => {
-  res.json(service.listAppointments(req.query.view || "day", req.query.anchorDate || new Date().toISOString()));
+  res.json(service.listAppointments(req.query.view || "day", req.query.anchorDate || new Date().toISOString(), false, req.session));
 });
 
 app.post("/api/appointments", (req, res) => {
-  res.status(201).json(service.saveAppointment(req.body || {}));
+  res.status(201).json(service.saveAppointment(req.body || {}, req.session));
 });
 
 app.put("/api/appointments/:id", (req, res) => {
-  res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }));
+  res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
 });
 
-app.get("/api/catalog/services", (_req, res) => {
-  res.json(service.listServices());
+app.get("/api/catalog/services", (req, res) => {
+  res.json(service.listServices(req.session));
 });
 
 app.post("/api/catalog/services", (req, res) => {
-  res.status(201).json(service.saveService(req.body || {}));
+  res.status(201).json(service.saveService(req.body || {}, req.session));
 });
 
 app.put("/api/catalog/services/:id", (req, res) => {
-  res.json(service.saveService({ ...(req.body || {}), id: req.params.id }));
+  res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
 });
 
 app.delete("/api/catalog/services/:id", (req, res) => {
-  res.json(service.deleteService(req.params.id));
+  res.json(service.deleteService(req.params.id, req.session));
 });
 
-app.get("/api/catalog/staff", (_req, res) => {
-  res.json(service.listStaff());
+app.get("/api/catalog/staff", (req, res) => {
+  res.json(service.listStaff(req.session));
 });
 
 app.post("/api/catalog/staff", (req, res) => {
-  res.status(201).json(service.saveStaff(req.body || {}));
+  res.status(201).json(service.saveStaff(req.body || {}, req.session));
 });
 
 app.put("/api/catalog/staff/:id", (req, res) => {
-  res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }));
+  res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
 });
 
 app.delete("/api/catalog/staff/:id", (req, res) => {
-  res.json(service.deleteStaff(req.params.id));
+  res.json(service.deleteStaff(req.params.id, req.session));
 });
 
-app.get("/api/catalog/resources", (_req, res) => {
-  res.json(service.listResources());
+app.get("/api/catalog/resources", (req, res) => {
+  res.json(service.listResources(req.session));
 });
 
 app.post("/api/catalog/resources", (req, res) => {
-  res.status(201).json(service.saveResource(req.body || {}));
+  res.status(201).json(service.saveResource(req.body || {}, req.session));
 });
 
 app.put("/api/catalog/resources/:id", (req, res) => {
-  res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }));
+  res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
 });
 
 app.delete("/api/catalog/resources/:id", (req, res) => {
-  res.json(service.deleteResource(req.params.id));
+  res.json(service.deleteResource(req.params.id, req.session));
 });
 
 app.get("/api/treatments", (req, res) => {
-  res.json(service.listTreatments(req.query.clientId));
+  res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
 app.post("/api/treatments", (req, res) => {
-  res.status(201).json(service.createTreatment(req.body || {}));
+  res.status(201).json(service.createTreatment(req.body || {}, req.session));
 });
 
 app.get("/api/payments", (req, res) => {
-  res.json(service.listPayments(req.query.clientId));
+  res.json(service.listPayments(req.query.clientId, req.session));
 });
 
 app.post("/api/payments", (req, res) => {
-  res.status(201).json(service.createPayment(req.body || {}));
+  res.status(201).json(service.createPayment(req.body || {}, req.session));
 });
 
-app.get("/api/settings", (_req, res) => {
-  res.json(service.getSettings());
+app.get("/api/settings", (req, res) => {
+  res.json(service.getSettings(req.session));
 });
 
 app.put("/api/settings", (req, res) => {
-  res.json(service.saveSettings(req.body || {}));
+  res.json(service.saveSettings(req.body || {}, req.session));
 });
 
-app.post("/api/settings/reset", (_req, res) => {
-  res.json(service.resetSettings());
+app.post("/api/settings/reset", (req, res) => {
+  res.json(service.resetSettings(req.session));
 });
 
 app.use((_req, res) => {

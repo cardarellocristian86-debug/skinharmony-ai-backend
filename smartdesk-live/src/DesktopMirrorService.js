@@ -7,6 +7,8 @@ const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
 const DEFAULT_ADMIN_USERNAME = "admin";
 const DEFAULT_ADMIN_PASSWORD = "admin1234";
+const DEFAULT_CENTER_ID = "center_admin";
+const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
 
 const defaultSettings = {
   centerName: "Ecosistema Center",
@@ -133,6 +135,7 @@ class DesktopMirrorService {
     this.treatmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "treatments.json"), []);
     this.usersRepository = new JsonFileRepository(path.join(DATA_DIR, "users.json"), []);
     this.settingsRepository = new JsonFileRepository(path.join(DATA_DIR, "settings.json"), defaultSettings);
+    this.centerSettingsRepository = new JsonFileRepository(path.join(DATA_DIR, "settings_by_center.json"), []);
     this.centerRepository = new JsonFileRepository(path.join(DATA_DIR, "center.json"), {});
     this.salesRepository = new JsonFileRepository(path.join(DATA_DIR, "sales.json"), []);
     this.sessions = new Map();
@@ -142,22 +145,84 @@ class DesktopMirrorService {
   ensureInitialAdmin() {
     const users = this.usersRepository.list();
     const existingAdmin = users.find((user) => String(user.username || "").trim().toLowerCase() === DEFAULT_ADMIN_USERNAME);
-    if (existingAdmin) return;
+    if (!existingAdmin) {
+      this.usersRepository.create({
+        id: crypto.randomUUID(),
+        username: DEFAULT_ADMIN_USERNAME,
+        passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
+        role: "superadmin",
+        active: true,
+        centerId: DEFAULT_CENTER_ID,
+        centerName: DEFAULT_CENTER_NAME,
+        createdAt: new Date().toISOString()
+      });
+    } else if (existingAdmin.role !== "superadmin" || !existingAdmin.centerId || !existingAdmin.centerName) {
+      this.usersRepository.update(existingAdmin.id, (user) => ({
+        ...user,
+        role: "superadmin",
+        centerId: user.centerId || DEFAULT_CENTER_ID,
+        centerName: user.centerName || DEFAULT_CENTER_NAME
+      }));
+    }
+    this.ensureCenterSettings(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
+  }
 
-    this.usersRepository.create({
-      id: crypto.randomUUID(),
-      username: DEFAULT_ADMIN_USERNAME,
-      passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
-      role: "owner",
-      active: true,
-      createdAt: new Date().toISOString()
+  getCenterId(session) {
+    return session?.centerId || DEFAULT_CENTER_ID;
+  }
+
+  getCenterName(session) {
+    return session?.centerName || DEFAULT_CENTER_NAME;
+  }
+
+  isInCenter(item, centerId) {
+    return (item?.centerId || DEFAULT_CENTER_ID) === centerId;
+  }
+
+  filterByCenter(items, session) {
+    const centerId = this.getCenterId(session);
+    return items.filter((item) => this.isInCenter(item, centerId));
+  }
+
+  attachCenter(item, session) {
+    return {
+      ...item,
+      centerId: item.centerId || this.getCenterId(session)
+    };
+  }
+
+  findByIdInCenter(repository, id, session) {
+    const found = repository.findById(id);
+    if (!found) return null;
+    return this.isInCenter(found, this.getCenterId(session)) ? found : null;
+  }
+
+  ensureCenterSettings(centerId, centerName) {
+    const items = this.centerSettingsRepository.list();
+    const existing = items.find((item) => item.centerId === centerId);
+    if (existing) return;
+    this.centerSettingsRepository.create({
+      centerId,
+      centerName,
+      settings: { ...defaultSettings, centerName }
     });
   }
 
-  listClients(search = "") {
+  getCenterSettingsRecord(session) {
+    const centerId = this.getCenterId(session);
+    const centerName = this.getCenterName(session);
+    this.ensureCenterSettings(centerId, centerName);
+    const items = this.centerSettingsRepository.list();
+    return items.find((item) => item.centerId === centerId) || {
+      centerId,
+      centerName,
+      settings: { ...defaultSettings, centerName }
+    };
+  }
+
+  listClients(search = "", session) {
     const normalizedSearch = String(search || "").trim().toLowerCase();
-    return this.clientsRepository
-      .list()
+    return this.filterByCenter(this.clientsRepository.list(), session)
       .filter((client) => {
         if (!normalizedSearch) return true;
         return [client.name, client.phone, client.email].filter(Boolean).some((field) => String(field).toLowerCase().includes(normalizedSearch));
@@ -165,26 +230,30 @@ class DesktopMirrorService {
       .map((client) => this.mapClient(client));
   }
 
-  saveClient(payload) {
-    const next = this.toClientEntity(payload);
+  saveClient(payload, session) {
+    const next = this.attachCenter(this.toClientEntity(payload), session);
     if (payload.id) {
-      const updated = this.clientsRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+      const current = this.findByIdInCenter(this.clientsRepository, payload.id, session);
+      if (!current) {
+        throw new Error("Cliente non trovato");
+      }
+      const updated = this.clientsRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId }));
       return this.mapClient(updated || next);
     }
     this.clientsRepository.create(next);
     return this.mapClient(next);
   }
 
-  getClientDetail(id) {
-    const client = this.clientsRepository.findById(id);
+  getClientDetail(id, session) {
+    const client = this.findByIdInCenter(this.clientsRepository, id, session);
     if (!client) {
       throw new Error("Cliente non trovato");
     }
-    const appointments = this.listAppointments("month", new Date().toISOString(), true).filter((item) => item.clientId === id);
-    const treatments = this.listTreatments(id);
-    const payments = this.listPayments(id);
-    const settings = this.getSettings();
-    const services = this.listServices();
+    const appointments = this.listAppointments("month", new Date().toISOString(), true, session).filter((item) => item.clientId === id);
+    const treatments = this.listTreatments(id, session);
+    const payments = this.listPayments(id, session);
+    const settings = this.getSettings(session);
+    const services = this.listServices(session);
     const servicesById = new Map(services.map((service) => [service.id, service]));
     const completedAppointments = appointments.filter((item) => item.status === "completed");
     const totalSpentCents = completedAppointments.reduce((sum, appointment) => {
@@ -218,8 +287,8 @@ class DesktopMirrorService {
     };
   }
 
-  getClientConsultation(id) {
-    const detail = this.getClientDetail(id);
+  getClientConsultation(id, session) {
+    const detail = this.getClientDetail(id, session);
     const revenueCents = detail.payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     const appointments = detail.appointments;
     const completed = appointments.filter((item) => item.status === "completed").length;
@@ -264,7 +333,7 @@ class DesktopMirrorService {
     };
   }
 
-  listAppointments(view = "day", anchorDate = new Date().toISOString(), includeAll = false) {
+  listAppointments(view = "day", anchorDate = new Date().toISOString(), includeAll = false, session) {
     const anchor = new Date(anchorDate);
     const anchorKey = toDateOnly(anchorDate);
     const start = new Date(anchor);
@@ -282,11 +351,11 @@ class DesktopMirrorService {
       start.setHours(0, 0, 0, 0);
       end.setHours(23, 59, 59, 999);
     }
-    const clients = this.clientsRepository.list();
-    const services = this.servicesRepository.list();
-    const staff = this.staffRepository.list();
-    const resources = this.resourcesRepository.list();
-    const items = this.appointmentsRepository.list().map((item) => {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const resources = this.filterByCenter(this.resourcesRepository.list(), session);
+    const items = this.filterByCenter(this.appointmentsRepository.list(), session).map((item) => {
       const mapped = this.mapAppointment(item, clients, services, staff, resources);
       const date = new Date(mapped.startAt);
       return { mapped, date };
@@ -297,8 +366,12 @@ class DesktopMirrorService {
       .map(({ mapped }) => mapped);
   }
 
-  saveAppointment(payload) {
+  saveAppointment(payload, session) {
     if (payload.id) {
+      const current = this.findByIdInCenter(this.appointmentsRepository, payload.id, session);
+      if (!current) {
+        throw new Error("Appuntamento non trovato");
+      }
       const updated = this.appointmentsRepository.update(payload.id, (current) => {
         const next = this.toAppointmentEntity({
           ...current,
@@ -306,18 +379,18 @@ class DesktopMirrorService {
           id: current.id,
           createdAt: current.createdAt,
           locked: payload.locked ?? current.locked ?? 0
-        });
-        return { ...current, ...next, id: current.id };
+        }, session);
+        return { ...current, ...this.attachCenter(next, session), id: current.id, centerId: current.centerId || this.getCenterId(session) };
       });
-      return this.mapAppointment(updated || this.toAppointmentEntity(payload));
+      return this.mapAppointment(updated || this.attachCenter(this.toAppointmentEntity(payload, session), session), this.filterByCenter(this.clientsRepository.list(), session), this.filterByCenter(this.servicesRepository.list(), session), this.filterByCenter(this.staffRepository.list(), session), this.filterByCenter(this.resourcesRepository.list(), session));
     }
-    const next = this.toAppointmentEntity(payload);
+    const next = this.attachCenter(this.toAppointmentEntity(payload, session), session);
     this.appointmentsRepository.create(next);
-    return this.mapAppointment(next);
+    return this.mapAppointment(next, this.filterByCenter(this.clientsRepository.list(), session), this.filterByCenter(this.servicesRepository.list(), session), this.filterByCenter(this.staffRepository.list(), session), this.filterByCenter(this.resourcesRepository.list(), session));
   }
 
-  listServices() {
-    return this.servicesRepository.list().map((item) => ({
+  listServices(session) {
+    return this.filterByCenter(this.servicesRepository.list(), session).map((item) => ({
       id: item.id,
       name: item.name,
       category: item.category || "",
@@ -330,8 +403,8 @@ class DesktopMirrorService {
     }));
   }
 
-  saveService(payload) {
-    const next = {
+  saveService(payload, session) {
+    const next = this.attachCenter({
       id: payload.id || `srv_${Date.now()}`,
       name: payload.name || "Servizio",
       category: payload.category || "",
@@ -345,21 +418,24 @@ class DesktopMirrorService {
       active: Number(payload.active ?? 1),
       createdAt: payload.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    };
+    }, session);
     if (payload.id) {
-      this.servicesRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+      const current = this.findByIdInCenter(this.servicesRepository, payload.id, session);
+      if (!current) throw new Error("Servizio non trovato");
+      this.servicesRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId }));
     } else {
       this.servicesRepository.create(next);
     }
-    return this.listServices().find((item) => item.id === next.id) || next;
+    return this.listServices(session).find((item) => item.id === next.id) || next;
   }
 
-  deleteService(id) {
+  deleteService(id, session) {
+    if (!this.findByIdInCenter(this.servicesRepository, id, session)) return { success: false };
     return { success: this.servicesRepository.delete(id) };
   }
 
-  listStaff() {
-    return this.staffRepository.list().map((item) => ({
+  listStaff(session) {
+    return this.filterByCenter(this.staffRepository.list(), session).map((item) => ({
       id: item.id,
       name: item.name,
       colorTag: item.colorTag || null,
@@ -371,8 +447,8 @@ class DesktopMirrorService {
     }));
   }
 
-  saveStaff(payload) {
-    const next = {
+  saveStaff(payload, session) {
+    const next = this.attachCenter({
       id: payload.id || `st_${Date.now()}`,
       name: payload.name || "Operatore",
       colorTag: payload.colorTag || null,
@@ -381,21 +457,24 @@ class DesktopMirrorService {
       targetProgress: Number(payload.targetProgress || 0),
       active: Number(payload.active ?? 1),
       createdAt: payload.createdAt || new Date().toISOString()
-    };
+    }, session);
     if (payload.id) {
-      this.staffRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+      const current = this.findByIdInCenter(this.staffRepository, payload.id, session);
+      if (!current) throw new Error("Operatore non trovato");
+      this.staffRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId }));
     } else {
       this.staffRepository.create(next);
     }
-    return this.listStaff().find((item) => item.id === next.id) || next;
+    return this.listStaff(session).find((item) => item.id === next.id) || next;
   }
 
-  deleteStaff(id) {
+  deleteStaff(id, session) {
+    if (!this.findByIdInCenter(this.staffRepository, id, session)) return { success: false };
     return { success: this.staffRepository.delete(id) };
   }
 
-  listResources() {
-    return this.resourcesRepository.list().map((item) => ({
+  listResources(session) {
+    return this.filterByCenter(this.resourcesRepository.list(), session).map((item) => ({
       id: item.id,
       name: item.name,
       type: item.type || null,
@@ -404,29 +483,31 @@ class DesktopMirrorService {
     }));
   }
 
-  saveResource(payload) {
-    const next = {
+  saveResource(payload, session) {
+    const next = this.attachCenter({
       id: payload.id || `res_${Date.now()}`,
       name: payload.name || "Risorsa",
       type: payload.type || "cabina",
       active: Number(payload.active ?? 1),
       createdAt: payload.createdAt || new Date().toISOString()
-    };
+    }, session);
     if (payload.id) {
-      this.resourcesRepository.update(payload.id, (current) => ({ ...current, ...next, id: current.id }));
+      const current = this.findByIdInCenter(this.resourcesRepository, payload.id, session);
+      if (!current) throw new Error("Risorsa non trovata");
+      this.resourcesRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId }));
     } else {
       this.resourcesRepository.create(next);
     }
-    return this.listResources().find((item) => item.id === next.id) || next;
+    return this.listResources(session).find((item) => item.id === next.id) || next;
   }
 
-  deleteResource(id) {
+  deleteResource(id, session) {
+    if (!this.findByIdInCenter(this.resourcesRepository, id, session)) return { success: false };
     return { success: this.resourcesRepository.delete(id) };
   }
 
-  listTreatments(clientId) {
-    return this.treatmentsRepository
-      .list()
+  listTreatments(clientId, session) {
+    return this.filterByCenter(this.treatmentsRepository.list(), session)
       .filter((item) => !clientId || item.clientId === clientId)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .map((item) => ({
@@ -444,8 +525,8 @@ class DesktopMirrorService {
       }));
   }
 
-  createTreatment(payload) {
-    const item = {
+  createTreatment(payload, session) {
+    const item = this.attachCenter({
       id: `trt_${Date.now()}`,
       clientId: payload.clientId,
       appointmentId: payload.appointmentId || null,
@@ -457,14 +538,13 @@ class DesktopMirrorService {
       resultNotes: payload.resultNotes || "",
       photoPath: payload.photoPath || "",
       createdAt: new Date().toISOString()
-    };
+    }, session);
     this.treatmentsRepository.create(item);
     return item;
   }
 
-  listPayments(clientId) {
-    return this.paymentsRepository
-      .list()
+  listPayments(clientId, session) {
+    return this.filterByCenter(this.paymentsRepository.list(), session)
       .filter((item) => !clientId || item.clientId === clientId)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .map((item) => ({
@@ -478,8 +558,8 @@ class DesktopMirrorService {
       }));
   }
 
-  createPayment(payload) {
-    const item = {
+  createPayment(payload, session) {
+    const item = this.attachCenter({
       id: `pay_${Date.now()}`,
       clientId: payload.clientId,
       appointmentId: payload.appointmentId || null,
@@ -487,7 +567,7 @@ class DesktopMirrorService {
       method: payload.method || "card",
       description: payload.description || "",
       createdAt: new Date().toISOString()
-    };
+    }, session);
     this.paymentsRepository.create(item);
     if (item.appointmentId) {
       this.appointmentsRepository.update(item.appointmentId, (current) => ({
@@ -500,19 +580,32 @@ class DesktopMirrorService {
     return item;
   }
 
-  getSettings() {
-    return { ...defaultSettings, ...this.settingsRepository.list() };
+  getSettings(session) {
+    const record = this.getCenterSettingsRecord(session);
+    return { ...defaultSettings, ...record.settings, centerName: record.centerName || record.settings.centerName || this.getCenterName(session) };
   }
 
-  saveSettings(payload) {
-    const next = { ...defaultSettings, ...payload };
-    this.settingsRepository.write(next);
+  saveSettings(payload, session) {
+    const centerId = this.getCenterId(session);
+    const current = this.getCenterSettingsRecord(session);
+    const next = { ...defaultSettings, ...current.settings, ...payload, centerName: payload.centerName || current.centerName || this.getCenterName(session) };
+    this.centerSettingsRepository.update(centerId, (record) => ({
+      ...record,
+      centerName: next.centerName,
+      settings: next
+    }));
     return next;
   }
 
-  resetSettings() {
-    this.settingsRepository.write(defaultSettings);
-    return defaultSettings;
+  resetSettings(session) {
+    const centerId = this.getCenterId(session);
+    const next = { ...defaultSettings, centerName: this.getCenterName(session) };
+    this.centerSettingsRepository.update(centerId, (record) => ({
+      ...record,
+      centerName: next.centerName,
+      settings: next
+    }));
+    return next;
   }
 
   login({ username, password }) {
@@ -527,10 +620,12 @@ class DesktopMirrorService {
     const session = {
       username: user.username,
       role: user.role || "owner",
+      centerId: user.centerId || DEFAULT_CENTER_ID,
+      centerName: user.centerName || DEFAULT_CENTER_NAME,
       savedAt: new Date().toISOString()
     };
     this.sessions.set(token, session);
-    return { success: true, token, username: session.username, role: session.role };
+    return { success: true, token, username: session.username, role: session.role, centerId: session.centerId, centerName: session.centerName };
   }
 
   getSession(token) {
@@ -543,12 +638,66 @@ class DesktopMirrorService {
     return { success: true };
   }
 
-  getDashboardStats() {
-    const appointments = this.listAppointments("month", new Date().toISOString(), true);
-    const payments = this.listPayments();
-    const services = this.listServices();
+  listAccessUsers(session) {
+    const currentCenterId = this.getCenterId(session);
+    const currentRole = session?.role || "owner";
+    return this.usersRepository
+      .list()
+      .filter((user) => currentRole === "superadmin" || this.isInCenter(user, currentCenterId))
+      .map((user) => ({
+        id: user.id,
+        username: user.username,
+        role: user.role || "owner",
+        active: user.active !== false,
+        centerId: user.centerId || DEFAULT_CENTER_ID,
+        centerName: user.centerName || DEFAULT_CENTER_NAME,
+        createdAt: user.createdAt || null
+      }))
+      .sort((a, b) => a.centerName.localeCompare(b.centerName) || a.username.localeCompare(b.username));
+  }
+
+  createAccessUser(payload, session) {
+    const currentRole = session?.role || "owner";
+    if (currentRole !== "superadmin") {
+      throw new Error("Permessi insufficienti");
+    }
+    const username = String(payload.username || "").trim().toLowerCase();
+    const password = String(payload.password || "");
+    const centerName = String(payload.centerName || "").trim() || `Centro ${username}`;
+    if (!username) throw new Error("Username obbligatorio");
+    if (password.length < 8) throw new Error("Password troppo corta");
+    const exists = this.usersRepository.list().some((user) => String(user.username || "").trim().toLowerCase() === username);
+    if (exists) throw new Error("Username già presente");
+    const centerId = crypto.randomUUID();
+    this.ensureCenterSettings(centerId, centerName);
+    const user = {
+      id: crypto.randomUUID(),
+      username,
+      passwordHash: hashPassword(password),
+      role: payload.role || "owner",
+      active: true,
+      centerId,
+      centerName,
+      createdAt: new Date().toISOString()
+    };
+    this.usersRepository.create(user);
+    return {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      active: user.active,
+      centerId: user.centerId,
+      centerName: user.centerName,
+      createdAt: user.createdAt
+    };
+  }
+
+  getDashboardStats(session) {
+    const appointments = this.listAppointments("month", new Date().toISOString(), true, session);
+    const payments = this.listPayments(undefined, session);
+    const services = this.listServices(session);
     const servicesById = new Map(services.map((service) => [service.id, service]));
-    const clients = this.clientsRepository.list();
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const today = toDateOnly(new Date().toISOString());
     const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
     const completedAppointments = appointments.filter((item) => item.status === "completed");
@@ -649,7 +798,7 @@ class DesktopMirrorService {
         const diff = new Date(item.startAt).getTime() - Date.now();
         return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;
       }).length,
-      activeStaff: this.staffRepository.list().filter((item) => item.active !== false).length,
+      activeStaff: this.filterByCenter(this.staffRepository.list(), session).filter((item) => item.active !== false).length,
       activeServices: services.filter((item) => item.active !== false).length,
       pendingConfirmations: todayAppointments.filter((item) => item.status === "requested" || item.status === "booked").length,
       inactiveClientsCount: inactiveClients.length,
@@ -662,14 +811,14 @@ class DesktopMirrorService {
     };
   }
 
-  getOperationalReport(period = "day") {
-    const appointments = this.listAppointments("month", new Date().toISOString(), true);
-    const payments = this.listPayments();
-    const services = this.listServices();
-    const staff = this.listStaff();
-    const clients = this.clientsRepository.list();
-    const treatments = this.listTreatments();
-    const resources = this.listResources();
+  getOperationalReport(period = "day", session) {
+    const appointments = this.listAppointments("month", new Date().toISOString(), true, session);
+    const payments = this.listPayments(undefined, session);
+    const services = this.listServices(session);
+    const staff = this.listStaff(session);
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const treatments = this.listTreatments(undefined, session);
+    const resources = this.listResources(session);
     const now = new Date();
     let start = new Date(now);
     if (period === "week") {
@@ -855,9 +1004,9 @@ class DesktopMirrorService {
     };
   }
 
-  exportOperationalReport(period = "day", format = "pdf") {
+  exportOperationalReport(period = "day", format = "pdf", session) {
     ensureDir(EXPORTS_DIR);
-    const report = this.getOperationalReport(period);
+    const report = this.getOperationalReport(period, session);
     const fileName = `operational-report-${period}-${Date.now()}.html`;
     const filePath = path.join(EXPORTS_DIR, fileName);
     const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Report operativo</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#163047}h1,h2{color:#236eb8}table{width:100%;border-collapse:collapse;margin-top:16px}td,th{border:1px solid #dfe8f3;padding:10px;text-align:left}</style></head><body><h1>Report operativo</h1><p>${report.dateLabel}</p><h2>Totali</h2><table><tr><th>Appuntamenti</th><th>Completati</th><th>Incasso</th></tr><tr><td>${report.totals.appointments}</td><td>${report.totals.completedAppointments}</td><td>${euro(report.totals.revenueCents)}</td></tr></table></body></html>`;
@@ -923,26 +1072,26 @@ class DesktopMirrorService {
     };
   }
 
-  toAppointmentEntity(payload) {
+  toAppointmentEntity(payload, session) {
     const now = new Date().toISOString();
     const startAt = payload.startAt || toDateTime(payload.date, payload.time);
-    const durationMin = Number(payload.durationMin || payload.duration || this.findServiceDurationById(payload.serviceId) || 45);
+    const durationMin = Number(payload.durationMin || payload.duration || this.findServiceDurationById(payload.serviceId, session) || 45);
     const endAt = payload.endAt || addMinutes(startAt, durationMin);
     return {
       id: payload.id || `appt_${Date.now()}`,
-      clientId: payload.clientId || this.findClientIdByName(payload.clientName),
-      staffId: payload.staffId || this.findStaffIdByName(payload.staffName),
-      serviceId: payload.serviceId || this.findServiceIdByName(payload.serviceName),
+      clientId: payload.clientId || this.findClientIdByName(payload.clientName, session),
+      staffId: payload.staffId || this.findStaffIdByName(payload.staffName, session),
+      serviceId: payload.serviceId || this.findServiceIdByName(payload.serviceName, session),
       serviceIds: Array.isArray(payload.serviceIds) ? payload.serviceIds : payload.serviceId ? [payload.serviceId] : undefined,
-      resourceId: payload.resourceId || this.findResourceIdByName(payload.resourceName),
+      resourceId: payload.resourceId || this.findResourceIdByName(payload.resourceName, session),
       startAt,
       endAt,
       date: toDateOnly(startAt),
       time: toTimeOnly(startAt),
-      client: payload.clientName || this.findClientNameById(payload.clientId) || "Cliente",
-      service: payload.serviceName || this.findServiceNameById(payload.serviceId) || "Servizio",
-      operator: payload.staffName || this.findStaffNameById(payload.staffId) || "Operatore",
-      room: payload.resourceName || this.findResourceNameById(payload.resourceId) || "Postazione",
+      client: payload.clientName || this.findClientNameById(payload.clientId, session) || "Cliente",
+      service: payload.serviceName || this.findServiceNameById(payload.serviceId, session) || "Servizio",
+      operator: payload.staffName || this.findStaffNameById(payload.staffId, session) || "Operatore",
+      room: payload.resourceName || this.findResourceNameById(payload.resourceId, session) || "Postazione",
       status: payload.status || "requested",
       day: "scheduled",
       reminderSent: false,
@@ -986,32 +1135,32 @@ class DesktopMirrorService {
     };
   }
 
-  findClientIdByName(name) {
-    return this.clientsRepository.list().find((item) => item.name === name)?.id || "";
+  findClientIdByName(name, session) {
+    return this.filterByCenter(this.clientsRepository.list(), session).find((item) => item.name === name)?.id || "";
   }
-  findStaffIdByName(name) {
-    return this.staffRepository.list().find((item) => item.name === name)?.id || "";
+  findStaffIdByName(name, session) {
+    return this.filterByCenter(this.staffRepository.list(), session).find((item) => item.name === name)?.id || "";
   }
-  findServiceIdByName(name) {
-    return this.servicesRepository.list().find((item) => item.name === name)?.id || "";
+  findServiceIdByName(name, session) {
+    return this.filterByCenter(this.servicesRepository.list(), session).find((item) => item.name === name)?.id || "";
   }
-  findResourceIdByName(name) {
-    return this.resourcesRepository.list().find((item) => item.name === name)?.id || "";
+  findResourceIdByName(name, session) {
+    return this.filterByCenter(this.resourcesRepository.list(), session).find((item) => item.name === name)?.id || "";
   }
-  findClientNameById(id) {
-    return this.clientsRepository.findById(id)?.name || "";
+  findClientNameById(id, session) {
+    return this.findByIdInCenter(this.clientsRepository, id, session)?.name || "";
   }
-  findStaffNameById(id) {
-    return this.staffRepository.findById(id)?.name || "";
+  findStaffNameById(id, session) {
+    return this.findByIdInCenter(this.staffRepository, id, session)?.name || "";
   }
-  findServiceNameById(id) {
-    return this.servicesRepository.findById(id)?.name || "";
+  findServiceNameById(id, session) {
+    return this.findByIdInCenter(this.servicesRepository, id, session)?.name || "";
   }
-  findResourceNameById(id) {
-    return this.resourcesRepository.findById(id)?.name || "";
+  findResourceNameById(id, session) {
+    return this.findByIdInCenter(this.resourcesRepository, id, session)?.name || "";
   }
-  findServiceDurationById(id) {
-    const service = this.servicesRepository.findById(id);
+  findServiceDurationById(id, session) {
+    const service = this.findByIdInCenter(this.servicesRepository, id, session);
     return Number(service?.durationMin || service?.duration || 45);
   }
 }
