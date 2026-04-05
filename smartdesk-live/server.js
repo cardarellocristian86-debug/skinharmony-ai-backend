@@ -6,6 +6,19 @@ const app = express();
 const service = new DesktopMirrorService();
 const publicDir = path.resolve(__dirname, "public");
 
+function readToken(req) {
+  return String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+}
+
+function requireAuth(req, res, next) {
+  const session = service.getSession(readToken(req));
+  if (!session) {
+    return res.status(401).send("Sessione non valida");
+  }
+  req.session = session;
+  return next();
+}
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -33,13 +46,18 @@ app.post("/api/auth/login", (req, res) => {
 });
 
 app.get("/api/auth/session", (req, res) => {
-  const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-  res.json(service.getSession(token));
+  res.json(service.getSession(readToken(req)));
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
-  res.json(service.logout(token));
+  res.json(service.logout(readToken(req)));
+});
+
+app.use("/api", (req, res, next) => {
+  if (req.path.startsWith("/auth/")) {
+    return next();
+  }
+  return requireAuth(req, res, next);
 });
 
 app.get("/api/dashboard/stats", (_req, res) => {

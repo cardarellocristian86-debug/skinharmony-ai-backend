@@ -5,6 +5,8 @@ const { JsonFileRepository } = require("./JsonFileRepository");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
+const DEFAULT_ADMIN_USERNAME = "admin";
+const DEFAULT_ADMIN_PASSWORD = "admin1234";
 
 const defaultSettings = {
   centerName: "Ecosistema Center",
@@ -87,6 +89,23 @@ function euro(cents) {
   return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
 }
 
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(String(password), salt, 64).toString("hex");
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifyPassword(password, passwordHash) {
+  if (!passwordHash || typeof passwordHash !== "string") return false;
+  const [scheme, salt, storedHash] = passwordHash.split(":");
+  if (scheme !== "scrypt" || !salt || !storedHash) return false;
+  const derivedHash = crypto.scryptSync(String(password), salt, 64).toString("hex");
+  const left = Buffer.from(storedHash, "hex");
+  const right = Buffer.from(derivedHash, "hex");
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
 function resolveMembership(totalSpentCents, settings) {
   if (!settings.membershipEnabled) {
     return null;
@@ -112,10 +131,27 @@ class DesktopMirrorService {
     this.resourcesRepository = new JsonFileRepository(path.join(DATA_DIR, "resources.json"), []);
     this.paymentsRepository = new JsonFileRepository(path.join(DATA_DIR, "payments.json"), []);
     this.treatmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "treatments.json"), []);
+    this.usersRepository = new JsonFileRepository(path.join(DATA_DIR, "users.json"), []);
     this.settingsRepository = new JsonFileRepository(path.join(DATA_DIR, "settings.json"), defaultSettings);
     this.centerRepository = new JsonFileRepository(path.join(DATA_DIR, "center.json"), {});
     this.salesRepository = new JsonFileRepository(path.join(DATA_DIR, "sales.json"), []);
     this.sessions = new Map();
+    this.ensureInitialAdmin();
+  }
+
+  ensureInitialAdmin() {
+    const users = this.usersRepository.list();
+    const existingAdmin = users.find((user) => String(user.username || "").trim().toLowerCase() === DEFAULT_ADMIN_USERNAME);
+    if (existingAdmin) return;
+
+    this.usersRepository.create({
+      id: crypto.randomUUID(),
+      username: DEFAULT_ADMIN_USERNAME,
+      passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
+      role: "owner",
+      active: true,
+      createdAt: new Date().toISOString()
+    });
   }
 
   listClients(search = "") {
@@ -480,13 +516,17 @@ class DesktopMirrorService {
   }
 
   login({ username, password }) {
-    if (username !== "admin" || password !== "admin1234") {
-      throw new Error("Credenziali non valide");
+    const normalizedUsername = String(username || "").trim().toLowerCase();
+    const user = this.usersRepository.list().find((item) => String(item.username || "").trim().toLowerCase() === normalizedUsername);
+    if (!user) throw new Error("Utente non trovato");
+    if (user.active === false) throw new Error("Utente disattivato");
+    if (!verifyPassword(password, user.passwordHash)) {
+      throw new Error("Password non valida");
     }
     const token = crypto.randomBytes(24).toString("hex");
     const session = {
-      username: "admin",
-      role: "owner",
+      username: user.username,
+      role: user.role || "owner",
       savedAt: new Date().toISOString()
     };
     this.sessions.set(token, session);

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "fb5bb735-1f21-4126-9df8-51982bcc7ac9",
+    "username": "admin",
+    "passwordHash": "scrypt:39df4155284e1cc935ebf846447566d5:be8cd94d67e7ab9b9852f70e3aa2377dc649949003966b5ab07c60a0ce129aac10635aa2db77866310145486c2247772cc6c1aa22c62aadbe7884dbd44200139",
+    "role": "owner",
+    "active": true,
+    "createdAt": "2026-04-05T21:27:04.893Z"
+  }
+]
