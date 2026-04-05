@@ -27,12 +27,12 @@ app.get("/meta/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  const verifyToken = process.env.META_VERIFY_TOKEN;
+  const verifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN;
 
   if (!verifyToken) {
     return res.status(503).json({
       ok: false,
-      error: "META_VERIFY_TOKEN non configurato"
+      error: "META_WEBHOOK_VERIFY_TOKEN non configurato"
     });
   }
 
