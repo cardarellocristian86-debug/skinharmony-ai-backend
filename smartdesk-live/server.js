@@ -174,7 +174,7 @@ app.post("/api/settings/reset", (_req, res) => {
   res.json(service.resetSettings());
 });
 
-app.get("*", (_req, res) => {
+app.use((_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
