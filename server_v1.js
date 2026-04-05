@@ -23,6 +23,29 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "protocol-engine-v1", vision: hasVisionSupport() });
 });
 
+app.get("/meta/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  const verifyToken = process.env.META_VERIFY_TOKEN;
+
+  if (!verifyToken) {
+    return res.status(503).json({
+      ok: false,
+      error: "META_VERIFY_TOKEN non configurato"
+    });
+  }
+
+  if (mode === "subscribe" && token === verifyToken) {
+    return res.status(200).send(challenge);
+  }
+
+  return res.status(403).json({
+    ok: false,
+    error: "Verifica webhook non autorizzata"
+  });
+});
+
 app.post("/api/protocols/generate", (req, res) => {
   const result = buildProtocolDraft(req.body || {});
   if (!result.ok) {
