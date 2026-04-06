@@ -269,8 +269,14 @@ class DesktopMirrorService {
   ensureCenterSettings(centerId, centerName) {
     const items = this.centerSettingsRepository.list();
     const existing = items.find((item) => item.centerId === centerId);
-    if (existing) return;
+    if (existing) {
+      if (existing.id !== centerId) {
+        this.centerSettingsRepository.write(items.map((item) => item.centerId === centerId ? { ...item, id: centerId } : item));
+      }
+      return;
+    }
     this.centerSettingsRepository.create({
+      id: centerId,
       centerId,
       centerName,
       settings: { ...defaultSettings, centerName }
@@ -283,6 +289,7 @@ class DesktopMirrorService {
     this.ensureCenterSettings(centerId, centerName);
     const items = this.centerSettingsRepository.list();
     return items.find((item) => item.centerId === centerId) || {
+      id: centerId,
       centerId,
       centerName,
       settings: { ...defaultSettings, centerName }
