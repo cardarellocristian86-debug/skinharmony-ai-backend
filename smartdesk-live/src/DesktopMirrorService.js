@@ -54,6 +54,7 @@ const defaultSettings = {
   shiftsTemplatesEnabled: true,
   shiftsClockEnabled: true,
   shiftsReportsEnabled: true,
+  shiftsFlexEnabled: false,
   membershipPearlThresholdCents: 30000,
   membershipSilverThresholdCents: 70000,
   membershipGoldThresholdCents: 120000,
@@ -148,6 +149,61 @@ function effectiveStartTime(item) {
 
 function effectiveEndTime(item) {
   return item.rectifiedEndTime || item.originalEndTime || item.endTime;
+}
+
+function clockStartTime(item) {
+  return item.rectifiedStartTime || item.originalStartTime || "";
+}
+
+function clockEndTime(item) {
+  return item.rectifiedEndTime || item.originalEndTime || "";
+}
+
+function plannedMinutes(item) {
+  return Math.max(0, minutesBetween(item.startTime, item.endTime));
+}
+
+function workedMinutes(item) {
+  const start = clockStartTime(item);
+  const end = clockEndTime(item);
+  if (!start || !end) return 0;
+  return Math.max(0, minutesBetween(start, end));
+}
+
+function dailyBalanceMinutes(item) {
+  const planned = plannedMinutes(item);
+  const worked = workedMinutes(item);
+  const todayKey = toDateOnly(new Date());
+  const hasClockStart = Boolean(clockStartTime(item));
+  const hasClockEnd = Boolean(clockEndTime(item));
+  if ((item.attendanceStatus === "absent" || (!hasClockStart && item.date < todayKey)) && item.date <= todayKey) {
+    return -planned;
+  }
+  if (hasClockStart && hasClockEnd) {
+    return worked - planned;
+  }
+  return 0;
+}
+
+function derivedAttendanceLabel(item) {
+  const todayKey = toDateOnly(new Date());
+  const hasClockStart = Boolean(clockStartTime(item));
+  const hasClockEnd = Boolean(clockEndTime(item));
+  if (item.attendanceStatus === "absent" || (!hasClockStart && item.date < todayKey)) return "Assente";
+  if (hasClockStart && !hasClockEnd) return "Entrato";
+  const balance = dailyBalanceMinutes(item);
+  if (hasClockStart && hasClockEnd) {
+    if (balance > 0) return "Straordinario";
+    if (balance < 0) return "Debito ore";
+    return "Regolare";
+  }
+  return "Da timbrare";
+}
+
+function formatSignedMinutes(totalMinutes) {
+  if (!totalMinutes) return "0h 00m";
+  const sign = totalMinutes > 0 ? "+" : "-";
+  return `${sign}${formatMinutes(Math.abs(totalMinutes))}`;
 }
 
 function normalizeWeek(days) {
@@ -464,17 +520,19 @@ class DesktopMirrorService {
       .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`))
       .map((item) => {
         const operator = staff.find((entry) => entry.id === item.staffId);
-        const workedMinutes = item.attendanceStatus === "present" || item.attendanceStatus === "late"
-          ? Math.max(0, minutesBetween(effectiveStartTime(item), effectiveEndTime(item)))
-          : 0;
         return {
           ...item,
+          clockStartTime: clockStartTime(item),
+          clockEndTime: clockEndTime(item),
           effectiveStartTime: effectiveStartTime(item),
           effectiveEndTime: effectiveEndTime(item),
           isRectified: Boolean(item.rectifiedAt),
+          plannedMinutes: plannedMinutes(item),
+          workedMinutes: workedMinutes(item),
+          dailyBalanceMinutes: dailyBalanceMinutes(item),
+          derivedAttendanceLabel: derivedAttendanceLabel(item),
           staffName: operator?.name || "Operatore",
-          staffColorTag: operator?.colorTag || null,
-          workedMinutes
+          staffColorTag: operator?.colorTag || null
         };
       });
   }
@@ -638,7 +696,11 @@ class DesktopMirrorService {
       .filter((item) => item.date >= range.start && item.date <= range.end && (!options.staffId || item.staffId === options.staffId))
       .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`));
     const staffName = options.staffId ? (staff.find((item) => item.id === options.staffId)?.name || "Operatore") : "Tutti gli operatori";
-    const totalWorkedMinutes = rows.reduce((sum, item) => sum + ((item.attendanceStatus === "present" || item.attendanceStatus === "late") ? Math.max(0, minutesBetween(effectiveStartTime(item), effectiveEndTime(item))) : 0), 0);
+    const totalWorkedMinutes = rows.reduce((sum, item) => sum + workedMinutes(item), 0);
+    const totalPlannedMinutes = rows.reduce((sum, item) => sum + plannedMinutes(item), 0);
+    const totalBalanceMinutes = rows.reduce((sum, item) => sum + dailyBalanceMinutes(item), 0);
+    const overtimeMinutes = rows.reduce((sum, item) => sum + Math.max(0, dailyBalanceMinutes(item)), 0);
+    const debitMinutes = rows.reduce((sum, item) => sum + Math.max(0, -dailyBalanceMinutes(item)), 0);
     const periodLabel = mode === "month"
       ? `${range.start.slice(5, 7)}/${range.start.slice(0, 4)}`
       : mode === "day"
@@ -646,14 +708,12 @@ class DesktopMirrorService {
         : `${range.start.split("-").reverse().join("/")} - ${range.end.split("-").reverse().join("/")}`;
     const rowsHtml = rows.map((item) => {
       const operator = staff.find((entry) => entry.id === item.staffId);
-      const worked = item.attendanceStatus === "present" || item.attendanceStatus === "late" ? formatMinutes(minutesBetween(effectiveStartTime(item), effectiveEndTime(item))) : "0h 00m";
-      const statusLabel = item.attendanceStatus === "present" ? "Presente" : item.attendanceStatus === "absent" ? "Assente" : item.attendanceStatus === "late" ? "Ritardo" : "Da confermare";
-      return `<tr><td>${item.date.split("-").reverse().join("/")}</td><td>${escapeHtml(operator?.name || "Operatore")}</td><td>${effectiveStartTime(item)} - ${effectiveEndTime(item)}</td><td>${statusLabel}</td><td>${worked}</td></tr>`;
+      return `<tr><td>${item.date.split("-").reverse().join("/")}</td><td>${escapeHtml(operator?.name || "Operatore")}</td><td>${item.startTime} - ${item.endTime}</td><td>${clockStartTime(item) || "--:--"} - ${clockEndTime(item) || "--:--"}</td><td>${derivedAttendanceLabel(item)}</td><td>${formatMinutes(workedMinutes(item))}</td><td>${formatSignedMinutes(dailyBalanceMinutes(item))}</td></tr>`;
     }).join("");
     ensureDir(EXPORTS_DIR);
     const fileName = `presenze-${Date.now()}.html`;
     const filePath = path.join(EXPORTS_DIR, fileName);
-    const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Foglio presenze</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#163047;padding:34px}h1{margin:0 0 8px;color:#1F86AA}.meta{color:#6e8299;margin-bottom:18px}.box{border:1px solid #dfe8f3;border-radius:14px;padding:14px;margin-bottom:18px;background:#f8fbff}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border-bottom:1px solid #edf3f8;text-align:left;font-size:13px}th{text-transform:uppercase;font-size:11px;letter-spacing:.05em;color:#6e8299}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:36px}.signature{padding-top:34px;border-top:1px solid #cfdbe6;color:#5b707a;font-size:13px}@media print{.printbar{display:none}}</style></head><body><div class="printbar" style="margin-bottom:16px;"><button onclick="window.print()" style="padding:10px 16px;border-radius:999px;border:1px solid #4FB6D6;background:#4FB6D6;color:#fff;font-weight:700;cursor:pointer;">Stampa documento</button></div><h1>Foglio presenze</h1><div class="meta">${escapeHtml(settings.centerName)} · ${periodLabel}</div><div class="box"><div><strong>Operatore:</strong> ${escapeHtml(staffName)}</div><div><strong>Totale ore lavorate:</strong> ${formatMinutes(totalWorkedMinutes)}</div></div><table><thead><tr><th>Data</th><th>Operatore</th><th>Orario</th><th>Stato</th><th>Ore</th></tr></thead><tbody>${rowsHtml || `<tr><td colspan="5">Nessun turno disponibile nel periodo selezionato.</td></tr>`}</tbody></table><div class="signatures"><div class="signature">Firma operatore</div><div class="signature">Firma responsabile</div></div></body></html>`;
+    const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Foglio presenze</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#163047;padding:34px}h1{margin:0 0 8px;color:#1F86AA}.meta{color:#6e8299;margin-bottom:18px}.box{border:1px solid #dfe8f3;border-radius:14px;padding:14px;margin-bottom:18px;background:#f8fbff}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border-bottom:1px solid #edf3f8;text-align:left;font-size:13px}th{text-transform:uppercase;font-size:11px;letter-spacing:.05em;color:#6e8299}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:36px}.signature{padding-top:34px;border-top:1px solid #cfdbe6;color:#5b707a;font-size:13px}@media print{.printbar{display:none}}</style></head><body><div class="printbar" style="margin-bottom:16px;"><button onclick="window.print()" style="padding:10px 16px;border-radius:999px;border:1px solid #4FB6D6;background:#4FB6D6;color:#fff;font-weight:700;cursor:pointer;">Stampa documento</button></div><h1>Foglio presenze</h1><div class="meta">${escapeHtml(settings.centerName)} · ${periodLabel}</div><div class="box"><div><strong>Operatore:</strong> ${escapeHtml(staffName)}</div><div><strong>Ore previste:</strong> ${formatMinutes(totalPlannedMinutes)}</div><div><strong>Totale ore lavorate:</strong> ${formatMinutes(totalWorkedMinutes)}</div>${settings.shiftsFlexEnabled ? `<div><strong>Saldo finale:</strong> ${totalBalanceMinutes > 0 ? "Credito ore" : totalBalanceMinutes < 0 ? "Debito ore" : "In pari"} · ${formatSignedMinutes(totalBalanceMinutes)}</div>` : `<div><strong>Straordinario:</strong> ${formatMinutes(overtimeMinutes)} · <strong>Debito ore:</strong> ${formatMinutes(debitMinutes)}</div>`}</div><table><thead><tr><th>Data</th><th>Operatore</th><th>Turno</th><th>Reale</th><th>Stato</th><th>Ore</th><th>Saldo</th></tr></thead><tbody>${rowsHtml || `<tr><td colspan="7">Nessun turno disponibile nel periodo selezionato.</td></tr>`}</tbody></table><div class="signatures"><div class="signature">Firma operatore</div><div class="signature">Firma responsabile</div></div></body></html>`;
     fs.writeFileSync(filePath, html);
     return { path: filePath, format: "html", url: `/exports/${fileName}` };
   }
