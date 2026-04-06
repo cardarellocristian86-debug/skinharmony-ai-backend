@@ -9,6 +9,11 @@ const DEFAULT_ADMIN_USERNAME = "admin";
 const DEFAULT_ADMIN_PASSWORD = "admin1234";
 const DEFAULT_CENTER_ID = "center_admin";
 const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
+const DEFAULT_STAFF_PRESET = [
+  { name: "Operatore 1", colorTag: "#6db7ff" },
+  { name: "Operatore 2", colorTag: "#8fd9c8" },
+  { name: "Responsabile", colorTag: "#d7b3ff" }
+];
 
 const defaultSettings = {
   centerName: "Ecosistema Center",
@@ -234,6 +239,7 @@ class DesktopMirrorService {
       }));
     }
     this.ensureCenterSettings(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
+    this.seedDefaultStaffForCenter(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
   }
 
   getCenterId(session) {
@@ -271,7 +277,7 @@ class DesktopMirrorService {
     const existing = items.find((item) => item.centerId === centerId);
     if (existing) {
       if (existing.id !== centerId) {
-        this.centerSettingsRepository.write(items.map((item) => item.centerId === centerId ? { ...item, id: centerId } : item));
+        this.centerSettingsRepository.write(items.map((item) => item.centerId === centerId ? { ...item, id: centerId, staffSeeded: item.staffSeeded === true } : item));
       }
       return;
     }
@@ -279,6 +285,7 @@ class DesktopMirrorService {
       id: centerId,
       centerId,
       centerName,
+      staffSeeded: false,
       settings: { ...defaultSettings, centerName }
     });
   }
@@ -292,8 +299,40 @@ class DesktopMirrorService {
       id: centerId,
       centerId,
       centerName,
+      staffSeeded: false,
       settings: { ...defaultSettings, centerName }
     };
+  }
+
+  seedDefaultStaffForCenter(centerId, centerName) {
+    this.ensureCenterSettings(centerId, centerName);
+    const record = this.centerSettingsRepository.list().find((item) => item.centerId === centerId);
+    if (record?.staffSeeded) return;
+
+    const hasStaffInCenter = this.staffRepository.list().some((item) => (item.centerId || DEFAULT_CENTER_ID) === centerId);
+    if (!hasStaffInCenter) {
+      DEFAULT_STAFF_PRESET.forEach((item, index) => {
+        this.staffRepository.create({
+          id: `${centerId}_staff_${index + 1}`,
+          centerId,
+          name: item.name,
+          colorTag: item.colorTag,
+          role: "",
+          shift: "",
+          targetProgress: 0,
+          active: 1,
+          createdAt: new Date().toISOString()
+        });
+      });
+    }
+
+    this.centerSettingsRepository.update(centerId, (current) => ({
+      ...current,
+      id: centerId,
+      centerId,
+      centerName: current.centerName || centerName,
+      staffSeeded: true
+    }));
   }
 
   listClients(search = "", session) {
@@ -707,6 +746,7 @@ class DesktopMirrorService {
   }
 
   listStaff(session) {
+    this.seedDefaultStaffForCenter(this.getCenterId(session), this.getCenterName(session));
     return this.filterByCenter(this.staffRepository.list(), session).map((item) => ({
       id: item.id,
       name: item.name,
@@ -942,6 +982,7 @@ class DesktopMirrorService {
     if (exists) throw new Error("Username già presente");
     const centerId = crypto.randomUUID();
     this.ensureCenterSettings(centerId, centerName);
+    this.seedDefaultStaffForCenter(centerId, centerName);
     const user = {
       id: crypto.randomUUID(),
       username,
