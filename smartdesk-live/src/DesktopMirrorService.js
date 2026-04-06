@@ -142,6 +142,14 @@ function formatMinutes(totalMinutes) {
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
 }
 
+function effectiveStartTime(item) {
+  return item.rectifiedStartTime || item.originalStartTime || item.startTime;
+}
+
+function effectiveEndTime(item) {
+  return item.rectifiedEndTime || item.originalEndTime || item.endTime;
+}
+
 function normalizeWeek(days) {
   return Array.from({ length: 7 }, (_, weekday) => {
     const current = Array.isArray(days) ? days.find((item) => Number(item.weekday) === weekday) : null;
@@ -457,10 +465,13 @@ class DesktopMirrorService {
       .map((item) => {
         const operator = staff.find((entry) => entry.id === item.staffId);
         const workedMinutes = item.attendanceStatus === "present" || item.attendanceStatus === "late"
-          ? Math.max(0, minutesBetween(item.startTime, item.endTime))
+          ? Math.max(0, minutesBetween(effectiveStartTime(item), effectiveEndTime(item)))
           : 0;
         return {
           ...item,
+          effectiveStartTime: effectiveStartTime(item),
+          effectiveEndTime: effectiveEndTime(item),
+          isRectified: Boolean(item.rectifiedAt),
           staffName: operator?.name || "Operatore",
           staffColorTag: operator?.colorTag || null,
           workedMinutes
@@ -470,12 +481,24 @@ class DesktopMirrorService {
 
   saveShift(payload, session) {
     const now = new Date().toISOString();
+    const current = payload.id ? this.findByIdInCenter(this.shiftsRepository, payload.id, session) : null;
+    if (payload.id && !current) {
+      throw new Error("Turno non trovato");
+    }
     const next = this.attachCenter({
       id: payload.id || `shift_${Date.now()}`,
       staffId: payload.staffId,
       date: payload.date || toDateOnly(now),
       startTime: String(payload.startTime || "09:00").slice(0, 5),
       endTime: String(payload.endTime || "18:00").slice(0, 5),
+      originalStartTime: payload.originalStartTime ? String(payload.originalStartTime).slice(0, 5) : null,
+      originalEndTime: payload.originalEndTime ? String(payload.originalEndTime).slice(0, 5) : null,
+      originalAttendanceStatus: payload.originalAttendanceStatus || null,
+      rectifiedStartTime: payload.rectifiedStartTime ? String(payload.rectifiedStartTime).slice(0, 5) : null,
+      rectifiedEndTime: payload.rectifiedEndTime ? String(payload.rectifiedEndTime).slice(0, 5) : null,
+      rectificationReason: payload.rectificationReason || "",
+      rectifiedBy: payload.rectifiedBy || "",
+      rectifiedAt: payload.rectifiedAt || "",
       notes: payload.notes || "",
       attendanceStatus: payload.attendanceStatus || "unconfirmed",
       attendanceNote: payload.attendanceNote || "",
@@ -484,11 +507,18 @@ class DesktopMirrorService {
       updatedAt: now
     }, session);
 
+    if ((session?.role || "owner") === "staff") {
+      next.rectifiedStartTime = current?.rectifiedStartTime || null;
+      next.rectifiedEndTime = current?.rectifiedEndTime || null;
+      next.rectificationReason = current?.rectificationReason || "";
+      next.rectifiedBy = current?.rectifiedBy || "";
+      next.rectifiedAt = current?.rectifiedAt || "";
+      next.originalStartTime = current?.originalStartTime || next.originalStartTime;
+      next.originalEndTime = current?.originalEndTime || next.originalEndTime;
+      next.originalAttendanceStatus = current?.originalAttendanceStatus || next.originalAttendanceStatus;
+    }
+
     if (payload.id) {
-      const current = this.findByIdInCenter(this.shiftsRepository, payload.id, session);
-      if (!current) {
-        throw new Error("Turno non trovato");
-      }
       this.shiftsRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId, createdAt: entry.createdAt || next.createdAt }));
     } else {
       this.shiftsRepository.create(next);
@@ -570,6 +600,14 @@ class DesktopMirrorService {
         date: cursorDate,
         startTime: dayConfig.startTime,
         endTime: dayConfig.endTime,
+        originalStartTime: null,
+        originalEndTime: null,
+        originalAttendanceStatus: null,
+        rectifiedStartTime: null,
+        rectifiedEndTime: null,
+        rectificationReason: "",
+        rectifiedBy: "",
+        rectifiedAt: "",
         notes: `Generato da schema: ${template.name}`,
         attendanceStatus: "unconfirmed",
         attendanceNote: "",
@@ -600,7 +638,7 @@ class DesktopMirrorService {
       .filter((item) => item.date >= range.start && item.date <= range.end && (!options.staffId || item.staffId === options.staffId))
       .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`));
     const staffName = options.staffId ? (staff.find((item) => item.id === options.staffId)?.name || "Operatore") : "Tutti gli operatori";
-    const totalWorkedMinutes = rows.reduce((sum, item) => sum + ((item.attendanceStatus === "present" || item.attendanceStatus === "late") ? Math.max(0, minutesBetween(item.startTime, item.endTime)) : 0), 0);
+    const totalWorkedMinutes = rows.reduce((sum, item) => sum + ((item.attendanceStatus === "present" || item.attendanceStatus === "late") ? Math.max(0, minutesBetween(effectiveStartTime(item), effectiveEndTime(item))) : 0), 0);
     const periodLabel = mode === "month"
       ? `${range.start.slice(5, 7)}/${range.start.slice(0, 4)}`
       : mode === "day"
@@ -608,9 +646,9 @@ class DesktopMirrorService {
         : `${range.start.split("-").reverse().join("/")} - ${range.end.split("-").reverse().join("/")}`;
     const rowsHtml = rows.map((item) => {
       const operator = staff.find((entry) => entry.id === item.staffId);
-      const worked = item.attendanceStatus === "present" || item.attendanceStatus === "late" ? formatMinutes(minutesBetween(item.startTime, item.endTime)) : "0h 00m";
+      const worked = item.attendanceStatus === "present" || item.attendanceStatus === "late" ? formatMinutes(minutesBetween(effectiveStartTime(item), effectiveEndTime(item))) : "0h 00m";
       const statusLabel = item.attendanceStatus === "present" ? "Presente" : item.attendanceStatus === "absent" ? "Assente" : item.attendanceStatus === "late" ? "Ritardo" : "Da confermare";
-      return `<tr><td>${item.date.split("-").reverse().join("/")}</td><td>${escapeHtml(operator?.name || "Operatore")}</td><td>${item.startTime} - ${item.endTime}</td><td>${statusLabel}</td><td>${worked}</td></tr>`;
+      return `<tr><td>${item.date.split("-").reverse().join("/")}</td><td>${escapeHtml(operator?.name || "Operatore")}</td><td>${effectiveStartTime(item)} - ${effectiveEndTime(item)}</td><td>${statusLabel}</td><td>${worked}</td></tr>`;
     }).join("");
     ensureDir(EXPORTS_DIR);
     const fileName = `presenze-${Date.now()}.html`;
