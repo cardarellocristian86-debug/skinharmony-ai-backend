@@ -116,6 +116,14 @@ app.get("/api/clients/:id/consultation", (req, res) => {
   }
 });
 
+app.get("/api/clients/:id/consent-document", (req, res) => {
+  try {
+    res.json(service.generateClientConsentDocument(req.params.id, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare il documento");
+  }
+});
+
 app.get("/api/appointments", (req, res) => {
   res.json(service.listAppointments(req.query.view || "day", req.query.anchorDate || new Date().toISOString(), false, req.session));
 });

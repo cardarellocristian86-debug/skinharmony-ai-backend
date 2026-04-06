@@ -100,6 +100,15 @@ function euro(cents) {
   return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
   const hash = crypto.scryptSync(String(password), salt, 64).toString("hex");
@@ -340,6 +349,30 @@ class DesktopMirrorService {
         treatments: detail.treatments.length
       }
     };
+  }
+
+  generateClientConsentDocument(id, session) {
+    const detail = this.getClientDetail(id, session);
+    const settings = this.getSettings(session);
+    const requiredFields = [
+      { label: "Nome centro", value: settings.centerName },
+      { label: "Ragione sociale", value: settings.centerLegalName },
+      { label: "Email centro", value: settings.centerEmail },
+      { label: "Telefono centro", value: settings.centerPhone }
+    ];
+    const missingFields = requiredFields.filter((field) => !String(field.value || "").trim());
+    if (missingFields.length > 0) {
+      throw new Error(`Completa prima il profilo centro: ${missingFields.map((field) => field.label).join(" · ")}`);
+    }
+
+    ensureDir(EXPORTS_DIR);
+    const timestamp = Date.now();
+    const fullName = `${detail.client.firstName || ""} ${detail.client.lastName || ""}`.trim() || "Cliente";
+    const safeName = fullName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "cliente";
+    const fileName = `consenso-${safeName}-${timestamp}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    fs.writeFileSync(filePath, this.buildClientConsentDocumentHtml(detail, settings));
+    return { path: filePath, format: "html", url: `/exports/${fileName}` };
   }
 
   listAppointments(view = "day", anchorDate = new Date().toISOString(), includeAll = false, session) {
@@ -1034,6 +1067,21 @@ class DesktopMirrorService {
       success: true,
       url: entries[0] ? `/exports/${entries[0]}` : null
     };
+  }
+
+  buildClientConsentDocumentHtml(detail, settings) {
+    const formatDate = (value) => value ? new Date(value).toLocaleDateString("it-IT") : "________________";
+    const yesNo = (value) => value ? "Si" : "No";
+    const addressLine = [settings.centerAddress, settings.centerPostalCode, settings.centerCity, settings.centerProvince].filter(Boolean).join(", ");
+    const sourceLabelMap = {
+      in_sede: "In sede",
+      telefonico: "Telefonico",
+      online: "Online",
+      importato: "Importato"
+    };
+    const consentSource = sourceLabelMap[String(detail.client.consentSource || "")] || "In sede";
+    const fullName = `${detail.client.firstName || ""} ${detail.client.lastName || ""}`.trim() || "Cliente";
+    return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Modulo privacy e consensi</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#163047;padding:34px}h1{margin:0 0 8px;color:#1F86AA;font-size:28px}h2{margin:22px 0 10px;color:#2A9EC4;font-size:17px}.meta{color:#6e8299;font-size:13px;margin-bottom:18px}.box{border:1px solid #dfe8f3;border-radius:14px;padding:16px;margin-bottom:14px;background:#f8fbff}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.label{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#6e8299;margin-bottom:4px}.value{font-size:15px;font-weight:600;color:#163047}p{margin:0 0 10px;line-height:1.65}.small{font-size:12px;color:#6e8299}.consent-row{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #edf3f8}.consent-row:last-child{border-bottom:0}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:34px}.signature-box{padding-top:36px;border-top:1px solid #cfdbe6;color:#4d6470;font-size:13px}@media print{.printbar{display:none}}</style></head><body><div class="printbar" style="margin-bottom:16px;"><button onclick="window.print()" style="padding:10px 16px;border-radius:999px;border:1px solid #4FB6D6;background:#4FB6D6;color:#fff;font-weight:700;cursor:pointer;">Stampa documento</button></div><h1>Modulo privacy e consensi</h1><div class="meta">Documento precompilato da SkinHarmony Smart Desk · generato il ${new Date().toLocaleString("it-IT")}</div><h2>Dati centro</h2><div class="box"><div class="grid"><div><div class="label">Nome centro</div><div class="value">${escapeHtml(settings.centerName)}</div></div><div><div class="label">Ragione sociale</div><div class="value">${escapeHtml(settings.centerLegalName)}</div></div><div><div class="label">Email</div><div class="value">${escapeHtml(settings.centerEmail)}</div></div><div><div class="label">Telefono</div><div class="value">${escapeHtml(settings.centerPhone)}</div></div></div>${addressLine ? `<p class="small" style="margin-top:12px;">Indirizzo: ${escapeHtml(addressLine)}</p>` : ""}${settings.centerVatNumber ? `<p class="small">P. IVA: ${escapeHtml(settings.centerVatNumber)}</p>` : ""}${settings.centerTaxCode ? `<p class="small">Codice fiscale: ${escapeHtml(settings.centerTaxCode)}</p>` : ""}</div><h2>Dati cliente</h2><div class="box"><div class="grid"><div><div class="label">Cliente</div><div class="value">${escapeHtml(fullName)}</div></div><div><div class="label">Telefono</div><div class="value">${escapeHtml(detail.client.phone || "—")}</div></div><div><div class="label">Email</div><div class="value">${escapeHtml(detail.client.email || "—")}</div></div><div><div class="label">Data di nascita</div><div class="value">${detail.client.birthDate ? new Date(detail.client.birthDate).toLocaleDateString("it-IT") : "—"}</div></div></div></div><h2>Informativa e consensi</h2><div class="box"><p>Il cliente dichiara di aver preso visione dell'informativa privacy del centro e di esprimere i consensi qui riportati in modo libero e specifico.</p><div class="consent-row"><div><div class="value">Presa visione privacy</div><div class="small">Data registrata: ${formatDate(detail.client.privacyConsentAt)}</div></div><div class="value">${yesNo(detail.client.privacyConsent)}</div></div><div class="consent-row"><div><div class="value">Consenso marketing</div><div class="small">Data registrata: ${formatDate(detail.client.marketingConsentAt)}</div></div><div class="value">${yesNo(detail.client.marketingConsent)}</div></div><div class="consent-row"><div><div class="value">Consenso dati sensibili / scheda tecnica</div><div class="small">Data registrata: ${formatDate(detail.client.sensitiveDataConsentAt)}</div></div><div class="value">${yesNo(detail.client.sensitiveDataConsent)}</div></div><p class="small" style="margin-top:12px;">Fonte consenso registrata nel gestionale: ${escapeHtml(consentSource)}</p></div><div class="signatures"><div class="signature-box">Firma cliente</div><div class="signature-box">Firma operatore / centro</div></div></body></html>`;
   }
 
   toClientEntity(payload) {
