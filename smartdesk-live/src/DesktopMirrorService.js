@@ -133,6 +133,18 @@ function formatMinutes(totalMinutes) {
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
 }
 
+function normalizeWeek(days) {
+  return Array.from({ length: 7 }, (_, weekday) => {
+    const current = Array.isArray(days) ? days.find((item) => Number(item.weekday) === weekday) : null;
+    return {
+      weekday,
+      enabled: Boolean(current?.enabled),
+      startTime: current?.startTime || "09:00",
+      endTime: current?.endTime || "18:00"
+    };
+  });
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -182,6 +194,7 @@ class DesktopMirrorService {
     this.servicesRepository = new JsonFileRepository(path.join(DATA_DIR, "services.json"), []);
     this.staffRepository = new JsonFileRepository(path.join(DATA_DIR, "staff.json"), []);
     this.shiftsRepository = new JsonFileRepository(path.join(DATA_DIR, "shifts.json"), []);
+    this.shiftTemplatesRepository = new JsonFileRepository(path.join(DATA_DIR, "shift_templates.json"), []);
     this.resourcesRepository = new JsonFileRepository(path.join(DATA_DIR, "resources.json"), []);
     this.paymentsRepository = new JsonFileRepository(path.join(DATA_DIR, "payments.json"), []);
     this.treatmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "treatments.json"), []);
@@ -436,6 +449,89 @@ class DesktopMirrorService {
   deleteShift(id, session) {
     if (!this.findByIdInCenter(this.shiftsRepository, id, session)) return { success: false };
     return { success: this.shiftsRepository.delete(id) };
+  }
+
+  listShiftTemplates(session) {
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    return this.filterByCenter(this.shiftTemplatesRepository.list(), session).map((item) => ({
+      ...item,
+      repeatEveryDays: Number(item.repeatEveryDays || 7),
+      weekA: normalizeWeek(item.weekA),
+      weekB: normalizeWeek(item.weekB),
+      staffName: staff.find((entry) => entry.id === item.staffId)?.name || "Operatore"
+    }));
+  }
+
+  saveShiftTemplate(payload, session) {
+    const now = new Date().toISOString();
+    const next = this.attachCenter({
+      id: payload.id || `template_${Date.now()}`,
+      staffId: payload.staffId,
+      name: payload.name || "Schema turni",
+      mode: payload.mode === "rotation" ? "rotation" : "single",
+      repeatEveryDays: Number(payload.repeatEveryDays || 7),
+      weekA: normalizeWeek(payload.weekA),
+      weekB: payload.mode === "rotation" ? normalizeWeek(payload.weekB) : [],
+      createdAt: payload.createdAt || now,
+      updatedAt: now
+    }, session);
+    if (payload.id) {
+      const current = this.findByIdInCenter(this.shiftTemplatesRepository, payload.id, session);
+      if (!current) throw new Error("Schema turni non trovato");
+      this.shiftTemplatesRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId, createdAt: entry.createdAt || next.createdAt }));
+    } else {
+      this.shiftTemplatesRepository.create(next);
+    }
+    return this.listShiftTemplates(session).find((item) => item.id === next.id) || next;
+  }
+
+  deleteShiftTemplate(id, session) {
+    if (!this.findByIdInCenter(this.shiftTemplatesRepository, id, session)) return { success: false };
+    return { success: this.shiftTemplatesRepository.delete(id) };
+  }
+
+  generateShiftTemplate(payload, session) {
+    const template = this.findByIdInCenter(this.shiftTemplatesRepository, payload.templateId, session);
+    if (!template) throw new Error("Schema turni non trovato");
+    const start = new Date(payload.startDate);
+    const end = new Date(payload.endDate);
+    const weekA = normalizeWeek(template.weekA);
+    const weekB = normalizeWeek(template.weekB);
+    const repeatWeeks = Math.max(1, Math.round(Number(template.repeatEveryDays || 7) / 7));
+    const existingKeys = new Set(this.filterByCenter(this.shiftsRepository.list(), session).filter((item) => item.staffId === template.staffId).map((item) => `${item.staffId}:${item.date}:${item.startTime}:${item.endTime}`));
+    let generatedCount = 0;
+
+    for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+      const cursorDate = toDateOnly(cursor);
+      const startWeek = new Date(start);
+      startWeek.setDate(start.getDate() - start.getDay());
+      const currentWeek = new Date(cursor);
+      currentWeek.setDate(cursor.getDate() - cursor.getDay());
+      const weekDiff = Math.round((currentWeek.getTime() - startWeek.getTime()) / 604800000);
+      if (template.mode !== "rotation" && weekDiff % repeatWeeks !== 0) continue;
+      const weekday = new Date(cursor).getDay();
+      const dayConfig = (template.mode === "rotation" && weekDiff % 2 === 1 ? weekB : weekA).find((item) => item.weekday === weekday);
+      if (!dayConfig?.enabled) continue;
+      const key = `${template.staffId}:${cursorDate}:${dayConfig.startTime}:${dayConfig.endTime}`;
+      if (existingKeys.has(key)) continue;
+      this.shiftsRepository.create(this.attachCenter({
+        id: `shift_${Date.now()}_${generatedCount}`,
+        staffId: template.staffId,
+        date: cursorDate,
+        startTime: dayConfig.startTime,
+        endTime: dayConfig.endTime,
+        notes: `Generato da schema: ${template.name}`,
+        attendanceStatus: "unconfirmed",
+        attendanceNote: "",
+        confirmedAt: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }, session));
+      existingKeys.add(key);
+      generatedCount += 1;
+    }
+
+    return { success: true, generatedCount };
   }
 
   exportShiftReport(options = {}, session) {

@@ -192,6 +192,30 @@ app.get("/api/shifts/export", (req, res) => {
   }
 });
 
+app.get("/api/shifts/templates", (req, res) => {
+  res.json(service.listShiftTemplates(req.session));
+});
+
+app.post("/api/shifts/templates", (req, res) => {
+  res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
+});
+
+app.put("/api/shifts/templates/:id", (req, res) => {
+  res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
+});
+
+app.delete("/api/shifts/templates/:id", (req, res) => {
+  res.json(service.deleteShiftTemplate(req.params.id, req.session));
+});
+
+app.post("/api/shifts/templates/generate", (req, res) => {
+  try {
+    res.json(service.generateShiftTemplate(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare i turni dallo schema");
+  }
+});
+
 app.get("/api/catalog/resources", (req, res) => {
   res.json(service.listResources(req.session));
 });
