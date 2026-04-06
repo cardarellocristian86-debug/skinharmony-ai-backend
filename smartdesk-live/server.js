@@ -168,6 +168,30 @@ app.delete("/api/catalog/staff/:id", (req, res) => {
   res.json(service.deleteStaff(req.params.id, req.session));
 });
 
+app.get("/api/shifts", (req, res) => {
+  res.json(service.listShifts(req.query.view || "month", req.query.anchorDate || new Date().toISOString(), req.query.staffId || "", req.session));
+});
+
+app.post("/api/shifts", (req, res) => {
+  res.status(201).json(service.saveShift(req.body || {}, req.session));
+});
+
+app.put("/api/shifts/:id", (req, res) => {
+  res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
+});
+
+app.delete("/api/shifts/:id", (req, res) => {
+  res.json(service.deleteShift(req.params.id, req.session));
+});
+
+app.get("/api/shifts/export", (req, res) => {
+  try {
+    res.json(service.exportShiftReport(req.query || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare il foglio presenze");
+  }
+});
+
 app.get("/api/catalog/resources", (req, res) => {
   res.json(service.listResources(req.session));
 });

@@ -100,6 +100,39 @@ function euro(cents) {
   return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
 }
 
+function rangeForView(view, anchorDate) {
+  const anchor = new Date(anchorDate || new Date().toISOString());
+  const base = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  if (view === "week") {
+    const day = base.getDay();
+    const diffToMonday = (day + 6) % 7;
+    const start = new Date(base);
+    start.setDate(base.getDate() - diffToMonday);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return { start: toDateOnly(start), end: toDateOnly(end) };
+  }
+  if (view === "month") {
+    const start = new Date(base.getFullYear(), base.getMonth(), 1);
+    const end = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+    return { start: toDateOnly(start), end: toDateOnly(end) };
+  }
+  return { start: toDateOnly(base), end: toDateOnly(base) };
+}
+
+function minutesBetween(startTime, endTime) {
+  const [startHour = "0", startMinute = "0"] = String(startTime || "").split(":");
+  const [endHour = "0", endMinute = "0"] = String(endTime || "").split(":");
+  return (Number(endHour) * 60 + Number(endMinute)) - (Number(startHour) * 60 + Number(startMinute));
+}
+
+function formatMinutes(totalMinutes) {
+  const safe = Math.max(0, Number(totalMinutes || 0));
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
 function escapeHtml(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -148,6 +181,7 @@ class DesktopMirrorService {
     this.appointmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "appointments.json"), []);
     this.servicesRepository = new JsonFileRepository(path.join(DATA_DIR, "services.json"), []);
     this.staffRepository = new JsonFileRepository(path.join(DATA_DIR, "staff.json"), []);
+    this.shiftsRepository = new JsonFileRepository(path.join(DATA_DIR, "shifts.json"), []);
     this.resourcesRepository = new JsonFileRepository(path.join(DATA_DIR, "resources.json"), []);
     this.paymentsRepository = new JsonFileRepository(path.join(DATA_DIR, "payments.json"), []);
     this.treatmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "treatments.json"), []);
@@ -349,6 +383,95 @@ class DesktopMirrorService {
         treatments: detail.treatments.length
       }
     };
+  }
+
+  listShifts(view = "month", anchorDate = new Date().toISOString(), staffId, session) {
+    const { start, end } = rangeForView(view, anchorDate);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    return this.filterByCenter(this.shiftsRepository.list(), session)
+      .filter((item) => item.date >= start && item.date <= end && (!staffId || item.staffId === staffId))
+      .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`))
+      .map((item) => {
+        const operator = staff.find((entry) => entry.id === item.staffId);
+        const workedMinutes = item.attendanceStatus === "present" || item.attendanceStatus === "late"
+          ? Math.max(0, minutesBetween(item.startTime, item.endTime))
+          : 0;
+        return {
+          ...item,
+          staffName: operator?.name || "Operatore",
+          staffColorTag: operator?.colorTag || null,
+          workedMinutes
+        };
+      });
+  }
+
+  saveShift(payload, session) {
+    const now = new Date().toISOString();
+    const next = this.attachCenter({
+      id: payload.id || `shift_${Date.now()}`,
+      staffId: payload.staffId,
+      date: payload.date || toDateOnly(now),
+      startTime: String(payload.startTime || "09:00").slice(0, 5),
+      endTime: String(payload.endTime || "18:00").slice(0, 5),
+      notes: payload.notes || "",
+      attendanceStatus: payload.attendanceStatus || "unconfirmed",
+      attendanceNote: payload.attendanceNote || "",
+      confirmedAt: payload.confirmedAt || "",
+      createdAt: payload.createdAt || now,
+      updatedAt: now
+    }, session);
+
+    if (payload.id) {
+      const current = this.findByIdInCenter(this.shiftsRepository, payload.id, session);
+      if (!current) {
+        throw new Error("Turno non trovato");
+      }
+      this.shiftsRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId, createdAt: entry.createdAt || next.createdAt }));
+    } else {
+      this.shiftsRepository.create(next);
+    }
+    return next;
+  }
+
+  deleteShift(id, session) {
+    if (!this.findByIdInCenter(this.shiftsRepository, id, session)) return { success: false };
+    return { success: this.shiftsRepository.delete(id) };
+  }
+
+  exportShiftReport(options = {}, session) {
+    const mode = options.mode || "month";
+    const anchorDate = options.anchorDate || new Date().toISOString();
+    let range = rangeForView(mode === "custom" ? "month" : mode, anchorDate);
+    if (mode === "custom") {
+      range = {
+        start: options.startDate || range.start,
+        end: options.endDate || range.end
+      };
+    }
+    const settings = this.getSettings(session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const rows = this.filterByCenter(this.shiftsRepository.list(), session)
+      .filter((item) => item.date >= range.start && item.date <= range.end && (!options.staffId || item.staffId === options.staffId))
+      .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`));
+    const staffName = options.staffId ? (staff.find((item) => item.id === options.staffId)?.name || "Operatore") : "Tutti gli operatori";
+    const totalWorkedMinutes = rows.reduce((sum, item) => sum + ((item.attendanceStatus === "present" || item.attendanceStatus === "late") ? Math.max(0, minutesBetween(item.startTime, item.endTime)) : 0), 0);
+    const periodLabel = mode === "month"
+      ? `${range.start.slice(5, 7)}/${range.start.slice(0, 4)}`
+      : mode === "day"
+        ? range.start.split("-").reverse().join("/")
+        : `${range.start.split("-").reverse().join("/")} - ${range.end.split("-").reverse().join("/")}`;
+    const rowsHtml = rows.map((item) => {
+      const operator = staff.find((entry) => entry.id === item.staffId);
+      const worked = item.attendanceStatus === "present" || item.attendanceStatus === "late" ? formatMinutes(minutesBetween(item.startTime, item.endTime)) : "0h 00m";
+      const statusLabel = item.attendanceStatus === "present" ? "Presente" : item.attendanceStatus === "absent" ? "Assente" : item.attendanceStatus === "late" ? "Ritardo" : "Da confermare";
+      return `<tr><td>${item.date.split("-").reverse().join("/")}</td><td>${escapeHtml(operator?.name || "Operatore")}</td><td>${item.startTime} - ${item.endTime}</td><td>${statusLabel}</td><td>${worked}</td></tr>`;
+    }).join("");
+    ensureDir(EXPORTS_DIR);
+    const fileName = `presenze-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Foglio presenze</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#163047;padding:34px}h1{margin:0 0 8px;color:#1F86AA}.meta{color:#6e8299;margin-bottom:18px}.box{border:1px solid #dfe8f3;border-radius:14px;padding:14px;margin-bottom:18px;background:#f8fbff}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border-bottom:1px solid #edf3f8;text-align:left;font-size:13px}th{text-transform:uppercase;font-size:11px;letter-spacing:.05em;color:#6e8299}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:36px}.signature{padding-top:34px;border-top:1px solid #cfdbe6;color:#5b707a;font-size:13px}@media print{.printbar{display:none}}</style></head><body><div class="printbar" style="margin-bottom:16px;"><button onclick="window.print()" style="padding:10px 16px;border-radius:999px;border:1px solid #4FB6D6;background:#4FB6D6;color:#fff;font-weight:700;cursor:pointer;">Stampa documento</button></div><h1>Foglio presenze</h1><div class="meta">${escapeHtml(settings.centerName)} · ${periodLabel}</div><div class="box"><div><strong>Operatore:</strong> ${escapeHtml(staffName)}</div><div><strong>Totale ore lavorate:</strong> ${formatMinutes(totalWorkedMinutes)}</div></div><table><thead><tr><th>Data</th><th>Operatore</th><th>Orario</th><th>Stato</th><th>Ore</th></tr></thead><tbody>${rowsHtml || `<tr><td colspan="5">Nessun turno disponibile nel periodo selezionato.</td></tr>`}</tbody></table><div class="signatures"><div class="signature">Firma operatore</div><div class="signature">Firma responsabile</div></div></body></html>`;
+    fs.writeFileSync(filePath, html);
+    return { path: filePath, format: "html", url: `/exports/${fileName}` };
   }
 
   generateClientConsentDocument(id, session) {
