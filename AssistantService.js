@@ -72,7 +72,26 @@ const RESPONSE_SCHEMA = {
     },
     payload: {
       type: "object",
-      additionalProperties: true
+      additionalProperties: false,
+      properties: {
+        query: { anyOf: [{ type: "string" }, { type: "null" }] },
+        clientId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        operatorId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        section: { anyOf: [{ type: "string" }, { type: "null" }] },
+        firstName: { anyOf: [{ type: "string" }, { type: "null" }] },
+        lastName: { anyOf: [{ type: "string" }, { type: "null" }] },
+        phone: { anyOf: [{ type: "string" }, { type: "null" }] },
+        email: { anyOf: [{ type: "string" }, { type: "null" }] },
+        period: { anyOf: [{ type: "string" }, { type: "null" }] },
+        startDate: { anyOf: [{ type: "string" }, { type: "null" }] },
+        endDate: { anyOf: [{ type: "string" }, { type: "null" }] },
+        date: { anyOf: [{ type: "string" }, { type: "null" }] },
+        view: { anyOf: [{ type: "string" }, { type: "null" }] },
+        status: { anyOf: [{ type: "string" }, { type: "null" }] },
+        title: { anyOf: [{ type: "string" }, { type: "null" }] },
+        note: { anyOf: [{ type: "string" }, { type: "null" }] }
+      },
+      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note"]
     },
     requiresConfirmation: {
       type: "boolean"
@@ -424,6 +443,10 @@ class AssistantService {
 
     if (safe.action && !ACTIONS.includes(safe.action)) {
       return fallback;
+    }
+
+    if (safe.mode === "answer" && safe.action) {
+      safe.mode = "action";
     }
 
     if (safe.action && !canUseAction(context.userRole, safe.action)) {
