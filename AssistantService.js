@@ -449,8 +449,8 @@ class AssistantService {
     const message = String(payload.message || "").trim();
     const context = this.buildContext(payload, session);
     const localDecision = this.buildLocalDecision(message, context);
-    const apiKey = process.env.OPENAI_API_KEY;
-    const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!apiKey) {
       return { ...localDecision, provider: "fallback" };
