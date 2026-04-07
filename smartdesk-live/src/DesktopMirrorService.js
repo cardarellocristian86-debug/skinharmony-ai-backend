@@ -55,6 +55,20 @@ const defaultSettings = {
   shiftsClockEnabled: true,
   shiftsReportsEnabled: true,
   shiftsFlexEnabled: false,
+  inventoryBaseEnabled: true,
+  inventoryMovementsEnabled: true,
+  inventoryAlertsEnabled: true,
+  inventoryReportsEnabled: true,
+  profitabilityEnabled: true,
+  profitabilityOperatorCostEnabled: true,
+  profitabilityTechnologyAnalysisEnabled: true,
+  operatorReportsEnabled: true,
+  operatorComparisonEnabled: true,
+  operatorRewardsEnabled: true,
+  operatorSalesBonusEnabled: true,
+  operatorPerformanceBonusEnabled: true,
+  operatorRetentionBonusEnabled: true,
+  operatorBenefitsEnabled: true,
   membershipPearlThresholdCents: 30000,
   membershipSilverThresholdCents: 70000,
   membershipGoldThresholdCents: 120000,
@@ -65,6 +79,15 @@ const defaultSettings = {
 
 function ensureDir(directoryPath) {
   fs.mkdirSync(directoryPath, { recursive: true });
+}
+
+function sanitizeFileName(value) {
+  return String(value || "file")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "file";
 }
 
 function splitName(name = "") {
@@ -128,6 +151,61 @@ function rangeForView(view, anchorDate) {
     return { start: toDateOnly(start), end: toDateOnly(end) };
   }
   return { start: toDateOnly(base), end: toDateOnly(base) };
+}
+
+function resolveDashboardRange(options = {}) {
+  const period = typeof options === "object" ? String(options.period || "day") : "day";
+  const anchorDate = typeof options === "object" ? options.anchorDate : undefined;
+  return { period, ...rangeForView(period, anchorDate || new Date().toISOString()) };
+}
+
+function resolveReportRange(options = {}) {
+  const period = typeof options === "string" ? options : String(options.period || "day");
+  const customStart = typeof options === "object" ? String(options.startDate || "") : "";
+  const customEnd = typeof options === "object" ? String(options.endDate || "") : "";
+  if (customStart && customEnd) {
+    return {
+      period,
+      start: customStart,
+      end: customEnd,
+      label: `${new Date(customStart).toLocaleDateString("it-IT")} - ${new Date(customEnd).toLocaleDateString("it-IT")}`
+    };
+  }
+  const now = new Date();
+  let start = new Date(now);
+  if (period === "week") {
+    start.setDate(now.getDate() - 7);
+  } else if (period === "month") {
+    start.setMonth(now.getMonth() - 1);
+  } else {
+    start.setHours(0, 0, 0, 0);
+  }
+  return {
+    period,
+    start: toDateOnly(start),
+    end: toDateOnly(now),
+    label: period === "day" ? "Oggi" : period === "week" ? "Ultimi 7 giorni" : "Ultimi 30 giorni"
+  };
+}
+
+function shiftDate(dateValue, days) {
+  const base = new Date(`${toDateOnly(dateValue)}T00:00:00`);
+  base.setDate(base.getDate() + Number(days || 0));
+  return toDateOnly(base);
+}
+
+function daysBetweenInclusive(start, end) {
+  const startDate = new Date(`${toDateOnly(start)}T00:00:00`);
+  const endDate = new Date(`${toDateOnly(end)}T00:00:00`);
+  return Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1);
+}
+
+function timeBandFromDate(dateValue) {
+  const hour = new Date(dateValue).getHours();
+  if (hour < 12) return "Mattina";
+  if (hour < 15) return "Pranzo";
+  if (hour < 18) return "Pomeriggio";
+  return "Sera";
 }
 
 function minutesBetween(startTime, endTime) {
@@ -269,6 +347,11 @@ class DesktopMirrorService {
     this.shiftsRepository = new JsonFileRepository(path.join(DATA_DIR, "shifts.json"), []);
     this.shiftTemplatesRepository = new JsonFileRepository(path.join(DATA_DIR, "shift_templates.json"), []);
     this.resourcesRepository = new JsonFileRepository(path.join(DATA_DIR, "resources.json"), []);
+    this.inventoryRepository = new JsonFileRepository(path.join(DATA_DIR, "inventory.json"), []);
+    this.inventoryMovementsRepository = new JsonFileRepository(path.join(DATA_DIR, "inventory_movements.json"), []);
+    this.profitabilityExecutionsRepository = new JsonFileRepository(path.join(DATA_DIR, "profitability_executions.json"), []);
+    this.operatorIncentiveRulesRepository = new JsonFileRepository(path.join(DATA_DIR, "operator_incentive_rules.json"), []);
+    this.operatorIncentiveResultsRepository = new JsonFileRepository(path.join(DATA_DIR, "operator_incentive_results.json"), []);
     this.paymentsRepository = new JsonFileRepository(path.join(DATA_DIR, "payments.json"), []);
     this.treatmentsRepository = new JsonFileRepository(path.join(DATA_DIR, "treatments.json"), []);
     this.usersRepository = new JsonFileRepository(path.join(DATA_DIR, "users.json"), []);
@@ -401,12 +484,23 @@ class DesktopMirrorService {
 
   listClients(search = "", session) {
     const normalizedSearch = String(search || "").trim().toLowerCase();
-    return this.filterByCenter(this.clientsRepository.list(), session)
+    const clients = this.filterByCenter(this.clientsRepository.list(), session)
       .filter((client) => {
         if (!normalizedSearch) return true;
         return [client.name, client.phone, client.email].filter(Boolean).some((field) => String(field).toLowerCase().includes(normalizedSearch));
-      })
-      .map((client) => this.mapClient(client));
+      });
+    const appointments = this.listAppointments("month", new Date().toISOString(), true, session);
+    const servicesById = new Map(this.listServices(session).map((service) => [service.id, service]));
+    const inventoryItems = this.listInventoryItems(session);
+    return clients.map((client) => {
+      const mapped = this.mapClient(client);
+      const completedAppointments = appointments.filter((item) => item.clientId === client.id && item.status === "completed");
+      const treatments = this.listTreatments(client.id, session);
+      return {
+        ...mapped,
+        clientIntelligence: this.buildClientIntelligence(completedAppointments, treatments, servicesById, inventoryItems)
+      };
+    });
   }
 
   saveClient(payload, session) {
@@ -451,6 +545,7 @@ class DesktopMirrorService {
       ...(typeof daysSinceLastVisit === "number" && daysSinceLastVisit >= 30 ? ["cliente inattivo"] : [])
     ];
     const membership = resolveMembership(totalSpentCents, settings);
+    const clientIntelligence = this.buildClientIntelligence(completedAppointments, treatments, servicesById, this.listInventoryItems(session));
     return {
       client: this.mapClient(client),
       appointments,
@@ -462,7 +557,8 @@ class DesktopMirrorService {
         completedVisits: completedAppointments.length,
         totalSpentCents,
         daysSinceLastVisit
-      }
+      },
+      clientIntelligence
     };
   }
 
@@ -482,6 +578,8 @@ class DesktopMirrorService {
     if (!detail.client.phone) missingData.push("telefono mancante");
     if (!detail.client.email) missingData.push("email mancante");
     if (!detail.client.notes) missingData.push("note cliente assenti");
+    const intelligence = detail.clientIntelligence || null;
+    const intelligenceSuggestions = Array.isArray(intelligence?.suggestionCards) ? intelligence.suggestionCards : [];
     return {
       clientName: `${detail.client.firstName} ${detail.client.lastName}`.trim(),
       summary,
@@ -489,10 +587,12 @@ class DesktopMirrorService {
       technologyBrief: detail.treatments.length ? "Storico tecnico disponibile." : "Storico tecnico non disponibile.",
       missingData,
       nextActions: [
+        ...intelligenceSuggestions,
         !detail.client.phone ? "raccogliere telefono per follow-up rapido" : "telefono cliente aggiornato",
         cancelled ? "verificare cause di annullamento o no-show" : "nessuna criticita evidente da annullamenti",
         lastAppointment ? `ripartire dall'ultima visita del ${new Date(lastAppointment.startAt).toLocaleDateString("it-IT")}` : "programmarea una prima visita completa"
-      ],
+      ].slice(0, 5),
+      clientIntelligence: intelligence,
       drafts: {
         note: `Briefing AI ${new Date().toLocaleString("it-IT")}\n${summary.join("\n")}\nDati mancanti: ${missingData.join(", ") || "nessuno."}`,
         protocol: "Bozza protocollo AI: usare lo storico reale del cliente e definire il prossimo step in cabina.",
@@ -509,6 +609,93 @@ class DesktopMirrorService {
         totalRevenueCents: revenueCents,
         treatments: detail.treatments.length
       }
+    };
+  }
+
+  buildClientIntelligence(completedAppointments, treatments, servicesById, inventoryItems = []) {
+    const sortedVisits = completedAppointments
+      .slice()
+      .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+    const visitCount = sortedVisits.length;
+    const totalSpentCents = sortedVisits.reduce((sum, appointment) => {
+      const serviceIds = Array.isArray(appointment.serviceIds) && appointment.serviceIds.length > 0
+        ? appointment.serviceIds
+        : appointment.serviceId ? [appointment.serviceId] : [];
+      return sum + serviceIds.reduce((serviceSum, serviceId) => serviceSum + Number(servicesById.get(serviceId)?.priceCents || 0), 0);
+    }, 0);
+    const averageTicketCents = visitCount > 0 ? Math.round(totalSpentCents / visitCount) : 0;
+    const lastVisitDate = visitCount > 0 ? sortedVisits[visitCount - 1].startAt : null;
+    const daysSinceLastVisit = lastVisitDate ? Math.max(0, Math.floor((Date.now() - new Date(lastVisitDate).getTime()) / 86400000)) : null;
+    const intervals = sortedVisits.slice(1).map((appointment, index) => Math.max(0, Math.round((new Date(appointment.startAt).getTime() - new Date(sortedVisits[index].startAt).getTime()) / 86400000)));
+    const averageDaysBetweenVisits = visitCount >= 3 && intervals.length > 0
+      ? Math.max(1, Math.round(intervals.reduce((sum, value) => sum + value, 0) / intervals.length))
+      : null;
+    let frequencyStatus = "DATI_INSUFFICIENTI";
+    if (averageDaysBetweenVisits && typeof daysSinceLastVisit === "number") {
+      if (daysSinceLastVisit <= averageDaysBetweenVisits) frequencyStatus = "ATTIVO";
+      else if (daysSinceLastVisit <= averageDaysBetweenVisits * 1.5) frequencyStatus = "IN_RITARDO";
+      else frequencyStatus = "INATTIVO";
+    }
+    const serviceCounter = new Map();
+    sortedVisits.forEach((appointment) => {
+      const serviceIds = Array.isArray(appointment.serviceIds) && appointment.serviceIds.length > 0
+        ? appointment.serviceIds
+        : appointment.serviceId ? [appointment.serviceId] : [];
+      serviceIds.forEach((serviceId) => {
+        const service = servicesById.get(serviceId);
+        if (!service) return;
+        const current = serviceCounter.get(serviceId) || { serviceId, name: service.name, count: 0, priceCents: Number(service.priceCents || 0) };
+        current.count += 1;
+        serviceCounter.set(serviceId, current);
+      });
+    });
+    const favoriteServices = Array.from(serviceCounter.values())
+      .sort((a, b) => b.count - a.count || b.priceCents - a.priceCents)
+      .slice(0, 3)
+      .map(({ serviceId, name, count }) => ({ serviceId, name, count }));
+    const lastServices = sortedVisits.slice(-3).reverse().map((appointment) => servicesById.get(appointment.serviceId)?.name || appointment.serviceName || "Servizio");
+    const purchasedProducts = Array.from(new Set(
+      treatments.flatMap((item) => String(item.productsUsed || "").split(/[,;]+/).map((product) => product.trim()).filter(Boolean))
+    )).slice(0, 6);
+    const recommendedProduct = purchasedProducts.length > 0
+      ? null
+      : inventoryItems
+        .filter((item) => Number(item.stockQuantity || 0) > 0)
+        .sort((a, b) => {
+          const aRetail = a.usageType === "retail" || a.usageType === "misto" ? 1 : 0;
+          const bRetail = b.usageType === "retail" || b.usageType === "misto" ? 1 : 0;
+          return bRetail - aRetail || Number(b.retailPriceCents || 0) - Number(a.retailPriceCents || 0);
+        })[0]?.name || null;
+    const spendingLevel = averageTicketCents < 6000 ? "LOW" : averageTicketCents < 11000 ? "MEDIUM" : "HIGH";
+    const mostlyBaseServices = favoriteServices.length > 0 && favoriteServices.every((service) => {
+      const linked = servicesById.get(service.serviceId);
+      const name = String(linked?.name || service.name || "").toLowerCase();
+      const category = String(linked?.category || "").toLowerCase();
+      return Number(linked?.priceCents || 0) < 9000 && !/premium|advanced|ritual|focus|pro/.test(`${name} ${category}`);
+    });
+    const mainService = favoriteServices[0]?.name || "servizio abituale";
+    const suggestionCards = [];
+    if (frequencyStatus === "IN_RITARDO") suggestionCards.push(`Cliente in ritardo rispetto alla sua routine. Proponi ${mainService}.`);
+    else if (frequencyStatus === "INATTIVO") suggestionCards.push("Cliente inattivo. Consigliato contatto.");
+    else if (frequencyStatus === "ATTIVO") suggestionCards.push(`Cliente attivo. Mantieni continuità su ${mainService}.`);
+    else suggestionCards.push("Dati ancora limitati. Costruisci una routine dalle prossime visite.");
+    if (mostlyBaseServices) suggestionCards.push("Puoi proporre upgrade a servizio avanzato.");
+    if (purchasedProducts.length === 0) suggestionCards.push(recommendedProduct ? `Suggerisci prodotto mantenimento: ${recommendedProduct}.` : "Suggerisci prodotto mantenimento.");
+    if (spendingLevel === "HIGH") suggestionCards.push("Cliente ad alto valore. Punta su fidelizzazione.");
+    return {
+      lastVisitDate,
+      visitCount,
+      averageDaysBetweenVisits,
+      frequencyStatus,
+      averageTicketCents,
+      spendingLevel,
+      totalSpentCents,
+      favoriteServices,
+      lastServices,
+      purchasedProducts,
+      recommendedProduct,
+      suggestionCards: suggestionCards.slice(0, 4),
+      suggestedAction: suggestionCards[0] || "Mantieni la relazione e registra il prossimo step."
     };
   }
 
@@ -806,6 +993,14 @@ class DesktopMirrorService {
       colorTag: item.colorTag || null,
       durationMin: Number(item.durationMin ?? item.duration ?? 60),
       priceCents: Number(item.priceCents ?? Math.round(Number(item.price || 0) * 100)),
+      productLinks: Array.isArray(item.productLinks) ? item.productLinks.map((link) => ({
+        productId: link.productId,
+        usageUnits: Number(link.usageUnits || 1)
+      })) : [],
+      technologyLinks: Array.isArray(item.technologyLinks) ? item.technologyLinks.map((link) => ({
+        technologyId: link.technologyId,
+        usageUnits: Number(link.usageUnits || 1)
+      })) : [],
       active: Number(item.active ?? 1),
       createdAt: item.createdAt || new Date().toISOString(),
       updatedAt: item.updatedAt || new Date().toISOString()
@@ -822,6 +1017,14 @@ class DesktopMirrorService {
       durationMin: Number(payload.durationMin ?? payload.duration ?? 60),
       price: Number(payload.priceCents ?? payload.price ?? 0) / (payload.priceCents ? 100 : 1),
       priceCents: Number(payload.priceCents ?? Math.round(Number(payload.price || 0) * 100)),
+      productLinks: Array.isArray(payload.productLinks) ? payload.productLinks.map((link) => ({
+        productId: link.productId,
+        usageUnits: Number(link.usageUnits || 1)
+      })) : [],
+      technologyLinks: Array.isArray(payload.technologyLinks) ? payload.technologyLinks.map((link) => ({
+        technologyId: link.technologyId,
+        usageUnits: Number(link.usageUnits || 1)
+      })) : [],
       operatorType: payload.operatorType || "",
       room: payload.room || "",
       active: Number(payload.active ?? 1),
@@ -849,6 +1052,7 @@ class DesktopMirrorService {
       id: item.id,
       name: item.name,
       colorTag: item.colorTag || null,
+      hourlyCostCents: Number(item.hourlyCostCents || 0),
       role: item.role || "",
       shift: item.shift || "",
       targetProgress: Number(item.targetProgress || 0),
@@ -862,6 +1066,7 @@ class DesktopMirrorService {
       id: payload.id || `st_${Date.now()}`,
       name: payload.name || "Operatore",
       colorTag: payload.colorTag || null,
+      hourlyCostCents: Number(payload.hourlyCostCents || 0),
       role: payload.role || "",
       shift: payload.shift || "",
       targetProgress: Number(payload.targetProgress || 0),
@@ -888,6 +1093,11 @@ class DesktopMirrorService {
       id: item.id,
       name: item.name,
       type: item.type || null,
+      totalCostCents: Number(item.totalCostCents || 0),
+      durationMonths: Number(item.durationMonths || 48),
+      estimatedMonthlyUses: Number(item.estimatedMonthlyUses || 0),
+      monthlyCostCents: Number(item.durationMonths || 0) > 0 ? Math.round(Number(item.totalCostCents || 0) / Number(item.durationMonths || 1)) : 0,
+      costPerUseCents: Number(item.durationMonths || 0) > 0 && Number(item.estimatedMonthlyUses || 0) > 0 ? Math.round((Number(item.totalCostCents || 0) / Number(item.durationMonths || 1)) / Number(item.estimatedMonthlyUses || 1)) : 0,
       active: Number(item.active ?? 1),
       createdAt: item.createdAt || new Date().toISOString()
     }));
@@ -898,6 +1108,9 @@ class DesktopMirrorService {
       id: payload.id || `res_${Date.now()}`,
       name: payload.name || "Risorsa",
       type: payload.type || "cabina",
+      totalCostCents: Number(payload.totalCostCents || 0),
+      durationMonths: Number(payload.durationMonths || 48),
+      estimatedMonthlyUses: Number(payload.estimatedMonthlyUses || 0),
       active: Number(payload.active ?? 1),
       createdAt: payload.createdAt || new Date().toISOString()
     }, session);
@@ -914,6 +1127,135 @@ class DesktopMirrorService {
   deleteResource(id, session) {
     if (!this.findByIdInCenter(this.resourcesRepository, id, session)) return { success: false };
     return { success: this.resourcesRepository.delete(id) };
+  }
+
+  listInventoryItems(session) {
+    return this.filterByCenter(this.inventoryRepository.list(), session)
+      .map((item) => ({
+        id: item.id,
+        name: item.name || "Articolo",
+        category: item.category || "",
+        supplier: item.supplier || "",
+        sku: item.sku || "",
+        usageType: item.usageType || "cabina",
+        unit: item.unit || "pz",
+        stockQuantity: Number(item.stockQuantity ?? item.stock ?? 0),
+        thresholdQuantity: Number(item.thresholdQuantity ?? item.threshold ?? 0),
+        costCents: Number(item.costCents ?? 0),
+        purchaseCostCents: Number(item.purchaseCostCents ?? item.costCents ?? 0),
+        estimatedTotalUses: Number(item.estimatedTotalUses ?? 0),
+        costPerUseCents: Number(item.estimatedTotalUses || 0) > 0 ? Math.round(Number(item.purchaseCostCents ?? item.costCents ?? 0) / Number(item.estimatedTotalUses || 1)) : 0,
+        retailPriceCents: Number(item.retailPriceCents ?? 0),
+        active: Number(item.active ?? 1),
+        createdAt: item.createdAt || new Date().toISOString(),
+        updatedAt: item.updatedAt || item.createdAt || new Date().toISOString()
+      }))
+      .filter((item) => item.active === 1)
+      .sort((a, b) => {
+        const aCritical = a.stockQuantity <= 0 ? 0 : a.stockQuantity <= a.thresholdQuantity ? 1 : 2;
+        const bCritical = b.stockQuantity <= 0 ? 0 : b.stockQuantity <= b.thresholdQuantity ? 1 : 2;
+        return aCritical - bCritical || a.name.localeCompare(b.name);
+      });
+  }
+
+  saveInventoryItem(payload, session) {
+    const next = this.attachCenter({
+      id: payload.id || `inv_${Date.now()}`,
+      name: payload.name || "Articolo",
+      category: payload.category || "",
+      supplier: payload.supplier || "",
+      sku: payload.sku || "",
+      usageType: payload.usageType || "cabina",
+      unit: payload.unit || "pz",
+      stockQuantity: Number(payload.stockQuantity ?? payload.stock ?? 0),
+      thresholdQuantity: Number(payload.thresholdQuantity ?? payload.threshold ?? 0),
+      costCents: Number(payload.costCents ?? 0),
+      purchaseCostCents: Number(payload.purchaseCostCents ?? payload.costCents ?? 0),
+      estimatedTotalUses: Number(payload.estimatedTotalUses ?? 0),
+      retailPriceCents: Number(payload.retailPriceCents ?? 0),
+      active: Number(payload.active ?? 1),
+      createdAt: payload.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }, session);
+    if (payload.id) {
+      const current = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
+      if (!current) throw new Error("Articolo di magazzino non trovato");
+      this.inventoryRepository.update(payload.id, (entry) => ({ ...entry, ...next, id: entry.id, centerId: entry.centerId || next.centerId, createdAt: entry.createdAt }));
+    } else {
+      this.inventoryRepository.create(next);
+    }
+    return this.listInventoryItems(session).find((item) => item.id === next.id) || next;
+  }
+
+  deleteInventoryItem(id, session) {
+    if (!this.findByIdInCenter(this.inventoryRepository, id, session)) return { success: false };
+    return { success: this.inventoryRepository.delete(id) };
+  }
+
+  listInventoryMovements(itemId = "", session) {
+    return this.filterByCenter(this.inventoryMovementsRepository.list(), session)
+      .filter((item) => !itemId || item.itemId === itemId)
+      .map((item) => ({
+        id: item.id,
+        itemId: item.itemId,
+        type: item.type,
+        quantity: Number(item.quantity || 0),
+        note: item.note || "",
+        operatorName: item.operatorName || "",
+        createdAt: item.createdAt || new Date().toISOString()
+      }))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  createInventoryMovement(payload, session) {
+    const item = this.findByIdInCenter(this.inventoryRepository, payload.itemId, session);
+    if (!item) {
+      throw new Error("Articolo di magazzino non trovato");
+    }
+    const quantity = Number(payload.quantity || 0);
+    const delta = payload.type === "load" || payload.type === "return"
+      ? quantity
+      : payload.type === "adjustment"
+        ? quantity - Number(item.stockQuantity ?? item.stock ?? 0)
+        : -quantity;
+    const nextStock = Math.max(0, Number(item.stockQuantity ?? item.stock ?? 0) + delta);
+    this.inventoryRepository.update(item.id, (current) => ({
+      ...current,
+      stockQuantity: nextStock,
+      updatedAt: new Date().toISOString()
+    }));
+    const movement = this.attachCenter({
+      id: `mov_${Date.now()}`,
+      itemId: item.id,
+      type: payload.type || "load",
+      quantity,
+      note: payload.note || "",
+      operatorName: payload.operatorName || "",
+      createdAt: new Date().toISOString()
+    }, session);
+    this.inventoryMovementsRepository.create(movement);
+    return {
+      movement,
+      item: this.listInventoryItems(session).find((entry) => entry.id === item.id)
+    };
+  }
+
+  getInventoryOverview(session) {
+    const items = this.listInventoryItems(session);
+    const movements = this.listInventoryMovements("", session);
+    const lowStockItems = items.filter((item) => item.stockQuantity <= item.thresholdQuantity);
+    const criticalItems = items.filter((item) => item.stockQuantity <= 0);
+    return {
+      summary: {
+        itemsCount: items.length,
+        lowStockCount: lowStockItems.length,
+        criticalCount: criticalItems.length,
+        stockValueCents: items.reduce((sum, item) => sum + Math.round(item.stockQuantity * item.costCents), 0),
+        retailValueCents: items.reduce((sum, item) => sum + Math.round(item.stockQuantity * item.retailPriceCents), 0)
+      },
+      lowStockItems: lowStockItems.slice(0, 10),
+      recentMovements: movements.slice(0, 12)
+    };
   }
 
   listTreatments(clientId, session) {
@@ -986,8 +1328,436 @@ class DesktopMirrorService {
         status: current.status === "cancelled" || current.status === "no_show" ? current.status : "completed",
         updatedAt: new Date().toISOString()
       }));
+      this.captureProfitabilityFromPayment(item, session);
     }
     return item;
+  }
+
+  captureProfitabilityFromPayment(payment, session) {
+    const settings = this.getSettings(session);
+    if (!settings.profitabilityEnabled || !payment.appointmentId) return [];
+    const existing = this.filterByCenter(this.profitabilityExecutionsRepository.list(), session).filter((item) => item.appointmentId === payment.appointmentId);
+    if (existing.length > 0) return existing;
+    const appointment = this.filterByCenter(this.appointmentsRepository.list(), session).find((item) => item.id === payment.appointmentId);
+    if (!appointment) return [];
+    const services = this.listServices(session);
+    const inventoryItems = this.listInventoryItems(session);
+    const staff = this.listStaff(session);
+    const resources = this.listResources(session);
+    const serviceIds = Array.isArray(appointment.serviceIds) && appointment.serviceIds.length ? appointment.serviceIds : appointment.serviceId ? [appointment.serviceId] : [];
+    const serviceRows = serviceIds.map((serviceId) => services.find((item) => item.id === serviceId)).filter(Boolean);
+    if (!serviceRows.length) return [];
+    const totalListPrice = serviceRows.reduce((sum, item) => sum + Number(item.priceCents || 0), 0);
+    const operator = staff.find((item) => item.id === appointment.staffId);
+    let allocatedSoFar = 0;
+    return serviceRows.map((service, index) => {
+      const shareAmount = totalListPrice > 0 ? Math.round(Number(payment.amountCents || 0) * (Number(service.priceCents || 0) / totalListPrice)) : Math.round(Number(payment.amountCents || 0) / serviceRows.length);
+      const priceChargedCents = index === serviceRows.length - 1 ? Number(payment.amountCents || 0) - allocatedSoFar : shareAmount;
+      allocatedSoFar += shareAmount;
+      const productCostTotalCents = (service.productLinks || []).reduce((sum, link) => {
+        const product = inventoryItems.find((item) => item.id === link.productId);
+        return sum + Math.round(Number(product?.costPerUseCents || 0) * Number(link.usageUnits || 1));
+      }, 0);
+      const technologyCostTotalCents = settings.profitabilityTechnologyAnalysisEnabled ? (service.technologyLinks || []).reduce((sum, link) => {
+        const technology = resources.find((item) => item.id === link.technologyId);
+        return sum + Math.round(Number(technology?.costPerUseCents || 0) * Number(link.usageUnits || 1));
+      }, 0) : 0;
+      const operatorCostTotalCents = settings.profitabilityOperatorCostEnabled && operator?.hourlyCostCents
+        ? Math.round((Number(service.durationMin || 0) / 60) * Number(operator.hourlyCostCents || 0))
+        : 0;
+      const totalCostCents = productCostTotalCents + technologyCostTotalCents + operatorCostTotalCents;
+      const execution = this.attachCenter({
+        id: `exec_${Date.now()}_${index}`,
+        appointmentId: appointment.id,
+        paymentId: payment.id,
+        serviceId: service.id,
+        operatorId: appointment.staffId || null,
+        date: toDateOnly(payment.createdAt || appointment.startAt),
+        priceChargedCents,
+        durationMinutes: Number(service.durationMin || 0),
+        productCostTotalCents,
+        technologyCostTotalCents,
+        operatorCostTotalCents,
+        totalCostCents,
+        profitCents: priceChargedCents - totalCostCents,
+        createdAt: new Date().toISOString()
+      }, session);
+      this.profitabilityExecutionsRepository.create(execution);
+      return execution;
+    });
+  }
+
+  getProfitabilityOverview(options = {}, session) {
+    const settings = this.getSettings(session);
+    const services = this.listServices(session);
+    const inventoryItems = this.listInventoryItems(session);
+    const technologies = this.listResources(session).filter((item) => item.type === "tecnologia" || item.type === "macchinario");
+    const { start, end } = resolveReportRange({ period: "month", ...options });
+    const executions = this.filterByCenter(this.profitabilityExecutionsRepository.list(), session).filter((item) => {
+      const date = String(item.date || toDateOnly(item.createdAt || new Date().toISOString()));
+      return date >= start && date <= end;
+    });
+    const serviceMap = new Map(services.map((item) => [item.id, item]));
+    const productMap = new Map(inventoryItems.map((item) => [item.id, item]));
+    const technologyMap = new Map(technologies.map((item) => [item.id, item]));
+    const serviceAcc = new Map();
+    const productAcc = new Map();
+    const technologyAcc = new Map();
+
+    for (const execution of executions) {
+      const currentService = serviceAcc.get(execution.serviceId) || { revenueCents: 0, costCents: 0, profitCents: 0, executions: 0 };
+      currentService.revenueCents += Number(execution.priceChargedCents || 0);
+      currentService.costCents += Number(execution.totalCostCents || 0);
+      currentService.profitCents += Number(execution.profitCents || 0);
+      currentService.executions += 1;
+      serviceAcc.set(execution.serviceId, currentService);
+      const service = serviceMap.get(execution.serviceId);
+      (service?.productLinks || []).forEach((link) => {
+        const current = productAcc.get(link.productId) || { revenueCents: 0, costConsumedCents: 0, totalUses: 0 };
+        const product = productMap.get(link.productId);
+        current.revenueCents += Number(execution.priceChargedCents || 0);
+        current.costConsumedCents += Math.round(Number(product?.costPerUseCents || 0) * Number(link.usageUnits || 1));
+        current.totalUses += Number(link.usageUnits || 1);
+        productAcc.set(link.productId, current);
+      });
+      if (settings.profitabilityTechnologyAnalysisEnabled) {
+        (service?.technologyLinks || []).forEach((link) => {
+          const current = technologyAcc.get(link.technologyId) || { revenueCents: 0, costCents: 0, totalUses: 0 };
+          const technology = technologyMap.get(link.technologyId);
+          current.revenueCents += Number(execution.priceChargedCents || 0);
+          current.costCents += Math.round(Number(technology?.costPerUseCents || 0) * Number(link.usageUnits || 1));
+          current.totalUses += Number(link.usageUnits || 1);
+          technologyAcc.set(link.technologyId, current);
+        });
+      }
+    }
+
+    const statusFrom = (profitCents, revenueCents) => {
+      if (profitCents < 0) return "LOSS";
+      const margin = revenueCents > 0 ? Math.round((profitCents / revenueCents) * 100) : 0;
+      return margin < 15 ? "LOW_MARGIN" : "PROFIT";
+    };
+
+    const servicesRows = services.map((service) => {
+      const row = serviceAcc.get(service.id) || { revenueCents: 0, costCents: 0, profitCents: 0, executions: 0 };
+      return { id: service.id, name: service.name, revenueCents: row.revenueCents, costCents: row.costCents, profitCents: row.profitCents, marginPercent: row.revenueCents > 0 ? Math.round((row.profitCents / row.revenueCents) * 100) : 0, status: statusFrom(row.profitCents, row.revenueCents), executions: row.executions };
+    }).sort((a, b) => b.profitCents - a.profitCents);
+    const productsRows = inventoryItems.map((item) => {
+      const row = productAcc.get(item.id) || { revenueCents: 0, costConsumedCents: 0, totalUses: 0 };
+      const profitCents = row.revenueCents - row.costConsumedCents;
+      return { id: item.id, name: item.name, revenueCents: row.revenueCents, costCents: row.costConsumedCents, profitCents, marginPercent: row.revenueCents > 0 ? Math.round((profitCents / row.revenueCents) * 100) : 0, status: statusFrom(profitCents, row.revenueCents), totalUses: row.totalUses, costConsumedCents: row.costConsumedCents };
+    }).sort((a, b) => b.profitCents - a.profitCents);
+    const technologiesRows = technologies.map((item) => {
+      const row = technologyAcc.get(item.id) || { revenueCents: 0, costCents: 0, totalUses: 0 };
+      const profitCents = row.revenueCents - row.costCents;
+      return { id: item.id, name: item.name, revenueCents: row.revenueCents, costCents: row.costCents, profitCents, marginPercent: row.revenueCents > 0 ? Math.round((profitCents / row.revenueCents) * 100) : 0, status: row.revenueCents < Number(item.monthlyCostCents || 0) && Number(item.monthlyCostCents || 0) > 0 ? "LOSS" : statusFrom(profitCents, row.revenueCents), monthlyCostCents: Number(item.monthlyCostCents || 0), totalUses: row.totalUses };
+    }).sort((a, b) => b.profitCents - a.profitCents);
+    const totals = executions.reduce((sum, item) => ({ executions: sum.executions + 1, revenueCents: sum.revenueCents + Number(item.priceChargedCents || 0), costCents: sum.costCents + Number(item.totalCostCents || 0), profitCents: sum.profitCents + Number(item.profitCents || 0) }), { executions: 0, revenueCents: 0, costCents: 0, profitCents: 0 });
+    const alerts = [
+      ...servicesRows.filter((item) => item.status !== "PROFIT" && item.revenueCents > 0).slice(0, 3).map((item) => ({ level: item.status === "LOSS" ? "critical" : "warning", area: "services", title: `${item.name} sotto controllo`, body: item.status === "LOSS" ? "Il servizio sta generando una perdita sui costi configurati." : "Il margine è basso: valuta prezzo, prodotti o durata." })),
+      ...technologiesRows.filter((item) => item.monthlyCostCents > 0 && item.revenueCents < item.monthlyCostCents).slice(0, 2).map((item) => ({ level: "warning", area: "technologies", title: `${item.name} non copre il costo mensile`, body: "Il ricavo generato non raggiunge ancora il costo medio mensile configurato." }))
+    ];
+    return { totals, services: servicesRows, products: productsRows, technologies: technologiesRows, alerts };
+  }
+
+  ensureDefaultOperatorIncentiveRules(session) {
+    const centerId = this.getCenterId(session);
+    const existing = this.filterByCenter(this.operatorIncentiveRulesRepository.list(), session);
+    if (existing.length > 0) {
+      return existing;
+    }
+    const defaults = [
+      {
+        id: `${centerId}_rule_sales`,
+        active: true,
+        operator_id: null,
+        type: "sales",
+        target_value: 110,
+        comparison_type: "gte",
+        reward_type: "benefit",
+        reward_value: 0,
+        benefit_label: "Bonus vendita premium",
+        period_type: "mese",
+        notes: "Ticket medio operatore sopra il 110% della media centro",
+        centerId
+      },
+      {
+        id: `${centerId}_rule_retention`,
+        active: true,
+        operator_id: null,
+        type: "retention",
+        target_value: 60,
+        comparison_type: "gte",
+        reward_type: "benefit",
+        reward_value: 0,
+        benefit_label: "Benefit retention",
+        period_type: "mese",
+        notes: "Retention clienti almeno al 60%",
+        centerId
+      },
+      {
+        id: `${centerId}_rule_performance`,
+        active: true,
+        operator_id: null,
+        type: "custom",
+        target_value: 10,
+        comparison_type: "gte",
+        reward_type: "benefit",
+        reward_value: 0,
+        benefit_label: "Benefit performance",
+        period_type: "mese",
+        notes: "Crescita fatturato almeno del 10% sul periodo precedente",
+        centerId
+      },
+      {
+        id: `${centerId}_rule_service_push`,
+        active: true,
+        operator_id: null,
+        type: "service_push",
+        target_value: 5,
+        comparison_type: "gte",
+        reward_type: "benefit",
+        reward_value: 0,
+        benefit_label: "Benefit servizi premium",
+        period_type: "mese",
+        notes: "Almeno 5 servizi premium nel periodo",
+        centerId
+      }
+    ];
+    defaults.forEach((item) => this.operatorIncentiveRulesRepository.create(item));
+    return defaults;
+  }
+
+  getOperatorReport(operatorId, options = {}, session) {
+    const settings = this.getSettings(session);
+    const operator = this.findByIdInCenter(this.staffRepository, operatorId, session);
+    if (!operator) {
+      throw new Error("Operatore non trovato");
+    }
+
+    const range = resolveReportRange(options);
+    const previousSpan = daysBetweenInclusive(range.start, range.end);
+    const previousRange = {
+      start: shiftDate(range.start, -previousSpan),
+      end: shiftDate(range.start, -1)
+    };
+
+    const allAppointments = this.listAppointments("month", new Date().toISOString(), true, session);
+    const payments = this.listPayments(undefined, session);
+    const services = this.listServices(session);
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const paymentByAppointment = new Map();
+    payments.forEach((payment) => {
+      const current = paymentByAppointment.get(payment.appointmentId) || 0;
+      paymentByAppointment.set(payment.appointmentId, current + Number(payment.amountCents || 0));
+    });
+    const serviceById = new Map(services.map((item) => [item.id, item]));
+    const premiumThreshold = services.length ? services.reduce((sum, item) => sum + Number(item.priceCents || 0), 0) / services.length : 0;
+    const clientAppointmentsMap = new Map();
+    allAppointments.filter((item) => item.status === "completed").forEach((item) => {
+      const list = clientAppointmentsMap.get(item.clientId) || [];
+      list.push(item);
+      clientAppointmentsMap.set(item.clientId, list);
+    });
+
+    const filterOperatorPeriod = (start, end) => allAppointments.filter((item) => {
+      const date = toDateOnly(item.startAt);
+      return item.staffId === operatorId && item.status === "completed" && date >= start && date <= end;
+    });
+    const currentAppointments = filterOperatorPeriod(range.start, range.end);
+    const previousAppointments = filterOperatorPeriod(previousRange.start, previousRange.end);
+    const centerAppointmentsCurrent = allAppointments.filter((item) => {
+      const date = toDateOnly(item.startAt);
+      return item.status === "completed" && date >= range.start && date <= range.end;
+    });
+
+    const revenueFor = (appointmentsList) => appointmentsList.reduce((sum, item) => sum + Number(paymentByAppointment.get(item.id) || 0), 0);
+    const currentRevenueCents = revenueFor(currentAppointments);
+    const previousRevenueCents = revenueFor(previousAppointments);
+    const completedAppointments = currentAppointments.length;
+    const uniqueClientIds = [...new Set(currentAppointments.map((item) => item.clientId).filter(Boolean))];
+    const averageTicketCents = completedAppointments ? Math.round(currentRevenueCents / completedAppointments) : 0;
+    const centerRevenueCents = revenueFor(centerAppointmentsCurrent);
+    const centerAverageTicketCents = centerAppointmentsCurrent.length ? Math.round(centerRevenueCents / centerAppointmentsCurrent.length) : 0;
+    const uniqueClients = uniqueClientIds.length;
+
+    const newClients = uniqueClientIds.filter((clientId) => {
+      const history = (clientAppointmentsMap.get(clientId) || []).slice().sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+      return history[0] && toDateOnly(history[0].startAt) >= range.start && toDateOnly(history[0].startAt) <= range.end;
+    }).length;
+    const returningClients = uniqueClients - newClients;
+    const previousOperatorClientIds = new Set(allAppointments.filter((item) => item.staffId === operatorId && item.status === "completed" && toDateOnly(item.startAt) < range.start).map((item) => item.clientId));
+    const inactiveClients = [...previousOperatorClientIds].filter((clientId) => {
+      if (uniqueClientIds.includes(clientId)) return false;
+      const history = (clientAppointmentsMap.get(clientId) || []).slice().sort((a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime());
+      const lastVisit = history[0];
+      return lastVisit ? Math.floor((new Date(`${range.end}T23:59:59`).getTime() - new Date(lastVisit.startAt).getTime()) / 86400000) >= 30 : false;
+    }).length;
+    const retentionRate = uniqueClients ? Math.round((returningClients / uniqueClients) * 100) : 0;
+
+    const serviceCounts = new Map();
+    currentAppointments.forEach((item) => {
+      const ids = Array.isArray(item.serviceIds) && item.serviceIds.length > 0 ? item.serviceIds : item.serviceId ? [item.serviceId] : [];
+      ids.forEach((serviceId) => {
+        serviceCounts.set(serviceId, (serviceCounts.get(serviceId) || 0) + 1);
+      });
+    });
+    const topServices = [...serviceCounts.entries()]
+      .map(([serviceId, count]) => ({ serviceId, name: serviceById.get(serviceId)?.name || "Servizio", count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+    const lowServices = services
+      .map((item) => ({ serviceId: item.id, name: item.name, count: Number(serviceCounts.get(item.id) || 0) }))
+      .sort((a, b) => a.count - b.count)
+      .slice(0, 3);
+    const premiumServices = services
+      .filter((item) => Number(item.priceCents || 0) >= premiumThreshold)
+      .map((item) => ({ serviceId: item.id, name: item.name, count: Number(serviceCounts.get(item.id) || 0) }))
+      .filter((item) => item.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+    const premiumCount = premiumServices.reduce((sum, item) => sum + item.count, 0);
+
+    const daysWorked = [...new Set(currentAppointments.map((item) => toDateOnly(item.startAt)))].length;
+    const averageAppointmentsPerDay = daysWorked ? Number((completedAppointments / daysWorked).toFixed(1)) : 0;
+    const timeBands = new Map([["Mattina", 0], ["Pranzo", 0], ["Pomeriggio", 0], ["Sera", 0]]);
+    currentAppointments.forEach((item) => {
+      const band = timeBandFromDate(item.startAt);
+      timeBands.set(band, Number(timeBands.get(band) || 0) + 1);
+    });
+    const sortedBands = [...timeBands.entries()].sort((a, b) => b[1] - a[1]);
+    const topTimeBand = sortedBands[0]?.[0] || "—";
+    const lowTimeBand = [...timeBands.entries()].sort((a, b) => a[1] - b[1])[0]?.[0] || "—";
+
+    let deltaRevenuePercent = null;
+    let trendState = "unknown";
+    let trendNote = "Nessun confronto disponibile";
+    if (settings.operatorComparisonEnabled && previousRevenueCents > 0) {
+      deltaRevenuePercent = Math.round(((currentRevenueCents - previousRevenueCents) / previousRevenueCents) * 100);
+      if (deltaRevenuePercent > 10) trendState = "growth";
+      else if (deltaRevenuePercent < -10) trendState = "decline";
+      else trendState = "stable";
+      trendNote = `${deltaRevenuePercent > 0 ? "+" : ""}${deltaRevenuePercent}% rispetto al periodo precedente`;
+    }
+
+    let salesState = "average";
+    if (centerAverageTicketCents > 0) {
+      const deltaVsCenter = ((averageTicketCents - centerAverageTicketCents) / centerAverageTicketCents) * 100;
+      if (deltaVsCenter > 10) salesState = "above";
+      else if (deltaVsCenter < -10) salesState = "below";
+    }
+
+    const rules = this.ensureDefaultOperatorIncentiveRules(session).filter((rule) => rule.active && (!rule.operator_id || rule.operator_id === operatorId));
+    const rewardsEnabled = settings.operatorRewardsEnabled;
+    const incentiveResults = [];
+    if (rewardsEnabled) {
+      rules.forEach((rule) => {
+        if ((rule.type === "sales" && !settings.operatorSalesBonusEnabled) || (rule.type === "retention" && !settings.operatorRetentionBonusEnabled) || (rule.type === "custom" && !settings.operatorPerformanceBonusEnabled)) {
+          return;
+        }
+        const progressValue = rule.type === "sales"
+          ? (centerAverageTicketCents ? Math.round((averageTicketCents / centerAverageTicketCents) * 100) : 0)
+          : rule.type === "retention"
+            ? retentionRate
+            : rule.type === "service_push"
+              ? premiumCount
+              : Number(deltaRevenuePercent || 0);
+        const achieved = rule.comparison_type === "gte"
+          ? progressValue >= Number(rule.target_value || 0)
+          : rule.comparison_type === "lte"
+            ? progressValue <= Number(rule.target_value || 0)
+            : progressValue === Number(rule.target_value || 0);
+        const near = !achieved && Number(rule.target_value || 0) > 0 && progressValue >= Number(rule.target_value || 0) * 0.8;
+        const status = achieved ? "reached" : near ? "near" : "missed";
+        const resultId = `${this.getCenterId(session)}_${operatorId}_${rule.id}_${range.start}_${range.end}`;
+        const resultPayload = this.attachCenter({
+          id: resultId,
+          operator_id: operatorId,
+          rule_id: rule.id,
+          period_start: range.start,
+          period_end: range.end,
+          achieved,
+          progress_value: progressValue,
+          reward_calculated: rule.reward_type === "fixed" || rule.reward_type === "percentage" ? Number(rule.reward_value || 0) : null,
+          benefit_awarded: achieved && settings.operatorBenefitsEnabled ? (rule.benefit_label || null) : null,
+          status,
+          updatedAt: new Date().toISOString()
+        }, session);
+        const current = this.findByIdInCenter(this.operatorIncentiveResultsRepository, resultId, session);
+        if (current) {
+          this.operatorIncentiveResultsRepository.update(resultId, (entry) => ({ ...entry, ...resultPayload }));
+        } else {
+          this.operatorIncentiveResultsRepository.create(resultPayload);
+        }
+        incentiveResults.push({
+          id: resultId,
+          title: rule.type === "sales" ? "Ticket medio target" : rule.type === "retention" ? "Retention target" : rule.type === "service_push" ? "Servizi premium target" : "Crescita target",
+          progressLabel: `${progressValue}${rule.type === "sales" || rule.type === "retention" || rule.type === "custom" ? "%" : ""} su target ${rule.target_value}${rule.type === "sales" || rule.type === "retention" || rule.type === "custom" ? "%" : ""}`,
+          rewardLabel: settings.operatorBenefitsEnabled ? (rule.benefit_label || "Benefit disponibile") : "Benefit disattivato",
+          status
+        });
+      });
+    }
+
+    let summaryText = "Operatore stabile, dati sotto controllo.";
+    const reachedCount = incentiveResults.filter((item) => item.status === "reached").length;
+    if (trendState === "growth" && salesState === "above" && reachedCount > 0) {
+      summaryText = "Operatore molto performante, crescita attiva, ticket sopra media e premio maturato.";
+    } else if (trendState === "growth") {
+      summaryText = premiumCount > 0
+        ? "Operatore in crescita, buon ticket medio, può spingere servizi premium."
+        : "Operatore in crescita, buona continuità operativa nel periodo.";
+    } else if (trendState === "decline" || salesState === "below") {
+      summaryText = "Operatore in calo, ticket basso e pochi servizi premium: suggerita formazione vendita.";
+    } else if (retentionRate >= 60) {
+      summaryText = "Operatore stabile, buona retention, nessun segnale critico nel periodo.";
+    }
+
+    return {
+      operator: {
+        id: operator.id,
+        name: operator.name,
+        colorTag: operator.colorTag || null
+      },
+      period,
+      periodLabel: label,
+      summary: {
+        revenueCents: currentRevenueCents,
+        completedAppointments,
+        averageTicketCents,
+        uniqueClients
+      },
+      trend: {
+        state: trendState,
+        deltaRevenuePercent,
+        note: trendNote
+      },
+      clients: {
+        total: uniqueClients,
+        newClients,
+        returningClients,
+        inactiveClients,
+        retentionRate
+      },
+      services: {
+        top: topServices,
+        low: lowServices,
+        premium: premiumServices
+      },
+      activity: {
+        daysWorked,
+        averageAppointmentsPerDay,
+        topTimeBand,
+        lowTimeBand
+      },
+      sales: {
+        operatorAverageTicketCents: averageTicketCents,
+        centerAverageTicketCents,
+        state: salesState
+      },
+      incentives: incentiveResults,
+      summaryText
+    };
   }
 
   getSettings(session) {
@@ -1103,26 +1873,37 @@ class DesktopMirrorService {
     };
   }
 
-  getDashboardStats(session) {
-    const appointments = this.listAppointments("month", new Date().toISOString(), true, session);
+  getDashboardStats(options = {}, session) {
+    const range = resolveDashboardRange(options);
+    const appointments = this.listAppointments(range.period, range.end, true, session);
     const payments = this.listPayments(undefined, session);
     const services = this.listServices(session);
     const servicesById = new Map(services.map((service) => [service.id, service]));
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
-    const today = toDateOnly(new Date().toISOString());
-    const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
-    const completedAppointments = appointments.filter((item) => item.status === "completed");
+    const referenceTimestamp = new Date(`${range.end}T23:59:59`).getTime();
+    const periodAppointments = appointments.filter((item) => {
+      const itemDate = toDateOnly(item.startAt);
+      return itemDate >= range.start && itemDate <= range.end;
+    });
+    const historicalAppointments = this.listAppointments("month", range.end, true, session)
+      .filter((item) => toDateOnly(item.startAt) <= range.end);
+    const completedAppointments = periodAppointments.filter((item) => item.status === "completed");
     const spendByClient = new Map();
     const visitsByClient = new Map();
     const lastVisitByClient = new Map();
     const servicePerformance = new Map();
 
+    historicalAppointments
+      .filter((item) => item.status === "completed")
+      .forEach((item) => {
+        const prev = lastVisitByClient.get(item.clientId);
+        if (!prev || new Date(item.startAt).getTime() > new Date(prev).getTime()) {
+          lastVisitByClient.set(item.clientId, item.startAt);
+        }
+      });
+
     completedAppointments.forEach((item) => {
       visitsByClient.set(item.clientId, (visitsByClient.get(item.clientId) || 0) + 1);
-      const prev = lastVisitByClient.get(item.clientId);
-      if (!prev || new Date(item.startAt).getTime() > new Date(prev).getTime()) {
-        lastVisitByClient.set(item.clientId, item.startAt);
-      }
       const serviceIds = Array.isArray(item.serviceIds) && item.serviceIds.length > 0
         ? item.serviceIds
         : item.serviceId ? [item.serviceId] : [];
@@ -1166,7 +1947,7 @@ class DesktopMirrorService {
     const inactiveClients = clients
       .map((client) => {
         const lastVisitAt = lastVisitByClient.get(client.id) || client.lastVisit || null;
-        const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((Date.now() - new Date(lastVisitAt).getTime()) / 86400000)) : -1;
+        const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((referenceTimestamp - new Date(lastVisitAt).getTime()) / 86400000)) : -1;
         return {
           clientId: client.id,
           name: client.name || "Cliente",
@@ -1178,14 +1959,15 @@ class DesktopMirrorService {
       .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
       .slice(0, 5);
 
-    const agendaLoad = todayAppointments.filter((item) => item.status !== "cancelled" && item.status !== "no_show").length;
+    const agendaLoad = periodAppointments.filter((item) => item.status !== "cancelled" && item.status !== "no_show").length;
     const alerts = [
       ...(inactiveClients.length > 0 ? [`Hai ${inactiveClients.length} clienti inattivi`] : []),
-      ...(agendaLoad <= 3 ? ["Agenda leggera oggi"] : [])
+      ...(agendaLoad <= 3 ? ["Agenda leggera nel periodo selezionato"] : [])
     ];
 
-    const nextAppointments = appointments
-      .filter((item) => new Date(item.startAt).getTime() >= Date.now())
+    const nextAppointments = periodAppointments
+      .filter((item) => item.status !== "cancelled" && item.status !== "no_show")
+      .sort((first, second) => new Date(first.startAt).getTime() - new Date(second.startAt).getTime())
       .slice(0, 6)
       .map((item) => ({
         id: item.id,
@@ -1197,21 +1979,25 @@ class DesktopMirrorService {
         locked: item.locked || 0
       }));
     return {
-      todayAppointments: todayAppointments.length,
-      confirmedAppointments: todayAppointments.filter((item) => item.status === "confirmed").length,
-      arrivedAppointments: todayAppointments.filter((item) => item.status === "arrived").length,
-      inProgressAppointments: todayAppointments.filter((item) => item.status === "in_progress").length,
-      readyCheckoutAppointments: todayAppointments.filter((item) => item.status === "ready_checkout").length,
-      completedAppointments: todayAppointments.filter((item) => item.status === "completed").length,
-      todayRevenueCents: payments.filter((item) => toDateOnly(item.createdAt) === today).reduce((sum, item) => sum + item.amountCents, 0),
-      activeClients: clients.length,
-      upcomingAppointments: appointments.filter((item) => {
-        const diff = new Date(item.startAt).getTime() - Date.now();
-        return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;
-      }).length,
-      activeStaff: this.filterByCenter(this.staffRepository.list(), session).filter((item) => item.active !== false).length,
-      activeServices: services.filter((item) => item.active !== false).length,
-      pendingConfirmations: todayAppointments.filter((item) => item.status === "requested" || item.status === "booked").length,
+      todayAppointments: periodAppointments.length,
+      confirmedAppointments: periodAppointments.filter((item) => item.status === "confirmed").length,
+      arrivedAppointments: periodAppointments.filter((item) => item.status === "arrived").length,
+      inProgressAppointments: periodAppointments.filter((item) => item.status === "in_progress").length,
+      readyCheckoutAppointments: periodAppointments.filter((item) => item.status === "ready_checkout").length,
+      completedAppointments: periodAppointments.filter((item) => item.status === "completed").length,
+      todayRevenueCents: payments
+        .filter((item) => {
+          const createdDate = toDateOnly(item.createdAt);
+          return createdDate >= range.start && createdDate <= range.end;
+        })
+        .reduce((sum, item) => sum + item.amountCents, 0),
+      activeClients: new Set(periodAppointments.map((item) => item.clientId).filter(Boolean)).size,
+      upcomingAppointments: agendaLoad,
+      activeStaff: new Set(periodAppointments.map((item) => item.staffId).filter(Boolean)).size,
+      activeServices: new Set(
+        periodAppointments.flatMap((item) => Array.isArray(item.serviceIds) && item.serviceIds.length > 0 ? item.serviceIds : item.serviceId ? [item.serviceId] : [])
+      ).size,
+      pendingConfirmations: periodAppointments.filter((item) => item.status === "requested" || item.status === "booked").length,
       inactiveClientsCount: inactiveClients.length,
       alerts,
       topClients,
@@ -1222,7 +2008,7 @@ class DesktopMirrorService {
     };
   }
 
-  getOperationalReport(period = "day", session) {
+  getOperationalReport(options = { period: "day" }, session) {
     const appointments = this.listAppointments("month", new Date().toISOString(), true, session);
     const payments = this.listPayments(undefined, session);
     const services = this.listServices(session);
@@ -1230,17 +2016,15 @@ class DesktopMirrorService {
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const treatments = this.listTreatments(undefined, session);
     const resources = this.listResources(session);
-    const now = new Date();
-    let start = new Date(now);
-    if (period === "week") {
-      start.setDate(now.getDate() - 7);
-    } else if (period === "month") {
-      start.setMonth(now.getMonth() - 1);
-    } else {
-      start.setHours(0, 0, 0, 0);
-    }
-    const scopedAppointments = appointments.filter((item) => new Date(item.startAt).getTime() >= start.getTime());
-    const scopedPayments = payments.filter((item) => new Date(item.createdAt).getTime() >= start.getTime());
+    const { period, start, end, label } = resolveReportRange(options);
+    const scopedAppointments = appointments.filter((item) => {
+      const date = toDateOnly(item.startAt);
+      return date >= start && date <= end;
+    });
+    const scopedPayments = payments.filter((item) => {
+      const date = toDateOnly(item.createdAt);
+      return date >= start && date <= end;
+    });
 
     const spendByClient = new Map();
     const visitByClient = new Map();
@@ -1394,7 +2178,7 @@ class DesktopMirrorService {
     return {
       period,
       generatedAt: new Date().toISOString(),
-      dateLabel: period === "day" ? "Oggi" : period === "week" ? "Ultimi 7 giorni" : "Ultimi 30 giorni",
+      dateLabel: label,
       totals,
       timeline,
       topOperators,
@@ -1415,9 +2199,10 @@ class DesktopMirrorService {
     };
   }
 
-  exportOperationalReport(period = "day", format = "pdf", session) {
+  exportOperationalReport(options = { period: "day" }, format = "pdf", session) {
     ensureDir(EXPORTS_DIR);
-    const report = this.getOperationalReport(period, session);
+    const report = this.getOperationalReport(options, session);
+    const period = typeof options === "string" ? options : String(options.period || "day");
     const fileName = `operational-report-${period}-${Date.now()}.html`;
     const filePath = path.join(EXPORTS_DIR, fileName);
     const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Report operativo</title><style>body{font-family:Arial,sans-serif;padding:32px;color:#163047}h1,h2{color:#236eb8}table{width:100%;border-collapse:collapse;margin-top:16px}td,th{border:1px solid #dfe8f3;padding:10px;text-align:left}</style></head><body><h1>Report operativo</h1><p>${report.dateLabel}</p><h2>Totali</h2><table><tr><th>Appuntamenti</th><th>Completati</th><th>Incasso</th></tr><tr><td>${report.totals.appointments}</td><td>${report.totals.completedAppointments}</td><td>${euro(report.totals.revenueCents)}</td></tr></table></body></html>`;
@@ -1427,6 +2212,25 @@ class DesktopMirrorService {
       format,
       url: `/exports/${fileName}`
     };
+  }
+
+  exportOperatorReport(operatorId, options = {}, session) {
+    ensureDir(EXPORTS_DIR);
+    const report = this.getOperatorReport(operatorId, options, session);
+    const fileName = `operator-report-${sanitizeFileName(report.operator?.name || "operatore")}-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    const html = this.buildOperatorReportHtml(report);
+    fs.writeFileSync(filePath, html);
+    return {
+      path: filePath,
+      format: "html",
+      url: `/exports/${fileName}`
+    };
+  }
+
+  buildOperatorReportHtml(report) {
+    const trendLabel = report?.trend?.state === "growth" ? "Crescita" : report?.trend?.state === "decline" ? "Calo" : report?.trend?.state === "stable" ? "Stabile" : "Nessun confronto";
+    return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Report operatore</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:32px;color:#163047}h1{margin:0 0 8px;color:#1F86AA}h2{color:#2A9EC4;margin:24px 0 12px;font-size:18px}.meta{color:#6e8299;margin-bottom:18px}.summary{border:1px solid #dfe8f3;border-radius:18px;background:#f8fbff;padding:18px;margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.box{border:1px solid #e5edf5;border-radius:14px;padding:14px;background:#fff}.label{color:#6e8299;font-size:12px;text-transform:uppercase;letter-spacing:.04em}.value{font-size:22px;font-weight:700}.row{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #edf3f8}.row:last-child{border-bottom:0}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:34px}.signature{padding-top:30px;border-top:1px solid #cfdbe6;color:#4d6470;font-size:13px}.printbar{margin-bottom:16px}@media print{.printbar{display:none}}</style></head><body><div class="printbar"><button onclick="window.print()" style="padding:10px 16px;border-radius:999px;border:1px solid #4FB6D6;background:#4FB6D6;color:#fff;font-weight:700;cursor:pointer;">Stampa report</button></div><h1>Report operatore</h1><div class="meta">${escapeHtml(report?.operator?.name || "Operatore")} · ${escapeHtml(report?.periodLabel || "")}</div><div class="summary"><div class="grid"><div class="box"><div class="label">Fatturato periodo</div><div class="value">${euro(report?.summary?.revenueCents || 0)}</div></div><div class="box"><div class="label">Appuntamenti completati</div><div class="value">${Number(report?.summary?.completedAppointments || 0)}</div></div><div class="box"><div class="label">Ticket medio</div><div class="value">${euro(report?.summary?.averageTicketCents || 0)}</div></div><div class="box"><div class="label">Clienti unici</div><div class="value">${Number(report?.summary?.uniqueClients || 0)}</div></div></div></div><h2>Andamento</h2><div class="box"><div class="row"><div>Stato</div><div>${trendLabel}</div></div><div class="row"><div>Confronto</div><div>${escapeHtml(report?.trend?.note || "Nessun confronto disponibile")}</div></div><div class="row"><div>Sintesi</div><div>${escapeHtml(report?.summaryText || "")}</div></div></div><h2>Clienti</h2><div class="box"><div class="row"><div>Totali serviti</div><div>${Number(report?.clients?.total || 0)}</div></div><div class="row"><div>Nuovi clienti</div><div>${Number(report?.clients?.newClients || 0)}</div></div><div class="row"><div>Clienti di ritorno</div><div>${Number(report?.clients?.returningClients || 0)}</div></div><div class="row"><div>Clienti inattivi</div><div>${Number(report?.clients?.inactiveClients || 0)}</div></div></div><h2>Servizi</h2><div class="box">${(report?.services?.top || []).map((item) => `<div class="row"><div>${escapeHtml(item.name)}</div><div>${Number(item.count || 0)}</div></div>`).join("") || "<div>Nessun dato</div>"}</div><h2>Attività reale</h2><div class="box"><div class="row"><div>Giorni lavorati</div><div>${Number(report?.activity?.daysWorked || 0)}</div></div><div class="row"><div>Media appuntamenti / giorno</div><div>${report?.activity?.averageAppointmentsPerDay || 0}</div></div><div class="row"><div>Fascia più attiva</div><div>${escapeHtml(report?.activity?.topTimeBand || "—")}</div></div><div class="row"><div>Fascia meno piena</div><div>${escapeHtml(report?.activity?.lowTimeBand || "—")}</div></div></div><h2>Premi & Benefit</h2><div class="box">${(report?.incentives || []).slice(0,4).map((item) => `<div class="row"><div>${escapeHtml(item.title)}<br><small>${escapeHtml(item.progressLabel)}</small></div><div>${item.status === "reached" ? "Raggiunto" : item.status === "near" ? "Quasi raggiunto" : "Non raggiunto"}</div></div>`).join("") || "<div>Nessuna regola premio attiva.</div>"}</div><div class="signatures"><div class="signature">Firma responsabile</div><div class="signature">Firma operatore</div></div></body></html>`;
   }
 
   openExportsFolder() {
