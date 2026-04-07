@@ -2,8 +2,10 @@ const express = require("express");
 const { buildProtocolDraft } = require("./engine_v1");
 const { classifyImageWithAI, hasVisionSupport } = require("./vision_adapter");
 const { selectLibraryProtocol, pickRecommendedPackage, library } = require("./library_selector");
+const { AssistantService } = require("./AssistantService");
 
 const app = express();
+const assistantService = new AssistantService();
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -130,6 +132,18 @@ app.post("/api/protocols/analyze", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: error.response?.data || error.message
+    });
+  }
+});
+
+app.post("/api/assistant/chat", async (req, res) => {
+  try {
+    const result = await assistantService.chat(req.body || {}, null);
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message || "Assistant error"
     });
   }
 });

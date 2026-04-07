@@ -1,0 +1,514 @@
+const ACTIONS = [
+  "open_dashboard",
+  "open_agenda",
+  "open_clients",
+  "open_client_form",
+  "open_client_details",
+  "open_inventory",
+  "open_reports",
+  "open_operator_report",
+  "open_turns",
+  "open_attendance",
+  "open_profitability",
+  "open_protocols",
+  "open_training",
+  "open_settings",
+  "search_client",
+  "create_client",
+  "create_note",
+  "create_task",
+  "filter_appointments",
+  "filter_clients"
+];
+
+const ACTION_PERMISSIONS = {
+  open_dashboard: "UI_NAVIGATION",
+  open_agenda: "UI_NAVIGATION",
+  open_clients: "UI_NAVIGATION",
+  open_client_form: "UI_NAVIGATION",
+  open_client_details: "UI_NAVIGATION",
+  open_inventory: "UI_NAVIGATION",
+  open_reports: "UI_NAVIGATION",
+  open_operator_report: "UI_NAVIGATION",
+  open_turns: "UI_NAVIGATION",
+  open_attendance: "UI_NAVIGATION",
+  open_profitability: "UI_NAVIGATION",
+  open_protocols: "UI_NAVIGATION",
+  open_training: "UI_NAVIGATION",
+  open_settings: "UI_NAVIGATION",
+  search_client: "UI_NAVIGATION",
+  filter_appointments: "UI_NAVIGATION",
+  filter_clients: "UI_NAVIGATION",
+  create_client: "SAFE_ACTIONS",
+  create_note: "SAFE_ACTIONS",
+  create_task: "SAFE_ACTIONS"
+};
+
+const ROLE_CAPABILITIES = {
+  superadmin: ["INFO_ONLY", "UI_NAVIGATION", "SAFE_ACTIONS"],
+  owner: ["INFO_ONLY", "UI_NAVIGATION", "SAFE_ACTIONS"],
+  admin: ["INFO_ONLY", "UI_NAVIGATION", "SAFE_ACTIONS"],
+  manager: ["INFO_ONLY", "UI_NAVIGATION", "SAFE_ACTIONS"],
+  staff: ["INFO_ONLY", "UI_NAVIGATION", "SAFE_ACTIONS"],
+  viewer: ["INFO_ONLY", "UI_NAVIGATION"]
+};
+
+const RESPONSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    mode: {
+      type: "string",
+      enum: ["answer", "action", "blocked_action"]
+    },
+    message: {
+      type: "string"
+    },
+    action: {
+      anyOf: [
+        { type: "string", enum: ACTIONS },
+        { type: "null" }
+      ]
+    },
+    payload: {
+      type: "object",
+      additionalProperties: true
+    },
+    requiresConfirmation: {
+      type: "boolean"
+    }
+  },
+  required: ["mode", "message", "action", "payload", "requiresConfirmation"]
+};
+
+function normalizeRole(role) {
+  const safe = String(role || "owner").toLowerCase();
+  return ROLE_CAPABILITIES[safe] ? safe : "owner";
+}
+
+function canUseAction(role, action) {
+  const permission = ACTION_PERMISSIONS[action] || "INFO_ONLY";
+  return (ROLE_CAPABILITIES[normalizeRole(role)] || ROLE_CAPABILITIES.owner).includes(permission);
+}
+
+function toDateOnly(value) {
+  if (!value) return new Date().toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return String(value);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function shiftDate(dateValue, days) {
+  const base = new Date(`${toDateOnly(dateValue)}T00:00:00`);
+  base.setDate(base.getDate() + Number(days || 0));
+  return toDateOnly(base);
+}
+
+function splitName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] || "",
+    lastName: parts.slice(1).join(" ")
+  };
+}
+
+function stripAccents(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeText(value) {
+  return stripAccents(value).toLowerCase().trim();
+}
+
+function extractPhone(value) {
+  const match = String(value || "").match(/(\+?\d[\d\s]{5,})$/);
+  return match ? match[1].replace(/\s+/g, "") : "";
+}
+
+function extractClientDraft(message) {
+  const raw = String(message || "").trim();
+  const match = raw.match(/(?:aggiungi|crea|inserisci)\s+cliente\s+(.+)/i);
+  if (!match) return null;
+  const tail = match[1].trim();
+  const phone = extractPhone(tail);
+  const namePart = phone ? tail.replace(/(\+?\d[\d\s]{5,})$/, "").trim() : tail;
+  const names = splitName(namePart);
+  return {
+    firstName: names.firstName,
+    lastName: names.lastName,
+    phone
+  };
+}
+
+function parseAgendaFilter(message) {
+  const normalized = normalizeText(message);
+  if (!/(filtra|mostra).*(agenda|appuntamenti)/.test(normalized)) return null;
+  let date = "";
+  if (normalized.includes("domani")) date = shiftDate(new Date(), 1);
+  else if (normalized.includes("ieri")) date = shiftDate(new Date(), -1);
+  else if (normalized.includes("oggi")) date = toDateOnly(new Date());
+  const statusMap = [
+    ["confermat", "confirmed"],
+    ["richiest", "requested"],
+    ["arrivat", "arrived"],
+    ["in corso", "in_progress"],
+    ["checkout", "ready_checkout"],
+    ["completat", "completed"],
+    ["annullat", "cancelled"],
+    ["no show", "no_show"]
+  ];
+  const status = statusMap.find(([label]) => normalized.includes(label))?.[1] || "";
+  return { date, status };
+}
+
+function buildAnswer(message, payload = {}) {
+  return {
+    mode: "answer",
+    message,
+    action: null,
+    payload,
+    requiresConfirmation: false
+  };
+}
+
+function buildAction(message, action, payload = {}, requiresConfirmation = false) {
+  return {
+    mode: "action",
+    message,
+    action,
+    payload,
+    requiresConfirmation
+  };
+}
+
+function buildBlocked(message, action = null, payload = {}) {
+  return {
+    mode: "blocked_action",
+    message,
+    action,
+    payload,
+    requiresConfirmation: false
+  };
+}
+
+class AssistantService {
+  constructor(desktopMirror) {
+    this.desktopMirror = desktopMirror;
+  }
+
+  getSettingsSafe() {
+    if (!this.desktopMirror?.getSettings) return {};
+    try {
+      return this.desktopMirror.getSettings() || {};
+    } catch {
+      return {};
+    }
+  }
+
+  getDashboardSafe() {
+    if (!this.desktopMirror?.getDashboardStats) return {};
+    try {
+      return this.desktopMirror.getDashboardStats() || {};
+    } catch {
+      return {};
+    }
+  }
+
+  listClientsSafe(context = {}) {
+    if (this.desktopMirror?.listClients) {
+      try {
+        return this.desktopMirror.listClients("") || [];
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(context.clientsPreview) ? context.clientsPreview : [];
+  }
+
+  listStaffSafe(context = {}) {
+    if (this.desktopMirror?.listStaff) {
+      try {
+        return this.desktopMirror.listStaff() || [];
+      } catch {
+        return [];
+      }
+    }
+    return Array.isArray(context.staffPreview) ? context.staffPreview : [];
+  }
+
+  buildContext(payload = {}, session = null) {
+    const context = payload.context || {};
+    const settings = this.getSettingsSafe();
+    const dashboard = this.getDashboardSafe();
+    const clients = this.listClientsSafe(context);
+    const staff = this.listStaffSafe(context);
+    const role = normalizeRole(context.userRole || session?.role || "owner");
+
+    return {
+      currentPage: String(context.currentPage || payload.page || "dashboard"),
+      currentModule: String(context.currentModule || ""),
+      currentRoute: String(payload.page || context.currentPage || "dashboard"),
+      userRole: role,
+      selectedClientId: context.selectedClientId || "",
+      selectedOperatorId: context.selectedOperatorId || "",
+      activePeriod: context.activePeriod || null,
+      settings: {
+        inventoryBaseEnabled: Boolean(settings.inventoryBaseEnabled),
+        profitabilityEnabled: Boolean(settings.profitabilityEnabled),
+        enableProtocolsHub: Boolean(settings.enableProtocolsHub),
+        enableTrainingHub: Boolean(settings.enableTrainingHub),
+        operatorReportsEnabled: Boolean(settings.operatorReportsEnabled)
+      },
+      dashboard: {
+        todayAppointments: Number(dashboard.todayAppointments || 0),
+        inactiveClientsCount: Number(dashboard.inactiveClientsCount || 0)
+      },
+      clientsPreview: clients.slice(0, 25).map((client) => ({
+        id: client.id,
+        name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "",
+        phone: client.phone || ""
+      })),
+      staffPreview: staff.slice(0, 25).map((item) => ({
+        id: item.id,
+        name: item.name || ""
+      }))
+    };
+  }
+
+  findClientByQuery(query, context = {}) {
+    const normalizedQuery = normalizeText(query);
+    if (!normalizedQuery) return null;
+    const clients = this.listClientsSafe(context);
+    return clients.find((client) => {
+      const fullName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "";
+      return normalizeText(fullName).includes(normalizedQuery);
+    }) || null;
+  }
+
+  findStaffByQuery(query, context = {}) {
+    const normalizedQuery = normalizeText(query);
+    if (!normalizedQuery) return null;
+    const staff = this.listStaffSafe(context);
+    return staff.find((item) => normalizeText(item.name).includes(normalizedQuery)) || null;
+  }
+
+  buildLocalDecision(message, context) {
+    const normalized = normalizeText(message);
+
+    if (!normalized) {
+      return buildAnswer("Scrivimi una richiesta breve: posso spiegarti un flusso, aprire una schermata o aiutarti con un cliente.");
+    }
+
+    if (/(disattiva|attiva|modifica impostazioni|cambia permessi|elimina.*operatore|elimina.*cliente|cancella.*cliente|cancella dati)/.test(normalized)) {
+      return buildBlocked(
+        "Non posso eseguire direttamente questa operazione. Ti apro Impostazioni o la sezione corretta e ti guido, ma non modifico dati sensibili in automatico.",
+        "open_settings",
+        { section: "general" }
+      );
+    }
+
+    if (/(come.*operatori|inser.*operatori|aggiung.*operatori|dove.*operatori)/.test(normalized)) {
+      return buildAnswer("Per inserire un operatore vai in Servizi > Operatori. Lì puoi aggiungere nome, colore e costo orario. Se vuoi posso aprire direttamente quella schermata.");
+    }
+
+    if (/(report.*dipendent|resa dipendent|report operatore|performance operatore)/.test(normalized) && /(come|dove)/.test(normalized)) {
+      return buildAnswer("Il report dipendenti è in Report business > Resa dipendenti. Da lì clicchi il nome dell’operatore e apri il suo report personale. Se vuoi posso aprire i report.");
+    }
+
+    if (/(come.*magazzino|funziona.*magazzino)/.test(normalized)) {
+      return buildAnswer("Il magazzino ti fa gestire articoli, movimenti, sottoscorta e controllo stock. Parti dalla panoramica, poi anagrafica articoli e infine movimenti. Se vuoi posso aprire il magazzino.");
+    }
+
+    const clientDraft = extractClientDraft(message);
+    if (clientDraft) {
+      if (clientDraft.firstName && clientDraft.phone) {
+        return buildAction(
+          `Ho preparato il cliente ${[clientDraft.firstName, clientDraft.lastName].filter(Boolean).join(" ")} con telefono ${clientDraft.phone}. Confermi il salvataggio?`,
+          "create_client",
+          clientDraft,
+          true
+        );
+      }
+      return buildAction(
+        "Apro il form cliente con i dati disponibili. Completa i campi mancanti e conferma il salvataggio.",
+        "open_client_form",
+        clientDraft
+      );
+    }
+
+    if (/(nuovo cliente|apri form cliente|apri nuovo cliente)/.test(normalized)) {
+      return buildAction("Apro il form cliente.", "open_client_form", {});
+    }
+
+    const clientSearchMatch = message.match(/(?:cerca|trova)\s+cliente\s+(.+)/i);
+    if (clientSearchMatch) {
+      const query = clientSearchMatch[1].trim();
+      const client = this.findClientByQuery(query, context);
+      if (client) {
+        const fullName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "cliente richiesto";
+        return buildAction(`Apro la scheda cliente di ${fullName}.`, "open_client_details", { clientId: client.id });
+      }
+      return buildAction(`Apro l’area clienti filtrata per ${query}.`, "search_client", { query });
+    }
+
+    if (/(filtra clienti|mostra clienti)/.test(normalized)) {
+      const query = message.replace(/.*(?:filtra clienti|mostra clienti)\s*/i, "").trim();
+      return buildAction(query ? `Filtro la lista clienti per ${query}.` : "Apro la lista clienti.", query ? "filter_clients" : "open_clients", query ? { query } : {});
+    }
+
+    const operatorReportMatch = message.match(/(?:report|scheda)\s+operatore\s+(.+)/i);
+    if (operatorReportMatch) {
+      const staff = this.findStaffByQuery(operatorReportMatch[1].trim(), context);
+      if (staff) {
+        return buildAction(`Apro il report operatore di ${staff.name}.`, "open_operator_report", {
+          operatorId: staff.id,
+          period: context.activePeriod?.period || "month",
+          startDate: context.activePeriod?.startDate || "",
+          endDate: context.activePeriod?.endDate || ""
+        });
+      }
+      return buildAnswer("Non ho trovato un operatore con quel nome. Se vuoi scrivimi il nome preciso oppure apri Report > Resa dipendenti.");
+    }
+
+    const agendaFilter = parseAgendaFilter(message);
+    if (agendaFilter) {
+      return buildAction("Filtro l’agenda sul periodo richiesto.", "filter_appointments", agendaFilter);
+    }
+
+    if (/(apri dashboard|torna dashboard|home)/.test(normalized)) return buildAction("Apro la dashboard.", "open_dashboard", {});
+    if (/(apri agenda|vai agenda|portami agenda|agenda|appuntamenti)/.test(normalized)) return buildAction("Apro l’agenda.", "open_agenda", {});
+    if (/(apri clienti|vai clienti|scheda clienti|crm)/.test(normalized)) return buildAction("Apro i clienti.", "open_clients", {});
+    if (/(apri magazzino|magazzino|stock|inventario)/.test(normalized)) {
+      return context.settings.inventoryBaseEnabled
+        ? buildAction("Apro il magazzino.", "open_inventory", {})
+        : buildBlocked("Il modulo magazzino non è attivo in questo centro.", "open_settings", { section: "inventory" });
+    }
+    if (/(apri report|vai report|report business|reportistica)/.test(normalized)) return buildAction("Apro i report.", "open_reports", {});
+    if (/(apri turni|turni|presenze)/.test(normalized)) return buildAction("Apro turni e presenze.", normalized.includes("presenze") ? "open_attendance" : "open_turns", {});
+    if (/(apri redditivita|redditivita|margini|profitto)/.test(normalized)) {
+      return context.settings.profitabilityEnabled
+        ? buildAction("Apro il controllo redditività.", "open_profitability", {})
+        : buildBlocked("La redditività non è attiva. Ti apro le impostazioni del modulo.", "open_settings", { section: "profitability" });
+    }
+    if (/(apri protocolli|protocolli)/.test(normalized)) {
+      return context.settings.enableProtocolsHub
+        ? buildAction("Apro i protocolli.", "open_protocols", {})
+        : buildBlocked("L’hub protocolli non è attivo. Ti porto in Impostazioni.", "open_settings", { section: "protocols" });
+    }
+    if (/(apri training|training|formazione)/.test(normalized)) {
+      return context.settings.enableTrainingHub
+        ? buildAction("Apro l’area training.", "open_training", {})
+        : buildBlocked("L’area training non è attiva. Ti porto in Impostazioni.", "open_settings", { section: "training" });
+    }
+    if (/(apri impostazioni|impostazioni|settings)/.test(normalized)) return buildAction("Apro le impostazioni.", "open_settings", {});
+
+    if (/(aiuto|help|cosa puoi fare|suggerisci|consiglio)/.test(normalized)) {
+      if (context.dashboard.todayAppointments === 0) {
+        return buildAnswer("Agenda vuota oggi. Ti conviene lavorare su recall o clienti inattivi. Posso aprire agenda, clienti, report, turni, magazzino o guidarti su un nuovo cliente.");
+      }
+      return buildAnswer("Posso spiegarti come usare il gestionale, aprire davvero le schermate principali, cercare clienti e creare un cliente base con conferma finale.");
+    }
+
+    return buildAnswer("Posso spiegarti un flusso, aprire davvero agenda, clienti, turni, report, magazzino e redditività, oppure preparare un nuovo cliente base con conferma.");
+  }
+
+  sanitizeResponse(candidate, context, fallback) {
+    const safe = {
+      mode: ["answer", "action", "blocked_action"].includes(candidate?.mode) ? candidate.mode : fallback.mode,
+      message: typeof candidate?.message === "string" && candidate.message.trim() ? candidate.message.trim() : fallback.message,
+      action: typeof candidate?.action === "string" ? candidate.action : null,
+      payload: candidate?.payload && typeof candidate.payload === "object" ? candidate.payload : {},
+      requiresConfirmation: Boolean(candidate?.requiresConfirmation)
+    };
+
+    if (safe.action && !ACTIONS.includes(safe.action)) {
+      return fallback;
+    }
+
+    if (safe.action && !canUseAction(context.userRole, safe.action)) {
+      return buildBlocked(
+        "Questa azione non è consentita per il tuo ruolo. Ti apro solo la schermata corretta quando disponibile e ti guido nei passaggi.",
+        ACTION_PERMISSIONS[safe.action] === "UI_NAVIGATION" ? safe.action : null,
+        safe.payload
+      );
+    }
+
+    if (safe.action === "create_note" || safe.action === "create_task") {
+      return buildBlocked(
+        "Questa azione non è ancora disponibile come salvataggio diretto. Posso aprire la schermata corretta e guidarti, ma non la eseguo in automatico.",
+        safe.action === "create_note" ? "open_client_form" : "open_dashboard",
+        safe.payload
+      );
+    }
+
+    return safe;
+  }
+
+  async chat(payload = {}, session = null) {
+    const message = String(payload.message || "").trim();
+    const context = this.buildContext(payload, session);
+    const localDecision = this.buildLocalDecision(message, context);
+    const apiKey = process.env.OPENAI_API_KEY;
+    const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+
+    if (!apiKey) {
+      return { ...localDecision, provider: "fallback" };
+    }
+
+    const instructions = [
+      "Sei SkinHarmony AI Assistant, assistente operativo reale del gestionale.",
+      "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
+      "Non promettere azioni non eseguibili.",
+      `Puoi usare solo queste azioni: ${ACTIONS.join(", ")}.`,
+      "Le azioni sensibili non si eseguono: usa blocked_action e guida l’utente.",
+      "Se la richiesta è una domanda, usa mode=answer.",
+      "Se l’azione è consentita e chiara, usa mode=action.",
+      "Per create_client richiedi conferma finale quando nome e telefono sono completi.",
+      "Non inventare dati che non sono nel contesto."
+    ].join("\n");
+
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          input: [
+            { role: "system", content: [{ type: "input_text", text: instructions }] },
+            { role: "user", content: [{ type: "input_text", text: JSON.stringify({ message, context }) }] }
+          ],
+          text: {
+            format: {
+              type: "json_schema",
+              name: "skinharmony_assistant_response",
+              strict: true,
+              schema: RESPONSE_SCHEMA
+            }
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`OpenAI HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      const raw = data?.output_text || data?.output?.[0]?.content?.[0]?.text || "{}";
+      const parsed = JSON.parse(raw);
+      return {
+        ...this.sanitizeResponse(parsed, context, localDecision),
+        provider: "openai"
+      };
+    } catch {
+      return { ...localDecision, provider: "fallback" };
+    }
+  }
+}
+
+module.exports = {
+  AssistantService
+};
