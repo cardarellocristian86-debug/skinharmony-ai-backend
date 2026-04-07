@@ -1,9 +1,11 @@
 const express = require("express");
 const path = require("path");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
+const { AssistantService } = require("./src/AssistantService");
 
 const app = express();
 const service = new DesktopMirrorService();
+const assistantService = new AssistantService(service);
 const publicDir = path.resolve(__dirname, "public");
 
 function readToken(req) {
@@ -73,19 +75,62 @@ app.use("/api", (req, res, next) => {
 });
 
 app.get("/api/dashboard/stats", (req, res) => {
-  res.json(service.getDashboardStats(req.session));
+  res.json(service.getDashboardStats({
+    period: req.query.period || "day",
+    anchorDate: req.query.anchorDate || new Date().toISOString()
+  }, req.session));
+});
+
+app.post("/api/assistant/chat", async (req, res) => {
+  try {
+    res.json(await assistantService.chat(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile usare l'assistente");
+  }
 });
 
 app.get("/api/reports/operational", (req, res) => {
-  res.json(service.getOperationalReport(req.query.period || "day", req.session));
+  res.json(service.getOperationalReport({
+    period: req.query.period || "day",
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.session));
 });
 
 app.get("/api/reports/export", (req, res) => {
-  res.json(service.exportOperationalReport(req.query.period || "day", req.query.format || "pdf", req.session));
+  res.json(service.exportOperationalReport({
+    period: req.query.period || "day",
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.query.format || "pdf", req.session));
 });
 
 app.get("/api/reports/open-exports", (_req, res) => {
   res.json(service.openExportsFolder());
+});
+
+app.get("/api/reports/operator/:id", (req, res) => {
+  try {
+    res.json(service.getOperatorReport(req.params.id, {
+      period: req.query.period || "month",
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session));
+  } catch (error) {
+    res.status(404).send(error instanceof Error ? error.message : "Report operatore non disponibile");
+  }
+});
+
+app.get("/api/reports/operator/:id/export", (req, res) => {
+  try {
+    res.json(service.exportOperatorReport(req.params.id, {
+      period: req.query.period || "month",
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare il report operatore");
+  }
 });
 
 app.get("/api/clients", (req, res) => {
@@ -230,6 +275,45 @@ app.put("/api/catalog/resources/:id", (req, res) => {
 
 app.delete("/api/catalog/resources/:id", (req, res) => {
   res.json(service.deleteResource(req.params.id, req.session));
+});
+
+app.get("/api/inventory/items", (req, res) => {
+  res.json(service.listInventoryItems(req.session));
+});
+
+app.post("/api/inventory/items", (req, res) => {
+  res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
+});
+
+app.put("/api/inventory/items/:id", (req, res) => {
+  res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
+});
+
+app.delete("/api/inventory/items/:id", (req, res) => {
+  res.json(service.deleteInventoryItem(req.params.id, req.session));
+});
+
+app.get("/api/inventory/movements", (req, res) => {
+  res.json(service.listInventoryMovements(String(req.query.itemId || ""), req.session));
+});
+
+app.post("/api/inventory/movements", (req, res) => {
+  try {
+    res.status(201).json(service.createInventoryMovement(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile registrare il movimento");
+  }
+});
+
+app.get("/api/inventory/overview", (req, res) => {
+  res.json(service.getInventoryOverview(req.session));
+});
+
+app.get("/api/profitability/overview", (req, res) => {
+  res.json(service.getProfitabilityOverview({
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.session));
 });
 
 app.get("/api/treatments", (req, res) => {
