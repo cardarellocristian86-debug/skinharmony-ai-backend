@@ -42,7 +42,7 @@ app.get("/health", (_req, res) => {
 
 app.post("/api/auth/login", (req, res) => {
   try {
-    res.json(service.login(req.body || {}));
+    res.json({ success: true, ...service.login(req.body || {}) });
   } catch (error) {
     res.status(401).send(error instanceof Error ? error.message : "Credenziali non valide");
   }
