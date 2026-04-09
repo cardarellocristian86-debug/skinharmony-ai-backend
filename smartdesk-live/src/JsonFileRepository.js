@@ -1,9 +1,11 @@
 const fs = require("fs");
 
 class JsonFileRepository {
-  constructor(filePath, defaultValue = []) {
+  constructor(filePath, defaultValue = [], options = {}) {
     this.filePath = filePath;
     this.defaultValue = defaultValue;
+    this.adapter = options.adapter || null;
+    this.collectionName = options.collectionName || null;
   }
 
   ensureFile() {
@@ -19,6 +21,9 @@ class JsonFileRepository {
 
   write(items) {
     fs.writeFileSync(this.filePath, JSON.stringify(items, null, 2));
+    if (this.adapter && this.collectionName) {
+      void this.adapter.enqueueWrite(this.collectionName, items);
+    }
   }
 
   findById(id) {

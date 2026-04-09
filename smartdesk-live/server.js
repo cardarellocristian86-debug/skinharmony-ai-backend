@@ -2,10 +2,11 @@ const express = require("express");
 const path = require("path");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
+const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter");
 
 const app = express();
-const service = new DesktopMirrorService();
-const assistantService = new AssistantService(service);
+let service = null;
+let assistantService = null;
 const publicDir = path.resolve(__dirname, "public");
 
 function readToken(req) {
@@ -77,7 +78,7 @@ app.use("/api", (req, res, next) => {
 app.get("/api/dashboard/stats", (req, res) => {
   res.json(service.getDashboardStats({
     period: req.query.period || "day",
-    anchorDate: req.query.anchorDate || new Date().toISOString()
+    anchorDate: req.query.anchorDate || New Date().toISOString()
   }, req.session));
 });
 
@@ -349,6 +350,23 @@ app.use((_req, res) => {
 });
 
 const port = Number(process.env.PORT || 10000);
-app.listen(port, () => {
-  console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
+
+async function bootstrap() {
+  const persistenceAdapter = process.env.DATABASE_URL
+    ? new PostgresPersistenceAdapter(process.env.DATABASE_URL)
+    : null;
+
+  service = new DesktopMirrorService({ persistenceAdapter });
+  await service.init();
+  assistantService = new AssistantService(service);
+
+  app.listen(port, () => {
+    console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
+    console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
+  });
+}
+
+bootstrap().catch((error) => {
+  console.error("[SmartDesk] Avvio fallito:", error);
+  process.exit(1);
 });
