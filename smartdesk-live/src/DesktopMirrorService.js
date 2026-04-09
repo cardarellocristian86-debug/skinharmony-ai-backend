@@ -5,28 +5,15 @@ const { JsonFileRepository } = require("./JsonFileRepository");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
-const DEFAULT_ADMIN_USERNAME = "admin";
-const DEFAULT_ADMIN_PASSWORD = "admin1234";
+
 const DEFAULT_CENTER_ID = "center_admin";
 const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
-const DEFAULT_STAFF_PRESET = [
-  { name: "Operatore 1", colorTag: "#6db7ff" },
-  { name: "Operatore 2", colorTag: "#8fd9c8" },
-  { name: "Responsabile", colorTag: "#d7b3ff" }
-];
+const DEFAULT_ADMIN_USERNAME = "admin";
+const DEFAULT_ADMIN_PASSWORD = "admin1234";
 
 const defaultSettings = {
-  centerName: "Ecosistema Center",
+  centerName: DEFAULT_CENTER_NAME,
   centerType: "Advanced Aesthetic Systems",
-  centerLegalName: "",
-  centerVatNumber: "",
-  centerTaxCode: "",
-  centerEmail: "",
-  centerPhone: "",
-  centerAddress: "",
-  centerCity: "",
-  centerProvince: "",
-  centerPostalCode: "",
   businessModel: "esthetic",
   agendaStartHour: "08:00",
   agendaEndHour: "20:00",
@@ -41,20 +28,8 @@ const defaultSettings = {
   enableProtocolsHub: true,
   enableTrainingHub: true,
   enableMultiLocation: false,
-  moduleSkinPro: false,
-  moduleO3System: false,
-  moduleTermosauna: false,
-  moduleExternalTech: true,
   aiMode: "local",
   aiActionsEnabled: true,
-  backupFrequency: "Ogni 6 ore",
-  syncEnabled: false,
-  membershipEnabled: true,
-  shiftsBaseEnabled: true,
-  shiftsTemplatesEnabled: true,
-  shiftsClockEnabled: true,
-  shiftsReportsEnabled: true,
-  shiftsFlexEnabled: false,
   inventoryBaseEnabled: true,
   inventoryMovementsEnabled: true,
   inventoryAlertsEnabled: true,
@@ -69,6 +44,7 @@ const defaultSettings = {
   operatorPerformanceBonusEnabled: true,
   operatorRetentionBonusEnabled: true,
   operatorBenefitsEnabled: true,
+  membershipEnabled: true,
   membershipPearlThresholdCents: 30000,
   membershipSilverThresholdCents: 70000,
   membershipGoldThresholdCents: 120000,
@@ -77,38 +53,26 @@ const defaultSettings = {
   membershipGoldDiscountPercent: 15
 };
 
+const DEFAULT_STAFF = [
+  { id: "staff_1", name: "Operatore 1", colorTag: "#6db7ff", role: "Operatore", active: 1 },
+  { id: "staff_2", name: "Operatore 2", colorTag: "#8fd9c8", role: "Operatore", active: 1 },
+  { id: "staff_3", name: "Responsabile", colorTag: "#d7b3ff", role: "Responsabile", active: 1 }
+];
+
 function ensureDir(directoryPath) {
   fs.mkdirSync(directoryPath, { recursive: true });
 }
 
-function sanitizeFileName(value) {
-  return String(value || "file")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase() || "file";
-}
-
-function splitName(name = "") {
-  const parts = String(name).trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return { firstName: "", lastName: "" };
-  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+function nowIso() {
+  return new Date().toISOString();
 }
 
 function toDateOnly(value) {
-  if (!value) {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  }
-  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return value;
-  }
+  if (!value) return nowIso().slice(0, 10);
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return String(value).slice(0, 10);
-  }
-  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+  if (Number.isNaN(parsed.getTime())) return nowIso().slice(0, 10);
+  return parsed.toISOString().slice(0, 10);
 }
 
 function toDateTime(date, time) {
@@ -117,9 +81,7 @@ function toDateTime(date, time) {
 
 function toTimeOnly(value) {
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return "09:00";
-  }
+  if (Number.isNaN(parsed.getTime())) return "09:00";
   return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
 }
 
@@ -133,159 +95,21 @@ function euro(cents) {
   return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
 }
 
-function rangeForView(view, anchorDate) {
-  const anchor = new Date(anchorDate || new Date().toISOString());
-  const base = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
-  if (view === "week") {
-    const day = base.getDay();
-    const diffToMonday = (day + 6) % 7;
-    const start = new Date(base);
-    start.setDate(base.getDate() - diffToMonday);
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    return { start: toDateOnly(start), end: toDateOnlx(end) };
-  }
-  if (view === "month") {
-    const start = new Date(base.getFullYear(), base.getMonth(), 1);
-    const end = new Date(base.getFullYear(), base.getMonth() + 1, 0);
-    return { start: toDateOnlx(start), end: toDateOnlx(end) };
-  }
-  return { start: toDateOnly(base), end: toDateOnly(base) };
+function sanitizeFileName(value) {
+  return String(value || "file")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase() || "file";
 }
 
-function resolveDashboardRange(options = {}) {
-  const period = typeof options === "object" ? String(options.period || "day") : "day";
-  const anchorDate = typeof options === "object" ? options.anchorDate : undefined;
-  return { period, ...rangeForView(period, anchorDate || new Date().toISOString()) };
-}
-
-function resolveReportRange(options = {}) {
-  const period = typeof options === "string" ? options : String(options.period || "day");
-  const customStart = typeof options === "object" ? String(options.startDate || "") : "";
-  const customEnd = typeof options === "object" ? String(options.endDate || "") : "";
-  if (customStart && customEnd) {
-    return {
-      period,
-      start: customStart,
-      end: customEnd,
-      label: `${new Date(customStart).toLocaleDateString("it-IT")} - ${new Date(customEnd).toLocaleDateString("it-IT")}`
-    };
-  }
-  const now = new Date();
-  let start = new Date(now);
-  if (period === "week") {
-    start.setDate(now.getDate() - 7);
-  } else if (period === "month") {
-    start.setMonth(now.getMonth() - 1);
-  } else {
-    start.setHours(0, 0, 0, 0);
-  }
+function splitName(name = "") {
+  const parts = String(name).trim().split(/\s+/).filter(Boolean);
   return {
-    period,
-    start: toDateOnlx(start),
-    end: toDateOnly(now),
-    label: period === "day" ? "Oggi" : period === "week" ? "Ultimi 7 giorni" : "Ultimi 30 giorni"
+    firstName: parts[0] || "",
+    lastName: parts.slice(1).join(" ")
   };
-}
-
-function shiftDate(dateValue, days) {
-  const base = new Date(`${toDateOnlx(dateValue)}T00:00:00`);
-  base.setDate(base.getDate() + Number(days || 0));
-  return toDateOnlx(base);
-}
-
-function daysBetweenInclusive(start, end) {
-  const startDate = new Date(`${toDateOnly(start)}T00:00:00`);
-  const endDate = new Date(`${toDateOnly(end)}T00:00:00`);
-  return Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1);
-}
-
-function timeBandFromDate(dateValue) {
-  const hour = new Date(dateValue).getHours();
-  if (hour < 12) return "Mattina";
-  if (hour < 15) return "Pranzo";
-  if (hour < 18) return "Pomeriggio";
-  return "Sera";
-}
-
-function minutesBetween(startTime, endTime) {
-  const [startHour = "0", startMinute = "0"] = String(startTime || "").split(":");
-  const [endHour = "0", endMinute = "0"] = String(endTime || "").split(":");
-  return (Number(endHour) * 60 + Number(endMinute)) - (Number(startHour) * 60 + Number(startMinute));
-}
-
-function formatMinutes(totalMinutes) {
-  const safe = Math.max(0, Number(totalMinutes || 0));
-  const hours = Math.floor(safe / 60);
-  const minutes = safe % 60;
-  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-}
-
-function effectiveStartTime(item) {
-  return item.rectifiedStartTime || item.originalStartTime || "";
-}
-
-function clockEndTime(item) {
-  return item.rectifiedEndTime || item.originalEndTime || "";
-}
-
-function plannedMinutes(item) {
-  return Math.max(0, minutesBetween(item.startTime, item.endTime));
-}
-
-function workedMinutes(item) {
-  const start = clockStartTime(item);
-  const end = clockEndTime(item);
-  if (!start || !end) return 0;
-  return Math.max(0, minutesBetween(start, end));
-}
-
-function dailyBalanceMinutes(item) {
-  const planned = plannedMinutes(item);
-  const worked = workedMinutes(item);
-  const todayKey = toDateOnly(new Date());
-  const hasClockStart = Boolean(clockStartTime(item));
-  const hasClockEnd = Boolean(clockEndTime(item));
-  if ((item.attendanceStatus === "absent" || (!hasClockStart && item.date < todayKey)) && item.date <= todayKey) {
-    return -planned;
-  }
-  if (hasClockStart && hasClockEnd) {
-    return worked - planned;
-  }
-  return 0;
-}
-
-function derivedAttendanceLabel(item) {
-  const todayKey = toDateOnly(new Date());
-  const hasClockStart = Boolean(clockStartTime(item));
-  const hasClockEnd = Boolean(clockEndTime(item));
-  if (item.attendanceStatus === "absent" || (!hasClockStart && item.date < todayKey)) return "Assente";
-  if (hasClockStart && !hasClockEnd) return "Entrato";
-  const balance = dailyBalanceMinutes(item);
-  if (hasClockStart && hasClockEnd) {
-    if (balance > 0) return "Straordinario";
-    if (balance < 0) return "Debito ore";
-    return "Regolare";
-  }
-  return "Da timbrare";
-}
-
-function formatSignedMinutes(totalMinutes) {
-  if (!totalMinutes) return "0h 00m";
-  const sign = totalMinutes > 0 ? "+" : "-";
-  return `${sign}${formatMinutes(Math.abs(totalMinutes))}`;
-}
-
-function normalizeWeek(days) {
-  return Array.from({ length: 7 }, (_, weekday) => {
-    const current = Array.isArray(days) ? days.find((item) => Number(item.weekday) === weekday) : null;
-    return {
-      weekday,
-      enabled: Boolean(current?.enabled),
-      startTime: current?.startTime || "09:00",
-      endTime: current?.endTime || "18:00"
-    };
-  });
 }
 
 function escapeHtml(value) {
@@ -314,25 +138,16 @@ function verifyPassword(password, passwordHash) {
   return crypto.timingSafeEqual(left, right);
 }
 
-function resolveMembership(totalSpentCents, settings) {
-  if (!settings.membershipEnabled) {
-    return null;
-  }
-  if (totalSpentCents >= Number(settings.membershipGoldThresholdCents || 0)) {
-    return { level: "Gold", discountPercent: Number(settings.membershipGoldDiscountPercent || 0) };
-  }
-  if (totalSpentCents >= Number(settings.membershipSilverThresholdCents || 0)) {
-    return { level: "Silver", discountPercent: Number(settings.membershipSilverDiscountPercent || 0) };
-  }
-  if (totalSpentCents >= Number(settings.membershipPearlThresholdCents || 0)) {
-    return { level: "Pearl", discountPercent: Number(settings.membershipPearlDiscountPercent || 0) };
-  }
-  return null;
+function makeId(prefix) {
+  return `${prefix}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 }
 
 class DesktopMirrorService {
   constructor(options = {}) {
     this.persistenceAdapter = options.persistenceAdapter || null;
+    ensureDir(DATA_DIR);
+    ensureDir(EXPORTS_DIR);
+
     this.clientsRepository = this.createRepository("clients", []);
     this.appointmentsRepository = this.createRepository("appointments", []);
     this.servicesRepository = this.createRepository("services", []);
@@ -342,16 +157,12 @@ class DesktopMirrorService {
     this.resourcesRepository = this.createRepository("resources", []);
     this.inventoryRepository = this.createRepository("inventory", []);
     this.inventoryMovementsRepository = this.createRepository("inventory_movements", []);
-    this.profitabilityExecutionsRepository = this.createRepository("profitability_executions", []);
-    this.operatorIncentiveRulesRepository = this.createRepository("operator_incentive_rules", []);
-    this.operatorIncentiveResultsRepository = this.createRepository("operator_incentive_results", []);
     this.paymentsRepository = this.createRepository("payments", []);
     this.treatmentsRepository = this.createRepository("treatments", []);
     this.usersRepository = this.createRepository("users", []);
-    this.settingsRepository = this.createRepository("settings", defaultSettings);
-    this.centerSettingsRepository = this.createRepository("settings_by_center", []);
-    this.centerRepository = this.createRepository("center", {});
     this.salesRepository = this.createRepository("sales", []);
+    this.settingsRepository = this.createRepository("settings", defaultSettings);
+
     this.sessions = new Map();
   }
 
@@ -375,137 +186,582 @@ class DesktopMirrorService {
         { name: "resources", filePath: path.join(DATA_DIR, "resources.json"), defaultValue: [] },
         { name: "inventory", filePath: path.join(DATA_DIR, "inventory.json"), defaultValue: [] },
         { name: "inventory_movements", filePath: path.join(DATA_DIR, "inventory_movements.json"), defaultValue: [] },
-        { name: "profitability_executions", filePath: path.join(DATA_DIR, "profitability_executions.json"), defaultValue: [] },
-        { name: "operator_incentive_rules", filePath: path.join(DATA_DIR, "operator_incentive_rules.json"), defaultValue: [] },
-        { name: "operator_incentive_results", filePath: path.join(DATA_DIR, "operator_incentive_results.json"), defaultValue: [] },
         { name: "payments", filePath: path.join(DATA_DIR, "payments.json"), defaultValue: [] },
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
-        { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings },
-        { name: "settings_by_center", filePath: path.join(DATA_DIR, "settings_by_center.json"), defaultValue: [] },
-        { name: "center", filePath: path.join(DATA_DIR, "center.json"), defaultValue: {} },
-        { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] }
+        { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
+        { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
       ]);
     }
+
     this.ensureInitialAdmin();
+    this.ensureDefaultStaff();
   }
 
   ensureInitialAdmin() {
     const users = this.usersRepository.list();
-    const existingAdmin = users.find((user) => String(user.username || "").trim().toLowerCase() === DEFAULT_ADMIN_USERNAME);
-    if (!existingAdmin) {
+    const admin = users.find((item) => String(item.username || "").toLowerCase() === DEFAULT_ADMIN_USERNAME);
+    if (!admin) {
       this.usersRepository.create({
-        id: crypto.randomUUID(),
+        id: makeId("user"),
         username: DEFAULT_ADMIN_USERNAME,
         passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
         role: "superadmin",
         active: true,
         centerId: DEFAULT_CENTER_ID,
         centerName: DEFAULT_CENTER_NAME,
-        createdAt: new Date().toISOString()
+        createdAt: nowIso()
       });
-    } else if (existingAdmin.role !== "superadmin" || !existingAdmin.centerId || !existingAdmin.centerName) {
-      this.usersRepository.update(existingAdmin.id, (user) => ({
-        ...user,
-        role: "superadmin",
-        centerId: user.centerId || DEFAULT_CENTER_ID,
-        centerName: user.centerName || DEFAULT_CENTER_NAME
-      }));
     }
-    this.ensureCenterSettings(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
-    this.seedDefaultStaffForCenter(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
   }
 
-  getCenterId(session) {
-    return session?.centerId || DEFAULT_CENTER_ID;
-  }
-
-  getCenterName(session) {
-    return session?.centerName || DEFAULT_CENTER_NAME;
-  }
-
-  isInCenter(item, centerId) {
-    return (item?.centerId || DEFAULT_CENTER_ID) === centerId;
-  }
-
-  filterByCenter(items, session) {
-    const centerId = this.getCenterId(session);
-    return items.filter((item) => this.isInCenter(item, centerId));
-  }
-
-  attachCenter(item, session) {
-    return {
-      ...item,
-      centerId: item.centerId || this.getCenterId(session)
-    };
-  }
-
-  findByIdInCenter(repository, id, session) {
-    const found = repository.findById(id);
-    if (!found) return null;
-    return this.isInCenter(found, this.getCenterId(session)) ? found : null;
-  }
-
-  ensureCenterSettings(centerId, centerName) {
-    const items = this.centerSettingsRepository.list();
-    const existing = items.find((item) => item.centerId === centerId);
-    if (existing) {
-      if (existing.id !== centerId) {
-        this.centerSettingsRepository.write(items.map((item) => item.centerId === centerId ? { ...item, id: centerId, staffSeeded: item.staffSeeded === true } : item));
-      }
-      return;
-    }
-    this.centerSettingsRepository.create({
-      id: centerId,
-      centerId,
-      centerName,
-      staffSeeded: false,
-      settings: { ...defaultSettings, centerName }
+  ensureDefaultStaff() {
+    const staff = this.staffRepository.list();
+    if (staff.length) return;
+    DEFAULT_STAFF.forEach((item) => {
+      this.staffRepository.create({
+        ...item,
+        centerId: DEFAULT_CENTER_ID,
+        createdAt: nowIso(),
+        updatedAt: nowIso()
+      });
     });
   }
 
-  getCenterSettingsRecord(session) {
-    const centerId = this.getCenterId(session);
-    const centerName = this.getCenterName(session);
-    this.ensureCenterSettings(centerId, centerName);
-    const items = this.centerSettingsRepository.list();
-    return items.find((item) => item.centerId === centerId) || {
-      id: centerId,
-      centerId,
-      centerName,
-      staffSeeded: false,
-      settings: { ...defaultSettings, centerName }
+  getSettings() {
+    const current = this.settingsRepository.list();
+    if (Array.isArray(current)) return { ...defaultSettings };
+    return { ...defaultSettings, ...current };
+  }
+
+  saveSettings(payload = {}) {
+    const next = { ...this.getSettings(), ...payload, updatedAt: nowIso() };
+    this.settingsRepository.write(next);
+    return next;
+  }
+
+  resetSettings() {
+    const next = { ...defaultSettings, updatedAt: nowIso() };
+    this.settingsRepository.write(next);
+    return next;
+  }
+
+  createSession(user) {
+    const token = crypto.randomUUID();
+    const session = {
+      token,
+      userId: user.id,
+      username: user.username,
+      role: user.role || "superadmin",
+      centerId: user.centerId || DEFAULT_CENTER_ID,
+      centerName: user.centerName || DEFAULT_CENTER_NAME,
+      createdAt: nowIso()
+    };
+    this.sessions.set(token, session);
+    return session;
+  }
+
+  login(payload = {}) {
+    const username = String(payload.username || payload.email || "").trim().toLowerCase();
+    const password = String(payload.password || "");
+    const user = this.usersRepository.list().find((item) => String(item.username || "").toLowerCase() === username);
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      throw new Error("Credenziali non valide");
+    }
+    return this.createSession(user);
+  }
+
+  getSession(token) {
+    return this.sessions.get(String(token || "")) || null;
+  }
+
+  logout(token) {
+    this.sessions.delete(String(token || ""));
+    return { success: true };
+  }
+
+  listAccessUsers() {
+    return this.usersRepository.list().map((item) => ({
+      id: item.id,
+      username: item.username,
+      role: item.role,
+      active: item.active,
+      centerId: item.centerId || DEFAULT_CENTER_ID,
+      centerName: item.centerName || DEFAULT_CENTER_NAME,
+      createdAt: item.createdAt || nowIso()
+    }));
+  }
+
+  createAccessUser(payload = {}) {
+    const username = String(payload.username || "").trim().toLowerCase();
+    if (!username) throw new Error("Username obbligatorio");
+    if (this.usersRepository.list().some((item) => String(item.username || "").toLowerCase() === username)) {
+      throw new Error("Utente già presente");
+    }
+    const user = {
+      id: makeId("user"),
+      username,
+      passwordHash: hashPassword(String(payload.password || "changeme123")),
+      role: String(payload.role || "staff"),
+      active: payload.active !== false,
+      centerId: DEFAULT_CENTER_ID,
+      centerName: DEFAULT_CENTER_NAME,
+      createdAt: nowIso()
+    };
+    this.usersRepository.create(user);
+    return this.listAccessUsers().find((item) => item.id === user.id);
+  }
+
+  listClients(search = "") {
+    const query = String(search || "").trim().toLowerCase();
+    const clients = this.clientsRepository.list();
+    if (!query) return clients;
+    return clients.filter((item) =>
+      [item.name, item.phone, item.email].some((value) => String(value || "").toLowerCase().includes(query))
+    );
+  }
+
+  saveClient(payload = {}) {
+    const firstName = String(payload.firstName || "").trim();
+    const lastName = String(payload.lastName || "").trim();
+    const fullName = String(payload.name || `${firstName} ${lastName}`.trim() || payload.fullName || "Nuovo cliente");
+    const now = nowIso();
+    const entity = {
+      id: payload.id || makeId("client"),
+      name: fullName,
+      phone: String(payload.phone || ""),
+      email: String(payload.email || ""),
+      birthDate: String(payload.birthDate || ""),
+      notes: String(payload.notes || ""),
+      allergies: String(payload.allergies || ""),
+      preferences: Array.isArray(payload.preferences)
+        ? payload.preferences
+        : String(payload.preferences || "").split(",").map((item) => item.trim()).filter(Boolean),
+      packages: Array.isArray(payload.packages)
+        ? payload.packages
+        : String(payload.packages || "").split(",").map((item) => item.trim()).filter(Boolean),
+      privacyConsent: Boolean(payload.privacyConsent),
+      marketingConsent: Boolean(payload.marketingConsent),
+      sensitiveDataConsent: Boolean(payload.sensitiveDataConsent),
+      consentSource: String(payload.consentSource || "in_sede"),
+      totalValue: Number(payload.totalValue || 0),
+      loyaltyTier: String(payload.loyaltyTier || "base"),
+      lastVisit: String(payload.lastVisit || ""),
+      createdAt: payload.createdAt || now,
+      updatedAt: now
+    };
+
+    if (!payload.id) {
+      this.clientsRepository.create(entity);
+      return entity;
+    }
+
+    return this.clientsRepository.update(payload.id, (current) => ({
+      ...current,
+      ...entity,
+      createdAt: current.createdAt || entity.createdAt
+    }));
+  }
+
+  getClientDetail(clientId) {
+    const client = this.clientsRepository.findById(clientId);
+    if (!client) throw new Error("Cliente non trovato");
+    const appointments = this.appointmentsRepository.list().filter((item) => item.clientId === clientId);
+    const payments = this.paymentsRepository.list().filter((item) => item.clientId === clientId);
+    const treatments = this.treatmentsRepository.list().filter((item) => item.clientId === clientId);
+    return {
+      client,
+      appointments,
+      payments,
+      treatments
     };
   }
 
-  seedDefaultStaffForCenter(centerId, centerName) {
-    this.ensureCenterSettings(centerId, centerName);
-    const record = this.centerSettingsRepository.list().find((item) => item.centerId === centerId);
-    if (record?.staffSeeded) return;
+  getClientConsultation(clientId) {
+    const detail = this.getClientDetail(clientId);
+    return {
+      client: detail.client,
+      history: detail.appointments.slice(0, 10),
+      recommendations: []
+    };
+  }
 
-    const hasStaffInCenter = this.staffRepository.list().some((item) => (item.centerId || DEFAULT_CENTER_ID) === centerId);
-    if (!hasStaffInCenter) {
-      DEFAULT_STAFF_PRESET.forEach((item, index) => {
-        this.staffRepository.create({
-          id: `${centerId}_staff_${index + 1}`,
-          centerId,
-          name: item.name,
-          colorTag: item.colorTag,
-          role: "",
-          shift: "",
-          targetProgress: 0,
-          active: 1,
-          createdAt: new Date().toISOString()
-        });
-      });
+  generateClientConsentDocument(clientId) {
+    const detail = this.getClientDetail(clientId);
+    ensureDir(EXPORTS_DIR);
+    const fileName = `consent-${sanitizeFileName(detail.client.name)}-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Consenso</title></head><body><h1>${escapeHtml(detail.client.name)}</h1><p>Documento consenso generato da Smart Desk.</p></body></html>`;
+    fs.writeFileSync(filePath, html);
+    return { path: filePath, url: `/exports/${fileName}` };
+  }
+
+  listAppointments(view = "day", anchorDate = nowIso()) {
+    const appointments = this.appointmentsRepository.list();
+    const day = toDateOnly(anchorDate);
+    if (view === "day") {
+      return appointments.filter((item) => toDateOnly(item.startAt) === day);
+    }
+    return appointments;
+  }
+
+  saveAppointment(payload = {}) {
+    const startAt = payload.startAt || toDateTime(payload.date, payload.time);
+    const durationMin = Number(payload.durationMin || payload.duration || 45);
+    const endAt = payload.endAt || addMinutes(startAt, durationMin);
+    const entity = {
+      id: payload.id || makeId("appt"),
+      clientId: String(payload.clientId || ""),
+      clientName: String(payload.clientName || payload.client || ""),
+      staffId: String(payload.staffId || ""),
+      staffName: String(payload.staffName || payload.operator || ""),
+      serviceId: String(payload.serviceId || ""),
+      serviceName: String(payload.serviceName || payload.service || ""),
+      resourceId: String(payload.resourceId || ""),
+      resourceName: String(payload.resourceName || payload.room || ""),
+      startAt,
+      endAt,
+      status: String(payload.status || "requested"),
+      notes: String(payload.notes || ""),
+      durationMin,
+      createdAt: payload.createdAt || nowIso(),
+      updatedAt: nowIso()
+    };
+
+    if (!payload.id) {
+      this.appointmentsRepository.create(entity);
+      return entity;
     }
 
-    this.centerSettingsRepository.update(centerId, (current) => ({
+    return this.appointmentsRepository.update(payload.id, (current) => ({
       ...current,
-      id: centerId,
-      centerId,
-      centerName: current.centerName || centerName,
-      staffSeeded: true
+      ...entity,
+      createdAt: current.createdAt || entity.createdAt
     }));
   }
-    
+
+  listServices() {
+    return this.servicesRepository.list();
+  }
+
+  saveService(payload = {}) {
+    const entity = {
+      id: payload.id || makeId("service"),
+      name: String(payload.name || "Nuovo servizio"),
+      category: String(payload.category || ""),
+      durationMin: Number(payload.durationMin || payload.duration || 45),
+      priceCents: Number(payload.priceCents || payload.price || 0),
+      active: payload.active !== false,
+      updatedAt: nowIso(),
+      createdAt: payload.createdAt || nowIso()
+    };
+    if (!payload.id) {
+      this.servicesRepository.create(entity);
+      return entity;
+    }
+    return this.servicesRepository.update(payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }));
+  }
+
+  deleteService(id) {
+    return { success: this.servicesRepository.delete(id) };
+  }
+
+  listStaff() {
+    return this.staffRepository.list();
+  }
+
+  saveStaff(payload = {}) {
+    const entity = {
+      id: payload.id || makeId("staff"),
+      name: String(payload.name || "Nuovo operatore"),
+      role: String(payload.role || ""),
+      colorTag: String(payload.colorTag || "#6db7ff"),
+      active: payload.active === false ? 0 : 1,
+      updatedAt: nowIso(),
+      createdAt: payload.createdAt || nowIso()
+    };
+    if (!payload.id) {
+      this.staffRepository.create(entity);
+      return entity;
+    }
+    return this.staffRepository.update(payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }));
+  }
+
+  deleteStaff(id) {
+    return { success: this.staffRepository.delete(id) };
+  }
+
+  listShifts() {
+    return this.shiftsRepository.list();
+  }
+
+  saveShift(payload = {}) {
+    const entity = {
+      id: payload.id || makeId("shift"),
+      staffId: String(payload.staffId || ""),
+      staffName: String(payload.staffName || ""),
+      date: toDateOnly(payload.date || payload.startDate || nowIso()),
+      startTime: String(payload.startTime || "09:00"),
+      endTime: String(payload.endTime || "18:00"),
+      attendanceStatus: String(payload.attendanceStatus || "scheduled"),
+      notes: String(payload.notes || ""),
+      updatedAt: nowIso(),
+      createdAt: payload.createdAt || nowIso()
+    };
+    if (!payload.id) {
+      this.shiftsRepository.create(entity);
+      return entity;
+    }
+    return this.shiftsRepository.update(payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }));
+  }
+
+  deleteShift(id) {
+    return { success: this.shiftsRepository.delete(id) };
+  }
+
+  exportShiftReport() {
+    ensureDir(EXPORTS_DIR);
+    const fileName = `shift-report-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    fs.writeFileSync(filePath, "<!doctype html><html><body><h1>Shift report</h1></body></html>");
+    return { path: filePath, url: `/exports/${fileName}` };
+  }
+
+  listShiftTemplates() {
+    return this.shiftTemplatesRepository.list();
+  }
+
+  saveShiftTemplate(payload = {}) {
+    const entity = {
+      id: payload.id || makeId("template"),
+      name: String(payload.name || "Nuovo template"),
+      week: Array.isArray(payload.week) ? payload.week : [],
+      updatedAt: nowIso(),
+      createdAt: payload.createdAt || nowIso()
+    };
+    if (!payload.id) {
+      this.shiftTemplatesRepository.create(entity);
+      return entity;
+    }
+    return this.shiftTemplatesRepository.update(payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }));
+  }
+
+  deleteShiftTemplate(id) {
+    return { success: this.shiftTemplatesRepository.delete(id) };
+  }
+
+  generateShiftTemplate(payload = {}) {
+    return {
+      generated: true,
+      templateId: payload.templateId || null,
+      range: { start: toDateOnly(payload.startDate || nowIso()), end: toDateOnly(payload.endDate || nowIso()) }
+    };
+  }
+
+  listResources() {
+    return this.resourcesRepository.list();
+  }
+
+  saveResource(payload = {}) {
+    const entity = {
+      id: payload.id || makeId("resource"),
+      name: String(payload.name || "Nuova risorsa"),
+      type: String(payload.type || "room"),
+      active: payload.active !== false,
+      updatedAt: nowIso(),
+      createdAt: payload.createdAt || nowIso()
+    };
+    if (!payload.id) {
+      this.resourcesRepository.create(entity);
+      return entity;
+    }
+    return this.resourcesRepository.update(payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }));
+  }
+
+  deleteResource(id) {
+    return { success: this.resourcesRepository.delete(id) };
+  }
+
+  listInventoryItems() {
+    return this.inventoryRepository.list();
+  }
+
+  saveInventoryItem(payload = {}) {
+    const entity = {
+      id: payload.id || makeId("inv"),
+      name: String(payload.name || "Nuovo articolo"),
+      sku: String(payload.sku || ""),
+      quantity: Number(payload.quantity || 0),
+      minQuantity: Number(payload.minQuantity || 0),
+      costCents: Number(payload.costCents || 0),
+      updatedAt: nowIso(),
+      createdAt: payload.createdAt || nowIso()
+    };
+    if (!payload.id) {
+      this.inventoryRepository.create(entity);
+      return entity;
+    }
+    return this.inventoryRepository.update(payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }));
+  }
+
+  deleteInventoryItem(id) {
+    return { success: this.inventoryRepository.delete(id) };
+  }
+
+  listInventoryMovements(itemId = "") {
+    return this.inventoryMovementsRepository.list().filter((item) => !itemId || item.itemId === itemId);
+  }
+
+  createInventoryMovement(payload = {}) {
+    const movement = {
+      id: makeId("move"),
+      itemId: String(payload.itemId || ""),
+      type: String(payload.type || "manual"),
+      quantity: Number(payload.quantity || 0),
+      note: String(payload.note || ""),
+      createdAt: nowIso()
+    };
+    this.inventoryMovementsRepository.create(movement);
+    if (movement.itemId) {
+      this.inventoryRepository.update(movement.itemId, (current) => ({
+        ...current,
+        quantity: Number(current.quantity || 0) + movement.quantity,
+        updatedAt: nowIso()
+      }));
+    }
+    return movement;
+  }
+
+  getInventoryOverview() {
+    const items = this.inventoryRepository.list();
+    return {
+      totalItems: items.length,
+      totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      lowStock: items.filter((item) => Number(item.quantity || 0) <= Number(item.minQuantity || 0))
+    };
+  }
+
+  listTreatments(clientId = "") {
+    return this.treatmentsRepository.list().filter((item) => !clientId || item.clientId === clientId);
+  }
+
+  createTreatment(payload = {}) {
+    const treatment = {
+      id: makeId("treat"),
+      clientId: String(payload.clientId || ""),
+      title: String(payload.title || "Trattamento"),
+      note: String(payload.note || ""),
+      createdAt: nowIso()
+    };
+    this.treatmentsRepository.create(treatment);
+    return treatment;
+  }
+
+  listPayments(clientId = "") {
+    return this.paymentsRepository.list().filter((item) => !clientId || item.clientId === clientId);
+  }
+
+  createPayment(payload = {}) {
+    const payment = {
+      id: makeId("pay"),
+      clientId: String(payload.clientId || ""),
+      amountCents: Number(payload.amountCents || payload.amount || 0),
+      method: String(payload.method || "cash"),
+      note: String(payload.note || ""),
+      createdAt: nowIso()
+    };
+    this.paymentsRepository.create(payment);
+    return payment;
+  }
+
+  getDashboardStats(options = {}) {
+    const today = toDateOnly(options.anchorDate || nowIso());
+    const appointments = this.appointmentsRepository.list();
+    const clients = this.clientsRepository.list();
+    const payments = this.paymentsRepository.list();
+    const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
+    const inactiveClientsCount = clients.filter((item) => !item.lastVisit).length;
+    const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    return {
+      todayAppointments: todayAppointments.length,
+      inactiveClientsCount,
+      completedAppointments: appointments.filter((item) => item.status === "completed").length,
+      revenueCents,
+      activeClientsCount: clients.length
+    };
+  }
+
+  getOperationalReport(options = {}) {
+    const appointments = this.appointmentsRepository.list();
+    const payments = this.paymentsRepository.list();
+    return {
+      periodLabel: String(options.period || "day"),
+      totals: {
+        appointments: appointments.length,
+        completedAppointments: appointments.filter((item) => item.status === "completed").length,
+        revenueCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0)
+      }
+    };
+  }
+
+  exportOperationalReport(options = {}, format = "pdf") {
+    ensureDir(EXPORTS_DIR);
+    const report = this.getOperationalReport(options);
+    const fileName = `operational-report-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    const html = `<!doctype html><html lang="it"><body><h1>Report operativo</h1><p>Appuntamenti: ${report.totals.appointments}</p><p>Completati: ${report.totals.completedAppointments}</p><p>Incasso: ${euro(report.totals.revenueCents)}</p></body></html>`;
+    fs.writeFileSync(filePath, html);
+    return { path: filePath, format, url: `/exports/${fileName}` };
+  }
+
+  getOperatorReport(operatorId, options = {}) {
+    const operator = this.staffRepository.findById(operatorId);
+    if (!operator) throw new Error("Operatore non trovato");
+    const appointments = this.appointmentsRepository.list().filter((item) => item.staffId === operatorId);
+    return {
+      operator,
+      periodLabel: String(options.period || "month"),
+      summary: {
+        completedAppointments: appointments.filter((item) => item.status === "completed").length,
+        revenueCents: 0,
+        averageTicketCents: 0,
+        uniqueClients: new Set(appointments.map((item) => item.clientId).filter(Boolean)).size
+      },
+      services: { top: [] },
+      clients: { total: appointments.length, newClients: 0, returningClients: 0, inactiveClients: 0 },
+      activity: { daysWorked: 0, averageAppointmentsPerDay: 0, topTimeBand: "N/D", lowTimeBand: "N/D" },
+      incentives: [],
+      trend: { state: "stable", note: "Nessun confronto disponibile" },
+      summaryText: "Report sintetico operatore"
+    };
+  }
+
+  exportOperatorReport(operatorId, options = {}) {
+    ensureDir(EXPORTS_DIR);
+    const report = this.getOperatorReport(operatorId, options);
+    const fileName = `operator-report-${sanitizeFileName(report.operator.name)}-${Date.now()}.html`;
+    const filePath = path.join(EXPORTS_DIR, fileName);
+    fs.writeFileSync(filePath, "<!doctype html><html><body><h1>Report operatore</h1></body></html>");
+    return { path: filePath, format: "html", url: `/exports/${fileName}` };
+  }
+
+  openExportsFolder() {
+    ensureDir(EXPORTS_DIR);
+    const entries = fs.readdirSync(EXPORTS_DIR).sort().reverse();
+    return { success: true, url: entries[0] ? `/exports/${entries[0]}` : null };
+  }
+
+  getProfitabilityOverview() {
+    const payments = this.paymentsRepository.list();
+    const inventory = this.inventoryRepository.list();
+    return {
+      revenueCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0),
+      inventoryCostCents: inventory.reduce((sum, item) => sum + Number(item.costCents || 0) * Number(item.quantity || 0), 0)
+    };
+  }
+}
+
+module.exports = {
+  DesktopMirrorService,
+  defaultSettings
+};
