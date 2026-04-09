@@ -78,7 +78,7 @@ app.use("/api", (req, res, next) => {
 app.get("/api/dashboard/stats", (req, res) => {
   res.json(service.getDashboardStats({
     period: req.query.period || "day",
-    anchorDate: req.query.anchorDate || New Date().toISOString()
+    anchorDate: req.query.anchorDate || new Date().toISOString()
   }, req.session));
 });
 
