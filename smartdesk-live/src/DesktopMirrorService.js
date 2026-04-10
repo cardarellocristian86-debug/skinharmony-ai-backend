@@ -636,15 +636,19 @@ class DesktopMirrorService {
       this.sessions.delete(sessionToken);
       return null;
     }
-    const refreshed = this.buildSession({ ...user, id: user.id }, sessionToken, {
-      username: current.supportMode ? (current.username || "") : undefined,
-      role: current.supportMode ? (current.role || "superadmin") : undefined,
+    const supportExtra = current.supportMode ? {
+      username: current.username || "",
+      role: current.role || "superadmin",
       supportMode: Boolean(current.supportMode),
       supportBy: current.supportBy || "",
       supportTargetUserId: current.supportTargetUserId || user.id,
       supportTargetUsername: current.supportTargetUsername || user.username || "",
       supportTargetRole: current.supportTargetRole || user.role || "owner"
-    });
+    } : {
+      supportMode: false,
+      supportBy: ""
+    };
+    const refreshed = this.buildSession({ ...user, id: user.id }, sessionToken, supportExtra);
     this.sessions.set(sessionToken, refreshed);
     return refreshed;
   }
