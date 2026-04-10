@@ -580,8 +580,13 @@ class DesktopMirrorService {
       throw new Error("Centro non trovato");
     }
     const supportSession = this.buildSession(user, crypto.randomUUID(), {
+      username: session.username || "supporto",
+      role: "superadmin",
       supportMode: true,
-      supportBy: session.username || "supporto"
+      supportBy: session.username || "supporto",
+      supportTargetUserId: user.id,
+      supportTargetUsername: user.username || "",
+      supportTargetRole: user.role || "owner"
     });
     this.sessions.set(supportSession.token, supportSession);
     return supportSession;
@@ -628,8 +633,13 @@ class DesktopMirrorService {
       return null;
     }
     const refreshed = this.buildSession({ ...user, id: user.id }, sessionToken, {
+      username: current.supportMode ? (current.username || "") : undefined,
+      role: current.supportMode ? (current.role || "superadmin") : undefined,
       supportMode: Boolean(current.supportMode),
-      supportBy: current.supportBy || ""
+      supportBy: current.supportBy || "",
+      supportTargetUserId: current.supportTargetUserId || user.id,
+      supportTargetUsername: current.supportTargetUsername || user.username || "",
+      supportTargetRole: current.supportTargetRole || user.role || "owner"
     });
     this.sessions.set(sessionToken, refreshed);
     return refreshed;
