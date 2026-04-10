@@ -1,5 +1,6 @@
 const express = require("express");
 const path = require("path");
+const nodemailer = require("nodemailer");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
 const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter");
@@ -8,6 +9,48 @@ const app = express();
 let service = null;
 let assistantService = null;
 const publicDir = path.resolve(__dirname, "public");
+
+function trialMailConfigured() {
+  return Boolean(
+    process.env.TRIAL_SMTP_HOST &&
+    process.env.TRIAL_SMTP_PORT &&
+    process.env.TRIAL_MAIL_FROM &&
+    process.env.TRIAL_SMTP_USER &&
+    process.env.TRIAL_SMTP_PASS
+  );
+}
+
+async function sendTrialVerificationMail({ email, centerName, ownerName, code }) {
+  if (!trialMailConfigured()) {
+    return { status: "disabled" };
+  }
+  const transporter = nodemailer.createTransport({
+    host: process.env.TRIAL_SMTP_HOST,
+    port: Number(process.env.TRIAL_SMTP_PORT || 587),
+    secure: String(process.env.TRIAL_SMTP_SECURE || "false").toLowerCase() === "true",
+    auth: {
+      user: process.env.TRIAL_SMTP_USER,
+      pass: process.env.TRIAL_SMTP_PASS
+    }
+  });
+  await transporter.sendMail({
+    from: process.env.TRIAL_MAIL_FROM,
+    to: email,
+    subject: "Verifica il tuo accesso Smart Desk",
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#163747;line-height:1.6">
+        <h2 style="margin:0 0 12px">Completa l'attivazione del tuo accesso</h2>
+        <p>Ciao ${ownerName || "team"}, abbiamo ricevuto la richiesta di prova per <strong>${centerName}</strong>.</p>
+        <p>Il tuo codice di verifica Smart Desk è:</p>
+        <div style="display:inline-block;padding:14px 18px;border-radius:14px;background:#eef8fd;border:1px solid #b6dced;font-size:28px;font-weight:700;letter-spacing:0.16em;color:#2a8ec4">
+          ${code}
+        </div>
+        <p style="margin-top:16px">Inseriscilo nella pagina di attivazione per sbloccare la prova gratuita di 7 giorni.</p>
+      </div>
+    `
+  });
+  return { status: "sent" };
+}
 
 function readToken(req) {
   return String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -33,6 +76,10 @@ function requireOperationalAccess(req, res, next) {
       ? "Trial scaduto. Attiva il piano per continuare."
       : req.session?.accessState === "suspended"
         ? "Account sospeso. Contatta SkinHarmony per riattivarlo."
+        : req.session?.accessState === "pending_verification"
+          ? "Verifica prima la tua email per attivare la prova."
+          : req.session?.accessState === "pending_payment"
+            ? "Pagamento in attesa. Completa l'attivazione per continuare."
         : "Accesso operativo non disponibile.",
     session: req.session
   });
@@ -64,11 +111,44 @@ app.post("/api/auth/login", (req, res) => {
   }
 });
 
-app.post("/api/auth/request-trial", (req, res) => {
+app.get("/api/auth/trial-config", (_req, res) => {
+  res.json(service.getTrialPublicConfig());
+});
+
+app.post("/api/auth/request-trial", async (req, res) => {
   try {
-    res.status(201).json(service.requestTrial(req.body || {}));
+    const result = service.requestTrial(req.body || {});
+    let emailDelivery = { status: "disabled" };
+    if (result.verification?.required && result.verification?.code) {
+      emailDelivery = await sendTrialVerificationMail({
+        email: result.verification.email,
+        centerName: req.body?.centerName || "",
+        ownerName: req.body?.ownerName || "",
+        code: result.verification.code
+      });
+    }
+    res.status(201).json({
+      success: result.success,
+      message: result.message,
+      credentials: result.credentials,
+      user: result.user,
+      verification: {
+        required: Boolean(result.verification?.required),
+        email: result.verification?.email || "",
+        deliveryStatus: emailDelivery.status
+      },
+      payment: result.payment
+    });
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile attivare la prova");
+  }
+});
+
+app.post("/api/auth/verify-trial-email", (req, res) => {
+  try {
+    res.json(service.verifyTrialEmail(req.body || {}));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile verificare l'email");
   }
 });
 

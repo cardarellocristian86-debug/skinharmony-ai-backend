@@ -11,6 +11,7 @@ const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
 const DEFAULT_ADMIN_USERNAME = "cristian";
 const DEFAULT_ADMIN_PASSWORD = "fabiana88!";
 const DEFAULT_TRIAL_DAYS = 7;
+const DEFAULT_TRIAL_VERIFICATION_MINUTES = 30;
 
 const defaultSettings = {
   centerName: DEFAULT_CENTER_NAME,
@@ -71,6 +72,12 @@ function nowIso() {
 function addDaysIso(value, days) {
   const base = new Date(value || nowIso());
   const next = new Date(base.getTime() + Number(days || 0) * 86400000);
+  return next.toISOString();
+}
+
+function addMinutesIso(value, minutes) {
+  const base = new Date(value || nowIso());
+  const next = new Date(base.getTime() + Number(minutes || 0) * 60000);
   return next.toISOString();
 }
 
@@ -149,6 +156,40 @@ function makeId(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function readBooleanEnv(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
+}
+
+function getTrialPaymentConfig() {
+  return {
+    method: "bank_transfer",
+    enabled: readBooleanEnv("TRIAL_BANK_TRANSFER_ENABLED", true),
+    configured: Boolean(process.env.TRIAL_BANK_ACCOUNT_HOLDER && process.env.TRIAL_BANK_IBAN),
+    accountHolder: String(process.env.TRIAL_BANK_ACCOUNT_HOLDER || ""),
+    iban: String(process.env.TRIAL_BANK_IBAN || ""),
+    bankName: String(process.env.TRIAL_BANK_NAME || ""),
+    bic: String(process.env.TRIAL_BANK_BIC || ""),
+    reason: String(process.env.TRIAL_BANK_REASON || ""),
+    supportEmail: String(process.env.TRIAL_SUPPORT_EMAIL || "")
+  };
+}
+
+function isTrialEmailVerificationConfigured() {
+  return Boolean(
+    process.env.TRIAL_SMTP_HOST &&
+    process.env.TRIAL_SMTP_PORT &&
+    process.env.TRIAL_MAIL_FROM &&
+    process.env.TRIAL_SMTP_USER &&
+    process.env.TRIAL_SMTP_PASS
+  );
+}
+
+function makeVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
 function sanitizeUsername(value = "") {
   return String(value || "")
     .trim()
@@ -221,10 +262,12 @@ class DesktopMirrorService {
     const now = Date.now();
     const expiredByDate = planType === "trial" && trialEndsAt && new Date(trialEndsAt).getTime() < now;
     let accountStatus = baseStatus;
-    if (user.active === false) {
-      accountStatus = "suspended";
-    } else if (planType === "active") {
+    if (planType === "active") {
       accountStatus = "active";
+    } else if (["pending_verification", "pending_payment"].includes(baseStatus)) {
+      accountStatus = baseStatus;
+    } else if (user.active === false) {
+      accountStatus = "suspended";
     } else if (expiredByDate || baseStatus === "expired") {
       accountStatus = "expired";
     } else if (!accountStatus) {
@@ -236,7 +279,11 @@ class DesktopMirrorService {
         ? "suspended"
         : accountStatus === "expired"
           ? "expired"
-          : "trial";
+          : accountStatus === "pending_verification"
+            ? "pending_verification"
+            : accountStatus === "pending_payment"
+              ? "pending_payment"
+              : "trial";
     const trialRemainingDays = accessState === "trial" && trialEndsAt
       ? Math.max(0, Math.ceil((new Date(trialEndsAt).getTime() - now) / 86400000))
       : 0;
@@ -269,6 +316,10 @@ class DesktopMirrorService {
         ? "Trial scaduto. Attiva il piano per continuare."
         : reason === "suspended"
           ? "Account sospeso. Contatta SkinHarmony per riattivarlo."
+          : reason === "pending_verification"
+            ? "Verifica prima la tua email per attivare la prova."
+            : reason === "pending_payment"
+              ? "Pagamento in attesa. Completa l'attivazione per continuare."
           : "Accesso operativo non disponibile."
     );
     error.code = reason;
@@ -315,8 +366,18 @@ class DesktopMirrorService {
       ownerName: normalized.ownerName || "",
       contactEmail: normalized.contactEmail || "",
       contactPhone: normalized.contactPhone || "",
+      emailVerifiedAt: normalized.emailVerifiedAt || "",
       createdAt: normalized.createdAt || nowIso(),
       activatedAt: normalized.activatedAt || ""
+    };
+  }
+
+  getTrialPublicConfig() {
+    return {
+      trialDays: DEFAULT_TRIAL_DAYS,
+      emailVerificationEnabled: isTrialEmailVerificationConfigured(),
+      verificationWindowMinutes: DEFAULT_TRIAL_VERIFICATION_MINUTES,
+      payment: getTrialPaymentConfig()
     };
   }
 
@@ -525,6 +586,12 @@ class DesktopMirrorService {
       throw new Error("Credenziali non valide");
     }
     const normalized = this.normalizeUserAccount(user);
+    if (normalized.accountStatus === "pending_verification") {
+      throw new Error("Verifica prima la tua email per attivare la prova.");
+    }
+    if (normalized.accountStatus === "pending_payment") {
+      throw new Error("Pagamento in attesa. Completa l'attivazione per continuare.");
+    }
     if (normalized.active === false || normalized.accountStatus === "suspended") {
       throw new Error("Account sospeso. Contatta SkinHarmony.");
     }
@@ -596,6 +663,10 @@ class DesktopMirrorService {
       trialEndsAt,
       paymentStatus: String(payload.paymentStatus || (planType === "active" ? "paid" : "pending")),
       accountStatus: String(payload.accountStatus || (planType === "active" ? "active" : "trial")),
+      emailVerifiedAt: String(payload.emailVerifiedAt || ""),
+      emailVerificationCode: String(payload.emailVerificationCode || ""),
+      emailVerificationExpiresAt: String(payload.emailVerificationExpiresAt || ""),
+      emailVerificationSentAt: String(payload.emailVerificationSentAt || ""),
       activatedAt: planType === "active" ? String(payload.activatedAt || now) : "",
       createdAt: now,
       updatedAt: now
@@ -613,6 +684,7 @@ class DesktopMirrorService {
     const centerName = String(payload.centerName || payload.businessName || "").trim();
     const ownerName = String(payload.ownerName || payload.referentName || "").trim();
     const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
+    const confirmEmail = String(payload.confirmEmail || "").trim().toLowerCase();
     const contactPhone = String(payload.contactPhone || payload.phone || "").trim();
     const businessModel = String(payload.businessModel || "esthetic");
     const chosenUsername = sanitizeUsername(String(payload.username || "").trim());
@@ -623,6 +695,7 @@ class DesktopMirrorService {
     if (!centerName) throw new Error("Nome centro obbligatorio");
     if (!ownerName) throw new Error("Nome referente obbligatorio");
     if (!contactEmail) throw new Error("Email obbligatoria");
+    if (!confirmEmail || confirmEmail !== contactEmail) throw new Error("Le email non coincidono");
     if (!chosenUsername) throw new Error("Username obbligatorio");
     if (chosenPassword.length < 8) throw new Error("La password deve contenere almeno 8 caratteri");
     if (!emailConfirmed) throw new Error("Devi confermare che l'email inserita è corretta");
@@ -636,6 +709,9 @@ class DesktopMirrorService {
     }
     const centerId = makeId("center");
     const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
+    const verificationEnabled = isTrialEmailVerificationConfigured();
+    const verificationCode = verificationEnabled ? makeVerificationCode() : "";
+    const verificationRequestedAt = nowIso();
     const user = this.createAccessUser({
       username: chosenUsername,
       password: chosenPassword,
@@ -648,15 +724,66 @@ class DesktopMirrorService {
       businessModel,
       planType: "trial",
       trialDays,
-      trialStartsAt: nowIso()
+      trialStartsAt: verificationRequestedAt,
+      accountStatus: verificationEnabled ? "pending_verification" : "trial",
+      paymentStatus: "trial_free",
+      emailVerifiedAt: verificationEnabled ? "" : verificationRequestedAt,
+      emailVerificationCode: verificationCode,
+      emailVerificationExpiresAt: verificationEnabled ? addMinutesIso(verificationRequestedAt, DEFAULT_TRIAL_VERIFICATION_MINUTES) : "",
+      emailVerificationSentAt: verificationEnabled ? verificationRequestedAt : ""
     }, { role: "superadmin", centerId: DEFAULT_CENTER_ID, centerName: DEFAULT_CENTER_NAME });
     return {
       success: true,
-      message: `Prova gratuita attivata per ${trialDays} giorni`,
+      message: verificationEnabled
+        ? `Ti abbiamo inviato un codice email. Dopo la verifica, la prova gratuita durerà ${trialDays} giorni.`
+        : `Prova gratuita attivata per ${trialDays} giorni`,
       credentials: {
         username: chosenUsername
       },
+      verification: {
+        required: verificationEnabled,
+        email: contactEmail,
+        code: verificationCode
+      },
+      payment: getTrialPaymentConfig(),
       user
+    };
+  }
+
+  verifyTrialEmail(payload = {}) {
+    const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
+    const verificationCode = String(payload.code || "").trim();
+    if (!contactEmail) throw new Error("Email obbligatoria");
+    if (!verificationCode) throw new Error("Codice verifica obbligatorio");
+    const user = this.usersRepository.list().find((item) => String(item.contactEmail || "").toLowerCase() === contactEmail);
+    if (!user) throw new Error("Nessuna prova collegata a questa email");
+    if (String(user.emailVerifiedAt || "").trim()) {
+      return {
+        success: true,
+        message: "Email già verificata. Puoi accedere al gestionale.",
+        user: this.serializeUserSummary(user)
+      };
+    }
+    if (String(user.emailVerificationCode || "").trim() !== verificationCode) {
+      throw new Error("Codice verifica non valido");
+    }
+    if (user.emailVerificationExpiresAt && new Date(user.emailVerificationExpiresAt).getTime() < Date.now()) {
+      throw new Error("Codice verifica scaduto. Richiedi una nuova attivazione.");
+    }
+    const verifiedAt = nowIso();
+    const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
+      ...current,
+      emailVerifiedAt: verifiedAt,
+      emailVerificationCode: "",
+      emailVerificationExpiresAt: "",
+      accountStatus: "trial",
+      updatedAt: verifiedAt
+    }));
+    return {
+      success: true,
+      message: "Email verificata. La tua prova gratuita è attiva.",
+      payment: getTrialPaymentConfig(),
+      user: this.serializeUserSummary(next || user)
     };
   }
 
