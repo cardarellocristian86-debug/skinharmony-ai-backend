@@ -43,6 +43,8 @@ async function sendTrialVerificationMail({ email, centerName, ownerName, verific
         <p>Ciao ${ownerName || "team"}, abbiamo ricevuto la richiesta di prova per <strong>${centerName}</strong>.</p>
         <p>Per confermare la tua email e attivare la prova gratuita, usa questo link sicuro:</p>
         <p><a href="${verificationUrl}" style="display:inline-block;padding:12px 18px;border-radius:14px;background:#2a8ec4;color:#fff;text-decoration:none;font-weight:700">Conferma la tua email</a></p>
+        <p style="margin:12px 0 0">Se il pulsante non si apre correttamente, copia e incolla questo link:</p>
+        <p style="word-break:break-all;color:#2a8ec4">${verificationUrl}</p>
         <p style="margin-top:16px">Il link scade automaticamente e può essere usato una sola volta.</p>
       </div>
     `
@@ -106,6 +108,8 @@ async function sendPasswordResetMail({ email, resetUrl }) {
         <h2 style="margin:0 0 12px">Richiesta cambio password</h2>
         <p>Abbiamo ricevuto una richiesta di reimpostazione password per il tuo account Smart Desk.</p>
         <p><a href="${resetUrl}" style="display:inline-block;padding:12px 18px;border-radius:14px;background:#2a8ec4;color:#fff;text-decoration:none;font-weight:700">Imposta una nuova password</a></p>
+        <p style="margin:12px 0 0">Se il pulsante non si apre correttamente, copia e incolla questo link:</p>
+        <p style="word-break:break-all;color:#2a8ec4">${resetUrl}</p>
         <p>Se non hai richiesto tu questa operazione, ignora la mail.</p>
       </div>
     `
