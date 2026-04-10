@@ -10,6 +10,7 @@ const DEFAULT_CENTER_ID = "center_admin";
 const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
 const DEFAULT_ADMIN_USERNAME = "admin";
 const DEFAULT_ADMIN_PASSWORD = "admin1234";
+const DEFAULT_TRIAL_DAYS = 7;
 
 const defaultSettings = {
   centerName: DEFAULT_CENTER_NAME,
@@ -65,6 +66,12 @@ function ensureDir(directoryPath) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function addDaysIso(value, days) {
+  const base = new Date(value || nowIso());
+  const next = new Date(base.getTime() + Number(days || 0) * 86400000);
+  return next.toISOString();
 }
 
 function toDateOnly(value) {
@@ -142,6 +149,26 @@ function makeId(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function sanitizeUsername(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9._-]+/g, "")
+    .replace(/^\.+|\.+$/g, "");
+}
+
+function slugifySegment(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 class DesktopMirrorService {
   constructor(options = {}) {
     this.persistenceAdapter = options.persistenceAdapter || null;
@@ -172,6 +199,125 @@ class DesktopMirrorService {
 
   getCenterName(session = null) {
     return String(session?.centerName || DEFAULT_CENTER_NAME);
+  }
+
+  getCurrentIso() {
+    return nowIso();
+  }
+
+  isSuperAdminSession(session = null) {
+    return String(session?.role || "") === "superadmin";
+  }
+
+  normalizeUserAccount(user = {}) {
+    const hasLegacyPlanlessAccount = !user.planType && !user.trialStartsAt && !user.trialEndsAt;
+    const inferredPlanType = hasLegacyPlanlessAccount ? "active" : (String(user.role || "") === "superadmin" ? "active" : "trial");
+    const planType = String(user.planType || inferredPlanType);
+    const paymentStatus = String(user.paymentStatus || (planType === "active" ? "paid" : "pending"));
+    const baseStatus = String(user.accountStatus || (planType === "active" ? "active" : "trial"));
+    const trialDays = Number(user.trialDays || DEFAULT_TRIAL_DAYS);
+    const trialStartsAt = user.trialStartsAt || (planType === "trial" ? user.createdAt || this.getCurrentIso() : "");
+    const trialEndsAt = user.trialEndsAt || (planType === "trial" && trialStartsAt ? addDaysIso(trialStartsAt, trialDays) : "");
+    const now = Date.now();
+    const expiredByDate = planType === "trial" && trialEndsAt && new Date(trialEndsAt).getTime() < now;
+    let accountStatus = baseStatus;
+    if (user.active === false) {
+      accountStatus = "suspended";
+    } else if (planType === "active") {
+      accountStatus = "active";
+    } else if (expiredByDate || baseStatus === "expired") {
+      accountStatus = "expired";
+    } else if (!accountStatus) {
+      accountStatus = "trial";
+    }
+    const accessState = accountStatus === "active"
+      ? "active"
+      : accountStatus === "suspended"
+        ? "suspended"
+        : accountStatus === "expired"
+          ? "expired"
+          : "trial";
+    const trialRemainingDays = accessState === "trial" && trialEndsAt
+      ? Math.max(0, Math.ceil((new Date(trialEndsAt).getTime() - now) / 86400000))
+      : 0;
+    return {
+      ...user,
+      planType,
+      paymentStatus,
+      accountStatus,
+      accessState,
+      trialDays,
+      trialStartsAt,
+      trialEndsAt,
+      trialRemainingDays
+    };
+  }
+
+  canOperate(session = null) {
+    if (!session) return false;
+    if (this.isSuperAdminSession(session)) return true;
+    return session.accessState === "active" || session.accessState === "trial";
+  }
+
+  assertCanOperate(session = null) {
+    if (this.canOperate(session)) {
+      return;
+    }
+    const reason = String(session?.accessState || "unauthorized");
+    const error = new Error(
+      reason === "expired"
+        ? "Trial scaduto. Attiva il piano per continuare."
+        : reason === "suspended"
+          ? "Account sospeso. Contatta SkinHarmony per riattivarlo."
+          : "Accesso operativo non disponibile."
+    );
+    error.code = reason;
+    throw error;
+  }
+
+  buildTrialCredentials(centerName = "", email = "", businessModel = "esthetic") {
+    const centerSlug = slugifySegment(centerName) || "centro";
+    const modelSlug = slugifySegment(businessModel) || "trial";
+    const localEmail = String(email || "").split("@")[0];
+    const emailSlug = slugifySegment(localEmail);
+    const base = sanitizeUsername(`${modelSlug}.${centerSlug}`.slice(0, 22)) || `trial.${Date.now()}`;
+    let username = base;
+    let suffix = 1;
+    const users = this.usersRepository.list();
+    while (users.some((item) => String(item.username || "").toLowerCase() === username)) {
+      username = sanitizeUsername(`${base}${suffix}`) || `trial${Date.now()}${suffix}`;
+      suffix += 1;
+    }
+    const password = `SH-${Math.random().toString(36).slice(2, 6).toUpperCase()}${String(Date.now()).slice(-4)}`;
+    return {
+      username: emailSlug && !users.some((item) => String(item.username || "").toLowerCase() === emailSlug) ? emailSlug : username,
+      password
+    };
+  }
+
+  serializeUserSummary(user = {}) {
+    const normalized = this.normalizeUserAccount(user);
+    return {
+      id: normalized.id,
+      username: normalized.username,
+      role: normalized.role,
+      active: normalized.active,
+      centerId: normalized.centerId || DEFAULT_CENTER_ID,
+      centerName: normalized.centerName || DEFAULT_CENTER_NAME,
+      planType: normalized.planType,
+      paymentStatus: normalized.paymentStatus,
+      accountStatus: normalized.accountStatus,
+      accessState: normalized.accessState,
+      trialStartsAt: normalized.trialStartsAt || "",
+      trialEndsAt: normalized.trialEndsAt || "",
+      trialRemainingDays: normalized.trialRemainingDays || 0,
+      businessModel: normalized.businessModel || "",
+      ownerName: normalized.ownerName || "",
+      contactEmail: normalized.contactEmail || "",
+      contactPhone: normalized.contactPhone || "",
+      createdAt: normalized.createdAt || nowIso(),
+      activatedAt: normalized.activatedAt || ""
+    };
   }
 
   belongsToCenter(item, centerId) {
@@ -253,6 +399,10 @@ class DesktopMirrorService {
         active: true,
         centerId: DEFAULT_CENTER_ID,
         centerName: DEFAULT_CENTER_NAME,
+        planType: "active",
+        accountStatus: "active",
+        paymentStatus: "paid",
+        activatedAt: nowIso(),
         createdAt: nowIso()
       });
     }
@@ -307,33 +457,62 @@ class DesktopMirrorService {
     return next;
   }
 
-  createSession(user) {
-    const token = crypto.randomUUID();
-    const session = {
-      token,
-      userId: user.id,
-      username: user.username,
-      role: user.role || "superadmin",
-      centerId: user.centerId || DEFAULT_CENTER_ID,
-      centerName: user.centerName || DEFAULT_CENTER_NAME,
+  buildSession(user, token = crypto.randomUUID()) {
+    const normalized = this.normalizeUserAccount(user);
+    return {
+      token: String(token),
+      userId: normalized.id,
+      username: normalized.username,
+      role: normalized.role || "superadmin",
+      centerId: normalized.centerId || DEFAULT_CENTER_ID,
+      centerName: normalized.centerName || DEFAULT_CENTER_NAME,
+      planType: normalized.planType,
+      paymentStatus: normalized.paymentStatus,
+      accountStatus: normalized.accountStatus,
+      accessState: normalized.accessState,
+      trialStartsAt: normalized.trialStartsAt || "",
+      trialEndsAt: normalized.trialEndsAt || "",
+      trialRemainingDays: normalized.trialRemainingDays || 0,
+      businessModel: normalized.businessModel || "",
       createdAt: nowIso()
     };
-    this.sessions.set(token, session);
+  }
+
+  createSession(user) {
+    const session = this.buildSession(user);
+    this.sessions.set(session.token, session);
     return session;
   }
 
   login(payload = {}) {
-    const username = String(payload.username || payload.email || "").trim().toLowerCase();
+    const username = sanitizeUsername(payload.username || payload.email || "");
     const password = String(payload.password || "");
     const user = this.usersRepository.list().find((item) => String(item.username || "").toLowerCase() === username);
     if (!user || !verifyPassword(password, user.passwordHash)) {
       throw new Error("Credenziali non valide");
     }
+    const normalized = this.normalizeUserAccount(user);
+    if (normalized.active === false || normalized.accountStatus === "suspended") {
+      throw new Error("Account sospeso. Contatta SkinHarmony.");
+    }
+    if (normalized.accountStatus !== user.accountStatus || normalized.trialEndsAt !== user.trialEndsAt) {
+      this.usersRepository.update(user.id, (current) => ({ ...current, ...normalized, updatedAt: nowIso() }));
+    }
     return this.createSession(user);
   }
 
   getSession(token) {
-    return this.sessions.get(String(token || "")) || null;
+    const sessionToken = String(token || "");
+    const current = this.sessions.get(sessionToken);
+    if (!current) return null;
+    const user = this.usersRepository.findById(current.userId);
+    if (!user) {
+      this.sessions.delete(sessionToken);
+      return null;
+    }
+    const refreshed = this.buildSession({ ...user, id: user.id }, sessionToken);
+    this.sessions.set(sessionToken, refreshed);
+    return refreshed;
   }
 
   logout(token) {
@@ -341,40 +520,141 @@ class DesktopMirrorService {
     return { success: true };
   }
 
-  listAccessUsers(_session = null) {
-    return this.usersRepository.list().map((item) => ({
-      id: item.id,
-      username: item.username,
-      role: item.role,
-      active: item.active,
-      centerId: item.centerId || DEFAULT_CENTER_ID,
-      centerName: item.centerName || DEFAULT_CENTER_NAME,
-      createdAt: item.createdAt || nowIso()
-    }));
+  listAccessUsers(session = null) {
+    const users = this.usersRepository.list();
+    const visible = this.isSuperAdminSession(session)
+      ? users
+      : users.filter((item) => this.belongsToCenter(item, this.getCenterId(session)));
+    return visible.map((item) => this.serializeUserSummary(item));
   }
 
   createAccessUser(payload = {}, session = null) {
-    const username = String(payload.username || "").trim().toLowerCase();
+    const username = sanitizeUsername(payload.username || payload.email || "");
     if (!username) throw new Error("Username obbligatorio");
     if (this.usersRepository.list().some((item) => String(item.username || "").toLowerCase() === username)) {
       throw new Error("Utente già presente");
     }
-    const centerId = String(payload.centerId || makeId("center"));
-    const centerName = String(payload.centerName || payload.businessName || username);
+    const canCreateCenter = this.isSuperAdminSession(session);
+    const centerId = String(canCreateCenter ? (payload.centerId || makeId("center")) : this.getCenterId(session));
+    const centerName = String(canCreateCenter ? (payload.centerName || payload.businessName || username) : this.getCenterName(session));
+    const now = nowIso();
+    const planType = String(payload.planType || "trial");
+    const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
+    const trialStartsAt = planType === "trial" ? String(payload.trialStartsAt || now) : "";
+    const trialEndsAt = planType === "trial" ? String(payload.trialEndsAt || addDaysIso(trialStartsAt, trialDays)) : "";
     const user = {
       id: makeId("user"),
       username,
       passwordHash: hashPassword(String(payload.password || "changeme123")),
-      role: String(payload.role || "staff"),
+      role: String(payload.role || (canCreateCenter ? "staff" : "staff")),
       active: payload.active !== false,
       centerId,
       centerName,
-      createdAt: nowIso()
+      ownerName: String(payload.ownerName || payload.referentName || ""),
+      contactEmail: String(payload.contactEmail || payload.email || ""),
+      contactPhone: String(payload.contactPhone || payload.phone || ""),
+      businessModel: String(payload.businessModel || "esthetic"),
+      planType,
+      trialDays,
+      trialStartsAt,
+      trialEndsAt,
+      paymentStatus: String(payload.paymentStatus || (planType === "active" ? "paid" : "pending")),
+      accountStatus: String(payload.accountStatus || (planType === "active" ? "active" : "trial")),
+      activatedAt: planType === "active" ? String(payload.activatedAt || now) : "",
+      createdAt: now,
+      updatedAt: now
     };
     this.usersRepository.create(user);
     this.ensureDefaultStaffForCenter(centerId, centerName);
-    this.saveSettings({ centerName }, { centerId, centerName, role: session?.role || "superadmin" });
-    return this.listAccessUsers(session).find((item) => item.id === user.id);
+    this.saveSettings({
+      centerName,
+      businessModel: user.businessModel
+    }, { centerId, centerName, role: session?.role || "superadmin" });
+    return this.listAccessUsers(session).find((item) => item.id === user.id) || this.serializeUserSummary(user);
+  }
+
+  requestTrial(payload = {}) {
+    const centerName = String(payload.centerName || payload.businessName || "").trim();
+    const ownerName = String(payload.ownerName || payload.referentName || "").trim();
+    const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
+    const contactPhone = String(payload.contactPhone || payload.phone || "").trim();
+    const businessModel = String(payload.businessModel || "esthetic");
+    if (!centerName) throw new Error("Nome centro obbligatorio");
+    if (!ownerName) throw new Error("Nome referente obbligatorio");
+    if (!contactEmail) throw new Error("Email obbligatoria");
+    const alreadyPresent = this.usersRepository.list().find((item) => String(item.contactEmail || "").toLowerCase() === contactEmail);
+    if (alreadyPresent) {
+      throw new Error("Esiste già un accesso associato a questa email");
+    }
+    const credentials = this.buildTrialCredentials(centerName, contactEmail, businessModel);
+    const centerId = makeId("center");
+    const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
+    const user = this.createAccessUser({
+      username: credentials.username,
+      password: credentials.password,
+      role: "owner",
+      centerId,
+      centerName,
+      ownerName,
+      contactEmail,
+      contactPhone,
+      businessModel,
+      planType: "trial",
+      trialDays,
+      trialStartsAt: nowIso()
+    }, { role: "superadmin", centerId: DEFAULT_CENTER_ID, centerName: DEFAULT_CENTER_NAME });
+    return {
+      success: true,
+      message: `Prova gratuita attivata per ${trialDays} giorni`,
+      credentials: {
+        username: credentials.username,
+        password: credentials.password
+      },
+      user
+    };
+  }
+
+  updateAccessUserStatus(userId, payload = {}, session = null) {
+    if (!this.isSuperAdminSession(session)) {
+      throw new Error("Operazione riservata al supporto SkinHarmony");
+    }
+    const current = this.usersRepository.findById(userId);
+    if (!current) throw new Error("Utente non trovato");
+    const now = nowIso();
+    const next = this.usersRepository.update(userId, (user) => {
+      const merged = {
+        ...user,
+        active: payload.active === undefined ? user.active : payload.active !== false,
+        planType: payload.planType || user.planType,
+        paymentStatus: payload.paymentStatus || user.paymentStatus,
+        accountStatus: payload.accountStatus || user.accountStatus,
+        trialStartsAt: payload.trialStartsAt || user.trialStartsAt,
+        trialEndsAt: payload.trialEndsAt || user.trialEndsAt,
+        activatedAt: payload.activatedAt || user.activatedAt,
+        updatedAt: now
+      };
+      if (payload.extendTrialDays) {
+        const base = merged.trialEndsAt || merged.trialStartsAt || now;
+        merged.trialEndsAt = addDaysIso(base, Number(payload.extendTrialDays || 0));
+        merged.accountStatus = "trial";
+        merged.planType = "trial";
+      }
+      if (payload.markPaid === true || merged.planType === "active") {
+        merged.planType = "active";
+        merged.paymentStatus = "paid";
+        merged.accountStatus = "active";
+        merged.activatedAt = payload.activatedAt || now;
+      }
+      if (payload.suspend === true) {
+        merged.active = false;
+        merged.accountStatus = "suspended";
+      }
+      if (payload.resetPassword) {
+        merged.passwordHash = hashPassword(String(payload.resetPassword));
+      }
+      return this.normalizeUserAccount(merged);
+    });
+    return this.serializeUserSummary(next || current);
   }
 
   listClients(search = "", session = null) {

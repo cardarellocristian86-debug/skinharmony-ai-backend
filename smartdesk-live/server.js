@@ -22,6 +22,22 @@ function requireAuth(req, res, next) {
   return next();
 }
 
+function requireOperationalAccess(req, res, next) {
+  if (service.canOperate(req.session)) {
+    return next();
+  }
+  return res.status(402).json({
+    success: false,
+    code: req.session?.accessState || "blocked",
+    message: req.session?.accessState === "expired"
+      ? "Trial scaduto. Attiva il piano per continuare."
+      : req.session?.accessState === "suspended"
+        ? "Account sospeso. Contatta SkinHarmony per riattivarlo."
+        : "Accesso operativo non disponibile.",
+    session: req.session
+  });
+}
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -48,6 +64,14 @@ app.post("/api/auth/login", (req, res) => {
   }
 });
 
+app.post("/api/auth/request-trial", (req, res) => {
+  try {
+    res.status(201).json(service.requestTrial(req.body || {}));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile attivare la prova");
+  }
+});
+
 app.get("/api/auth/session", (req, res) => {
   res.json(service.getSession(readToken(req)));
 });
@@ -68,11 +92,19 @@ app.post("/api/auth/users", requireAuth, (req, res) => {
   }
 });
 
+app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
+  try {
+    res.json(service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare lo stato utente");
+  }
+});
+
 app.use("/api", (req, res, next) => {
   if (req.path.startsWith("/auth/")) {
     return next();
   }
-  return requireAuth(req, res, next);
+  return requireAuth(req, res, () => requireOperationalAccess(req, res, next));
 });
 
 app.get("/api/dashboard/stats", (req, res) => {
