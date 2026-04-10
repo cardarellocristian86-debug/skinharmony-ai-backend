@@ -262,6 +262,7 @@ class DesktopMirrorService {
     const hasLegacyPlanlessAccount = !user.planType && !user.trialStartsAt && !user.trialEndsAt;
     const inferredPlanType = hasLegacyPlanlessAccount ? "active" : (String(user.role || "") === "superadmin" ? "active" : "trial");
     const planType = String(user.planType || inferredPlanType);
+    const subscriptionPlan = String(user.subscriptionPlan || (String(user.role || "") === "superadmin" ? "gold" : "gold"));
     const paymentStatus = String(user.paymentStatus || (planType === "active" ? "paid" : "pending"));
     const baseStatus = String(user.accountStatus || (planType === "active" ? "active" : "trial"));
     const trialDays = Number(user.trialDays || DEFAULT_TRIAL_DAYS);
@@ -298,6 +299,7 @@ class DesktopMirrorService {
     return {
       ...user,
       planType,
+      subscriptionPlan,
       paymentStatus,
       accountStatus,
       accessState,
@@ -364,6 +366,7 @@ class DesktopMirrorService {
       centerId: normalized.centerId || DEFAULT_CENTER_ID,
       centerName: normalized.centerName || DEFAULT_CENTER_NAME,
       planType: normalized.planType,
+      subscriptionPlan: normalized.subscriptionPlan,
       paymentStatus: normalized.paymentStatus,
       accountStatus: normalized.accountStatus,
       accessState: normalized.accessState,
@@ -551,6 +554,7 @@ class DesktopMirrorService {
       centerId: normalized.centerId || DEFAULT_CENTER_ID,
       centerName: normalized.centerName || DEFAULT_CENTER_NAME,
       planType: normalized.planType,
+      subscriptionPlan: normalized.subscriptionPlan,
       paymentStatus: normalized.paymentStatus,
       accountStatus: normalized.accountStatus,
       accessState: normalized.accessState,
@@ -685,6 +689,7 @@ class DesktopMirrorService {
       contactPhone: String(payload.contactPhone || payload.phone || ""),
       businessModel: String(payload.businessModel || "esthetic"),
       planType,
+      subscriptionPlan: String(payload.subscriptionPlan || (String(payload.role || "") === "superadmin" ? "gold" : "gold")),
       trialDays,
       trialStartsAt,
       trialEndsAt,
@@ -885,6 +890,7 @@ class DesktopMirrorService {
         ...user,
         active: payload.active === undefined ? user.active : payload.active !== false,
         planType: payload.planType || user.planType,
+        subscriptionPlan: payload.subscriptionPlan || user.subscriptionPlan,
         paymentStatus: payload.paymentStatus || user.paymentStatus,
         accountStatus: payload.accountStatus || user.accountStatus,
         trialStartsAt: payload.trialStartsAt || user.trialStartsAt,
