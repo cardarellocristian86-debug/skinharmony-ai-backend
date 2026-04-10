@@ -457,7 +457,7 @@ class DesktopMirrorService {
     return next;
   }
 
-  buildSession(user, token = crypto.randomUUID()) {
+  buildSession(user, token = crypto.randomUUID(), extra = {}) {
     const normalized = this.normalizeUserAccount(user);
     return {
       token: String(token),
@@ -475,6 +475,8 @@ class DesktopMirrorService {
       trialRemainingDays: normalized.trialRemainingDays || 0,
       businessModel: normalized.businessModel || "",
       createdAt: nowIso()
+      ,
+      ...extra
     };
   }
 
@@ -482,6 +484,22 @@ class DesktopMirrorService {
     const session = this.buildSession(user);
     this.sessions.set(session.token, session);
     return session;
+  }
+
+  createSupportSessionForUser(userId, session = null) {
+    if (!this.isSuperAdminSession(session)) {
+      throw new Error("Operazione riservata al supporto SkinHarmony");
+    }
+    const user = this.usersRepository.findById(userId);
+    if (!user) {
+      throw new Error("Centro non trovato");
+    }
+    const supportSession = this.buildSession(user, crypto.randomUUID(), {
+      supportMode: true,
+      supportBy: session.username || "supporto"
+    });
+    this.sessions.set(supportSession.token, supportSession);
+    return supportSession;
   }
 
   login(payload = {}) {
@@ -510,7 +528,10 @@ class DesktopMirrorService {
       this.sessions.delete(sessionToken);
       return null;
     }
-    const refreshed = this.buildSession({ ...user, id: user.id }, sessionToken);
+    const refreshed = this.buildSession({ ...user, id: user.id }, sessionToken, {
+      supportMode: Boolean(current.supportMode),
+      supportBy: current.supportBy || ""
+    });
     this.sessions.set(sessionToken, refreshed);
     return refreshed;
   }
@@ -579,19 +600,30 @@ class DesktopMirrorService {
     const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
     const contactPhone = String(payload.contactPhone || payload.phone || "").trim();
     const businessModel = String(payload.businessModel || "esthetic");
+    const chosenUsername = sanitizeUsername(String(payload.username || "").trim());
+    const chosenPassword = String(payload.password || "");
+    const privacyConsent = Boolean(payload.privacyConsent);
+    const policyConsent = Boolean(payload.policyConsent);
+    const emailConfirmed = Boolean(payload.emailConfirmed);
     if (!centerName) throw new Error("Nome centro obbligatorio");
     if (!ownerName) throw new Error("Nome referente obbligatorio");
     if (!contactEmail) throw new Error("Email obbligatoria");
+    if (!chosenUsername) throw new Error("Username obbligatorio");
+    if (chosenPassword.length < 8) throw new Error("La password deve contenere almeno 8 caratteri");
+    if (!emailConfirmed) throw new Error("Devi confermare che l'email inserita è corretta");
+    if (!privacyConsent || !policyConsent) throw new Error("Devi confermare privacy e policy prima di attivare la prova");
     const alreadyPresent = this.usersRepository.list().find((item) => String(item.contactEmail || "").toLowerCase() === contactEmail);
     if (alreadyPresent) {
       throw new Error("Esiste già un accesso associato a questa email");
     }
-    const credentials = this.buildTrialCredentials(centerName, contactEmail, businessModel);
+    if (this.usersRepository.list().some((item) => String(item.username || "").toLowerCase() === chosenUsername)) {
+      throw new Error("Username già presente");
+    }
     const centerId = makeId("center");
     const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
     const user = this.createAccessUser({
-      username: credentials.username,
-      password: credentials.password,
+      username: chosenUsername,
+      password: chosenPassword,
       role: "owner",
       centerId,
       centerName,
@@ -607,8 +639,7 @@ class DesktopMirrorService {
       success: true,
       message: `Prova gratuita attivata per ${trialDays} giorni`,
       credentials: {
-        username: credentials.username,
-        password: credentials.password
+        username: chosenUsername
       },
       user
     };

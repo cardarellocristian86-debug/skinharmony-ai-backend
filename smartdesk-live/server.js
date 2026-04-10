@@ -100,6 +100,14 @@ app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
   }
 });
 
+app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
+  try {
+    res.json({ success: true, ...service.createSupportSessionForUser(req.params.id, req.session) });
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aprire la sessione supporto");
+  }
+});
+
 app.use("/api", (req, res, next) => {
   if (req.path.startsWith("/auth/")) {
     return next();
