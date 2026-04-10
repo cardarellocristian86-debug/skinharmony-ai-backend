@@ -141,6 +141,10 @@ function hashPassword(password) {
   return `scrypt:${salt}:${hash}`;
 }
 
+function hashToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
 function verifyPassword(password, passwordHash) {
   if (!passwordHash || typeof passwordHash !== "string") return false;
   const [scheme, salt, storedHash] = passwordHash.split(":");
@@ -154,6 +158,10 @@ function verifyPassword(password, passwordHash) {
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function makeSecureToken() {
+  return crypto.randomBytes(32).toString("hex");
 }
 
 function readBooleanEnv(name, fallback = false) {
@@ -550,6 +558,7 @@ class DesktopMirrorService {
       trialEndsAt: normalized.trialEndsAt || "",
       trialRemainingDays: normalized.trialRemainingDays || 0,
       businessModel: normalized.businessModel || "",
+      emailVerifiedAt: normalized.emailVerifiedAt || "",
       createdAt: nowIso()
       ,
       ...extra
@@ -576,6 +585,14 @@ class DesktopMirrorService {
     });
     this.sessions.set(supportSession.token, supportSession);
     return supportSession;
+  }
+
+  invalidateSessionsForUser(userId) {
+    for (const [token, session] of this.sessions.entries()) {
+      if (session.userId === userId) {
+        this.sessions.delete(token);
+      }
+    }
   }
 
   login(payload = {}) {
@@ -710,7 +727,7 @@ class DesktopMirrorService {
     const centerId = makeId("center");
     const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
     const verificationEnabled = isTrialEmailVerificationConfigured();
-    const verificationCode = verificationEnabled ? makeVerificationCode() : "";
+    const verificationToken = verificationEnabled ? makeSecureToken() : "";
     const verificationRequestedAt = nowIso();
     const user = this.createAccessUser({
       username: chosenUsername,
@@ -728,7 +745,8 @@ class DesktopMirrorService {
       accountStatus: verificationEnabled ? "pending_verification" : "trial",
       paymentStatus: "trial_free",
       emailVerifiedAt: verificationEnabled ? "" : verificationRequestedAt,
-      emailVerificationCode: verificationCode,
+      emailVerificationCode: "",
+      emailVerificationTokenHash: verificationEnabled ? hashToken(verificationToken) : "",
       emailVerificationExpiresAt: verificationEnabled ? addMinutesIso(verificationRequestedAt, DEFAULT_TRIAL_VERIFICATION_MINUTES) : "",
       emailVerificationSentAt: verificationEnabled ? verificationRequestedAt : ""
     }, { role: "superadmin", centerId: DEFAULT_CENTER_ID, centerName: DEFAULT_CENTER_NAME });
@@ -743,20 +761,19 @@ class DesktopMirrorService {
       verification: {
         required: verificationEnabled,
         email: contactEmail,
-        code: verificationCode
+        token: verificationToken
       },
       payment: getTrialPaymentConfig(),
       user
     };
   }
 
-  verifyTrialEmail(payload = {}) {
-    const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
-    const verificationCode = String(payload.code || "").trim();
-    if (!contactEmail) throw new Error("Email obbligatoria");
-    if (!verificationCode) throw new Error("Codice verifica obbligatorio");
-    const user = this.usersRepository.list().find((item) => String(item.contactEmail || "").toLowerCase() === contactEmail);
-    if (!user) throw new Error("Nessuna prova collegata a questa email");
+  verifyTrialEmailToken(payload = {}) {
+    const token = String(payload.token || "").trim();
+    if (!token) throw new Error("Token verifica obbligatorio");
+    const tokenHash = hashToken(token);
+    const user = this.usersRepository.list().find((item) => String(item.emailVerificationTokenHash || "") === tokenHash);
+    if (!user) throw new Error("Link di verifica non valido");
     if (String(user.emailVerifiedAt || "").trim()) {
       return {
         success: true,
@@ -764,17 +781,15 @@ class DesktopMirrorService {
         user: this.serializeUserSummary(user)
       };
     }
-    if (String(user.emailVerificationCode || "").trim() !== verificationCode) {
-      throw new Error("Codice verifica non valido");
-    }
     if (user.emailVerificationExpiresAt && new Date(user.emailVerificationExpiresAt).getTime() < Date.now()) {
-      throw new Error("Codice verifica scaduto. Richiedi una nuova attivazione.");
+      throw new Error("Link di verifica scaduto. Richiedi una nuova attivazione.");
     }
     const verifiedAt = nowIso();
     const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
       ...current,
       emailVerifiedAt: verifiedAt,
       emailVerificationCode: "",
+      emailVerificationTokenHash: "",
       emailVerificationExpiresAt: "",
       accountStatus: "trial",
       updatedAt: verifiedAt
@@ -783,6 +798,67 @@ class DesktopMirrorService {
       success: true,
       message: "Email verificata. La tua prova gratuita è attiva.",
       payment: getTrialPaymentConfig(),
+      user: this.serializeUserSummary(next || user)
+    };
+  }
+
+  requestPasswordReset(payload = {}) {
+    const identifier = sanitizeUsername(payload.identifier || payload.username || payload.email || "").trim();
+    const emailIdentifier = String(payload.identifier || payload.email || "").trim().toLowerCase();
+    const user = this.usersRepository.list().find((item) =>
+      String(item.username || "").toLowerCase() === identifier ||
+      String(item.contactEmail || "").toLowerCase() === emailIdentifier
+    );
+    if (!user || !String(user.contactEmail || "").trim()) {
+      return {
+        success: true,
+        message: "Se l'account esiste, abbiamo inviato una mail per reimpostare la password."
+      };
+    }
+    const resetToken = makeSecureToken();
+    const resetIssuedAt = nowIso();
+    this.usersRepository.update(user.id, (current) => ({
+      ...current,
+      passwordResetTokenHash: hashToken(resetToken),
+      passwordResetExpiresAt: addMinutesIso(resetIssuedAt, 30),
+      passwordResetSentAt: resetIssuedAt,
+      updatedAt: resetIssuedAt
+    }));
+    return {
+      success: true,
+      message: "Se l'account esiste, abbiamo inviato una mail per reimpostare la password.",
+      delivery: {
+        email: String(user.contactEmail || "").trim().toLowerCase(),
+        token: resetToken
+      }
+    };
+  }
+
+  resetPasswordWithToken(payload = {}) {
+    const token = String(payload.token || "").trim();
+    const password = String(payload.password || "");
+    if (!token) throw new Error("Token reset obbligatorio");
+    if (password.length < 8) throw new Error("La password deve contenere almeno 8 caratteri");
+    const tokenHash = hashToken(token);
+    const user = this.usersRepository.list().find((item) => String(item.passwordResetTokenHash || "") === tokenHash);
+    if (!user) throw new Error("Link reset non valido");
+    if (user.passwordResetExpiresAt && new Date(user.passwordResetExpiresAt).getTime() < Date.now()) {
+      throw new Error("Link reset scaduto. Richiedi una nuova email.");
+    }
+    const changedAt = nowIso();
+    const next = this.usersRepository.update(user.id, (current) => ({
+      ...current,
+      passwordHash: hashPassword(password),
+      passwordResetTokenHash: "",
+      passwordResetExpiresAt: "",
+      passwordResetSentAt: "",
+      lastPasswordChangeAt: changedAt,
+      updatedAt: changedAt
+    }));
+    this.invalidateSessionsForUser(user.id);
+    return {
+      success: true,
+      message: "Password aggiornata correttamente. Ora puoi accedere.",
       user: this.serializeUserSummary(next || user)
     };
   }

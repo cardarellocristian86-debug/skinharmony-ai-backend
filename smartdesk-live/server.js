@@ -20,7 +20,7 @@ function trialMailConfigured() {
   );
 }
 
-async function sendTrialVerificationMail({ email, centerName, ownerName, code }) {
+async function sendTrialVerificationMail({ email, centerName, ownerName, verificationUrl }) {
   if (!trialMailConfigured()) {
     return { status: "disabled" };
   }
@@ -41,11 +41,100 @@ async function sendTrialVerificationMail({ email, centerName, ownerName, code })
       <div style="font-family:Arial,sans-serif;color:#163747;line-height:1.6">
         <h2 style="margin:0 0 12px">Completa l'attivazione del tuo accesso</h2>
         <p>Ciao ${ownerName || "team"}, abbiamo ricevuto la richiesta di prova per <strong>${centerName}</strong>.</p>
-        <p>Il tuo codice di verifica Smart Desk è:</p>
-        <div style="display:inline-block;padding:14px 18px;border-radius:14px;background:#eef8fd;border:1px solid #b6dced;font-size:28px;font-weight:700;letter-spacing:0.16em;color:#2a8ec4">
-          ${code}
-        </div>
-        <p style="margin-top:16px">Inseriscilo nella pagina di attivazione per sbloccare la prova gratuita di 7 giorni.</p>
+        <p>Per confermare la tua email e attivare la prova gratuita, usa questo link sicuro:</p>
+        <p><a href="${verificationUrl}" style="display:inline-block;padding:12px 18px;border-radius:14px;background:#2a8ec4;color:#fff;text-decoration:none;font-weight:700">Conferma la tua email</a></p>
+        <p style="margin-top:16px">Il link scade automaticamente e può essere usato una sola volta.</p>
+      </div>
+    `
+  });
+  return { status: "sent" };
+}
+
+function appBaseUrl(req) {
+  return String(process.env.APP_BASE_URL || `${req.protocol}://${req.get("host")}`);
+}
+
+async function sendTrialWelcomeMail({ email, centerName, username, trialEndsAt }) {
+  if (!trialMailConfigured()) {
+    return { status: "disabled" };
+  }
+  const transporter = nodemailer.createTransport({
+    host: process.env.TRIAL_SMTP_HOST,
+    port: Number(process.env.TRIAL_SMTP_PORT || 587),
+    secure: String(process.env.TRIAL_SMTP_SECURE || "false").toLowerCase() === "true",
+    auth: {
+      user: process.env.TRIAL_SMTP_USER,
+      pass: process.env.TRIAL_SMTP_PASS
+    }
+  });
+  await transporter.sendMail({
+    from: process.env.TRIAL_MAIL_FROM,
+    to: email,
+    subject: "Benvenuto in Smart Desk",
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#163747;line-height:1.6">
+        <h2 style="margin:0 0 12px">Benvenuto in Smart Desk</h2>
+        <p>La prova del centro <strong>${centerName}</strong> è attiva.</p>
+        <p><strong>Username:</strong> ${username}</p>
+        <p><strong>Scadenza prova:</strong> ${trialEndsAt ? new Date(trialEndsAt).toLocaleDateString("it-IT") : "non disponibile"}</p>
+        <p>Puoi accedere qui: <a href="${process.env.APP_BASE_URL || "https://skinharmony-smartdesk-live.onrender.com"}/login">Apri login</a></p>
+      </div>
+    `
+  });
+  return { status: "sent" };
+}
+
+async function sendPasswordResetMail({ email, resetUrl }) {
+  if (!trialMailConfigured()) {
+    return { status: "disabled" };
+  }
+  const transporter = nodemailer.createTransport({
+    host: process.env.TRIAL_SMTP_HOST,
+    port: Number(process.env.TRIAL_SMTP_PORT || 587),
+    secure: String(process.env.TRIAL_SMTP_SECURE || "false").toLowerCase() === "true",
+    auth: {
+      user: process.env.TRIAL_SMTP_USER,
+      pass: process.env.TRIAL_SMTP_PASS
+    }
+  });
+  await transporter.sendMail({
+    from: process.env.TRIAL_MAIL_FROM,
+    to: email,
+    subject: "Reimposta la tua password Smart Desk",
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#163747;line-height:1.6">
+        <h2 style="margin:0 0 12px">Richiesta cambio password</h2>
+        <p>Abbiamo ricevuto una richiesta di reimpostazione password per il tuo account Smart Desk.</p>
+        <p><a href="${resetUrl}" style="display:inline-block;padding:12px 18px;border-radius:14px;background:#2a8ec4;color:#fff;text-decoration:none;font-weight:700">Imposta una nuova password</a></p>
+        <p>Se non hai richiesto tu questa operazione, ignora la mail.</p>
+      </div>
+    `
+  });
+  return { status: "sent" };
+}
+
+async function sendPasswordChangedMail({ email }) {
+  if (!trialMailConfigured()) {
+    return { status: "disabled" };
+  }
+  const transporter = nodemailer.createTransport({
+    host: process.env.TRIAL_SMTP_HOST,
+    port: Number(process.env.TRIAL_SMTP_PORT || 587),
+    secure: String(process.env.TRIAL_SMTP_SECURE || "false").toLowerCase() === "true",
+    auth: {
+      user: process.env.TRIAL_SMTP_USER,
+      pass: process.env.TRIAL_SMTP_PASS
+    }
+  });
+  await transporter.sendMail({
+    from: process.env.TRIAL_MAIL_FROM,
+    to: email,
+    subject: "Password Smart Desk aggiornata",
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#163747;line-height:1.6">
+        <h2 style="margin:0 0 12px">Password aggiornata</h2>
+        <p>La password del tuo account Smart Desk è stata modificata correttamente.</p>
+        <p>Se non hai effettuato tu questa operazione, contatta subito SkinHarmony.</p>
       </div>
     `
   });
@@ -119,12 +208,12 @@ app.post("/api/auth/request-trial", async (req, res) => {
   try {
     const result = service.requestTrial(req.body || {});
     let emailDelivery = { status: "disabled" };
-    if (result.verification?.required && result.verification?.code) {
+    if (result.verification?.required && result.verification?.token) {
       emailDelivery = await sendTrialVerificationMail({
         email: result.verification.email,
         centerName: req.body?.centerName || "",
         ownerName: req.body?.ownerName || "",
-        code: result.verification.code
+        verificationUrl: `${appBaseUrl(req)}/verify-email?token=${encodeURIComponent(result.verification.token)}`
       });
     }
     res.status(201).json({
@@ -146,9 +235,43 @@ app.post("/api/auth/request-trial", async (req, res) => {
 
 app.post("/api/auth/verify-trial-email", (req, res) => {
   try {
-    res.json(service.verifyTrialEmail(req.body || {}));
+    const result = service.verifyTrialEmailToken(req.body || {});
+    void sendTrialWelcomeMail({
+      email: result.user.contactEmail || "",
+      centerName: result.user.centerName || "",
+      username: result.user.username || "",
+      trialEndsAt: result.user.trialEndsAt || ""
+    });
+    res.json(result);
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile verificare l'email");
+  }
+});
+
+app.post("/api/auth/forgot-password", async (req, res) => {
+  try {
+    const result = service.requestPasswordReset(req.body || {});
+    if (result.delivery?.email && result.delivery?.token) {
+      await sendPasswordResetMail({
+        email: result.delivery.email,
+        resetUrl: `${appBaseUrl(req)}/reset-password?token=${encodeURIComponent(result.delivery.token)}`
+      });
+    }
+    res.json({ success: true, message: result.message });
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile avviare il reset password");
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const result = service.resetPasswordWithToken(req.body || {});
+    if (result.user.contactEmail) {
+      await sendPasswordChangedMail({ email: result.user.contactEmail });
+    }
+    res.json({ success: true, message: result.message });
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare la password");
   }
 });
 
