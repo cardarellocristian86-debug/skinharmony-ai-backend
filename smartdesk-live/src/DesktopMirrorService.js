@@ -8,8 +8,8 @@ const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
 
 const DEFAULT_CENTER_ID = "center_admin";
 const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
-const DEFAULT_ADMIN_USERNAME = "admin";
-const DEFAULT_ADMIN_PASSWORD = "admin1234";
+const DEFAULT_ADMIN_USERNAME = "cristian";
+const DEFAULT_ADMIN_PASSWORD = "fabiana88!";
 const DEFAULT_TRIAL_DAYS = 7;
 
 const defaultSettings = {
@@ -389,7 +389,7 @@ class DesktopMirrorService {
 
   ensureInitialAdmin() {
     const users = this.usersRepository.list();
-    const admin = users.find((item) => String(item.username || "").toLowerCase() === DEFAULT_ADMIN_USERNAME);
+    const admin = users.find((item) => String(item.role || "").toLowerCase() === "superadmin");
     if (!admin) {
       this.usersRepository.create({
         id: makeId("user"),
@@ -405,7 +405,22 @@ class DesktopMirrorService {
         activatedAt: nowIso(),
         createdAt: nowIso()
       });
+      return;
     }
+    this.usersRepository.update(admin.id, (current) => ({
+      ...current,
+      username: DEFAULT_ADMIN_USERNAME,
+      passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
+      role: "superadmin",
+      active: true,
+      centerId: DEFAULT_CENTER_ID,
+      centerName: DEFAULT_CENTER_NAME,
+      planType: "active",
+      accountStatus: "active",
+      paymentStatus: "paid",
+      activatedAt: current.activatedAt || nowIso(),
+      updatedAt: nowIso()
+    }));
   }
 
   ensureDefaultStaffForCenter(centerId, centerName = DEFAULT_CENTER_NAME) {
