@@ -120,12 +120,21 @@ function canUseAction(role, action) {
   return (ROLE_CAPABILITIES[normalizeRole(role)] || ROLE_CAPABILITIES.owner).includes(permission);
 }
 
+function formatLocalDate(dateValue) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return formatLocalDate(new Date());
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function toDateOnly(value) {
-  if (!value) return new Date().toISOString().slice(0, 10);
+  if (!value) return formatLocalDate(new Date());
   if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return String(value);
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10);
-  return parsed.toISOString().slice(0, 10);
+  if (Number.isNaN(parsed.getTime())) return formatLocalDate(new Date());
+  return formatLocalDate(parsed);
 }
 
 function shiftDate(dateValue, days) {
@@ -801,8 +810,17 @@ class AssistantService {
       const data = await response.json();
       const raw = data?.output_text || data?.output?.[0]?.content?.[0]?.text || "{}";
       const parsed = JSON.parse(raw);
+      const sanitized = this.sanitizeResponse(parsed, context, localDecision);
+      if (localDecision.action && ["create_client", "create_appointment", "create_shift"].includes(localDecision.action)) {
+        return {
+          ...localDecision,
+          message: sanitized.message || localDecision.message,
+          requiresConfirmation: true,
+          provider: "openai"
+        };
+      }
       return {
-        ...this.sanitizeResponse(parsed, context, localDecision),
+        ...sanitized,
         provider: "openai"
       };
     } catch {

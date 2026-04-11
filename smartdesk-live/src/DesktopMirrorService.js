@@ -1980,7 +1980,7 @@ class DesktopMirrorService {
       const greeting = usableFirstName(displayName) ? `Ciao ${usableFirstName(displayName)}` : "Ciao";
       const timing = daysSinceLastVisit >= 90
         ? `sono passati ${daysSinceLastVisit} giorni dall'ultimo appuntamento`
-        : `e il momento giusto per rivedere il percorso`;
+        : `è il momento giusto per rivedere il percorso`;
       return {
         clientId,
         name: displayName,
@@ -1994,7 +1994,7 @@ class DesktopMirrorService {
         hasMarketingConsent,
         suggestedPush: signal.push,
         message: hasMarketingConsent
-          ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: cosi controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
+          ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: così controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
       };
     }).filter((item) => item.daysSinceLastVisit >= 30 || item.segment !== "attivo")
