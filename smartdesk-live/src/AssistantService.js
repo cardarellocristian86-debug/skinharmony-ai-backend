@@ -82,6 +82,8 @@ const RESPONSE_SCHEMA = {
         firstName: { anyOf: [{ type: "string" }, { type: "null" }] },
         lastName: { anyOf: [{ type: "string" }, { type: "null" }] },
         phone: { anyOf: [{ type: "string" }, { type: "null" }] },
+        noContact: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+        walkInName: { anyOf: [{ type: "string" }, { type: "null" }] },
         email: { anyOf: [{ type: "string" }, { type: "null" }] },
         period: { anyOf: [{ type: "string" }, { type: "null" }] },
         startDate: { anyOf: [{ type: "string" }, { type: "null" }] },
@@ -101,7 +103,7 @@ const RESPONSE_SCHEMA = {
         startTime: { anyOf: [{ type: "string" }, { type: "null" }] },
         endTime: { anyOf: [{ type: "string" }, { type: "null" }] }
       },
-      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note", "time", "durationMin", "clientName", "staffId", "staffName", "serviceId", "serviceName", "startTime", "endTime"]
+      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "noContact", "walkInName", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note", "time", "durationMin", "clientName", "staffId", "staffName", "serviceId", "serviceName", "startTime", "endTime"]
     },
     requiresConfirmation: { type: "boolean" }
   },
@@ -159,12 +161,18 @@ function extractClientDraft(message) {
   if (!match) return null;
   const tail = match[1].trim();
   const phone = extractPhone(tail);
-  const namePart = phone ? tail.replace(/(\+?\d[\d\s]{5,})$/, "").trim() : tail;
+  const noContact = /(senza\s+(telefono|numero|contatto|email|mail)|non\s+vuole\s+lasciare|no\s+contatto)/i.test(tail);
+  const namePart = (phone ? tail.replace(/(\+?\d[\d\s]{5,})$/, "") : tail)
+    .replace(/senza\s+(telefono|numero|contatto|email|mail)/ig, "")
+    .replace(/non\s+vuole\s+lasciare\s+(telefono|numero|contatto|email|mail)/ig, "")
+    .replace(/no\s+contatto/ig, "")
+    .trim();
   const names = splitName(namePart);
   return {
     firstName: names.firstName,
     lastName: names.lastName,
-    phone
+    phone,
+    noContact
   };
 }
 
@@ -452,6 +460,12 @@ class AssistantService {
     const normalized = normalizeText(message);
     if (!/(aggiungi|crea|inserisci|prenota).*(appuntamento|prenotazione|agenda)/.test(normalized)) return null;
     const client = this.findClientMention(message, context, session);
+    const occasionalMatch = String(message || "").match(/cliente\s+(?:occasionale\s+)?([a-zà-ù]+(?:\s+[a-zà-ù]+){0,3})/i);
+    const walkInName = !client && occasionalMatch
+      ? occasionalMatch[1]
+        .replace(/\b(oggi|domani|dopodomani|alle|ore|con|per)\b.*$/i, "")
+        .trim()
+      : "";
     const staff = this.findStaffMention(message, context, session);
     const service = this.findServiceMention(message, context, session);
     const date = parseDateFromText(message);
@@ -460,6 +474,7 @@ class AssistantService {
     return {
       clientId: client?.id || "",
       clientName: client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "" : "",
+      walkInName,
       staffId: staff?.id || "",
       staffName: staff?.name || "",
       serviceId: service?.id || "",
@@ -517,9 +532,10 @@ class AssistantService {
 
     const clientDraft = extractClientDraft(message);
     if (clientDraft) {
-      if (clientDraft.firstName && clientDraft.phone) {
+      if (clientDraft.firstName && (clientDraft.phone || clientDraft.noContact)) {
+        const noContactCopy = clientDraft.noContact ? " senza contatto telefonico/email registrato" : ` con telefono ${clientDraft.phone}`;
         return buildAction(
-          `Ho preparato il cliente ${[clientDraft.firstName, clientDraft.lastName].filter(Boolean).join(" ")} con telefono ${clientDraft.phone}. Confermi il salvataggio?`,
+          `Ho preparato il cliente ${[clientDraft.firstName, clientDraft.lastName].filter(Boolean).join(" ")}${noContactCopy}. Confermi il salvataggio?`,
           "create_client",
           clientDraft,
           true
@@ -527,8 +543,10 @@ class AssistantService {
       }
       return buildAnswer(
         [
-          "Posso creare il cliente, ma mi serve almeno nome e telefono per evitare schede inutili.",
-          "Scrivi ad esempio: crea cliente Mario Rossi 3331234567."
+          "Posso creare il cliente anche senza telefono, ma devi indicarlo chiaramente.",
+          "Esempi:",
+          "crea cliente Mario Rossi 3331234567",
+          "crea cliente Maria Rossi senza telefono"
         ].join("\n"),
         clientDraft
       );
@@ -537,7 +555,7 @@ class AssistantService {
     const appointmentDraft = this.extractAppointmentDraft(message, context, session);
     if (appointmentDraft) {
       const missing = [];
-      if (!appointmentDraft.clientId) missing.push("cliente esistente");
+      if (!appointmentDraft.clientId && !appointmentDraft.walkInName) missing.push("cliente esistente oppure cliente occasionale");
       if (!appointmentDraft.date) missing.push("data");
       if (!appointmentDraft.time) missing.push("ora");
       if (missing.length) {
@@ -546,13 +564,14 @@ class AssistantService {
             `Per creare l’appuntamento mi manca: ${missing.join(", ")}.`,
             "Scrivi un comando più completo, ad esempio:",
             "aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
+            "Oppure: aggiungi appuntamento cliente occasionale Maria domani alle 15 con Anna per colore.",
             "Se il cliente non esiste ancora, crea prima il cliente."
           ].join("\n"),
           appointmentDraft
         );
       }
       const details = [
-        appointmentDraft.clientName,
+        appointmentDraft.clientName || `cliente occasionale ${appointmentDraft.walkInName}`,
         appointmentDraft.serviceName ? `servizio ${appointmentDraft.serviceName}` : "servizio non indicato",
         appointmentDraft.staffName ? `con ${appointmentDraft.staffName}` : "operatore non indicato",
         `${appointmentDraft.date} alle ${appointmentDraft.time}`
@@ -691,9 +710,9 @@ class AssistantService {
 
     if (safe.action === "create_appointment") {
       const payload = safe.payload || {};
-      if (!payload.clientId || !payload.date || !payload.time) {
+      if ((!payload.clientId && !payload.walkInName) || !payload.date || !payload.time) {
         return buildAnswer(
-          "Non salvo appuntamenti senza cliente esistente, data e ora. Scrivi ad esempio: aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
+          "Non salvo appuntamenti senza cliente esistente o cliente occasionale, data e ora. Scrivi ad esempio: aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore. Oppure: aggiungi appuntamento cliente occasionale Maria domani alle 15.",
           payload
         );
       }
@@ -741,10 +760,11 @@ class AssistantService {
       "Le azioni sensibili non si eseguono: usa blocked_action e guida l’utente.",
       "Se la richiesta è una domanda, usa mode=answer.",
       "Se l’azione è consentita e chiara, usa mode=action.",
-      "Per create_client richiedi conferma finale quando nome e telefono sono completi.",
+      "Per create_client richiedi conferma finale quando nome e telefono sono completi, oppure quando l'utente scrive esplicitamente senza telefono/senza contatto.",
       "Per create_appointment richiedi sempre conferma finale e usa solo cliente, operatore e servizio presenti nel contesto.",
       "Per create_shift richiedi sempre conferma finale e usa solo operatori presenti nel contesto.",
-      "Non creare appuntamenti senza clientId, date e time.",
+      "Puoi creare appuntamenti senza clientId solo se payload.walkInName e presente come cliente occasionale.",
+      "Non creare appuntamenti senza clientId o walkInName, date e time.",
       "Non creare turni senza staffId, date, startTime ed endTime.",
       "Se mancano dati obbligatori, non aprire schermate: spiega esattamente cosa manca e proponi un esempio di comando completo.",
       "Non inventare dati che non sono nel contesto."

@@ -1614,6 +1614,7 @@ class DesktopMirrorService {
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       clientId: String(payload.clientId || ""),
+      walkInName: String(payload.walkInName || ""),
       appointmentId: String(payload.appointmentId || ""),
       amountCents: Number(payload.amountCents || payload.amount || 0),
       method: String(payload.method || "cash"),
