@@ -503,6 +503,101 @@ class AssistantService {
       return { ...localDecision, provider: "fallback" };
     }
   }
+
+  buildAiGoldFallback(question, context) {
+    const marketingCount = Array.isArray(context.marketing?.suggestions) ? context.marketing.suggestions.length : 0;
+    const profitAlerts = Array.isArray(context.profitability?.alerts) ? context.profitability.alerts.length : 0;
+    const firstMarketing = context.marketing?.suggestions?.[0];
+    const firstAlert = context.profitability?.alerts?.[0];
+    const lines = [
+      "Lettura AI Gold operativa sui dati disponibili:",
+      marketingCount
+        ? `Marketing: ci sono ${marketingCount} clienti da valutare. Prima priorità: ${firstMarketing?.name || "cliente"} (${firstMarketing?.motive || "richiamo suggerito"}).`
+        : "Marketing: nessun cliente prioritario rilevato ora.",
+      profitAlerts
+        ? `Redditività: ci sono ${profitAlerts} alert. Primo controllo: ${firstAlert?.title || "servizio critico"}.`
+        : "Redditività: nessun alert critico rilevato sui dati configurati.",
+      "Non ho eseguito azioni automatiche. Conferma sempre tu eventuali contatti, modifiche o verifiche operative."
+    ];
+    if (question) {
+      lines.unshift(`Domanda ricevuta: ${question}`);
+    }
+    return lines.join("\n");
+  }
+
+  async aiGoldAsk(payload = {}, session = null) {
+    if (!this.desktopMirror?.hasGoldIntelligence?.(session)) {
+      return {
+        goldEnabled: false,
+        provider: "blocked",
+        answer: "AI Gold disponibile solo con piano Gold.",
+        actions: []
+      };
+    }
+
+    const question = String(payload.question || "").trim();
+    const context = {
+      marketing: this.desktopMirror.getAiGoldMarketing(session),
+      profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
+      dashboard: this.getDashboardSafe(session),
+      settings: this.getSettingsSafe(session)
+    };
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+
+    if (!apiKey) {
+      return {
+        goldEnabled: true,
+        provider: "fallback",
+        answer: this.buildAiGoldFallback(question, context),
+        actions: []
+      };
+    }
+
+    const instructions = [
+      "Sei AI Gold di SkinHarmony Smart Desk.",
+      "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
+      "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
+      "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
+      "Suggerisci azioni concrete che l'operatore deve confermare.",
+      "Evita claim medici, terapeutici o promesse di risultato.",
+      "Rispondi in italiano, tono premium, chiaro, pratico.",
+      "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."
+    ].join("\n");
+
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          input: [
+            { role: "system", content: [{ type: "input_text", text: instructions }] },
+            { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context }) }] }
+          ]
+        })
+      });
+      if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
+      const data = await response.json();
+      const answer = data?.output_text || data?.output?.[0]?.content?.[0]?.text || this.buildAiGoldFallback(question, context);
+      return {
+        goldEnabled: true,
+        provider: "openai",
+        answer,
+        actions: []
+      };
+    } catch {
+      return {
+        goldEnabled: true,
+        provider: "fallback",
+        answer: this.buildAiGoldFallback(question, context),
+        actions: []
+      };
+    }
+  }
 }
 
 module.exports = {

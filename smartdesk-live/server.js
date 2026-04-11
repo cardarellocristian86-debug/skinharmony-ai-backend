@@ -583,6 +583,14 @@ app.get("/api/ai-gold/profitability", (req, res) => {
   }, req.session));
 });
 
+app.post("/api/ai-gold/ask", async (req, res) => {
+  try {
+    res.json(await assistantService.aiGoldAsk(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "AI Gold non disponibile");
+  }
+});
+
 app.get("/api/treatments", (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
