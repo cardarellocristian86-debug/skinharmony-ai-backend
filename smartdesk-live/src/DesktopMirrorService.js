@@ -1184,6 +1184,8 @@ class DesktopMirrorService {
       category: String(payload.category || ""),
       durationMin: Number(payload.durationMin || payload.duration || 45),
       priceCents: Number(payload.priceCents || payload.price || 0),
+      estimatedProductCostCents: Number(payload.estimatedProductCostCents || payload.productCostCents || 0),
+      technologyCostCents: Number(payload.technologyCostCents || 0),
       active: payload.active !== false,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1211,6 +1213,7 @@ class DesktopMirrorService {
       name: String(payload.name || "Nuovo operatore"),
       role: String(payload.role || ""),
       colorTag: String(payload.colorTag || "#6db7ff"),
+      hourlyCostCents: Number(payload.hourlyCostCents || payload.hourlyCost || 0),
       active: payload.active === false ? 0 : 1,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1572,7 +1575,8 @@ class DesktopMirrorService {
       const durationMin = Number(appointment.durationMin || service.durationMin || 60);
       const operatorCostCents = Math.round((Number(operator?.hourlyCostCents || 0) / 60) * durationMin);
       const productCostCents = Number(service.estimatedProductCostCents || service.productCostCents || inventoryCostAverage || 0);
-      const costCents = operatorCostCents + productCostCents;
+      const technologyCostCents = Number(service.technologyCostCents || 0);
+      const costCents = operatorCostCents + productCostCents + technologyCostCents;
       current.executions += 1;
       current.revenueCents += revenueCents;
       current.costCents += costCents;
