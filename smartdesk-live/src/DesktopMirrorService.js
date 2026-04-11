@@ -1875,7 +1875,7 @@ class DesktopMirrorService {
     };
     const usableFirstName = (name) => {
       const first = String(name || "").trim().split(/\s+/)[0] || "";
-      if (!first || /^(ai|gold|test|cliente)$/i.test(first)) return "";
+      if (!first || /^(ai|gold|test|cliente|top|persa|perso|ferma|fermo|colore|cute|balayage|piega|keratina)$/i.test(first)) return "";
       return first;
     };
     const serviceSignal = (serviceName, clientName) => {
