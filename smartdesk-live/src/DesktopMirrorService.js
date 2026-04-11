@@ -126,6 +126,116 @@ function sanitizeFileName(value) {
     .toLowerCase() || "file";
 }
 
+function normalizePdfText(value) {
+  const replacements = {
+    "€": "EUR",
+    "è": "e",
+    "é": "e",
+    "à": "a",
+    "ì": "i",
+    "ò": "o",
+    "ù": "u",
+    "È": "E",
+    "É": "E",
+    "À": "A",
+    "Ì": "I",
+    "Ò": "O",
+    "Ù": "U",
+    "’": "'",
+    "“": "\"",
+    "”": "\"",
+    "–": "-"
+  };
+  return String(value || "").replace(/[€èéàìòùÈÉÀÌÒÙ’“”–]/g, (match) => replacements[match] || match);
+}
+
+function escapePdfText(value) {
+  return normalizePdfText(value).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function wrapPdfLine(value, limit = 92) {
+  const words = normalizePdfText(value).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    const next = `${current} ${word}`.trim();
+    if (next.length > limit && current) {
+      lines.push(current);
+      current = word;
+      return;
+    }
+    current = next;
+  });
+  if (current) lines.push(current);
+  return lines.length ? lines : [""];
+}
+
+function writeSimplePdf(filePath, sections = []) {
+  const pageWidth = 595;
+  const pageHeight = 842;
+  const margin = 54;
+  const pages = [];
+  let current = [];
+  let y = pageHeight - margin;
+  const pushPage = () => {
+    if (current.length) pages.push(current);
+    current = [];
+    y = pageHeight - margin;
+  };
+  sections.forEach((section) => {
+    const style = section.style || "body";
+    const lineHeight = style === "title" ? 24 : style === "heading" ? 18 : 14;
+    const size = style === "title" ? 20 : style === "heading" ? 14 : 10;
+    const wrapped = wrapPdfLine(section.text || "", style === "title" ? 56 : style === "heading" ? 74 : 92);
+    const needed = wrapped.length * lineHeight + (style === "title" || style === "heading" ? 10 : 3);
+    if (y - needed < margin) pushPage();
+    wrapped.forEach((line) => {
+      current.push({ style, size, text: line, y });
+      y -= lineHeight;
+    });
+    y -= style === "title" || style === "heading" ? 8 : 3;
+  });
+  pushPage();
+
+  const objects = [];
+  const add = (content) => {
+    objects.push(content);
+    return objects.length;
+  };
+  const regularFont = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  const boldFont = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>");
+  const contentIds = pages.map((page, pageIndex) => {
+    const commands = ["BT"];
+    page.forEach((line) => {
+      const font = line.style === "body" ? "F1" : "F2";
+      commands.push(`/${font} ${line.size} Tf ${margin} ${line.y} Td (${escapePdfText(line.text)}) Tj`);
+      commands.push(`${-margin} ${-line.y} Td`);
+    });
+    commands.push(`/F1 8 Tf ${margin} 28 Td (Pagina ${pageIndex + 1} di ${pages.length} - Documento consensi SkinHarmony Smart Desk) Tj`);
+    commands.push("ET");
+    const stream = commands.join("\n");
+    return add(`<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`);
+  });
+  const pageIds = [];
+  const pagesId = objects.length + contentIds.length + 1;
+  contentIds.forEach((contentId) => {
+    pageIds.push(add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${regularFont} 0 R /F2 ${boldFont} 0 R >> >> /Contents ${contentId} 0 R >>`));
+  });
+  const realPagesId = add(`<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`);
+  const catalogId = add(`<< /Type /Catalog /Pages ${realPagesId} 0 R >>`);
+  const chunks = [Buffer.from("%PDF-1.4\n", "latin1")];
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.concat(chunks).length);
+    chunks.push(Buffer.from(`${index + 1} 0 obj\n${object}\nendobj\n`, "latin1"));
+  });
+  const body = Buffer.concat(chunks);
+  const xrefOffset = body.length;
+  const xrefRows = offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n `).join("\n");
+  const trailer = `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${xrefRows}\ntrailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  fs.writeFileSync(filePath, Buffer.concat([body, Buffer.from(trailer, "latin1")]));
+}
+
 function splitName(name = "") {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
   return {
@@ -1045,9 +1155,11 @@ class DesktopMirrorService {
   }
 
   saveClient(payload = {}, session = null) {
-    const firstName = String(payload.firstName || "").trim();
-    const lastName = String(payload.lastName || "").trim();
-    const fullName = String(payload.name || `${firstName} ${lastName}`.trim() || payload.fullName || "Nuovo cliente");
+    const providedName = String(payload.name || payload.fullName || "").trim();
+    const split = splitName(providedName);
+    const firstName = String(payload.firstName || split.firstName || "").trim();
+    const lastName = String(payload.lastName || split.lastName || "").trim();
+    const fullName = String(`${firstName} ${lastName}`.trim() || providedName || "Nuovo cliente");
     const now = nowIso();
     const centerId = this.getCenterId(session);
     const centerName = this.getCenterName(session);
@@ -1055,6 +1167,8 @@ class DesktopMirrorService {
       id: payload.id || makeId("client"),
       centerId,
       centerName,
+      firstName,
+      lastName,
       name: fullName,
       phone: String(payload.phone || ""),
       email: String(payload.email || ""),
@@ -1070,6 +1184,9 @@ class DesktopMirrorService {
       privacyConsent: Boolean(payload.privacyConsent),
       marketingConsent: Boolean(payload.marketingConsent),
       sensitiveDataConsent: Boolean(payload.sensitiveDataConsent),
+      privacyConsentAt: String(payload.privacyConsentAt || (payload.privacyConsent ? now : "")),
+      marketingConsentAt: String(payload.marketingConsentAt || (payload.marketingConsent ? now : "")),
+      sensitiveDataConsentAt: String(payload.sensitiveDataConsentAt || (payload.sensitiveDataConsent ? now : "")),
       consentSource: String(payload.consentSource || "in_sede"),
       totalValue: Number(payload.totalValue || 0),
       loyaltyTier: String(payload.loyaltyTier || "base"),
@@ -1116,11 +1233,41 @@ class DesktopMirrorService {
   generateClientConsentDocument(clientId, session = null) {
     const detail = this.getClientDetail(clientId, session);
     ensureDir(EXPORTS_DIR);
-    const fileName = `consent-${sanitizeFileName(detail.client.name)}-${Date.now()}.html`;
+    const client = detail.client || {};
+    const clientName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente";
+    const fileName = `consensi-${sanitizeFileName(clientName)}-${Date.now()}.pdf`;
     const filePath = path.join(EXPORTS_DIR, fileName);
-    const html = `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Consenso</title></head><body><h1>${escapeHtml(detail.client.name)}</h1><p>Documento consenso generato da Smart Desk.</p></body></html>`;
-    fs.writeFileSync(filePath, html);
-    return { path: filePath, url: `/exports/${fileName}` };
+    const today = new Date().toLocaleDateString("it-IT");
+    const sections = [
+      { style: "title", text: "SkinHarmony Smart Desk - Modulo privacy e consensi" },
+      { style: "body", text: `Cliente: ${clientName}` },
+      { style: "body", text: `Telefono: ${client.phone || "________________"}    Email: ${client.email || "________________"}` },
+      { style: "body", text: `Data nascita: ${client.birthDate || "________________"}    Data documento: ${today}` },
+      { style: "heading", text: "Informativa privacy" },
+      { style: "body", text: "Il presente modulo raccoglie la presa visione dell'informativa privacy e i consensi del cliente per la gestione dei dati nel gestionale del centro. Il trattamento dei dati avviene nel rispetto del Regolamento UE 2016/679 (GDPR) e della normativa nazionale applicabile in materia di protezione dei dati personali." },
+      { style: "body", text: "I dati raccolti possono includere dati anagrafici, contatti, appuntamenti, servizi effettuati, preferenze operative, note di servizio, consensi e informazioni necessarie alla corretta gestione del rapporto con il cliente." },
+      { style: "heading", text: "Finalita del trattamento" },
+      { style: "body", text: "1. Gestione anagrafica cliente, appuntamenti, storico servizi e comunicazioni operative legate al servizio richiesto." },
+      { style: "body", text: "2. Gestione amministrativa, fiscale e organizzativa del rapporto con il centro." },
+      { style: "body", text: "3. Invio di comunicazioni marketing, promozionali o recall commerciali solo se il cliente presta consenso specifico." },
+      { style: "body", text: "4. Gestione di note tecniche o informazioni utili allo svolgimento del servizio, incluse eventuali indicazioni su preferenze, sensibilita o controindicazioni dichiarate dal cliente." },
+      { style: "heading", text: "Consensi" },
+      { style: "body", text: `[${client.privacyConsent ? "X" : " "}] Presa visione informativa privacy - Data: ${client.privacyConsentAt ? new Date(client.privacyConsentAt).toLocaleDateString("it-IT") : "________________"}` },
+      { style: "body", text: `[${client.marketingConsent ? "X" : " "}] Consenso marketing e recall commerciali - Data: ${client.marketingConsentAt ? new Date(client.marketingConsentAt).toLocaleDateString("it-IT") : "________________"}` },
+      { style: "body", text: `[${client.sensitiveDataConsent ? "X" : " "}] Consenso al trattamento di dati particolari eventualmente dichiarati dal cliente per finalita operative del servizio - Data: ${client.sensitiveDataConsentAt ? new Date(client.sensitiveDataConsentAt).toLocaleDateString("it-IT") : "________________"}` },
+      { style: "body", text: `Fonte consenso registrata: ${client.consentSource || "in_sede"}` },
+      { style: "heading", text: "Diritti dell'interessato" },
+      { style: "body", text: "Il cliente puo richiedere accesso, rettifica, aggiornamento, limitazione, cancellazione dei dati ove applicabile, opposizione al trattamento e revoca dei consensi prestati, senza pregiudicare la liceita del trattamento basata sul consenso prima della revoca." },
+      { style: "heading", text: "Dichiarazione e firma" },
+      { style: "body", text: "Il cliente dichiara di aver ricevuto le informazioni essenziali sul trattamento dei dati personali e di esprimere i consensi selezionati nel presente modulo." },
+      { style: "body", text: "Luogo e data: ______________________________________________" },
+      { style: "body", text: "Firma cliente: _____________________________________________" },
+      { style: "body", text: "Firma operatore / centro: __________________________________" },
+      { style: "heading", text: "Nota operativa" },
+      { style: "body", text: "Documento generato da Smart Desk come supporto operativo. Il centro resta responsabile della propria informativa privacy completa, dei dati del titolare del trattamento e dell'adeguamento legale al proprio caso specifico." }
+    ];
+    writeSimplePdf(filePath, sections);
+    return { path: filePath, url: `/exports/${fileName}`, format: "pdf" };
   }
 
   listAppointments(view = "day", anchorDate = nowIso(), _includeArchived = false, session = null) {
