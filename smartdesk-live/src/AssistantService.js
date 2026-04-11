@@ -507,8 +507,10 @@ class AssistantService {
   buildAiGoldFallback(question, context) {
     const marketingCount = Array.isArray(context.marketing?.suggestions) ? context.marketing.suggestions.length : 0;
     const profitAlerts = Array.isArray(context.profitability?.alerts) ? context.profitability.alerts.length : 0;
+    const monthlyTrend = Array.isArray(context.profitability?.monthlyTrend) ? context.profitability.monthlyTrend : [];
     const firstMarketing = context.marketing?.suggestions?.[0];
     const firstAlert = context.profitability?.alerts?.[0];
+    const lastDrop = [...monthlyTrend].reverse().find((item) => item.signal === "drop");
     const lines = [
       "Lettura AI Gold operativa sui dati disponibili:",
       marketingCount
@@ -517,6 +519,9 @@ class AssistantService {
       profitAlerts
         ? `Redditività: ci sono ${profitAlerts} alert. Primo controllo: ${firstAlert?.title || "servizio critico"}.`
         : "Redditività: nessun alert critico rilevato sui dati configurati.",
+      lastDrop
+        ? `Trend mensile: ${lastDrop.month} mostra un calo da controllare rispetto al mese precedente.`
+        : "Trend mensile: nessun calo importante rilevato nel periodo selezionato.",
       "Non ho eseguito azioni automatiche. Conferma sempre tu eventuali contatti, modifiche o verifiche operative."
     ];
     if (question) {
@@ -560,6 +565,7 @@ class AssistantService {
       "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
       "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
       "Suggerisci azioni concrete che l'operatore deve confermare.",
+      "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
       "Evita claim medici, terapeutici o promesse di risultato.",
       "Rispondi in italiano, tono premium, chiaro, pratico.",
       "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."

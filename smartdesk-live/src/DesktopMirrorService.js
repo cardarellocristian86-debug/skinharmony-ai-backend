@@ -1554,6 +1554,7 @@ class DesktopMirrorService {
       ? Math.round(inventory.reduce((sum, item) => sum + Number(item.costCents || 0), 0) / inventory.length)
       : 0;
     const serviceMap = new Map();
+    const monthlyMap = new Map();
     appointments.forEach((appointment) => {
       const service = serviceById.get(String(appointment.serviceId || "")) || {};
       const serviceId = String(service.id || appointment.serviceId || "unknown");
@@ -1577,11 +1578,27 @@ class DesktopMirrorService {
       const productCostCents = Number(service.estimatedProductCostCents || service.productCostCents || inventoryCostAverage || 0);
       const technologyCostCents = Number(service.technologyCostCents || 0);
       const costCents = operatorCostCents + productCostCents + technologyCostCents;
+      const monthKey = String(appointment.startAt || appointment.createdAt || "").slice(0, 7) || "senza-data";
+      const monthly = monthlyMap.get(monthKey) || {
+        month: monthKey,
+        executions: 0,
+        revenueCents: 0,
+        costCents: 0,
+        profitCents: 0,
+        marginPercent: 0,
+        deltaRevenueCents: 0,
+        signal: "stable"
+      };
       current.executions += 1;
       current.revenueCents += revenueCents;
       current.costCents += costCents;
       current.profitCents += revenueCents - costCents;
+      monthly.executions += 1;
+      monthly.revenueCents += revenueCents;
+      monthly.costCents += costCents;
+      monthly.profitCents += revenueCents - costCents;
       serviceMap.set(serviceId, current);
+      monthlyMap.set(monthKey, monthly);
     });
     const serviceRows = Array.from(serviceMap.values()).map((item) => {
       const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
@@ -1594,6 +1611,24 @@ class DesktopMirrorService {
       costCents: summary.costCents + Number(item.costCents || 0),
       profitCents: summary.profitCents + Number(item.profitCents || 0)
     }), { executions: 0, revenueCents: 0, costCents: 0, profitCents: 0 });
+    const monthlyTrend = Array.from(monthlyMap.values())
+      .sort((a, b) => String(a.month).localeCompare(String(b.month)))
+      .map((item, index, rows) => {
+        const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
+        const previous = rows[index - 1];
+        const deltaRevenueCents = previous ? item.revenueCents - Number(previous.revenueCents || 0) : 0;
+        const signal = deltaRevenueCents <= -300000
+          ? "drop"
+          : deltaRevenueCents >= 300000
+            ? "growth"
+            : "stable";
+        return {
+          ...item,
+          marginPercent,
+          deltaRevenueCents,
+          signal
+        };
+      });
     const alerts = serviceRows
       .filter((item) => item.status !== "HEALTHY")
       .map((item) => ({
@@ -1610,6 +1645,7 @@ class DesktopMirrorService {
       services: serviceRows,
       products: [],
       technologies: [],
+      monthlyTrend,
       alerts,
       revenueCents: totals.revenueCents,
       inventoryCostCents: totals.costCents
@@ -1710,7 +1746,13 @@ class DesktopMirrorService {
       };
     }
     const actions = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
-      .sort((a, b) => new Date(b.generatedAt || b.createdAt || 0).getTime() - new Date(a.generatedAt || a.createdAt || 0).getTime());
+      .sort((a, b) => {
+        const priorityRank = { alta: 3, media: 2, bassa: 1 };
+        const statusRank = { to_approve: 4, approved: 3, copied: 2, done: 1, archived: 0 };
+        return (priorityRank[String(b.priority || "")] || 0) - (priorityRank[String(a.priority || "")] || 0)
+          || (statusRank[String(b.status || "")] || 0) - (statusRank[String(a.status || "")] || 0)
+          || new Date(b.generatedAt || b.createdAt || 0).getTime() - new Date(a.generatedAt || a.createdAt || 0).getTime();
+      });
     return {
       goldEnabled: true,
       generatedAt: nowIso(),
@@ -1742,7 +1784,10 @@ class DesktopMirrorService {
     const priorityRank = { alta: 3, media: 2, bassa: 1 };
     const candidates = (insight.suggestions || [])
       .filter((item) => item.hasMarketingConsent)
-      .sort((a, b) => (priorityRank[b.priority] || 0) - (priorityRank[a.priority] || 0))
+      .sort((a, b) => (
+        (priorityRank[b.priority] || 0) - (priorityRank[a.priority] || 0)
+        || Number(b.daysSinceLastVisit || 0) - Number(a.daysSinceLastVisit || 0)
+      ))
       .slice(0, 12);
 
     candidates.forEach((suggestion) => {
@@ -1876,6 +1921,7 @@ class DesktopMirrorService {
       goldEnabled: true,
       generatedAt: nowIso(),
       summary: overview.totals,
+      monthlyTrend: overview.monthlyTrend || [],
       alerts,
       suggestions
     };
