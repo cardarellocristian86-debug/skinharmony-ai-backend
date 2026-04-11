@@ -10,6 +10,7 @@ const ACTIONS = [
   "open_turns",
   "open_attendance",
   "open_profitability",
+  "open_cashdesk",
   "open_protocols",
   "open_training",
   "open_settings",
@@ -35,6 +36,7 @@ const ACTION_PERMISSIONS = {
   open_turns: "UI_NAVIGATION",
   open_attendance: "UI_NAVIGATION",
   open_profitability: "UI_NAVIGATION",
+  open_cashdesk: "UI_NAVIGATION",
   open_protocols: "UI_NAVIGATION",
   open_training: "UI_NAVIGATION",
   open_settings: "UI_NAVIGATION",
@@ -282,6 +284,14 @@ function buildBlocked(message, action = null, payload = {}) {
   return { mode: "blocked_action", message, action, payload, requiresConfirmation: false };
 }
 
+function hasAnyPayloadValue(payload = {}) {
+  return Object.values(payload || {}).some((value) => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "number") return Number.isFinite(value) && value !== 0;
+    return String(value).trim() !== "";
+  });
+}
+
 class AssistantService {
   constructor(desktopMirror) {
     this.desktopMirror = desktopMirror;
@@ -515,9 +525,11 @@ class AssistantService {
           true
         );
       }
-      return buildAction(
-        "Apro il form cliente con i dati disponibili. Completa i campi mancanti e conferma il salvataggio.",
-        "open_client_form",
+      return buildAnswer(
+        [
+          "Posso creare il cliente, ma mi serve almeno nome e telefono per evitare schede inutili.",
+          "Scrivi ad esempio: crea cliente Mario Rossi 3331234567."
+        ].join("\n"),
         clientDraft
       );
     }
@@ -529,9 +541,13 @@ class AssistantService {
       if (!appointmentDraft.date) missing.push("data");
       if (!appointmentDraft.time) missing.push("ora");
       if (missing.length) {
-        return buildAction(
-          `Per creare l’appuntamento mi manca: ${missing.join(", ")}. Ti apro l’agenda, poi completa i dati mancanti.`,
-          "open_agenda",
+        return buildAnswer(
+          [
+            `Per creare l’appuntamento mi manca: ${missing.join(", ")}.`,
+            "Scrivi un comando più completo, ad esempio:",
+            "aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
+            "Se il cliente non esiste ancora, crea prima il cliente."
+          ].join("\n"),
           appointmentDraft
         );
       }
@@ -552,9 +568,12 @@ class AssistantService {
       if (!shiftDraft.startTime) missing.push("ora inizio");
       if (!shiftDraft.endTime) missing.push("ora fine");
       if (missing.length) {
-        return buildAction(
-          `Per creare il turno mi manca: ${missing.join(", ")}. Ti apro Turni e presenze, poi completa i dati mancanti.`,
-          "open_turns",
+        return buildAnswer(
+          [
+            `Per creare il turno mi manca: ${missing.join(", ")}.`,
+            "Scrivi un comando completo, ad esempio:",
+            "crea turno Anna domani dalle 9 alle 18."
+          ].join("\n"),
           shiftDraft
         );
       }
@@ -614,6 +633,7 @@ class AssistantService {
         : buildBlocked("Il modulo magazzino non è attivo in questo centro.", "open_settings", { section: "inventory" });
     }
     if (/(apri report|vai report|report business|reportistica)/.test(normalized)) return buildAction("Apro i report.", "open_reports", {});
+    if (/(apri cassa|vai cassa|cassa|pagamento|pagamenti)/.test(normalized)) return buildAction("Apro la cassa operativa.", "open_cashdesk", {});
     if (/(apri turni|turni|presenze)/.test(normalized)) return buildAction("Apro turni e presenze.", normalized.includes("presenze") ? "open_attendance" : "open_turns", {});
     if (/(apri redditivita|redditivita|margini|profitto)/.test(normalized)) {
       return context.settings.profitabilityEnabled
@@ -665,10 +685,17 @@ class AssistantService {
       );
     }
 
+    if ((safe.action === "create_appointment" || safe.action === "create_shift" || safe.action === "create_client") && !hasAnyPayloadValue(safe.payload)) {
+      return fallback;
+    }
+
     if (safe.action === "create_appointment") {
       const payload = safe.payload || {};
       if (!payload.clientId || !payload.date || !payload.time) {
-        return buildBlocked("Non salvo appuntamenti senza cliente, data e ora. Ti apro l’agenda per completare i dati.", "open_agenda", payload);
+        return buildAnswer(
+          "Non salvo appuntamenti senza cliente esistente, data e ora. Scrivi ad esempio: aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
+          payload
+        );
       }
       safe.requiresConfirmation = true;
     }
@@ -676,7 +703,10 @@ class AssistantService {
     if (safe.action === "create_shift") {
       const payload = safe.payload || {};
       if (!payload.staffId || !payload.date || !payload.startTime || !payload.endTime) {
-        return buildBlocked("Non salvo turni senza operatore, data, ora inizio e ora fine. Ti apro Turni e presenze.", "open_turns", payload);
+        return buildAnswer(
+          "Non salvo turni senza operatore, data, ora inizio e ora fine. Scrivi ad esempio: crea turno Anna domani dalle 9 alle 18.",
+          payload
+        );
       }
       safe.requiresConfirmation = true;
     }
@@ -716,6 +746,7 @@ class AssistantService {
       "Per create_shift richiedi sempre conferma finale e usa solo operatori presenti nel contesto.",
       "Non creare appuntamenti senza clientId, date e time.",
       "Non creare turni senza staffId, date, startTime ed endTime.",
+      "Se mancano dati obbligatori, non aprire schermate: spiega esattamente cosa manca e proponi un esempio di comando completo.",
       "Non inventare dati che non sono nel contesto."
     ].join("\n");
 
