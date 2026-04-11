@@ -301,6 +301,27 @@ function buildBlocked(message, action = null, payload = {}) {
   return { mode: "blocked_action", message, action, payload, requiresConfirmation: false };
 }
 
+function buildConfirmationMessage(action, payload = {}, fallback = "Confermi il salvataggio?") {
+  if (action === "create_client") {
+    const name = [payload.firstName, payload.lastName].filter(Boolean).join(" ") || "nuovo cliente";
+    const contact = payload.noContact ? " senza telefono/email" : payload.phone ? ` con telefono ${payload.phone}` : "";
+    return `Ho preparato il cliente ${name}${contact}. Confermi il salvataggio?`;
+  }
+  if (action === "create_appointment") {
+    const client = payload.clientName || payload.walkInName || "cliente";
+    const service = payload.serviceName ? ` per ${payload.serviceName}` : "";
+    const staff = payload.staffName ? ` con ${payload.staffName}` : "";
+    const date = payload.date ? ` il ${payload.date}` : "";
+    const time = payload.time ? ` alle ${payload.time}` : "";
+    return `Ho preparato l'appuntamento per ${client}${date}${time}${service}${staff}. Confermi il salvataggio?`;
+  }
+  if (action === "create_shift") {
+    const staff = payload.staffName || "operatore";
+    return `Ho preparato il turno per ${staff} il ${payload.date || "giorno indicato"} dalle ${payload.startTime || "--"} alle ${payload.endTime || "--"}. Confermi il salvataggio?`;
+  }
+  return fallback;
+}
+
 function hasAnyPayloadValue(payload = {}) {
   return Object.values(payload || {}).some((value) => {
     if (value === null || value === undefined) return false;
@@ -813,9 +834,17 @@ class AssistantService {
       const sanitized = this.sanitizeResponse(parsed, context, localDecision);
       if (localDecision.action && ["create_client", "create_appointment", "create_shift"].includes(localDecision.action)) {
         const mergedPayload = { ...(localDecision.payload || {}) };
+        const normalizedMessage = normalizeText(message);
+        const candidateStaffName = String(sanitized.payload?.staffName || "").trim();
+        const canMergeStaff = candidateStaffName && normalizedMessage.includes(normalizeText(candidateStaffName));
+        const candidateServiceName = String(sanitized.payload?.serviceName || "").trim();
+        const canMergeService = candidateServiceName
+          && normalizeText(candidateServiceName).split(/\s+/).some((word) => word.length >= 4 && normalizedMessage.includes(word));
         if (sanitized.action === localDecision.action && sanitized.payload && typeof sanitized.payload === "object") {
           Object.entries(sanitized.payload).forEach(([key, value]) => {
             if ((mergedPayload[key] === undefined || mergedPayload[key] === null || mergedPayload[key] === "") && value !== undefined && value !== null && value !== "") {
+              if (["staffId", "staffName", "operatorId"].includes(key) && !canMergeStaff) return;
+              if (["serviceId", "serviceName"].includes(key) && !canMergeService) return;
               mergedPayload[key] = value;
             }
           });
@@ -823,7 +852,7 @@ class AssistantService {
         return {
           ...localDecision,
           payload: mergedPayload,
-          message: sanitized.message || localDecision.message,
+          message: buildConfirmationMessage(localDecision.action, mergedPayload, localDecision.message),
           requiresConfirmation: true,
           provider: "openai"
         };
