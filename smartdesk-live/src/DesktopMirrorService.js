@@ -243,6 +243,7 @@ class DesktopMirrorService {
     this.inventoryMovementsRepository = this.createRepository("inventory_movements", []);
     this.paymentsRepository = this.createRepository("payments", []);
     this.treatmentsRepository = this.createRepository("treatments", []);
+    this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
@@ -524,6 +525,7 @@ class DesktopMirrorService {
         { name: "inventory_movements", filePath: path.join(DATA_DIR, "inventory_movements.json"), defaultValue: [] },
         { name: "payments", filePath: path.join(DATA_DIR, "payments.json"), defaultValue: [] },
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
+        { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
@@ -1692,6 +1694,139 @@ class DesktopMirrorService {
       generatedAt: nowIso(),
       suggestions
     };
+  }
+
+  getAiMarketingAutopilot(session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "Marketing Autopilot disponibile solo con piano Gold.",
+        actions: []
+      };
+    }
+    const actions = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
+      .sort((a, b) => new Date(b.generatedAt || b.createdAt || 0).getTime() - new Date(a.generatedAt || a.createdAt || 0).getTime());
+    return {
+      goldEnabled: true,
+      generatedAt: nowIso(),
+      actions,
+      summary: {
+        total: actions.length,
+        pending: actions.filter((item) => ["new", "to_approve", "approved"].includes(String(item.status || ""))).length,
+        done: actions.filter((item) => item.status === "done").length,
+        archived: actions.filter((item) => item.status === "archived").length
+      }
+    };
+  }
+
+  generateAiMarketingAutopilotActions(session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "Marketing Autopilot disponibile solo con piano Gold.",
+        actions: []
+      };
+    }
+    const centerId = this.getCenterId(session);
+    const centerName = this.getCenterName(session);
+    const today = toDateOnly(nowIso());
+    const existing = this.filterByCenter(this.aiMarketingActionsRepository.list(), session);
+    const insight = this.getAiGoldMarketing(session);
+    const created = [];
+    const priorityRank = { alta: 3, media: 2, bassa: 1 };
+    const candidates = (insight.suggestions || [])
+      .filter((item) => item.hasMarketingConsent)
+      .sort((a, b) => (priorityRank[b.priority] || 0) - (priorityRank[a.priority] || 0))
+      .slice(0, 12);
+
+    candidates.forEach((suggestion) => {
+      const alreadyOpen = existing.some((item) => (
+        String(item.clientId || "") === String(suggestion.clientId || "")
+        && String(item.type || "") === "recall"
+        && !["done", "archived"].includes(String(item.status || ""))
+      ));
+      const generatedToday = existing.some((item) => (
+        String(item.clientId || "") === String(suggestion.clientId || "")
+        && toDateOnly(item.generatedAt || item.createdAt) === today
+      ));
+      if (alreadyOpen || generatedToday) return;
+      const action = {
+        id: makeId("aimkt"),
+        centerId,
+        centerName,
+        clientId: String(suggestion.clientId || ""),
+        clientName: suggestion.name || "Cliente",
+        type: "recall",
+        status: "to_approve",
+        priority: suggestion.priority || "media",
+        segment: suggestion.segment || "",
+        reason: suggestion.motive || "Richiamo suggerito da AI Gold.",
+        suggestedMessage: suggestion.message || "",
+        source: "ai_gold_marketing",
+        aiProvider: "rules",
+        generatedAt: nowIso(),
+        updatedAt: nowIso(),
+        completedAt: "",
+        archivedAt: "",
+        approvedAt: "",
+        copiedAt: ""
+      };
+      this.aiMarketingActionsRepository.create(action);
+      created.push(action);
+    });
+
+    return {
+      goldEnabled: true,
+      generatedAt: nowIso(),
+      createdCount: created.length,
+      actions: created
+    };
+  }
+
+  updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      throw new Error("Marketing Autopilot disponibile solo con piano Gold");
+    }
+    const allowed = new Set(["to_approve", "approved", "copied", "done", "archived"]);
+    const status = String(payload.status || "").toLowerCase();
+    if (!allowed.has(status)) {
+      throw new Error("Stato azione non valido");
+    }
+    const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
+      ...current,
+      status,
+      updatedAt: nowIso(),
+      approvedAt: status === "approved" ? nowIso() : current.approvedAt || "",
+      copiedAt: status === "copied" ? nowIso() : current.copiedAt || "",
+      completedAt: status === "done" ? nowIso() : current.completedAt || "",
+      archivedAt: status === "archived" ? nowIso() : current.archivedAt || ""
+    }), session);
+    return updated;
+  }
+
+  updateAiMarketingActionDrafts(enhancements = [], session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return [];
+    }
+    const byId = new Map(enhancements.map((item) => [String(item.id || ""), item]));
+    const updated = [];
+    this.filterByCenter(this.aiMarketingActionsRepository.list(), session).forEach((action) => {
+      const enhancement = byId.get(String(action.id || ""));
+      if (!enhancement) return;
+      const next = this.updateInCenter(this.aiMarketingActionsRepository, action.id, (current) => ({
+        ...current,
+        reason: String(enhancement.reason || current.reason || ""),
+        suggestedMessage: String(enhancement.suggestedMessage || current.suggestedMessage || ""),
+        aiProvider: String(enhancement.aiProvider || "openai"),
+        updatedAt: nowIso()
+      }), session);
+      updated.push(next);
+    });
+    return updated;
   }
 
   getAiGoldProfitability(options = {}, session = null) {

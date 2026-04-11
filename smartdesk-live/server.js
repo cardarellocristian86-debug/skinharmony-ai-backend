@@ -591,6 +591,35 @@ app.post("/api/ai-gold/ask", async (req, res) => {
   }
 });
 
+app.get("/api/ai-gold/marketing/autopilot", (req, res) => {
+  res.json(service.getAiMarketingAutopilot(req.session));
+});
+
+app.post("/api/ai-gold/marketing/autopilot/generate", async (req, res) => {
+  try {
+    const generated = service.generateAiMarketingAutopilotActions(req.session);
+    const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
+    if (enhanced.actions?.length) {
+      service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
+    }
+    res.json({
+      ...service.getAiMarketingAutopilot(req.session),
+      createdCount: generated.createdCount || 0,
+      aiProvider: enhanced.provider
+    });
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare Marketing Autopilot");
+  }
+});
+
+app.post("/api/ai-gold/marketing/autopilot/:id/status", (req, res) => {
+  try {
+    res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare l'azione marketing");
+  }
+});
+
 app.get("/api/treatments", (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });

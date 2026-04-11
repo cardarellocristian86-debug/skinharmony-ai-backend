@@ -598,6 +598,119 @@ class AssistantService {
       };
     }
   }
+
+  async enhanceMarketingAutopilotActions(actions = [], session = null) {
+    const items = Array.isArray(actions) ? actions.slice(0, 12) : [];
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+    if (!items.length) {
+      return { provider: apiKey ? "openai" : "fallback", actions: [] };
+    }
+    if (!apiKey) {
+      return {
+        provider: "fallback",
+        actions: items.map((item) => ({ ...item, aiProvider: "rules" }))
+      };
+    }
+
+    const instructions = [
+      "Sei AI Gold Marketing di SkinHarmony Smart Desk.",
+      "Rifinisci azioni recall gia generate da dati reali.",
+      "Non inventare dati non presenti.",
+      "Non promettere risultati medici o terapeutici.",
+      "Non inviare messaggi e non creare campagne automatiche.",
+      "Crea messaggi brevi, professionali, premium, utilizzabili via WhatsApp/SMS.",
+      "Rispetta il consenso marketing: se manca, non proporre invio.",
+      "Rispondi solo JSON valido con array actions."
+    ].join("\n");
+
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        actions: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              id: { type: "string" },
+              reason: { type: "string" },
+              suggestedMessage: { type: "string" }
+            },
+            required: ["id", "reason", "suggestedMessage"]
+          }
+        }
+      },
+      required: ["actions"]
+    };
+
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          input: [
+            { role: "system", content: [{ type: "input_text", text: instructions }] },
+            {
+              role: "user",
+              content: [{
+                type: "input_text",
+                text: JSON.stringify({
+                  center: {
+                    centerId: session?.centerId || "",
+                    centerName: session?.centerName || ""
+                  },
+                  actions: items.map((item) => ({
+                    id: item.id,
+                    clientName: item.clientName,
+                    priority: item.priority,
+                    segment: item.segment,
+                    reason: item.reason,
+                    suggestedMessage: item.suggestedMessage
+                  }))
+                })
+              }]
+            }
+          ],
+          text: {
+            format: {
+              type: "json_schema",
+              name: "skinharmony_ai_marketing_actions",
+              strict: true,
+              schema
+            }
+          }
+        })
+      });
+      if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
+      const data = await response.json();
+      const raw = data?.output_text || data?.output?.[0]?.content?.[0]?.text || "{}";
+      const parsed = JSON.parse(raw);
+      const byId = new Map((parsed.actions || []).map((item) => [String(item.id || ""), item]));
+      return {
+        provider: "openai",
+        actions: items.map((item) => {
+          const enhanced = byId.get(String(item.id || ""));
+          return {
+            ...item,
+            reason: enhanced?.reason || item.reason,
+            suggestedMessage: enhanced?.suggestedMessage || item.suggestedMessage,
+            aiProvider: "openai"
+          };
+        })
+      };
+    } catch {
+      return {
+        provider: "fallback",
+        actions: items.map((item) => ({ ...item, aiProvider: "rules" }))
+      };
+    }
+  }
 }
 
 module.exports = {
