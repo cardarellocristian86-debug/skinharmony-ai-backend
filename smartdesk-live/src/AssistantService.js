@@ -848,6 +848,9 @@ class AssistantService {
               mergedPayload[key] = value;
             }
           });
+          if (canMergeService && Number(sanitized.payload.durationMin || 0) > 0) {
+            mergedPayload.durationMin = Number(sanitized.payload.durationMin);
+          }
         }
         return {
           ...localDecision,
