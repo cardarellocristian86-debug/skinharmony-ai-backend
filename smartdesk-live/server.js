@@ -572,6 +572,17 @@ app.get("/api/profitability/overview", (req, res) => {
   }, req.session));
 });
 
+app.get("/api/ai-gold/marketing", (req, res) => {
+  res.json(service.getAiGoldMarketing(req.session));
+});
+
+app.get("/api/ai-gold/profitability", (req, res) => {
+  res.json(service.getAiGoldProfitability({
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.session));
+});
+
 app.get("/api/treatments", (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });

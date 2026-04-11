@@ -330,6 +330,12 @@ class DesktopMirrorService {
     return session.accessState === "active" || session.accessState === "trial";
   }
 
+  hasGoldIntelligence(session = null) {
+    if (!session) return false;
+    if (this.isSuperAdminSession(session) && !session.supportMode) return true;
+    return String(session.subscriptionPlan || "").toLowerCase() === "gold";
+  }
+
   assertCanOperate(session = null) {
     if (this.canOperate(session)) {
       return;
@@ -1430,11 +1436,31 @@ class DesktopMirrorService {
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
-    const inactiveClientsCount = clients.filter((item) => !item.lastVisit).length;
+    const now = Date.now();
+    const inactiveClients = clients.map((client) => {
+      const clientId = String(client.id || "");
+      const clientAppointments = appointments
+        .filter((item) => String(item.clientId || "") === clientId)
+        .sort((a, b) => new Date(b.startAt || b.createdAt || 0).getTime() - new Date(a.startAt || a.createdAt || 0).getTime());
+      const lastAppointment = clientAppointments[0] || null;
+      const lastVisitAt = lastAppointment?.startAt || client.lastVisit || "";
+      const daysSinceLastVisit = lastVisitAt
+        ? Math.max(0, Math.floor((now - new Date(lastVisitAt).getTime()) / 86400000))
+        : 999;
+      return {
+        clientId,
+        name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
+        phone: client.phone || "",
+        daysSinceLastVisit
+      };
+    })
+      .filter((item) => item.daysSinceLastVisit >= 30)
+      .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit);
     const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     return {
       todayAppointments: todayAppointments.length,
-      inactiveClientsCount,
+      inactiveClientsCount: inactiveClients.length,
+      inactiveClients,
       completedAppointments: appointments.filter((item) => item.status === "completed").length,
       revenueCents,
       activeClientsCount: clients.length
@@ -1501,12 +1527,218 @@ class DesktopMirrorService {
     return { success: true, url: entries[0] ? `/exports/${entries[0]}` : null };
   }
 
-  getProfitabilityOverview(_options = {}, session = null) {
+  getProfitabilityOverview(options = {}, session = null) {
+    const startDate = String(options.startDate || "");
+    const endDate = String(options.endDate || "");
+    const inRange = (value) => {
+      const dateOnly = toDateOnly(value || "");
+      if (!dateOnly) return false;
+      if (startDate && dateOnly < startDate) return false;
+      if (endDate && dateOnly > endDate) return false;
+      return true;
+    };
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session)
+      .filter((item) => item.status === "completed" && inRange(item.startAt || item.createdAt));
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const serviceById = new Map(services.map((item) => [String(item.id), item]));
+    const staffById = new Map(staff.map((item) => [String(item.id), item]));
+    const inventoryCostAverage = inventory.length
+      ? Math.round(inventory.reduce((sum, item) => sum + Number(item.costCents || 0), 0) / inventory.length)
+      : 0;
+    const serviceMap = new Map();
+    appointments.forEach((appointment) => {
+      const service = serviceById.get(String(appointment.serviceId || "")) || {};
+      const serviceId = String(service.id || appointment.serviceId || "unknown");
+      const current = serviceMap.get(serviceId) || {
+        id: serviceId,
+        name: service.name || appointment.serviceName || "Servizio non configurato",
+        executions: 0,
+        revenueCents: 0,
+        costCents: 0,
+        profitCents: 0,
+        marginPercent: 0,
+        status: "HEALTHY"
+      };
+      const linkedPayments = payments.filter((payment) => String(payment.appointmentId || "") === String(appointment.id || ""));
+      const revenueCents = linkedPayments.length
+        ? linkedPayments.reduce((sum, payment) => sum + Number(payment.amountCents || 0), 0)
+        : Number(service.priceCents || appointment.priceCents || 0);
+      const operator = staffById.get(String(appointment.staffId || ""));
+      const durationMin = Number(appointment.durationMin || service.durationMin || 60);
+      const operatorCostCents = Math.round((Number(operator?.hourlyCostCents || 0) / 60) * durationMin);
+      const productCostCents = Number(service.estimatedProductCostCents || service.productCostCents || inventoryCostAverage || 0);
+      const costCents = operatorCostCents + productCostCents;
+      current.executions += 1;
+      current.revenueCents += revenueCents;
+      current.costCents += costCents;
+      current.profitCents += revenueCents - costCents;
+      serviceMap.set(serviceId, current);
+    });
+    const serviceRows = Array.from(serviceMap.values()).map((item) => {
+      const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
+      const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
+      return { ...item, marginPercent, status };
+    }).sort((a, b) => a.marginPercent - b.marginPercent);
+    const totals = serviceRows.reduce((summary, item) => ({
+      executions: summary.executions + Number(item.executions || 0),
+      revenueCents: summary.revenueCents + Number(item.revenueCents || 0),
+      costCents: summary.costCents + Number(item.costCents || 0),
+      profitCents: summary.profitCents + Number(item.profitCents || 0)
+    }), { executions: 0, revenueCents: 0, costCents: 0, profitCents: 0 });
+    const alerts = serviceRows
+      .filter((item) => item.status !== "HEALTHY")
+      .map((item) => ({
+        area: "servizi",
+        level: item.status === "LOSS" ? "critical" : "warning",
+        title: item.status === "LOSS" ? `${item.name} lavora in perdita` : `${item.name} ha margine basso`,
+        body: item.status === "LOSS"
+          ? "Controlla prezzo, durata, costo operatore e prodotti usati prima di proporlo ancora."
+          : "Il servizio rende poco rispetto al ricavo: verifica durata reale e consumo prodotti.",
+        serviceId: item.id
+      }));
     return {
-      revenueCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0),
-      inventoryCostCents: inventory.reduce((sum, item) => sum + Number(item.costCents || 0) * Number(item.quantity || 0), 0)
+      totals,
+      services: serviceRows,
+      products: [],
+      technologies: [],
+      alerts,
+      revenueCents: totals.revenueCents,
+      inventoryCostCents: totals.costCents
+    };
+  }
+
+  getAiGoldMarketing(session = null) {
+    this.assertCanOperate(session);
+    const goldEnabled = this.hasGoldIntelligence(session);
+    if (!goldEnabled) {
+      return {
+        goldEnabled: false,
+        message: "AI Gold Marketing disponibile solo con piano Gold.",
+        suggestions: []
+      };
+    }
+    const now = Date.now();
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const serviceById = new Map(services.map((item) => [String(item.id), item]));
+    const suggestions = clients.map((client) => {
+      const clientId = String(client.id || "");
+      const clientAppointments = appointments
+        .filter((item) => String(item.clientId || "") === clientId)
+        .sort((a, b) => new Date(a.startAt || a.createdAt || 0).getTime() - new Date(b.startAt || b.createdAt || 0).getTime());
+      const lastAppointment = clientAppointments[clientAppointments.length - 1] || null;
+      const lastVisitAt = lastAppointment?.startAt || client.lastVisit || client.updatedAt || client.createdAt || "";
+      const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((now - new Date(lastVisitAt).getTime()) / 86400000)) : 999;
+      const gaps = clientAppointments.slice(1).map((item, index) => {
+        const previous = clientAppointments[index];
+        return Math.max(1, Math.round((new Date(item.startAt || 0).getTime() - new Date(previous.startAt || 0).getTime()) / 86400000));
+      }).filter((value) => Number.isFinite(value));
+      const averageFrequencyDays = gaps.length ? Math.round(gaps.reduce((sum, value) => sum + value, 0) / gaps.length) : 45;
+      const totalSpentCents = payments
+        .filter((item) => String(item.clientId || "") === clientId)
+        .reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+      const lastService = lastAppointment ? serviceById.get(String(lastAppointment.serviceId || "")) : null;
+      const hasMarketingConsent = Boolean(client.marketingConsent);
+      const segment = totalSpentCents >= 50000
+        ? "top_cliente"
+        : daysSinceLastVisit >= 90
+          ? "perso"
+          : daysSinceLastVisit >= Math.max(45, averageFrequencyDays + 15)
+            ? "a_rischio"
+            : "attivo";
+      const priority = !hasMarketingConsent
+        ? "media"
+        : segment === "perso"
+          ? "alta"
+          : segment === "a_rischio" || totalSpentCents >= 50000
+            ? "alta"
+            : daysSinceLastVisit >= 30
+              ? "media"
+              : "bassa";
+      const firstName = String(client.firstName || client.name || "Cliente").trim().split(/\s+/)[0] || "Cliente";
+      const motive = !hasMarketingConsent
+        ? "Consenso marketing non confermato: contatto solo se autorizzato."
+        : lastService?.name
+          ? `Richiamo legato a ${lastService.name}.`
+          : "Richiamo di mantenimento per continuità cliente.";
+      return {
+        clientId,
+        name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
+        phone: client.phone || "",
+        daysSinceLastVisit,
+        averageFrequencyDays,
+        segment,
+        priority,
+        motive,
+        lastServiceName: lastService?.name || "",
+        hasMarketingConsent,
+        message: hasMarketingConsent
+          ? `Ciao ${firstName}, ti scriviamo perché è passato un po’ dall’ultimo appuntamento${lastService?.name ? ` per ${lastService.name}` : ""}. Se vuoi, possiamo fissare un controllo o un nuovo trattamento nei prossimi giorni.`
+          : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
+      };
+    }).filter((item) => item.daysSinceLastVisit >= 30 || item.segment !== "attivo")
+      .sort((a, b) => {
+        const weight = { alta: 3, media: 2, bassa: 1 };
+        return (weight[b.priority] || 0) - (weight[a.priority] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
+      })
+      .slice(0, 20);
+    return {
+      goldEnabled: true,
+      generatedAt: nowIso(),
+      suggestions
+    };
+  }
+
+  getAiGoldProfitability(options = {}, session = null) {
+    this.assertCanOperate(session);
+    const goldEnabled = this.hasGoldIntelligence(session);
+    if (!goldEnabled) {
+      return {
+        goldEnabled: false,
+        message: "AI Gold Redditività disponibile solo con piano Gold.",
+        alerts: [],
+        suggestions: []
+      };
+    }
+    const overview = this.getProfitabilityOverview(options, session);
+    const suggestions = overview.services.map((service) => {
+      const status = String(service.status || "HEALTHY");
+      const suggestion = status === "LOSS"
+        ? "Verifica prezzo, durata, costo operatore e consumo prodotti: il servizio rischia di lavorare in perdita."
+        : status === "LOW_MARGIN"
+          ? "Margine basso: controlla durata reale e prodotti usati prima di spingere il servizio."
+          : "Servizio sano: puoi mantenerlo o usarlo come riferimento commerciale.";
+      return {
+        id: service.id,
+        name: service.name || "Servizio",
+        executions: Number(service.executions || 0),
+        revenueCents: Number(service.revenueCents || 0),
+        costCents: Number(service.costCents || 0),
+        profitCents: Number(service.profitCents || 0),
+        marginPercent: Number(service.marginPercent || 0),
+        status,
+        suggestion
+      };
+    }).sort((a, b) => a.marginPercent - b.marginPercent);
+    const alerts = suggestions
+      .filter((item) => item.status !== "HEALTHY")
+      .map((item) => ({
+        level: item.status === "LOSS" ? "critical" : "warning",
+        title: item.status === "LOSS" ? `${item.name} in perdita` : `${item.name} con margine basso`,
+        body: item.suggestion,
+        serviceId: item.id
+      }));
+    return {
+      goldEnabled: true,
+      generatedAt: nowIso(),
+      summary: overview.totals,
+      alerts,
+      suggestions
     };
   }
 }
