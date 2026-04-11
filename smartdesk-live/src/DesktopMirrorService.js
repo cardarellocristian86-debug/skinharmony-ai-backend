@@ -1328,9 +1328,12 @@ class DesktopMirrorService {
       centerName,
       clientId: String(payload.clientId || ""),
       clientName: String(payload.clientName || payload.client || ""),
+      walkInName: String(payload.walkInName || ""),
+      walkInPhone: String(payload.walkInPhone || ""),
       staffId: String(payload.staffId || ""),
       staffName: String(payload.staffName || payload.operator || ""),
       serviceId: String(payload.serviceId || ""),
+      serviceIds: Array.isArray(payload.serviceIds) ? payload.serviceIds : (payload.serviceId ? [String(payload.serviceId)] : []),
       serviceName: String(payload.serviceName || payload.service || ""),
       resourceId: String(payload.resourceId || ""),
       resourceName: String(payload.resourceName || payload.room || ""),
@@ -1339,6 +1342,7 @@ class DesktopMirrorService {
       status: String(payload.status || "requested"),
       notes: String(payload.notes || ""),
       durationMin,
+      locked: payload.locked ? 1 : 0,
       createdAt: payload.createdAt || nowIso(),
       updatedAt: nowIso()
     };
@@ -1610,9 +1614,11 @@ class DesktopMirrorService {
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       clientId: String(payload.clientId || ""),
+      appointmentId: String(payload.appointmentId || ""),
       amountCents: Number(payload.amountCents || payload.amount || 0),
       method: String(payload.method || "cash"),
-      note: String(payload.note || ""),
+      description: String(payload.description || payload.note || ""),
+      note: String(payload.note || payload.description || ""),
       createdAt: nowIso()
     };
     this.paymentsRepository.create(payment);
