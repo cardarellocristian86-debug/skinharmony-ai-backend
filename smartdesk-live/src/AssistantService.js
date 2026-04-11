@@ -301,6 +301,18 @@ function buildBlocked(message, action = null, payload = {}) {
   return { mode: "blocked_action", message, action, payload, requiresConfirmation: false };
 }
 
+function significantTokens(value) {
+  const stop = new Set([
+    "ai", "gold", "test", "top", "stylist", "senior", "junior", "lento",
+    "operatore", "responsabile", "premium", "redditivo", "redditiva",
+    "promo", "perdita", "scontata", "scontato"
+  ]);
+  return normalizeText(value)
+    .split(/[^a-z0-9]+/i)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 4 && !stop.has(item));
+}
+
 function buildConfirmationMessage(action, payload = {}, fallback = "Confermi il salvataggio?") {
   if (action === "create_client") {
     const name = [payload.firstName, payload.lastName].filter(Boolean).join(" ") || "nuovo cliente";
@@ -445,7 +457,11 @@ class AssistantService {
     const normalizedQuery = normalizeText(query);
     if (!normalizedQuery) return null;
     const staff = this.listStaffSafe(context, session);
-    return staff.find((item) => normalizeText(item.name).includes(normalizedQuery)) || null;
+    return staff.find((item) => {
+      const name = normalizeText(item.name || "");
+      const tokens = significantTokens(item.name || "");
+      return name.includes(normalizedQuery) || tokens.some((token) => normalizedQuery.includes(token));
+    }) || null;
   }
 
   findServiceByQuery(query, context = {}, session = null) {
@@ -454,7 +470,8 @@ class AssistantService {
     const services = this.listServicesSafe(context, session);
     return services.find((item) => {
       const name = normalizeText(item.name || "");
-      return name && (normalizedQuery.includes(name) || name.includes(normalizedQuery));
+      const tokens = significantTokens(item.name || "");
+      return name && (normalizedQuery.includes(name) || name.includes(normalizedQuery) || tokens.some((token) => normalizedQuery.includes(token)));
     }) || null;
   }
 
@@ -473,7 +490,8 @@ class AssistantService {
     const staff = this.listStaffSafe(context, session);
     return staff.find((item) => {
       const normalizedName = normalizeText(item.name || "");
-      return normalizedName && normalizedMessage.includes(normalizedName);
+      const tokens = significantTokens(item.name || "");
+      return normalizedName && (normalizedMessage.includes(normalizedName) || tokens.some((token) => normalizedMessage.includes(token)));
     }) || null;
   }
 
@@ -482,7 +500,8 @@ class AssistantService {
     const services = this.listServicesSafe(context, session);
     return services.find((item) => {
       const normalizedName = normalizeText(item.name || "");
-      return normalizedName && normalizedMessage.includes(normalizedName);
+      const tokens = significantTokens(item.name || "");
+      return normalizedName && (normalizedMessage.includes(normalizedName) || tokens.some((token) => normalizedMessage.includes(token)));
     }) || null;
   }
 
@@ -490,7 +509,7 @@ class AssistantService {
     const normalized = normalizeText(message);
     if (!/(aggiungi|crea|inserisci|prenota).*(appuntamento|prenotazione|agenda)/.test(normalized)) return null;
     const client = this.findClientMention(message, context, session);
-    const occasionalMatch = String(message || "").match(/cliente\s+(?:occasionale\s+)?([a-zà-ù]+(?:\s+[a-zà-ù]+){0,3})/i);
+    const occasionalMatch = String(message || "").match(/cliente\s+(?:occasionale\s+)?(.+?)(?=\s+(?:oggi|domani|dopodomani|alle|ore|con|per)\b|$)/i);
     const walkInName = !client && occasionalMatch
       ? occasionalMatch[1]
         .replace(/\b(oggi|domani|dopodomani|alle|ore|con|per)\b.*$/i, "")
@@ -836,9 +855,12 @@ class AssistantService {
         const mergedPayload = { ...(localDecision.payload || {}) };
         const normalizedMessage = normalizeText(message);
         const candidateStaffName = String(sanitized.payload?.staffName || "").trim();
-        const canMergeStaff = candidateStaffName && normalizedMessage.includes(normalizeText(candidateStaffName));
+        const staffFromAi = this.findStaffByQuery(candidateStaffName, context, session);
+        const canMergeStaff = staffFromAi && normalizedMessage.includes(normalizeText(candidateStaffName));
         const candidateServiceName = String(sanitized.payload?.serviceName || "").trim();
+        const serviceFromAi = this.findServiceByQuery(candidateServiceName, context, session);
         const canMergeService = candidateServiceName
+          && serviceFromAi
           && normalizeText(candidateServiceName).split(/\s+/).some((word) => word.length >= 4 && normalizedMessage.includes(word));
         if (sanitized.action === localDecision.action && sanitized.payload && typeof sanitized.payload === "object") {
           Object.entries(sanitized.payload).forEach(([key, value]) => {
@@ -848,6 +870,15 @@ class AssistantService {
               mergedPayload[key] = value;
             }
           });
+          if (canMergeStaff) {
+            mergedPayload.staffId = mergedPayload.staffId || staffFromAi.id || "";
+            mergedPayload.operatorId = mergedPayload.operatorId || staffFromAi.id || "";
+            mergedPayload.staffName = mergedPayload.staffName || staffFromAi.name || candidateStaffName;
+          }
+          if (canMergeService) {
+            mergedPayload.serviceId = mergedPayload.serviceId || serviceFromAi.id || "";
+            mergedPayload.serviceName = mergedPayload.serviceName || serviceFromAi.name || candidateServiceName;
+          }
           if (canMergeService && Number(sanitized.payload.durationMin || 0) > 0) {
             mergedPayload.durationMin = Number(sanitized.payload.durationMin);
           }
