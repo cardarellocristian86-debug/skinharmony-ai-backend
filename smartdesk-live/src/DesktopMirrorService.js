@@ -109,6 +109,14 @@ function euro(cents) {
   return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 function sanitizeFileName(value) {
   return String(value || "file")
     .normalize("NFD")
@@ -356,9 +364,9 @@ class DesktopMirrorService {
     };
   }
 
-  serializeUserSummary(user = {}) {
+  serializeUserSummary(user = {}, options = {}) {
     const normalized = this.normalizeUserAccount(user);
-    return {
+    const summary = {
       id: normalized.id,
       username: normalized.username,
       role: normalized.role,
@@ -380,6 +388,58 @@ class DesktopMirrorService {
       emailVerifiedAt: normalized.emailVerifiedAt || "",
       createdAt: normalized.createdAt || nowIso(),
       activatedAt: normalized.activatedAt || ""
+    };
+    if (options.includeControlStats) {
+      summary.controlStats = this.getCenterControlStats(summary.centerId);
+    }
+    return summary;
+  }
+
+  getRepositoryItems(repository) {
+    const items = repository?.list?.();
+    return Array.isArray(items) ? items : [];
+  }
+
+  getCenterRepositoryItems(repository, centerId) {
+    return this.getRepositoryItems(repository).filter((item) => this.belongsToCenter(item, centerId));
+  }
+
+  getCenterControlStats(centerId) {
+    const centerKey = String(centerId || DEFAULT_CENTER_ID);
+    const collections = {
+      clients: this.getCenterRepositoryItems(this.clientsRepository, centerKey),
+      appointments: this.getCenterRepositoryItems(this.appointmentsRepository, centerKey),
+      services: this.getCenterRepositoryItems(this.servicesRepository, centerKey),
+      staff: this.getCenterRepositoryItems(this.staffRepository, centerKey),
+      shifts: this.getCenterRepositoryItems(this.shiftsRepository, centerKey),
+      inventory: this.getCenterRepositoryItems(this.inventoryRepository, centerKey),
+      inventoryMovements: this.getCenterRepositoryItems(this.inventoryMovementsRepository, centerKey),
+      payments: this.getCenterRepositoryItems(this.paymentsRepository, centerKey),
+      treatments: this.getCenterRepositoryItems(this.treatmentsRepository, centerKey),
+      sales: this.getCenterRepositoryItems(this.salesRepository, centerKey),
+      users: this.getCenterRepositoryItems(this.usersRepository, centerKey)
+    };
+    const storageBytes = Object.values(collections).reduce(
+      (total, items) => total + Buffer.byteLength(JSON.stringify(items || []), "utf8"),
+      0
+    );
+    const sessions = Array.from(this.sessions.values()).filter((item) => String(item.centerId || "") === centerKey);
+    return {
+      clients: collections.clients.length,
+      appointments: collections.appointments.length,
+      services: collections.services.length,
+      staff: collections.staff.length,
+      shifts: collections.shifts.length,
+      inventoryItems: collections.inventory.length,
+      inventoryMovements: collections.inventoryMovements.length,
+      payments: collections.payments.length,
+      treatments: collections.treatments.length,
+      sales: collections.sales.length,
+      users: collections.users.length,
+      storageBytes,
+      storageLabel: formatBytes(storageBytes),
+      activeSessions: sessions.length,
+      supportSessions: sessions.filter((item) => item.supportMode).length
     };
   }
 
@@ -660,10 +720,11 @@ class DesktopMirrorService {
 
   listAccessUsers(session = null) {
     const users = this.usersRepository.list();
+    const includeControlStats = this.isSuperAdminSession(session);
     const visible = this.isSuperAdminSession(session)
       ? users
       : users.filter((item) => this.belongsToCenter(item, this.getCenterId(session)));
-    return visible.map((item) => this.serializeUserSummary(item));
+    return visible.map((item) => this.serializeUserSummary(item, { includeControlStats }));
   }
 
   createAccessUser(payload = {}, session = null) {
@@ -713,7 +774,7 @@ class DesktopMirrorService {
       centerName,
       businessModel: user.businessModel
     }, { centerId, centerName, role: session?.role || "superadmin" });
-    return this.listAccessUsers(session).find((item) => item.id === user.id) || this.serializeUserSummary(user);
+    return this.listAccessUsers(session).find((item) => item.id === user.id) || this.serializeUserSummary(user, { includeControlStats: this.isSuperAdminSession(session) });
   }
 
   requestTrial(payload = {}) {
@@ -923,7 +984,7 @@ class DesktopMirrorService {
       }
       return this.normalizeUserAccount(merged);
     });
-    return this.serializeUserSummary(next || current);
+    return this.serializeUserSummary(next || current, { includeControlStats: this.isSuperAdminSession(session) });
   }
 
   listClients(search = "", session = null) {
