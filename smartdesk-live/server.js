@@ -591,6 +591,18 @@ app.post("/api/ai-gold/ask", async (req, res) => {
   }
 });
 
+app.post("/api/ai-gold/command", async (req, res) => {
+  try {
+    if (!service.hasGoldIntelligence(req.session)) {
+      res.status(403).send("Comandi operativi disponibili solo con AI Gold.");
+      return;
+    }
+    res.json(await assistantService.chat(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Comando AI Gold non disponibile");
+  }
+});
+
 app.get("/api/ai-gold/marketing/autopilot", (req, res) => {
   res.json(service.getAiMarketingAutopilot(req.session));
 });
