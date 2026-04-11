@@ -16,6 +16,15 @@ const DEFAULT_TRIAL_VERIFICATION_MINUTES = 30;
 const defaultSettings = {
   centerName: DEFAULT_CENTER_NAME,
   centerType: "Advanced Aesthetic Systems",
+  centerLegalName: "",
+  centerVatNumber: "",
+  centerTaxCode: "",
+  centerEmail: "",
+  centerPhone: "",
+  centerAddress: "",
+  centerCity: "",
+  centerProvince: "",
+  centerPostalCode: "",
   businessModel: "esthetic",
   agendaStartHour: "08:00",
   agendaEndHour: "20:00",
@@ -1234,17 +1243,45 @@ class DesktopMirrorService {
     const detail = this.getClientDetail(clientId, session);
     ensureDir(EXPORTS_DIR);
     const client = detail.client || {};
+    const settings = this.getSettings(session);
     const clientName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente";
+    const legalName = String(settings.centerLegalName || settings.centerName || this.getCenterName(session) || "").trim();
+    const centerDisplayName = String(settings.centerName || legalName || this.getCenterName(session) || "Centro").trim();
+    const centerAddress = [
+      settings.centerAddress,
+      [settings.centerPostalCode, settings.centerCity, settings.centerProvince].filter(Boolean).join(" ")
+    ].filter(Boolean).join(", ");
+    const fiscalData = [
+      settings.centerVatNumber ? `P.IVA ${settings.centerVatNumber}` : "",
+      settings.centerTaxCode ? `CF ${settings.centerTaxCode}` : ""
+    ].filter(Boolean).join(" - ");
+    const contacts = [
+      settings.centerEmail ? `Email ${settings.centerEmail}` : "",
+      settings.centerPhone ? `Tel. ${settings.centerPhone}` : ""
+    ].filter(Boolean).join(" - ");
+    const missingLegalData = [
+      !settings.centerLegalName ? "ragione sociale" : "",
+      !settings.centerEmail ? "email centro" : "",
+      !settings.centerPhone ? "telefono centro" : ""
+    ].filter(Boolean);
     const fileName = `consensi-${sanitizeFileName(clientName)}-${Date.now()}.pdf`;
     const filePath = path.join(EXPORTS_DIR, fileName);
     const today = new Date().toLocaleDateString("it-IT");
     const sections = [
       { style: "title", text: "SkinHarmony Smart Desk - Modulo privacy e consensi" },
+      { style: "heading", text: "Dati del centro / titolare del trattamento" },
+      { style: "body", text: `Centro: ${centerDisplayName}` },
+      { style: "body", text: `Ragione sociale / titolare: ${legalName || "Da completare in Impostazioni"}` },
+      { style: "body", text: `Sede: ${centerAddress || "Da completare in Impostazioni"}` },
+      { style: "body", text: `Dati fiscali: ${fiscalData || "Da completare in Impostazioni"}` },
+      { style: "body", text: `Contatti privacy/centro: ${contacts || "Da completare in Impostazioni"}` },
+      ...(missingLegalData.length ? [{ style: "body", text: `Attenzione operativa: completare in Impostazioni ${missingLegalData.join(", ")} per avere un documento piu completo.` }] : []),
+      { style: "heading", text: "Dati cliente" },
       { style: "body", text: `Cliente: ${clientName}` },
       { style: "body", text: `Telefono: ${client.phone || "________________"}    Email: ${client.email || "________________"}` },
       { style: "body", text: `Data nascita: ${client.birthDate || "________________"}    Data documento: ${today}` },
       { style: "heading", text: "Informativa privacy" },
-      { style: "body", text: "Il presente modulo raccoglie la presa visione dell'informativa privacy e i consensi del cliente per la gestione dei dati nel gestionale del centro. Il trattamento dei dati avviene nel rispetto del Regolamento UE 2016/679 (GDPR) e della normativa nazionale applicabile in materia di protezione dei dati personali." },
+      { style: "body", text: `Il presente modulo raccoglie la presa visione dell'informativa privacy e i consensi del cliente per la gestione dei dati nel gestionale del centro ${centerDisplayName}. Il trattamento dei dati avviene nel rispetto del Regolamento UE 2016/679 (GDPR) e della normativa nazionale applicabile in materia di protezione dei dati personali.` },
       { style: "body", text: "I dati raccolti possono includere dati anagrafici, contatti, appuntamenti, servizi effettuati, preferenze operative, note di servizio, consensi e informazioni necessarie alla corretta gestione del rapporto con il cliente." },
       { style: "heading", text: "Finalita del trattamento" },
       { style: "body", text: "1. Gestione anagrafica cliente, appuntamenti, storico servizi e comunicazioni operative legate al servizio richiesto." },
@@ -1262,7 +1299,7 @@ class DesktopMirrorService {
       { style: "body", text: "Il cliente dichiara di aver ricevuto le informazioni essenziali sul trattamento dei dati personali e di esprimere i consensi selezionati nel presente modulo." },
       { style: "body", text: "Luogo e data: ______________________________________________" },
       { style: "body", text: "Firma cliente: _____________________________________________" },
-      { style: "body", text: "Firma operatore / centro: __________________________________" },
+      { style: "body", text: `Firma operatore / ${centerDisplayName}: ______________________________` },
       { style: "heading", text: "Nota operativa" },
       { style: "body", text: "Documento generato da Smart Desk come supporto operativo. Il centro resta responsabile della propria informativa privacy completa, dei dati del titolare del trattamento e dell'adeguamento legale al proprio caso specifico." }
     ];
