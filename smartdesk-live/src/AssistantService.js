@@ -812,8 +812,17 @@ class AssistantService {
       const parsed = JSON.parse(raw);
       const sanitized = this.sanitizeResponse(parsed, context, localDecision);
       if (localDecision.action && ["create_client", "create_appointment", "create_shift"].includes(localDecision.action)) {
+        const mergedPayload = { ...(localDecision.payload || {}) };
+        if (sanitized.action === localDecision.action && sanitized.payload && typeof sanitized.payload === "object") {
+          Object.entries(sanitized.payload).forEach(([key, value]) => {
+            if ((mergedPayload[key] === undefined || mergedPayload[key] === null || mergedPayload[key] === "") && value !== undefined && value !== null && value !== "") {
+              mergedPayload[key] = value;
+            }
+          });
+        }
         return {
           ...localDecision,
+          payload: mergedPayload,
           message: sanitized.message || localDecision.message,
           requiresConfirmation: true,
           provider: "openai"
