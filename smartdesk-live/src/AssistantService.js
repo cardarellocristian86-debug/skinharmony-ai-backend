@@ -15,6 +15,8 @@ const ACTIONS = [
   "open_settings",
   "search_client",
   "create_client",
+  "create_appointment",
+  "create_shift",
   "create_note",
   "create_task",
   "filter_appointments",
@@ -40,6 +42,8 @@ const ACTION_PERMISSIONS = {
   filter_appointments: "UI_NAVIGATION",
   filter_clients: "UI_NAVIGATION",
   create_client: "SAFE_ACTIONS",
+  create_appointment: "SAFE_ACTIONS",
+  create_shift: "SAFE_ACTIONS",
   create_note: "SAFE_ACTIONS",
   create_task: "SAFE_ACTIONS"
 };
@@ -84,9 +88,18 @@ const RESPONSE_SCHEMA = {
         view: { anyOf: [{ type: "string" }, { type: "null" }] },
         status: { anyOf: [{ type: "string" }, { type: "null" }] },
         title: { anyOf: [{ type: "string" }, { type: "null" }] },
-        note: { anyOf: [{ type: "string" }, { type: "null" }] }
+        note: { anyOf: [{ type: "string" }, { type: "null" }] },
+        time: { anyOf: [{ type: "string" }, { type: "null" }] },
+        durationMin: { anyOf: [{ type: "number" }, { type: "null" }] },
+        clientName: { anyOf: [{ type: "string" }, { type: "null" }] },
+        staffId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        staffName: { anyOf: [{ type: "string" }, { type: "null" }] },
+        serviceId: { anyOf: [{ type: "string" }, { type: "null" }] },
+        serviceName: { anyOf: [{ type: "string" }, { type: "null" }] },
+        startTime: { anyOf: [{ type: "string" }, { type: "null" }] },
+        endTime: { anyOf: [{ type: "string" }, { type: "null" }] }
       },
-      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note"]
+      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note", "time", "durationMin", "clientName", "staffId", "staffName", "serviceId", "serviceName", "startTime", "endTime"]
     },
     requiresConfirmation: { type: "boolean" }
   },
@@ -174,6 +187,89 @@ function parseAgendaFilter(message) {
   return { date, status };
 }
 
+function nextWeekdayDate(weekdayIndex) {
+  const base = new Date();
+  const current = base.getDay();
+  let delta = weekdayIndex - current;
+  if (delta <= 0) delta += 7;
+  base.setDate(base.getDate() + delta);
+  return toDateOnly(base);
+}
+
+function parseDateFromText(message) {
+  const raw = String(message || "");
+  const normalized = normalizeText(raw);
+  if (normalized.includes("dopodomani")) return shiftDate(new Date(), 2);
+  if (normalized.includes("domani")) return shiftDate(new Date(), 1);
+  if (normalized.includes("oggi")) return toDateOnly(new Date());
+  const isoMatch = raw.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (isoMatch) return isoMatch[1];
+  const italianMatch = raw.match(/\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/);
+  if (italianMatch) {
+    const day = italianMatch[1].padStart(2, "0");
+    const month = italianMatch[2].padStart(2, "0");
+    const currentYear = new Date().getFullYear();
+    const year = italianMatch[3]
+      ? (italianMatch[3].length === 2 ? `20${italianMatch[3]}` : italianMatch[3])
+      : String(currentYear);
+    return `${year}-${month}-${day}`;
+  }
+  const weekdays = [
+    ["domenica", 0],
+    ["lunedi", 1],
+    ["lunedì", 1],
+    ["martedi", 2],
+    ["martedì", 2],
+    ["mercoledi", 3],
+    ["mercoledì", 3],
+    ["giovedi", 4],
+    ["giovedì", 4],
+    ["venerdi", 5],
+    ["venerdì", 5],
+    ["sabato", 6]
+  ];
+  const found = weekdays.find(([label]) => normalized.includes(stripAccents(label)));
+  return found ? nextWeekdayDate(found[1]) : "";
+}
+
+function parseTimeFromText(message) {
+  const raw = String(message || "");
+  const explicitMatch = raw.match(/\b(?:alle|ore)\s+(\d{1,2})(?:[:.,](\d{2}))?\b/i);
+  const match = explicitMatch || raw.match(/\b(\d{1,2})[:.,](\d{2})\b/i);
+  if (!match) return "";
+  const hour = Number(match[1]);
+  const minutes = match[2] ? Number(match[2]) : 0;
+  if (hour < 0 || hour > 23 || minutes < 0 || minutes > 59) return "";
+  return `${String(hour).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function parseShiftTimesFromText(message) {
+  const raw = String(message || "");
+  const range = raw.match(/\b(?:dalle|da)\s+(\d{1,2})(?:[:.,](\d{2}))?\s+(?:alle|a)\s+(\d{1,2})(?:[:.,](\d{2}))?\b/i);
+  if (range) {
+    const startHour = Number(range[1]);
+    const startMinutes = range[2] ? Number(range[2]) : 0;
+    const endHour = Number(range[3]);
+    const endMinutes = range[4] ? Number(range[4]) : 0;
+    if (startHour >= 0 && startHour <= 23 && startMinutes >= 0 && startMinutes <= 59 && endHour >= 0 && endHour <= 23 && endMinutes >= 0 && endMinutes <= 59) {
+      return [
+        `${String(startHour).padStart(2, "0")}:${String(startMinutes).padStart(2, "0")}`,
+        `${String(endHour).padStart(2, "0")}:${String(endMinutes).padStart(2, "0")}`
+      ];
+    }
+  }
+  return [];
+}
+
+function parseDurationFromText(message, fallback = 45) {
+  const raw = String(message || "");
+  const hoursMatch = raw.match(/\b(\d+(?:[,.]\d+)?)\s*(?:ore|ora|h)\b/i);
+  if (hoursMatch) return Math.max(15, Math.round(Number(hoursMatch[1].replace(",", ".")) * 60));
+  const minutesMatch = raw.match(/\b(\d{2,3})\s*(?:minuti|min)\b/i);
+  if (minutesMatch) return Math.max(15, Number(minutesMatch[1]));
+  return fallback;
+}
+
 function buildAnswer(message, payload = {}) {
   return { mode: "answer", message, action: null, payload, requiresConfirmation: false };
 }
@@ -231,12 +327,24 @@ class AssistantService {
     return Array.isArray(context.staffPreview) ? context.staffPreview : [];
   }
 
+  listServicesSafe(_context = {}, session = null) {
+    if (this.desktopMirror?.listServices) {
+      try {
+        return this.desktopMirror.listServices(session) || [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
+
   buildContext(payload = {}, session = null) {
     const context = payload.context || {};
     const settings = this.getSettingsSafe(session);
     const dashboard = this.getDashboardSafe(session);
     const clients = this.listClientsSafe(context, session);
     const staff = this.listStaffSafe(context, session);
+    const services = this.listServicesSafe(context, session);
     const role = normalizeRole(context.userRole || session?.role || "owner");
 
     return {
@@ -266,6 +374,11 @@ class AssistantService {
       staffPreview: staff.slice(0, 25).map((item) => ({
         id: item.id,
         name: item.name || ""
+      })),
+      servicesPreview: services.slice(0, 25).map((item) => ({
+        id: item.id,
+        name: item.name || "",
+        durationMin: Number(item.durationMin || 45)
       }))
     };
   }
@@ -285,6 +398,84 @@ class AssistantService {
     if (!normalizedQuery) return null;
     const staff = this.listStaffSafe(context, session);
     return staff.find((item) => normalizeText(item.name).includes(normalizedQuery)) || null;
+  }
+
+  findServiceByQuery(query, context = {}, session = null) {
+    const normalizedQuery = normalizeText(query);
+    if (!normalizedQuery) return null;
+    const services = this.listServicesSafe(context, session);
+    return services.find((item) => {
+      const name = normalizeText(item.name || "");
+      return name && (normalizedQuery.includes(name) || name.includes(normalizedQuery));
+    }) || null;
+  }
+
+  findClientMention(message, context = {}, session = null) {
+    const normalizedMessage = normalizeText(message);
+    const clients = this.listClientsSafe(context, session);
+    return clients.find((client) => {
+      const fullName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "";
+      const normalizedName = normalizeText(fullName);
+      return normalizedName && normalizedMessage.includes(normalizedName);
+    }) || null;
+  }
+
+  findStaffMention(message, context = {}, session = null) {
+    const normalizedMessage = normalizeText(message);
+    const staff = this.listStaffSafe(context, session);
+    return staff.find((item) => {
+      const normalizedName = normalizeText(item.name || "");
+      return normalizedName && normalizedMessage.includes(normalizedName);
+    }) || null;
+  }
+
+  findServiceMention(message, context = {}, session = null) {
+    const normalizedMessage = normalizeText(message);
+    const services = this.listServicesSafe(context, session);
+    return services.find((item) => {
+      const normalizedName = normalizeText(item.name || "");
+      return normalizedName && normalizedMessage.includes(normalizedName);
+    }) || null;
+  }
+
+  extractAppointmentDraft(message, context = {}, session = null) {
+    const normalized = normalizeText(message);
+    if (!/(aggiungi|crea|inserisci|prenota).*(appuntamento|prenotazione|agenda)/.test(normalized)) return null;
+    const client = this.findClientMention(message, context, session);
+    const staff = this.findStaffMention(message, context, session);
+    const service = this.findServiceMention(message, context, session);
+    const date = parseDateFromText(message);
+    const time = parseTimeFromText(message);
+    const durationMin = parseDurationFromText(message, Number(service?.durationMin || 45));
+    return {
+      clientId: client?.id || "",
+      clientName: client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "" : "",
+      staffId: staff?.id || "",
+      staffName: staff?.name || "",
+      serviceId: service?.id || "",
+      serviceName: service?.name || "",
+      date,
+      time,
+      durationMin,
+      status: "confirmed",
+      notes: "Creato da SkinHarmony AI dopo conferma operatore."
+    };
+  }
+
+  extractShiftDraft(message, context = {}, session = null) {
+    const normalized = normalizeText(message);
+    if (!/(aggiungi|crea|inserisci|programma).*(turno|calendario|orario)/.test(normalized)) return null;
+    const staff = this.findStaffMention(message, context, session);
+    const date = parseDateFromText(message);
+    const times = parseShiftTimesFromText(message);
+    return {
+      staffId: staff?.id || "",
+      staffName: staff?.name || "",
+      date,
+      startTime: times[0] || "",
+      endTime: times[1] || "",
+      notes: "Turno creato da SkinHarmony AI dopo conferma operatore."
+    };
   }
 
   buildLocalDecision(message, context, session) {
@@ -328,6 +519,50 @@ class AssistantService {
         "Apro il form cliente con i dati disponibili. Completa i campi mancanti e conferma il salvataggio.",
         "open_client_form",
         clientDraft
+      );
+    }
+
+    const appointmentDraft = this.extractAppointmentDraft(message, context, session);
+    if (appointmentDraft) {
+      const missing = [];
+      if (!appointmentDraft.clientId) missing.push("cliente esistente");
+      if (!appointmentDraft.date) missing.push("data");
+      if (!appointmentDraft.time) missing.push("ora");
+      if (missing.length) {
+        return buildAction(
+          `Per creare l’appuntamento mi manca: ${missing.join(", ")}. Ti apro l’agenda, poi completa i dati mancanti.`,
+          "open_agenda",
+          appointmentDraft
+        );
+      }
+      const details = [
+        appointmentDraft.clientName,
+        appointmentDraft.serviceName ? `servizio ${appointmentDraft.serviceName}` : "servizio non indicato",
+        appointmentDraft.staffName ? `con ${appointmentDraft.staffName}` : "operatore non indicato",
+        `${appointmentDraft.date} alle ${appointmentDraft.time}`
+      ].filter(Boolean).join(", ");
+      return buildAction(`Ho preparato l’appuntamento: ${details}. Confermi il salvataggio in agenda?`, "create_appointment", appointmentDraft, true);
+    }
+
+    const shiftDraft = this.extractShiftDraft(message, context, session);
+    if (shiftDraft) {
+      const missing = [];
+      if (!shiftDraft.staffId) missing.push("operatore");
+      if (!shiftDraft.date) missing.push("data");
+      if (!shiftDraft.startTime) missing.push("ora inizio");
+      if (!shiftDraft.endTime) missing.push("ora fine");
+      if (missing.length) {
+        return buildAction(
+          `Per creare il turno mi manca: ${missing.join(", ")}. Ti apro Turni e presenze, poi completa i dati mancanti.`,
+          "open_turns",
+          shiftDraft
+        );
+      }
+      return buildAction(
+        `Ho preparato il turno di ${shiftDraft.staffName} per ${shiftDraft.date}, dalle ${shiftDraft.startTime} alle ${shiftDraft.endTime}. Confermi il salvataggio?`,
+        "create_shift",
+        shiftDraft,
+        true
       );
     }
 
@@ -401,10 +636,10 @@ class AssistantService {
       if (context.dashboard.todayAppointments === 0) {
         return buildAnswer("Agenda vuota oggi. Ti conviene lavorare su recall o clienti inattivi. Posso aprire agenda, clienti, report, turni, magazzino o guidarti su un nuovo cliente.");
       }
-      return buildAnswer("Posso spiegarti come usare il gestionale, aprire davvero le schermate principali, cercare clienti e creare un cliente base con conferma finale.");
+      return buildAnswer("Posso spiegarti come usare il gestionale, aprire schermate, cercare clienti e preparare clienti, appuntamenti o turni con conferma finale.");
     }
 
-    return buildAnswer("Posso spiegarti un flusso, aprire davvero agenda, clienti, turni, report, magazzino e redditività, oppure preparare un nuovo cliente base con conferma.");
+    return buildAnswer("Posso spiegarti un flusso, aprire agenda, clienti, turni, report, magazzino e redditività, oppure preparare cliente, appuntamento o turno con conferma.");
   }
 
   sanitizeResponse(candidate, context, fallback) {
@@ -428,6 +663,22 @@ class AssistantService {
         ACTION_PERMISSIONS[safe.action] === "UI_NAVIGATION" ? safe.action : null,
         safe.payload
       );
+    }
+
+    if (safe.action === "create_appointment") {
+      const payload = safe.payload || {};
+      if (!payload.clientId || !payload.date || !payload.time) {
+        return buildBlocked("Non salvo appuntamenti senza cliente, data e ora. Ti apro l’agenda per completare i dati.", "open_agenda", payload);
+      }
+      safe.requiresConfirmation = true;
+    }
+
+    if (safe.action === "create_shift") {
+      const payload = safe.payload || {};
+      if (!payload.staffId || !payload.date || !payload.startTime || !payload.endTime) {
+        return buildBlocked("Non salvo turni senza operatore, data, ora inizio e ora fine. Ti apro Turni e presenze.", "open_turns", payload);
+      }
+      safe.requiresConfirmation = true;
     }
 
     if (safe.action === "create_note" || safe.action === "create_task") {
@@ -461,6 +712,10 @@ class AssistantService {
       "Se la richiesta è una domanda, usa mode=answer.",
       "Se l’azione è consentita e chiara, usa mode=action.",
       "Per create_client richiedi conferma finale quando nome e telefono sono completi.",
+      "Per create_appointment richiedi sempre conferma finale e usa solo cliente, operatore e servizio presenti nel contesto.",
+      "Per create_shift richiedi sempre conferma finale e usa solo operatori presenti nel contesto.",
+      "Non creare appuntamenti senza clientId, date e time.",
+      "Non creare turni senza staffId, date, startTime ed endTime.",
       "Non inventare dati che non sono nel contesto."
     ].join("\n");
 
