@@ -78,6 +78,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function addDaysIso(value, days) {
   const base = new Date(value || nowIso());
   const next = new Date(base.getTime() + Number(days || 0) * 86400000);
@@ -1859,8 +1866,78 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const serviceById = new Map(services.map((item) => [String(item.id), item]));
+    const cleanDisplayName = (client) => {
+      const raw = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente";
+      return String(raw)
+        .replace(/^AI Gold Recall Test\s*-\s*/i, "")
+        .replace(/^AI Gold Test\s*-\s*/i, "")
+        .trim() || "Cliente";
+    };
+    const usableFirstName = (name) => {
+      const first = String(name || "").trim().split(/\s+/)[0] || "";
+      if (!first || /^(ai|gold|test|cliente)$/i.test(first)) return "";
+      return first;
+    };
+    const serviceSignal = (serviceName, clientName) => {
+      const text = normalizeText(`${serviceName || ""} ${clientName || ""}`);
+      if (text.includes("cute") || text.includes("o3") || text.includes("cuoio")) {
+        return {
+          area: "cute",
+          motive: "Richiamo mirato sul percorso cute/cuoio capelluto.",
+          proposal: "un controllo cute e una proposta di mantenimento O3",
+          push: "spingere percorso cute/O3 e mantenimento programmato"
+        };
+      }
+      if (text.includes("balayage") || text.includes("schiar") || text.includes("tonal")) {
+        return {
+          area: "balayage",
+          motive: "Richiamo su mantenimento colore e luminosita lunghezze.",
+          proposal: "un controllo balayage con tonalizzazione o trattamento gloss",
+          push: "spingere tonalizzazione, gloss e trattamento protezione lunghezze"
+        };
+      }
+      if (text.includes("colore") || text.includes("ricresc")) {
+        return {
+          area: "colore",
+          motive: "Richiamo su ricrescita e mantenimento colore.",
+          proposal: "un controllo colore con servizio di mantenimento",
+          push: "spingere colore premium, gloss e mantenimento ricrescita"
+        };
+      }
+      if (text.includes("keratina") || text.includes("lisciante")) {
+        return {
+          area: "keratina",
+          motive: "Richiamo su controllo mantenimento lunghezze.",
+          proposal: "un controllo mantenimento keratina e lunghezze",
+          push: "spingere mantenimento post-trattamento e prodotti domiciliari"
+        };
+      }
+      if (text.includes("piega")) {
+        return {
+          area: "piega",
+          motive: "Richiamo su routine piega e frequenza di ritorno.",
+          proposal: "una piega con trattamento rapido di luminosita",
+          push: "spingere pacchetti piega, trattamento rapido e fidelizzazione"
+        };
+      }
+      if (text.includes("taglio")) {
+        return {
+          area: "taglio",
+          motive: "Richiamo su mantenimento taglio e ordine immagine.",
+          proposal: "un controllo taglio e styling",
+          push: "spingere ritorno programmato e servizi abbinati"
+        };
+      }
+      return {
+        area: "generale",
+        motive: "Richiamo personalizzato per recuperare continuita cliente.",
+        proposal: "un controllo personalizzato in salone",
+        push: "spingere servizio premium coerente con lo storico cliente"
+      };
+    };
     const suggestions = clients.map((client) => {
       const clientId = String(client.id || "");
+      const displayName = cleanDisplayName(client);
       const clientAppointments = appointments
         .filter((item) => String(item.clientId || "") === clientId)
         .sort((a, b) => new Date(a.startAt || a.createdAt || 0).getTime() - new Date(b.startAt || b.createdAt || 0).getTime());
@@ -1899,19 +1976,25 @@ class DesktopMirrorService {
         : lastService?.name
           ? `Richiamo legato a ${lastService.name}.`
           : "Richiamo di mantenimento per continuità cliente.";
+      const signal = serviceSignal(lastService?.name || "", displayName);
+      const greeting = usableFirstName(displayName) ? `Ciao ${usableFirstName(displayName)}` : "Ciao";
+      const timing = daysSinceLastVisit >= 90
+        ? `sono passati ${daysSinceLastVisit} giorni dall'ultimo appuntamento`
+        : `e il momento giusto per rivedere il percorso`;
       return {
         clientId,
-        name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
+        name: displayName,
         phone: client.phone || "",
         daysSinceLastVisit,
         averageFrequencyDays,
         segment,
         priority,
-        motive,
+        motive: hasMarketingConsent ? signal.motive : motive,
         lastServiceName: lastService?.name || "",
         hasMarketingConsent,
+        suggestedPush: signal.push,
         message: hasMarketingConsent
-          ? `Ciao ${firstName}, ti scriviamo perché è passato un po’ dall’ultimo appuntamento${lastService?.name ? ` per ${lastService.name}` : ""}. Se vuoi, possiamo fissare un controllo o un nuovo trattamento nei prossimi giorni.`
+          ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: cosi controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
       };
     }).filter((item) => item.daysSinceLastVisit >= 30 || item.segment !== "attivo")
