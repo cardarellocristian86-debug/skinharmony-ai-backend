@@ -272,6 +272,9 @@ class DesktopMirrorService {
     const planType = String(user.planType || inferredPlanType);
     const subscriptionPlan = String(user.subscriptionPlan || (String(user.role || "") === "superadmin" ? "gold" : "gold"));
     const paymentStatus = String(user.paymentStatus || (planType === "active" ? "paid" : "pending"));
+    const requestedSubscriptionPlan = ["base", "silver", "gold"].includes(String(user.requestedSubscriptionPlan || ""))
+      ? String(user.requestedSubscriptionPlan)
+      : "";
     const baseStatus = String(user.accountStatus || (planType === "active" ? "active" : "trial"));
     const trialDays = Number(user.trialDays || DEFAULT_TRIAL_DAYS);
     const trialStartsAt = user.trialStartsAt || (planType === "trial" ? user.createdAt || this.getCurrentIso() : "");
@@ -308,6 +311,9 @@ class DesktopMirrorService {
       ...user,
       planType,
       subscriptionPlan,
+      requestedSubscriptionPlan,
+      subscriptionChangeRequestedAt: String(user.subscriptionChangeRequestedAt || ""),
+      subscriptionChangeStatus: String(user.subscriptionChangeStatus || (requestedSubscriptionPlan ? "pending" : "")),
       paymentStatus,
       accountStatus,
       accessState,
@@ -375,6 +381,9 @@ class DesktopMirrorService {
       centerName: normalized.centerName || DEFAULT_CENTER_NAME,
       planType: normalized.planType,
       subscriptionPlan: normalized.subscriptionPlan,
+      requestedSubscriptionPlan: normalized.requestedSubscriptionPlan || "",
+      subscriptionChangeRequestedAt: normalized.subscriptionChangeRequestedAt || "",
+      subscriptionChangeStatus: normalized.subscriptionChangeStatus || "",
       paymentStatus: normalized.paymentStatus,
       accountStatus: normalized.accountStatus,
       accessState: normalized.accessState,
@@ -956,6 +965,9 @@ class DesktopMirrorService {
         active: payload.active === undefined ? user.active : payload.active !== false,
         planType: payload.planType || user.planType,
         subscriptionPlan: payload.subscriptionPlan || user.subscriptionPlan,
+        requestedSubscriptionPlan: payload.requestedSubscriptionPlan === undefined ? user.requestedSubscriptionPlan : payload.requestedSubscriptionPlan,
+        subscriptionChangeRequestedAt: payload.subscriptionChangeRequestedAt === undefined ? user.subscriptionChangeRequestedAt : payload.subscriptionChangeRequestedAt,
+        subscriptionChangeStatus: payload.subscriptionChangeStatus === undefined ? user.subscriptionChangeStatus : payload.subscriptionChangeStatus,
         paymentStatus: payload.paymentStatus || user.paymentStatus,
         accountStatus: payload.accountStatus || user.accountStatus,
         trialStartsAt: payload.trialStartsAt || user.trialStartsAt,
@@ -975,6 +987,11 @@ class DesktopMirrorService {
         merged.accountStatus = "active";
         merged.activatedAt = payload.activatedAt || now;
       }
+      if (payload.subscriptionPlan) {
+        merged.requestedSubscriptionPlan = "";
+        merged.subscriptionChangeRequestedAt = "";
+        merged.subscriptionChangeStatus = "";
+      }
       if (payload.suspend === true) {
         merged.active = false;
         merged.accountStatus = "suspended";
@@ -985,6 +1002,29 @@ class DesktopMirrorService {
       return this.normalizeUserAccount(merged);
     });
     return this.serializeUserSummary(next || current, { includeControlStats: this.isSuperAdminSession(session) });
+  }
+
+  requestSubscriptionChange(payload = {}, session = null) {
+    this.assertCanOperate(session);
+    const requestedPlan = String(payload.subscriptionPlan || "").toLowerCase();
+    if (!["base", "silver", "gold"].includes(requestedPlan)) {
+      throw new Error("Piano richiesto non valido");
+    }
+    const current = this.usersRepository.findById(session.userId);
+    if (!current) throw new Error("Utente non trovato");
+    const now = nowIso();
+    const next = this.usersRepository.update(current.id, (user) => this.normalizeUserAccount({
+      ...user,
+      requestedSubscriptionPlan: requestedPlan,
+      subscriptionChangeRequestedAt: now,
+      subscriptionChangeStatus: "pending",
+      updatedAt: now
+    }));
+    return {
+      success: true,
+      message: `Richiesta cambio piano a ${requestedPlan} inviata a SkinHarmony.`,
+      user: this.serializeUserSummary(next || current)
+    };
   }
 
   listClients(search = "", session = null) {

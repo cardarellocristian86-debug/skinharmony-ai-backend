@@ -315,6 +315,14 @@ app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
   }
 });
 
+app.post("/api/auth/subscription/request-change", requireAuth, (req, res) => {
+  try {
+    res.json(service.requestSubscriptionChange(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare la richiesta abbonamento");
+  }
+});
+
 app.use("/api", (req, res, next) => {
   if (req.path.startsWith("/auth/")) {
     return next();
