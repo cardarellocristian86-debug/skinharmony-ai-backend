@@ -320,7 +320,7 @@ function buildConfirmationMessage(action, payload = {}, fallback = "Confermi il 
     return `Ho preparato il cliente ${name}${contact}. Confermi il salvataggio?`;
   }
   if (action === "create_appointment") {
-    const client = payload.clientName || payload.walkInName || "cliente";
+    const client = payload.walkInName || payload.clientName || "cliente";
     const service = payload.serviceName ? ` per ${payload.serviceName}` : "";
     const staff = payload.staffName ? ` con ${payload.staffName}` : "";
     const date = payload.date ? ` il ${payload.date}` : "";
