@@ -476,11 +476,13 @@ class DesktopMirrorService {
   }
 
   hasProtocolAiAccess(session = null) {
+    if (this.isSuperAdminSession(session)) return true;
     const plan = this.getPlanLevel(session);
     return plan === "silver" || plan === "gold";
   }
 
   getProtocolAiLimit(session = null) {
+    if (this.isSuperAdminSession(session)) return 300;
     const plan = this.getPlanLevel(session);
     if (plan === "gold") return 300;
     if (plan === "silver") return 7;
@@ -1746,7 +1748,7 @@ class DesktopMirrorService {
         draft: null
       };
     }
-    const currentPlan = this.getPlanLevel(session);
+    const currentPlan = this.isSuperAdminSession(session) ? "gold" : this.getPlanLevel(session);
     const protocolLimit = this.getProtocolAiLimit(session);
     const savedProtocols = this.listProtocols("", session);
     const usedCount = savedProtocols.filter((item) => String(item.source || "").includes("ai_protocols")).length;

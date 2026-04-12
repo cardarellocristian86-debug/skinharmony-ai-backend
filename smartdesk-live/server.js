@@ -178,6 +178,17 @@ function requireOperationalAccess(req, res, next) {
   });
 }
 
+function requireSuperAdmin(req, res, next) {
+  if (String(req.session?.role || "").toLowerCase() === "superadmin") {
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    code: "superadmin_only",
+    message: "Funzione in test riservata al super admin."
+  });
+}
+
 const planWeight = {
   base: 1,
   silver: 2,
@@ -661,7 +672,7 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
   }
 });
 
-app.post("/api/ai-gold/protocols/draft", requirePlan("silver"), async (req, res) => {
+app.post("/api/ai-gold/protocols/draft", requireSuperAdmin, requirePlan("silver"), async (req, res) => {
   try {
     res.json(await service.generateAiGoldProtocolDraft(req.body || {}, req.session));
   } catch (error) {
