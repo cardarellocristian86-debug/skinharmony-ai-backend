@@ -1781,12 +1781,52 @@ class DesktopMirrorService {
     const skinSensitivity = String(payload.skinSensitivity || "").trim();
     const timeBudget = String(payload.timeBudget || "").trim();
     const photoAnalysis = String(payload.photoAnalysis || "").trim();
+    const photoConsent = Boolean(payload.photoConsent);
     const availableTechnologies = Array.isArray(payload.availableTechnologies)
       ? payload.availableTechnologies.map((item) => String(item || "").trim()).filter(Boolean)
       : String(payload.availableTechnologies || "").split(",").map((item) => item.trim()).filter(Boolean);
     const optionalFlags = Array.isArray(payload.optionalFlags)
       ? payload.optionalFlags.map((item) => String(item || "").trim()).filter(Boolean)
       : String(payload.optionalFlags || "").split(",").map((item) => item.trim()).filter(Boolean);
+    const safetyFlags = Array.isArray(payload.safetyFlags)
+      ? payload.safetyFlags.map((item) => String(item || "").trim()).filter(Boolean)
+      : String(payload.safetyFlags || "").split(",").map((item) => item.trim()).filter(Boolean);
+    const imageDataUrl = String(payload.imageDataUrl || "").trim();
+    const preflightErrors = [];
+    if (!targetArea || !needType || !zoneDetail || !ageRange) {
+      preflightErrors.push("Compila fascia eta, area, zona specifica e obiettivo analisi.");
+    }
+    if (!imageDataUrl) {
+      preflightErrors.push("Carica almeno una foto della zona da analizzare.");
+    }
+    if (!photoConsent) {
+      preflightErrors.push("Conferma il consenso all'uso della foto per l'analisi estetica preliminare.");
+    }
+    if (!availableTechnologies.length) {
+      preflightErrors.push("Seleziona le tecnologie realmente presenti nel centro.");
+    }
+    if (safetyFlags.length) {
+      preflightErrors.push("Sono presenti blocchi di sicurezza dichiarati: serve valutazione professionale prima di procedere.");
+    }
+    if (availableTechnologies.includes("Nessuna delle precedenti") && availableTechnologies.length > 1) {
+      preflightErrors.push("Non puoi selezionare 'Nessuna delle precedenti' insieme ad altre tecnologie.");
+    }
+    if (targetArea === "scalp" && !availableTechnologies.includes("O3 System")) {
+      preflightErrors.push("Per un caso scalp, il motore richiede O3 System tra le tecnologie disponibili.");
+    }
+    if (preflightErrors.length) {
+      return {
+        protocolAiEnabled: true,
+        goldEnabled: currentPlan === "gold",
+        currentPlan,
+        protocolLimit,
+        usedCount,
+        protocolMode,
+        message: preflightErrors.join(" "),
+        errors: preflightErrors,
+        draft: null
+      };
+    }
     const searchText = [
       payload.title,
       payload.objective,
@@ -1955,7 +1995,6 @@ class DesktopMirrorService {
       : "Oggi impostiamo una prima seduta controllata, leggiamo la risposta e costruiamo il percorso senza promesse automatiche.";
     let remoteProtocolAnalysis = null;
     let remoteProtocolWarning = "";
-    const imageDataUrl = String(payload.imageDataUrl || "").trim();
     if (imageDataUrl && typeof fetch === "function") {
       try {
         const controller = new AbortController();
