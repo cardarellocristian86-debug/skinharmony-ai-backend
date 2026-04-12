@@ -218,6 +218,10 @@ function requirePlan(requiredPlan) {
   };
 }
 
+function sendBadRequest(res, error, fallback) {
+  res.status(400).send(error instanceof Error ? error.message : fallback);
+}
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -434,11 +438,19 @@ app.get("/api/clients", (req, res) => {
 });
 
 app.post("/api/clients", (req, res) => {
-  res.status(201).json(service.saveClient(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveClient(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare il cliente");
+  }
 });
 
 app.put("/api/clients/:id", (req, res) => {
-  res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare il cliente");
+  }
 });
 
 app.get("/api/clients/:id", (req, res) => {
@@ -470,11 +482,19 @@ app.get("/api/appointments", (req, res) => {
 });
 
 app.post("/api/appointments", (req, res) => {
-  res.status(201).json(service.saveAppointment(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveAppointment(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare l'appuntamento");
+  }
 });
 
 app.put("/api/appointments/:id", (req, res) => {
-  res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare l'appuntamento");
+  }
 });
 
 app.get("/api/catalog/services", (req, res) => {
@@ -482,11 +502,19 @@ app.get("/api/catalog/services", (req, res) => {
 });
 
 app.post("/api/catalog/services", (req, res) => {
-  res.status(201).json(service.saveService(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveService(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare il servizio");
+  }
 });
 
 app.put("/api/catalog/services/:id", (req, res) => {
-  res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare il servizio");
+  }
 });
 
 app.delete("/api/catalog/services/:id", (req, res) => {
@@ -498,11 +526,19 @@ app.get("/api/catalog/staff", (req, res) => {
 });
 
 app.post("/api/catalog/staff", (req, res) => {
-  res.status(201).json(service.saveStaff(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveStaff(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare l'operatore");
+  }
 });
 
 app.put("/api/catalog/staff/:id", (req, res) => {
-  res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare l'operatore");
+  }
 });
 
 app.delete("/api/catalog/staff/:id", (req, res) => {
@@ -514,11 +550,19 @@ app.get("/api/shifts", (req, res) => {
 });
 
 app.post("/api/shifts", (req, res) => {
-  res.status(201).json(service.saveShift(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveShift(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare il turno");
+  }
 });
 
 app.put("/api/shifts/:id", (req, res) => {
-  res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare il turno");
+  }
 });
 
 app.delete("/api/shifts/:id", (req, res) => {
@@ -538,11 +582,19 @@ app.get("/api/shifts/templates", requirePlan("silver"), (req, res) => {
 });
 
 app.post("/api/shifts/templates", requirePlan("silver"), (req, res) => {
-  res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare lo schema turni");
+  }
 });
 
 app.put("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
-  res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare lo schema turni");
+  }
 });
 
 app.delete("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
@@ -562,11 +614,19 @@ app.get("/api/catalog/resources", (req, res) => {
 });
 
 app.post("/api/catalog/resources", (req, res) => {
-  res.status(201).json(service.saveResource(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveResource(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare la risorsa");
+  }
 });
 
 app.put("/api/catalog/resources/:id", (req, res) => {
-  res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare la risorsa");
+  }
 });
 
 app.delete("/api/catalog/resources/:id", (req, res) => {
@@ -578,11 +638,19 @@ app.get("/api/inventory/items", (req, res) => {
 });
 
 app.post("/api/inventory/items", (req, res) => {
-  res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare l'articolo");
+  }
 });
 
 app.put("/api/inventory/items/:id", (req, res) => {
-  res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
+  try {
+    res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile aggiornare l'articolo");
+  }
 });
 
 app.delete("/api/inventory/items/:id", (req, res) => {
@@ -685,7 +753,11 @@ app.get("/api/treatments", requirePlan("silver"), (req, res) => {
 });
 
 app.post("/api/treatments", requirePlan("silver"), (req, res) => {
-  res.status(201).json(service.createTreatment(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.createTreatment(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile salvare il trattamento");
+  }
 });
 
 app.get("/api/protocols", (req, res) => {
@@ -726,7 +798,11 @@ app.get("/api/payments/summary", (req, res) => {
 });
 
 app.post("/api/payments", (req, res) => {
-  res.status(201).json(service.createPayment(req.body || {}, req.session));
+  try {
+    res.status(201).json(service.createPayment(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile registrare il pagamento");
+  }
 });
 
 app.get("/api/settings", (req, res) => {

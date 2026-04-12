@@ -334,6 +334,55 @@ function idempotencyKey(payload = {}) {
   return cleanText(payload.idempotencyKey || payload.requestId || "", "", 120);
 }
 
+function rawProvided(value) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function assertValid(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+function assertEmailIfProvided(value, label = "Email") {
+  if (rawProvided(value)) {
+    assertValid(Boolean(cleanEmail(value)), `${label} non valida`);
+  }
+}
+
+function assertPhoneIfProvided(value, label = "Telefono") {
+  if (rawProvided(value)) {
+    const cleaned = cleanPhone(value);
+    assertValid(cleaned.length >= 7, `${label} non valido`);
+  }
+}
+
+function assertDateTime(value, label = "Data") {
+  const parsed = new Date(value);
+  assertValid(Boolean(value) && !Number.isNaN(parsed.getTime()), `${label} non valida`);
+}
+
+function assertTime(value, label = "Orario") {
+  assertValid(/^\d{2}:\d{2}$/.test(String(value || "")), `${label} non valido`);
+}
+
+function minutesFromTime(value) {
+  const [hours = "0", minutes = "0"] = String(value || "00:00").split(":");
+  return Number(hours) * 60 + Number(minutes);
+}
+
+function assertRange(value, label, options = {}) {
+  const numeric = Number(value);
+  assertValid(Number.isFinite(numeric), `${label} non valido`);
+  if (Number.isFinite(options.min)) {
+    assertValid(numeric >= options.min, `${label} sotto il minimo consentito`);
+  }
+  if (Number.isFinite(options.max)) {
+    assertValid(numeric <= options.max, `${label} sopra il massimo consentito`);
+  }
+  return numeric;
+}
+
 function makeSecureToken() {
   return crypto.randomBytes(32).toString("hex");
 }
@@ -1343,7 +1392,11 @@ class DesktopMirrorService {
     const split = splitName(providedName);
     const firstName = cleanText(payload.firstName || split.firstName || "", "", 80);
     const lastName = cleanText(payload.lastName || split.lastName || "", "", 80);
-    const fullName = cleanText(`${firstName} ${lastName}`.trim() || providedName || "Nuovo cliente", "Nuovo cliente", 180);
+    const fullName = cleanText(`${firstName} ${lastName}`.trim() || providedName, "", 180);
+    assertValid(fullName.length >= 2, "Nome cliente obbligatorio");
+    assertEmailIfProvided(payload.email, "Email cliente");
+    assertPhoneIfProvided(payload.phone, "Telefono cliente");
+    assertRange(payload.totalValue || 0, "Valore cliente", { min: 0, max: 100000000 });
     const now = nowIso();
     const centerId = this.getCenterId(session);
     const centerName = this.getCenterName(session);
@@ -1373,7 +1426,7 @@ class DesktopMirrorService {
       marketingConsentAt: String(payload.marketingConsentAt || (payload.marketingConsent ? now : "")),
       sensitiveDataConsentAt: String(payload.sensitiveDataConsentAt || (payload.sensitiveDataConsent ? now : "")),
       consentSource: String(payload.consentSource || "in_sede"),
-      totalValue: clampNumber(payload.totalValue || 0, 0, { min: 0 }),
+      totalValue: clampNumber(payload.totalValue || 0, 0, { min: 0, max: 100000000 }),
       loyaltyTier: cleanText(payload.loyaltyTier || "base", "base", 40),
       lastVisit: cleanText(payload.lastVisit || "", "", 40),
       createdAt: payload.createdAt || now,
@@ -1496,7 +1549,12 @@ class DesktopMirrorService {
     const existing = !payload.id ? this.findExistingByIdempotency(this.appointmentsRepository, payload, session) : null;
     if (existing) return existing;
     const startAt = payload.startAt || toDateTime(payload.date, payload.time);
-    const durationMin = clampNumber(payload.durationMin || payload.duration || 45, 45, { min: 5, max: 720 });
+    assertDateTime(startAt, "Data appuntamento");
+    const durationMin = assertRange(payload.durationMin || payload.duration || 45, "Durata appuntamento", { min: 5, max: 720 });
+    const appointmentClientName = cleanText(payload.clientName || payload.client || "", "", 180);
+    const appointmentWalkInName = cleanText(payload.walkInName || "", "", 180);
+    assertValid(Boolean(payload.clientId || appointmentClientName || appointmentWalkInName), "Cliente appuntamento obbligatorio");
+    assertPhoneIfProvided(payload.walkInPhone, "Telefono cliente appuntamento");
     const endAt = payload.endAt || addMinutes(startAt, durationMin);
     const centerId = this.getCenterId(session);
     const centerName = this.getCenterName(session);
@@ -1506,8 +1564,8 @@ class DesktopMirrorService {
       centerId,
       centerName,
       clientId: String(payload.clientId || ""),
-      clientName: cleanText(payload.clientName || payload.client || "", "", 180),
-      walkInName: cleanText(payload.walkInName || "", "", 180),
+      clientName: appointmentClientName,
+      walkInName: appointmentWalkInName,
       walkInPhone: cleanPhone(payload.walkInPhone || ""),
       staffId: String(payload.staffId || ""),
       staffName: cleanText(payload.staffName || payload.operator || "", "", 120),
@@ -1545,17 +1603,23 @@ class DesktopMirrorService {
   saveService(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.servicesRepository, payload, session) : null;
     if (existing) return existing;
+    const serviceName = cleanText(payload.name || "", "", 160);
+    assertValid(serviceName.length >= 2, "Nome servizio obbligatorio");
+    const durationMin = assertRange(payload.durationMin || payload.duration || 45, "Durata servizio", { min: 5, max: 720 });
+    const priceCents = assertRange(payload.priceCents || payload.price || 0, "Prezzo servizio", { min: 0, max: 100000000 });
+    const estimatedProductCostCents = assertRange(payload.estimatedProductCostCents || payload.productCostCents || 0, "Costo prodotto stimato", { min: 0, max: 100000000 });
+    const technologyCostCents = assertRange(payload.technologyCostCents || 0, "Costo tecnologia", { min: 0, max: 100000000 });
     const entity = {
       id: payload.id || makeId("service"),
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: cleanText(payload.name || "Nuovo servizio", "Nuovo servizio", 160),
+      name: serviceName,
       category: cleanText(payload.category || "", "", 80),
-      durationMin: clampNumber(payload.durationMin || payload.duration || 45, 45, { min: 5, max: 720 }),
-      priceCents: clampNumber(payload.priceCents || payload.price || 0, 0, { min: 0 }),
-      estimatedProductCostCents: clampNumber(payload.estimatedProductCostCents || payload.productCostCents || 0, 0, { min: 0 }),
-      technologyCostCents: clampNumber(payload.technologyCostCents || 0, 0, { min: 0 }),
+      durationMin,
+      priceCents,
+      estimatedProductCostCents,
+      technologyCostCents,
       active: payload.active !== false,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1578,15 +1642,22 @@ class DesktopMirrorService {
   saveStaff(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.staffRepository, payload, session) : null;
     if (existing) return existing;
+    const staffName = cleanText(payload.name || "", "", 120);
+    assertValid(staffName.length >= 2, "Nome operatore obbligatorio");
+    assertEmailIfProvided(payload.email, "Email operatore");
+    assertPhoneIfProvided(payload.phone, "Telefono operatore");
+    const hourlyCostCents = assertRange(payload.hourlyCostCents || payload.hourlyCost || 0, "Costo orario operatore", { min: 0, max: 100000000 });
     const entity = {
       id: payload.id || makeId("staff"),
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: cleanText(payload.name || "Nuovo operatore", "Nuovo operatore", 120),
+      name: staffName,
       role: cleanText(payload.role || "", "", 80),
       colorTag: cleanText(payload.colorTag || "#6db7ff", "#6db7ff", 20),
-      hourlyCostCents: clampNumber(payload.hourlyCostCents || payload.hourlyCost || 0, 0, { min: 0 }),
+      hourlyCostCents,
+      email: cleanEmail(payload.email || ""),
+      phone: cleanPhone(payload.phone || ""),
       active: payload.active === false ? 0 : 1,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1617,16 +1688,23 @@ class DesktopMirrorService {
   saveShift(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.shiftsRepository, payload, session) : null;
     if (existing) return existing;
+    const staffName = cleanText(payload.staffName || "", "", 120);
+    const startTime = cleanText(payload.startTime || "09:00", "09:00", 5);
+    const endTime = cleanText(payload.endTime || "18:00", "18:00", 5);
+    assertValid(Boolean(payload.staffId || staffName), "Operatore turno obbligatorio");
+    assertTime(startTime, "Ora inizio turno");
+    assertTime(endTime, "Ora fine turno");
+    assertValid(minutesFromTime(endTime) > minutesFromTime(startTime), "Ora fine turno deve essere successiva all'inizio");
     const entity = {
       id: payload.id || makeId("shift"),
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       staffId: String(payload.staffId || ""),
-      staffName: cleanText(payload.staffName || "", "", 120),
+      staffName,
       date: toDateOnly(payload.date || payload.startDate || nowIso()),
-      startTime: cleanText(payload.startTime || "09:00", "09:00", 5),
-      endTime: cleanText(payload.endTime || "18:00", "18:00", 5),
+      startTime,
+      endTime,
       attendanceStatus: cleanText(payload.attendanceStatus || "scheduled", "scheduled", 40),
       notes: cleanText(payload.notes || "", "", 1000),
       updatedAt: nowIso(),
@@ -1656,11 +1734,13 @@ class DesktopMirrorService {
   }
 
   saveShiftTemplate(payload = {}, session = null) {
+    const templateName = cleanText(payload.name || "", "", 120);
+    assertValid(templateName.length >= 2, "Nome schema turni obbligatorio");
     const entity = {
       id: payload.id || makeId("template"),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: String(payload.name || "Nuovo template"),
+      name: templateName,
       week: Array.isArray(payload.week) ? payload.week : [],
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1691,12 +1771,14 @@ class DesktopMirrorService {
   saveResource(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.resourcesRepository, payload, session) : null;
     if (existing) return existing;
+    const resourceName = cleanText(payload.name || "", "", 120);
+    assertValid(resourceName.length >= 2, "Nome risorsa obbligatorio");
     const entity = {
       id: payload.id || makeId("resource"),
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: cleanText(payload.name || "Nuova risorsa", "Nuova risorsa", 120),
+      name: resourceName,
       type: cleanText(payload.type || "room", "room", 60),
       active: payload.active !== false,
       updatedAt: nowIso(),
@@ -1720,16 +1802,32 @@ class DesktopMirrorService {
   saveInventoryItem(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.inventoryRepository, payload, session) : null;
     if (existing) return existing;
+    const itemName = cleanText(payload.name || "", "", 160);
+    const quantity = assertRange(payload.quantity ?? payload.stockQuantity ?? 0, "Quantità magazzino", { min: 0, max: 100000000 });
+    const minQuantity = assertRange(payload.minQuantity ?? payload.thresholdQuantity ?? 0, "Soglia magazzino", { min: 0, max: 100000000 });
+    const costCents = assertRange(payload.costCents || payload.unitCostCents || payload.purchaseCostCents || 0, "Costo articolo", { min: 0, max: 100000000 });
+    const salePriceCents = assertRange(payload.salePriceCents || payload.retailPriceCents || 0, "Prezzo vendita articolo", { min: 0, max: 100000000 });
+    assertValid(itemName.length >= 2, "Nome articolo obbligatorio");
     const entity = {
       id: payload.id || makeId("inv"),
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: cleanText(payload.name || "Nuovo articolo", "Nuovo articolo", 160),
+      name: itemName,
       sku: cleanText(payload.sku || "", "", 80).replace(/[^a-zA-Z0-9._-]/g, ""),
-      quantity: clampNumber(payload.quantity ?? payload.stockQuantity ?? 0, 0, { min: 0 }),
-      minQuantity: clampNumber(payload.minQuantity || 0, 0, { min: 0 }),
-      costCents: clampNumber(payload.costCents || payload.unitCostCents || 0, 0, { min: 0 }),
+      quantity,
+      stockQuantity: quantity,
+      minQuantity,
+      thresholdQuantity: minQuantity,
+      costCents,
+      unitCostCents: costCents,
+      purchaseCostCents: costCents,
+      salePriceCents,
+      retailPriceCents: salePriceCents,
+      category: cleanText(payload.category || "", "", 80),
+      supplier: cleanText(payload.supplier || "", "", 120),
+      unit: cleanText(payload.unit || "pz", "pz", 20),
+      usageType: cleanText(payload.usageType || "cabina", "cabina", 40),
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
     };
@@ -1750,7 +1848,9 @@ class DesktopMirrorService {
 
   createInventoryMovement(payload = {}, session = null) {
     const centerId = this.getCenterId(session);
-    const quantity = clampNumber(payload.quantity || 0, 0, { min: -100000, max: 100000 });
+    assertValid(Boolean(payload.itemId), "Articolo magazzino obbligatorio");
+    assertValid(Boolean(this.findByIdInCenter(this.inventoryRepository, payload.itemId, session)), "Articolo magazzino non trovato");
+    const quantity = assertRange(payload.quantity || 0, "Quantità movimento", { min: 0.01, max: 100000 });
     const movement = {
       id: makeId("move"),
       centerId,
@@ -1763,9 +1863,13 @@ class DesktopMirrorService {
     };
     this.inventoryMovementsRepository.create(movement);
     if (movement.itemId) {
+      const signedQuantity = ["unload", "internal_use", "sale"].includes(movement.type)
+        ? -movement.quantity
+        : movement.quantity;
       this.updateInCenter(this.inventoryRepository, movement.itemId, (current) => ({
         ...current,
-        quantity: Number(current.quantity || 0) + movement.quantity,
+        quantity: Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity),
+        stockQuantity: Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity),
         updatedAt: nowIso()
       }), session);
     }
@@ -1813,13 +1917,16 @@ class DesktopMirrorService {
     const now = nowIso();
     const clientId = String(payload.clientId || "");
     const client = clientId ? this.findByIdInCenter(this.clientsRepository, clientId, session) : null;
+    const protocolTitle = cleanText(payload.title || "", "", 180);
+    assertValid(protocolTitle.length >= 2, "Titolo protocollo obbligatorio");
+    assertRange(payload.sessionsCount || 0, "Numero sedute protocollo", { min: 0, max: 200 });
     const entity = {
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       clientId,
       clientName: cleanText(payload.clientName || (client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() : ""), "", 180),
-      title: cleanText(payload.title || "Protocollo operativo", "Protocollo operativo", 180),
+      title: protocolTitle,
       objective: cleanText(payload.objective || "", "", 1000),
       area: cleanText(payload.area || "", "", 120),
       libraryScope: ["center", "skinharmony"].includes(String(payload.libraryScope || "").toLowerCase())
@@ -2432,15 +2539,18 @@ class DesktopMirrorService {
   createPayment(payload = {}, session = null) {
     const existing = this.findExistingByIdempotency(this.paymentsRepository, payload, session);
     if (existing) return existing;
+    const amountCents = assertRange(payload.amountCents || payload.amount || 0, "Importo pagamento", { min: 1, max: 100000000 });
+    const walkInName = cleanText(payload.walkInName || "", "", 180);
+    assertValid(Boolean(payload.clientId || walkInName || payload.appointmentId), "Cliente o appuntamento pagamento obbligatorio");
     const payment = {
       id: makeId("pay"),
       idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       clientId: String(payload.clientId || ""),
-      walkInName: cleanText(payload.walkInName || "", "", 180),
+      walkInName,
       appointmentId: String(payload.appointmentId || ""),
-      amountCents: clampNumber(payload.amountCents || payload.amount || 0, 0, { min: 0, max: 100000000 }),
+      amountCents,
       method: cleanText(payload.method || "cash", "cash", 40),
       description: cleanText(payload.description || payload.note || "", "", 1000),
       note: cleanText(payload.note || payload.description || "", "", 1000),
