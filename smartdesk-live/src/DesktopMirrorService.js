@@ -1615,6 +1615,79 @@ class DesktopMirrorService {
     return this.filterByCenter(this.paymentsRepository.list(), session).filter((item) => !clientId || item.clientId === clientId);
   }
 
+  getPaymentsSummary(options = {}, session = null) {
+    const mode = String(options.period || "day");
+    const anchorDate = toDateOnly(options.anchorDate || nowIso());
+    let startDate = String(options.startDate || "");
+    let endDate = String(options.endDate || "");
+    if (mode === "custom") {
+      startDate = toDateOnly(startDate || anchorDate);
+      endDate = toDateOnly(endDate || startDate);
+    } else if (mode === "week") {
+      const anchor = new Date(`${anchorDate}T00:00:00`);
+      const diffToMonday = (anchor.getDay() + 6) % 7;
+      const start = new Date(anchor);
+      start.setDate(anchor.getDate() - diffToMonday);
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      startDate = toDateOnly(start.toISOString());
+      endDate = toDateOnly(end.toISOString());
+    } else if (mode === "month") {
+      const anchor = new Date(`${anchorDate}T00:00:00`);
+      startDate = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, "0")}-01`;
+      const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+      endDate = toDateOnly(end.toISOString());
+    } else {
+      startDate = anchorDate;
+      endDate = anchorDate;
+    }
+    if (startDate > endDate) {
+      const swap = startDate;
+      startDate = endDate;
+      endDate = swap;
+    }
+
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const clientNames = new Map(clients.map((client) => [
+      String(client.id || ""),
+      `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente"
+    ]));
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session)
+      .filter((item) => {
+        const createdDate = toDateOnly(item.createdAt);
+        return createdDate >= startDate && createdDate <= endDate;
+      })
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+    const byMethod = {};
+    const byDay = {};
+    payments.forEach((payment) => {
+      const amountCents = Number(payment.amountCents || 0);
+      const method = String(payment.method || "cash");
+      const day = toDateOnly(payment.createdAt);
+      byMethod[method] = (byMethod[method] || 0) + amountCents;
+      byDay[day] = (byDay[day] || 0) + amountCents;
+    });
+
+    return {
+      period: mode,
+      startDate,
+      endDate,
+      totals: {
+        count: payments.length,
+        revenueCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0)
+      },
+      byMethod: Object.entries(byMethod).map(([method, amountCents]) => ({ method, amountCents })),
+      byDay: Object.entries(byDay)
+        .map(([date, amountCents]) => ({ date, amountCents }))
+        .sort((a, b) => String(a.date).localeCompare(String(b.date))),
+      recentPayments: payments.slice(0, 12).map((payment) => ({
+        ...payment,
+        clientName: payment.clientId ? clientNames.get(String(payment.clientId)) || "Cliente" : payment.walkInName || "Cliente occasionale"
+      }))
+    };
+  }
+
   createPayment(payload = {}, session = null) {
     const payment = {
       id: makeId("pay"),

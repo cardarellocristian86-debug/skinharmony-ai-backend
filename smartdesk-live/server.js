@@ -673,6 +673,15 @@ app.get("/api/payments", (req, res) => {
   res.json(service.listPayments(req.query.clientId, req.session));
 });
 
+app.get("/api/payments/summary", (req, res) => {
+  res.json(service.getPaymentsSummary({
+    period: req.query.period || "day",
+    anchorDate: req.query.anchorDate || "",
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.session));
+});
+
 app.post("/api/payments", (req, res) => {
   res.status(201).json(service.createPayment(req.body || {}, req.session));
 });
