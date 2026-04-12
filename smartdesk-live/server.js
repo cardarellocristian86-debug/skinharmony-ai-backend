@@ -741,6 +741,14 @@ app.post("/api/settings/reset", (req, res) => {
   res.json(service.resetSettings(req.session));
 });
 
+app.post("/api/admin/cleanup-test-data", requireSuperAdmin, (req, res) => {
+  try {
+    res.json(service.deleteSafeTestData(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile eseguire cleanup test");
+  }
+});
+
 app.use((_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });

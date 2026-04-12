@@ -45,6 +45,11 @@ const defaultSettings = {
   enableMultiLocation: false,
   aiMode: "local",
   aiActionsEnabled: true,
+  shiftsBaseEnabled: true,
+  shiftsTemplatesEnabled: true,
+  shiftsClockEnabled: true,
+  shiftsReportsEnabled: true,
+  shiftsFlexEnabled: false,
   inventoryBaseEnabled: true,
   inventoryMovementsEnabled: true,
   inventoryAlertsEnabled: true,
@@ -296,6 +301,37 @@ function verifyPassword(password, passwordHash) {
 
 function makeId(prefix) {
   return `${prefix}_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function clampNumber(value, fallback = 0, options = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const min = Number.isFinite(options.min) ? options.min : -Infinity;
+  const max = Number.isFinite(options.max) ? options.max : Infinity;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function cleanText(value, fallback = "", maxLength = 500) {
+  const cleaned = String(value || fallback)
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.slice(0, maxLength);
+}
+
+function cleanEmail(value = "") {
+  const email = cleanText(value, "", 180).toLowerCase();
+  if (!email) return "";
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+function cleanPhone(value = "") {
+  return String(value || "")
+    .replace(/[^\d+]/g, "")
+    .slice(0, 24);
+}
+
+function idempotencyKey(payload = {}) {
+  return cleanText(payload.idempotencyKey || payload.requestId || "", "", 120);
 }
 
 function makeSecureToken() {
@@ -659,6 +695,68 @@ class DesktopMirrorService {
       return { success: false };
     }
     return { success: repository.delete(id) };
+  }
+
+  findExistingByIdempotency(repository, payload = {}, session = null) {
+    const key = idempotencyKey(payload);
+    if (!key) return null;
+    return this.filterByCenter(repository.list(), session).find((item) => item.idempotencyKey === key) || null;
+  }
+
+  deleteSafeTestData(payload = {}, session = null) {
+    if (!this.isSuperAdminSession(session)) {
+      throw new Error("Cleanup riservato al super admin");
+    }
+    const prefix = cleanText(payload.prefix || "STRESS_", "STRESS_", 80);
+    if (!prefix || prefix.length < 6) {
+      throw new Error("Prefisso cleanup troppo corto");
+    }
+    const centerId = cleanText(payload.centerId || "", "", 120);
+    const shouldDelete = (item = {}) => {
+      if (centerId && String(item.centerId || "") !== centerId) return false;
+      const text = [
+        item.id,
+        item.username,
+        item.centerName,
+        item.name,
+        item.firstName,
+        item.lastName,
+        item.clientName,
+        item.walkInName,
+        item.title,
+        item.sku,
+        item.notes,
+        item.source
+      ].map((value) => String(value || "")).join(" ");
+      return text.includes(prefix);
+    };
+    const repositories = {
+      users: this.usersRepository,
+      clients: this.clientsRepository,
+      appointments: this.appointmentsRepository,
+      services: this.servicesRepository,
+      staff: this.staffRepository,
+      shifts: this.shiftsRepository,
+      shiftTemplates: this.shiftTemplatesRepository,
+      resources: this.resourcesRepository,
+      inventory: this.inventoryRepository,
+      inventoryMovements: this.inventoryMovementsRepository,
+      payments: this.paymentsRepository,
+      treatments: this.treatmentsRepository,
+      protocols: this.protocolsRepository,
+      aiMarketingActions: this.aiMarketingActionsRepository,
+      sales: this.salesRepository
+    };
+    const deleted = {};
+    Object.entries(repositories).forEach(([name, repository]) => {
+      deleted[name] = repository.deleteWhere(shouldDelete);
+    });
+    return {
+      success: true,
+      prefix,
+      centerId,
+      deleted
+    };
   }
 
   createRepository(name, defaultValue) {
@@ -1239,26 +1337,29 @@ class DesktopMirrorService {
   }
 
   saveClient(payload = {}, session = null) {
-    const providedName = String(payload.name || payload.fullName || "").trim();
+    const existing = !payload.id ? this.findExistingByIdempotency(this.clientsRepository, payload, session) : null;
+    if (existing) return existing;
+    const providedName = cleanText(payload.name || payload.fullName || "", "", 180);
     const split = splitName(providedName);
-    const firstName = String(payload.firstName || split.firstName || "").trim();
-    const lastName = String(payload.lastName || split.lastName || "").trim();
-    const fullName = String(`${firstName} ${lastName}`.trim() || providedName || "Nuovo cliente");
+    const firstName = cleanText(payload.firstName || split.firstName || "", "", 80);
+    const lastName = cleanText(payload.lastName || split.lastName || "", "", 80);
+    const fullName = cleanText(`${firstName} ${lastName}`.trim() || providedName || "Nuovo cliente", "Nuovo cliente", 180);
     const now = nowIso();
     const centerId = this.getCenterId(session);
     const centerName = this.getCenterName(session);
     const entity = {
       id: payload.id || makeId("client"),
+      idempotencyKey: idempotencyKey(payload),
       centerId,
       centerName,
       firstName,
       lastName,
       name: fullName,
-      phone: String(payload.phone || ""),
-      email: String(payload.email || ""),
-      birthDate: String(payload.birthDate || ""),
-      notes: String(payload.notes || ""),
-      allergies: String(payload.allergies || ""),
+      phone: cleanPhone(payload.phone || ""),
+      email: cleanEmail(payload.email || ""),
+      birthDate: cleanText(payload.birthDate || "", "", 20),
+      notes: cleanText(payload.notes || "", "", 2000),
+      allergies: cleanText(payload.allergies || "", "", 500),
       preferences: Array.isArray(payload.preferences)
         ? payload.preferences
         : String(payload.preferences || "").split(",").map((item) => item.trim()).filter(Boolean),
@@ -1272,9 +1373,9 @@ class DesktopMirrorService {
       marketingConsentAt: String(payload.marketingConsentAt || (payload.marketingConsent ? now : "")),
       sensitiveDataConsentAt: String(payload.sensitiveDataConsentAt || (payload.sensitiveDataConsent ? now : "")),
       consentSource: String(payload.consentSource || "in_sede"),
-      totalValue: Number(payload.totalValue || 0),
-      loyaltyTier: String(payload.loyaltyTier || "base"),
-      lastVisit: String(payload.lastVisit || ""),
+      totalValue: clampNumber(payload.totalValue || 0, 0, { min: 0 }),
+      loyaltyTier: cleanText(payload.loyaltyTier || "base", "base", 40),
+      lastVisit: cleanText(payload.lastVisit || "", "", 40),
       createdAt: payload.createdAt || now,
       updatedAt: now
     };
@@ -1392,30 +1493,33 @@ class DesktopMirrorService {
   }
 
   saveAppointment(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.appointmentsRepository, payload, session) : null;
+    if (existing) return existing;
     const startAt = payload.startAt || toDateTime(payload.date, payload.time);
-    const durationMin = Number(payload.durationMin || payload.duration || 45);
+    const durationMin = clampNumber(payload.durationMin || payload.duration || 45, 45, { min: 5, max: 720 });
     const endAt = payload.endAt || addMinutes(startAt, durationMin);
     const centerId = this.getCenterId(session);
     const centerName = this.getCenterName(session);
     const entity = {
       id: payload.id || makeId("appt"),
+      idempotencyKey: idempotencyKey(payload),
       centerId,
       centerName,
       clientId: String(payload.clientId || ""),
-      clientName: String(payload.clientName || payload.client || ""),
-      walkInName: String(payload.walkInName || ""),
-      walkInPhone: String(payload.walkInPhone || ""),
+      clientName: cleanText(payload.clientName || payload.client || "", "", 180),
+      walkInName: cleanText(payload.walkInName || "", "", 180),
+      walkInPhone: cleanPhone(payload.walkInPhone || ""),
       staffId: String(payload.staffId || ""),
-      staffName: String(payload.staffName || payload.operator || ""),
+      staffName: cleanText(payload.staffName || payload.operator || "", "", 120),
       serviceId: String(payload.serviceId || ""),
       serviceIds: Array.isArray(payload.serviceIds) ? payload.serviceIds : (payload.serviceId ? [String(payload.serviceId)] : []),
-      serviceName: String(payload.serviceName || payload.service || ""),
+      serviceName: cleanText(payload.serviceName || payload.service || "", "", 160),
       resourceId: String(payload.resourceId || ""),
-      resourceName: String(payload.resourceName || payload.room || ""),
+      resourceName: cleanText(payload.resourceName || payload.room || "", "", 120),
       startAt,
       endAt,
-      status: String(payload.status || "requested"),
-      notes: String(payload.notes || ""),
+      status: cleanText(payload.status || "requested", "requested", 40),
+      notes: cleanText(payload.notes || "", "", 1000),
       durationMin,
       locked: payload.locked ? 1 : 0,
       createdAt: payload.createdAt || nowIso(),
@@ -1439,16 +1543,19 @@ class DesktopMirrorService {
   }
 
   saveService(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.servicesRepository, payload, session) : null;
+    if (existing) return existing;
     const entity = {
       id: payload.id || makeId("service"),
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: String(payload.name || "Nuovo servizio"),
-      category: String(payload.category || ""),
-      durationMin: Number(payload.durationMin || payload.duration || 45),
-      priceCents: Number(payload.priceCents || payload.price || 0),
-      estimatedProductCostCents: Number(payload.estimatedProductCostCents || payload.productCostCents || 0),
-      technologyCostCents: Number(payload.technologyCostCents || 0),
+      name: cleanText(payload.name || "Nuovo servizio", "Nuovo servizio", 160),
+      category: cleanText(payload.category || "", "", 80),
+      durationMin: clampNumber(payload.durationMin || payload.duration || 45, 45, { min: 5, max: 720 }),
+      priceCents: clampNumber(payload.priceCents || payload.price || 0, 0, { min: 0 }),
+      estimatedProductCostCents: clampNumber(payload.estimatedProductCostCents || payload.productCostCents || 0, 0, { min: 0 }),
+      technologyCostCents: clampNumber(payload.technologyCostCents || 0, 0, { min: 0 }),
       active: payload.active !== false,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1469,14 +1576,17 @@ class DesktopMirrorService {
   }
 
   saveStaff(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.staffRepository, payload, session) : null;
+    if (existing) return existing;
     const entity = {
       id: payload.id || makeId("staff"),
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: String(payload.name || "Nuovo operatore"),
-      role: String(payload.role || ""),
-      colorTag: String(payload.colorTag || "#6db7ff"),
-      hourlyCostCents: Number(payload.hourlyCostCents || payload.hourlyCost || 0),
+      name: cleanText(payload.name || "Nuovo operatore", "Nuovo operatore", 120),
+      role: cleanText(payload.role || "", "", 80),
+      colorTag: cleanText(payload.colorTag || "#6db7ff", "#6db7ff", 20),
+      hourlyCostCents: clampNumber(payload.hourlyCostCents || payload.hourlyCost || 0, 0, { min: 0 }),
       active: payload.active === false ? 0 : 1,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1505,17 +1615,20 @@ class DesktopMirrorService {
   }
 
   saveShift(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.shiftsRepository, payload, session) : null;
+    if (existing) return existing;
     const entity = {
       id: payload.id || makeId("shift"),
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       staffId: String(payload.staffId || ""),
-      staffName: String(payload.staffName || ""),
+      staffName: cleanText(payload.staffName || "", "", 120),
       date: toDateOnly(payload.date || payload.startDate || nowIso()),
-      startTime: String(payload.startTime || "09:00"),
-      endTime: String(payload.endTime || "18:00"),
-      attendanceStatus: String(payload.attendanceStatus || "scheduled"),
-      notes: String(payload.notes || ""),
+      startTime: cleanText(payload.startTime || "09:00", "09:00", 5),
+      endTime: cleanText(payload.endTime || "18:00", "18:00", 5),
+      attendanceStatus: cleanText(payload.attendanceStatus || "scheduled", "scheduled", 40),
+      notes: cleanText(payload.notes || "", "", 1000),
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
     };
@@ -1576,12 +1689,15 @@ class DesktopMirrorService {
   }
 
   saveResource(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.resourcesRepository, payload, session) : null;
+    if (existing) return existing;
     const entity = {
       id: payload.id || makeId("resource"),
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: String(payload.name || "Nuova risorsa"),
-      type: String(payload.type || "room"),
+      name: cleanText(payload.name || "Nuova risorsa", "Nuova risorsa", 120),
+      type: cleanText(payload.type || "room", "room", 60),
       active: payload.active !== false,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1602,15 +1718,18 @@ class DesktopMirrorService {
   }
 
   saveInventoryItem(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.inventoryRepository, payload, session) : null;
+    if (existing) return existing;
     const entity = {
       id: payload.id || makeId("inv"),
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
-      name: String(payload.name || "Nuovo articolo"),
-      sku: String(payload.sku || ""),
-      quantity: Number(payload.quantity || 0),
-      minQuantity: Number(payload.minQuantity || 0),
-      costCents: Number(payload.costCents || 0),
+      name: cleanText(payload.name || "Nuovo articolo", "Nuovo articolo", 160),
+      sku: cleanText(payload.sku || "", "", 80).replace(/[^a-zA-Z0-9._-]/g, ""),
+      quantity: clampNumber(payload.quantity ?? payload.stockQuantity ?? 0, 0, { min: 0 }),
+      minQuantity: clampNumber(payload.minQuantity || 0, 0, { min: 0 }),
+      costCents: clampNumber(payload.costCents || payload.unitCostCents || 0, 0, { min: 0 }),
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
     };
@@ -1631,14 +1750,15 @@ class DesktopMirrorService {
 
   createInventoryMovement(payload = {}, session = null) {
     const centerId = this.getCenterId(session);
+    const quantity = clampNumber(payload.quantity || 0, 0, { min: -100000, max: 100000 });
     const movement = {
       id: makeId("move"),
       centerId,
       centerName: this.getCenterName(session),
       itemId: String(payload.itemId || ""),
-      type: String(payload.type || "manual"),
-      quantity: Number(payload.quantity || 0),
-      note: String(payload.note || ""),
+      type: cleanText(payload.type || "manual", "manual", 40),
+      quantity,
+      note: cleanText(payload.note || "", "", 500),
       createdAt: nowIso()
     };
     this.inventoryMovementsRepository.create(movement);
@@ -1688,34 +1808,37 @@ class DesktopMirrorService {
   }
 
   saveProtocol(payload = {}, session = null) {
+    const existing = !payload.id ? this.findExistingByIdempotency(this.protocolsRepository, payload, session) : null;
+    if (existing) return existing;
     const now = nowIso();
     const clientId = String(payload.clientId || "");
     const client = clientId ? this.findByIdInCenter(this.clientsRepository, clientId, session) : null;
     const entity = {
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       clientId,
-      clientName: String(payload.clientName || (client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() : "")),
-      title: String(payload.title || "Protocollo operativo"),
-      objective: String(payload.objective || ""),
-      area: String(payload.area || ""),
+      clientName: cleanText(payload.clientName || (client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() : ""), "", 180),
+      title: cleanText(payload.title || "Protocollo operativo", "Protocollo operativo", 180),
+      objective: cleanText(payload.objective || "", "", 1000),
+      area: cleanText(payload.area || "", "", 120),
       libraryScope: ["center", "skinharmony"].includes(String(payload.libraryScope || "").toLowerCase())
         ? String(payload.libraryScope || "").toLowerCase()
         : "center",
-      targetArea: String(payload.targetArea || ""),
-      needType: String(payload.needType || ""),
-      caseIntensity: String(payload.caseIntensity || ""),
-      sessionsCount: Number(payload.sessionsCount || 0),
-      frequency: String(payload.frequency || ""),
-      technologies: String(payload.technologies || ""),
-      products: String(payload.products || ""),
-      steps: String(payload.steps || ""),
-      clientCommunication: String(payload.clientCommunication || ""),
-      avoidClaims: String(payload.avoidClaims || "Nessun risultato garantito. Nessun linguaggio medico o terapeutico."),
-      operatorNotes: String(payload.operatorNotes || payload.notes || ""),
-      limitations: String(payload.limitations || "Protocollo operativo non medico. Nessuna diagnosi o promessa terapeutica."),
-      source: String(payload.source || "manual"),
-      status: String(payload.status || "draft"),
+      targetArea: cleanText(payload.targetArea || "", "", 40),
+      needType: cleanText(payload.needType || "", "", 120),
+      caseIntensity: cleanText(payload.caseIntensity || "", "", 40),
+      sessionsCount: clampNumber(payload.sessionsCount || 0, 0, { min: 0, max: 200 }),
+      frequency: cleanText(payload.frequency || "", "", 200),
+      technologies: cleanText(payload.technologies || "", "", 1000),
+      products: cleanText(payload.products || "", "", 1000),
+      steps: cleanText(payload.steps || "", "", 5000),
+      clientCommunication: cleanText(payload.clientCommunication || "", "", 2000),
+      avoidClaims: cleanText(payload.avoidClaims || "Nessun risultato garantito. Nessun linguaggio medico o terapeutico.", "Nessun risultato garantito. Nessun linguaggio medico o terapeutico.", 1500),
+      operatorNotes: cleanText(payload.operatorNotes || payload.notes || "", "", 3000),
+      limitations: cleanText(payload.limitations || "Protocollo operativo non medico. Nessuna diagnosi o promessa terapeutica.", "Protocollo operativo non medico. Nessuna diagnosi o promessa terapeutica.", 1500),
+      source: cleanText(payload.source || "manual", "manual", 80),
+      status: cleanText(payload.status || "draft", "draft", 40),
       updatedAt: now
     };
     if (payload.id) {
@@ -2307,17 +2430,20 @@ class DesktopMirrorService {
   }
 
   createPayment(payload = {}, session = null) {
+    const existing = this.findExistingByIdempotency(this.paymentsRepository, payload, session);
+    if (existing) return existing;
     const payment = {
       id: makeId("pay"),
+      idempotencyKey: idempotencyKey(payload),
       centerId: this.getCenterId(session),
       centerName: this.getCenterName(session),
       clientId: String(payload.clientId || ""),
-      walkInName: String(payload.walkInName || ""),
+      walkInName: cleanText(payload.walkInName || "", "", 180),
       appointmentId: String(payload.appointmentId || ""),
-      amountCents: Number(payload.amountCents || payload.amount || 0),
-      method: String(payload.method || "cash"),
-      description: String(payload.description || payload.note || ""),
-      note: String(payload.note || payload.description || ""),
+      amountCents: clampNumber(payload.amountCents || payload.amount || 0, 0, { min: 0, max: 100000000 }),
+      method: cleanText(payload.method || "cash", "cash", 40),
+      description: cleanText(payload.description || payload.note || "", "", 1000),
+      note: cleanText(payload.note || payload.description || "", "", 1000),
       createdAt: nowIso()
     };
     this.paymentsRepository.create(payment);

@@ -59,6 +59,16 @@ class JsonFileRepository {
     }
     return removed;
   }
+
+  deleteWhere(predicate) {
+    const items = this.list();
+    const next = items.filter((item) => !predicate(item));
+    const removedCount = items.length - next.length;
+    if (removedCount > 0) {
+      this.write(next);
+    }
+    return removedCount;
+  }
 }
 
 module.exports = {
