@@ -178,6 +178,35 @@ function requireOperationalAccess(req, res, next) {
   });
 }
 
+const planWeight = {
+  base: 1,
+  silver: 2,
+  gold: 3
+};
+
+function normalizedPlan(session) {
+  if (String(session?.role || "").toLowerCase() === "superadmin") return "gold";
+  const plan = String(session?.subscriptionPlan || "").toLowerCase();
+  return planWeight[plan] ? plan : "gold";
+}
+
+function requirePlan(requiredPlan) {
+  return (req, res, next) => {
+    const currentWeight = planWeight[normalizedPlan(req.session)] || planWeight.gold;
+    const requiredWeight = planWeight[requiredPlan] || planWeight.gold;
+    if (currentWeight >= requiredWeight) {
+      return next();
+    }
+    return res.status(403).json({
+      success: false,
+      code: "plan_locked",
+      requiredPlan,
+      currentPlan: normalizedPlan(req.session),
+      message: `Funzione disponibile dal piano ${requiredPlan}.`
+    });
+  };
+}
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -345,7 +374,7 @@ app.post("/api/assistant/chat", async (req, res) => {
   }
 });
 
-app.get("/api/reports/operational", (req, res) => {
+app.get("/api/reports/operational", requirePlan("silver"), (req, res) => {
   res.json(service.getOperationalReport({
     period: req.query.period || "day",
     startDate: req.query.startDate || "",
@@ -353,7 +382,7 @@ app.get("/api/reports/operational", (req, res) => {
   }, req.session));
 });
 
-app.get("/api/reports/export", (req, res) => {
+app.get("/api/reports/export", requirePlan("silver"), (req, res) => {
   res.json(service.exportOperationalReport({
     period: req.query.period || "day",
     startDate: req.query.startDate || "",
@@ -361,11 +390,11 @@ app.get("/api/reports/export", (req, res) => {
   }, req.query.format || "pdf", req.session));
 });
 
-app.get("/api/reports/open-exports", (_req, res) => {
+app.get("/api/reports/open-exports", requirePlan("silver"), (_req, res) => {
   res.json(service.openExportsFolder());
 });
 
-app.get("/api/reports/operator/:id", (req, res) => {
+app.get("/api/reports/operator/:id", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.getOperatorReport(req.params.id, {
       period: req.query.period || "month",
@@ -377,7 +406,7 @@ app.get("/api/reports/operator/:id", (req, res) => {
   }
 });
 
-app.get("/api/reports/operator/:id/export", (req, res) => {
+app.get("/api/reports/operator/:id/export", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.exportOperatorReport(req.params.id, {
       period: req.query.period || "month",
@@ -485,7 +514,7 @@ app.delete("/api/shifts/:id", (req, res) => {
   res.json(service.deleteShift(req.params.id, req.session));
 });
 
-app.get("/api/shifts/export", (req, res) => {
+app.get("/api/shifts/export", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.exportShiftReport(req.query || {}, req.session));
   } catch (error) {
@@ -493,23 +522,23 @@ app.get("/api/shifts/export", (req, res) => {
   }
 });
 
-app.get("/api/shifts/templates", (req, res) => {
+app.get("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   res.json(service.listShiftTemplates(req.session));
 });
 
-app.post("/api/shifts/templates", (req, res) => {
+app.post("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
 });
 
-app.put("/api/shifts/templates/:id", (req, res) => {
+app.put("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
   res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
 });
 
-app.delete("/api/shifts/templates/:id", (req, res) => {
+app.delete("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
   res.json(service.deleteShiftTemplate(req.params.id, req.session));
 });
 
-app.post("/api/shifts/templates/generate", (req, res) => {
+app.post("/api/shifts/templates/generate", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.generateShiftTemplate(req.body || {}, req.session));
   } catch (error) {
@@ -549,11 +578,11 @@ app.delete("/api/inventory/items/:id", (req, res) => {
   res.json(service.deleteInventoryItem(req.params.id, req.session));
 });
 
-app.get("/api/inventory/movements", (req, res) => {
+app.get("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   res.json(service.listInventoryMovements(String(req.query.itemId || ""), req.session));
 });
 
-app.post("/api/inventory/movements", (req, res) => {
+app.post("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   try {
     res.status(201).json(service.createInventoryMovement(req.body || {}, req.session));
   } catch (error) {
@@ -561,29 +590,29 @@ app.post("/api/inventory/movements", (req, res) => {
   }
 });
 
-app.get("/api/inventory/overview", (req, res) => {
+app.get("/api/inventory/overview", requirePlan("silver"), (req, res) => {
   res.json(service.getInventoryOverview(req.session));
 });
 
-app.get("/api/profitability/overview", (req, res) => {
+app.get("/api/profitability/overview", requirePlan("silver"), (req, res) => {
   res.json(service.getProfitabilityOverview({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
   }, req.session));
 });
 
-app.get("/api/ai-gold/marketing", (req, res) => {
+app.get("/api/ai-gold/marketing", requirePlan("gold"), (req, res) => {
   res.json(service.getAiGoldMarketing(req.session));
 });
 
-app.get("/api/ai-gold/profitability", (req, res) => {
+app.get("/api/ai-gold/profitability", requirePlan("gold"), (req, res) => {
   res.json(service.getAiGoldProfitability({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
   }, req.session));
 });
 
-app.post("/api/ai-gold/ask", async (req, res) => {
+app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
   try {
     res.json(await assistantService.aiGoldAsk(req.body || {}, req.session));
   } catch (error) {
@@ -591,7 +620,7 @@ app.post("/api/ai-gold/ask", async (req, res) => {
   }
 });
 
-app.post("/api/ai-gold/command", async (req, res) => {
+app.post("/api/ai-gold/command", requirePlan("gold"), async (req, res) => {
   try {
     if (!service.hasGoldIntelligence(req.session)) {
       res.status(403).send("Comandi operativi disponibili solo con AI Gold.");
@@ -603,11 +632,11 @@ app.post("/api/ai-gold/command", async (req, res) => {
   }
 });
 
-app.get("/api/ai-gold/marketing/autopilot", (req, res) => {
+app.get("/api/ai-gold/marketing/autopilot", requirePlan("gold"), (req, res) => {
   res.json(service.getAiMarketingAutopilot(req.session));
 });
 
-app.post("/api/ai-gold/marketing/autopilot/generate", async (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async (req, res) => {
   try {
     const generated = service.generateAiMarketingAutopilotActions(req.session);
     const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
@@ -624,7 +653,7 @@ app.post("/api/ai-gold/marketing/autopilot/generate", async (req, res) => {
   }
 });
 
-app.post("/api/ai-gold/marketing/autopilot/:id/status", (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
@@ -632,11 +661,11 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", (req, res) => {
   }
 });
 
-app.get("/api/treatments", (req, res) => {
+app.get("/api/treatments", requirePlan("silver"), (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
-app.post("/api/treatments", (req, res) => {
+app.post("/api/treatments", requirePlan("silver"), (req, res) => {
   res.status(201).json(service.createTreatment(req.body || {}, req.session));
 });
 
