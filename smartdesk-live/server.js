@@ -661,9 +661,9 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
   }
 });
 
-app.post("/api/ai-gold/protocols/draft", requirePlan("silver"), (req, res) => {
+app.post("/api/ai-gold/protocols/draft", requirePlan("silver"), async (req, res) => {
   try {
-    res.json(service.generateAiGoldProtocolDraft(req.body || {}, req.session));
+    res.json(await service.generateAiGoldProtocolDraft(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile generare la bozza protocollo AI Gold");
   }

@@ -1737,7 +1737,7 @@ class DesktopMirrorService {
     return this.deleteInCenter(this.protocolsRepository, id, session);
   }
 
-  generateAiGoldProtocolDraft(payload = {}, session = null) {
+  async generateAiGoldProtocolDraft(payload = {}, session = null) {
     if (!this.hasProtocolAiAccess(session)) {
       return {
         protocolAiEnabled: false,
@@ -1953,6 +1953,49 @@ class DesktopMirrorService {
     const clientScript = sessionGoal
       ? `Oggi lavoriamo su ${sessionGoal.toLowerCase()} con un percorso progressivo. Valutiamo la risposta e decidiamo insieme il passo successivo.`
       : "Oggi impostiamo una prima seduta controllata, leggiamo la risposta e costruiamo il percorso senza promesse automatiche.";
+    let remoteProtocolAnalysis = null;
+    let remoteProtocolWarning = "";
+    const imageDataUrl = String(payload.imageDataUrl || "").trim();
+    if (imageDataUrl && typeof fetch === "function") {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
+        const response = await fetch(process.env.PROTOCOL_ENGINE_URL || "https://skinharmony-ai-backend.onrender.com/api/protocols/analyze", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            imageDataUrl,
+            issue: needType,
+            area: targetArea,
+            zoneDetail,
+            ageRange,
+            technologies,
+            sessionGoal,
+            skinSensitivity,
+            timeBudget,
+            caseIntensity,
+            caseNotes: String(payload.caseNotes || ""),
+            recentTreatments: recentTreatmentsInput,
+            safetyFlags: Array.isArray(payload.safetyFlags) ? payload.safetyFlags : [],
+            optionalFlags
+          })
+        });
+        clearTimeout(timeout);
+        const data = await response.json();
+        if (response.ok && data?.ok && data.protocol) {
+          remoteProtocolAnalysis = data;
+        } else {
+          remoteProtocolWarning = Array.isArray(data?.errors)
+            ? data.errors.join(" ")
+            : String(data?.error?.message || data?.error || "Motore Vision non disponibile.");
+        }
+      } catch (error) {
+        remoteProtocolWarning = error instanceof Error ? error.message : "Motore Vision non disponibile.";
+      }
+    }
     const skinHarmonySteps = skinHarmonyProtocol?.steps
       ? [`Base SkinHarmony: ${skinHarmonyProtocol.title || "protocollo SkinHarmony"}.`, skinHarmonyProtocol.steps]
       : [];
@@ -1964,6 +2007,12 @@ class DesktopMirrorService {
       : protocolMode === "center"
         ? centerSteps
         : [...centerSteps, ...skinHarmonySteps];
+    if (remoteProtocolAnalysis?.protocol?.sessionSteps?.length) {
+      composedSteps.unshift(
+        `Base Vision + Library pagina 600: ${remoteProtocolAnalysis.protocol.title || "protocollo remoto"}.`,
+        remoteProtocolAnalysis.protocol.sessionSteps.map((step, index) => `${index + 1}. ${step}`).join("\n")
+      );
+    }
     const protocolTechnologies = String(payload.technologies || baseProtocol?.technologies || "").trim()
       || (technologies.length ? technologies.join(", ") : "Tecnologia da scegliere tra quelle attive nel centro.");
     const protocolProducts = String(payload.products || baseProtocol?.products || "").trim()
@@ -2014,13 +2063,24 @@ class DesktopMirrorService {
         caseType: `${areaLabel}${needType ? ` / ${needType}` : ""}`,
         objective,
         confidence: photoAnalysis ? "media" : "prudente",
-        photoCoherence: photoAnalysis
-          ? [`Lettura operatore/foto acquisita: ${photoAnalysis}.`, "La foto non sostituisce la valutazione professionale."]
-          : ["Foto non presente o non descritta: completare controllo visivo prima di applicare il protocollo."],
+        remoteEngine: remoteProtocolAnalysis ? "Vision + Library pagina 600" : "Bozza interna Smart Desk",
+        photoCoherence: remoteProtocolAnalysis?.vision
+          ? [
+              `Motore pagina 600: area ${remoteProtocolAnalysis.vision.probable_area || "non determinata"}, esigenza ${remoteProtocolAnalysis.vision.probable_issue || "non determinata"}, confidenza ${remoteProtocolAnalysis.vision.confidence || "non indicata"}.`,
+              remoteProtocolAnalysis.protocol?.summary || "Protocollo compatibile trovato nella libreria remota.",
+              "La foto non sostituisce la valutazione professionale."
+            ]
+          : remoteProtocolWarning
+            ? [`Motore pagina 600 non usato: ${remoteProtocolWarning}`, "Eseguita bozza interna Smart Desk senza inventare dalla foto."]
+            : photoAnalysis
+              ? [`Lettura operatore/foto acquisita: ${photoAnalysis}.`, "La foto non sostituisce la valutazione professionale."]
+              : ["Foto non presente o non descritta: completare controllo visivo prima di applicare il protocollo."],
         signals: analysisSignals,
         workLogic,
         strategy,
-        sessionSteps,
+        sessionSteps: remoteProtocolAnalysis?.protocol?.sessionSteps?.length
+          ? remoteProtocolAnalysis.protocol.sessionSteps
+          : sessionSteps,
         verifications,
         clientScript,
         avoid: [
