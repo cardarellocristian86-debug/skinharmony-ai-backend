@@ -369,6 +369,7 @@ class DesktopMirrorService {
     this.inventoryMovementsRepository = this.createRepository("inventory_movements", []);
     this.paymentsRepository = this.createRepository("payments", []);
     this.treatmentsRepository = this.createRepository("treatments", []);
+    this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
@@ -558,6 +559,7 @@ class DesktopMirrorService {
       inventoryMovements: this.getCenterRepositoryItems(this.inventoryMovementsRepository, centerKey),
       payments: this.getCenterRepositoryItems(this.paymentsRepository, centerKey),
       treatments: this.getCenterRepositoryItems(this.treatmentsRepository, centerKey),
+      protocols: this.getCenterRepositoryItems(this.protocolsRepository, centerKey),
       sales: this.getCenterRepositoryItems(this.salesRepository, centerKey),
       users: this.getCenterRepositoryItems(this.usersRepository, centerKey)
     };
@@ -651,6 +653,7 @@ class DesktopMirrorService {
         { name: "inventory_movements", filePath: path.join(DATA_DIR, "inventory_movements.json"), defaultValue: [] },
         { name: "payments", filePath: path.join(DATA_DIR, "payments.json"), defaultValue: [] },
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
+        { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
@@ -1609,6 +1612,124 @@ class DesktopMirrorService {
     };
     this.treatmentsRepository.create(treatment);
     return treatment;
+  }
+
+  listProtocols(clientId = "", session = null) {
+    return this.filterByCenter(this.protocolsRepository.list(), session)
+      .filter((item) => !clientId || item.clientId === clientId)
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime());
+  }
+
+  saveProtocol(payload = {}, session = null) {
+    const now = nowIso();
+    const clientId = String(payload.clientId || "");
+    const client = clientId ? this.findByIdInCenter(this.clientsRepository, clientId, session) : null;
+    const entity = {
+      centerId: this.getCenterId(session),
+      centerName: this.getCenterName(session),
+      clientId,
+      clientName: String(payload.clientName || (client ? `${client.firstName || ""} ${client.lastName || ""}`.trim() : "")),
+      title: String(payload.title || "Protocollo operativo"),
+      objective: String(payload.objective || ""),
+      area: String(payload.area || ""),
+      sessionsCount: Number(payload.sessionsCount || 0),
+      frequency: String(payload.frequency || ""),
+      technologies: String(payload.technologies || ""),
+      products: String(payload.products || ""),
+      steps: String(payload.steps || ""),
+      operatorNotes: String(payload.operatorNotes || payload.notes || ""),
+      limitations: String(payload.limitations || "Protocollo operativo non medico. Nessuna diagnosi o promessa terapeutica."),
+      source: String(payload.source || "manual"),
+      status: String(payload.status || "draft"),
+      updatedAt: now
+    };
+    if (payload.id) {
+      return this.updateInCenter(this.protocolsRepository, payload.id, (current) => ({
+        ...current,
+        ...entity,
+        id: current.id,
+        createdAt: current.createdAt || now
+      }), session);
+    }
+    const protocol = {
+      id: makeId("protocol"),
+      ...entity,
+      createdAt: now
+    };
+    this.protocolsRepository.create(protocol);
+    return protocol;
+  }
+
+  deleteProtocol(id, session = null) {
+    return this.deleteInCenter(this.protocolsRepository, id, session);
+  }
+
+  generateAiGoldProtocolDraft(payload = {}, session = null) {
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "Protocollo AI disponibile solo con AI Gold.",
+        draft: null
+      };
+    }
+    const clientId = String(payload.clientId || "");
+    const client = clientId ? this.findByIdInCenter(this.clientsRepository, clientId, session) : null;
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session)
+      .filter((item) => !clientId || String(item.clientId || "") === clientId)
+      .sort((a, b) => new Date(b.startAt || b.createdAt || 0).getTime() - new Date(a.startAt || a.createdAt || 0).getTime());
+    const treatments = this.listTreatments(clientId, session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const recentServices = appointments.slice(0, 5).map((appointment) => appointment.serviceName || services.find((service) => service.id === appointment.serviceId)?.name).filter(Boolean);
+    const technologies = [
+      ...new Set([
+        ...services.map((service) => service.technologyName || service.technology || service.category).filter(Boolean),
+        ...treatments.map((treatment) => treatment.technologyUsed).filter(Boolean)
+      ])
+    ].slice(0, 4);
+    const products = inventory
+      .filter((item) => Number(item.stockQuantity ?? item.quantity ?? 0) > 0)
+      .slice(0, 4)
+      .map((item) => item.name)
+      .filter(Boolean);
+    const clientName = client
+      ? `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente"
+      : String(payload.clientName || "");
+    const objective = String(payload.objective || "").trim() || (
+      recentServices.length
+        ? `Dare continuità ai servizi già eseguiti: ${recentServices.slice(0, 3).join(", ")}.`
+        : "Costruire un percorso operativo progressivo dopo valutazione in cabina."
+    );
+    const draft = {
+      clientId,
+      clientName,
+      title: String(payload.title || (clientName ? `Protocollo operativo ${clientName}` : "Protocollo operativo AI Gold")),
+      objective,
+      area: String(payload.area || "Da definire in cabina"),
+      sessionsCount: Number(payload.sessionsCount || (recentServices.length ? 4 : 3)),
+      frequency: String(payload.frequency || "1 seduta ogni 7/14 giorni, da confermare dopo risposta del cliente."),
+      technologies: technologies.length ? technologies.join(", ") : "Tecnologia da scegliere tra quelle attive nel centro.",
+      products: products.length ? products.join(", ") : "Prodotti da selezionare in base a disponibilità e scheda cliente.",
+      steps: [
+        "1. Verifica scheda cliente, consensi, preferenze e note operative.",
+        "2. Esegui prima seduta con parametri conservativi e registra risposta cliente.",
+        "3. Conferma frequenza e continuità solo dopo valutazione dell’operatore.",
+        "4. Aggiorna note, prodotti usati e prossimo richiamo."
+      ].join("\n"),
+      operatorNotes: [
+        appointments.length ? `Storico letto: ${appointments.length} appuntamenti collegati.` : "Storico appuntamenti non sufficiente.",
+        treatments.length ? `Trattamenti registrati: ${treatments.length}.` : "Nessuna scheda trattamento registrata.",
+        "La bozza va controllata e modificata dall’operatore prima del salvataggio."
+      ].join("\n"),
+      limitations: "Bozza operativa non medica. Non contiene diagnosi, promesse terapeutiche o garanzie di risultato.",
+      source: "ai_gold",
+      status: "draft"
+    };
+    return {
+      goldEnabled: true,
+      message: "AI Gold ha preparato una bozza protocollo. Controlla i campi e salva solo se coerente.",
+      draft
+    };
   }
 
   listPayments(clientId = "", session = null) {

@@ -661,12 +661,44 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
   }
 });
 
+app.post("/api/ai-gold/protocols/draft", requirePlan("gold"), (req, res) => {
+  try {
+    res.json(service.generateAiGoldProtocolDraft(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare la bozza protocollo AI Gold");
+  }
+});
+
 app.get("/api/treatments", requirePlan("silver"), (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
 app.post("/api/treatments", requirePlan("silver"), (req, res) => {
   res.status(201).json(service.createTreatment(req.body || {}, req.session));
+});
+
+app.get("/api/protocols", (req, res) => {
+  res.json(service.listProtocols(req.query.clientId, req.session));
+});
+
+app.post("/api/protocols", (req, res) => {
+  try {
+    res.status(201).json(service.saveProtocol(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile salvare il protocollo");
+  }
+});
+
+app.put("/api/protocols/:id", (req, res) => {
+  try {
+    res.json(service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare il protocollo");
+  }
+});
+
+app.delete("/api/protocols/:id", (req, res) => {
+  res.json(service.deleteProtocol(req.params.id, req.session));
 });
 
 app.get("/api/payments", (req, res) => {
