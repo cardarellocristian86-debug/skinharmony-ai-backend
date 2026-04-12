@@ -2,6 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { JsonFileRepository } = require("./JsonFileRepository");
+const {
+  SKINHARMONY_LIBRARY_CENTER_ID,
+  skinHarmonyProtocolLibrary
+} = require("./SkinHarmonyProtocolLibrary");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -464,6 +468,25 @@ class DesktopMirrorService {
     return String(session.subscriptionPlan || "").toLowerCase() === "gold";
   }
 
+  getPlanLevel(session = null) {
+    if (!session) return "base";
+    if (this.isSuperAdminSession(session) && !session.supportMode) return "gold";
+    const plan = String(session.subscriptionPlan || "").toLowerCase();
+    return ["base", "silver", "gold"].includes(plan) ? plan : "gold";
+  }
+
+  hasProtocolAiAccess(session = null) {
+    const plan = this.getPlanLevel(session);
+    return plan === "silver" || plan === "gold";
+  }
+
+  getProtocolAiLimit(session = null) {
+    const plan = this.getPlanLevel(session);
+    if (plan === "gold") return 300;
+    if (plan === "silver") return 7;
+    return 0;
+  }
+
   assertCanOperate(session = null) {
     if (this.canOperate(session)) {
       return;
@@ -605,6 +628,11 @@ class DesktopMirrorService {
     return items.filter((item) => this.belongsToCenter(item, centerId));
   }
 
+  isGlobalSkinHarmonyProtocol(item = {}) {
+    return String(item.centerId || "") === SKINHARMONY_LIBRARY_CENTER_ID
+      && String(item.libraryScope || "").toLowerCase() === "skinharmony";
+  }
+
   findByIdInCenter(repository, id, session = null) {
     const current = repository.findById(id);
     if (!current || !this.belongsToCenter(current, this.getCenterId(session))) {
@@ -662,7 +690,42 @@ class DesktopMirrorService {
     }
 
     this.ensureInitialAdmin();
+    this.ensureSkinHarmonyProtocolLibrary();
     this.ensureDefaultStaffForCenter(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
+  }
+
+  ensureSkinHarmonyProtocolLibrary() {
+    const current = this.protocolsRepository.list();
+    const now = nowIso();
+    const currentById = new Map(current.map((item) => [String(item.id || ""), item]));
+    let changed = false;
+    const nextItems = [...current];
+    skinHarmonyProtocolLibrary.forEach((protocol) => {
+      const existing = currentById.get(protocol.id);
+      const nextProtocol = {
+        ...protocol,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now
+      };
+      if (existing) {
+        const index = nextItems.findIndex((item) => item.id === protocol.id);
+        nextItems[index] = {
+          ...existing,
+          ...nextProtocol,
+          centerId: SKINHARMONY_LIBRARY_CENTER_ID,
+          libraryScope: "skinharmony",
+          source: "skinharmony_library",
+          status: "active"
+        };
+        changed = true;
+        return;
+      }
+      nextItems.unshift(nextProtocol);
+      changed = true;
+    });
+    if (changed) {
+      this.protocolsRepository.write(nextItems);
+    }
   }
 
   ensureInitialAdmin() {
@@ -1615,7 +1678,9 @@ class DesktopMirrorService {
   }
 
   listProtocols(clientId = "", session = null) {
-    return this.filterByCenter(this.protocolsRepository.list(), session)
+    const centerId = this.getCenterId(session);
+    return this.protocolsRepository.list()
+      .filter((item) => this.belongsToCenter(item, centerId) || this.isGlobalSkinHarmonyProtocol(item))
       .filter((item) => !clientId || item.clientId === clientId)
       .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime());
   }
@@ -1632,11 +1697,19 @@ class DesktopMirrorService {
       title: String(payload.title || "Protocollo operativo"),
       objective: String(payload.objective || ""),
       area: String(payload.area || ""),
+      libraryScope: ["center", "skinharmony"].includes(String(payload.libraryScope || "").toLowerCase())
+        ? String(payload.libraryScope || "").toLowerCase()
+        : "center",
+      targetArea: String(payload.targetArea || ""),
+      needType: String(payload.needType || ""),
+      caseIntensity: String(payload.caseIntensity || ""),
       sessionsCount: Number(payload.sessionsCount || 0),
       frequency: String(payload.frequency || ""),
       technologies: String(payload.technologies || ""),
       products: String(payload.products || ""),
       steps: String(payload.steps || ""),
+      clientCommunication: String(payload.clientCommunication || ""),
+      avoidClaims: String(payload.avoidClaims || "Nessun risultato garantito. Nessun linguaggio medico o terapeutico."),
       operatorNotes: String(payload.operatorNotes || payload.notes || ""),
       limitations: String(payload.limitations || "Protocollo operativo non medico. Nessuna diagnosi o promessa terapeutica."),
       source: String(payload.source || "manual"),
@@ -1665,15 +1738,123 @@ class DesktopMirrorService {
   }
 
   generateAiGoldProtocolDraft(payload = {}, session = null) {
-    if (!this.hasGoldIntelligence(session)) {
+    if (!this.hasProtocolAiAccess(session)) {
       return {
+        protocolAiEnabled: false,
         goldEnabled: false,
-        message: "Protocollo AI disponibile solo con AI Gold.",
+        message: "Protocolli AI disponibili dal piano Silver.",
+        draft: null
+      };
+    }
+    const currentPlan = this.getPlanLevel(session);
+    const protocolLimit = this.getProtocolAiLimit(session);
+    const savedProtocols = this.listProtocols("", session);
+    const usedCount = savedProtocols.filter((item) => String(item.source || "").includes("ai_protocols")).length;
+    if (usedCount >= protocolLimit) {
+      return {
+        protocolAiEnabled: false,
+        goldEnabled: currentPlan === "gold",
+        currentPlan,
+        protocolLimit,
+        usedCount,
+        message: `Limite Protocolli AI raggiunto (${usedCount}/${protocolLimit}). Puoi continuare a usare i protocolli manuali del centro.`,
         draft: null
       };
     }
     const clientId = String(payload.clientId || "");
     const client = clientId ? this.findByIdInCenter(this.clientsRepository, clientId, session) : null;
+    const protocolModeRaw = String(payload.protocolMode || "hybrid").toLowerCase();
+    const protocolMode = ["center", "skinharmony", "hybrid"].includes(protocolModeRaw) ? protocolModeRaw : "hybrid";
+    const modeLabels = {
+      center: "Protocolli del centro",
+      skinharmony: "Protocolli SkinHarmony",
+      hybrid: "Ibrido centro + SkinHarmony"
+    };
+    const targetArea = String(payload.targetArea || "").trim();
+    const needType = String(payload.needType || "").trim();
+    const caseIntensity = String(payload.caseIntensity || "").trim();
+    const searchText = [
+      payload.title,
+      payload.objective,
+      payload.area,
+      targetArea,
+      needType,
+      caseIntensity
+    ].map((item) => String(item || "").toLowerCase()).join(" ");
+    const centerProtocols = savedProtocols.filter((item) => {
+      const scope = String(item.libraryScope || "center").toLowerCase();
+      const status = String(item.status || "").toLowerCase();
+      return scope === "center" && status !== "archived";
+    });
+    const skinHarmonyProtocols = savedProtocols.filter((item) => {
+      const scope = String(item.libraryScope || "").toLowerCase();
+      const status = String(item.status || "").toLowerCase();
+      return scope === "skinharmony" && status !== "archived";
+    });
+    const scoreProtocol = (protocol) => {
+      let score = 0;
+      const protocolArea = String(protocol.targetArea || "").toLowerCase();
+      const protocolNeed = String(protocol.needType || "").toLowerCase();
+      const protocolText = [
+        protocol.title,
+        protocol.objective,
+        protocol.area,
+        protocol.steps,
+        protocol.technologies
+      ].map((item) => String(item || "").toLowerCase()).join(" ");
+      if (targetArea && protocolArea && protocolArea === targetArea.toLowerCase()) score += 4;
+      if (needType && protocolNeed && (protocolNeed.includes(needType.toLowerCase()) || needType.toLowerCase().includes(protocolNeed))) score += 3;
+      if (targetArea && protocolText.includes(targetArea.toLowerCase())) score += 2;
+      if (needType && protocolText.includes(needType.toLowerCase())) score += 2;
+      searchText.split(/\s+/).filter((word) => word.length > 4).forEach((word) => {
+        if (protocolText.includes(word)) score += 0.25;
+      });
+      return score;
+    };
+    const matchedCenterProtocol = centerProtocols
+      .map((protocol) => ({ protocol, score: scoreProtocol(protocol) }))
+      .sort((a, b) => b.score - a.score)[0];
+    const centerProtocol = matchedCenterProtocol && matchedCenterProtocol.score > 0 ? matchedCenterProtocol.protocol : null;
+    const matchedSkinHarmonyProtocol = skinHarmonyProtocols
+      .map((protocol) => ({ protocol, score: scoreProtocol(protocol) }))
+      .sort((a, b) => b.score - a.score)[0];
+    const skinHarmonyProtocol = matchedSkinHarmonyProtocol && matchedSkinHarmonyProtocol.score > 0 ? matchedSkinHarmonyProtocol.protocol : null;
+    if (protocolMode === "center" && !centerProtocol) {
+      return {
+        protocolAiEnabled: true,
+        goldEnabled: currentPlan === "gold",
+        currentPlan,
+        protocolLimit,
+        usedCount,
+        protocolMode,
+        message: "Non ho trovato un protocollo del centro coerente con area e obiettivo. Carica prima un protocollo del centro o usa modalita ibrida.",
+        draft: null
+      };
+    }
+    if (protocolMode === "skinharmony" && !skinHarmonyProtocol) {
+      return {
+        protocolAiEnabled: true,
+        goldEnabled: currentPlan === "gold",
+        currentPlan,
+        protocolLimit,
+        usedCount,
+        protocolMode,
+        message: "Non ho trovato un protocollo SkinHarmony coerente con area e obiettivo. Carica o aggiorna la libreria prima di generare.",
+        draft: null
+      };
+    }
+    if (protocolMode === "hybrid" && !centerProtocol && !skinHarmonyProtocol) {
+      return {
+        protocolAiEnabled: true,
+        goldEnabled: currentPlan === "gold",
+        currentPlan,
+        protocolLimit,
+        usedCount,
+        protocolMode,
+        message: "Non ci sono protocolli coerenti da combinare. Inserisci prima un protocollo del centro o usa una voce presente nella libreria SkinHarmony.",
+        draft: null
+      };
+    }
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session)
       .filter((item) => !clientId || String(item.clientId || "") === clientId)
       .sort((a, b) => new Date(b.startAt || b.createdAt || 0).getTime() - new Date(a.startAt || a.createdAt || 0).getTime());
@@ -1695,39 +1876,66 @@ class DesktopMirrorService {
     const clientName = client
       ? `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente"
       : String(payload.clientName || "");
-    const objective = String(payload.objective || "").trim() || (
+    const baseProtocol = protocolMode === "skinharmony"
+      ? skinHarmonyProtocol
+      : centerProtocol || skinHarmonyProtocol;
+    const objective = String(payload.objective || "").trim() || String(baseProtocol?.objective || "").trim() || (
       recentServices.length
         ? `Dare continuità ai servizi già eseguiti: ${recentServices.slice(0, 3).join(", ")}.`
         : "Costruire un percorso operativo progressivo dopo valutazione in cabina."
     );
+    const skinHarmonySteps = skinHarmonyProtocol?.steps
+      ? [`Base SkinHarmony: ${skinHarmonyProtocol.title || "protocollo SkinHarmony"}.`, skinHarmonyProtocol.steps]
+      : [];
+    const centerSteps = centerProtocol?.steps
+      ? [`Base protocollo centro: ${centerProtocol.title || "protocollo salvato"}.`, centerProtocol.steps]
+      : [];
+    const composedSteps = protocolMode === "skinharmony"
+      ? skinHarmonySteps
+      : protocolMode === "center"
+        ? centerSteps
+        : [...centerSteps, ...skinHarmonySteps];
+    const protocolTechnologies = String(payload.technologies || baseProtocol?.technologies || "").trim()
+      || (technologies.length ? technologies.join(", ") : "Tecnologia da scegliere tra quelle attive nel centro.");
+    const protocolProducts = String(payload.products || baseProtocol?.products || "").trim()
+      || (products.length ? products.join(", ") : "Prodotti da selezionare in base a disponibilità e scheda cliente.");
     const draft = {
       clientId,
       clientName,
-      title: String(payload.title || (clientName ? `Protocollo operativo ${clientName}` : "Protocollo operativo AI Gold")),
+      title: String(payload.title || (baseProtocol?.title ? `Adattamento ${baseProtocol.title}` : (clientName ? `Protocollo operativo ${clientName}` : "Protocollo operativo Protocolli AI"))),
       objective,
-      area: String(payload.area || "Da definire in cabina"),
-      sessionsCount: Number(payload.sessionsCount || (recentServices.length ? 4 : 3)),
-      frequency: String(payload.frequency || "1 seduta ogni 7/14 giorni, da confermare dopo risposta del cliente."),
-      technologies: technologies.length ? technologies.join(", ") : "Tecnologia da scegliere tra quelle attive nel centro.",
-      products: products.length ? products.join(", ") : "Prodotti da selezionare in base a disponibilità e scheda cliente.",
-      steps: [
-        "1. Verifica scheda cliente, consensi, preferenze e note operative.",
-        "2. Esegui prima seduta con parametri conservativi e registra risposta cliente.",
-        "3. Conferma frequenza e continuità solo dopo valutazione dell’operatore.",
-        "4. Aggiorna note, prodotti usati e prossimo richiamo."
-      ].join("\n"),
+      area: String(payload.area || baseProtocol?.area || "Da definire in cabina"),
+      libraryScope: "center",
+      targetArea: targetArea || String(baseProtocol?.targetArea || ""),
+      needType: needType || String(baseProtocol?.needType || ""),
+      caseIntensity: caseIntensity || String(baseProtocol?.caseIntensity || ""),
+      sessionsCount: Number(payload.sessionsCount || baseProtocol?.sessionsCount || (recentServices.length ? 4 : 3)),
+      frequency: String(payload.frequency || baseProtocol?.frequency || "1 seduta ogni 7/14 giorni, da confermare dopo risposta del cliente."),
+      technologies: protocolTechnologies,
+      products: protocolProducts,
+      steps: composedSteps.filter(Boolean).join("\n"),
+      clientCommunication: String(baseProtocol?.clientCommunication || "Percorso costruito sul tuo obiettivo estetico e verificato seduta dopo seduta, senza promesse automatiche."),
+      avoidClaims: String(baseProtocol?.avoidClaims || "Evitare promesse di risultato, diagnosi mediche, linguaggio terapeutico e indicazioni non verificate dall’operatore."),
       operatorNotes: [
+        `Modalità: ${modeLabels[protocolMode]}.`,
+        centerProtocol ? `Protocollo centro usato come base: ${centerProtocol.title || "senza titolo"}.` : "Nessun protocollo centro compatibile usato come base.",
+        skinHarmonyProtocol ? `Protocollo SkinHarmony usato come base: ${skinHarmonyProtocol.title || "senza titolo"}.` : "Nessun protocollo SkinHarmony compatibile usato come base.",
         appointments.length ? `Storico letto: ${appointments.length} appuntamenti collegati.` : "Storico appuntamenti non sufficiente.",
         treatments.length ? `Trattamenti registrati: ${treatments.length}.` : "Nessuna scheda trattamento registrata.",
         "La bozza va controllata e modificata dall’operatore prima del salvataggio."
       ].join("\n"),
       limitations: "Bozza operativa non medica. Non contiene diagnosi, promesse terapeutiche o garanzie di risultato.",
-      source: "ai_gold",
+      source: `ai_protocols_${protocolMode}`,
       status: "draft"
     };
     return {
-      goldEnabled: true,
-      message: "AI Gold ha preparato una bozza protocollo. Controlla i campi e salva solo se coerente.",
+      protocolAiEnabled: true,
+      goldEnabled: currentPlan === "gold",
+      currentPlan,
+      protocolLimit,
+      usedCount,
+      protocolMode,
+      message: `Protocolli AI ha preparato una bozza in modalita ${modeLabels[protocolMode]}. Controlla i campi e salva solo se coerente.`,
       draft
     };
   }

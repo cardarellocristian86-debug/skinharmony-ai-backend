@@ -398,6 +398,17 @@ class AssistantService {
     return [];
   }
 
+  listProtocolsSafe(_context = {}, session = null) {
+    if (this.desktopMirror?.listProtocols) {
+      try {
+        return this.desktopMirror.listProtocols("", session) || [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
+
   buildContext(payload = {}, session = null) {
     const context = payload.context || {};
     const settings = this.getSettingsSafe(session);
@@ -405,9 +416,17 @@ class AssistantService {
     const clients = this.listClientsSafe(context, session);
     const staff = this.listStaffSafe(context, session);
     const services = this.listServicesSafe(context, session);
+    const protocols = this.listProtocolsSafe(context, session);
     const role = normalizeRole(context.userRole || session?.role || "owner");
+    const currentPlan = this.desktopMirror?.getPlanLevel
+      ? this.desktopMirror.getPlanLevel(session)
+      : String(session?.subscriptionPlan || "base").toLowerCase();
 
     return {
+      centerId: String(session?.centerId || ""),
+      centerName: String(session?.centerName || ""),
+      subscriptionPlan: currentPlan,
+      supportMode: Boolean(session?.supportMode),
       currentPage: String(context.currentPage || payload.page || "dashboard"),
       currentModule: String(context.currentModule || ""),
       currentRoute: String(payload.page || context.currentPage || "dashboard"),
@@ -439,6 +458,14 @@ class AssistantService {
         id: item.id,
         name: item.name || "",
         durationMin: Number(item.durationMin || 45)
+      })),
+      protocolsPreview: protocols.slice(0, 25).map((item) => ({
+        id: item.id,
+        title: item.title || "",
+        libraryScope: item.libraryScope || "",
+        targetArea: item.targetArea || "",
+        needType: item.needType || "",
+        source: item.source || ""
       }))
     };
   }
@@ -577,6 +604,39 @@ class AssistantService {
 
     if (/(come.*magazzino|funziona.*magazzino)/.test(normalized)) {
       return buildAnswer("Il magazzino ti fa gestire articoli, movimenti, sottoscorta e controllo stock. Parti dalla panoramica, poi anagrafica articoli e infine movimenti. Se vuoi posso aprire il magazzino.");
+    }
+
+    if (/(chi sono|che centro|quale centro|che piano|abbonamento|riconosci)/.test(normalized)) {
+      return buildAnswer([
+        `Stai lavorando nel centro: ${context.centerName || "centro non indicato"}.`,
+        `Piano rilevato: ${context.subscriptionPlan || "non indicato"}.`,
+        `Ruolo sessione: ${context.userRole || "owner"}.`,
+        "Leggo solo i dati collegati a questa sessione e non uso dati di altri centri."
+      ].join("\n"));
+    }
+
+    if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalized)) {
+      const lines = [
+        `Centro: ${context.centerName || "centro non indicato"}.`,
+        context.dashboard.todayAppointments
+          ? `Agenda: oggi risultano ${context.dashboard.todayAppointments} appuntamenti.`
+          : "Agenda: oggi non risultano appuntamenti nel riepilogo disponibile.",
+        context.dashboard.inactiveClientsCount
+          ? `Clienti: ci sono ${context.dashboard.inactiveClientsCount} clienti inattivi da valutare.`
+          : "Clienti: non ho un alert inattivi evidente nel riepilogo disponibile.",
+        "Priorità: controlla agenda, richiami clienti e dati mancanti prima di aumentare volume marketing."
+      ];
+      return buildAnswer(lines.join("\n"));
+    }
+
+    if (/(libreria skinharmony|protocolli skinharmony|come uso.*protocolli|cosa manca.*protocolli)/.test(normalized)) {
+      const skinHarmonyCount = (context.protocolsPreview || []).filter((item) => item.libraryScope === "skinharmony").length;
+      const centerCount = (context.protocolsPreview || []).filter((item) => item.libraryScope === "center").length;
+      return buildAnswer([
+        `Nel contesto leggo ${skinHarmonyCount} protocolli SkinHarmony e ${centerCount} protocolli del centro.`,
+        "Per partire: duplica un protocollo SkinHarmony nel centro, adattalo ai tuoi prodotti/tecnologie e poi usa Protocolli AI in modalità Ibrida.",
+        "Se manca un protocollo coerente, Protocolli AI deve fermarsi e chiedere di caricarlo invece di inventare."
+      ].join("\n"));
     }
 
     const clientDraft = extractClientDraft(message);
@@ -804,6 +864,8 @@ class AssistantService {
     const instructions = [
       "Sei SkinHarmony AI Assistant, assistente operativo reale del gestionale.",
       "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
+      "Riconosci il centro e il piano solo dal contesto di sessione. Non chiedere all'utente chi e se il contesto lo contiene.",
+      "Usa esclusivamente dati del centro presenti nel contesto JSON. Non parlare di altri centri e non inventare dati mancanti.",
       "Non promettere azioni non eseguibili.",
       `Puoi usare solo queste azioni: ${ACTIONS.join(", ")}.`,
       "Le azioni sensibili non si eseguono: usa blocked_action e guida l’utente.",

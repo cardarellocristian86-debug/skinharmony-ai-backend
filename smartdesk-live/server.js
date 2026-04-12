@@ -661,7 +661,7 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
   }
 });
 
-app.post("/api/ai-gold/protocols/draft", requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/protocols/draft", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.generateAiGoldProtocolDraft(req.body || {}, req.session));
   } catch (error) {
