@@ -1771,15 +1771,38 @@ class DesktopMirrorService {
       hybrid: "Ibrido centro + SkinHarmony"
     };
     const targetArea = String(payload.targetArea || "").trim();
-    const needType = String(payload.needType || "").trim();
+    const issue = String(payload.issue || "").trim();
+    const needType = String(payload.needType || issue || "").trim();
     const caseIntensity = String(payload.caseIntensity || "").trim();
+    const ageRange = String(payload.ageRange || "").trim();
+    const zoneDetail = String(payload.zoneDetail || "").trim();
+    const recentTreatmentsInput = String(payload.recentTreatments || "").trim();
+    const sessionGoal = String(payload.sessionGoal || "").trim();
+    const skinSensitivity = String(payload.skinSensitivity || "").trim();
+    const timeBudget = String(payload.timeBudget || "").trim();
+    const photoAnalysis = String(payload.photoAnalysis || "").trim();
+    const availableTechnologies = Array.isArray(payload.availableTechnologies)
+      ? payload.availableTechnologies.map((item) => String(item || "").trim()).filter(Boolean)
+      : String(payload.availableTechnologies || "").split(",").map((item) => item.trim()).filter(Boolean);
+    const optionalFlags = Array.isArray(payload.optionalFlags)
+      ? payload.optionalFlags.map((item) => String(item || "").trim()).filter(Boolean)
+      : String(payload.optionalFlags || "").split(",").map((item) => item.trim()).filter(Boolean);
     const searchText = [
       payload.title,
       payload.objective,
       payload.area,
       targetArea,
       needType,
-      caseIntensity
+      caseIntensity,
+      issue,
+      zoneDetail,
+      recentTreatmentsInput,
+      sessionGoal,
+      skinSensitivity,
+      timeBudget,
+      photoAnalysis,
+      ...availableTechnologies,
+      ...optionalFlags
     ].map((item) => String(item || "").toLowerCase()).join(" ");
     const centerProtocols = savedProtocols.filter((item) => {
       const scope = String(item.libraryScope || "center").toLowerCase();
@@ -1864,6 +1887,7 @@ class DesktopMirrorService {
     const recentServices = appointments.slice(0, 5).map((appointment) => appointment.serviceName || services.find((service) => service.id === appointment.serviceId)?.name).filter(Boolean);
     const technologies = [
       ...new Set([
+        ...availableTechnologies,
         ...services.map((service) => service.technologyName || service.technology || service.category).filter(Boolean),
         ...treatments.map((treatment) => treatment.technologyUsed).filter(Boolean)
       ])
@@ -1884,6 +1908,51 @@ class DesktopMirrorService {
         ? `Dare continuità ai servizi già eseguiti: ${recentServices.slice(0, 3).join(", ")}.`
         : "Costruire un percorso operativo progressivo dopo valutazione in cabina."
     );
+    const areaLabel = targetArea === "viso" ? "Viso" : targetArea === "corpo" ? "Corpo" : targetArea === "scalp" ? "Cuoio capelluto" : "Area da confermare";
+    const analysisSignals = [
+      ageRange ? `Fascia eta: ${ageRange}.` : "Fascia eta non indicata.",
+      zoneDetail ? `Zona specifica: ${zoneDetail}.` : "Zona specifica da completare.",
+      issue ? `Esigenza dichiarata: ${issue}.` : "Esigenza da confermare con la cliente.",
+      recentTreatmentsInput ? `Trattamenti recenti: ${recentTreatmentsInput}.` : "Trattamenti recenti non indicati.",
+      skinSensitivity ? `Sensibilita dichiarata: ${skinSensitivity}.` : "Sensibilita non dichiarata.",
+      timeBudget ? `Tempo disponibile: ${timeBudget}.` : "Tempo seduta non indicato.",
+      photoAnalysis ? `Lettura foto/operatore: ${photoAnalysis}.` : "Foto non analizzata: usare valutazione visiva professionale prima di procedere."
+    ];
+    const riskNotes = [
+      skinSensitivity && skinSensitivity !== "normale" ? "Impostare una prima seduta prudente e controllare risposta immediata." : "",
+      recentTreatmentsInput && !recentTreatmentsInput.toLowerCase().includes("nessun") ? "Verificare compatibilita con trattamenti recenti prima di usare tecnologie intense." : "",
+      optionalFlags.includes("consenso-foto") ? "Consenso foto dichiarato: mantenere luce e distanza coerenti per confronti futuri." : "Se servono foto, raccogliere consenso prima dello scatto.",
+      optionalFlags.includes("cliente-nuovo") ? "Cliente nuovo: prima seduta piu conservativa e anamnesi completa." : ""
+    ].filter(Boolean);
+    const decision = skinSensitivity && skinSensitivity !== "normale"
+      ? "Procedere con protocollo prudente e progressivo, senza sovraccaricare la seduta."
+      : "Procedere con proposta operativa progressiva, verificando risposta e comfort a ogni seduta.";
+    const workLogic = [
+      `Partire da ${areaLabel.toLowerCase()}${zoneDetail ? `, zona ${zoneDetail}` : ""}, collegando esigenza e tecnologie disponibili.`,
+      sessionGoal ? `Obiettivo seduta: ${sessionGoal}.` : "Definire un obiettivo seduta misurabile prima di iniziare.",
+      technologies.length ? `Tecnologie disponibili lette: ${technologies.join(", ")}.` : "Tecnologie non rilevate: selezionarle manualmente prima della seduta.",
+      "L'AI propone una traccia; l'operatore deve confermare scheda, consenso e compatibilita."
+    ];
+    const strategy = [
+      baseProtocol ? `Usare come base: ${baseProtocol.title || "protocollo selezionato"}.` : "Non usare protocolli inventati: completare libreria o scegliere SkinHarmony.",
+      caseIntensity === "evidente" ? "Dividere il percorso in step e fare review intermedia." : "Mantenere progressione semplice e controllata.",
+      "Registrare risposta cliente dopo ogni seduta per correggere frequenza e intensita."
+    ];
+    const sessionSteps = [
+      "1. Verifica scheda cliente, consenso e trattamenti recenti.",
+      "2. Controllo visivo/fotografico non medico con luce coerente.",
+      technologies.length ? `3. Seduta centrale con ${technologies.slice(0, 2).join(" + ")} secondo tollerabilita.` : "3. Seduta centrale con tecnologia/manualita scelta dall'operatore.",
+      products.length ? `4. Chiusura con prodotto coerente: ${products.slice(0, 2).join(", ")}.` : "4. Chiusura con prodotto coerente se disponibile.",
+      "5. Nota finale su comfort, risposta e prossima azione."
+    ];
+    const verifications = [
+      "Confermare consenso informato e consenso foto se si archiviano immagini.",
+      "Controllare eventuali controindicazioni operative dichiarate dal cliente.",
+      "Non promettere risultati certi: parlare di percorso progressivo e verifica."
+    ];
+    const clientScript = sessionGoal
+      ? `Oggi lavoriamo su ${sessionGoal.toLowerCase()} con un percorso progressivo. Valutiamo la risposta e decidiamo insieme il passo successivo.`
+      : "Oggi impostiamo una prima seduta controllata, leggiamo la risposta e costruiamo il percorso senza promesse automatiche.";
     const skinHarmonySteps = skinHarmonyProtocol?.steps
       ? [`Base SkinHarmony: ${skinHarmonyProtocol.title || "protocollo SkinHarmony"}.`, skinHarmonyProtocol.steps]
       : [];
@@ -1914,10 +1983,12 @@ class DesktopMirrorService {
       technologies: protocolTechnologies,
       products: protocolProducts,
       steps: composedSteps.filter(Boolean).join("\n"),
-      clientCommunication: String(baseProtocol?.clientCommunication || "Percorso costruito sul tuo obiettivo estetico e verificato seduta dopo seduta, senza promesse automatiche."),
+      clientCommunication: String(baseProtocol?.clientCommunication || clientScript),
       avoidClaims: String(baseProtocol?.avoidClaims || "Evitare promesse di risultato, diagnosi mediche, linguaggio terapeutico e indicazioni non verificate dall’operatore."),
       operatorNotes: [
         `Modalità: ${modeLabels[protocolMode]}.`,
+        ...analysisSignals,
+        ...riskNotes,
         centerProtocol ? `Protocollo centro usato come base: ${centerProtocol.title || "senza titolo"}.` : "Nessun protocollo centro compatibile usato come base.",
         skinHarmonyProtocol ? `Protocollo SkinHarmony usato come base: ${skinHarmonyProtocol.title || "senza titolo"}.` : "Nessun protocollo SkinHarmony compatibile usato come base.",
         appointments.length ? `Storico letto: ${appointments.length} appuntamenti collegati.` : "Storico appuntamenti non sufficiente.",
@@ -1936,7 +2007,38 @@ class DesktopMirrorService {
       usedCount,
       protocolMode,
       message: `Protocolli AI ha preparato una bozza in modalita ${modeLabels[protocolMode]}. Controlla i campi e salva solo se coerente.`,
-      draft
+      draft,
+      analysis: {
+        title: draft.title,
+        decision,
+        caseType: `${areaLabel}${needType ? ` / ${needType}` : ""}`,
+        objective,
+        confidence: photoAnalysis ? "media" : "prudente",
+        photoCoherence: photoAnalysis
+          ? [`Lettura operatore/foto acquisita: ${photoAnalysis}.`, "La foto non sostituisce la valutazione professionale."]
+          : ["Foto non presente o non descritta: completare controllo visivo prima di applicare il protocollo."],
+        signals: analysisSignals,
+        workLogic,
+        strategy,
+        sessionSteps,
+        verifications,
+        clientScript,
+        avoid: [
+          "Non usare diagnosi mediche.",
+          "Non promettere risultati garantiti.",
+          "Non modificare prezzi, costi o scheda cliente senza conferma operatore."
+        ],
+        todayActions: [
+          "Aprire scheda cliente e controllare dati essenziali.",
+          "Confermare consenso e foto se necessaria.",
+          "Usare la bozza solo dopo revisione dell'operatore."
+        ],
+        usage: {
+          usedCount,
+          limit: protocolLimit,
+          remaining: Math.max(protocolLimit - usedCount - 1, 0)
+        }
+      }
     };
   }
 
