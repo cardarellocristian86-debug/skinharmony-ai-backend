@@ -1776,6 +1776,7 @@ class DesktopMirrorService {
     const caseIntensity = String(payload.caseIntensity || "").trim();
     const ageRange = String(payload.ageRange || "").trim();
     const zoneDetail = String(payload.zoneDetail || "").trim();
+    const journeyPhase = String(payload.journeyPhase || "").trim();
     const recentTreatmentsInput = String(payload.recentTreatments || "").trim();
     const sessionGoal = String(payload.sessionGoal || "").trim();
     const skinSensitivity = String(payload.skinSensitivity || "").trim();
@@ -1836,6 +1837,7 @@ class DesktopMirrorService {
       caseIntensity,
       issue,
       zoneDetail,
+      journeyPhase,
       recentTreatmentsInput,
       sessionGoal,
       skinSensitivity,
@@ -1950,10 +1952,78 @@ class DesktopMirrorService {
         : "Costruire un percorso operativo progressivo dopo valutazione in cabina."
     );
     const areaLabel = targetArea === "viso" ? "Viso" : targetArea === "corpo" ? "Corpo" : targetArea === "scalp" ? "Cuoio capelluto" : "Area da confermare";
+    const inferredJourneyPhase = journeyPhase || (
+      treatments.length || appointments.length
+        ? (sessionGoal === "mantenimento" ? "maintenance" : "active_phase")
+        : "first_session"
+    );
+    const journeyPhaseLabels = {
+      first_session: "Prima seduta",
+      active_phase: "Fase attiva",
+      maintenance: "Mantenimento",
+      review: "Review / correzione percorso"
+    };
+    const highSensitivity = ["alta", "sensibile", "reattiva"].includes(skinSensitivity.toLowerCase());
+    const hasRecentTreatment = Boolean(recentTreatmentsInput && !recentTreatmentsInput.toLowerCase().includes("nessun"));
+    const evidentCase = caseIntensity === "evidente";
+    const decisionHierarchy = [
+      "1. Sicurezza: eventuali blocchi dichiarati fermano la generazione e richiedono valutazione professionale.",
+      highSensitivity ? "2. Sensibilita: alta, quindi vince una prima impostazione prudente anche se il caso appare evidente." : "2. Sensibilita: non alta, si puo costruire una progressione controllata.",
+      hasRecentTreatment ? `3. Trattamenti recenti: ${recentTreatmentsInput}, quindi ridurre intensita e verificare compatibilita prima della tecnologia centrale.` : "3. Trattamenti recenti: nessun vincolo forte dichiarato.",
+      `4. Fase percorso: ${journeyPhaseLabels[inferredJourneyPhase] || inferredJourneyPhase}, quindi cambia frequenza e aggressivita operativa.`,
+      evidentCase ? "5. Intensita caso: evidente, ma non supera sicurezza e sensibilita; si lavora per step e review." : "5. Intensita caso: gestibile con percorso progressivo."
+    ];
+    const buildTechnologyDecision = (technology) => {
+      const lower = String(technology || "").toLowerCase();
+      if (!technology || lower.includes("nessuna")) return "Tecnologie: nessuna tecnologia centrale dichiarata, usare protocollo manuale prudente o caricare tecnologie reali del centro.";
+      if (targetArea === "scalp") {
+        if (lower.includes("o3")) return "O3 System: prioritario per area scalp, con intensita progressiva e controllo comfort.";
+        return `${technology}: disponibile ma non prioritaria per scalp; usarla solo se prevista dal protocollo centro.`;
+      }
+      if (highSensitivity && (lower.includes("radio") || lower.includes("rf") || lower.includes("presso"))) {
+        return `${technology}: disponibile ma da limitare nella prima seduta per sensibilita alta; prima testare risposta e comfort.`;
+      }
+      if (targetArea === "viso" && lower.includes("skin pro")) {
+        return highSensitivity
+          ? "Skin Pro: consigliata in modalita prudente, seduta breve e progressiva."
+          : "Skin Pro: tecnologia prioritaria per percorso viso, con progressione in base alla risposta.";
+      }
+      if (targetArea === "corpo" && (lower.includes("presso") || lower.includes("radio") || lower.includes("manual"))) {
+        return `${technology}: consigliata per corpo, da collegare a obiettivo, durata e risposta cliente.`;
+      }
+      return `${technology}: disponibile; inserirla solo se coerente con area, obiettivo e tollerabilita.`;
+    };
+    const technologyPlan = technologies.map(buildTechnologyDecision).filter(Boolean);
+    const adaptationRules = [
+      inferredJourneyPhase === "first_session" ? "Prima seduta: ridurre ambizione, raccogliere risposta, non costruire subito protocollo aggressivo." : "",
+      inferredJourneyPhase === "active_phase" ? "Fase attiva: mantenere progressione, ma inserire review dopo 2-3 sedute." : "",
+      inferredJourneyPhase === "maintenance" ? "Mantenimento: frequenza piu distanziata, obiettivo continuita e controllo, non spinta intensiva." : "",
+      inferredJourneyPhase === "review" ? "Review: confrontare foto/storico e correggere frequenza, tecnologia o obiettivo prima di proseguire." : "",
+      highSensitivity ? "Sensibilita alta: seduta piu breve, meno tecnologia intensa, piu verifica comfort." : "",
+      hasRecentTreatment ? "Trattamento recente: evitare sovrapposizioni aggressive e registrare il motivo della prudenza." : "",
+      evidentCase && !highSensitivity ? "Caso evidente: dividere in blocchi e misurare miglioramento con review intermedia." : ""
+    ].filter(Boolean);
+    const suggestedSessions = inferredJourneyPhase === "maintenance"
+      ? 4
+      : highSensitivity
+        ? 3
+        : evidentCase
+          ? 8
+          : caseIntensity === "media"
+            ? 5
+            : 4;
+    const suggestedFrequency = inferredJourneyPhase === "maintenance"
+      ? "1 seduta ogni 21/30 giorni, con controllo fotografico periodico."
+      : highSensitivity || hasRecentTreatment
+        ? "1 seduta ogni 10/14 giorni, aumentando solo se la risposta e coerente."
+        : evidentCase
+          ? "1 seduta ogni 7 giorni, review obbligatoria a meta percorso."
+          : "1 seduta ogni 7/10 giorni, review dopo 2-3 sedute.";
     const analysisSignals = [
       ageRange ? `Fascia eta: ${ageRange}.` : "Fascia eta non indicata.",
       zoneDetail ? `Zona specifica: ${zoneDetail}.` : "Zona specifica da completare.",
       issue ? `Esigenza dichiarata: ${issue}.` : "Esigenza da confermare con la cliente.",
+      `Fase percorso: ${journeyPhaseLabels[inferredJourneyPhase] || inferredJourneyPhase}.`,
       recentTreatmentsInput ? `Trattamenti recenti: ${recentTreatmentsInput}.` : "Trattamenti recenti non indicati.",
       skinSensitivity ? `Sensibilita dichiarata: ${skinSensitivity}.` : "Sensibilita non dichiarata.",
       timeBudget ? `Tempo disponibile: ${timeBudget}.` : "Tempo seduta non indicato.",
@@ -1965,24 +2035,29 @@ class DesktopMirrorService {
       optionalFlags.includes("consenso-foto") ? "Consenso foto dichiarato: mantenere luce e distanza coerenti per confronti futuri." : "Se servono foto, raccogliere consenso prima dello scatto.",
       optionalFlags.includes("cliente-nuovo") ? "Cliente nuovo: prima seduta piu conservativa e anamnesi completa." : ""
     ].filter(Boolean);
-    const decision = skinSensitivity && skinSensitivity !== "normale"
-      ? "Procedere con protocollo prudente e progressivo, senza sovraccaricare la seduta."
-      : "Procedere con proposta operativa progressiva, verificando risposta e comfort a ogni seduta.";
+    const decision = highSensitivity || hasRecentTreatment
+      ? "Decisione AI: protocollo prudente adattato. Sicurezza, sensibilita e trattamenti recenti prevalgono su intensita e obiettivo estetico."
+      : inferredJourneyPhase === "maintenance"
+        ? "Decisione AI: percorso di mantenimento. L'obiettivo e continuita, controllo e prevenzione di sovraccarico operativo."
+        : evidentCase
+          ? "Decisione AI: percorso attivo a step. Il caso e evidente, ma va diviso in blocchi con review intermedia."
+          : "Decisione AI: proposta progressiva standard, con verifica della risposta a ogni seduta.";
     const workLogic = [
       `Partire da ${areaLabel.toLowerCase()}${zoneDetail ? `, zona ${zoneDetail}` : ""}, collegando esigenza e tecnologie disponibili.`,
       sessionGoal ? `Obiettivo seduta: ${sessionGoal}.` : "Definire un obiettivo seduta misurabile prima di iniziare.",
-      technologies.length ? `Tecnologie disponibili lette: ${technologies.join(", ")}.` : "Tecnologie non rilevate: selezionarle manualmente prima della seduta.",
+      technologies.length ? `Tecnologie disponibili lette e pesate: ${technologies.join(", ")}.` : "Tecnologie non rilevate: selezionarle manualmente prima della seduta.",
+      `Proposta percorso: ${suggestedSessions} sedute, frequenza ${suggestedFrequency}`,
       "L'AI propone una traccia; l'operatore deve confermare scheda, consenso e compatibilita."
     ];
     const strategy = [
       baseProtocol ? `Usare come base: ${baseProtocol.title || "protocollo selezionato"}.` : "Non usare protocolli inventati: completare libreria o scegliere SkinHarmony.",
-      caseIntensity === "evidente" ? "Dividere il percorso in step e fare review intermedia." : "Mantenere progressione semplice e controllata.",
+      ...adaptationRules,
       "Registrare risposta cliente dopo ogni seduta per correggere frequenza e intensita."
     ];
     const sessionSteps = [
       "1. Verifica scheda cliente, consenso e trattamenti recenti.",
       "2. Controllo visivo/fotografico non medico con luce coerente.",
-      technologies.length ? `3. Seduta centrale con ${technologies.slice(0, 2).join(" + ")} secondo tollerabilita.` : "3. Seduta centrale con tecnologia/manualita scelta dall'operatore.",
+      technologies.length ? `3. Seduta centrale con tecnologia prioritaria selezionata, non con tutte insieme: ${technologies.slice(0, 2).join(" + ")} solo se coerenti.` : "3. Seduta centrale con tecnologia/manualita scelta dall'operatore.",
       products.length ? `4. Chiusura con prodotto coerente: ${products.slice(0, 2).join(", ")}.` : "4. Chiusura con prodotto coerente se disponibile.",
       "5. Nota finale su comfort, risposta e prossima azione."
     ];
@@ -2019,6 +2094,7 @@ class DesktopMirrorService {
             caseIntensity,
             caseNotes: String(payload.caseNotes || ""),
             recentTreatments: recentTreatmentsInput,
+            journeyPhase: inferredJourneyPhase,
             safetyFlags: Array.isArray(payload.safetyFlags) ? payload.safetyFlags : [],
             optionalFlags
           })
@@ -2067,8 +2143,8 @@ class DesktopMirrorService {
       targetArea: targetArea || String(baseProtocol?.targetArea || ""),
       needType: needType || String(baseProtocol?.needType || ""),
       caseIntensity: caseIntensity || String(baseProtocol?.caseIntensity || ""),
-      sessionsCount: Number(payload.sessionsCount || baseProtocol?.sessionsCount || (recentServices.length ? 4 : 3)),
-      frequency: String(payload.frequency || baseProtocol?.frequency || "1 seduta ogni 7/14 giorni, da confermare dopo risposta del cliente."),
+      sessionsCount: Number(payload.sessionsCount || baseProtocol?.sessionsCount || suggestedSessions),
+      frequency: String(payload.frequency || baseProtocol?.frequency || suggestedFrequency),
       technologies: protocolTechnologies,
       products: protocolProducts,
       steps: composedSteps.filter(Boolean).join("\n"),
@@ -2076,6 +2152,12 @@ class DesktopMirrorService {
       avoidClaims: String(baseProtocol?.avoidClaims || "Evitare promesse di risultato, diagnosi mediche, linguaggio terapeutico e indicazioni non verificate dall’operatore."),
       operatorNotes: [
         `Modalità: ${modeLabels[protocolMode]}.`,
+        "Gerarchia decisionale applicata:",
+        ...decisionHierarchy,
+        "Adattamenti applicati:",
+        ...adaptationRules,
+        "Tecnologie pesate:",
+        ...technologyPlan,
         ...analysisSignals,
         ...riskNotes,
         centerProtocol ? `Protocollo centro usato come base: ${centerProtocol.title || "senza titolo"}.` : "Nessun protocollo centro compatibile usato come base.",
@@ -2116,6 +2198,9 @@ class DesktopMirrorService {
               ? [`Lettura operatore/foto acquisita: ${photoAnalysis}.`, "La foto non sostituisce la valutazione professionale."]
               : ["Foto non presente o non descritta: completare controllo visivo prima di applicare il protocollo."],
         signals: analysisSignals,
+        decisionHierarchy,
+        adaptations: adaptationRules,
+        technologyPlan,
         workLogic,
         strategy,
         sessionSteps: remoteProtocolAnalysis?.protocol?.sessionSteps?.length
