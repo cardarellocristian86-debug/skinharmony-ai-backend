@@ -1882,6 +1882,7 @@ class DesktopMirrorService {
       .map((protocol) => ({ protocol, score: scoreProtocol(protocol) }))
       .sort((a, b) => b.score - a.score)[0];
     const skinHarmonyProtocol = matchedSkinHarmonyProtocol && matchedSkinHarmonyProtocol.score > 0 ? matchedSkinHarmonyProtocol.protocol : null;
+    const canUseRemoteProtocolLibrary = Boolean(imageDataUrl);
     if (protocolMode === "center" && !centerProtocol) {
       return {
         protocolAiEnabled: true,
@@ -1894,7 +1895,7 @@ class DesktopMirrorService {
         draft: null
       };
     }
-    if (protocolMode === "skinharmony" && !skinHarmonyProtocol) {
+    if (protocolMode === "skinharmony" && !skinHarmonyProtocol && !canUseRemoteProtocolLibrary) {
       return {
         protocolAiEnabled: true,
         goldEnabled: currentPlan === "gold",
@@ -1906,7 +1907,7 @@ class DesktopMirrorService {
         draft: null
       };
     }
-    if (protocolMode === "hybrid" && !centerProtocol && !skinHarmonyProtocol) {
+    if (protocolMode === "hybrid" && !centerProtocol && !skinHarmonyProtocol && !canUseRemoteProtocolLibrary) {
       return {
         protocolAiEnabled: true,
         goldEnabled: currentPlan === "gold",
