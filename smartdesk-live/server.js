@@ -9,6 +9,38 @@ const app = express();
 let service = null;
 let assistantService = null;
 const publicDir = path.resolve(__dirname, "public");
+app.set("trust proxy", 1);
+
+const rateLimitBuckets = new Map();
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.ip || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
+}
+
+function createRateLimiter({ windowMs, max, keyPrefix }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${keyPrefix}:${clientIp(req)}:${String(req.body?.username || req.body?.contactEmail || req.body?.email || "").toLowerCase()}`;
+    const current = rateLimitBuckets.get(key);
+    const bucket = current && current.resetAt > now
+      ? current
+      : { count: 0, resetAt: now + windowMs };
+    bucket.count += 1;
+    rateLimitBuckets.set(key, bucket);
+    if (bucket.count > max) {
+      return res.status(429).json({
+        success: false,
+        code: "rate_limited",
+        message: "Troppe richieste ravvicinate. Attendi qualche minuto e riprova."
+      });
+    }
+    return next();
+  };
+}
+
+const loginRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: "login" });
+const trialRateLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10, keyPrefix: "trial" });
+const passwordRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 8, keyPrefix: "password" });
 
 function trialMailConfigured() {
   return Boolean(
@@ -240,7 +272,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "skinharmony-smartdesk-live" });
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", loginRateLimit, (req, res) => {
   try {
     res.json({ success: true, ...service.login(req.body || {}) });
   } catch (error) {
@@ -252,7 +284,7 @@ app.get("/api/auth/trial-config", (_req, res) => {
   res.json(service.getTrialPublicConfig());
 });
 
-app.post("/api/auth/request-trial", async (req, res) => {
+app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   try {
     const result = service.requestTrial(req.body || {});
     let emailDelivery = { status: "disabled" };
@@ -296,7 +328,7 @@ app.post("/api/auth/verify-trial-email", (req, res) => {
   }
 });
 
-app.post("/api/auth/forgot-password", async (req, res) => {
+app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
   try {
     const result = service.requestPasswordReset(req.body || {});
     if (result.delivery?.email && result.delivery?.token) {
@@ -311,7 +343,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   }
 });
 
-app.post("/api/auth/reset-password", async (req, res) => {
+app.post("/api/auth/reset-password", passwordRateLimit, async (req, res) => {
   try {
     const result = service.resetPasswordWithToken(req.body || {});
     if (result.user.contactEmail) {

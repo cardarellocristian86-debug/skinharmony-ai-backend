@@ -1,5 +1,14 @@
 const fs = require("fs");
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 class PostgresPersistenceAdapter {
   constructor(databaseUrl) {
     this.databaseUrl = databaseUrl;
@@ -13,7 +22,7 @@ class PostgresPersistenceAdapter {
     try {
       ({ Pool } = require("pg"));
     } catch (error) {
-      throw new Error("Dipendenza 'pg' non installata. Esegui npm install nel servizio smartdesk-live.");
+      throw new Error("Dipendenza 'pg' non installata. Esegui npm install nel servizio render-smartdesk-live.");
     }
     this.pool = new Pool({
       connectionString: this.databaseUrl,
@@ -95,6 +104,58 @@ class PostgresPersistenceAdapter {
 
     this.writeChains.set(name, nextChain);
     return nextChain;
+  }
+
+  async getDatabaseUsage(options = {}) {
+    if (!this.databaseUrl) {
+      return {
+        connected: false,
+        source: "postgres_adapter",
+        note: "DATABASE_URL non configurato."
+      };
+    }
+
+    const pool = this.createPool();
+    const limitBytes = Number(options.limitBytes || 0);
+    const databaseResult = await pool.query(`
+      SELECT
+        current_database() AS database_name,
+        pg_database_size(current_database())::bigint AS used_bytes,
+        pg_size_pretty(pg_database_size(current_database())) AS used_pretty
+    `);
+    const tablesResult = await pool.query(`
+      SELECT
+        schemaname,
+        relname,
+        pg_total_relation_size(format('%I.%I', schemaname, relname))::bigint AS bytes,
+        pg_size_pretty(pg_total_relation_size(format('%I.%I', schemaname, relname))) AS pretty
+      FROM pg_stat_user_tables
+      ORDER BY bytes DESC
+      LIMIT 12
+    `);
+
+    const row = databaseResult.rows[0] || {};
+    const usedBytes = Number(row.used_bytes || 0);
+    const remainingBytes = limitBytes > 0 ? Math.max(limitBytes - usedBytes, 0) : null;
+    return {
+      connected: true,
+      source: "postgres_adapter",
+      databaseName: row.database_name || "",
+      usedBytes,
+      usedPretty: row.used_pretty || formatBytes(usedBytes),
+      limitBytes: limitBytes || null,
+      limitPretty: limitBytes ? formatBytes(limitBytes) : "",
+      remainingBytes,
+      remainingPretty: remainingBytes === null ? "" : formatBytes(remainingBytes),
+      usedPercent: limitBytes ? Math.round((usedBytes / limitBytes) * 1000) / 10 : null,
+      tables: tablesResult.rows.map((table) => ({
+        schema: table.schemaname,
+        name: table.relname,
+        bytes: Number(table.bytes || 0),
+        pretty: table.pretty || formatBytes(table.bytes)
+      })),
+      updatedAt: new Date().toISOString()
+    };
   }
 }
 
