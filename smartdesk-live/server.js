@@ -196,9 +196,9 @@ const planWeight = {
 };
 
 function normalizedPlan(session) {
-  if (String(session?.role || "").toLowerCase() === "superadmin") return "gold";
+  if (String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode) return "gold";
   const plan = String(session?.subscriptionPlan || "").toLowerCase();
-  return planWeight[plan] ? plan : "gold";
+  return planWeight[plan] ? plan : "base";
 }
 
 function requirePlan(requiredPlan) {
@@ -495,6 +495,10 @@ app.put("/api/appointments/:id", (req, res) => {
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'appuntamento");
   }
+});
+
+app.delete("/api/appointments/:id", (req, res) => {
+  res.json(service.deleteAppointment(req.params.id, req.session));
 });
 
 app.get("/api/catalog/services", (req, res) => {

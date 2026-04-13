@@ -236,7 +236,7 @@ function writeSimplePdf(filePath, sections = []) {
       commands.push(`/${font} ${line.size} Tf ${margin} ${line.y} Td (${escapePdfText(line.text)}) Tj`);
       commands.push(`${-margin} ${-line.y} Td`);
     });
-    commands.push(`/F1 8 Tf ${margin} 28 Td (Pagina ${pageIndex + 1} di ${pages.length} - Documento consensi SkinHarmony Smart Desk) Tj`);
+    commands.push(`/F1 8 Tf ${margin} 28 Td (Pagina ${pageIndex + 1} di ${pages.length} - SkinHarmony Smart Desk) Tj`);
     commands.push("ET");
     const stream = commands.join("\n");
     return add(`<< /Length ${Buffer.byteLength(stream, "latin1")} >>\nstream\n${stream}\nendstream`);
@@ -487,7 +487,7 @@ class DesktopMirrorService {
     const hasLegacyPlanlessAccount = !user.planType && !user.trialStartsAt && !user.trialEndsAt;
     const inferredPlanType = hasLegacyPlanlessAccount ? "active" : (String(user.role || "") === "superadmin" ? "active" : "trial");
     const planType = String(user.planType || inferredPlanType);
-    const subscriptionPlan = String(user.subscriptionPlan || (String(user.role || "") === "superadmin" ? "gold" : "gold"));
+    const subscriptionPlan = String(user.subscriptionPlan || (String(user.role || "") === "superadmin" ? "gold" : "base"));
     const paymentStatus = String(user.paymentStatus || (planType === "active" ? "paid" : "pending"));
     const requestedSubscriptionPlan = ["base", "silver", "gold"].includes(String(user.requestedSubscriptionPlan || ""))
       ? String(user.requestedSubscriptionPlan)
@@ -557,7 +557,7 @@ class DesktopMirrorService {
     if (!session) return "base";
     if (this.isSuperAdminSession(session) && !session.supportMode) return "gold";
     const plan = String(session.subscriptionPlan || "").toLowerCase();
-    return ["base", "silver", "gold"].includes(plan) ? plan : "gold";
+    return ["base", "silver", "gold"].includes(plan) ? plan : "base";
   }
 
   hasProtocolAiAccess(session = null) {
@@ -1112,7 +1112,7 @@ class DesktopMirrorService {
       contactPhone: String(payload.contactPhone || payload.phone || ""),
       businessModel: String(payload.businessModel || "esthetic"),
       planType,
-      subscriptionPlan: String(payload.subscriptionPlan || (String(payload.role || "") === "superadmin" ? "gold" : "gold")),
+      subscriptionPlan: String(payload.subscriptionPlan || (String(payload.role || "") === "superadmin" ? "gold" : "base")),
       trialDays,
       trialStartsAt,
       trialEndsAt,
@@ -1596,6 +1596,10 @@ class DesktopMirrorService {
     }), session);
   }
 
+  deleteAppointment(id, session = null) {
+    return this.deleteInCenter(this.appointmentsRepository, id, session);
+  }
+
   listServices(session = null) {
     return this.filterByCenter(this.servicesRepository.list(), session);
   }
@@ -1609,6 +1613,22 @@ class DesktopMirrorService {
     const priceCents = assertRange(payload.priceCents || payload.price || 0, "Prezzo servizio", { min: 0, max: 100000000 });
     const estimatedProductCostCents = assertRange(payload.estimatedProductCostCents || payload.productCostCents || 0, "Costo prodotto stimato", { min: 0, max: 100000000 });
     const technologyCostCents = assertRange(payload.technologyCostCents || 0, "Costo tecnologia", { min: 0, max: 100000000 });
+    const productLinks = Array.isArray(payload.productLinks)
+      ? payload.productLinks
+        .map((item) => ({
+          productId: String(item.productId || ""),
+          usageUnits: Number(item.usageUnits || 1)
+        }))
+        .filter((item) => item.productId)
+      : [];
+    const technologyLinks = Array.isArray(payload.technologyLinks)
+      ? payload.technologyLinks
+        .map((item) => ({
+          technologyId: String(item.technologyId || ""),
+          usageUnits: Number(item.usageUnits || 1)
+        }))
+        .filter((item) => item.technologyId)
+      : [];
     const entity = {
       id: payload.id || makeId("service"),
       idempotencyKey: idempotencyKey(payload),
@@ -1620,6 +1640,8 @@ class DesktopMirrorService {
       priceCents,
       estimatedProductCostCents,
       technologyCostCents,
+      productLinks,
+      technologyLinks,
       active: payload.active !== false,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -1773,6 +1795,11 @@ class DesktopMirrorService {
     if (existing) return existing;
     const resourceName = cleanText(payload.name || "", "", 120);
     assertValid(resourceName.length >= 2, "Nome risorsa obbligatorio");
+    const totalCostCents = assertRange(payload.totalCostCents || 0, "Costo totale tecnologia", { min: 0, max: 100000000 });
+    const durationMonths = assertRange(payload.durationMonths || 0, "Durata ammortamento tecnologia", { min: 0, max: 600 });
+    const estimatedMonthlyUses = assertRange(payload.estimatedMonthlyUses || 0, "Utilizzi mensili tecnologia", { min: 0, max: 1000000 });
+    const monthlyCostCents = durationMonths > 0 ? Math.round(totalCostCents / durationMonths) : assertRange(payload.monthlyCostCents || 0, "Costo mensile tecnologia", { min: 0, max: 100000000 });
+    const costPerUseCents = estimatedMonthlyUses > 0 ? Math.round(monthlyCostCents / estimatedMonthlyUses) : assertRange(payload.costPerUseCents || 0, "Costo uso tecnologia", { min: 0, max: 100000000 });
     const entity = {
       id: payload.id || makeId("resource"),
       idempotencyKey: idempotencyKey(payload),
@@ -1780,6 +1807,11 @@ class DesktopMirrorService {
       centerName: this.getCenterName(session),
       name: resourceName,
       type: cleanText(payload.type || "room", "room", 60),
+      totalCostCents,
+      durationMonths,
+      estimatedMonthlyUses,
+      monthlyCostCents,
+      costPerUseCents,
       active: payload.active !== false,
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
@@ -2598,26 +2630,170 @@ class DesktopMirrorService {
   }
 
   getOperationalReport(options = {}, session = null) {
-    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
-    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const period = String(options.period || "day");
+    let startDate = toDateOnly(options.startDate || nowIso());
+    let endDate = toDateOnly(options.endDate || startDate);
+    if (startDate > endDate) {
+      const swap = startDate;
+      startDate = endDate;
+      endDate = swap;
+    }
+    const inRange = (value) => {
+      const dateOnly = toDateOnly(value || "");
+      return Boolean(dateOnly && dateOnly >= startDate && dateOnly <= endDate);
+    };
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session)
+      .filter((item) => inRange(item.startAt || item.createdAt));
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session)
+      .filter((item) => inRange(item.createdAt));
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const clientNames = new Map(clients.map((client) => [String(client.id || ""), `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente"]));
+    const staffById = new Map(staff.map((item) => [String(item.id || ""), item]));
+    const serviceById = new Map(services.map((item) => [String(item.id || ""), item]));
+    const paymentsByAppointment = new Map();
+    payments.forEach((payment) => {
+      const key = String(payment.appointmentId || "");
+      if (!key) return;
+      paymentsByAppointment.set(key, (paymentsByAppointment.get(key) || 0) + Number(payment.amountCents || 0));
+    });
+    const revenueForAppointment = (appointment) => {
+      const linked = paymentsByAppointment.get(String(appointment.id || ""));
+      if (linked) return linked;
+      const service = serviceById.get(String(appointment.serviceId || ""));
+      return Number(service?.priceCents || appointment.priceCents || 0);
+    };
+    const byDay = new Map();
+    const byOperator = new Map();
+    const byService = new Map();
+    const byClientSpend = new Map();
+    const byClientVisits = new Map();
+    appointments.forEach((appointment) => {
+      const day = toDateOnly(appointment.startAt || appointment.createdAt);
+      const revenueCents = revenueForAppointment(appointment);
+      const dayRow = byDay.get(day) || { label: day, appointments: 0, revenueCents: 0 };
+      dayRow.appointments += 1;
+      dayRow.revenueCents += revenueCents;
+      byDay.set(day, dayRow);
+
+      const staffId = String(appointment.staffId || "unassigned");
+      const operator = staffById.get(staffId);
+      const operatorRow = byOperator.get(staffId) || {
+        staffId,
+        name: operator?.name || appointment.staffName || "Operatore libero",
+        appointments: 0,
+        completed: 0,
+        revenueCents: 0,
+        colorTag: operator?.colorTag || null
+      };
+      operatorRow.appointments += 1;
+      if (appointment.status === "completed") operatorRow.completed += 1;
+      operatorRow.revenueCents += revenueCents;
+      byOperator.set(staffId, operatorRow);
+
+      const serviceId = String(appointment.serviceId || "free");
+      const service = serviceById.get(serviceId);
+      const serviceRow = byService.get(serviceId) || {
+        serviceId,
+        name: service?.name || appointment.serviceName || "Servizio libero",
+        appointments: 0,
+        revenueCents: 0,
+        colorTag: service?.colorTag || null
+      };
+      serviceRow.appointments += 1;
+      serviceRow.revenueCents += revenueCents;
+      byService.set(serviceId, serviceRow);
+
+      const clientId = String(appointment.clientId || "");
+      if (clientId) {
+        const spendRow = byClientSpend.get(clientId) || { clientId, name: clientNames.get(clientId) || appointment.clientName || "Cliente", visits: 0, amountCents: 0 };
+        spendRow.visits += 1;
+        spendRow.amountCents += revenueCents;
+        byClientSpend.set(clientId, spendRow);
+        byClientVisits.set(clientId, { clientId, name: spendRow.name, visits: spendRow.visits });
+      }
+    });
+    const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    const completedAppointments = appointments.filter((item) => item.status === "completed").length;
+    const topServices = Array.from(byService.values()).sort((a, b) => b.appointments - a.appointments);
+    const inactiveClients = clients.map((client) => {
+      const clientAppointments = this.filterByCenter(this.appointmentsRepository.list(), session)
+        .filter((item) => String(item.clientId || "") === String(client.id || ""))
+        .sort((a, b) => new Date(b.startAt || b.createdAt || 0).getTime() - new Date(a.startAt || a.createdAt || 0).getTime());
+      const lastVisitAt = clientAppointments[0]?.startAt || client.lastVisit || "";
+      const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((Date.now() - new Date(lastVisitAt).getTime()) / 86400000)) : 999;
+      return {
+        clientId: String(client.id || ""),
+        name: clientNames.get(String(client.id || "")) || "Cliente",
+        phone: client.phone || "",
+        daysSinceLastVisit,
+        lastVisitAt
+      };
+    }).filter((item) => item.daysSinceLastVisit >= 45).sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit).slice(0, 10);
+    const insights = [];
+    if (completedAppointments === 0) insights.push("Completa e incassa gli appuntamenti per attivare un report più preciso.");
+    if (topServices[0]) insights.push(`Servizio più richiesto nel periodo: ${topServices[0].name}.`);
+    if (inactiveClients[0]) insights.push(`${inactiveClients.length} clienti risultano inattivi o da richiamare.`);
     return {
-      periodLabel: String(options.period || "day"),
+      period,
+      generatedAt: nowIso(),
+      dateLabel: startDate === endDate ? startDate : `${startDate} - ${endDate}`,
       totals: {
         appointments: appointments.length,
-        completedAppointments: appointments.filter((item) => item.status === "completed").length,
-        revenueCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0)
-      }
+        completedAppointments,
+        cancelledAppointments: appointments.filter((item) => item.status === "cancelled").length,
+        noShowAppointments: appointments.filter((item) => item.status === "no_show").length,
+        revenueCents,
+        averageTicketCents: payments.length ? Math.round(revenueCents / payments.length) : 0,
+        activeClients: new Set(appointments.map((item) => item.clientId).filter(Boolean)).size,
+        returningClients: Array.from(byClientVisits.values()).filter((item) => item.visits > 1).length,
+        occasionalClients: appointments.filter((item) => !item.clientId).length,
+        rebookingRate: appointments.length ? Math.round((completedAppointments / appointments.length) * 100) : 0
+      },
+      timeline: Array.from(byDay.values()).sort((a, b) => String(a.label).localeCompare(String(b.label))),
+      topOperators: Array.from(byOperator.values()).sort((a, b) => b.revenueCents - a.revenueCents).slice(0, 8),
+      topServices: topServices.slice(0, 8),
+      lowServices: topServices.slice().sort((a, b) => a.appointments - b.appointments).slice(0, 5),
+      topClientsBySpend: Array.from(byClientSpend.values()).sort((a, b) => b.amountCents - a.amountCents).slice(0, 8),
+      frequentClients: Array.from(byClientVisits.values()).sort((a, b) => b.visits - a.visits).slice(0, 8),
+      inactiveClients,
+      technologyUsage: [],
+      lowTechnologyUsage: [],
+      insights
     };
   }
 
   exportOperationalReport(options = {}, format = "pdf", session = null) {
     ensureDir(EXPORTS_DIR);
     const report = this.getOperationalReport(options, session);
+    if (format === "pdf") {
+      const fileName = `operational-report-${Date.now()}.pdf`;
+      const filePath = path.join(EXPORTS_DIR, fileName);
+      const sections = [
+        { style: "title", text: "Report operativo Smart Desk" },
+        { style: "heading", text: `Periodo: ${report.dateLabel}` },
+        { style: "body", text: `Appuntamenti: ${report.totals.appointments}` },
+        { style: "body", text: `Completati: ${report.totals.completedAppointments}` },
+        { style: "body", text: `Annullati: ${report.totals.cancelledAppointments}` },
+        { style: "body", text: `No-show: ${report.totals.noShowAppointments}` },
+        { style: "body", text: `Incasso: ${euro(report.totals.revenueCents)}` },
+        { style: "body", text: `Ticket medio: ${euro(report.totals.averageTicketCents)}` },
+        { style: "heading", text: "Servizi principali" },
+        ...(report.topServices || []).slice(0, 8).map((item) => ({ style: "body", text: `${item.name}: ${item.appointments} appuntamenti, ${euro(item.revenueCents)}` })),
+        { style: "heading", text: "Operatori" },
+        ...(report.topOperators || []).slice(0, 8).map((item) => ({ style: "body", text: `${item.name}: ${item.appointments} appuntamenti, ${item.completed} completati, ${euro(item.revenueCents)}` })),
+        { style: "heading", text: "Insight" },
+        ...((report.insights || []).length ? report.insights : ["Nessun insight critico nel periodo."]).map((item) => ({ style: "body", text: item }))
+      ];
+      writeSimplePdf(filePath, sections);
+      return { path: filePath, format: "pdf", url: `/exports/${fileName}` };
+    }
     const fileName = `operational-report-${Date.now()}.html`;
     const filePath = path.join(EXPORTS_DIR, fileName);
-    const html = `<!doctype html><html lang="it"><body><h1>Report operativo</h1><p>Appuntamenti: ${report.totals.appointments}</p><p>Completati: ${report.totals.completedAppointments}</p><p>Incasso: ${euro(report.totals.revenueCents)}</p></body></html>`;
+    const html = `<!doctype html><html lang="it"><body><h1>Report operativo</h1><p>Periodo: ${report.dateLabel}</p><p>Appuntamenti: ${report.totals.appointments}</p><p>Completati: ${report.totals.completedAppointments}</p><p>Incasso: ${euro(report.totals.revenueCents)}</p></body></html>`;
     fs.writeFileSync(filePath, html);
-    return { path: filePath, format, url: `/exports/${fileName}` };
+    return { path: filePath, format: "html", url: `/exports/${fileName}` };
   }
 
   getOperatorReport(operatorId, options = {}, session = null) {
@@ -2673,12 +2849,17 @@ class DesktopMirrorService {
     const staff = this.filterByCenter(this.staffRepository.list(), session);
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const serviceById = new Map(services.map((item) => [String(item.id), item]));
     const staffById = new Map(staff.map((item) => [String(item.id), item]));
+    const inventoryById = new Map(inventory.map((item) => [String(item.id), item]));
+    const resourceById = new Map(resources.map((item) => [String(item.id), item]));
     const inventoryCostAverage = inventory.length
       ? Math.round(inventory.reduce((sum, item) => sum + Number(item.costCents || 0), 0) / inventory.length)
       : 0;
     const serviceMap = new Map();
+    const productMap = new Map();
+    const technologyMap = new Map();
     const monthlyMap = new Map();
     appointments.forEach((appointment) => {
       const service = serviceById.get(String(appointment.serviceId || "")) || {};
@@ -2703,6 +2884,55 @@ class DesktopMirrorService {
       const productCostCents = Number(service.estimatedProductCostCents || service.productCostCents || inventoryCostAverage || 0);
       const technologyCostCents = Number(service.technologyCostCents || 0);
       const costCents = operatorCostCents + productCostCents + technologyCostCents;
+      const productLinks = Array.isArray(service.productLinks) ? service.productLinks : [];
+      const technologyLinks = Array.isArray(service.technologyLinks) ? service.technologyLinks : [];
+      productLinks.forEach((link) => {
+        const product = inventoryById.get(String(link.productId || ""));
+        if (!product) return;
+        const usageUnits = Number(link.usageUnits || 1);
+        const unitCostCents = Number(product.costPerUseCents || product.costCents || product.unitCostCents || 0);
+        const consumedCents = Math.round(unitCostCents * usageUnits);
+        const allocatedRevenueCents = Math.round(revenueCents / Math.max(productLinks.length, 1));
+        const currentProduct = productMap.get(String(product.id)) || {
+          id: String(product.id),
+          name: product.name || "Prodotto",
+          totalUses: 0,
+          costConsumedCents: 0,
+          revenueCents: 0,
+          profitCents: 0,
+          marginPercent: 0,
+          status: "HEALTHY"
+        };
+        currentProduct.totalUses += usageUnits;
+        currentProduct.costConsumedCents += consumedCents;
+        currentProduct.revenueCents += allocatedRevenueCents;
+        currentProduct.profitCents += allocatedRevenueCents - consumedCents;
+        productMap.set(String(product.id), currentProduct);
+      });
+      technologyLinks.forEach((link) => {
+        const technology = resourceById.get(String(link.technologyId || ""));
+        if (!technology) return;
+        const usageUnits = Number(link.usageUnits || 1);
+        const costPerUseCents = Number(technology.costPerUseCents || 0);
+        const consumedCents = Math.round(costPerUseCents * usageUnits);
+        const allocatedRevenueCents = Math.round(revenueCents / Math.max(technologyLinks.length, 1));
+        const currentTechnology = technologyMap.get(String(technology.id)) || {
+          id: String(technology.id),
+          name: technology.name || "Tecnologia",
+          totalUses: 0,
+          monthlyCostCents: Number(technology.monthlyCostCents || 0),
+          revenueCents: 0,
+          costCents: 0,
+          profitCents: 0,
+          marginPercent: 0,
+          status: "HEALTHY"
+        };
+        currentTechnology.totalUses += usageUnits;
+        currentTechnology.revenueCents += allocatedRevenueCents;
+        currentTechnology.costCents += consumedCents;
+        currentTechnology.profitCents += allocatedRevenueCents - consumedCents;
+        technologyMap.set(String(technology.id), currentTechnology);
+      });
       const monthKey = String(appointment.startAt || appointment.createdAt || "").slice(0, 7) || "senza-data";
       const monthly = monthlyMap.get(monthKey) || {
         month: monthKey,
@@ -2726,6 +2956,16 @@ class DesktopMirrorService {
       monthlyMap.set(monthKey, monthly);
     });
     const serviceRows = Array.from(serviceMap.values()).map((item) => {
+      const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
+      const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
+      return { ...item, marginPercent, status };
+    }).sort((a, b) => a.marginPercent - b.marginPercent);
+    const productRows = Array.from(productMap.values()).map((item) => {
+      const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
+      const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
+      return { ...item, marginPercent, status };
+    }).sort((a, b) => a.marginPercent - b.marginPercent);
+    const technologyRows = Array.from(technologyMap.values()).map((item) => {
       const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
       const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
       return { ...item, marginPercent, status };
@@ -2768,8 +3008,8 @@ class DesktopMirrorService {
     return {
       totals,
       services: serviceRows,
-      products: [],
-      technologies: [],
+      products: productRows,
+      technologies: technologyRows,
       monthlyTrend,
       alerts,
       revenueCents: totals.revenueCents,
