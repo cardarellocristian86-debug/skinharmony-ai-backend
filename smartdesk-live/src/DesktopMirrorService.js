@@ -2800,10 +2800,13 @@ class DesktopMirrorService {
       if (new Date(appointment.startAt || appointment.createdAt || 0).getTime() > Date.now()) return false;
       return !paidAppointmentIds.has(String(appointment.id || ""));
     });
+    const unlinkedPayments = payments.filter((payment) => !payment.appointmentId || !payment.clientId);
     const duplicateGroups = this.listClientDuplicateGroups(session);
     const contactScore = clients.length ? Math.round(((clients.length - clientsMissingContact.length) / clients.length) * 100) : 100;
     const costScore = services.length ? Math.round(((services.length - servicesMissingCosts.length) / services.length) * 100) : 100;
-    const paymentScore = appointments.length ? Math.round(((appointments.length - appointmentsMissingPayment.length) / appointments.length) * 100) : 100;
+    const paymentBase = Math.max(appointments.length, payments.length, 1);
+    const paymentIssues = appointmentsMissingPayment.length + unlinkedPayments.length;
+    const paymentScore = Math.max(0, Math.round(((paymentBase - paymentIssues) / paymentBase) * 100));
     const duplicatePenalty = Math.min(20, duplicateGroups.length * 3);
     const score = Math.max(0, Math.round(((contactScore + costScore + paymentScore) / 3) - duplicatePenalty));
     return {
@@ -2816,12 +2819,15 @@ class DesktopMirrorService {
         servicesMissingCosts: servicesMissingCosts.length,
         appointments: appointments.length,
         appointmentsMissingPayment: appointmentsMissingPayment.length,
+        payments: payments.length,
+        unlinkedPayments: unlinkedPayments.length,
         duplicateGroups: duplicateGroups.length
       },
       alerts: [
         clientsMissingContact.length ? `${clientsMissingContact.length} clienti senza telefono o email` : "",
         servicesMissingCosts.length ? `${servicesMissingCosts.length} servizi senza costi configurati` : "",
         appointmentsMissingPayment.length ? `${appointmentsMissingPayment.length} appuntamenti passati senza pagamento collegato` : "",
+        unlinkedPayments.length ? `${unlinkedPayments.length} pagamenti da collegare` : "",
         duplicateGroups.length ? `${duplicateGroups.length} gruppi di possibili duplicati cliente` : ""
       ].filter(Boolean),
       samples: {
