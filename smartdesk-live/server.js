@@ -437,6 +437,22 @@ app.get("/api/clients", (req, res) => {
   res.json(service.listClients(req.query.search, req.session));
 });
 
+app.get("/api/clients/duplicates", (req, res) => {
+  res.json(service.listClientDuplicateGroups(req.session));
+});
+
+app.post("/api/clients/duplicate-suggestions", (req, res) => {
+  res.json(service.findClientDuplicateSuggestions(req.body || {}, req.session));
+});
+
+app.post("/api/clients/merge", (req, res) => {
+  try {
+    res.json(service.mergeClients(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile unire i clienti");
+  }
+});
+
 app.post("/api/clients", (req, res) => {
   try {
     res.status(201).json(service.saveClient(req.body || {}, req.session));
@@ -801,12 +817,28 @@ app.get("/api/payments/summary", (req, res) => {
   }, req.session));
 });
 
+app.get("/api/payments/unlinked", (req, res) => {
+  res.json(service.listUnlinkedPayments(req.session));
+});
+
 app.post("/api/payments", (req, res) => {
   try {
     res.status(201).json(service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare il pagamento");
   }
+});
+
+app.post("/api/payments/:id/link", (req, res) => {
+  try {
+    res.json(service.linkPayment(req.params.id, req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile collegare il pagamento");
+  }
+});
+
+app.get("/api/data-quality", (req, res) => {
+  res.json(service.getDataQuality(req.session));
 });
 
 app.get("/api/settings", (req, res) => {

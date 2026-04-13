@@ -330,6 +330,37 @@ function cleanPhone(value = "") {
     .slice(0, 24);
 }
 
+function duplicateTokens(value = "") {
+  return normalizeText(value)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
+}
+
+function tokenSimilarity(left = "", right = "") {
+  const leftTokens = new Set(duplicateTokens(left));
+  const rightTokens = new Set(duplicateTokens(right));
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  let shared = 0;
+  leftTokens.forEach((token) => {
+    if (rightTokens.has(token)) shared += 1;
+  });
+  return shared / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function clientNameForDuplicate(client = {}) {
+  return cleanText(`${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "", "", 180);
+}
+
+function mergeTextValues(...values) {
+  return values
+    .map((value) => cleanText(value || "", "", 2000))
+    .filter(Boolean)
+    .filter((value, index, source) => source.indexOf(value) === index)
+    .join(" | ");
+}
+
 function idempotencyKey(payload = {}) {
   return cleanText(payload.idempotencyKey || payload.requestId || "", "", 120);
 }
@@ -1440,6 +1471,116 @@ class DesktopMirrorService {
     );
   }
 
+  scoreClientSimilarity(left = {}, right = {}) {
+    if (!left || !right || String(left.id || "") === String(right.id || "")) return 0;
+    const leftEmail = cleanEmail(left.email || "");
+    const rightEmail = cleanEmail(right.email || "");
+    if (leftEmail && rightEmail && leftEmail === rightEmail) return 1;
+    const leftPhone = cleanPhone(left.phone || "");
+    const rightPhone = cleanPhone(right.phone || "");
+    if (leftPhone && rightPhone && leftPhone === rightPhone) return 0.96;
+    const nameScore = tokenSimilarity(clientNameForDuplicate(left), clientNameForDuplicate(right));
+    const contactBoost = (leftPhone && rightPhone && leftPhone.slice(-7) === rightPhone.slice(-7)) ? 0.2 : 0;
+    return Math.min(0.95, nameScore + contactBoost);
+  }
+
+  serializeDuplicateClient(client = {}, score = 0) {
+    return {
+      id: client.id,
+      firstName: client.firstName || "",
+      lastName: client.lastName || "",
+      name: clientNameForDuplicate(client),
+      phone: client.phone || "",
+      email: client.email || "",
+      score: Number(score.toFixed(2))
+    };
+  }
+
+  findClientDuplicateSuggestions(payload = {}, session = null) {
+    const candidate = {
+      id: payload.id || "",
+      firstName: payload.firstName || splitName(payload.name || payload.fullName || "").firstName,
+      lastName: payload.lastName || splitName(payload.name || payload.fullName || "").lastName,
+      name: payload.name || payload.fullName || "",
+      phone: payload.phone || "",
+      email: payload.email || ""
+    };
+    const hasSearchableValue = clientNameForDuplicate(candidate).length >= 3 || cleanPhone(candidate.phone).length >= 7 || Boolean(cleanEmail(candidate.email));
+    if (!hasSearchableValue) return [];
+    return this.filterByCenter(this.clientsRepository.list(), session)
+      .map((client) => ({ client, score: this.scoreClientSimilarity(candidate, client) }))
+      .filter((item) => item.score >= 0.55)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map((item) => this.serializeDuplicateClient(item.client, item.score));
+  }
+
+  listClientDuplicateGroups(session = null) {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const groups = [];
+    const used = new Set();
+    clients.forEach((client) => {
+      if (used.has(client.id)) return;
+      const matches = clients
+        .filter((other) => String(other.id || "") !== String(client.id || ""))
+        .map((other) => ({ client: other, score: this.scoreClientSimilarity(client, other) }))
+        .filter((item) => item.score >= 0.72)
+        .sort((a, b) => b.score - a.score);
+      if (!matches.length) return;
+      const groupClients = [this.serializeDuplicateClient(client, 1), ...matches.map((item) => this.serializeDuplicateClient(item.client, item.score))];
+      groupClients.forEach((item) => used.add(item.id));
+      groups.push({
+        id: `dup_${client.id}`,
+        clients: groupClients,
+        score: Math.max(...matches.map((item) => item.score))
+      });
+    });
+    return groups.sort((a, b) => b.score - a.score);
+  }
+
+  mergeClients(payload = {}, session = null) {
+    const primaryId = String(payload.primaryClientId || "");
+    const secondaryId = String(payload.secondaryClientId || "");
+    assertValid(primaryId && secondaryId && primaryId !== secondaryId, "Clienti da unire non validi");
+    const primary = this.findByIdInCenter(this.clientsRepository, primaryId, session);
+    const secondary = this.findByIdInCenter(this.clientsRepository, secondaryId, session);
+    assertValid(Boolean(primary && secondary), "Cliente duplicato non trovato");
+    const now = nowIso();
+    const merged = this.updateInCenter(this.clientsRepository, primaryId, (current) => ({
+      ...current,
+      firstName: current.firstName || secondary.firstName || "",
+      lastName: current.lastName || secondary.lastName || "",
+      name: clientNameForDuplicate(current) || clientNameForDuplicate(secondary),
+      phone: current.phone || secondary.phone || "",
+      email: current.email || secondary.email || "",
+      birthDate: current.birthDate || secondary.birthDate || "",
+      notes: mergeTextValues(current.notes, secondary.notes),
+      allergies: mergeTextValues(current.allergies, secondary.allergies),
+      preferences: Array.from(new Set([...(current.preferences || []), ...(secondary.preferences || [])].filter(Boolean))),
+      packages: Array.from(new Set([...(current.packages || []), ...(secondary.packages || [])].filter(Boolean))),
+      privacyConsent: Boolean(current.privacyConsent || secondary.privacyConsent),
+      marketingConsent: Boolean(current.marketingConsent || secondary.marketingConsent),
+      sensitiveDataConsent: Boolean(current.sensitiveDataConsent || secondary.sensitiveDataConsent),
+      privacyConsentAt: current.privacyConsentAt || secondary.privacyConsentAt || "",
+      marketingConsentAt: current.marketingConsentAt || secondary.marketingConsentAt || "",
+      sensitiveDataConsentAt: current.sensitiveDataConsentAt || secondary.sensitiveDataConsentAt || "",
+      totalValue: Math.max(Number(current.totalValue || 0), Number(secondary.totalValue || 0)),
+      updatedAt: now,
+      mergedClientIds: Array.from(new Set([...(current.mergedClientIds || []), secondaryId]))
+    }), session);
+    [this.appointmentsRepository, this.paymentsRepository, this.treatmentsRepository, this.protocolsRepository].forEach((repository) => {
+      repository.list()
+        .filter((item) => String(item.centerId || "") === this.getCenterId(session) && String(item.clientId || "") === secondaryId)
+        .forEach((item) => repository.update(item.id, (current) => ({ ...current, clientId: primaryId, updatedAt: now })));
+    });
+    this.clientsRepository.delete(secondaryId);
+    return {
+      success: true,
+      mergedClient: merged,
+      removedClientId: secondaryId
+    };
+  }
+
   saveClient(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.clientsRepository, payload, session) : null;
     if (existing) return existing;
@@ -2548,6 +2689,152 @@ class DesktopMirrorService {
 
   listPayments(clientId = "", session = null) {
     return this.filterByCenter(this.paymentsRepository.list(), session).filter((item) => !clientId || item.clientId === clientId);
+  }
+
+  buildPaymentLinkSuggestions(payment = {}, session = null) {
+    const paymentDay = toDateOnly(payment.createdAt || nowIso());
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const linkedAppointmentIds = new Set(payments.map((item) => String(item.appointmentId || "")).filter(Boolean));
+    const paymentClientId = String(payment.clientId || "");
+    const paymentName = cleanText(payment.walkInName || "", "", 180);
+    return appointments
+      .filter((appointment) => {
+        if (linkedAppointmentIds.has(String(appointment.id || ""))) return false;
+        if (["cancelled", "no_show"].includes(String(appointment.status || ""))) return false;
+        const sameDay = toDateOnly(appointment.startAt || appointment.createdAt) === paymentDay;
+        const sameClient = paymentClientId && String(appointment.clientId || "") === paymentClientId;
+        const client = clients.find((item) => item.id === appointment.clientId);
+        const appointmentName = appointment.clientName || appointment.walkInName || clientNameForDuplicate(client);
+        const similarName = paymentName && tokenSimilarity(paymentName, appointmentName) >= 0.5;
+        return sameClient || (sameDay && (similarName || !paymentClientId));
+      })
+      .sort((a, b) => {
+        const aSameClient = paymentClientId && String(a.clientId || "") === paymentClientId ? -1 : 0;
+        const bSameClient = paymentClientId && String(b.clientId || "") === paymentClientId ? -1 : 0;
+        if (aSameClient !== bSameClient) return aSameClient - bSameClient;
+        return Math.abs(new Date(a.startAt || 0).getTime() - new Date(payment.createdAt || 0).getTime())
+          - Math.abs(new Date(b.startAt || 0).getTime() - new Date(payment.createdAt || 0).getTime());
+      })
+      .slice(0, 4)
+      .map((appointment) => {
+        const client = clients.find((item) => item.id === appointment.clientId);
+        const service = this.servicesRepository.findById(appointment.serviceId) || {};
+        return {
+          id: appointment.id,
+          clientId: appointment.clientId || "",
+          clientName: appointment.clientName || appointment.walkInName || clientNameForDuplicate(client),
+          serviceName: service.name || appointment.serviceName || appointment.service || "Servizio",
+          startAt: appointment.startAt || "",
+          amountCents: Number(service.priceCents || appointment.amountCents || 0),
+          status: appointment.status || ""
+        };
+      });
+  }
+
+  listUnlinkedPayments(session = null) {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    return this.filterByCenter(this.paymentsRepository.list(), session)
+      .filter((payment) => !payment.appointmentId || !payment.clientId)
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+      .slice(0, 80)
+      .map((payment) => {
+        const client = clients.find((item) => item.id === payment.clientId);
+        return {
+          ...payment,
+          clientName: payment.clientId ? clientNameForDuplicate(client) : payment.walkInName || "Cliente occasionale",
+          linkState: payment.appointmentId && payment.clientId
+            ? "complete"
+            : payment.appointmentId
+              ? "missing_client"
+              : "missing_appointment",
+          suggestions: this.buildPaymentLinkSuggestions(payment, session)
+        };
+      });
+  }
+
+  linkPayment(paymentId, payload = {}, session = null) {
+    const payment = this.findByIdInCenter(this.paymentsRepository, paymentId, session);
+    assertValid(Boolean(payment), "Pagamento non trovato");
+    const appointmentId = String(payload.appointmentId || payment.appointmentId || "");
+    const appointment = appointmentId ? this.findByIdInCenter(this.appointmentsRepository, appointmentId, session) : null;
+    const clientId = String(payload.clientId || appointment?.clientId || payment.clientId || "");
+    const updated = this.updateInCenter(this.paymentsRepository, paymentId, (current) => ({
+      ...current,
+      appointmentId,
+      clientId,
+      walkInName: clientId ? "" : current.walkInName || "",
+      linkedAt: nowIso(),
+      updatedAt: nowIso()
+    }), session);
+    if (appointment && !["completed", "cancelled", "no_show"].includes(String(appointment.status || ""))) {
+      this.updateInCenter(this.appointmentsRepository, appointment.id, (current) => ({
+        ...current,
+        status: "completed",
+        locked: 1,
+        updatedAt: nowIso()
+      }), session);
+    }
+    return {
+      success: true,
+      payment: updated,
+      suggestions: updated ? this.buildPaymentLinkSuggestions(updated, session) : []
+    };
+  }
+
+  getDataQuality(session = null) {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const paidAppointmentIds = new Set(payments.map((payment) => String(payment.appointmentId || "")).filter(Boolean));
+    const clientsMissingContact = clients.filter((client) => !client.phone && !client.email);
+    const servicesMissingCosts = services.filter((service) => {
+      const hasProductCost = Array.isArray(service.productLinks) && service.productLinks.length > 0;
+      const hasTechnologyCost = Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
+      return !hasProductCost && !hasTechnologyCost;
+    });
+    const appointmentsMissingPayment = appointments.filter((appointment) => {
+      if (["cancelled", "no_show"].includes(String(appointment.status || ""))) return false;
+      if (new Date(appointment.startAt || appointment.createdAt || 0).getTime() > Date.now()) return false;
+      return !paidAppointmentIds.has(String(appointment.id || ""));
+    });
+    const duplicateGroups = this.listClientDuplicateGroups(session);
+    const contactScore = clients.length ? Math.round(((clients.length - clientsMissingContact.length) / clients.length) * 100) : 100;
+    const costScore = services.length ? Math.round(((services.length - servicesMissingCosts.length) / services.length) * 100) : 100;
+    const paymentScore = appointments.length ? Math.round(((appointments.length - appointmentsMissingPayment.length) / appointments.length) * 100) : 100;
+    const duplicatePenalty = Math.min(20, duplicateGroups.length * 3);
+    const score = Math.max(0, Math.round(((contactScore + costScore + paymentScore) / 3) - duplicatePenalty));
+    return {
+      score,
+      status: score >= 82 ? "buono" : score >= 60 ? "medio" : "basso",
+      metrics: {
+        clients: clients.length,
+        clientsMissingContact: clientsMissingContact.length,
+        services: services.length,
+        servicesMissingCosts: servicesMissingCosts.length,
+        appointments: appointments.length,
+        appointmentsMissingPayment: appointmentsMissingPayment.length,
+        duplicateGroups: duplicateGroups.length
+      },
+      alerts: [
+        clientsMissingContact.length ? `${clientsMissingContact.length} clienti senza telefono o email` : "",
+        servicesMissingCosts.length ? `${servicesMissingCosts.length} servizi senza costi configurati` : "",
+        appointmentsMissingPayment.length ? `${appointmentsMissingPayment.length} appuntamenti passati senza pagamento collegato` : "",
+        duplicateGroups.length ? `${duplicateGroups.length} gruppi di possibili duplicati cliente` : ""
+      ].filter(Boolean),
+      samples: {
+        clientsMissingContact: clientsMissingContact.slice(0, 5).map((client) => this.serializeDuplicateClient(client, 0)),
+        servicesMissingCosts: servicesMissingCosts.slice(0, 5).map((service) => ({ id: service.id, name: service.name || "Servizio" })),
+        appointmentsMissingPayment: appointmentsMissingPayment.slice(0, 5).map((appointment) => ({
+          id: appointment.id,
+          clientId: appointment.clientId || "",
+          startAt: appointment.startAt || "",
+          status: appointment.status || ""
+        }))
+      }
+    };
   }
 
   getPaymentsSummary(options = {}, session = null) {
