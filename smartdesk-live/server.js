@@ -829,6 +829,25 @@ app.post("/api/admin/cleanup-test-data", requireSuperAdmin, (req, res) => {
   }
 });
 
+app.post("/api/admin/reset-center-data", requireSuperAdmin, (req, res) => {
+  try {
+    res.json(service.resetCenterOperationalData(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile eseguire reset centro");
+  }
+});
+
+app.get("/api/admin/database-usage", requireSuperAdmin, async (req, res) => {
+  try {
+    res.json(await service.getDatabaseUsage(req.session));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Impossibile leggere uso database"
+    });
+  }
+});
+
 app.use((_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });

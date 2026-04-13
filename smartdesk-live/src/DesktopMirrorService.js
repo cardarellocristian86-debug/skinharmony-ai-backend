@@ -697,6 +697,21 @@ class DesktopMirrorService {
     };
   }
 
+  async getDatabaseUsage(session = null) {
+    if (!this.isSuperAdminSession(session)) {
+      throw new Error("Funzione riservata al super admin.");
+    }
+    if (!this.persistenceAdapter?.getDatabaseUsage) {
+      return {
+        connected: false,
+        source: "json_locale",
+        note: "Postgres non e attivo in questo ambiente."
+      };
+    }
+    const freePlanLimitBytes = 1024 * 1024 * 1024;
+    return this.persistenceAdapter.getDatabaseUsage({ limitBytes: freePlanLimitBytes });
+  }
+
   getTrialPublicConfig() {
     return {
       trialDays: DEFAULT_TRIAL_DAYS,
@@ -805,6 +820,46 @@ class DesktopMirrorService {
       prefix,
       centerId,
       deleted
+    };
+  }
+
+  resetCenterOperationalData(payload = {}, session = null) {
+    if (!this.isSuperAdminSession(session)) {
+      throw new Error("Reset riservato al super admin");
+    }
+    const centerId = cleanText(payload.centerId || "", "", 120);
+    const confirm = cleanText(payload.confirm || "", "", 120);
+    if (!centerId || centerId === DEFAULT_CENTER_ID) {
+      throw new Error("Centro non valido per il reset");
+    }
+    if (confirm !== `RESET-${centerId}`) {
+      throw new Error("Conferma reset non valida");
+    }
+    const repositories = {
+      clients: this.clientsRepository,
+      appointments: this.appointmentsRepository,
+      services: this.servicesRepository,
+      staff: this.staffRepository,
+      shifts: this.shiftsRepository,
+      shiftTemplates: this.shiftTemplatesRepository,
+      resources: this.resourcesRepository,
+      inventory: this.inventoryRepository,
+      inventoryMovements: this.inventoryMovementsRepository,
+      payments: this.paymentsRepository,
+      treatments: this.treatmentsRepository,
+      protocols: this.protocolsRepository,
+      aiMarketingActions: this.aiMarketingActionsRepository,
+      sales: this.salesRepository
+    };
+    const deleted = {};
+    Object.entries(repositories).forEach(([name, repository]) => {
+      deleted[name] = repository.deleteWhere((item) => this.belongsToCenter(item, centerId));
+    });
+    return {
+      success: true,
+      centerId,
+      deleted,
+      remaining: this.getCenterControlStats(centerId)
     };
   }
 
@@ -2545,7 +2600,9 @@ class DesktopMirrorService {
       const amountCents = Number(payment.amountCents || 0);
       const method = String(payment.method || "cash");
       const day = toDateOnly(payment.createdAt);
-      byMethod[method] = (byMethod[method] || 0) + amountCents;
+      byMethod[method] = byMethod[method] || { method, amountCents: 0, count: 0 };
+      byMethod[method].amountCents += amountCents;
+      byMethod[method].count += 1;
       byDay[day] = (byDay[day] || 0) + amountCents;
     });
 
@@ -2557,7 +2614,7 @@ class DesktopMirrorService {
         count: payments.length,
         revenueCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0)
       },
-      byMethod: Object.entries(byMethod).map(([method, amountCents]) => ({ method, amountCents })),
+      byMethod: Object.values(byMethod),
       byDay: Object.entries(byDay)
         .map(([date, amountCents]) => ({ date, amountCents }))
         .sort((a, b) => String(a.date).localeCompare(String(b.date))),
@@ -2574,6 +2631,8 @@ class DesktopMirrorService {
     const amountCents = assertRange(payload.amountCents || payload.amount || 0, "Importo pagamento", { min: 1, max: 100000000 });
     const walkInName = cleanText(payload.walkInName || "", "", 180);
     assertValid(Boolean(payload.clientId || walkInName || payload.appointmentId), "Cliente o appuntamento pagamento obbligatorio");
+    const createdAt = payload.createdAt || nowIso();
+    assertDateTime(createdAt, "Data pagamento");
     const payment = {
       id: makeId("pay"),
       idempotencyKey: idempotencyKey(payload),
@@ -2586,7 +2645,7 @@ class DesktopMirrorService {
       method: cleanText(payload.method || "cash", "cash", 40),
       description: cleanText(payload.description || payload.note || "", "", 1000),
       note: cleanText(payload.note || payload.description || "", "", 1000),
-      createdAt: nowIso()
+      createdAt
     };
     this.paymentsRepository.create(payment);
     return payment;
