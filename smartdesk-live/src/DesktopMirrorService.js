@@ -2793,7 +2793,16 @@ class DesktopMirrorService {
     const servicesMissingCosts = services.filter((service) => {
       const hasProductCost = Array.isArray(service.productLinks) && service.productLinks.length > 0;
       const hasTechnologyCost = Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
-      return !hasProductCost && !hasTechnologyCost;
+      const hasEstimatedCost = Number(service.estimatedProductCostCents || service.productCostCents || 0) > 0
+        || Number(service.technologyCostCents || 0) > 0;
+      return !hasProductCost && !hasTechnologyCost && !hasEstimatedCost;
+    });
+    const servicesWithEstimatedCosts = services.filter((service) => {
+      const hasProductCost = Array.isArray(service.productLinks) && service.productLinks.length > 0;
+      const hasTechnologyCost = Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
+      const hasEstimatedCost = Number(service.estimatedProductCostCents || service.productCostCents || 0) > 0
+        || Number(service.technologyCostCents || 0) > 0;
+      return !hasProductCost && !hasTechnologyCost && hasEstimatedCost;
     });
     const appointmentsMissingPayment = appointments.filter((appointment) => {
       if (["cancelled", "no_show"].includes(String(appointment.status || ""))) return false;
@@ -2817,6 +2826,7 @@ class DesktopMirrorService {
         clientsMissingContact: clientsMissingContact.length,
         services: services.length,
         servicesMissingCosts: servicesMissingCosts.length,
+        servicesWithEstimatedCosts: servicesWithEstimatedCosts.length,
         appointments: appointments.length,
         appointmentsMissingPayment: appointmentsMissingPayment.length,
         payments: payments.length,
@@ -2826,6 +2836,7 @@ class DesktopMirrorService {
       alerts: [
         clientsMissingContact.length ? `${clientsMissingContact.length} clienti senza telefono o email` : "",
         servicesMissingCosts.length ? `${servicesMissingCosts.length} servizi senza costi configurati` : "",
+        servicesWithEstimatedCosts.length ? `${servicesWithEstimatedCosts.length} servizi con costi stimati non collegati a prodotti o tecnologie` : "",
         appointmentsMissingPayment.length ? `${appointmentsMissingPayment.length} appuntamenti passati senza pagamento collegato` : "",
         unlinkedPayments.length ? `${unlinkedPayments.length} pagamenti da collegare` : "",
         duplicateGroups.length ? `${duplicateGroups.length} gruppi di possibili duplicati cliente` : ""
@@ -2833,6 +2844,7 @@ class DesktopMirrorService {
       samples: {
         clientsMissingContact: clientsMissingContact.slice(0, 5).map((client) => this.serializeDuplicateClient(client, 0)),
         servicesMissingCosts: servicesMissingCosts.slice(0, 5).map((service) => ({ id: service.id, name: service.name || "Servizio" })),
+        servicesWithEstimatedCosts: servicesWithEstimatedCosts.slice(0, 5).map((service) => ({ id: service.id, name: service.name || "Servizio" })),
         appointmentsMissingPayment: appointmentsMissingPayment.slice(0, 5).map((appointment) => ({
           id: appointment.id,
           clientId: appointment.clientId || "",
