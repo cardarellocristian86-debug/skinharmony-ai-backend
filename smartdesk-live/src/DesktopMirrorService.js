@@ -3632,6 +3632,25 @@ class DesktopMirrorService {
             : daysSinceLastVisit >= 30
               ? "media"
               : "bassa";
+      const pattern = segment === "perso"
+        ? "cliente a rischio perdita"
+        : segment === "a_rischio"
+          ? "cliente in calo"
+          : daysSinceLastVisit <= Math.max(21, averageFrequencyDays + 7)
+            ? "cliente abituale"
+            : "cliente saltuario";
+      const risk = !hasMarketingConsent
+        ? "medio"
+        : segment === "perso" || daysSinceLastVisit >= Math.max(90, averageFrequencyDays * 2)
+          ? "alto"
+          : segment === "a_rischio" || daysSinceLastVisit >= Math.max(45, averageFrequencyDays + 15)
+            ? "medio"
+            : "basso";
+      const operatingDecision = priority === "alta"
+        ? "contattare oggi"
+        : priority === "media"
+          ? "contattare entro 3 giorni"
+          : "recall non urgente";
       const firstName = String(client.firstName || client.name || "Cliente").trim().split(/\s+/)[0] || "Cliente";
       const motive = !hasMarketingConsent
         ? "Consenso marketing non confermato: contatto solo se autorizzato."
@@ -3655,6 +3674,31 @@ class DesktopMirrorService {
           : segment === "a_rischio"
             ? "Recall mirato sul servizio abituale e proposta appuntamento entro 10 giorni."
             : "Messaggio leggero di mantenimento e controllo prossimo appuntamento.";
+      const clearReason = segment === "perso"
+        ? "quasi perso"
+        : segment === "a_rischio"
+          ? "cliente fuori ritmo"
+          : totalSpentCents >= 50000
+            ? "cliente di valore da presidiare"
+            : "mantenimento relazione";
+      const safeAction = !hasMarketingConsent
+        ? "Verifica consenso, poi chiama o scrivi in modo autorizzato."
+        : `Proponi un appuntamento semplice legato a ${lastService?.name || "servizio abituale"}.`;
+      const upsellAction = !hasMarketingConsent
+        ? "Dopo consenso, proponi check gratuito o consulenza breve."
+        : signal.push
+          ? `Abbina ${signal.push}.`
+          : "Abbina un servizio premium coerente con lo storico cliente.";
+      const lossIfIgnoredCents = risk === "alto"
+        ? Math.max(estimatedRecallValueCents, Math.round(totalSpentCents * 0.2))
+        : risk === "medio"
+          ? Math.max(estimatedRecallValueCents, Math.round(totalSpentCents * 0.1))
+          : Math.max(0, Math.round(estimatedRecallValueCents * 0.5));
+      const conclusion = priority === "alta"
+        ? `${displayName} va gestita oggi.`
+        : priority === "media"
+          ? `${displayName} va recuperata entro 3 giorni.`
+          : `${displayName} non è urgente, ma va mantenuta.`;
       const greeting = usableFirstName(displayName) ? `Ciao ${usableFirstName(displayName)}` : "Ciao";
       const timing = daysSinceLastVisit >= 90
         ? `sono passati ${daysSinceLastVisit} giorni dall'ultimo appuntamento`
@@ -3668,8 +3712,16 @@ class DesktopMirrorService {
         totalSpentCents,
         averageTicketCents,
         estimatedRecallValueCents,
+        lossIfIgnoredCents,
         segment,
+        pattern,
         priority,
+        risk,
+        operatingDecision,
+        clearReason,
+        safeAction,
+        upsellAction,
+        conclusion,
         urgencyReason,
         recommendedAction,
         motive: hasMarketingConsent ? signal.motive : motive,
@@ -3767,11 +3819,19 @@ class DesktopMirrorService {
         type: "recall",
         status: "to_approve",
         priority: suggestion.priority || "media",
+        risk: suggestion.risk || "medio",
+        pattern: suggestion.pattern || "",
+        operatingDecision: suggestion.operatingDecision || "",
+        clearReason: suggestion.clearReason || "",
+        safeAction: suggestion.safeAction || "",
+        upsellAction: suggestion.upsellAction || "",
+        conclusion: suggestion.conclusion || "",
         segment: suggestion.segment || "",
         reason: suggestion.motive || "Richiamo suggerito da AI Gold.",
         urgencyReason: suggestion.urgencyReason || "",
         recommendedAction: suggestion.recommendedAction || "",
         estimatedValueCents: Number(suggestion.estimatedRecallValueCents || 0),
+        lossIfIgnoredCents: Number(suggestion.lossIfIgnoredCents || 0),
         suggestedMessage: suggestion.message || "",
         source: "ai_gold_marketing",
         aiProvider: "rules",
@@ -3868,6 +3928,19 @@ class DesktopMirrorService {
         : status === "LOW_MARGIN"
           ? "Prima ottimizza durata o costo materiale; poi decidi se spingere il servizio."
           : "Usalo come servizio benchmark per costruire offerte sostenibili.";
+      const clearConclusion = status === "LOSS"
+        ? "stai perdendo soldi"
+        : status === "LOW_MARGIN"
+          ? "margine migliorabile"
+          : "stai guadagnando bene";
+      const economicGapCents = status === "LOSS"
+        ? Math.abs(Number(service.profitCents || 0))
+        : estimatedCorrectionCents * executions;
+      const operatingAction = status === "LOSS"
+        ? "aumenta prezzo o riduci subito costo/durata"
+        : status === "LOW_MARGIN"
+          ? "riduci costo prodotto o aumenta leggermente il prezzo"
+          : "spingi questo servizio";
       return {
         id: service.id,
         name: service.name || "Servizio",
@@ -3880,6 +3953,9 @@ class DesktopMirrorService {
         averageCostCents,
         targetMargin,
         estimatedCorrectionCents,
+        economicGapCents,
+        clearConclusion,
+        operatingAction,
         nextAction,
         status,
         suggestion
