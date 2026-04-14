@@ -3898,6 +3898,279 @@ class DesktopMirrorService {
     return updated;
   }
 
+  getAiGoldDecisionCenter(options = {}, session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "Dashboard decisionale disponibile solo con piano Gold.",
+        sections: []
+      };
+    }
+    const startDate = String(options.startDate || "");
+    const endDate = String(options.endDate || "");
+    const marketing = this.getAiGoldMarketing(session);
+    const profitability = this.getAiGoldProfitability({ startDate, endDate }, session);
+    const nowDate = toDateOnly(nowIso());
+    const currentMonthStart = `${nowDate.slice(0, 7)}-01`;
+    const operational = this.getOperationalReport({
+      startDate: startDate || currentMonthStart,
+      endDate: endDate || toDateOnly(nowIso())
+    }, session);
+    const inventory = this.getInventoryOverview(session);
+    const dataQuality = this.getDataQuality(session);
+    const shifts = this.filterByCenter(this.shiftsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const resources = this.filterByCenter(this.resourcesRepository.list(), session);
+    const treatments = this.filterByCenter(this.treatmentsRepository.list(), session);
+    const protocols = this.listProtocols("", session);
+    const nextSeven = new Date(`${nowDate}T00:00:00`);
+    nextSeven.setDate(nextSeven.getDate() + 7);
+    const nextSevenDate = toDateOnly(nextSeven.toISOString());
+    const upcomingAppointments = appointments.filter((item) => {
+      const date = toDateOnly(item.startAt || item.createdAt);
+      return date >= nowDate && date <= nextSevenDate && !["cancelled", "no_show"].includes(String(item.status || ""));
+    });
+    const upcomingByDay = new Map();
+    upcomingAppointments.forEach((appointment) => {
+      const date = toDateOnly(appointment.startAt || appointment.createdAt);
+      upcomingByDay.set(date, (upcomingByDay.get(date) || 0) + 1);
+    });
+    const weakestUpcomingDay = Array.from(upcomingByDay.entries())
+      .sort((a, b) => Number(a[1]) - Number(b[1]))[0];
+    const staffLoad = new Map();
+    upcomingAppointments.forEach((appointment) => {
+      const staffId = String(appointment.staffId || "unassigned");
+      const row = staffLoad.get(staffId) || {
+        staffId,
+        name: appointment.staffName || "Operatore libero",
+        appointments: 0
+      };
+      row.appointments += 1;
+      staffLoad.set(staffId, row);
+    });
+    const leastLoadedOperator = Array.from(staffLoad.values())
+      .sort((a, b) => Number(a.appointments || 0) - Number(b.appointments || 0))[0];
+    const focusClient = marketing.suggestions?.[0] || null;
+    const marginAlert = profitability.suggestions?.find((item) => item.status !== "HEALTHY") || null;
+    const bestService = profitability.suggestions?.slice().sort((a, b) => Number(b.marginPercent || 0) - Number(a.marginPercent || 0))[0] || null;
+    const lowTechnology = (profitability.technologies || []).find((item) => Number(item.totalUses || 0) <= 2 || item.status !== "HEALTHY") || null;
+    const lowStock = inventory.lowStock?.[0] || null;
+    const topOperator = operational.topOperators?.[0] || null;
+    const weakOperator = operational.topOperators?.slice().reverse()[0] || leastLoadedOperator || null;
+    const topClient = operational.topClientsBySpend?.[0] || null;
+    const membershipWarning = topClient && focusClient && String(topClient.clientId || "") === String(focusClient.clientId || "")
+      ? topClient
+      : null;
+    const sections = [
+      {
+        key: "daily",
+        title: "Priorità del giorno",
+        items: [
+          focusClient ? {
+            id: `client-${focusClient.clientId}`,
+            level: focusClient.priority === "alta" ? "critical" : "warning",
+            area: "clienti",
+            conclusion: focusClient.conclusion || `${focusClient.name} va seguito.`,
+            reason: `${focusClient.clearReason || "cliente da presidiare"} · ultima visita ${focusClient.daysSinceLastVisit} gg · frequenza ${focusClient.averageFrequencyDays} gg`,
+            impactCents: Number(focusClient.estimatedRecallValueCents || 0),
+            riskCents: Number(focusClient.lossIfIgnoredCents || 0),
+            action: focusClient.operatingDecision || "contattare entro 3 giorni",
+            button: "Prepara messaggio",
+            target: "marketing",
+            clientId: focusClient.clientId
+          } : null,
+          weakestUpcomingDay ? {
+            id: `agenda-${weakestUpcomingDay[0]}`,
+            level: Number(weakestUpcomingDay[1]) <= 2 ? "warning" : "info",
+            area: "agenda",
+            conclusion: `Giornata scarica: ${weakestUpcomingDay[0]}`,
+            reason: `${weakestUpcomingDay[1]} appuntamenti nei prossimi 7 giorni: usa recall mirati per riempire i buchi.`,
+            impactCents: Number(focusClient?.estimatedRecallValueCents || 0),
+            riskCents: 0,
+            action: "riempi buco agenda",
+            button: "Apri agenda",
+            target: "agenda"
+          } : null,
+          dataQuality.metrics?.unlinkedPayments ? {
+            id: "cash-unlinked",
+            level: "warning",
+            area: "cassa",
+            conclusion: `${dataQuality.metrics.unlinkedPayments} pagamenti da collegare`,
+            reason: "La cassa incassa, ma alcuni movimenti non sono collegati a cliente o appuntamento.",
+            impactCents: 0,
+            riskCents: 0,
+            action: "collega pagamenti",
+            button: "Apri cassa",
+            target: "cashdesk"
+          } : null
+        ].filter(Boolean)
+      },
+      {
+        key: "profitability",
+        title: "Redditività reale",
+        items: [
+          marginAlert ? {
+            id: `service-${marginAlert.id}`,
+            level: marginAlert.status === "LOSS" ? "critical" : "warning",
+            area: "servizi",
+            conclusion: `${marginAlert.name}: ${marginAlert.clearConclusion}`,
+            reason: `Incasso medio ${euro(Number(marginAlert.averageRevenueCents || 0))} · costo medio ${euro(Number(marginAlert.averageCostCents || 0))} · margine ${marginAlert.marginPercent}%`,
+            impactCents: Number(marginAlert.economicGapCents || 0),
+            riskCents: Number(marginAlert.economicGapCents || 0),
+            action: marginAlert.operatingAction || "controlla costo servizio",
+            button: "Apri servizi",
+            target: "services"
+          } : null,
+          bestService ? {
+            id: `best-service-${bestService.id}`,
+            level: "success",
+            area: "servizi",
+            conclusion: `${bestService.name}: servizio da spingere`,
+            reason: `Margine ${bestService.marginPercent}%: usa questo servizio come riferimento commerciale.`,
+            impactCents: Number(bestService.averageRevenueCents || 0),
+            riskCents: 0,
+            action: "spingi questo servizio",
+            button: "Apri marketing",
+            target: "marketing"
+          } : null
+        ].filter(Boolean)
+      },
+      {
+        key: "performance",
+        title: "Performance centro",
+        items: [
+          topOperator ? {
+            id: `operator-top-${topOperator.staffId}`,
+            level: "success",
+            area: "operatori",
+            conclusion: `${topOperator.name}: operatore forte nel periodo`,
+            reason: `${topOperator.appointments} appuntamenti · ${topOperator.completed} completati · ${euro(Number(topOperator.revenueCents || 0))} generati.`,
+            impactCents: Number(topOperator.revenueCents || 0),
+            riskCents: 0,
+            action: "usa come benchmark operativo",
+            button: "Apri turni",
+            target: "shifts"
+          } : null,
+          weakOperator && topOperator && String(weakOperator.staffId || "") !== String(topOperator.staffId || "") ? {
+            id: `operator-weak-${weakOperator.staffId}`,
+            level: "warning",
+            area: "operatori",
+            conclusion: `${weakOperator.name}: saturazione da controllare`,
+            reason: `${weakOperator.appointments || 0} appuntamenti nel periodo: verifica agenda, servizi assegnati e continuità.`,
+            impactCents: 0,
+            riskCents: 0,
+            action: "verifica operatore",
+            button: "Apri turni",
+            target: "shifts"
+          } : null
+        ].filter(Boolean)
+      },
+      {
+        key: "hidden",
+        title: "Opportunità nascoste",
+        items: [
+          lowTechnology ? {
+            id: `tech-${lowTechnology.id}`,
+            level: "warning",
+            area: "tecnologie",
+            conclusion: `${lowTechnology.name}: tecnologia sottoutilizzata o poco redditizia`,
+            reason: `${lowTechnology.totalUses || 0} utilizzi · ricavi ${euro(Number(lowTechnology.revenueCents || 0))} · margine ${lowTechnology.marginPercent || 0}%.`,
+            impactCents: Number(lowTechnology.monthlyCostCents || 0),
+            riskCents: Number(lowTechnology.monthlyCostCents || 0),
+            action: "promuovi tecnologia coerente",
+            button: "Apri redditività",
+            target: "profitability"
+          } : null,
+          lowStock ? {
+            id: `stock-${lowStock.id}`,
+            level: "warning",
+            area: "magazzino",
+            conclusion: `${lowStock.name || "Prodotto"} sotto controllo`,
+            reason: `Giacenza ${lowStock.quantity || 0}, soglia ${lowStock.minQuantity || 0}: evita stop operativi su servizi collegati.`,
+            impactCents: Number(lowStock.costCents || 0),
+            riskCents: 0,
+            action: "verifica stock",
+            button: "Apri magazzino",
+            target: "inventory"
+          } : null,
+          membershipWarning ? {
+            id: `membership-${membershipWarning.clientId}`,
+            level: "success",
+            area: "membership",
+            conclusion: `${membershipWarning.name}: cliente alto valore da presidiare`,
+            reason: `${euro(Number(membershipWarning.amountCents || 0))} di storico nel periodo: non trattarlo come cliente normale.`,
+            impactCents: Number(membershipWarning.amountCents || 0),
+            riskCents: Number(focusClient?.lossIfIgnoredCents || 0),
+            action: "proponi percorso o upgrade",
+            button: "Apri cliente",
+            target: "client",
+            clientId: membershipWarning.clientId
+          } : null
+        ].filter(Boolean)
+      },
+      {
+        key: "actions",
+        title: "Azioni immediate",
+        items: [
+          {
+            id: "action-marketing",
+            level: marketing.suggestions?.length ? "critical" : "info",
+            area: "marketing",
+            conclusion: `${marketing.suggestions?.length || 0} clienti da leggere con priorità`,
+            reason: "Gold ordina recall, rischio perdita e valore economico prima di far partire il messaggio.",
+            impactCents: (marketing.suggestions || []).slice(0, 5).reduce((sum, item) => sum + Number(item.estimatedRecallValueCents || 0), 0),
+            riskCents: (marketing.suggestions || []).slice(0, 5).reduce((sum, item) => sum + Number(item.lossIfIgnoredCents || 0), 0),
+            action: "lavora la lista recall",
+            button: "Genera azioni",
+            target: "autopilot"
+          },
+          {
+            id: "action-data",
+            level: dataQuality.status === "basso" ? "warning" : "info",
+            area: "qualità dati",
+            conclusion: `Qualità dati ${dataQuality.score}%`,
+            reason: dataQuality.alerts?.[0] || "Dati sufficienti per lettura operativa.",
+            impactCents: 0,
+            riskCents: 0,
+            action: "correggi dati sporchi quando rallentano l'analisi",
+            button: "Apri clienti",
+            target: "clients"
+          }
+        ]
+      }
+    ].map((section) => ({
+      ...section,
+      items: section.items.slice(0, 4)
+    }));
+    const totalInsights = sections.reduce((sum, section) => sum + section.items.length, 0);
+    return {
+      goldEnabled: true,
+      generatedAt: nowIso(),
+      summary: {
+        totalInsights,
+        modulesConnected: [
+          "agenda",
+          "clienti",
+          "servizi",
+          "cassa",
+          "magazzino",
+          "turni",
+          "trattamenti",
+          "protocolli",
+          "redditività",
+          "operatori",
+          "membership",
+          "AI cliente"
+        ],
+        treatments: treatments.length,
+        protocols: protocols.length,
+        technologies: resources.length
+      },
+      sections
+    };
+  }
+
   getAiGoldProfitability(options = {}, session = null) {
     this.assertCanOperate(session);
     const goldEnabled = this.hasGoldIntelligence(session);

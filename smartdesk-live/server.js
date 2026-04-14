@@ -783,6 +783,13 @@ app.get("/api/ai-gold/profitability", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
+app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
+  res.json(service.getAiGoldDecisionCenter({
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.session));
+});
+
 app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
   try {
     res.json(await assistantService.aiGoldAsk(req.body || {}, req.session));
