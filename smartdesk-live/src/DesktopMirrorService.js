@@ -3448,7 +3448,14 @@ class DesktopMirrorService {
     const serviceRows = Array.from(serviceMap.values()).map((item) => {
       const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
       const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
-      return { ...item, marginPercent, status };
+      const executions = Number(item.executions || 0);
+      return {
+        ...item,
+        averageRevenueCents: executions ? Math.round(Number(item.revenueCents || 0) / executions) : 0,
+        averageCostCents: executions ? Math.round(Number(item.costCents || 0) / executions) : 0,
+        marginPercent,
+        status
+      };
     }).sort((a, b) => a.marginPercent - b.marginPercent);
     const productRows = Array.from(productMap.values()).map((item) => {
       const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
@@ -3614,7 +3621,12 @@ class DesktopMirrorService {
         .length;
       const lastService = lastAppointment ? serviceById.get(String(lastAppointment.serviceId || "")) : null;
       const averageTicketCents = clientPaymentsCount ? Math.round(totalSpentCents / clientPaymentsCount) : Number(lastService?.priceCents || 0);
-      const estimatedRecallValueCents = Math.max(averageTicketCents || 0, Number(lastService?.priceCents || 0));
+      const referenceValueCents = Math.max(averageTicketCents || 0, Number(lastService?.priceCents || 0));
+      const valueSource = clientPaymentsCount
+        ? "ticket_medio_reale"
+        : Number(lastService?.priceCents || 0) > 0
+          ? "prezzo_ultimo_servizio"
+          : "dato_non_disponibile";
       const hasMarketingConsent = Boolean(client.marketingConsent);
       const segment = totalSpentCents >= 50000
         ? "top_cliente"
@@ -3689,11 +3701,6 @@ class DesktopMirrorService {
         : signal.push
           ? `Abbina ${signal.push}.`
           : "Abbina un servizio premium coerente con lo storico cliente.";
-      const lossIfIgnoredCents = risk === "alto"
-        ? Math.max(estimatedRecallValueCents, Math.round(totalSpentCents * 0.2))
-        : risk === "medio"
-          ? Math.max(estimatedRecallValueCents, Math.round(totalSpentCents * 0.1))
-          : Math.max(0, Math.round(estimatedRecallValueCents * 0.5));
       const conclusion = priority === "alta"
         ? `${displayName} va gestita oggi.`
         : priority === "media"
@@ -3711,8 +3718,10 @@ class DesktopMirrorService {
         averageFrequencyDays,
         totalSpentCents,
         averageTicketCents,
-        estimatedRecallValueCents,
-        lossIfIgnoredCents,
+        referenceValueCents,
+        valueSource,
+        estimatedRecallValueCents: referenceValueCents,
+        lossIfIgnoredCents: 0,
         segment,
         pattern,
         priority,
@@ -3728,6 +3737,11 @@ class DesktopMirrorService {
         lastServiceName: lastService?.name || "",
         hasMarketingConsent,
         suggestedPush: signal.push,
+        valueLabel: valueSource === "dato_non_disponibile"
+          ? "Valore economico non disponibile: mancano incassi o prezzo ultimo servizio."
+          : valueSource === "ticket_medio_reale"
+            ? `Riferimento economico: ticket medio reale ${euro(referenceValueCents)}.`
+            : `Riferimento economico: prezzo ultimo servizio ${euro(referenceValueCents)}.`,
         message: hasMarketingConsent
           ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: così controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
@@ -3831,7 +3845,10 @@ class DesktopMirrorService {
         urgencyReason: suggestion.urgencyReason || "",
         recommendedAction: suggestion.recommendedAction || "",
         estimatedValueCents: Number(suggestion.estimatedRecallValueCents || 0),
-        lossIfIgnoredCents: Number(suggestion.lossIfIgnoredCents || 0),
+        referenceValueCents: Number(suggestion.referenceValueCents || suggestion.estimatedRecallValueCents || 0),
+        valueSource: suggestion.valueSource || "",
+        valueLabel: suggestion.valueLabel || "",
+        lossIfIgnoredCents: 0,
         suggestedMessage: suggestion.message || "",
         source: "ai_gold_marketing",
         aiProvider: "rules",
@@ -3973,8 +3990,8 @@ class DesktopMirrorService {
             area: "clienti",
             conclusion: focusClient.conclusion || `${focusClient.name} va seguito.`,
             reason: `${focusClient.clearReason || "cliente da presidiare"} · ultima visita ${focusClient.daysSinceLastVisit} gg · frequenza ${focusClient.averageFrequencyDays} gg`,
-            impactCents: Number(focusClient.estimatedRecallValueCents || 0),
-            riskCents: Number(focusClient.lossIfIgnoredCents || 0),
+            impactCents: Number(focusClient.referenceValueCents || focusClient.estimatedRecallValueCents || 0),
+            riskCents: 0,
             action: focusClient.operatingDecision || "contattare entro 3 giorni",
             button: "Prepara messaggio",
             target: "marketing",
@@ -3986,7 +4003,7 @@ class DesktopMirrorService {
             area: "agenda",
             conclusion: `Giornata scarica: ${weakestUpcomingDay[0]}`,
             reason: `${weakestUpcomingDay[1]} appuntamenti nei prossimi 7 giorni: usa recall mirati per riempire i buchi.`,
-            impactCents: Number(focusClient?.estimatedRecallValueCents || 0),
+            impactCents: 0,
             riskCents: 0,
             action: "riempi buco agenda",
             button: "Apri agenda",
@@ -4101,7 +4118,7 @@ class DesktopMirrorService {
             conclusion: `${membershipWarning.name}: cliente alto valore da presidiare`,
             reason: `${euro(Number(membershipWarning.amountCents || 0))} di storico nel periodo: non trattarlo come cliente normale.`,
             impactCents: Number(membershipWarning.amountCents || 0),
-            riskCents: Number(focusClient?.lossIfIgnoredCents || 0),
+            riskCents: 0,
             action: "proponi percorso o upgrade",
             button: "Apri cliente",
             target: "client",
@@ -4118,9 +4135,9 @@ class DesktopMirrorService {
             level: marketing.suggestions?.length ? "critical" : "info",
             area: "marketing",
             conclusion: `${marketing.suggestions?.length || 0} clienti da leggere con priorità`,
-            reason: "Gold ordina recall, rischio perdita e valore economico prima di far partire il messaggio.",
-            impactCents: (marketing.suggestions || []).slice(0, 5).reduce((sum, item) => sum + Number(item.estimatedRecallValueCents || 0), 0),
-            riskCents: (marketing.suggestions || []).slice(0, 5).reduce((sum, item) => sum + Number(item.lossIfIgnoredCents || 0), 0),
+            reason: "Gold ordina recall, rischio operativo e riferimenti economici reali già presenti prima di far partire il messaggio.",
+            impactCents: 0,
+            riskCents: 0,
             action: "lavora la lista recall",
             button: "Genera azioni",
             target: "autopilot"
@@ -4191,15 +4208,12 @@ class DesktopMirrorService {
           ? "Margine basso: controlla durata reale e prodotti usati prima di spingere il servizio."
           : "Servizio sano: puoi mantenerlo o usarlo come riferimento commerciale.";
       const executions = Number(service.executions || 0);
-      const averageRevenueCents = executions ? Math.round(Number(service.revenueCents || 0) / executions) : 0;
-      const averageCostCents = executions ? Math.round(Number(service.costCents || 0) / executions) : 0;
-      const targetMargin = 45;
-      const targetPriceCents = averageCostCents > 0 ? Math.ceil(averageCostCents / (1 - targetMargin / 100)) : 0;
-      const estimatedCorrectionCents = Math.max(0, targetPriceCents - averageRevenueCents);
+      const averageRevenueCents = Number(service.averageRevenueCents || 0);
+      const averageCostCents = Number(service.averageCostCents || 0);
       const nextAction = status === "LOSS"
-        ? "Ricalcola prezzo minimo, durata reale e consumo prodotto prima di proporlo ancora."
+        ? "Controlla il dato nel modulo servizi: prezzo, durata reale e consumo prodotto."
         : status === "LOW_MARGIN"
-          ? "Prima ottimizza durata o costo materiale; poi decidi se spingere il servizio."
+          ? "Verifica costi inseriti e valuta se il servizio va spinto o corretto."
           : "Usalo come servizio benchmark per costruire offerte sostenibili.";
       const clearConclusion = status === "LOSS"
         ? "stai perdendo soldi"
@@ -4208,11 +4222,11 @@ class DesktopMirrorService {
           : "stai guadagnando bene";
       const economicGapCents = status === "LOSS"
         ? Math.abs(Number(service.profitCents || 0))
-        : estimatedCorrectionCents * executions;
+        : 0;
       const operatingAction = status === "LOSS"
-        ? "aumenta prezzo o riduci subito costo/durata"
+        ? "verifica prezzo, costo e durata nel servizio"
         : status === "LOW_MARGIN"
-          ? "riduci costo prodotto o aumenta leggermente il prezzo"
+          ? "controlla costo prodotto e durata reale"
           : "spingi questo servizio";
       return {
         id: service.id,
@@ -4224,8 +4238,6 @@ class DesktopMirrorService {
         marginPercent: Number(service.marginPercent || 0),
         averageRevenueCents,
         averageCostCents,
-        targetMargin,
-        estimatedCorrectionCents,
         economicGapCents,
         clearConclusion,
         operatingAction,
