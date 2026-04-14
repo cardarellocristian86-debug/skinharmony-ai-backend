@@ -100,6 +100,13 @@ function addDaysIso(value, days) {
   return next.toISOString();
 }
 
+function addMonthsIso(value, months) {
+  const base = new Date(value || nowIso());
+  const next = new Date(base);
+  next.setMonth(next.getMonth() + Number(months || 0));
+  return next.toISOString();
+}
+
 function addMinutesIso(value, minutes) {
   const base = new Date(value || nowIso());
   const next = new Date(base.getTime() + Number(minutes || 0) * 60000);
@@ -1459,6 +1466,107 @@ class DesktopMirrorService {
       success: true,
       message: `Richiesta cambio piano a ${requestedPlan} inviata a SkinHarmony.`,
       user: this.serializeUserSummary(next || current)
+    };
+  }
+
+  getSmartDeskPlanFromWooCommerceOrder(order = {}) {
+    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+    const candidates = lineItems.map((item) => {
+      const sku = normalizeText(item.sku || "");
+      const name = normalizeText(item.name || "");
+      return `${sku} ${name}`;
+    });
+    const text = candidates.join(" ");
+    const plan = text.includes("gold")
+      ? "gold"
+      : text.includes("silver")
+        ? "silver"
+        : text.includes("base")
+          ? "base"
+          : "";
+    const cycle = text.includes("year") || text.includes("annuale")
+      ? "yearly"
+      : text.includes("month") || text.includes("mensile")
+        ? "monthly"
+        : "";
+    return { plan, cycle };
+  }
+
+  activateSubscriptionFromWooCommerceOrder(order = {}) {
+    const orderStatus = String(order.status || "").toLowerCase();
+    if (!["processing", "completed"].includes(orderStatus)) {
+      return {
+        success: true,
+        ignored: true,
+        reason: `Ordine WooCommerce non pagato o non completato: ${orderStatus || "stato mancante"}`,
+        orderId: order.id || ""
+      };
+    }
+    const { plan, cycle } = this.getSmartDeskPlanFromWooCommerceOrder(order);
+    if (!plan) {
+      return {
+        success: true,
+        ignored: true,
+        reason: "Ordine pagato ma nessun piano Smart Desk riconosciuto",
+        orderId: order.id || ""
+      };
+    }
+    const email = String(order.billing?.email || order.customer?.email || "").trim().toLowerCase();
+    if (!email) {
+      throw new Error("Email cliente WooCommerce mancante");
+    }
+    const user = this.usersRepository.list().find((item) =>
+      String(item.contactEmail || "").trim().toLowerCase() === email ||
+      String(item.username || "").trim().toLowerCase() === email
+    );
+    if (!user) {
+      return {
+        success: true,
+        matched: false,
+        action: "pending_manual_activation",
+        message: "Pagamento ricevuto, ma nessun account Smart Desk trovato con la stessa email.",
+        orderId: order.id || "",
+        email,
+        plan,
+        cycle: cycle || "unknown"
+      };
+    }
+    const now = nowIso();
+    const subscriptionEndsAt = cycle === "yearly"
+      ? addMonthsIso(now, 12)
+      : cycle === "monthly"
+        ? addMonthsIso(now, 1)
+        : user.subscriptionEndsAt || "";
+    const total = Number(order.total || 0);
+    const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
+      ...current,
+      active: true,
+      planType: "active",
+      subscriptionPlan: plan,
+      requestedSubscriptionPlan: "",
+      subscriptionChangeRequestedAt: "",
+      subscriptionChangeStatus: "",
+      paymentStatus: "paid",
+      accountStatus: "active",
+      activatedAt: current.activatedAt || now,
+      subscriptionBillingCycle: cycle || current.subscriptionBillingCycle || "",
+      subscriptionStartedAt: current.subscriptionStartedAt || now,
+      subscriptionEndsAt,
+      subscriptionSource: "woocommerce",
+      subscriptionLastOrderId: String(order.id || ""),
+      subscriptionLastPaymentAt: now,
+      subscriptionLastAmountCents: Math.round(total * 100),
+      updatedAt: now
+    }));
+    return {
+      success: true,
+      matched: true,
+      action: "account_activated",
+      orderId: order.id || "",
+      email,
+      plan,
+      cycle: cycle || "unknown",
+      user: this.serializeUserSummary(next || user)
     };
   }
 

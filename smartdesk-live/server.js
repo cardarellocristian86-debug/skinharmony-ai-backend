@@ -1,5 +1,6 @@
 const express = require("express");
 const path = require("path");
+const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
@@ -254,6 +255,25 @@ function sendBadRequest(res, error, fallback) {
   res.status(400).send(error instanceof Error ? error.message : fallback);
 }
 
+function verifyWooCommerceWebhook(req) {
+  const secret = String(process.env.WOOCOMMERCE_WEBHOOK_SECRET || "").trim();
+  if (!secret) {
+    return { ok: false, code: "missing_secret", message: "WooCommerce webhook secret non configurato" };
+  }
+  const signature = String(req.headers["x-wc-webhook-signature"] || "").trim();
+  if (!signature) {
+    return { ok: false, code: "missing_signature", message: "Firma WooCommerce mancante" };
+  }
+  const rawBody = req.rawBody || "";
+  const expected = crypto.createHmac("sha256", secret).update(rawBody, "utf8").digest("base64");
+  const provided = Buffer.from(signature);
+  const calculated = Buffer.from(expected);
+  if (provided.length !== calculated.length || !crypto.timingSafeEqual(provided, calculated)) {
+    return { ok: false, code: "invalid_signature", message: "Firma WooCommerce non valida" };
+  }
+  return { ok: true };
+}
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
@@ -264,7 +284,12 @@ app.use((req, res, next) => {
   return next();
 });
 
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({
+  limit: "15mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf.toString("utf8");
+  }
+}));
 app.use("/assets", express.static(path.join(publicDir, "assets")));
 app.use("/exports", express.static(path.join(publicDir, "exports")));
 
@@ -396,6 +421,21 @@ app.post("/api/auth/subscription/request-change", requireAuth, (req, res) => {
     res.json(service.requestSubscriptionChange(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare la richiesta abbonamento");
+  }
+});
+
+app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
+  const verification = verifyWooCommerceWebhook(req);
+  if (!verification.ok) {
+    return res.status(401).json({ success: false, ...verification });
+  }
+  try {
+    res.json(service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Impossibile collegare ordine WooCommerce"
+    });
   }
 });
 
