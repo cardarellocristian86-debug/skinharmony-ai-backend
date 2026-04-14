@@ -1909,9 +1909,17 @@ class DesktopMirrorService {
     const staffName = cleanText(payload.staffName || "", "", 120);
     const startTime = cleanText(payload.startTime || "09:00", "09:00", 5);
     const endTime = cleanText(payload.endTime || "18:00", "18:00", 5);
+    const originalStartTime = cleanText(payload.originalStartTime || "", "", 5);
+    const originalEndTime = cleanText(payload.originalEndTime || "", "", 5);
+    const rectifiedStartTime = cleanText(payload.rectifiedStartTime || "", "", 5);
+    const rectifiedEndTime = cleanText(payload.rectifiedEndTime || "", "", 5);
     assertValid(Boolean(payload.staffId || staffName), "Operatore turno obbligatorio");
     assertTime(startTime, "Ora inizio turno");
     assertTime(endTime, "Ora fine turno");
+    if (originalStartTime) assertTime(originalStartTime, "Ora entrata reale");
+    if (originalEndTime) assertTime(originalEndTime, "Ora uscita reale");
+    if (rectifiedStartTime) assertTime(rectifiedStartTime, "Ora entrata rettificata");
+    if (rectifiedEndTime) assertTime(rectifiedEndTime, "Ora uscita rettificata");
     assertValid(minutesFromTime(endTime) > minutesFromTime(startTime), "Ora fine turno deve essere successiva all'inizio");
     const entity = {
       id: payload.id || makeId("shift"),
@@ -1923,7 +1931,17 @@ class DesktopMirrorService {
       date: toDateOnly(payload.date || payload.startDate || nowIso()),
       startTime,
       endTime,
+      originalStartTime,
+      originalEndTime,
+      originalAttendanceStatus: cleanText(payload.originalAttendanceStatus || "", "", 40),
+      rectifiedStartTime,
+      rectifiedEndTime,
+      rectificationReason: cleanText(payload.rectificationReason || "", "", 1000),
+      rectifiedBy: cleanText(payload.rectifiedBy || "", "", 120),
+      rectifiedAt: cleanText(payload.rectifiedAt || "", "", 40),
       attendanceStatus: cleanText(payload.attendanceStatus || "scheduled", "scheduled", 40),
+      attendanceNote: cleanText(payload.attendanceNote || "", "", 1000),
+      confirmedAt: cleanText(payload.confirmedAt || "", "", 40),
       notes: cleanText(payload.notes || "", "", 1000),
       updatedAt: nowIso(),
       createdAt: payload.createdAt || nowIso()
