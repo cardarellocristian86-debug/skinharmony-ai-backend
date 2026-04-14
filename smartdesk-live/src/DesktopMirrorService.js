@@ -3609,7 +3609,12 @@ class DesktopMirrorService {
       const totalSpentCents = payments
         .filter((item) => String(item.clientId || "") === clientId)
         .reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+      const clientPaymentsCount = payments
+        .filter((item) => String(item.clientId || "") === clientId)
+        .length;
       const lastService = lastAppointment ? serviceById.get(String(lastAppointment.serviceId || "")) : null;
+      const averageTicketCents = clientPaymentsCount ? Math.round(totalSpentCents / clientPaymentsCount) : Number(lastService?.priceCents || 0);
+      const estimatedRecallValueCents = Math.max(averageTicketCents || 0, Number(lastService?.priceCents || 0));
       const hasMarketingConsent = Boolean(client.marketingConsent);
       const segment = totalSpentCents >= 50000
         ? "top_cliente"
@@ -3634,6 +3639,22 @@ class DesktopMirrorService {
           ? `Richiamo legato a ${lastService.name}.`
           : "Richiamo di mantenimento per continuità cliente.";
       const signal = serviceSignal(lastService?.name || "", displayName);
+      const urgencyReason = !hasMarketingConsent
+        ? "Prima serve consenso marketing registrato."
+        : segment === "perso"
+          ? `Cliente perso: ${daysSinceLastVisit} giorni senza ritorno.`
+          : segment === "a_rischio"
+            ? `Frequenza reale fuori ritmo: media ${averageFrequencyDays} giorni, ultimo passaggio ${daysSinceLastVisit} giorni fa.`
+            : totalSpentCents >= 50000
+              ? "Cliente ad alto valore: conviene presidiare continuità e proposta."
+              : "Richiamo utile per mantenere continuità.";
+      const recommendedAction = !hasMarketingConsent
+        ? "Apri scheda cliente e registra consenso prima di inviare comunicazioni."
+        : segment === "perso"
+          ? "Contatto personale, proposta semplice e slot comodo entro 7 giorni."
+          : segment === "a_rischio"
+            ? "Recall mirato sul servizio abituale e proposta appuntamento entro 10 giorni."
+            : "Messaggio leggero di mantenimento e controllo prossimo appuntamento.";
       const greeting = usableFirstName(displayName) ? `Ciao ${usableFirstName(displayName)}` : "Ciao";
       const timing = daysSinceLastVisit >= 90
         ? `sono passati ${daysSinceLastVisit} giorni dall'ultimo appuntamento`
@@ -3644,8 +3665,13 @@ class DesktopMirrorService {
         phone: client.phone || "",
         daysSinceLastVisit,
         averageFrequencyDays,
+        totalSpentCents,
+        averageTicketCents,
+        estimatedRecallValueCents,
         segment,
         priority,
+        urgencyReason,
+        recommendedAction,
         motive: hasMarketingConsent ? signal.motive : motive,
         lastServiceName: lastService?.name || "",
         hasMarketingConsent,
@@ -3743,6 +3769,9 @@ class DesktopMirrorService {
         priority: suggestion.priority || "media",
         segment: suggestion.segment || "",
         reason: suggestion.motive || "Richiamo suggerito da AI Gold.",
+        urgencyReason: suggestion.urgencyReason || "",
+        recommendedAction: suggestion.recommendedAction || "",
+        estimatedValueCents: Number(suggestion.estimatedRecallValueCents || 0),
         suggestedMessage: suggestion.message || "",
         source: "ai_gold_marketing",
         aiProvider: "rules",
@@ -3828,14 +3857,30 @@ class DesktopMirrorService {
         : status === "LOW_MARGIN"
           ? "Margine basso: controlla durata reale e prodotti usati prima di spingere il servizio."
           : "Servizio sano: puoi mantenerlo o usarlo come riferimento commerciale.";
+      const executions = Number(service.executions || 0);
+      const averageRevenueCents = executions ? Math.round(Number(service.revenueCents || 0) / executions) : 0;
+      const averageCostCents = executions ? Math.round(Number(service.costCents || 0) / executions) : 0;
+      const targetMargin = 45;
+      const targetPriceCents = averageCostCents > 0 ? Math.ceil(averageCostCents / (1 - targetMargin / 100)) : 0;
+      const estimatedCorrectionCents = Math.max(0, targetPriceCents - averageRevenueCents);
+      const nextAction = status === "LOSS"
+        ? "Ricalcola prezzo minimo, durata reale e consumo prodotto prima di proporlo ancora."
+        : status === "LOW_MARGIN"
+          ? "Prima ottimizza durata o costo materiale; poi decidi se spingere il servizio."
+          : "Usalo come servizio benchmark per costruire offerte sostenibili.";
       return {
         id: service.id,
         name: service.name || "Servizio",
-        executions: Number(service.executions || 0),
+        executions,
         revenueCents: Number(service.revenueCents || 0),
         costCents: Number(service.costCents || 0),
         profitCents: Number(service.profitCents || 0),
         marginPercent: Number(service.marginPercent || 0),
+        averageRevenueCents,
+        averageCostCents,
+        targetMargin,
+        estimatedCorrectionCents,
+        nextAction,
         status,
         suggestion
       };
