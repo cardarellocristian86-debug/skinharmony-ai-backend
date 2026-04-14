@@ -3317,6 +3317,90 @@ class DesktopMirrorService {
     return { path: filePath, format: "html", url: `/exports/${fileName}` };
   }
 
+  getCenterHealth(options = {}, session = null) {
+    const nowDate = toDateOnly(nowIso());
+    const startDate = toDateOnly(options.startDate || `${nowDate.slice(0, 7)}-01`);
+    const endDate = toDateOnly(options.endDate || nowDate);
+    const startMs = new Date(`${startDate}T00:00:00`).getTime();
+    const endMs = new Date(`${endDate}T00:00:00`).getTime();
+    const dayCount = Number.isFinite(startMs) && Number.isFinite(endMs)
+      ? Math.max(1, Math.round((endMs - startMs) / 86400000) + 1)
+      : 30;
+    const monthsEquivalent = Math.max(1, dayCount / 30);
+    const settings = this.getSettings(session);
+    const modelText = `${settings.businessModel || ""} ${settings.centerType || ""}`.toLowerCase();
+    const isBarber = modelText.includes("barber");
+    const thresholds = isBarber
+      ? { under: 200000, fragile: 300000, stable: 400000 }
+      : { under: 250000, fragile: 350000, stable: 500000 };
+    const operational = this.getOperationalReport({ startDate, endDate }, session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const activeOperators = Math.max(1, staff.filter((item) => item.active !== false).length || staff.length || 1);
+    const revenueCents = Number(operational.totals?.revenueCents || 0);
+    const monthlyRevenueCents = Math.round(revenueCents / monthsEquivalent);
+    const revenuePerOperatorCents = Math.round(monthlyRevenueCents / activeOperators);
+    const workingDays = Math.max(1, Math.round(dayCount * 5 / 7));
+    const expectedAppointmentsPerOperatorDay = isBarber ? 8 : 6;
+    const expectedCapacity = Math.max(1, activeOperators * workingDays * expectedAppointmentsPerOperatorDay);
+    const appointments = Number(operational.totals?.appointments || 0);
+    const saturationPercent = Math.min(100, Math.round((appointments / expectedCapacity) * 100));
+    const activeClients = Number(operational.totals?.activeClients || 0);
+    const returningClients = Number(operational.totals?.returningClients || 0);
+    const continuityPercent = activeClients ? Math.round((returningClients / activeClients) * 100) : 0;
+    const scale = ["sotto_soglia", "fragile", "stabile", "forte"];
+    let statusIndex = revenuePerOperatorCents < thresholds.under
+      ? 0
+      : revenuePerOperatorCents < thresholds.fragile
+        ? 1
+        : revenuePerOperatorCents < thresholds.stable
+          ? 2
+          : 3;
+    if (saturationPercent < 20 || continuityPercent < 10 || activeClients < 5) {
+      statusIndex = Math.min(statusIndex, 1);
+    }
+    if (revenuePerOperatorCents < thresholds.under && (saturationPercent < 15 || activeClients < 3)) {
+      statusIndex = 0;
+    }
+    const status = scale[statusIndex];
+    const statusLabel = status === "sotto_soglia"
+      ? "sotto soglia"
+      : status === "fragile"
+        ? "fragile"
+        : status;
+    const level = status === "sotto_soglia"
+      ? "critical"
+      : status === "fragile"
+        ? "warning"
+        : "success";
+    const blockers = [];
+    if (revenuePerOperatorCents < thresholds.under) blockers.push("fatturato per operatore sotto soglia");
+    if (saturationPercent < 20) blockers.push("agenda poco satura");
+    if (continuityPercent < 10) blockers.push("continuità clienti bassa");
+    if (activeClients < 5) blockers.push("pochi clienti attivi nel periodo");
+    const reason = blockers.length
+      ? blockers.join(" · ")
+      : "fatturato, saturazione agenda e continuità clienti sono coerenti con il periodo.";
+    return {
+      status,
+      statusLabel,
+      level,
+      businessModel: isBarber ? "barber" : "standard",
+      period: { startDate, endDate, dayCount, monthsEquivalent },
+      thresholds,
+      revenueCents,
+      monthlyRevenueCents,
+      revenuePerOperatorCents,
+      activeOperators,
+      appointments,
+      saturationPercent,
+      activeClients,
+      returningClients,
+      continuityPercent,
+      reason,
+      note: "La salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini."
+    };
+  }
+
   openExportsFolder() {
     ensureDir(EXPORTS_DIR);
     const entries = fs.readdirSync(EXPORTS_DIR).sort().reverse();
@@ -3504,6 +3588,7 @@ class DesktopMirrorService {
       }));
     return {
       totals,
+      centerHealth: this.getCenterHealth({ startDate, endDate }, session),
       services: serviceRows,
       products: productRows,
       technologies: technologyRows,
@@ -3934,6 +4019,10 @@ class DesktopMirrorService {
       startDate: startDate || currentMonthStart,
       endDate: endDate || toDateOnly(nowIso())
     }, session);
+    const centerHealth = this.getCenterHealth({
+      startDate: startDate || currentMonthStart,
+      endDate: endDate || toDateOnly(nowIso())
+    }, session);
     const inventory = this.getInventoryOverview(session);
     const dataQuality = this.getDataQuality(session);
     const shifts = this.filterByCenter(this.shiftsRepository.list(), session);
@@ -3981,6 +4070,40 @@ class DesktopMirrorService {
       : null;
     const sections = [
       {
+        key: "center_health",
+        title: "Stato centro",
+        items: [
+          {
+            id: "center-health-main",
+            level: centerHealth.level,
+            area: "salute centro",
+            conclusion: `Centro ${centerHealth.statusLabel}: ${centerHealth.status === "sotto_soglia" ? "attività insufficiente rispetto agli operatori" : centerHealth.status === "fragile" ? "volume operativo da rinforzare" : centerHealth.status === "stabile" ? "base operativa sotto controllo" : "centro forte nel periodo"}`,
+            reason: `${centerHealth.reason} · fatturato/operatore ${euro(centerHealth.revenuePerOperatorCents)} al mese · saturazione ${centerHealth.saturationPercent}% · continuità ${centerHealth.continuityPercent}%`,
+            impactCents: Number(centerHealth.monthlyRevenueCents || 0),
+            riskCents: 0,
+            action: centerHealth.status === "sotto_soglia"
+              ? "aumenta volume agenda e richiami prima dei margini"
+              : centerHealth.status === "fragile"
+                ? "rinforza continuità clienti e saturazione"
+                : "mantieni controllo operativo",
+            button: "Apri dashboard",
+            target: "dashboard"
+          },
+          {
+            id: "center-health-rule",
+            level: "info",
+            area: "regola",
+            conclusion: "Prodotti e tecnologie non determinano lo stato del centro",
+            reason: "Margini prodotto o resa tecnologia sono letture secondarie: non compensano fatturato basso, pochi clienti o agenda vuota.",
+            impactCents: 0,
+            riskCents: 0,
+            action: "prima sopravvivenza del centro, poi ottimizzazione margini",
+            button: "Apri redditività",
+            target: "profitability"
+          }
+        ]
+      },
+      {
         key: "daily",
         title: "Priorità del giorno",
         items: [
@@ -4025,7 +4148,7 @@ class DesktopMirrorService {
       },
       {
         key: "profitability",
-        title: "Redditività reale",
+        title: "Redditività prodotti e tecnologie",
         items: [
           marginAlert ? {
             id: `service-${marginAlert.id}`,
@@ -4166,6 +4289,7 @@ class DesktopMirrorService {
       generatedAt: nowIso(),
       summary: {
         totalInsights,
+        centerHealth,
         modulesConnected: [
           "agenda",
           "clienti",
