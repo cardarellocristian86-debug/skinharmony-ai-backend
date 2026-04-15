@@ -141,6 +141,108 @@ function euro(cents) {
   return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents || 0) / 100);
 }
 
+function average(values) {
+  const clean = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(Number(value)));
+  if (!clean.length) return 0;
+  return clean.reduce((sum, value) => sum + Number(value), 0) / clean.length;
+}
+
+function clamp(value, min, max) {
+  const numeric = Number(value || 0);
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function relevantClientAppointments(appointments, clientId, nowMs = Date.now()) {
+  return (Array.isArray(appointments) ? appointments : [])
+    .filter((item) => String(item.clientId || "") === String(clientId || ""))
+    .filter((item) => {
+      const status = String(item.status || "").toLowerCase();
+      if (["cancelled", "no_show", "moved"].includes(status)) return false;
+      const time = new Date(item.startAt || item.createdAt || 0).getTime();
+      return Number.isFinite(time) && time <= nowMs;
+    })
+    .sort((a, b) => new Date(a.startAt || a.createdAt || 0).getTime() - new Date(b.startAt || b.createdAt || 0).getTime());
+}
+
+function visitGapsDays(appointments) {
+  return (Array.isArray(appointments) ? appointments : []).slice(1)
+    .map((item, index) => {
+      const current = new Date(item.startAt || item.createdAt || 0).getTime();
+      const previous = new Date(appointments[index].startAt || appointments[index].createdAt || 0).getTime();
+      return Math.max(1, Math.round((current - previous) / 86400000));
+    })
+    .filter((value) => Number.isFinite(value) && value > 0 && value <= 365);
+}
+
+function getCenterAverageFrequencyDays(clients, appointments, nowMs = Date.now()) {
+  const allGaps = [];
+  (Array.isArray(clients) ? clients : []).forEach((client) => {
+    const visits = relevantClientAppointments(appointments, String(client.id || ""), nowMs);
+    if (visits.length < 3) return;
+    visitGapsDays(visits)
+      .filter((gap) => gap >= 7 && gap <= 120)
+      .forEach((gap) => allGaps.push(gap));
+  });
+  const value = Math.round(average(allGaps));
+  return value ? clamp(value, 21, 75) : 45;
+}
+
+function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now()) {
+  const clientId = String(client?.id || "");
+  const visits = relevantClientAppointments(appointments, clientId, nowMs);
+  const lastVisit = visits[visits.length - 1] || null;
+  const lastVisitAt = lastVisit?.startAt || client?.lastVisit || "";
+  const lastVisitTime = lastVisitAt ? new Date(lastVisitAt).getTime() : NaN;
+  const daysSinceLastVisit = Number.isFinite(lastVisitTime)
+    ? Math.max(0, Math.floor((nowMs - lastVisitTime) / 86400000))
+    : 999;
+  const gaps = visitGapsDays(visits);
+  const averageFrequencyDays = gaps.length
+    ? Math.round(average(gaps))
+    : Math.round(Number(centerAverageFrequencyDays || 45));
+  const deviation = gaps.length && averageFrequencyDays
+    ? average(gaps.map((gap) => Math.abs(gap - averageFrequencyDays))) / averageFrequencyDays
+    : 1;
+  const visitCount = visits.length;
+  const clientType = visitCount <= 2
+    ? "occasionale"
+    : (visitCount >= 4 && deviation <= 0.65) || (visitCount >= 3 && averageFrequencyDays <= Number(centerAverageFrequencyDays || 45) * 1.35 && deviation <= 0.85)
+      ? "abituale"
+      : "saltuario";
+  const routineDays = clientType === "abituale" ? clamp(averageFrequencyDays, 14, 120) : null;
+  const lightThreshold = Math.round(Math.max(60, Number(centerAverageFrequencyDays || 45) * 1.8));
+  const outOfRoutineAfter = routineDays ? Math.round(routineDays + Math.max(7, Number(centerAverageFrequencyDays || 45) * 0.25)) : lightThreshold;
+  const highRiskAfter = routineDays ? Math.round(Math.max(outOfRoutineAfter + 14, routineDays * 1.75)) : Math.round(lightThreshold * 1.4);
+  const isOutOfRoutine = clientType === "abituale" && daysSinceLastVisit >= outOfRoutineAfter;
+  const isHighRisk = clientType === "abituale" && daysSinceLastVisit >= highRiskAfter;
+  const isLightSuggestion = clientType === "saltuario" && daysSinceLastVisit >= lightThreshold;
+  const alertLevel = isHighRisk
+    ? "rischio"
+    : isOutOfRoutine
+      ? "alert"
+      : isLightSuggestion
+        ? "suggerimento"
+        : "nessuno";
+  return {
+    clientType,
+    visitCount,
+    visits,
+    lastVisit,
+    lastVisitAt,
+    daysSinceLastVisit,
+    gaps,
+    averageFrequencyDays,
+    centerAverageFrequencyDays: Math.round(Number(centerAverageFrequencyDays || 45)),
+    routineDays,
+    outOfRoutineAfter,
+    highRiskAfter,
+    lightThreshold,
+    alertLevel,
+    hasRecallAlert: alertLevel !== "nessuno",
+    deviation: Number.isFinite(deviation) ? Number(deviation.toFixed(2)) : 1
+  };
+}
+
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
   if (value < 1024) return `${value} B`;
@@ -3089,30 +3191,34 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
     const now = Date.now();
+    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, appointments, now);
     const inactiveClients = clients.map((client) => {
       const clientId = String(client.id || "");
-      const clientAppointments = appointments
-        .filter((item) => String(item.clientId || "") === clientId)
-        .sort((a, b) => new Date(b.startAt || b.createdAt || 0).getTime() - new Date(a.startAt || a.createdAt || 0).getTime());
-      const lastAppointment = clientAppointments[0] || null;
-      const lastVisitAt = lastAppointment?.startAt || client.lastVisit || "";
-      const daysSinceLastVisit = lastVisitAt
-        ? Math.max(0, Math.floor((now - new Date(lastVisitAt).getTime()) / 86400000))
-        : 999;
+      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now);
       return {
         clientId,
         name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
         phone: client.phone || "",
-        daysSinceLastVisit
+        daysSinceLastVisit: routine.daysSinceLastVisit,
+        clientType: routine.clientType,
+        averageFrequencyDays: routine.averageFrequencyDays,
+        routineDays: routine.routineDays,
+        centerAverageFrequencyDays: routine.centerAverageFrequencyDays,
+        alertLevel: routine.alertLevel,
+        visitCount: routine.visitCount
       };
     })
-      .filter((item) => item.daysSinceLastVisit >= 30)
-      .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit);
+      .filter((item) => item.alertLevel === "rischio" || item.alertLevel === "alert" || item.alertLevel === "suggerimento")
+      .sort((a, b) => {
+        const rank = { rischio: 3, alert: 2, suggerimento: 1 };
+        return (rank[b.alertLevel] || 0) - (rank[a.alertLevel] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
+      });
     const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     return {
       todayAppointments: todayAppointments.length,
       inactiveClientsCount: inactiveClients.length,
       inactiveClients,
+      centerAverageFrequencyDays,
       completedAppointments: appointments.filter((item) => item.status === "completed").length,
       revenueCents,
       activeClientsCount: clients.length
@@ -3207,20 +3313,25 @@ class DesktopMirrorService {
     const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     const completedAppointments = appointments.filter((item) => item.status === "completed").length;
     const topServices = Array.from(byService.values()).sort((a, b) => b.appointments - a.appointments);
+    const reportNow = Date.now();
+    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, this.filterByCenter(this.appointmentsRepository.list(), session), reportNow);
     const inactiveClients = clients.map((client) => {
-      const clientAppointments = this.filterByCenter(this.appointmentsRepository.list(), session)
-        .filter((item) => String(item.clientId || "") === String(client.id || ""))
-        .sort((a, b) => new Date(b.startAt || b.createdAt || 0).getTime() - new Date(a.startAt || a.createdAt || 0).getTime());
-      const lastVisitAt = clientAppointments[0]?.startAt || client.lastVisit || "";
-      const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((Date.now() - new Date(lastVisitAt).getTime()) / 86400000)) : 999;
+      const routine = classifyClientRoutine(client, this.filterByCenter(this.appointmentsRepository.list(), session), centerAverageFrequencyDays, reportNow);
       return {
         clientId: String(client.id || ""),
         name: clientNames.get(String(client.id || "")) || "Cliente",
         phone: client.phone || "",
-        daysSinceLastVisit,
-        lastVisitAt
+        daysSinceLastVisit: routine.daysSinceLastVisit,
+        lastVisitAt: routine.lastVisitAt,
+        clientType: routine.clientType,
+        averageFrequencyDays: routine.averageFrequencyDays,
+        routineDays: routine.routineDays,
+        alertLevel: routine.alertLevel
       };
-    }).filter((item) => item.daysSinceLastVisit >= 45).sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit).slice(0, 10);
+    }).filter((item) => item.alertLevel === "rischio" || item.alertLevel === "alert" || item.alertLevel === "suggerimento").sort((a, b) => {
+      const rank = { rischio: 3, alert: 2, suggerimento: 1 };
+      return (rank[b.alertLevel] || 0) - (rank[a.alertLevel] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
+    }).slice(0, 10);
     const insights = [];
     if (completedAppointments === 0) insights.push("Completa e incassa gli appuntamenti per attivare un report più preciso.");
     if (topServices[0]) insights.push(`Servizio più richiesto nel periodo: ${topServices[0].name}.`);
@@ -3615,6 +3726,7 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const serviceById = new Map(services.map((item) => [String(item.id), item]));
+    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, appointments, now);
     const cleanDisplayName = (client) => {
       const raw = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente";
       return String(raw)
@@ -3687,17 +3799,11 @@ class DesktopMirrorService {
     const suggestions = clients.map((client) => {
       const clientId = String(client.id || "");
       const displayName = cleanDisplayName(client);
-      const clientAppointments = appointments
-        .filter((item) => String(item.clientId || "") === clientId)
-        .sort((a, b) => new Date(a.startAt || a.createdAt || 0).getTime() - new Date(b.startAt || b.createdAt || 0).getTime());
-      const lastAppointment = clientAppointments[clientAppointments.length - 1] || null;
-      const lastVisitAt = lastAppointment?.startAt || client.lastVisit || client.updatedAt || client.createdAt || "";
-      const daysSinceLastVisit = lastVisitAt ? Math.max(0, Math.floor((now - new Date(lastVisitAt).getTime()) / 86400000)) : 999;
-      const gaps = clientAppointments.slice(1).map((item, index) => {
-        const previous = clientAppointments[index];
-        return Math.max(1, Math.round((new Date(item.startAt || 0).getTime() - new Date(previous.startAt || 0).getTime()) / 86400000));
-      }).filter((value) => Number.isFinite(value));
-      const averageFrequencyDays = gaps.length ? Math.round(gaps.reduce((sum, value) => sum + value, 0) / gaps.length) : 45;
+      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now);
+      const clientAppointments = routine.visits;
+      const lastAppointment = routine.lastVisit || null;
+      const daysSinceLastVisit = routine.daysSinceLastVisit;
+      const averageFrequencyDays = routine.averageFrequencyDays;
       const totalSpentCents = payments
         .filter((item) => String(item.clientId || "") === clientId)
         .reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
@@ -3713,34 +3819,40 @@ class DesktopMirrorService {
           ? "prezzo_ultimo_servizio"
           : "dato_non_disponibile";
       const hasMarketingConsent = Boolean(client.marketingConsent);
-      const segment = totalSpentCents >= 50000
-        ? "top_cliente"
-        : daysSinceLastVisit >= 90
+      const segment = routine.clientType === "occasionale"
+        ? "occasionale"
+        : routine.alertLevel === "rischio"
           ? "perso"
-          : daysSinceLastVisit >= Math.max(45, averageFrequencyDays + 15)
+          : routine.alertLevel === "alert"
             ? "a_rischio"
-            : "attivo";
+            : totalSpentCents >= 50000 && routine.clientType !== "occasionale"
+              ? "top_cliente"
+              : routine.alertLevel === "suggerimento"
+                ? "saltuario_da_presidiare"
+                : "attivo";
       const priority = !hasMarketingConsent
         ? "media"
         : segment === "perso"
           ? "alta"
           : segment === "a_rischio" || totalSpentCents >= 50000
             ? "alta"
-            : daysSinceLastVisit >= 30
+            : segment === "saltuario_da_presidiare"
               ? "media"
               : "bassa";
       const pattern = segment === "perso"
         ? "cliente a rischio perdita"
         : segment === "a_rischio"
           ? "cliente in calo"
-          : daysSinceLastVisit <= Math.max(21, averageFrequencyDays + 7)
+          : routine.clientType === "abituale"
             ? "cliente abituale"
-            : "cliente saltuario";
+            : routine.clientType === "saltuario"
+              ? "cliente saltuario"
+              : "cliente occasionale";
       const risk = !hasMarketingConsent
         ? "medio"
-        : segment === "perso" || daysSinceLastVisit >= Math.max(90, averageFrequencyDays * 2)
+        : segment === "perso"
           ? "alto"
-          : segment === "a_rischio" || daysSinceLastVisit >= Math.max(45, averageFrequencyDays + 15)
+          : segment === "a_rischio"
             ? "medio"
             : "basso";
       const operatingDecision = priority === "alta"
@@ -3759,8 +3871,10 @@ class DesktopMirrorService {
         ? "Prima serve consenso marketing registrato."
         : segment === "perso"
           ? `Cliente perso: ${daysSinceLastVisit} giorni senza ritorno.`
-          : segment === "a_rischio"
-            ? `Frequenza reale fuori ritmo: media ${averageFrequencyDays} giorni, ultimo passaggio ${daysSinceLastVisit} giorni fa.`
+        : segment === "a_rischio"
+            ? `Cliente abituale fuori routine: media ${averageFrequencyDays} giorni, ultimo passaggio ${daysSinceLastVisit} giorni fa.`
+            : segment === "saltuario_da_presidiare"
+              ? `Cliente saltuario: non è routine, ma è fermo da ${daysSinceLastVisit} giorni.`
             : totalSpentCents >= 50000
               ? "Cliente ad alto valore: conviene presidiare continuità e proposta."
               : "Richiamo utile per mantenere continuità.";
@@ -3768,13 +3882,17 @@ class DesktopMirrorService {
         ? "Apri scheda cliente e registra consenso prima di inviare comunicazioni."
         : segment === "perso"
           ? "Contatto personale, proposta semplice e slot comodo entro 7 giorni."
-          : segment === "a_rischio"
+        : segment === "a_rischio"
             ? "Recall mirato sul servizio abituale e proposta appuntamento entro 10 giorni."
+            : segment === "saltuario_da_presidiare"
+              ? "Suggerimento leggero: messaggio morbido, senza urgenza."
             : "Messaggio leggero di mantenimento e controllo prossimo appuntamento.";
       const clearReason = segment === "perso"
         ? "quasi perso"
         : segment === "a_rischio"
           ? "cliente fuori ritmo"
+          : segment === "saltuario_da_presidiare"
+            ? "cliente saltuario da presidiare"
           : totalSpentCents >= 50000
             ? "cliente di valore da presidiare"
             : "mantenimento relazione";
@@ -3811,6 +3929,11 @@ class DesktopMirrorService {
         pattern,
         priority,
         risk,
+        clientType: routine.clientType,
+        visitCount: routine.visitCount,
+        routineDays: routine.routineDays,
+        centerAverageFrequencyDays: routine.centerAverageFrequencyDays,
+        alertLevel: routine.alertLevel,
         operatingDecision,
         clearReason,
         safeAction,
@@ -3831,7 +3954,7 @@ class DesktopMirrorService {
           ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: così controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
       };
-    }).filter((item) => item.daysSinceLastVisit >= 30 || item.segment !== "attivo")
+    }).filter((item) => item.alertLevel !== "nessuno" && item.clientType !== "occasionale")
       .sort((a, b) => {
         const weight = { alta: 3, media: 2, bassa: 1 };
         return (weight[b.priority] || 0) - (weight[a.priority] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
