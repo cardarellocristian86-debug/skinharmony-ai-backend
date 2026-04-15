@@ -2964,6 +2964,7 @@ class DesktopMirrorService {
   listUnlinkedPayments(session = null) {
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     return this.filterByCenter(this.paymentsRepository.list(), session)
+      .filter((payment) => !["free", "ignored"].includes(String(payment.reconciliationStatus || "")))
       .filter((payment) => !payment.appointmentId || !payment.clientId)
       .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
       .slice(0, 80)
@@ -2985,6 +2986,20 @@ class DesktopMirrorService {
   linkPayment(paymentId, payload = {}, session = null) {
     const payment = this.findByIdInCenter(this.paymentsRepository, paymentId, session);
     assertValid(Boolean(payment), "Pagamento non trovato");
+    if (payload.markAsFree || payload.ignoreReconciliation) {
+      const updatedFreePayment = this.updateInCenter(this.paymentsRepository, paymentId, (current) => ({
+        ...current,
+        reconciliationStatus: payload.ignoreReconciliation ? "ignored" : "free",
+        reconciliationNote: cleanText(payload.note || "Pagamento libero confermato dall'operatore", "", 220),
+        linkedAt: nowIso(),
+        updatedAt: nowIso()
+      }), session);
+      return {
+        success: true,
+        payment: updatedFreePayment,
+        suggestions: []
+      };
+    }
     const appointmentId = String(payload.appointmentId || payment.appointmentId || "");
     const appointment = appointmentId ? this.findByIdInCenter(this.appointmentsRepository, appointmentId, session) : null;
     const clientId = String(payload.clientId || appointment?.clientId || payment.clientId || "");
@@ -3037,7 +3052,9 @@ class DesktopMirrorService {
       if (new Date(appointment.startAt || appointment.createdAt || 0).getTime() > Date.now()) return false;
       return !paidAppointmentIds.has(String(appointment.id || ""));
     });
-    const unlinkedPayments = payments.filter((payment) => !payment.appointmentId || !payment.clientId);
+    const unlinkedPayments = payments
+      .filter((payment) => !["free", "ignored"].includes(String(payment.reconciliationStatus || "")))
+      .filter((payment) => !payment.appointmentId || !payment.clientId);
     const duplicateGroups = this.listClientDuplicateGroups(session);
     const contactScore = clients.length ? Math.round(((clients.length - clientsMissingContact.length) / clients.length) * 100) : 100;
     const costScore = services.length ? Math.round(((services.length - servicesMissingCosts.length) / services.length) * 100) : 100;
