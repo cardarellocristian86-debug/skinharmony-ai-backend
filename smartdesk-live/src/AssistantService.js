@@ -604,6 +604,31 @@ class AssistantService {
   }
 
   buildSmartPriorityAnswer(context) {
+    const plan = String(context.subscriptionPlan || "base").toLowerCase();
+    if (plan !== "gold") {
+      if (plan === "silver") {
+        return [
+          "Nel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI.",
+          "",
+          "Cosa fare ora:",
+          "1. Apri Report per leggere andamento e numeri del periodo.",
+          "2. Apri Cassa per controllare incassi e pagamenti.",
+          "3. Apri Clienti o Agenda per correggere dati e appuntamenti.",
+          "",
+          "Le priorità automatiche e gli alert decisionali sono disponibili nel piano Gold."
+        ].join("\n");
+      }
+      return [
+        "Nel piano Base il pulsante Smart resta operativo, ma non usa priorità AI.",
+        "",
+        "Cosa puoi fare ora:",
+        "1. Apri Agenda.",
+        "2. Crea o cerca un cliente.",
+        "3. Apri Cassa e controlla gli incassi.",
+        "",
+        "Gli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold."
+      ].join("\n");
+    }
     const dashboard = context.dashboard || {};
     const quality = context.dataQuality || {};
     const metrics = quality.metrics || {};

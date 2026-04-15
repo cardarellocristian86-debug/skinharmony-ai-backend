@@ -3185,6 +3185,8 @@ class DesktopMirrorService {
   }
 
   getDashboardStats(options = {}, session = null) {
+    const plan = this.getPlanLevel(session);
+    const goldEnabled = plan === "gold";
     const today = toDateOnly(options.anchorDate || nowIso());
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
@@ -3216,9 +3218,9 @@ class DesktopMirrorService {
     const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     return {
       todayAppointments: todayAppointments.length,
-      inactiveClientsCount: inactiveClients.length,
-      inactiveClients,
-      centerAverageFrequencyDays,
+      inactiveClientsCount: goldEnabled ? inactiveClients.length : 0,
+      inactiveClients: goldEnabled ? inactiveClients : [],
+      centerAverageFrequencyDays: goldEnabled ? centerAverageFrequencyDays : null,
       completedAppointments: appointments.filter((item) => item.status === "completed").length,
       revenueCents,
       activeClientsCount: clients.length
