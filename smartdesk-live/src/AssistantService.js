@@ -365,6 +365,15 @@ class AssistantService {
     }
   }
 
+  getDataQualitySafe(session = null) {
+    if (!this.desktopMirror?.getDataQuality) return {};
+    try {
+      return this.desktopMirror.getDataQuality(session) || {};
+    } catch {
+      return {};
+    }
+  }
+
   listClientsSafe(context = {}, session = null) {
     if (this.desktopMirror?.listClients) {
       try {
@@ -413,6 +422,7 @@ class AssistantService {
     const context = payload.context || {};
     const settings = this.getSettingsSafe(session);
     const dashboard = this.getDashboardSafe(session);
+    const dataQuality = this.getDataQualitySafe(session);
     const clients = this.listClientsSafe(context, session);
     const staff = this.listStaffSafe(context, session);
     const services = this.listServicesSafe(context, session);
@@ -443,7 +453,21 @@ class AssistantService {
       },
       dashboard: {
         todayAppointments: Number(dashboard.todayAppointments || 0),
-        inactiveClientsCount: Number(dashboard.inactiveClientsCount || 0)
+        inactiveClientsCount: Number(dashboard.inactiveClientsCount || 0),
+        completedAppointments: Number(dashboard.completedAppointments || 0),
+        activeClientsCount: Number(dashboard.activeClientsCount || 0)
+      },
+      dataQuality: {
+        score: Number(dataQuality.score || 100),
+        status: String(dataQuality.status || "buono"),
+        metrics: {
+          clientsMissingContact: Number(dataQuality.metrics?.clientsMissingContact || 0),
+          servicesMissingCosts: Number(dataQuality.metrics?.servicesMissingCosts || 0),
+          appointmentsMissingPayment: Number(dataQuality.metrics?.appointmentsMissingPayment || 0),
+          unlinkedPayments: Number(dataQuality.metrics?.unlinkedPayments || 0),
+          duplicateGroups: Number(dataQuality.metrics?.duplicateGroups || 0)
+        },
+        alerts: Array.isArray(dataQuality.alerts) ? dataQuality.alerts.slice(0, 6) : []
       },
       clientsPreview: clients.slice(0, 25).map((client) => ({
         id: client.id,
@@ -559,7 +583,7 @@ class AssistantService {
       time,
       durationMin,
       status: "confirmed",
-      notes: "Creato da SkinHarmony AI dopo conferma operatore."
+      notes: "Creato dal pulsante Smart dopo conferma operatore."
     };
   }
 
@@ -575,8 +599,57 @@ class AssistantService {
       date,
       startTime: times[0] || "",
       endTime: times[1] || "",
-      notes: "Turno creato da SkinHarmony AI dopo conferma operatore."
+      notes: "Turno creato dal pulsante Smart dopo conferma operatore."
     };
+  }
+
+  buildSmartPriorityAnswer(context) {
+    const dashboard = context.dashboard || {};
+    const quality = context.dataQuality || {};
+    const metrics = quality.metrics || {};
+    const alerts = [];
+
+    if (Number(dashboard.todayAppointments || 0) <= 2) {
+      alerts.push(`Attivita bassa oggi: ${Number(dashboard.todayAppointments || 0)} appuntamenti.`);
+    }
+    if (Number(dashboard.inactiveClientsCount || 0) > 0) {
+      alerts.push(`Clienti da recuperare: ${Number(dashboard.inactiveClientsCount || 0)}.`);
+    }
+    if (Number(metrics.unlinkedPayments || 0) > 0) {
+      alerts.push(`Pagamenti da collegare: ${Number(metrics.unlinkedPayments || 0)}.`);
+    }
+    if (Number(metrics.appointmentsMissingPayment || 0) > 0) {
+      alerts.push(`Appuntamenti senza pagamento: ${Number(metrics.appointmentsMissingPayment || 0)}.`);
+    }
+    if (Number(metrics.clientsMissingContact || 0) > 0) {
+      alerts.push(`Clienti senza contatto: ${Number(metrics.clientsMissingContact || 0)}.`);
+    }
+    if (Number(metrics.servicesMissingCosts || 0) > 0) {
+      alerts.push(`Servizi senza costi: ${Number(metrics.servicesMissingCosts || 0)}.`);
+    }
+    if (String(quality.status || "") === "basso") {
+      alerts.push(`Qualita dati bassa: ${Number(quality.score || 0)}%.`);
+    }
+
+    if (!alerts.length) {
+      return "Non vedo priorita operative urgenti nei dati disponibili. Puoi lavorare normalmente su agenda, clienti e cassa.";
+    }
+
+    const actions = [];
+    if (Number(dashboard.inactiveClientsCount || 0) > 0) actions.push("1. Apri Marketing o Clienti e richiama prima i clienti inattivi.");
+    if (Number(dashboard.todayAppointments || 0) <= 2) actions.push("2. Riempi l'agenda: controlla slot liberi e clienti da recuperare.");
+    if (Number(metrics.unlinkedPayments || 0) > 0 || Number(metrics.appointmentsMissingPayment || 0) > 0) actions.push("3. Apri Cassa e collega pagamenti/appuntamenti prima di leggere i report.");
+    if (Number(metrics.clientsMissingContact || 0) > 0 || Number(metrics.servicesMissingCosts || 0) > 0) actions.push("4. Completa i dati mancanti per rendere report e AI piu affidabili.");
+
+    return [
+      "Ci sono priorita operative da gestire.",
+      "",
+      "Alert letti dal gestionale:",
+      ...alerts.slice(0, 6).map((item) => `- ${item}`),
+      "",
+      "Cosa fare ora:",
+      ...(actions.length ? actions.slice(0, 4) : ["1. Controlla dashboard, agenda e cassa."])
+    ].join("\n");
   }
 
   buildLocalDecision(message, context, session) {
@@ -616,17 +689,7 @@ class AssistantService {
     }
 
     if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalized)) {
-      const lines = [
-        `Centro: ${context.centerName || "centro non indicato"}.`,
-        context.dashboard.todayAppointments
-          ? `Agenda: oggi risultano ${context.dashboard.todayAppointments} appuntamenti.`
-          : "Agenda: oggi non risultano appuntamenti nel riepilogo disponibile.",
-        context.dashboard.inactiveClientsCount
-          ? `Clienti: ci sono ${context.dashboard.inactiveClientsCount} clienti inattivi da valutare.`
-          : "Clienti: non ho un alert inattivi evidente nel riepilogo disponibile.",
-        "Priorità: controlla agenda, richiami clienti e dati mancanti prima di aumentare volume marketing."
-      ];
-      return buildAnswer(lines.join("\n"));
+      return buildAnswer(this.buildSmartPriorityAnswer(context));
     }
 
     if (/(libreria skinharmony|protocolli skinharmony|come uso.*protocolli|cosa manca.*protocolli)/.test(normalized)) {
@@ -854,6 +917,10 @@ class AssistantService {
     const message = String(payload.message || "").trim();
     const context = this.buildContext(payload, session);
     const localDecision = this.buildLocalDecision(message, context, session);
+    const normalizedMessage = normalizeText(message);
+    if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
+      return { ...localDecision, provider: "rules" };
+    }
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
