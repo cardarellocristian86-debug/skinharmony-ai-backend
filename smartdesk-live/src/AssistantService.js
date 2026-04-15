@@ -635,25 +635,25 @@ class AssistantService {
     const alerts = [];
 
     if (Number(dashboard.todayAppointments || 0) <= 2) {
-      alerts.push(`Attivita bassa oggi: ${Number(dashboard.todayAppointments || 0)} appuntamenti.`);
+      alerts.push("Critico: centro sotto ritmo. Aumenta agenda e richiami prima di lavorare sui margini.");
     }
     if (Number(dashboard.inactiveClientsCount || 0) > 0) {
-      alerts.push(`Clienti da recuperare: ${Number(dashboard.inactiveClientsCount || 0)}.`);
+      alerts.push("Attenzione: clienti da recuperare. Parti dai richiami prima di cercare nuovi clienti.");
     }
     if (Number(metrics.unlinkedPayments || 0) > 0) {
-      alerts.push(`Pagamenti da collegare: ${Number(metrics.unlinkedPayments || 0)}.`);
+      alerts.push("Attenzione: cassa da riallineare. Collega o archivia i pagamenti aperti.");
     }
     if (Number(metrics.appointmentsMissingPayment || 0) > 0) {
-      alerts.push(`Appuntamenti senza pagamento: ${Number(metrics.appointmentsMissingPayment || 0)}.`);
+      alerts.push("Attenzione: appuntamenti senza incasso collegato. Controlla la cassa prima dei report.");
     }
     if (Number(metrics.clientsMissingContact || 0) > 0) {
-      alerts.push(`Clienti senza contatto: ${Number(metrics.clientsMissingContact || 0)}.`);
+      alerts.push("Attenzione: clienti non contattabili. Completa i dati quando fai recall o checkout.");
     }
     if (Number(metrics.servicesMissingCosts || 0) > 0) {
-      alerts.push(`Servizi senza costi: ${Number(metrics.servicesMissingCosts || 0)}.`);
+      alerts.push("Attenzione: costi servizio incompleti. La redditività resta stimata finché non li completi.");
     }
     if (String(quality.status || "") === "basso") {
-      alerts.push(`Qualita dati bassa: ${Number(quality.score || 0)}%.`);
+      alerts.push("Critico: qualità dati bassa. Prima pulisci cassa, clienti e servizi, poi leggi l'analisi.");
     }
 
     if (!alerts.length) {
@@ -669,7 +669,7 @@ class AssistantService {
     return [
       "Ci sono priorita operative da gestire.",
       "",
-      "Alert letti dal gestionale:",
+      "Sintesi operativa:",
       ...alerts.slice(0, 6).map((item) => `- ${item}`),
       "",
       "Cosa fare ora:",
