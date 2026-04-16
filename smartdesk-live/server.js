@@ -912,6 +912,14 @@ app.get("/api/payments/unlinked", (req, res) => {
   }));
 });
 
+app.post("/api/payments/cash-close", (req, res) => {
+  try {
+    res.json(service.closeCashdesk(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile chiudere la cassa");
+  }
+});
+
 app.post("/api/payments", (req, res) => {
   try {
     res.status(201).json(service.createPayment(req.body || {}, req.session));

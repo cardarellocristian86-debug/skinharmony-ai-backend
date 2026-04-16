@@ -904,6 +904,7 @@ class DesktopMirrorService {
     this.inventoryRepository = this.createRepository("inventory", []);
     this.inventoryMovementsRepository = this.createRepository("inventory_movements", []);
     this.paymentsRepository = this.createRepository("payments", []);
+    this.cashClosuresRepository = this.createRepository("cash_closures", []);
     this.treatmentsRepository = this.createRepository("treatments", []);
     this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
@@ -1305,6 +1306,7 @@ class DesktopMirrorService {
       inventory: this.getCenterRepositoryItems(this.inventoryRepository, centerKey),
       inventoryMovements: this.getCenterRepositoryItems(this.inventoryMovementsRepository, centerKey),
       payments: this.getCenterRepositoryItems(this.paymentsRepository, centerKey),
+      cashClosures: this.getCenterRepositoryItems(this.cashClosuresRepository, centerKey),
       treatments: this.getCenterRepositoryItems(this.treatmentsRepository, centerKey),
       protocols: this.getCenterRepositoryItems(this.protocolsRepository, centerKey),
       sales: this.getCenterRepositoryItems(this.salesRepository, centerKey),
@@ -1324,6 +1326,7 @@ class DesktopMirrorService {
       inventoryItems: collections.inventory.length,
       inventoryMovements: collections.inventoryMovements.length,
       payments: collections.payments.length,
+      cashClosures: collections.cashClosures.length,
       treatments: collections.treatments.length,
       sales: collections.sales.length,
       users: collections.users.length,
@@ -1447,6 +1450,7 @@ class DesktopMirrorService {
       inventory: this.inventoryRepository,
       inventoryMovements: this.inventoryMovementsRepository,
       payments: this.paymentsRepository,
+      cashClosures: this.cashClosuresRepository,
       treatments: this.treatmentsRepository,
       protocols: this.protocolsRepository,
       aiMarketingActions: this.aiMarketingActionsRepository,
@@ -1487,6 +1491,7 @@ class DesktopMirrorService {
       inventory: this.inventoryRepository,
       inventoryMovements: this.inventoryMovementsRepository,
       payments: this.paymentsRepository,
+      cashClosures: this.cashClosuresRepository,
       treatments: this.treatmentsRepository,
       protocols: this.protocolsRepository,
       aiMarketingActions: this.aiMarketingActionsRepository,
@@ -1525,6 +1530,7 @@ class DesktopMirrorService {
         { name: "inventory", filePath: path.join(DATA_DIR, "inventory.json"), defaultValue: [] },
         { name: "inventory_movements", filePath: path.join(DATA_DIR, "inventory_movements.json"), defaultValue: [] },
         { name: "payments", filePath: path.join(DATA_DIR, "payments.json"), defaultValue: [] },
+        { name: "cash_closures", filePath: path.join(DATA_DIR, "cash_closures.json"), defaultValue: [] },
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
         { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
@@ -3979,6 +3985,72 @@ class DesktopMirrorService {
         ...payment,
         clientName: payment.clientId ? clientNames.get(String(payment.clientId)) || "Cliente" : payment.walkInName || "Cliente occasionale"
       }))
+    };
+  }
+
+  closeCashdesk(payload = {}, session = null) {
+    const closeDate = toDateOnly(payload.date || nowIso());
+    const summary = this.getPaymentsSummary({ period: "day", anchorDate: closeDate }, session);
+    const unlinkedPayments = this.listUnlinkedPayments(session, { forceRefresh: true })
+      .filter((payment) => toDateOnly(payment.createdAt || nowIso()) === closeDate);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const openStatuses = new Set(["requested", "confirmed", "arrived", "in_progress", "ready_checkout"]);
+    const openAppointments = appointments
+      .filter((appointment) => toDateOnly(appointment.startAt || appointment.createdAt || nowIso()) === closeDate)
+      .filter((appointment) => openStatuses.has(String(appointment.status || "")))
+      .map((appointment) => ({
+        id: appointment.id,
+        clientId: appointment.clientId || "",
+        clientName: appointment.clientName || appointment.walkInName || "Cliente",
+        serviceName: appointment.serviceName || appointment.service || "Servizio",
+        status: appointment.status || "",
+        startAt: appointment.startAt || ""
+      }));
+
+    const blockers = [];
+    if (unlinkedPayments.length) blockers.push(`${unlinkedPayments.length} pagamenti da collegare`);
+    if (openAppointments.length) blockers.push(`${openAppointments.length} appuntamenti ancora aperti`);
+
+    if (blockers.length) {
+      return {
+        success: false,
+        status: "blocked",
+        date: closeDate,
+        message: `Cassa non chiusa: ${blockers.join(" e ")}.`,
+        summary,
+        unlinkedPayments,
+        openAppointments
+      };
+    }
+
+    const centerId = this.getCenterId(session);
+    const existing = this.filterByCenter(this.cashClosuresRepository.list(), session)
+      .find((item) => String(item.date || "") === closeDate);
+    const closure = {
+      id: existing?.id || makeId("cashclose"),
+      centerId,
+      centerName: this.getCenterName(session),
+      date: closeDate,
+      status: "closed",
+      totalPayments: Number(summary?.totals?.count || 0),
+      revenueCents: Number(summary?.totals?.revenueCents || 0),
+      byMethod: summary?.byMethod || [],
+      closedBy: session?.username || session?.role || "operatore",
+      closedAt: nowIso(),
+      updatedAt: nowIso()
+    };
+
+    const saved = existing
+      ? this.cashClosuresRepository.update(existing.id, () => closure)
+      : this.cashClosuresRepository.create(closure);
+    return {
+      success: true,
+      status: "closed",
+      message: "Cassa chiusa: giornata salvata e nessuna incoerenza aperta.",
+      closure: saved || closure,
+      summary,
+      unlinkedPayments: [],
+      openAppointments: []
     };
   }
 
