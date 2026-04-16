@@ -3112,22 +3112,50 @@ class DesktopMirrorService {
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const paidAppointmentIds = new Set(payments.map((payment) => String(payment.appointmentId || "")).filter(Boolean));
-    const clientsMissingContact = clients.filter((client) => !client.phone && !client.email);
-    const servicesMissingCosts = services.filter((service) => {
+    const activeClients = clients.filter((client) => client.active !== false && client.active !== 0);
+    const activeServices = services.filter((service) => service.active !== false && service.active !== 0);
+    const activeStaff = staff.filter((operator) => operator.active !== false && operator.active !== 0);
+    const activeInventory = inventory.filter((item) => item.active !== false && item.active !== 0);
+    const activeResources = resources.filter((resource) => resource.active !== false && resource.active !== 0);
+    const completedAppointments = appointments.filter((appointment) => String(appointment.status || "").toLowerCase() === "completed");
+    const soldServiceIds = new Set(completedAppointments.map((appointment) => String(appointment.serviceId || "")).filter(Boolean));
+    const soldServices = activeServices.filter((service) => soldServiceIds.has(String(service.id || "")));
+    const staffIdsUsedByServices = new Set(activeServices.flatMap((service) => [
+      ...(Array.isArray(service.staffIds) ? service.staffIds : []),
+      ...(Array.isArray(service.operatorIds) ? service.operatorIds : []),
+      ...(Array.isArray(service.assignedStaffIds) ? service.assignedStaffIds : [])
+    ]).map((id) => String(id || "")).filter(Boolean));
+    const serviceHasCompleteCost = (service) => {
       const hasProductCost = Array.isArray(service.productLinks) && service.productLinks.length > 0;
       const hasTechnologyCost = Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
       const hasEstimatedCost = Number(service.estimatedProductCostCents || service.productCostCents || 0) > 0
         || Number(service.technologyCostCents || 0) > 0;
-      return !hasProductCost && !hasTechnologyCost && !hasEstimatedCost;
-    });
-    const servicesWithEstimatedCosts = services.filter((service) => {
+      return hasProductCost || hasTechnologyCost || hasEstimatedCost;
+    };
+    const serviceHasEstimatedCostOnly = (service) => {
       const hasProductCost = Array.isArray(service.productLinks) && service.productLinks.length > 0;
       const hasTechnologyCost = Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
       const hasEstimatedCost = Number(service.estimatedProductCostCents || service.productCostCents || 0) > 0
         || Number(service.technologyCostCents || 0) > 0;
       return !hasProductCost && !hasTechnologyCost && hasEstimatedCost;
-    });
+    };
+    const clientsMissingContact = activeClients.filter((client) => !client.phone && !client.email);
+    const clientsMissingPhone = activeClients.filter((client) => !client.phone);
+    const clientsMissingEmail = activeClients.filter((client) => !client.email);
+    const clientsWithExpectedHistory = activeClients.filter((client) => (
+      appointments.some((appointment) => String(appointment.clientId || "") === String(client.id || ""))
+      || payments.some((payment) => String(payment.clientId || "") === String(client.id || ""))
+    ));
+    const clientsMissingLastVisit = clientsWithExpectedHistory.filter((client) => !client.lastVisit);
+    const servicesMissingCosts = activeServices.filter((service) => !serviceHasCompleteCost(service));
+    const servicesWithEstimatedCosts = activeServices.filter((service) => serviceHasEstimatedCostOnly(service));
+    const servicesMissingPrice = activeServices.filter((service) => Number(service.priceCents || service.price || 0) <= 0);
+    const servicesMissingDuration = activeServices.filter((service) => Number(service.durationMin || service.duration || 0) <= 0);
+    const servicesMissingCategory = activeServices.filter((service) => !cleanText(service.category || service.serviceCategory || service.type || "", "", 80));
     const appointmentsMissingPayment = appointments.filter((appointment) => {
       if (["cancelled", "no_show"].includes(String(appointment.status || ""))) return false;
       if (new Date(appointment.startAt || appointment.createdAt || 0).getTime() > Date.now()) return false;
@@ -3136,27 +3164,216 @@ class DesktopMirrorService {
     const unlinkedPayments = payments
       .filter((payment) => !["free", "ignored"].includes(String(payment.reconciliationStatus || "")))
       .filter((payment) => !payment.appointmentId || !payment.clientId);
+    const paymentsMissingMethod = payments.filter((payment) => !cleanText(payment.method || "", "", 40));
+    const appointmentsMissingClient = appointments.filter((appointment) => !appointment.clientId && !appointment.walkInName && !appointment.clientName);
+    const appointmentsMissingService = appointments.filter((appointment) => !appointment.serviceId && !appointment.serviceName);
+    const appointmentsMissingOperator = appointments.filter((appointment) => !appointment.staffId && !appointment.operatorId && !appointment.staffName);
+    const completedAppointmentsMissingFinalData = completedAppointments.filter((appointment) => {
+      const hasPayment = paidAppointmentIds.has(String(appointment.id || ""));
+      return !hasPayment || (!appointment.serviceId && !appointment.serviceName) || (!appointment.clientId && !appointment.walkInName && !appointment.clientName);
+    });
+    const operatorsMissingHourlyCost = activeStaff.filter((operator) => Number(operator.hourlyCostCents || operator.hourlyCost || 0) <= 0);
+    const operatorsMissingRole = activeStaff.filter((operator) => !cleanText(operator.role || "", "", 80));
+    const operatorsMissingServices = activeStaff.filter((operator) => {
+      const direct = Array.isArray(operator.serviceIds) || Array.isArray(operator.services) || Array.isArray(operator.assignedServiceIds);
+      const directCount = [
+        ...(Array.isArray(operator.serviceIds) ? operator.serviceIds : []),
+        ...(Array.isArray(operator.services) ? operator.services : []),
+        ...(Array.isArray(operator.assignedServiceIds) ? operator.assignedServiceIds : [])
+      ].filter(Boolean).length;
+      return direct ? directCount === 0 : !staffIdsUsedByServices.has(String(operator.id || ""));
+    });
+    const inventoryMissingCost = activeInventory.filter((item) => Number(item.costCents || item.unitCostCents || item.purchaseCostCents || 0) <= 0);
+    const inventoryMissingStock = activeInventory.filter((item) => item.quantity === undefined && item.stockQuantity === undefined);
+    const productServiceLinks = activeServices.flatMap((service) => (
+      Array.isArray(service.productLinks)
+        ? service.productLinks.map((link) => ({ ...link, serviceId: service.id, serviceName: service.name }))
+        : []
+    ));
+    const productLinksMissingUsage = productServiceLinks.filter((link) => Number(link.quantityUsage || link.usageUnits || 0) <= 0);
+    const soldServicesMissingMarginCost = soldServices.filter((service) => !serviceHasCompleteCost(service));
+    const resourcesMissingCost = activeResources.filter((resource) => (
+      Number(resource.monthlyCostCents || 0) <= 0 && Number(resource.costPerUseCents || 0) <= 0
+    ));
+    const servicesWithCalculatedMargin = activeServices.filter((service) => {
+      const price = Number(service.priceCents || service.price || 0);
+      return price > 0 && serviceHasCompleteCost(service);
+    });
+    const servicesLowMargin = servicesWithCalculatedMargin.filter((service) => {
+      const price = Number(service.priceCents || service.price || 0);
+      const cost = Number(service.estimatedProductCostCents || service.productCostCents || 0) + Number(service.technologyCostCents || 0);
+      const marginPercent = price > 0 ? ((price - cost) / price) * 100 : 0;
+      return marginPercent < 35;
+    });
     const duplicateGroups = this.listClientDuplicateGroups(session);
-    const contactScore = clients.length ? Math.round(((clients.length - clientsMissingContact.length) / clients.length) * 100) : 100;
-    const costScore = services.length ? Math.round(((services.length - servicesMissingCosts.length) / services.length) * 100) : 100;
-    const paymentBase = Math.max(appointments.length, payments.length, 1);
-    const paymentIssues = appointmentsMissingPayment.length + unlinkedPayments.length;
-    const paymentScore = Math.max(0, Math.round(((paymentBase - paymentIssues) / paymentBase) * 100));
-    const duplicatePenalty = Math.min(20, duplicateGroups.length * 3);
-    const score = Math.max(0, Math.round(((contactScore + costScore + paymentScore) / 3) - duplicatePenalty));
+    const makePreview = (items, mapper) => items.slice(0, 5).map(mapper);
+    const makeCheck = (items, totalRecords, weight, mapper) => {
+      const safeTotal = Math.max(0, Number(totalRecords || 0));
+      const missingCount = Array.isArray(items) ? items.length : Number(items || 0);
+      const issueRate = safeTotal > 0 ? missingCount / safeTotal : 0;
+      const penalty = issueRate * Number(weight || 0);
+      const severity = issueRate === 0 ? "ok" : issueRate <= 0.10 ? "info" : issueRate <= 0.25 ? "warning" : "critical";
+      return {
+        totalRecords: safeTotal,
+        missingCount,
+        issueRate: Number(issueRate.toFixed(4)),
+        penalty: Number(penalty.toFixed(2)),
+        severity,
+        previewCount: Math.min(missingCount, 5),
+        itemsPreview: Array.isArray(items) ? makePreview(items, mapper || ((item) => ({ id: item.id || "", name: item.name || item.id || "Record" }))) : [],
+        lastComputedAt: nowIso()
+      };
+    };
+    const summarizeBlock = (checks) => {
+      const entries = Object.values(checks || {});
+      const penalty = Number(entries.reduce((sum, item) => sum + Number(item.penalty || 0), 0).toFixed(2));
+      const totalRecords = entries.reduce((max, item) => Math.max(max, Number(item.totalRecords || 0)), 0);
+      const missingCount = entries.reduce((sum, item) => sum + Number(item.missingCount || 0), 0);
+      const issueRate = totalRecords > 0 ? Math.min(1, missingCount / totalRecords) : 0;
+      const severity = entries.some((item) => item.severity === "critical")
+        ? "critical"
+        : entries.some((item) => item.severity === "warning")
+          ? "warning"
+          : entries.some((item) => item.severity === "info")
+            ? "info"
+            : "ok";
+      return {
+        totalRecords,
+        missingCount,
+        issueRate: Number(issueRate.toFixed(4)),
+        penalty,
+        severity,
+        previewCount: Math.min(missingCount, 5),
+        lastComputedAt: nowIso(),
+        checks
+      };
+    };
+    const clientPreview = (client) => this.serializeDuplicateClient(client, 0);
+    const servicePreview = (service) => ({ id: service.id, name: service.name || "Servizio" });
+    const appointmentPreview = (appointment) => ({
+      id: appointment.id,
+      clientId: appointment.clientId || "",
+      serviceId: appointment.serviceId || "",
+      staffId: appointment.staffId || appointment.operatorId || "",
+      startAt: appointment.startAt || "",
+      status: appointment.status || ""
+    });
+    const paymentPreview = (payment) => ({
+      id: payment.id,
+      clientId: payment.clientId || "",
+      appointmentId: payment.appointmentId || "",
+      amountCents: Number(payment.amountCents || 0),
+      method: payment.method || ""
+    });
+    const operatorPreview = (operator) => ({ id: operator.id, name: operator.name || "Operatore" });
+    const inventoryPreview = (item) => ({ id: item.id, name: item.name || "Prodotto" });
+    const clientsQuality = summarizeBlock({
+      withoutContact: makeCheck(clientsMissingContact, activeClients.length, 12, clientPreview),
+      withoutPhone: makeCheck(clientsMissingPhone, activeClients.length, 4, clientPreview),
+      withoutEmail: makeCheck(clientsMissingEmail, activeClients.length, 2, clientPreview),
+      withoutLastVisit: makeCheck(clientsMissingLastVisit, clientsWithExpectedHistory.length, 3, clientPreview)
+    });
+    const servicesQuality = summarizeBlock({
+      withoutPrice: makeCheck(servicesMissingPrice, activeServices.length, 10, servicePreview),
+      withoutCost: makeCheck(servicesMissingCosts, activeServices.length, 14, servicePreview),
+      withoutDuration: makeCheck(servicesMissingDuration, activeServices.length, 6, servicePreview),
+      withoutCategory: makeCheck(servicesMissingCategory, activeServices.length, 3, servicePreview)
+    });
+    const paymentsQuality = summarizeBlock({
+      completedWithoutPayment: makeCheck(appointmentsMissingPayment, completedAppointments.length, 15, appointmentPreview),
+      unlinkedPayments: makeCheck(unlinkedPayments, payments.length, 6, paymentPreview),
+      withoutMethod: makeCheck(paymentsMissingMethod, payments.length, 4, paymentPreview)
+    });
+    const appointmentsQuality = summarizeBlock({
+      withoutClient: makeCheck(appointmentsMissingClient, appointments.length, 8, appointmentPreview),
+      withoutService: makeCheck(appointmentsMissingService, appointments.length, 8, appointmentPreview),
+      withoutOperator: makeCheck(appointmentsMissingOperator, appointments.length, 5, appointmentPreview),
+      completedWithMissingFinalData: makeCheck(completedAppointmentsMissingFinalData, completedAppointments.length, 7, appointmentPreview)
+    });
+    const operatorsQuality = summarizeBlock({
+      withoutHourlyCost: makeCheck(operatorsMissingHourlyCost, activeStaff.length, 10, operatorPreview),
+      withoutRole: makeCheck(operatorsMissingRole, activeStaff.length, 3, operatorPreview),
+      withoutServices: makeCheck(operatorsMissingServices, activeStaff.length, 4, operatorPreview)
+    });
+    const inventoryQuality = summarizeBlock({
+      withoutCost: makeCheck(inventoryMissingCost, activeInventory.length, 6, inventoryPreview),
+      withoutStock: makeCheck(inventoryMissingStock, activeInventory.length, 3, inventoryPreview),
+      productServiceLinksWithoutUsage: makeCheck(productLinksMissingUsage, productServiceLinks.length, 8, (link) => ({
+        id: link.productId || "",
+        serviceId: link.serviceId || "",
+        name: link.serviceName || "Collegamento prodotto-servizio"
+      }))
+    });
+    const profitabilityQuality = summarizeBlock({
+      soldServicesWithoutCost: makeCheck(soldServicesMissingMarginCost, soldServices.length, 12, servicePreview),
+      technologiesWithoutCost: makeCheck(resourcesMissingCost, activeResources.length, 6, (resource) => ({ id: resource.id, name: resource.name || "Tecnologia" })),
+      lowMarginServices: makeCheck(servicesLowMargin, servicesWithCalculatedMargin.length, 5, servicePreview)
+    });
+    const totalPenalty = Number([
+      clientsQuality,
+      servicesQuality,
+      paymentsQuality,
+      appointmentsQuality,
+      operatorsQuality,
+      inventoryQuality,
+      profitabilityQuality
+    ].reduce((sum, block) => sum + Number(block.penalty || 0), 0).toFixed(2));
+    const rawScore = 100 - totalPenalty;
+    const score = Math.round(Math.max(0, Math.min(100, rawScore)));
+    const state = score >= 85 ? "alto" : score >= 65 ? "medio" : score >= 40 ? "basso" : "critico";
+    const status = state === "alto" ? "buono" : state === "critico" ? "basso" : state;
     return {
+      clients: clientsQuality,
+      services: servicesQuality,
+      payments: paymentsQuality,
+      appointments: appointmentsQuality,
+      operators: operatorsQuality,
+      inventory: inventoryQuality,
+      profitability: profitabilityQuality,
+      scoreDetails: {
+        value: score,
+        state,
+        totalPenalty,
+        updatedAt: nowIso()
+      },
+      state,
       score,
-      status: score >= 82 ? "buono" : score >= 60 ? "medio" : "basso",
+      status,
+      totalPenalty,
+      updatedAt: nowIso(),
       metrics: {
-        clients: clients.length,
+        clients: activeClients.length,
         clientsMissingContact: clientsMissingContact.length,
-        services: services.length,
+        clientsMissingPhone: clientsMissingPhone.length,
+        clientsMissingEmail: clientsMissingEmail.length,
+        clientsMissingLastVisit: clientsMissingLastVisit.length,
+        services: activeServices.length,
         servicesMissingCosts: servicesMissingCosts.length,
+        servicesMissingPrice: servicesMissingPrice.length,
+        servicesMissingDuration: servicesMissingDuration.length,
+        servicesMissingCategory: servicesMissingCategory.length,
         servicesWithEstimatedCosts: servicesWithEstimatedCosts.length,
         appointments: appointments.length,
         appointmentsMissingPayment: appointmentsMissingPayment.length,
+        appointmentsMissingClient: appointmentsMissingClient.length,
+        appointmentsMissingService: appointmentsMissingService.length,
+        appointmentsMissingOperator: appointmentsMissingOperator.length,
+        completedAppointmentsMissingFinalData: completedAppointmentsMissingFinalData.length,
         payments: payments.length,
         unlinkedPayments: unlinkedPayments.length,
+        paymentsMissingMethod: paymentsMissingMethod.length,
+        operators: activeStaff.length,
+        operatorsMissingHourlyCost: operatorsMissingHourlyCost.length,
+        operatorsMissingRole: operatorsMissingRole.length,
+        operatorsMissingServices: operatorsMissingServices.length,
+        inventory: activeInventory.length,
+        inventoryMissingCost: inventoryMissingCost.length,
+        inventoryMissingStock: inventoryMissingStock.length,
+        productLinksMissingUsage: productLinksMissingUsage.length,
+        technologies: activeResources.length,
+        technologiesMissingCost: resourcesMissingCost.length,
+        soldServicesMissingMarginCost: soldServicesMissingMarginCost.length,
+        servicesLowMargin: servicesLowMargin.length,
         duplicateGroups: duplicateGroups.length
       },
       alerts: [
@@ -3176,7 +3393,10 @@ class DesktopMirrorService {
           clientId: appointment.clientId || "",
           startAt: appointment.startAt || "",
           status: appointment.status || ""
-        }))
+        })),
+        unlinkedPayments: unlinkedPayments.slice(0, 5).map(paymentPreview),
+        operatorsMissingHourlyCost: operatorsMissingHourlyCost.slice(0, 5).map(operatorPreview),
+        inventoryMissingCost: inventoryMissingCost.slice(0, 5).map(inventoryPreview)
       }
     };
   }
