@@ -377,7 +377,7 @@ class AssistantService {
   listClientsSafe(context = {}, session = null) {
     if (this.desktopMirror?.listClients) {
       try {
-        return this.desktopMirror.listClients("", session) || [];
+        return this.desktopMirror.listClients("", session, { summaryOnly: true, limit: 2000 }) || [];
       } catch {
         return [];
       }

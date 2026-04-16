@@ -2185,7 +2185,6 @@ class DesktopMirrorService {
     const daysSinceLastVisit = Number.isFinite(lastVisitTime)
       ? Math.max(0, Math.floor((Date.now() - lastVisitTime) / 86400000))
       : null;
-    const hasContact = Boolean(client.phone || client.email);
     const derivedStatus = daysSinceLastVisit === null
       ? "DATI_INSUFFICIENTI"
       : daysSinceLastVisit > 120
@@ -2193,27 +2192,33 @@ class DesktopMirrorService {
         : daysSinceLastVisit > 45
           ? "IN_RITARDO"
           : "ATTIVO";
-    const delayScore = daysSinceLastVisit === null ? 0 : Math.min(100, Math.round((daysSinceLastVisit / 180) * 100));
-    const valueScore = Math.min(100, Math.round(Number(client.totalValue || 0) / 1000));
-    const contactPenalty = hasContact ? 0 : 20;
-    const priorityScore = clampNumber((delayScore * 0.55) + (valueScore * 0.3) + contactPenalty, 0, { min: 0, max: 100 });
+    const statusLabel = derivedStatus === "ATTIVO"
+      ? "Attivo"
+      : derivedStatus === "IN_RITARDO"
+        ? "In ritardo"
+        : derivedStatus === "INATTIVO"
+          ? "Inattivo"
+          : "Dati insufficienti";
+    const lastVisitLabel = daysSinceLastVisit === null
+      ? "Nessuna visita"
+      : daysSinceLastVisit === 0
+        ? "Oggi"
+        : `${daysSinceLastVisit} giorni fa`;
     return {
       id: client.id,
       firstName: client.firstName || "",
       lastName: client.lastName || "",
       name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
       phone: client.phone || "",
-      email: client.email || "",
+      phoneShort: client.phone || "",
       lastVisit: lastVisitAt,
-      totalValue: Number(client.totalValue || 0),
-      privacyConsent: Boolean(client.privacyConsent),
-      marketingConsent: Boolean(client.marketingConsent),
-      sensitiveDataConsent: Boolean(client.sensitiveDataConsent),
+      lastVisitLabel,
+      clientStatus: derivedStatus,
+      clientStatusLabel: statusLabel,
+      tag: statusLabel,
       clientIntelligence: {
-        ...(client.clientIntelligence || {}),
-        frequencyStatus: client.clientIntelligence?.frequencyStatus || derivedStatus,
-        daysSinceLastVisit,
-        priorityScore: Math.round(priorityScore)
+        frequencyStatus: derivedStatus,
+        daysSinceLastVisit
       }
     };
   }
