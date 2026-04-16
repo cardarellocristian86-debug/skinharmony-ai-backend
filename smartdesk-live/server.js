@@ -507,7 +507,10 @@ app.get("/api/reports/operator/:id/export", requirePlan("silver"), (req, res) =>
 });
 
 app.get("/api/clients", (req, res) => {
-  res.json(service.listClients(req.query.search, req.session));
+  res.json(service.listClients(req.query.search, req.session, {
+    summaryOnly: req.query.summary === "1" || req.query.summary === "true",
+    limit: req.query.limit
+  }));
 });
 
 app.get("/api/clients/duplicates", (req, res) => {

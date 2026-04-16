@@ -2179,13 +2179,56 @@ class DesktopMirrorService {
     };
   }
 
-  listClients(search = "", session = null) {
+  serializeClientListItem(client = {}) {
+    const lastVisitAt = client.lastVisit || "";
+    const lastVisitTime = lastVisitAt ? new Date(lastVisitAt).getTime() : NaN;
+    const daysSinceLastVisit = Number.isFinite(lastVisitTime)
+      ? Math.max(0, Math.floor((Date.now() - lastVisitTime) / 86400000))
+      : null;
+    const hasContact = Boolean(client.phone || client.email);
+    const derivedStatus = daysSinceLastVisit === null
+      ? "DATI_INSUFFICIENTI"
+      : daysSinceLastVisit > 120
+        ? "INATTIVO"
+        : daysSinceLastVisit > 45
+          ? "IN_RITARDO"
+          : "ATTIVO";
+    const delayScore = daysSinceLastVisit === null ? 0 : Math.min(100, Math.round((daysSinceLastVisit / 180) * 100));
+    const valueScore = Math.min(100, Math.round(Number(client.totalValue || 0) / 1000));
+    const contactPenalty = hasContact ? 0 : 20;
+    const priorityScore = clampNumber((delayScore * 0.55) + (valueScore * 0.3) + contactPenalty, 0, { min: 0, max: 100 });
+    return {
+      id: client.id,
+      firstName: client.firstName || "",
+      lastName: client.lastName || "",
+      name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
+      phone: client.phone || "",
+      email: client.email || "",
+      lastVisit: lastVisitAt,
+      totalValue: Number(client.totalValue || 0),
+      privacyConsent: Boolean(client.privacyConsent),
+      marketingConsent: Boolean(client.marketingConsent),
+      sensitiveDataConsent: Boolean(client.sensitiveDataConsent),
+      clientIntelligence: {
+        ...(client.clientIntelligence || {}),
+        frequencyStatus: client.clientIntelligence?.frequencyStatus || derivedStatus,
+        daysSinceLastVisit,
+        priorityScore: Math.round(priorityScore)
+      }
+    };
+  }
+
+  listClients(search = "", session = null, options = {}) {
     const query = String(search || "").trim().toLowerCase();
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
-    if (!query) return clients;
-    return clients.filter((item) =>
-      [item.name, item.phone, item.email].some((value) => String(value || "").toLowerCase().includes(query))
-    );
+    const filtered = query
+      ? clients.filter((item) =>
+        [item.name, item.firstName, item.lastName, item.phone, item.email].some((value) => String(value || "").toLowerCase().includes(query))
+      )
+      : clients;
+    const limit = clampNumber(options.limit || 0, 0, { min: 0, max: 5000 });
+    const result = options.summaryOnly ? filtered.map((client) => this.serializeClientListItem(client)) : filtered;
+    return limit ? result.slice(0, limit) : result;
   }
 
   scoreClientSimilarity(left = {}, right = {}) {
@@ -4084,49 +4127,92 @@ class DesktopMirrorService {
   getDashboardStats(options = {}, session = null) {
     const plan = this.getPlanLevel(session);
     const goldEnabled = plan === "gold";
-    const today = toDateOnly(options.anchorDate || nowIso());
+    const mode = String(options.period || "day");
+    const anchorDate = toDateOnly(options.anchorDate || nowIso());
+    let startDate = anchorDate;
+    let endDate = anchorDate;
+    if (mode === "week") {
+      const anchor = new Date(`${anchorDate}T00:00:00`);
+      const diffToMonday = (anchor.getDay() + 6) % 7;
+      const start = new Date(anchor);
+      start.setDate(anchor.getDate() - diffToMonday);
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      startDate = toDateOnly(start.toISOString());
+      endDate = toDateOnly(end.toISOString());
+    } else if (mode === "month") {
+      const anchor = new Date(`${anchorDate}T00:00:00`);
+      startDate = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, "0")}-01`;
+      endDate = toDateOnly(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).toISOString());
+    }
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const serviceById = new Map(services.map((item) => [String(item.id || ""), item]));
-    const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
+    const inRange = (value) => {
+      const date = toDateOnly(value || "");
+      return date >= startDate && date <= endDate;
+    };
+    const todayAppointments = appointments.filter((item) => inRange(item.startAt || item.createdAt));
+    const periodPayments = payments.filter((item) => inRange(item.createdAt));
     const now = Date.now();
-    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, appointments, now);
-    const inactiveClients = clients.map((client) => {
+    const lastVisitByClient = new Map();
+    appointments.forEach((appointment) => {
+      const clientId = String(appointment.clientId || "");
+      if (!clientId) return;
+      const visitTime = new Date(appointment.startAt || appointment.createdAt || "").getTime();
+      if (!Number.isFinite(visitTime) || visitTime > now) return;
+      const current = lastVisitByClient.get(clientId);
+      if (!current || visitTime > current.time) {
+        lastVisitByClient.set(clientId, { time: visitTime, appointment });
+      }
+    });
+    const inactiveClients = goldEnabled ? clients.map((client) => {
       const clientId = String(client.id || "");
-      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now, serviceById);
+      const lastVisit = lastVisitByClient.get(clientId);
+      const lastVisitAt = lastVisit?.appointment?.startAt || client.lastVisit || "";
+      const lastVisitTime = lastVisitAt ? new Date(lastVisitAt).getTime() : NaN;
+      const daysSinceLastVisit = Number.isFinite(lastVisitTime) ? Math.max(0, Math.floor((now - lastVisitTime) / 86400000)) : 999;
+      const lastService = lastVisit?.appointment ? serviceById.get(String(lastVisit.appointment.serviceId || "")) : null;
+      const routine = expectedRecallRoutineFromService(lastService || lastVisit?.appointment?.serviceName || "", 45);
+      const { recallStatus, recallStatusLabel, overdueDays } = classifyRecallStatus(daysSinceLastVisit, routine.maxDays);
       return {
         clientId,
         name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
         phone: client.phone || "",
-        daysSinceLastVisit: routine.daysSinceLastVisit,
-        clientType: routine.clientType,
-        averageFrequencyDays: routine.averageFrequencyDays,
-        routineDays: routine.routineDays,
-        expectedRoutineDays: routine.expectedRoutineDays,
-        expectedRoutineRange: routine.expectedRoutineRange,
-        recallStatus: routine.recallStatus,
-        recallStatusLabel: routine.recallStatusLabel,
-        overdueDays: routine.overdueDays,
-        centerAverageFrequencyDays: routine.centerAverageFrequencyDays,
-        alertLevel: routine.alertLevel,
-        visitCount: routine.visitCount
+        daysSinceLastVisit,
+        expectedRoutineDays: routine.maxDays,
+        expectedRoutineRange: routine,
+        recallStatus,
+        recallStatusLabel,
+        overdueDays,
+        alertLevel: recallStatus === "a_rischio" ? "rischio" : recallStatus === "da_richiamare" ? "alert" : "nessuno",
+        priorityScore: Math.round((Math.min(1, Math.max(0, overdueDays) / 90) * 70) + (client.phone || client.email ? 0 : 20))
       };
     })
       .filter((item) => item.recallStatus === "da_richiamare" || item.recallStatus === "a_rischio")
       .sort((a, b) => {
         const rank = { a_rischio: 2, da_richiamare: 1 };
-        return (rank[b.recallStatus] || 0) - (rank[a.recallStatus] || 0) || b.overdueDays - a.overdueDays;
-      });
-    const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+        return (rank[b.recallStatus] || 0) - (rank[a.recallStatus] || 0) || b.priorityScore - a.priorityScore;
+      })
+      .slice(0, 12) : [];
+    const revenueCents = periodPayments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     return {
       todayAppointments: todayAppointments.length,
       inactiveClientsCount: goldEnabled ? inactiveClients.length : 0,
       inactiveClients: goldEnabled ? inactiveClients : [],
-      centerAverageFrequencyDays: goldEnabled ? centerAverageFrequencyDays : null,
-      completedAppointments: appointments.filter((item) => item.status === "completed").length,
+      centerAverageFrequencyDays: goldEnabled ? 45 : null,
+      completedAppointments: todayAppointments.filter((item) => item.status === "completed").length,
+      confirmedAppointments: todayAppointments.filter((item) => item.status === "confirmed").length,
+      arrivedAppointments: todayAppointments.filter((item) => item.status === "arrived").length,
+      inProgressAppointments: todayAppointments.filter((item) => item.status === "in_progress").length,
+      readyCheckoutAppointments: todayAppointments.filter((item) => item.status === "ready_checkout").length,
+      pendingConfirmations: todayAppointments.filter((item) => item.status === "requested" || item.status === "booked").length,
+      upcomingAppointments: todayAppointments.filter((item) => !["completed", "cancelled", "no_show"].includes(String(item.status || ""))).length,
       revenueCents,
+      todayRevenueCents: revenueCents,
+      activeClients: clients.length,
       activeClientsCount: clients.length
     };
   }
