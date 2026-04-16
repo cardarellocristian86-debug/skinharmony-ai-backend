@@ -20,6 +20,7 @@ const ANALYTICS_CACHE_TTL_MS = 120000;
 const SNAPSHOT_CACHE_TTL_MS = 60000;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
+const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
 
 const ANALYTICS_BLOCKS = {
   CLIENTS_QUALITY: "clientsQuality",
@@ -954,6 +955,7 @@ class DesktopMirrorService {
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
+    this.appointmentsDayCache = new Map();
   }
 
   getCenterId(session = null) {
@@ -2538,13 +2540,77 @@ class DesktopMirrorService {
     return { path: filePath, url: `/exports/${fileName}`, format: "pdf" };
   }
 
-  listAppointments(view = "day", anchorDate = nowIso(), _includeArchived = false, session = null) {
-    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+  getAppointmentsDayCacheKey(day = "", session = null, filters = {}) {
+    const centerId = this.getCenterId(session);
+    const staffId = String(filters.staffId || filters.operatorId || "");
+    const resourceId = String(filters.resourceId || "");
+    const status = String(filters.status || "");
+    return [centerId, toDateOnly(day || nowIso()), staffId, resourceId, status]
+      .map((part) => String(part || "all").replace(/[^a-zA-Z0-9_-]+/g, "_"))
+      .join(":");
+  }
+
+  invalidateAppointmentsDayCache(centerId = "", dates = []) {
+    const normalizedDates = new Set((Array.isArray(dates) ? dates : [dates])
+      .map((date) => toDateOnly(date || ""))
+      .filter(Boolean));
+    Array.from(this.appointmentsDayCache.keys()).forEach((key) => {
+      const parts = String(key).split(":");
+      const keyCenterId = parts[0] || "";
+      const keyDate = parts[1] || "";
+      if (centerId && keyCenterId !== centerId) return;
+      if (normalizedDates.size && !normalizedDates.has(keyDate)) return;
+      this.appointmentsDayCache.delete(key);
+    });
+  }
+
+  serializeAppointmentDayItem(item = {}) {
+    return {
+      id: item.id || "",
+      clientId: item.clientId || "",
+      clientName: item.clientName || "",
+      walkInName: item.walkInName || "",
+      walkInPhone: item.walkInPhone || "",
+      staffId: item.staffId || "",
+      staffName: item.staffName || "",
+      serviceId: item.serviceId || "",
+      serviceIds: Array.isArray(item.serviceIds) ? item.serviceIds : (item.serviceId ? [String(item.serviceId)] : []),
+      serviceName: item.serviceName || "",
+      resourceId: item.resourceId || "",
+      resourceName: item.resourceName || "",
+      startAt: item.startAt || "",
+      endAt: item.endAt || "",
+      durationMin: Number(item.durationMin || 0),
+      status: item.status || "",
+      notes: item.notes || "",
+      locked: item.locked ? 1 : 0,
+      colorTag: item.colorTag || item.serviceColor || item.staffColor || ""
+    };
+  }
+
+  listAppointments(view = "day", anchorDate = nowIso(), _includeArchived = false, session = null, filters = {}) {
     const day = toDateOnly(anchorDate);
     if (view === "day") {
-      return appointments.filter((item) => toDateOnly(item.startAt) === day);
+      const cacheKey = this.getAppointmentsDayCacheKey(day, session, filters);
+      const cached = this.appointmentsDayCache.get(cacheKey);
+      if (cached && cached.expiresAtMs > Date.now()) {
+        return cached.items;
+      }
+      const appointments = this.filterByCenter(this.appointmentsRepository.list(), session)
+        .filter((item) => toDateOnly(item.startAt) === day)
+        .filter((item) => !filters.staffId || String(item.staffId || "") === String(filters.staffId))
+        .filter((item) => !filters.operatorId || String(item.staffId || "") === String(filters.operatorId))
+        .filter((item) => !filters.resourceId || String(item.resourceId || "") === String(filters.resourceId))
+        .filter((item) => !filters.status || String(item.status || "") === String(filters.status))
+        .map((item) => this.serializeAppointmentDayItem(item));
+      this.appointmentsDayCache.set(cacheKey, {
+        items: appointments,
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + APPOINTMENTS_DAY_CACHE_TTL_MS
+      });
+      return appointments;
     }
-    return appointments;
+    return this.filterByCenter(this.appointmentsRepository.list(), session);
   }
 
   saveAppointment(payload = {}, session = null) {
@@ -2588,19 +2654,31 @@ class DesktopMirrorService {
 
     if (!payload.id) {
       this.appointmentsRepository.create(entity);
+      this.invalidateAppointmentsDayCache(centerId, [entity.startAt]);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       return entity;
     }
 
-    return this.updateInCenter(this.appointmentsRepository, payload.id, (current) => ({
+    const currentAppointment = this.findByIdInCenter(this.appointmentsRepository, payload.id, session);
+    const updated = this.updateInCenter(this.appointmentsRepository, payload.id, (current) => ({
       ...current,
       ...entity,
       createdAt: current.createdAt || entity.createdAt
     }), session);
+    this.invalidateAppointmentsDayCache(centerId, [
+      currentAppointment?.startAt || "",
+      updated?.startAt || entity.startAt
+    ]);
+    return updated;
   }
 
   deleteAppointment(id, session = null) {
-    return this.deleteInCenter(this.appointmentsRepository, id, session);
+    const currentAppointment = this.findByIdInCenter(this.appointmentsRepository, id, session);
+    const result = this.deleteInCenter(this.appointmentsRepository, id, session);
+    if (result?.success) {
+      this.invalidateAppointmentsDayCache(this.getCenterId(session), [currentAppointment?.startAt || ""]);
+    }
+    return result;
   }
 
   listServices(session = null) {
@@ -3647,6 +3725,7 @@ class DesktopMirrorService {
         locked: 1,
         updatedAt: nowIso()
       }), session);
+      this.invalidateAppointmentsDayCache(this.getCenterId(session), [appointment.startAt || ""]);
     }
     return {
       success: true,

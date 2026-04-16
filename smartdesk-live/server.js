@@ -577,7 +577,12 @@ app.get("/api/clients/:id/consent-document", (req, res) => {
 });
 
 app.get("/api/appointments", (req, res) => {
-  res.json(service.listAppointments(req.query.view || "day", req.query.anchorDate || new Date().toISOString(), false, req.session));
+  res.json(service.listAppointments(req.query.view || "day", req.query.anchorDate || new Date().toISOString(), false, req.session, {
+    staffId: req.query.staffId || "",
+    operatorId: req.query.operatorId || "",
+    resourceId: req.query.resourceId || "",
+    status: req.query.status || ""
+  }));
 });
 
 app.post("/api/appointments", (req, res) => {
