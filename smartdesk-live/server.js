@@ -13,6 +13,121 @@ const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
 
 const rateLimitBuckets = new Map();
+const safeModeMonitor = {
+  activeRequests: 0,
+  samples: [],
+  active: false,
+  enteredAt: 0,
+  lastChangedAt: 0,
+  lastReason: "",
+  thresholds: {
+    windowMs: Number(process.env.SAFE_MODE_WINDOW_MS || 45000),
+    minSamples: Number(process.env.SAFE_MODE_MIN_SAMPLES || 80),
+    p95Ms: Number(process.env.SAFE_MODE_P95_MS || 3000),
+    avgMs: Number(process.env.SAFE_MODE_AVG_MS || 1200),
+    errorRate: Number(process.env.SAFE_MODE_ERROR_RATE || 1),
+    concurrentRequests: Number(process.env.SAFE_MODE_CONCURRENT_REQUESTS || 120),
+    minActiveMs: Number(process.env.SAFE_MODE_MIN_ACTIVE_MS || 90000),
+    recoveryMs: Number(process.env.SAFE_MODE_RECOVERY_MS || 60000)
+  }
+};
+
+function isSafeModeForced() {
+  return ["1", "true", "yes", "on"].includes(String(process.env.SAFE_MODE_FORCE || "").toLowerCase());
+}
+
+function percentile(values, p) {
+  const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
+}
+
+function safeModeSnapshot(now = Date.now()) {
+  const windowMs = safeModeMonitor.thresholds.windowMs;
+  safeModeMonitor.samples = safeModeMonitor.samples.filter((item) => now - item.at <= windowMs);
+  const samples = safeModeMonitor.samples;
+  const durations = samples.map((item) => item.ms);
+  const errors = samples.filter((item) => item.status >= 500 || item.error).length;
+  const avgMs = durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0;
+  const p95Ms = Math.round(percentile(durations, 95));
+  const errorRate = samples.length ? Number(((errors / samples.length) * 100).toFixed(2)) : 0;
+  return {
+    active: safeModeMonitor.active || isSafeModeForced(),
+    forced: isSafeModeForced(),
+    activeRequests: safeModeMonitor.activeRequests,
+    sampleCount: samples.length,
+    avgMs,
+    p95Ms,
+    errorRate,
+    enteredAt: safeModeMonitor.enteredAt ? new Date(safeModeMonitor.enteredAt).toISOString() : "",
+    lastChangedAt: safeModeMonitor.lastChangedAt ? new Date(safeModeMonitor.lastChangedAt).toISOString() : "",
+    reason: safeModeMonitor.lastReason,
+    thresholds: safeModeMonitor.thresholds
+  };
+}
+
+function evaluateSafeMode() {
+  if (isSafeModeForced()) {
+    if (!safeModeMonitor.active) {
+      const now = Date.now();
+      safeModeMonitor.active = true;
+      safeModeMonitor.enteredAt = now;
+      safeModeMonitor.lastChangedAt = now;
+      safeModeMonitor.lastReason = "forzata da SAFE_MODE_FORCE";
+      console.warn("[safe-mode] attiva: forzata da SAFE_MODE_FORCE");
+    }
+    return;
+  }
+  const now = Date.now();
+  const snapshot = safeModeSnapshot(now);
+  const reasons = [];
+  const enoughSamples = snapshot.sampleCount >= safeModeMonitor.thresholds.minSamples;
+  if (safeModeMonitor.activeRequests >= safeModeMonitor.thresholds.concurrentRequests) {
+    reasons.push(`concorrenza ${safeModeMonitor.activeRequests} >= ${safeModeMonitor.thresholds.concurrentRequests}`);
+  }
+  if (enoughSamples && snapshot.p95Ms >= safeModeMonitor.thresholds.p95Ms) {
+    reasons.push(`p95 ${snapshot.p95Ms}ms >= ${safeModeMonitor.thresholds.p95Ms}ms`);
+  }
+  if (enoughSamples && snapshot.avgMs >= safeModeMonitor.thresholds.avgMs) {
+    reasons.push(`avg ${snapshot.avgMs}ms >= ${safeModeMonitor.thresholds.avgMs}ms`);
+  }
+  if (enoughSamples && snapshot.errorRate >= safeModeMonitor.thresholds.errorRate) {
+    reasons.push(`errorRate ${snapshot.errorRate}% >= ${safeModeMonitor.thresholds.errorRate}%`);
+  }
+
+  if (reasons.length && !safeModeMonitor.active) {
+    safeModeMonitor.active = true;
+    safeModeMonitor.enteredAt = now;
+    safeModeMonitor.lastChangedAt = now;
+    safeModeMonitor.lastReason = reasons.join("; ");
+    console.warn(`[safe-mode] attiva: ${safeModeMonitor.lastReason}`);
+    return;
+  }
+
+  if (!safeModeMonitor.active) return;
+  const activeLongEnough = now - safeModeMonitor.enteredAt >= safeModeMonitor.thresholds.minActiveMs;
+  const recovered = !reasons.length && now - safeModeMonitor.lastChangedAt >= safeModeMonitor.thresholds.recoveryMs;
+  if (activeLongEnough && recovered) {
+    safeModeMonitor.active = false;
+    safeModeMonitor.lastChangedAt = now;
+    safeModeMonitor.lastReason = "rientro sotto soglia";
+    console.warn("[safe-mode] disattiva: rientro sotto soglia");
+  }
+}
+
+function isSafeModeActive() {
+  evaluateSafeMode();
+  return safeModeMonitor.active || isSafeModeForced();
+}
+
+function safeModePayload(message = "Sistema sotto carico: operazione temporaneamente limitata per mantenere operatività") {
+  return {
+    success: false,
+    code: "safe_mode_active",
+    safeMode: safeModeSnapshot(),
+    message
+  };
+}
 
 function clientIp(req) {
   return String(req.headers["x-forwarded-for"] || req.ip || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
@@ -290,6 +405,26 @@ app.use(express.json({
     req.rawBody = buf.toString("utf8");
   }
 }));
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api")) return next();
+  const startedAt = Date.now();
+  safeModeMonitor.activeRequests += 1;
+  res.setHeader("X-SmartDesk-Safe-Mode", isSafeModeActive() ? "1" : "0");
+  res.on("finish", () => {
+    const endedAt = Date.now();
+    safeModeMonitor.activeRequests = Math.max(0, safeModeMonitor.activeRequests - 1);
+    safeModeMonitor.samples.push({
+      at: endedAt,
+      ms: endedAt - startedAt,
+      status: Number(res.statusCode || 0),
+      error: Number(res.statusCode || 0) >= 500
+    });
+    evaluateSafeMode();
+  });
+  return next();
+});
+
 app.use("/assets", express.static(path.join(publicDir, "assets")));
 app.use("/exports", express.static(path.join(publicDir, "exports")));
 
@@ -446,6 +581,13 @@ app.use("/api", (req, res, next) => {
   return requireAuth(req, res, () => requireOperationalAccess(req, res, next));
 });
 
+app.get("/api/system/safe-mode", (req, res) => {
+  res.json({
+    success: true,
+    safeMode: safeModeSnapshot()
+  });
+});
+
 app.get("/api/dashboard/stats", (req, res) => {
   res.json(service.getDashboardStats({
     period: req.query.period || "day",
@@ -454,6 +596,22 @@ app.get("/api/dashboard/stats", (req, res) => {
 });
 
 app.post("/api/dashboard/refresh", (req, res) => {
+  if (isSafeModeActive()) {
+    const dashboard = service.getDashboardStats({
+        period: req.body?.period || req.query.period || "day",
+        anchorDate: req.body?.anchorDate || req.query.anchorDate || new Date().toISOString()
+      }, req.session);
+    return res.json({
+      ...dashboard,
+      dashboardCache: {
+        ...(dashboard.dashboardCache || {}),
+        refreshStatus: "safe_mode",
+        message: "Sistema sotto carico: aggiornamento temporaneamente limitato per mantenere operatività",
+        safeMode: true
+      },
+      safeMode: safeModeSnapshot()
+    });
+  }
   res.json(service.refreshDashboardStats({
     period: req.body?.period || req.query.period || "day",
     anchorDate: req.body?.anchorDate || req.query.anchorDate || new Date().toISOString()
@@ -473,7 +631,7 @@ app.get("/api/reports/operational", requirePlan("silver"), (req, res) => {
     period: req.query.period || "day",
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
-    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
+    forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
   }, req.session));
 });
 
@@ -581,7 +739,8 @@ app.get("/api/appointments", (req, res) => {
     staffId: req.query.staffId || "",
     operatorId: req.query.operatorId || "",
     resourceId: req.query.resourceId || "",
-    status: req.query.status || ""
+    status: req.query.status || "",
+    safeMode: isSafeModeActive()
   }));
 });
 
@@ -785,7 +944,7 @@ app.get("/api/profitability/overview", requirePlan("silver"), (req, res) => {
   res.json(service.getProfitabilityOverview({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
-    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
+    forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
   }, req.session));
 });
 
@@ -804,7 +963,7 @@ app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
   res.json(service.getBusinessSnapshot({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
-    forceRefresh: req.query.forceRefresh === "1"
+    forceRefresh: !isSafeModeActive() && req.query.forceRefresh === "1"
   }, req.session));
 });
 
@@ -816,6 +975,9 @@ app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
 });
 
 app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
+  if (isSafeModeActive()) {
+    return res.status(429).json(safeModePayload("Sistema sotto carico: AI temporaneamente limitata, agenda e cassa restano operative"));
+  }
   try {
     res.json(await assistantService.aiGoldAsk(req.body || {}, req.session));
   } catch (error) {
@@ -840,6 +1002,9 @@ app.get("/api/ai-gold/marketing/autopilot", requirePlan("gold"), (req, res) => {
 });
 
 app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async (req, res) => {
+  if (isSafeModeActive()) {
+    return res.status(429).json(safeModePayload("Sistema sotto carico: generazione marketing temporaneamente limitata"));
+  }
   try {
     const generated = service.generateAiMarketingAutopilotActions(req.session);
     const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
@@ -865,6 +1030,9 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
 });
 
 app.post("/api/ai-gold/protocols/draft", requireSuperAdmin, requirePlan("silver"), async (req, res) => {
+  if (isSafeModeActive()) {
+    return res.status(429).json(safeModePayload("Sistema sotto carico: generazione protocolli temporaneamente limitata"));
+  }
   try {
     res.json(await service.generateAiGoldProtocolDraft(req.body || {}, req.session));
   } catch (error) {
@@ -923,7 +1091,7 @@ app.get("/api/payments/summary", (req, res) => {
 
 app.get("/api/payments/unlinked", (req, res) => {
   res.json(service.listUnlinkedPayments(req.session, {
-    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
+    forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
   }));
 });
 
@@ -953,8 +1121,8 @@ app.post("/api/payments/:id/link", (req, res) => {
 
 app.get("/api/data-quality", (req, res) => {
   res.json(service.getDataQuality(req.session, {
-    summaryOnly: req.query.summary === "1" || req.query.summary === "true",
-    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
+    summaryOnly: isSafeModeActive() || req.query.summary === "1" || req.query.summary === "true",
+    forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
   }));
 });
 

@@ -2596,6 +2596,9 @@ class DesktopMirrorService {
       if (cached && cached.expiresAtMs > Date.now()) {
         return cached.items;
       }
+      if (filters.safeMode && cached?.items) {
+        return cached.items;
+      }
       const appointments = this.filterByCenter(this.appointmentsRepository.list(), session)
         .filter((item) => toDateOnly(item.startAt) === day)
         .filter((item) => !filters.staffId || String(item.staffId || "") === String(filters.staffId))
