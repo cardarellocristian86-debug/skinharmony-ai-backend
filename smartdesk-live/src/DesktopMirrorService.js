@@ -3762,7 +3762,7 @@ class DesktopMirrorService {
     return { path: filePath, format: "html", url: `/exports/${fileName}` };
   }
 
-  getCenterHealth(options = {}, session = null) {
+  getCenterHealth(options = {}, session = null, precomputedOperational = null) {
     const nowDate = toDateOnly(nowIso());
     const startDate = toDateOnly(options.startDate || `${nowDate.slice(0, 7)}-01`);
     const endDate = toDateOnly(options.endDate || nowDate);
@@ -3778,7 +3778,7 @@ class DesktopMirrorService {
     const thresholds = isBarber
       ? { under: 200000, fragile: 300000, stable: 400000 }
       : { under: 250000, fragile: 350000, stable: 500000 };
-    const operational = this.getOperationalReport({ startDate, endDate }, session);
+    const operational = precomputedOperational || this.getOperationalReport({ startDate, endDate }, session);
     const staff = this.filterByCenter(this.staffRepository.list(), session);
     const activeOperators = Math.max(1, staff.filter((item) => item.active !== false).length || staff.length || 1);
     const revenueCents = Number(operational.totals?.revenueCents || 0);
@@ -3852,7 +3852,7 @@ class DesktopMirrorService {
     return { success: true, url: entries[0] ? `/exports/${entries[0]}` : null };
   }
 
-  getProfitabilityOverview(options = {}, session = null) {
+  getProfitabilityOverview(options = {}, session = null, precomputed = {}) {
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
     const inRange = (value) => {
@@ -4033,7 +4033,7 @@ class DesktopMirrorService {
       }));
     return {
       totals,
-      centerHealth: this.getCenterHealth({ startDate, endDate }, session),
+      centerHealth: precomputed.centerHealth || this.getCenterHealth({ startDate, endDate }, session),
       services: serviceRows,
       products: productRows,
       technologies: technologyRows,
@@ -4373,7 +4373,8 @@ class DesktopMirrorService {
     const centerName = this.getCenterName(session);
     const today = toDateOnly(nowIso());
     const existing = this.filterByCenter(this.aiMarketingActionsRepository.list(), session);
-    const insight = this.getAiGoldMarketing(session);
+    const snapshot = this.getBusinessSnapshot({}, session);
+    const insight = snapshot.marketing || { suggestions: [] };
     const created = [];
     const priorityRank = { alta: 3, media: 2, bassa: 1 };
     const candidates = (insight.suggestions || [])
@@ -4486,6 +4487,27 @@ class DesktopMirrorService {
     return updated;
   }
 
+  getAiGoldMarketingSnapshot(session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "AI Gold Marketing disponibile solo con piano Gold.",
+        suggestions: []
+      };
+    }
+    const snapshot = this.getBusinessSnapshot({}, session);
+    return snapshot.marketing || {
+      goldEnabled: true,
+      generatedAt: snapshot.generatedAt || nowIso(),
+      suggestions: [],
+      lostClients: [],
+      historicInactiveClients: [],
+      counts: { priority: 0, lost: 0, historic: 0 },
+      sourceLayer: "business_snapshot"
+    };
+  }
+
   getBusinessSnapshot(options = {}, session = null) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
@@ -4519,9 +4541,14 @@ class DesktopMirrorService {
     const snapshotStartDate = startDate || currentMonthStart;
     const snapshotEndDate = endDate || nowDate;
     const marketing = this.getAiGoldMarketing(session);
-    const profitability = this.getAiGoldProfitability({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session);
     const operational = this.getOperationalReport({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session);
-    const centerHealth = this.getCenterHealth({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session);
+    const centerHealth = this.getCenterHealth({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session, operational);
+    const profitabilityOverview = this.getProfitabilityOverview(
+      { startDate: snapshotStartDate, endDate: snapshotEndDate },
+      session,
+      { centerHealth }
+    );
+    const profitability = this.buildAiGoldProfitabilityFromOverview(profitabilityOverview);
     const inventory = this.getInventoryOverview(session);
     const dataQuality = this.getDataQuality(session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -4902,19 +4929,9 @@ class DesktopMirrorService {
     };
   }
 
-  getAiGoldProfitability(options = {}, session = null) {
-    this.assertCanOperate(session);
-    const goldEnabled = this.hasGoldIntelligence(session);
-    if (!goldEnabled) {
-      return {
-        goldEnabled: false,
-        message: "AI Gold Redditività disponibile solo con piano Gold.",
-        alerts: [],
-        suggestions: []
-      };
-    }
-    const overview = this.getProfitabilityOverview(options, session);
-    const suggestions = overview.services.map((service) => {
+  buildAiGoldProfitabilityFromOverview(overview = {}) {
+    const services = Array.isArray(overview.services) ? overview.services : [];
+    const suggestions = services.map((service) => {
       const status = String(service.status || "HEALTHY");
       const suggestion = status === "LOSS"
         ? "Verifica prezzo, durata, costo operatore e consumo prodotti: il servizio rischia di lavorare in perdita."
@@ -4975,6 +4992,43 @@ class DesktopMirrorService {
       monthlyTrend: overview.monthlyTrend || [],
       alerts,
       suggestions
+    };
+  }
+
+  getAiGoldProfitabilityLive(options = {}, session = null, precomputedOverview = null) {
+    this.assertCanOperate(session);
+    const goldEnabled = this.hasGoldIntelligence(session);
+    if (!goldEnabled) {
+      return {
+        goldEnabled: false,
+        message: "AI Gold Redditività disponibile solo con piano Gold.",
+        alerts: [],
+        suggestions: []
+      };
+    }
+    const overview = precomputedOverview || this.getProfitabilityOverview(options, session);
+    return this.buildAiGoldProfitabilityFromOverview(overview);
+  }
+
+  getAiGoldProfitability(options = {}, session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "AI Gold Redditività disponibile solo con piano Gold.",
+        alerts: [],
+        suggestions: []
+      };
+    }
+    const snapshot = this.getBusinessSnapshot(options, session);
+    return snapshot.profitability || {
+      goldEnabled: true,
+      generatedAt: snapshot.generatedAt || nowIso(),
+      summary: {},
+      monthlyTrend: [],
+      alerts: [],
+      suggestions: [],
+      sourceLayer: "business_snapshot"
     };
   }
 }

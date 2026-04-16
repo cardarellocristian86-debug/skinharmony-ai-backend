@@ -773,7 +773,7 @@ app.get("/api/profitability/overview", requirePlan("silver"), (req, res) => {
 });
 
 app.get("/api/ai-gold/marketing", requirePlan("gold"), (req, res) => {
-  res.json(service.getAiGoldMarketing(req.session));
+  res.json(service.getAiGoldMarketingSnapshot(req.session));
 });
 
 app.get("/api/ai-gold/profitability", requirePlan("gold"), (req, res) => {
