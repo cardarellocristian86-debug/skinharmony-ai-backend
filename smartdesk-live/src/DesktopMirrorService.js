@@ -187,7 +187,36 @@ function getCenterAverageFrequencyDays(clients, appointments, nowMs = Date.now()
   return value ? clamp(value, 21, 75) : 45;
 }
 
-function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now()) {
+function expectedRecallRoutineFromService(serviceName, fallbackDays = 45) {
+  const text = normalizeText(serviceName || "");
+  if (/schiar|balay|meches|meces|shatush|shatoush|decolor/.test(text)) {
+    return { key: "schiariture_balayage", label: "Schiariture / balayage", minDays: 56, maxDays: 70 };
+  }
+  if (/colore|ricresc|tonalizz|gloss|rifless/.test(text)) {
+    return { key: "colore_ricrescita", label: "Colore / ricrescita", minDays: 28, maxDays: 42 };
+  }
+  if (/keratin|cheratin|lisciante|trattament|ricostruz|botox|cute|cuoio|o3|special/.test(text)) {
+    return { key: "trattamento_speciale", label: "Trattamento speciale", minDays: 70, maxDays: 90 };
+  }
+  if (/taglio|piega|barba|styling|messa in piega/.test(text)) {
+    return { key: "taglio_piega", label: "Taglio / piega frequente", minDays: 21, maxDays: 35 };
+  }
+  const normalizedFallback = clamp(fallbackDays, 35, 75);
+  return { key: "routine_centro", label: "Routine media centro", minDays: Math.max(21, normalizedFallback - 7), maxDays: normalizedFallback };
+}
+
+function classifyRecallStatus(daysSinceLastVisit, expectedRoutineDays) {
+  const days = Number(daysSinceLastVisit || 0);
+  const routine = Number(expectedRoutineDays || 45);
+  const overdueDays = days - routine;
+  if (days > 180) return { recallStatus: "storico", recallStatusLabel: "Storico", overdueDays };
+  if (overdueDays > 90) return { recallStatus: "perso", recallStatusLabel: "Perso", overdueDays };
+  if (overdueDays > 30) return { recallStatus: "a_rischio", recallStatusLabel: "A rischio", overdueDays };
+  if (overdueDays > 0) return { recallStatus: "da_richiamare", recallStatusLabel: "Da richiamare", overdueDays };
+  return { recallStatus: "in_linea", recallStatusLabel: "In linea", overdueDays: Math.max(0, overdueDays) };
+}
+
+function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now(), serviceById = new Map()) {
   const clientId = String(client?.id || "");
   const visits = relevantClientAppointments(appointments, clientId, nowMs);
   const lastVisit = visits[visits.length - 1] || null;
@@ -209,19 +238,19 @@ function classifyClientRoutine(client, appointments, centerAverageFrequencyDays,
     : (visitCount >= 4 && deviation <= 0.65) || (visitCount >= 3 && averageFrequencyDays <= Number(centerAverageFrequencyDays || 45) * 1.35 && deviation <= 0.85)
       ? "abituale"
       : "saltuario";
-  const routineDays = clientType === "abituale" ? clamp(averageFrequencyDays, 14, 120) : null;
-  const lightThreshold = Math.round(Math.max(60, Number(centerAverageFrequencyDays || 45) * 1.8));
-  const outOfRoutineAfter = routineDays ? Math.round(routineDays + Math.max(7, Number(centerAverageFrequencyDays || 45) * 0.25)) : lightThreshold;
-  const highRiskAfter = routineDays ? Math.round(Math.max(outOfRoutineAfter + 14, routineDays * 1.75)) : Math.round(lightThreshold * 1.4);
-  const isOutOfRoutine = clientType === "abituale" && daysSinceLastVisit >= outOfRoutineAfter;
-  const isHighRisk = clientType === "abituale" && daysSinceLastVisit >= highRiskAfter;
-  const isLightSuggestion = clientType === "saltuario" && daysSinceLastVisit >= lightThreshold;
-  const alertLevel = isHighRisk
+  const lastService = lastVisit ? serviceById.get(String(lastVisit.serviceId || "")) : null;
+  const serviceRoutine = expectedRecallRoutineFromService(lastService?.name || lastVisit?.serviceName || lastVisit?.service || "", centerAverageFrequencyDays);
+  const routineDays = serviceRoutine.maxDays;
+  const outOfRoutineAfter = routineDays;
+  const highRiskAfter = routineDays + 30;
+  const lostAfter = routineDays + 90;
+  const { recallStatus, recallStatusLabel, overdueDays } = classifyRecallStatus(daysSinceLastVisit, routineDays);
+  const alertLevel = recallStatus === "a_rischio"
     ? "rischio"
-    : isOutOfRoutine
+    : recallStatus === "da_richiamare"
       ? "alert"
-      : isLightSuggestion
-        ? "suggerimento"
+      : recallStatus === "perso" || recallStatus === "storico"
+        ? recallStatus
         : "nessuno";
   return {
     clientType,
@@ -234,11 +263,17 @@ function classifyClientRoutine(client, appointments, centerAverageFrequencyDays,
     averageFrequencyDays,
     centerAverageFrequencyDays: Math.round(Number(centerAverageFrequencyDays || 45)),
     routineDays,
+    expectedRoutineDays: routineDays,
+    expectedRoutineRange: { minDays: serviceRoutine.minDays, maxDays: serviceRoutine.maxDays, label: serviceRoutine.label, key: serviceRoutine.key },
+    recallStatus,
+    recallStatusLabel,
+    overdueDays,
     outOfRoutineAfter,
     highRiskAfter,
-    lightThreshold,
+    lostAfter,
+    lightThreshold: routineDays,
     alertLevel,
-    hasRecallAlert: alertLevel !== "nessuno",
+    hasRecallAlert: recallStatus === "da_richiamare" || recallStatus === "a_rischio",
     deviation: Number.isFinite(deviation) ? Number(deviation.toFixed(2)) : 1
   };
 }
@@ -3208,12 +3243,14 @@ class DesktopMirrorService {
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const serviceById = new Map(services.map((item) => [String(item.id || ""), item]));
     const todayAppointments = appointments.filter((item) => toDateOnly(item.startAt) === today);
     const now = Date.now();
     const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, appointments, now);
     const inactiveClients = clients.map((client) => {
       const clientId = String(client.id || "");
-      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now);
+      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now, serviceById);
       return {
         clientId,
         name: `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente",
@@ -3222,15 +3259,20 @@ class DesktopMirrorService {
         clientType: routine.clientType,
         averageFrequencyDays: routine.averageFrequencyDays,
         routineDays: routine.routineDays,
+        expectedRoutineDays: routine.expectedRoutineDays,
+        expectedRoutineRange: routine.expectedRoutineRange,
+        recallStatus: routine.recallStatus,
+        recallStatusLabel: routine.recallStatusLabel,
+        overdueDays: routine.overdueDays,
         centerAverageFrequencyDays: routine.centerAverageFrequencyDays,
         alertLevel: routine.alertLevel,
         visitCount: routine.visitCount
       };
     })
-      .filter((item) => item.alertLevel === "rischio" || item.alertLevel === "alert" || item.alertLevel === "suggerimento")
+      .filter((item) => item.recallStatus === "da_richiamare" || item.recallStatus === "a_rischio")
       .sort((a, b) => {
-        const rank = { rischio: 3, alert: 2, suggerimento: 1 };
-        return (rank[b.alertLevel] || 0) - (rank[a.alertLevel] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
+        const rank = { a_rischio: 2, da_richiamare: 1 };
+        return (rank[b.recallStatus] || 0) - (rank[a.recallStatus] || 0) || b.overdueDays - a.overdueDays;
       });
     const revenueCents = payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
     return {
@@ -3334,8 +3376,9 @@ class DesktopMirrorService {
     const topServices = Array.from(byService.values()).sort((a, b) => b.appointments - a.appointments);
     const reportNow = Date.now();
     const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, this.filterByCenter(this.appointmentsRepository.list(), session), reportNow);
+    const allCenterAppointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const inactiveClients = clients.map((client) => {
-      const routine = classifyClientRoutine(client, this.filterByCenter(this.appointmentsRepository.list(), session), centerAverageFrequencyDays, reportNow);
+      const routine = classifyClientRoutine(client, allCenterAppointments, centerAverageFrequencyDays, reportNow, serviceById);
       return {
         clientId: String(client.id || ""),
         name: clientNames.get(String(client.id || "")) || "Cliente",
@@ -3345,16 +3388,21 @@ class DesktopMirrorService {
         clientType: routine.clientType,
         averageFrequencyDays: routine.averageFrequencyDays,
         routineDays: routine.routineDays,
+        expectedRoutineDays: routine.expectedRoutineDays,
+        expectedRoutineRange: routine.expectedRoutineRange,
+        recallStatus: routine.recallStatus,
+        recallStatusLabel: routine.recallStatusLabel,
+        overdueDays: routine.overdueDays,
         alertLevel: routine.alertLevel
       };
-    }).filter((item) => item.alertLevel === "rischio" || item.alertLevel === "alert" || item.alertLevel === "suggerimento").sort((a, b) => {
-      const rank = { rischio: 3, alert: 2, suggerimento: 1 };
-      return (rank[b.alertLevel] || 0) - (rank[a.alertLevel] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
+    }).filter((item) => item.recallStatus === "da_richiamare" || item.recallStatus === "a_rischio").sort((a, b) => {
+      const rank = { a_rischio: 2, da_richiamare: 1 };
+      return (rank[b.recallStatus] || 0) - (rank[a.recallStatus] || 0) || b.overdueDays - a.overdueDays;
     }).slice(0, 10);
     const insights = [];
     if (completedAppointments === 0) insights.push("Completa e incassa gli appuntamenti per attivare un report più preciso.");
     if (topServices[0]) insights.push(`Servizio più richiesto nel periodo: ${topServices[0].name}.`);
-    if (inactiveClients[0]) insights.push(`${inactiveClients.length} clienti risultano inattivi o da richiamare.`);
+    if (inactiveClients[0]) insights.push(`${inactiveClients.length} clienti sono da richiamare o a rischio.`);
     return {
       period,
       generatedAt: nowIso(),
@@ -3815,10 +3863,10 @@ class DesktopMirrorService {
         push: "spingere servizio premium coerente con lo storico cliente"
       };
     };
-    const suggestions = clients.map((client) => {
+    const allSuggestions = clients.map((client) => {
       const clientId = String(client.id || "");
       const displayName = cleanDisplayName(client);
-      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now);
+      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now, serviceById);
       const clientAppointments = routine.visits;
       const lastAppointment = routine.lastVisit || null;
       const daysSinceLastVisit = routine.daysSinceLastVisit;
@@ -3838,30 +3886,34 @@ class DesktopMirrorService {
           ? "prezzo_ultimo_servizio"
           : "dato_non_disponibile";
       const hasMarketingConsent = Boolean(client.marketingConsent);
-      const segment = routine.clientType === "occasionale"
-        ? "occasionale"
-        : routine.alertLevel === "rischio"
+      const segment = routine.recallStatus === "storico"
+        ? "storico"
+        : routine.recallStatus === "perso"
           ? "perso"
-          : routine.alertLevel === "alert"
+          : routine.recallStatus === "a_rischio"
             ? "a_rischio"
+            : routine.recallStatus === "da_richiamare"
+              ? "da_richiamare"
+              : routine.clientType === "occasionale"
+                ? "occasionale"
             : totalSpentCents >= 50000 && routine.clientType !== "occasionale"
               ? "top_cliente"
-              : routine.alertLevel === "suggerimento"
-                ? "saltuario_da_presidiare"
                 : "attivo";
       const priority = !hasMarketingConsent
         ? "media"
-        : segment === "perso"
+        : segment === "a_rischio"
           ? "alta"
-          : segment === "a_rischio" || totalSpentCents >= 50000
-            ? "alta"
-            : segment === "saltuario_da_presidiare"
+          : segment === "da_richiamare" || totalSpentCents >= 50000
               ? "media"
-              : "bassa";
+            : "bassa";
       const pattern = segment === "perso"
         ? "cliente a rischio perdita"
+        : segment === "storico"
+          ? "cliente storico inattivo"
         : segment === "a_rischio"
           ? "cliente in calo"
+          : segment === "da_richiamare"
+            ? "cliente da richiamare"
           : routine.clientType === "abituale"
             ? "cliente abituale"
             : routine.clientType === "saltuario"
@@ -3869,9 +3921,9 @@ class DesktopMirrorService {
               : "cliente occasionale";
       const risk = !hasMarketingConsent
         ? "medio"
-        : segment === "perso"
+        : segment === "a_rischio"
           ? "alto"
-          : segment === "a_rischio"
+          : segment === "perso"
             ? "medio"
             : "basso";
       const operatingDecision = priority === "alta"
@@ -3888,30 +3940,36 @@ class DesktopMirrorService {
       const signal = serviceSignal(lastService?.name || "", displayName);
       const urgencyReason = !hasMarketingConsent
         ? "Prima serve consenso marketing registrato."
+        : segment === "storico"
+          ? `Cliente storico: ${daysSinceLastVisit} giorni senza ritorno, fuori dalle priorità del giorno.`
         : segment === "perso"
-          ? `Cliente perso: ${daysSinceLastVisit} giorni senza ritorno.`
+          ? `Cliente perso: oltre ${routine.overdueDays} giorni fuori routine.`
         : segment === "a_rischio"
-            ? `Cliente abituale fuori routine: media ${averageFrequencyDays} giorni, ultimo passaggio ${daysSinceLastVisit} giorni fa.`
-            : segment === "saltuario_da_presidiare"
-              ? `Cliente saltuario: non è routine, ma è fermo da ${daysSinceLastVisit} giorni.`
+            ? `Cliente a rischio: oltre ${routine.overdueDays} giorni fuori routine ${routine.expectedRoutineDays} giorni.`
+            : segment === "da_richiamare"
+              ? `Cliente da richiamare: oltre ${routine.overdueDays} giorni fuori routine ${routine.expectedRoutineDays} giorni.`
             : totalSpentCents >= 50000
               ? "Cliente ad alto valore: conviene presidiare continuità e proposta."
               : "Richiamo utile per mantenere continuità.";
       const recommendedAction = !hasMarketingConsent
         ? "Apri scheda cliente e registra consenso prima di inviare comunicazioni."
-        : segment === "perso"
-          ? "Contatto personale, proposta semplice e slot comodo entro 7 giorni."
         : segment === "a_rischio"
             ? "Recall mirato sul servizio abituale e proposta appuntamento entro 10 giorni."
-            : segment === "saltuario_da_presidiare"
-              ? "Suggerimento leggero: messaggio morbido, senza urgenza."
+          : segment === "da_richiamare"
+              ? "Messaggio breve e proposta slot semplice prima che diventi a rischio."
+            : segment === "perso"
+              ? "Recupero non prioritario: usa una campagna separata, non la lista del giorno."
+            : segment === "storico"
+              ? "Non trattarlo come recall urgente: mantienilo nello storico inattivi."
             : "Messaggio leggero di mantenimento e controllo prossimo appuntamento.";
       const clearReason = segment === "perso"
-        ? "quasi perso"
+        ? "cliente perso"
+        : segment === "storico"
+          ? "storico inattivo"
         : segment === "a_rischio"
           ? "cliente fuori ritmo"
-          : segment === "saltuario_da_presidiare"
-            ? "cliente saltuario da presidiare"
+          : segment === "da_richiamare"
+            ? "cliente da richiamare"
           : totalSpentCents >= 50000
             ? "cliente di valore da presidiare"
             : "mantenimento relazione";
@@ -3951,6 +4009,11 @@ class DesktopMirrorService {
         clientType: routine.clientType,
         visitCount: routine.visitCount,
         routineDays: routine.routineDays,
+        expectedRoutineDays: routine.expectedRoutineDays,
+        expectedRoutineRange: routine.expectedRoutineRange,
+        recallStatus: routine.recallStatus,
+        recallStatusLabel: routine.recallStatusLabel,
+        overdueDays: routine.overdueDays,
         centerAverageFrequencyDays: routine.centerAverageFrequencyDays,
         alertLevel: routine.alertLevel,
         operatingDecision,
@@ -3973,16 +4036,30 @@ class DesktopMirrorService {
           ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: così controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
       };
-    }).filter((item) => item.alertLevel !== "nessuno" && item.clientType !== "occasionale")
+    });
+    const prioritySuggestions = allSuggestions.filter((item) => item.recallStatus === "da_richiamare" || item.recallStatus === "a_rischio")
       .sort((a, b) => {
         const weight = { alta: 3, media: 2, bassa: 1 };
-        return (weight[b.priority] || 0) - (weight[a.priority] || 0) || b.daysSinceLastVisit - a.daysSinceLastVisit;
+        return (weight[b.priority] || 0) - (weight[a.priority] || 0) || b.overdueDays - a.overdueDays;
       })
       .slice(0, 20);
+    const lostClients = allSuggestions.filter((item) => item.recallStatus === "perso")
+      .sort((a, b) => b.overdueDays - a.overdueDays)
+      .slice(0, 20);
+    const historicInactiveClients = allSuggestions.filter((item) => item.recallStatus === "storico")
+      .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
+      .slice(0, 40);
     return {
       goldEnabled: true,
       generatedAt: nowIso(),
-      suggestions
+      suggestions: prioritySuggestions,
+      lostClients,
+      historicInactiveClients,
+      counts: {
+        priority: prioritySuggestions.length,
+        lost: lostClients.length,
+        historic: historicInactiveClients.length
+      }
     };
   }
 
