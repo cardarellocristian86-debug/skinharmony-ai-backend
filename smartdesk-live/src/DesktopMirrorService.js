@@ -187,19 +187,32 @@ function getCenterAverageFrequencyDays(clients, appointments, nowMs = Date.now()
   return value ? clamp(value, 21, 75) : 45;
 }
 
-function expectedRecallRoutineFromService(serviceName, fallbackDays = 45) {
-  const text = normalizeText(serviceName || "");
+function expectedRecallRoutineFromService(serviceInput, fallbackDays = 45) {
+  const service = serviceInput && typeof serviceInput === "object" ? serviceInput : null;
+  const rawName = service ? service.name || service.serviceName || service.service || "" : serviceInput || "";
+  const rawCategory = service ? service.category || service.serviceCategory || service.type || "" : "";
+  const hasTechnologyLinks = service && Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
+  const text = normalizeText(`${rawCategory || ""} ${rawName || ""}`);
+  if (hasTechnologyLinks || /tecnolog|radiofrequ|laser|pressoter|ultrasu|ossigen|ozon|o3|plasma|skin pro|macchin|fotobiomod|endosfer|criolip|elettropor/.test(text)) {
+    return { key: "tecnologie_avanzate", label: "Tecnologie avanzate", minDays: 30, maxDays: 60 };
+  }
+  if (/corpo|body|cellulit|dren|linfodren|massagg|press|rimodell|fang|bendagg|tonific|gambe|addome|percorso corpo/.test(text)) {
+    return { key: "estetica_corpo", label: "Estetica corpo / percorso", minDays: 7, maxDays: 14 };
+  }
+  if (/viso|facial|pulizia|peeling|trattamento viso|idrata|antiage|anti age|macchie viso|couperose|acne|pelle|dermo/.test(text)) {
+    return { key: "estetica_viso", label: "Estetica viso", minDays: 30, maxDays: 45 };
+  }
   if (/schiar|balay|meches|meces|shatush|shatoush|decolor/.test(text)) {
-    return { key: "schiariture_balayage", label: "Schiariture / balayage", minDays: 56, maxDays: 70 };
+    return { key: "parrucchiere_schiariture", label: "Parrucchiere / schiariture", minDays: 56, maxDays: 70 };
   }
   if (/colore|ricresc|tonalizz|gloss|rifless/.test(text)) {
-    return { key: "colore_ricrescita", label: "Colore / ricrescita", minDays: 28, maxDays: 42 };
+    return { key: "parrucchiere_colore", label: "Parrucchiere / colore", minDays: 28, maxDays: 42 };
   }
   if (/keratin|cheratin|lisciante|trattament|ricostruz|botox|cute|cuoio|o3|special/.test(text)) {
-    return { key: "trattamento_speciale", label: "Trattamento speciale", minDays: 70, maxDays: 90 };
+    return { key: "parrucchiere_trattamento", label: "Parrucchiere / trattamento speciale", minDays: 70, maxDays: 90 };
   }
-  if (/taglio|piega|barba|styling|messa in piega/.test(text)) {
-    return { key: "taglio_piega", label: "Taglio / piega frequente", minDays: 21, maxDays: 35 };
+  if (/parrucch|hair|barber|taglio|piega|barba|styling|messa in piega/.test(text)) {
+    return { key: "parrucchiere", label: "Parrucchiere", minDays: 21, maxDays: 45 };
   }
   const normalizedFallback = clamp(fallbackDays, 35, 75);
   return { key: "routine_centro", label: "Routine media centro", minDays: Math.max(21, normalizedFallback - 7), maxDays: normalizedFallback };
@@ -239,7 +252,7 @@ function classifyClientRoutine(client, appointments, centerAverageFrequencyDays,
       ? "abituale"
       : "saltuario";
   const lastService = lastVisit ? serviceById.get(String(lastVisit.serviceId || "")) : null;
-  const serviceRoutine = expectedRecallRoutineFromService(lastService?.name || lastVisit?.serviceName || lastVisit?.service || "", centerAverageFrequencyDays);
+  const serviceRoutine = expectedRecallRoutineFromService(lastService || lastVisit?.serviceName || lastVisit?.service || "", centerAverageFrequencyDays);
   const routineDays = serviceRoutine.maxDays;
   const outOfRoutineAfter = routineDays;
   const highRiskAfter = routineDays + 30;
