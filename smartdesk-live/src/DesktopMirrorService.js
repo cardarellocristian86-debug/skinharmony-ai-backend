@@ -653,6 +653,7 @@ class DesktopMirrorService {
     this.settingsRepository = this.createRepository("settings", defaultSettings);
 
     this.sessions = new Map();
+    this.businessSnapshotCache = new Map();
   }
 
   getCenterId(session = null) {
@@ -746,6 +747,24 @@ class DesktopMirrorService {
     if (this.isSuperAdminSession(session) && !session.supportMode) return "gold";
     const plan = String(session.subscriptionPlan || "").toLowerCase();
     return ["base", "silver", "gold"].includes(plan) ? plan : "base";
+  }
+
+  getBusinessSnapshotCacheKey(options = {}, session = null) {
+    const centerId = this.getCenterId(session);
+    const startDate = String(options.startDate || "");
+    const endDate = String(options.endDate || "");
+    return `${centerId}:${startDate}:${endDate}:${this.getPlanLevel(session)}`;
+  }
+
+  invalidateBusinessSnapshot(centerId = "") {
+    if (!centerId) {
+      this.businessSnapshotCache.clear();
+      return;
+    }
+    const prefix = `${centerId}:`;
+    Array.from(this.businessSnapshotCache.keys()).forEach((key) => {
+      if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
+    });
   }
 
   hasProtocolAiAccess(session = null) {
@@ -937,7 +956,9 @@ class DesktopMirrorService {
     if (!current || !this.belongsToCenter(current, centerId)) {
       throw new Error("Elemento non trovato");
     }
-    return repository.update(id, updater);
+    const updated = repository.update(id, updater);
+    this.invalidateBusinessSnapshot(centerId);
+    return updated;
   }
 
   deleteInCenter(repository, id, session = null) {
@@ -946,7 +967,9 @@ class DesktopMirrorService {
     if (!current || !this.belongsToCenter(current, centerId)) {
       return { success: false };
     }
-    return { success: repository.delete(id) };
+    const success = repository.delete(id);
+    if (success) this.invalidateBusinessSnapshot(centerId);
+    return { success };
   }
 
   findExistingByIdempotency(repository, payload = {}, session = null) {
@@ -1889,6 +1912,7 @@ class DesktopMirrorService {
 
     if (!payload.id) {
       this.clientsRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
 
@@ -2040,6 +2064,7 @@ class DesktopMirrorService {
 
     if (!payload.id) {
       this.appointmentsRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
 
@@ -2102,6 +2127,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.servicesRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
     return this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2140,6 +2166,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.staffRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
     return this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2206,6 +2233,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.shiftsRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
     return this.updateInCenter(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2290,6 +2318,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.resourcesRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
     return this.updateInCenter(this.resourcesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2337,6 +2366,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.inventoryRepository.create(entity);
+      this.invalidateBusinessSnapshot(this.getCenterId(session));
       return entity;
     }
     return this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2366,6 +2396,7 @@ class DesktopMirrorService {
       createdAt: nowIso()
     };
     this.inventoryMovementsRepository.create(movement);
+    this.invalidateBusinessSnapshot(centerId);
     if (movement.itemId) {
       const signedQuantity = ["unload", "internal_use", "sale"].includes(movement.type)
         ? -movement.quantity
@@ -2404,6 +2435,7 @@ class DesktopMirrorService {
       createdAt: nowIso()
     };
     this.treatmentsRepository.create(treatment);
+    this.invalidateBusinessSnapshot(this.getCenterId(session));
     return treatment;
   }
 
@@ -2466,6 +2498,7 @@ class DesktopMirrorService {
       createdAt: now
     };
     this.protocolsRepository.create(protocol);
+    this.invalidateBusinessSnapshot(this.getCenterId(session));
     return protocol;
   }
 
@@ -3246,6 +3279,7 @@ class DesktopMirrorService {
       createdAt
     };
     this.paymentsRepository.create(payment);
+    this.invalidateBusinessSnapshot(this.getCenterId(session));
     return payment;
   }
 
@@ -4232,32 +4266,44 @@ class DesktopMirrorService {
     return updated;
   }
 
-  getAiGoldDecisionCenter(options = {}, session = null) {
+  getBusinessSnapshot(options = {}, session = null) {
     this.assertCanOperate(session);
-    if (!this.hasGoldIntelligence(session)) {
+    const plan = this.getPlanLevel(session);
+    if (plan !== "gold") {
       return {
-        goldEnabled: false,
-        message: "Dashboard decisionale disponibile solo con piano Gold.",
-        sections: []
+        snapshotAvailable: false,
+        requiredPlan: "gold",
+        currentPlan: plan,
+        message: "Business Snapshot disponibile solo come fonte decisionale del piano Gold."
       };
     }
+
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
-    const marketing = this.getAiGoldMarketing(session);
-    const profitability = this.getAiGoldProfitability({ startDate, endDate }, session);
+    const cacheKey = this.getBusinessSnapshotCacheKey({ startDate, endDate }, session);
+    const cached = this.businessSnapshotCache.get(cacheKey);
+    const nowMs = Date.now();
+    if (cached && cached.expiresAtMs > nowMs && !options.forceRefresh) {
+      return {
+        ...cached.snapshot,
+        meta: {
+          ...cached.snapshot.meta,
+          cached: true,
+          cacheAgeMs: nowMs - cached.createdAtMs
+        }
+      };
+    }
+
     const nowDate = toDateOnly(nowIso());
     const currentMonthStart = `${nowDate.slice(0, 7)}-01`;
-    const operational = this.getOperationalReport({
-      startDate: startDate || currentMonthStart,
-      endDate: endDate || toDateOnly(nowIso())
-    }, session);
-    const centerHealth = this.getCenterHealth({
-      startDate: startDate || currentMonthStart,
-      endDate: endDate || toDateOnly(nowIso())
-    }, session);
+    const snapshotStartDate = startDate || currentMonthStart;
+    const snapshotEndDate = endDate || nowDate;
+    const marketing = this.getAiGoldMarketing(session);
+    const profitability = this.getAiGoldProfitability({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session);
+    const operational = this.getOperationalReport({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session);
+    const centerHealth = this.getCenterHealth({ startDate: snapshotStartDate, endDate: snapshotEndDate }, session);
     const inventory = this.getInventoryOverview(session);
     const dataQuality = this.getDataQuality(session);
-    const shifts = this.filterByCenter(this.shiftsRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const treatments = this.filterByCenter(this.treatmentsRepository.list(), session);
@@ -4275,7 +4321,7 @@ class DesktopMirrorService {
       upcomingByDay.set(date, (upcomingByDay.get(date) || 0) + 1);
     });
     const weakestUpcomingDay = Array.from(upcomingByDay.entries())
-      .sort((a, b) => Number(a[1]) - Number(b[1]))[0];
+      .sort((a, b) => Number(a[1]) - Number(b[1]))[0] || null;
     const staffLoad = new Map();
     upcomingAppointments.forEach((appointment) => {
       const staffId = String(appointment.staffId || "unassigned");
@@ -4288,15 +4334,92 @@ class DesktopMirrorService {
       staffLoad.set(staffId, row);
     });
     const leastLoadedOperator = Array.from(staffLoad.values())
-      .sort((a, b) => Number(a.appointments || 0) - Number(b.appointments || 0))[0];
+      .sort((a, b) => Number(a.appointments || 0) - Number(b.appointments || 0))[0] || null;
+    const topOperator = operational.topOperators?.[0] || null;
+    const weakOperator = operational.topOperators?.slice().reverse()[0] || leastLoadedOperator || null;
+    const topClient = operational.topClientsBySpend?.[0] || null;
     const focusClient = marketing.suggestions?.[0] || null;
+    const snapshot = {
+      snapshotAvailable: true,
+      snapshotVersion: "1.0",
+      sourceLayer: "business_snapshot",
+      generatedAt: nowIso(),
+      expiresAt: new Date(nowMs + 60000).toISOString(),
+      plan,
+      period: {
+        startDate: snapshotStartDate,
+        endDate: snapshotEndDate
+      },
+      meta: {
+        cached: false,
+        cacheTtlMs: 60000,
+        freshness: "fresh",
+        rule: "Core calcola, Report ordina, Snapshot prepara, AI Gold decide."
+      },
+      core: {
+        appointments: appointments.length,
+        treatments: treatments.length,
+        protocols: protocols.length,
+        technologies: resources.length
+      },
+      report: {
+        operational,
+        centerHealth
+      },
+      marketing: {
+        ...marketing,
+        priorityClients: Array.isArray(marketing.suggestions) ? marketing.suggestions : [],
+        lostClients: Array.isArray(marketing.lostClients) ? marketing.lostClients : [],
+        historicInactiveClients: Array.isArray(marketing.historicInactiveClients) ? marketing.historicInactiveClients : [],
+        focusClient
+      },
+      profitability,
+      inventory,
+      dataQuality,
+      operations: {
+        upcomingAppointments,
+        weakestUpcomingDay,
+        leastLoadedOperator,
+        topOperator,
+        weakOperator,
+        topClient
+      }
+    };
+    this.businessSnapshotCache.set(cacheKey, {
+      createdAtMs: nowMs,
+      expiresAtMs: nowMs + 60000,
+      snapshot
+    });
+    return snapshot;
+  }
+
+  getAiGoldDecisionCenter(options = {}, session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        message: "Dashboard decisionale disponibile solo con piano Gold.",
+        sections: []
+      };
+    }
+    const startDate = String(options.startDate || "");
+    const endDate = String(options.endDate || "");
+    const snapshot = this.getBusinessSnapshot({ startDate, endDate }, session);
+    const marketing = snapshot.marketing || {};
+    const profitability = snapshot.profitability || {};
+    const operational = snapshot.report?.operational || {};
+    const centerHealth = snapshot.report?.centerHealth || {};
+    const inventory = snapshot.inventory || {};
+    const dataQuality = snapshot.dataQuality || {};
+    const focusClient = snapshot.marketing?.focusClient || null;
     const marginAlert = profitability.suggestions?.find((item) => item.status !== "HEALTHY") || null;
     const bestService = profitability.suggestions?.slice().sort((a, b) => Number(b.marginPercent || 0) - Number(a.marginPercent || 0))[0] || null;
     const lowTechnology = (profitability.technologies || []).find((item) => Number(item.totalUses || 0) <= 2 || item.status !== "HEALTHY") || null;
     const lowStock = inventory.lowStock?.[0] || null;
-    const topOperator = operational.topOperators?.[0] || null;
-    const weakOperator = operational.topOperators?.slice().reverse()[0] || leastLoadedOperator || null;
-    const topClient = operational.topClientsBySpend?.[0] || null;
+    const weakestUpcomingDay = snapshot.operations?.weakestUpcomingDay || null;
+    const topOperator = snapshot.operations?.topOperator || null;
+    const weakOperator = snapshot.operations?.weakOperator || null;
+    const topClient = snapshot.operations?.topClient || null;
     const membershipWarning = topClient && focusClient && String(topClient.clientId || "") === String(focusClient.clientId || "")
       ? topClient
       : null;
@@ -4545,9 +4668,15 @@ class DesktopMirrorService {
           "membership",
           "AI cliente"
         ],
-        treatments: treatments.length,
-        protocols: protocols.length,
-        technologies: resources.length
+        snapshot: {
+          sourceLayer: snapshot.sourceLayer,
+          cached: Boolean(snapshot.meta?.cached),
+          generatedAt: snapshot.generatedAt,
+          expiresAt: snapshot.expiresAt
+        },
+        treatments: Number(snapshot.core?.treatments || 0),
+        protocols: Number(snapshot.core?.protocols || 0),
+        technologies: Number(snapshot.core?.technologies || 0)
       },
       sections
     };

@@ -1055,14 +1055,21 @@ class AssistantService {
   }
 
   buildAiGoldFallback(question, context) {
-    const marketingCount = Array.isArray(context.marketing?.suggestions) ? context.marketing.suggestions.length : 0;
-    const profitAlerts = Array.isArray(context.profitability?.alerts) ? context.profitability.alerts.length : 0;
-    const monthlyTrend = Array.isArray(context.profitability?.monthlyTrend) ? context.profitability.monthlyTrend : [];
-    const firstMarketing = context.marketing?.suggestions?.[0];
-    const firstAlert = context.profitability?.alerts?.[0];
+    const snapshot = context.businessSnapshot || null;
+    const marketing = snapshot?.marketing || context.marketing || {};
+    const profitability = snapshot?.profitability || context.profitability || {};
+    const centerHealth = snapshot?.report?.centerHealth || null;
+    const marketingCount = Array.isArray(marketing.suggestions) ? marketing.suggestions.length : 0;
+    const profitAlerts = Array.isArray(profitability.alerts) ? profitability.alerts.length : 0;
+    const monthlyTrend = Array.isArray(profitability.monthlyTrend) ? profitability.monthlyTrend : [];
+    const firstMarketing = marketing.suggestions?.[0];
+    const firstAlert = profitability.alerts?.[0];
     const lastDrop = [...monthlyTrend].reverse().find((item) => item.signal === "drop");
     const lines = [
       "Lettura AI Gold operativa sui dati disponibili:",
+      centerHealth
+        ? `Stato centro: ${centerHealth.statusLabel || centerHealth.status}. Azione: ${centerHealth.status === "sotto_soglia" ? "aumenta agenda e richiami prima dei margini" : "mantieni controllo operativo e correggi i punti deboli"}.`
+        : "Stato centro: dato non disponibile nello snapshot.",
       marketingCount
         ? `Marketing: ci sono ${marketingCount} clienti da valutare. Prima priorità: ${firstMarketing?.name || "cliente"} (${firstMarketing?.motive || "richiamo suggerito"}).`
         : "Marketing: nessun cliente prioritario rilevato ora.",
@@ -1091,7 +1098,14 @@ class AssistantService {
     }
 
     const question = String(payload.question || "").trim();
-    const context = {
+    const snapshot = this.desktopMirror.getBusinessSnapshot
+      ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
+      : null;
+    const context = snapshot?.snapshotAvailable ? {
+      businessSnapshot: snapshot,
+      dashboard: this.getDashboardSafe(session),
+      settings: this.getSettingsSafe(session)
+    } : {
       marketing: this.desktopMirror.getAiGoldMarketing(session),
       profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
       dashboard: this.getDashboardSafe(session),

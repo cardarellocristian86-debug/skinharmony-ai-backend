@@ -783,6 +783,14 @@ app.get("/api/ai-gold/profitability", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
+app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
+  res.json(service.getBusinessSnapshot({
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || "",
+    forceRefresh: req.query.forceRefresh === "1"
+  }, req.session));
+});
+
 app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
   res.json(service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
