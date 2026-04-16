@@ -41,6 +41,241 @@ const ANALYTICS_BLOCKS = {
   SHIFT_SIGNALS: "shiftSignals"
 };
 
+const UPDATE_MODES = {
+  REALTIME: "realtime",
+  EVENT_DRIVEN: "event_driven",
+  TIMEOUT_BATCH: "timeout_batch",
+  MANUAL: "manual",
+  SNAPSHOT_READ: "snapshot_read"
+};
+
+const ANALYTICS_UPDATE_POLICIES = {
+  agendaDay: {
+    mode: UPDATE_MODES.REALTIME,
+    type: "summary",
+    purpose: "Agenda operativa del giorno",
+    trigger: "apertura agenda/dashboard e modifiche appuntamenti",
+    condition: "sempre disponibile",
+    risk: "se non e live l'operatore perde controllo operativo"
+  },
+  appointmentStatus: {
+    mode: UPDATE_MODES.REALTIME,
+    type: "summary",
+    purpose: "Stato arrivo, in corso, completato, no-show",
+    trigger: "cambio stato appuntamento",
+    condition: "sempre disponibile",
+    risk: "deve aggiornarsi subito per cassa e agenda"
+  },
+  cashdeskDay: {
+    mode: UPDATE_MODES.REALTIME,
+    type: "summary",
+    purpose: "Incasso e pagamenti del giorno",
+    trigger: "apertura cassa e registrazione pagamento",
+    condition: "sempre disponibile",
+    risk: "non deve dipendere da snapshot o batch"
+  },
+  livePayments: {
+    mode: UPDATE_MODES.REALTIME,
+    type: "summary",
+    purpose: "Pagamento appena registrato",
+    trigger: "creazione pagamento",
+    condition: "sempre disponibile",
+    risk: "l'utente deve vedere subito cosa ha salvato"
+  },
+  paymentIssues: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Pagamenti da collegare e riconciliazione",
+    trigger: "click Verifica cassa / Controllo pagamenti / Chiudi cassa",
+    condition: "calcolo on demand con cache breve",
+    risk: "se live continuo pesa senza migliorare il lavoro"
+  },
+  cashdeskVerification: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Verifica o chiusura cassa",
+    trigger: "azione esplicita utente",
+    condition: "solo su richiesta",
+    risk: "deve produrre azioni risolvibili, non solo alert"
+  },
+  dataQualitySummary: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Qualita dati sintetica per dashboard/snapshot",
+    trigger: "modifica cliente, servizio, pagamento, appuntamento, operatore, magazzino",
+    condition: "dirty flag per blocco",
+    risk: "non deve trascinare preview e checks completi in dashboard"
+  },
+  dataQualityFull: {
+    mode: UPDATE_MODES.TIMEOUT_BATCH,
+    type: "detail",
+    purpose: "Controlli completi qualita dati e preview problemi",
+    trigger: "timeout, batch o click vista dettaglio",
+    condition: "forceRefresh se richiesto",
+    risk: "troppo pesante per lettura continua"
+  },
+  profitabilitySummary: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Sintesi margini e quadro economico",
+    trigger: "checkout, pagamento, modifica costi/prezzi",
+    condition: "riuso cache analytics se non stale",
+    risk: "deve alimentare AI Gold senza ricalcoli diretti"
+  },
+  profitabilityDetail: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Margini servizio/prodotto/tecnologia",
+    trigger: "apertura Redditivita o Aggiorna analisi",
+    condition: "on demand, con forceRefresh opzionale",
+    risk: "periodi lunghi possono pesare"
+  },
+  profitabilityAlerts: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Alert margini bassi o servizi in perdita",
+    trigger: "checkout, pagamento, modifica costi/prezzi",
+    condition: "entra nel Business Snapshot",
+    risk: "deve restare operativo, non tecnico"
+  },
+  reportOperationalSummary: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Numeri ordinati: incassi, ticket, appuntamenti, clienti",
+    trigger: "pagamento, checkout, modifica appuntamento",
+    condition: "periodi brevi e cache analytics",
+    risk: "non deve ricalcolare tutto in Gold"
+  },
+  reportOperationalDetail: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Timeline, top servizi, top operatori, periodo lungo",
+    trigger: "apertura Report o export",
+    condition: "on demand o batch per periodi lunghi",
+    risk: "se automatico rallenta dashboard"
+  },
+  recallPriority: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Clienti da richiamare ora",
+    trigger: "appuntamento completato, modifica cliente, storico visite",
+    condition: "solo richiamare/a rischio",
+    risk: "non includere persi e storico nella priorita"
+  },
+  lostClients: {
+    mode: UPDATE_MODES.TIMEOUT_BATCH,
+    type: "detail",
+    purpose: "Clienti persi recenti",
+    trigger: "batch giornaliero o apertura Marketing",
+    condition: "fuori dalla lista prioritaria",
+    risk: "puo gonfiare i numeri se trattato come recall urgente"
+  },
+  historicInactive: {
+    mode: UPDATE_MODES.TIMEOUT_BATCH,
+    type: "detail",
+    purpose: "Storico inattivi vecchi",
+    trigger: "batch giornaliero/settimanale o filtro dedicato",
+    condition: "mai in priorita principale",
+    risk: "lista grande e poco operativa"
+  },
+  centerHealth: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Salute centro su fatturato, operatori, agenda, continuita",
+    trigger: "checkout, pagamento, agenda, clienti",
+    condition: "separata da prodotti e tecnologie",
+    risk: "non deve essere falsata da margini alti con basso volume"
+  },
+  dashboardGoldAlerts: {
+    mode: UPDATE_MODES.SNAPSHOT_READ,
+    type: "summary",
+    purpose: "Priorita operative visibili in dashboard Gold",
+    trigger: "Business Snapshot aggiornato",
+    condition: "lettura snapshot-only",
+    risk: "non ricalcolare nella dashboard"
+  },
+  businessSnapshot: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Fotografia coerente del centro per AI Gold",
+    trigger: "dirty blocks, preload dashboard Gold, rebuild controllato",
+    condition: "solo Gold",
+    risk: "prossimo step: debounce/batch persistente"
+  },
+  decisionCenter: {
+    mode: UPDATE_MODES.SNAPSHOT_READ,
+    type: "summary",
+    purpose: "Decisioni operative AI Gold",
+    trigger: "apertura AI Gold o dashboard decisionale",
+    condition: "legge Business Snapshot",
+    risk: "non deve chiamare report/profitability/data-quality diretti"
+  },
+  operatorSignals: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Segnali operatori, saturazione e resa",
+    trigger: "turni, appuntamenti, checkout",
+    condition: "solo se modulo turni/operatori attivo",
+    risk: "non pesare su centri che non usano turni"
+  },
+  inventoryOverview: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Giacenze, sottoscorta e quadro magazzino",
+    trigger: "modifica prodotto o movimento stock",
+    condition: "lista articoli resta operativa, overview cache",
+    risk: "Base non deve vedere numeri avanzati fuorvianti"
+  },
+  shifts: {
+    mode: UPDATE_MODES.REALTIME,
+    type: "summary",
+    purpose: "Turni operativi dipendenti",
+    trigger: "apertura Turni e modifica turno",
+    condition: "solo se shiftsBaseEnabled=true",
+    risk: "se modulo spento non deve calcolare"
+  },
+  shiftReports: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Report presenze, PDF e periodo",
+    trigger: "apertura report turni/export",
+    condition: "solo modulo turni attivo e piano adeguato",
+    risk: "non serve durante lavoro ordinario"
+  },
+  clientDuplicates: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Possibili duplicati clienti",
+    trigger: "click sezione duplicati o batch dedicato",
+    condition: "non blocca creazione cliente",
+    risk: "falsi positivi se troppo aggressivo"
+  },
+  trendAnalysis: {
+    mode: UPDATE_MODES.TIMEOUT_BATCH,
+    type: "detail",
+    purpose: "Trend e analisi periodo lungo",
+    trigger: "batch o apertura report periodo",
+    condition: "mai realtime",
+    risk: "periodi lunghi possono saturare la lettura"
+  },
+  marketingAutopilotCandidates: {
+    mode: UPDATE_MODES.EVENT_DRIVEN,
+    type: "summary",
+    purpose: "Candidati azioni marketing Gold",
+    trigger: "recallPriority aggiornato o generazione azioni",
+    condition: "candidati automatici, invio sempre confermato",
+    risk: "messaggi completi meglio on demand"
+  },
+  messageDrafts: {
+    mode: UPDATE_MODES.MANUAL,
+    type: "detail",
+    purpose: "Messaggi pronti da copiare",
+    trigger: "click Prepara messaggio / Genera azioni",
+    condition: "on demand",
+    risk: "non generare testi inutili per tutti i clienti"
+  }
+};
+
 const defaultSettings = {
   centerName: DEFAULT_CENTER_NAME,
   centerType: "Advanced Aesthetic Systems",
@@ -4903,10 +5138,15 @@ class DesktopMirrorService {
         dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session)))
       },
       blockMeta: {
-        realtime: ["agenda_giorno", "cassa_giorno", "pagamenti_live", "crud_operativi"],
-        eventDriven: ["centerHealth", "recallPriority", "dataQualitySummary", "paymentIssues", "dashboardGoldAlerts"],
-        batchTimeout: ["dataQuality", "profitability", "operationalReport", "lostClients", "historicInactive", "paymentsUnlinked"],
-        snapshotRead: ["decisionCenter", "aiGoldMarketing", "aiGoldProfitability", "dashboardGoldAlerts"]
+        policyVersion: "2026-04-16-update-modes",
+        rule: "Live solo operativo immediato; event-driven per sintesi; timeout/batch per analisi pesanti; manuale per verifiche; AI Gold snapshot-read.",
+        modes: UPDATE_MODES,
+        policies: ANALYTICS_UPDATE_POLICIES,
+        realtime: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.REALTIME).map(([key]) => key),
+        eventDriven: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.EVENT_DRIVEN).map(([key]) => key),
+        timeoutBatch: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.TIMEOUT_BATCH).map(([key]) => key),
+        manual: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.MANUAL).map(([key]) => key),
+        snapshotRead: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.SNAPSHOT_READ).map(([key]) => key)
       },
       core: {
         appointments: appointments.length,
