@@ -453,6 +453,13 @@ app.get("/api/dashboard/stats", (req, res) => {
   }, req.session));
 });
 
+app.post("/api/dashboard/refresh", (req, res) => {
+  res.json(service.refreshDashboardStats({
+    period: req.body?.period || req.query.period || "day",
+    anchorDate: req.body?.anchorDate || req.query.anchorDate || new Date().toISOString()
+  }, req.session, { mode: "manual" }));
+});
+
 app.post("/api/assistant/chat", async (req, res) => {
   try {
     res.json(await assistantService.chat(req.body || {}, req.session));

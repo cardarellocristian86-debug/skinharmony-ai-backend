@@ -18,6 +18,8 @@ const DEFAULT_TRIAL_DAYS = 7;
 const DEFAULT_TRIAL_VERIFICATION_MINUTES = 30;
 const ANALYTICS_CACHE_TTL_MS = 120000;
 const SNAPSHOT_CACHE_TTL_MS = 60000;
+const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
+const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 
 const ANALYTICS_BLOCKS = {
   CLIENTS_QUALITY: "clientsQuality",
@@ -38,7 +40,8 @@ const ANALYTICS_BLOCKS = {
   CENTER_HEALTH: "centerHealth",
   INVENTORY_OVERVIEW: "inventoryOverview",
   OPERATOR_SIGNALS: "operatorSignals",
-  SHIFT_SIGNALS: "shiftSignals"
+  SHIFT_SIGNALS: "shiftSignals",
+  DASHBOARD_STATS: "dashboardStats"
 };
 
 const UPDATE_MODES = {
@@ -941,6 +944,7 @@ class DesktopMirrorService {
     this.treatmentsRepository = this.createRepository("treatments", []);
     this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
+    this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
@@ -949,6 +953,7 @@ class DesktopMirrorService {
     this.businessSnapshotCache = new Map();
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
+    this.dashboardRefreshLocks = new Set();
   }
 
   getCenterId(session = null) {
@@ -1567,6 +1572,7 @@ class DesktopMirrorService {
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
         { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
+        { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
@@ -4171,7 +4177,141 @@ class DesktopMirrorService {
     return payment;
   }
 
+  normalizeDashboardStatsOptions(options = {}) {
+    const period = ["day", "week", "month"].includes(String(options.period || "")) ? String(options.period) : "day";
+    return {
+      period,
+      anchorDate: toDateOnly(options.anchorDate || nowIso())
+    };
+  }
+
+  getDashboardSnapshotId(options = {}, session = null) {
+    const centerId = this.getCenterId(session);
+    const normalized = this.normalizeDashboardStatsOptions(options);
+    return [
+      centerId,
+      this.getPlanLevel(session),
+      normalized.period,
+      normalized.anchorDate
+    ].map((part) => String(part || "").replace(/[^a-zA-Z0-9_-]+/g, "_")).join(":");
+  }
+
+  getDashboardRefreshSlotMs(session = null, intervalMs = DASHBOARD_AUTO_REFRESH_MS) {
+    const seed = `${this.getCenterId(session)}:${session?.userId || session?.username || ""}`;
+    const digest = crypto.createHash("sha1").update(seed).digest("hex").slice(0, 8);
+    return parseInt(digest, 16) % Math.max(1, intervalMs);
+  }
+
+  getDashboardNextRefreshAt(snapshot = null, session = null) {
+    const slotMs = this.getDashboardRefreshSlotMs(session, DASHBOARD_AUTO_REFRESH_MS);
+    let nextMs = Math.floor(Date.now() / DASHBOARD_AUTO_REFRESH_MS) * DASHBOARD_AUTO_REFRESH_MS + slotMs;
+    if (nextMs <= Date.now()) nextMs += DASHBOARD_AUTO_REFRESH_MS;
+    const generatedMs = snapshot?.generatedAt ? new Date(snapshot.generatedAt).getTime() : 0;
+    while (Number.isFinite(generatedMs) && generatedMs > 0 && nextMs <= generatedMs) {
+      nextMs += DASHBOARD_AUTO_REFRESH_MS;
+    }
+    return new Date(nextMs).toISOString();
+  }
+
+  findDashboardSnapshot(options = {}, session = null) {
+    const id = this.getDashboardSnapshotId(options, session);
+    return this.dashboardSnapshotsRepository.findById(id);
+  }
+
+  saveDashboardSnapshot(options = {}, session = null, payload = {}, meta = {}) {
+    const normalized = this.normalizeDashboardStatsOptions(options);
+    const id = this.getDashboardSnapshotId(normalized, session);
+    const now = nowIso();
+    const current = this.dashboardSnapshotsRepository.findById(id);
+    const next = {
+      id,
+      centerId: this.getCenterId(session),
+      plan: this.getPlanLevel(session),
+      period: normalized.period,
+      anchorDate: normalized.anchorDate,
+      payload,
+      generatedAt: now,
+      source: meta.source || "manual",
+      lastManualRefreshAt: meta.manual ? now : current?.lastManualRefreshAt || "",
+      createdAt: current?.createdAt || now,
+      updatedAt: now
+    };
+    if (current) return this.dashboardSnapshotsRepository.update(id, () => next);
+    return this.dashboardSnapshotsRepository.create(next);
+  }
+
+  decorateDashboardSnapshot(snapshot = null, session = null, extra = {}) {
+    const payload = snapshot?.payload || {};
+    const generatedAt = snapshot?.generatedAt || "";
+    const ageMs = generatedAt ? Date.now() - new Date(generatedAt).getTime() : 0;
+    const stale = Boolean(generatedAt && ageMs > DASHBOARD_AUTO_REFRESH_MS);
+    return {
+      ...payload,
+      dashboardCache: {
+        cached: true,
+        source: snapshot?.source || "saved",
+        generatedAt,
+        ageMs: Math.max(0, Number.isFinite(ageMs) ? ageMs : 0),
+        stale,
+        autoRefreshMs: DASHBOARD_AUTO_REFRESH_MS,
+        manualCooldownMs: DASHBOARD_MANUAL_COOLDOWN_MS,
+        nextAutoRefreshAt: this.getDashboardNextRefreshAt(snapshot, session),
+        ...extra
+      }
+    };
+  }
+
   getDashboardStats(options = {}, session = null) {
+    const normalized = this.normalizeDashboardStatsOptions(options);
+    const snapshot = this.findDashboardSnapshot(normalized, session);
+    if (snapshot?.payload) {
+      return this.decorateDashboardSnapshot(snapshot, session);
+    }
+    const payload = this.computeDashboardStats(normalized, session);
+    const saved = this.saveDashboardSnapshot(normalized, session, payload, { source: "bootstrap" });
+    return this.decorateDashboardSnapshot(saved, session, {
+      bootstrap: true,
+      message: "Primo snapshot dashboard creato. Le prossime aperture leggeranno il dato salvato."
+    });
+  }
+
+  refreshDashboardStats(options = {}, session = null, meta = {}) {
+    const normalized = this.normalizeDashboardStatsOptions(options);
+    const key = this.getDashboardSnapshotId(normalized, session);
+    const current = this.findDashboardSnapshot(normalized, session);
+    if (this.dashboardRefreshLocks.has(key)) {
+      return this.decorateDashboardSnapshot(current, session, {
+        refreshStatus: "in_progress",
+        message: "Aggiornamento in corso"
+      });
+    }
+    const lastRefreshAt = current?.lastManualRefreshAt || current?.generatedAt || "";
+    const lastRefreshMs = lastRefreshAt ? new Date(lastRefreshAt).getTime() : 0;
+    const waitMs = lastRefreshMs > 0 ? DASHBOARD_MANUAL_COOLDOWN_MS - (Date.now() - lastRefreshMs) : 0;
+    if (meta.mode !== "scheduler" && waitMs > 0) {
+      return this.decorateDashboardSnapshot(current, session, {
+        refreshStatus: "cooldown",
+        retryAfterMs: waitMs,
+        message: "Dati aggiornati recentemente, riprova tra pochi minuti"
+      });
+    }
+    this.dashboardRefreshLocks.add(key);
+    try {
+      const payload = this.computeDashboardStats(normalized, session);
+      const saved = this.saveDashboardSnapshot(normalized, session, payload, {
+        source: meta.mode === "scheduler" ? "scheduler" : "manual",
+        manual: meta.mode !== "scheduler"
+      });
+      return this.decorateDashboardSnapshot(saved, session, {
+        refreshStatus: "refreshed",
+        message: "Dashboard aggiornata"
+      });
+    } finally {
+      this.dashboardRefreshLocks.delete(key);
+    }
+  }
+
+  computeDashboardStats(options = {}, session = null) {
     const plan = this.getPlanLevel(session);
     const goldEnabled = plan === "gold";
     const mode = String(options.period || "day");
@@ -4245,6 +4385,8 @@ class DesktopMirrorService {
       })
       .slice(0, 12) : [];
     const revenueCents = periodPayments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+    const paymentSummary = this.getPaymentsSummary({ period: mode, anchorDate }, session);
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     return {
       todayAppointments: todayAppointments.length,
       inactiveClientsCount: goldEnabled ? inactiveClients.length : 0,
@@ -4260,7 +4402,9 @@ class DesktopMirrorService {
       revenueCents,
       todayRevenueCents: revenueCents,
       activeClients: clients.length,
-      activeClientsCount: clients.length
+      activeClientsCount: clients.length,
+      paymentSummary,
+      dataQuality
     };
   }
 
