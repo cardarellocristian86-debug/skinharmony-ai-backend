@@ -411,9 +411,41 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, numeric));
 }
 
+function mapById(items = []) {
+  return new Map((Array.isArray(items) ? items : []).map((item) => [String(item.id || ""), item]));
+}
+
+function groupByClientId(items = []) {
+  const grouped = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const clientId = String(item.clientId || "");
+    if (!clientId) return;
+    const current = grouped.get(clientId) || [];
+    current.push(item);
+    grouped.set(clientId, current);
+  });
+  return grouped;
+}
+
+function groupByAppointmentId(items = []) {
+  const grouped = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const appointmentId = String(item.appointmentId || "");
+    if (!appointmentId) return;
+    const current = grouped.get(appointmentId) || [];
+    current.push(item);
+    grouped.set(appointmentId, current);
+  });
+  return grouped;
+}
+
 function relevantClientAppointments(appointments, clientId, nowMs = Date.now()) {
-  return (Array.isArray(appointments) ? appointments : [])
-    .filter((item) => String(item.clientId || "") === String(clientId || ""))
+  const sourceIsGrouped = appointments instanceof Map;
+  const source = appointments instanceof Map
+    ? appointments.get(String(clientId || "")) || []
+    : (Array.isArray(appointments) ? appointments : []);
+  return source
+    .filter((item) => sourceIsGrouped || String(item.clientId || "") === String(clientId || ""))
     .filter((item) => {
       const status = String(item.status || "").toLowerCase();
       if (["cancelled", "no_show", "moved"].includes(status)) return false;
@@ -435,8 +467,9 @@ function visitGapsDays(appointments) {
 
 function getCenterAverageFrequencyDays(clients, appointments, nowMs = Date.now()) {
   const allGaps = [];
+  const appointmentsByClientId = appointments instanceof Map ? appointments : groupByClientId(appointments);
   (Array.isArray(clients) ? clients : []).forEach((client) => {
-    const visits = relevantClientAppointments(appointments, String(client.id || ""), nowMs);
+    const visits = relevantClientAppointments(appointmentsByClientId, String(client.id || ""), nowMs);
     if (visits.length < 3) return;
     visitGapsDays(visits)
       .filter((gap) => gap >= 7 && gap <= 120)
@@ -2410,9 +2443,10 @@ class DesktopMirrorService {
   getClientDetail(clientId, session = null) {
     const client = this.findByIdInCenter(this.clientsRepository, clientId, session);
     if (!client) throw new Error("Cliente non trovato");
-    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session).filter((item) => item.clientId === clientId);
-    const payments = this.filterByCenter(this.paymentsRepository.list(), session).filter((item) => item.clientId === clientId);
-    const treatments = this.filterByCenter(this.treatmentsRepository.list(), session).filter((item) => item.clientId === clientId);
+    const normalizedClientId = String(clientId || "");
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session).filter((item) => String(item.clientId || "") === normalizedClientId);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session).filter((item) => String(item.clientId || "") === normalizedClientId);
+    const treatments = this.filterByCenter(this.treatmentsRepository.list(), session).filter((item) => String(item.clientId || "") === normalizedClientId);
     return {
       client,
       appointments,
@@ -3493,11 +3527,13 @@ class DesktopMirrorService {
     return this.filterByCenter(this.paymentsRepository.list(), session).filter((item) => !clientId || item.clientId === clientId);
   }
 
-  buildPaymentLinkSuggestions(payment = {}, session = null) {
+  buildPaymentLinkSuggestions(payment = {}, session = null, context = {}) {
     const paymentDay = toDateOnly(payment.createdAt || nowIso());
-    const clients = this.filterByCenter(this.clientsRepository.list(), session);
-    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
-    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const clients = context.clients || this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = context.appointments || this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = context.payments || this.filterByCenter(this.paymentsRepository.list(), session);
+    const clientsById = context.clientsById || mapById(clients);
+    const servicesById = context.servicesById || mapById(this.filterByCenter(this.servicesRepository.list(), session));
     const linkedAppointmentIds = new Set(payments.map((item) => String(item.appointmentId || "")).filter(Boolean));
     const paymentClientId = String(payment.clientId || "");
     const paymentName = cleanText(payment.walkInName || "", "", 180);
@@ -3507,7 +3543,7 @@ class DesktopMirrorService {
         if (["cancelled", "no_show"].includes(String(appointment.status || ""))) return false;
         const sameDay = toDateOnly(appointment.startAt || appointment.createdAt) === paymentDay;
         const sameClient = paymentClientId && String(appointment.clientId || "") === paymentClientId;
-        const client = clients.find((item) => item.id === appointment.clientId);
+        const client = clientsById.get(String(appointment.clientId || ""));
         const appointmentName = appointment.clientName || appointment.walkInName || clientNameForDuplicate(client);
         const similarName = paymentName && tokenSimilarity(paymentName, appointmentName) >= 0.5;
         return sameClient || (sameDay && (similarName || !paymentClientId));
@@ -3521,8 +3557,8 @@ class DesktopMirrorService {
       })
       .slice(0, 4)
       .map((appointment) => {
-        const client = clients.find((item) => item.id === appointment.clientId);
-        const service = this.servicesRepository.findById(appointment.serviceId) || {};
+        const client = clientsById.get(String(appointment.clientId || ""));
+        const service = servicesById.get(String(appointment.serviceId || "")) || {};
         return {
           id: appointment.id,
           clientId: appointment.clientId || "",
@@ -3542,13 +3578,19 @@ class DesktopMirrorService {
       if (cached) return cached.items || [];
     }
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
-    const items = this.filterByCenter(this.paymentsRepository.list(), session)
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const clientsById = mapById(clients);
+    const servicesById = mapById(services);
+    const suggestionContext = { clients, appointments, payments, clientsById, servicesById };
+    const items = payments
       .filter((payment) => !["free", "ignored"].includes(String(payment.reconciliationStatus || "")))
       .filter((payment) => !payment.appointmentId || !payment.clientId)
       .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
       .slice(0, 80)
       .map((payment) => {
-        const client = clients.find((item) => item.id === payment.clientId);
+        const client = clientsById.get(String(payment.clientId || ""));
         return {
           ...payment,
           clientName: payment.clientId ? clientNameForDuplicate(client) : payment.walkInName || "Cliente occasionale",
@@ -3557,7 +3599,7 @@ class DesktopMirrorService {
             : payment.appointmentId
               ? "missing_client"
               : "missing_appointment",
-          suggestions: this.buildPaymentLinkSuggestions(payment, session)
+          suggestions: this.buildPaymentLinkSuggestions(payment, session, suggestionContext)
         };
       });
     this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PAYMENT_ISSUES, cacheOptions, session, { items }, 90000);
@@ -4244,6 +4286,8 @@ class DesktopMirrorService {
       .filter((item) => inRange(item.startAt || item.createdAt));
     const payments = this.filterByCenter(this.paymentsRepository.list(), session)
       .filter((item) => inRange(item.createdAt));
+    const allCenterAppointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const allAppointmentsByClientId = groupByClientId(allCenterAppointments);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const staff = this.filterByCenter(this.staffRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
@@ -4316,10 +4360,9 @@ class DesktopMirrorService {
     const completedAppointments = appointments.filter((item) => item.status === "completed").length;
     const topServices = Array.from(byService.values()).sort((a, b) => b.appointments - a.appointments);
     const reportNow = Date.now();
-    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, this.filterByCenter(this.appointmentsRepository.list(), session), reportNow);
-    const allCenterAppointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, allAppointmentsByClientId, reportNow);
     const inactiveClients = clients.map((client) => {
-      const routine = classifyClientRoutine(client, allCenterAppointments, centerAverageFrequencyDays, reportNow, serviceById);
+      const routine = classifyClientRoutine(client, allAppointmentsByClientId, centerAverageFrequencyDays, reportNow, serviceById);
       return {
         clientId: String(client.id || ""),
         name: clientNames.get(String(client.id || "")) || "Cliente",
@@ -4569,6 +4612,7 @@ class DesktopMirrorService {
     const productMap = new Map();
     const technologyMap = new Map();
     const monthlyMap = new Map();
+    const paymentsByAppointmentId = groupByAppointmentId(payments);
     appointments.forEach((appointment) => {
       const service = serviceById.get(String(appointment.serviceId || "")) || {};
       const serviceId = String(service.id || appointment.serviceId || "unknown");
@@ -4582,7 +4626,7 @@ class DesktopMirrorService {
         marginPercent: 0,
         status: "HEALTHY"
       };
-      const linkedPayments = payments.filter((payment) => String(payment.appointmentId || "") === String(appointment.id || ""));
+      const linkedPayments = paymentsByAppointmentId.get(String(appointment.id || "")) || [];
       const revenueCents = linkedPayments.length
         ? linkedPayments.reduce((sum, payment) => sum + Number(payment.amountCents || 0), 0)
         : Number(service.priceCents || appointment.priceCents || 0);
@@ -4755,7 +4799,9 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const serviceById = new Map(services.map((item) => [String(item.id), item]));
-    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, appointments, now);
+    const appointmentsByClientId = groupByClientId(appointments);
+    const paymentsByClientId = groupByClientId(payments);
+    const centerAverageFrequencyDays = getCenterAverageFrequencyDays(clients, appointmentsByClientId, now);
     const cleanDisplayName = (client) => {
       const raw = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "Cliente";
       return String(raw)
@@ -4828,17 +4874,14 @@ class DesktopMirrorService {
     const allSuggestions = clients.map((client) => {
       const clientId = String(client.id || "");
       const displayName = cleanDisplayName(client);
-      const routine = classifyClientRoutine(client, appointments, centerAverageFrequencyDays, now, serviceById);
+      const routine = classifyClientRoutine(client, appointmentsByClientId, centerAverageFrequencyDays, now, serviceById);
       const clientAppointments = routine.visits;
       const lastAppointment = routine.lastVisit || null;
       const daysSinceLastVisit = routine.daysSinceLastVisit;
       const averageFrequencyDays = routine.averageFrequencyDays;
-      const totalSpentCents = payments
-        .filter((item) => String(item.clientId || "") === clientId)
-        .reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
-      const clientPaymentsCount = payments
-        .filter((item) => String(item.clientId || "") === clientId)
-        .length;
+      const clientPayments = paymentsByClientId.get(clientId) || [];
+      const totalSpentCents = clientPayments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+      const clientPaymentsCount = clientPayments.length;
       const lastService = lastAppointment ? serviceById.get(String(lastAppointment.serviceId || "")) : null;
       const averageTicketCents = clientPaymentsCount ? Math.round(totalSpentCents / clientPaymentsCount) : Number(lastService?.priceCents || 0);
       const referenceValueCents = Math.max(averageTicketCents || 0, Number(lastService?.priceCents || 0));
