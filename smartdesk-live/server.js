@@ -465,7 +465,8 @@ app.get("/api/reports/operational", requirePlan("silver"), (req, res) => {
   res.json(service.getOperationalReport({
     period: req.query.period || "day",
     startDate: req.query.startDate || "",
-    endDate: req.query.endDate || ""
+    endDate: req.query.endDate || "",
+    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
   }, req.session));
 });
 
@@ -768,7 +769,8 @@ app.get("/api/inventory/overview", requirePlan("silver"), (req, res) => {
 app.get("/api/profitability/overview", requirePlan("silver"), (req, res) => {
   res.json(service.getProfitabilityOverview({
     startDate: req.query.startDate || "",
-    endDate: req.query.endDate || ""
+    endDate: req.query.endDate || "",
+    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
   }, req.session));
 });
 
@@ -905,7 +907,9 @@ app.get("/api/payments/summary", (req, res) => {
 });
 
 app.get("/api/payments/unlinked", (req, res) => {
-  res.json(service.listUnlinkedPayments(req.session));
+  res.json(service.listUnlinkedPayments(req.session, {
+    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
+  }));
 });
 
 app.post("/api/payments", (req, res) => {
@@ -925,7 +929,10 @@ app.post("/api/payments/:id/link", (req, res) => {
 });
 
 app.get("/api/data-quality", (req, res) => {
-  res.json(service.getDataQuality(req.session));
+  res.json(service.getDataQuality(req.session, {
+    summaryOnly: req.query.summary === "1" || req.query.summary === "true",
+    forceRefresh: req.query.forceRefresh === "1" || req.query.forceRefresh === "true"
+  }));
 });
 
 app.get("/api/settings", (req, res) => {

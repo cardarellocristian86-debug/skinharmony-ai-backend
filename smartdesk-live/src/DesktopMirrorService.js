@@ -16,6 +16,30 @@ const DEFAULT_ADMIN_USERNAME = "cristian";
 const DEFAULT_ADMIN_PASSWORD = "fabiana88!";
 const DEFAULT_TRIAL_DAYS = 7;
 const DEFAULT_TRIAL_VERIFICATION_MINUTES = 30;
+const ANALYTICS_CACHE_TTL_MS = 120000;
+const SNAPSHOT_CACHE_TTL_MS = 60000;
+
+const ANALYTICS_BLOCKS = {
+  CLIENTS_QUALITY: "clientsQuality",
+  SERVICES_QUALITY: "servicesQuality",
+  PAYMENTS_QUALITY: "paymentsQuality",
+  APPOINTMENTS_QUALITY: "appointmentsQuality",
+  OPERATORS_QUALITY: "operatorsQuality",
+  INVENTORY_QUALITY: "inventoryQuality",
+  PROFITABILITY_QUALITY: "profitabilityQuality",
+  DATA_QUALITY: "dataQuality",
+  DATA_QUALITY_SUMMARY: "dataQualitySummary",
+  OPERATIONAL_REPORT: "operationalReport",
+  PROFITABILITY: "profitability",
+  PROFITABILITY_SUMMARY: "profitabilitySummary",
+  PAYMENT_ISSUES: "paymentIssues",
+  RECALL_PRIORITY: "recallPriority",
+  MARKETING_RECALL: "marketingRecall",
+  CENTER_HEALTH: "centerHealth",
+  INVENTORY_OVERVIEW: "inventoryOverview",
+  OPERATOR_SIGNALS: "operatorSignals",
+  SHIFT_SIGNALS: "shiftSignals"
+};
 
 const defaultSettings = {
   centerName: DEFAULT_CENTER_NAME,
@@ -654,6 +678,8 @@ class DesktopMirrorService {
 
     this.sessions = new Map();
     this.businessSnapshotCache = new Map();
+    this.analyticsCache = new Map();
+    this.analyticsDirtyBlocks = new Map();
   }
 
   getCenterId(session = null) {
@@ -756,11 +782,180 @@ class DesktopMirrorService {
     return `${centerId}:${startDate}:${endDate}:${this.getPlanLevel(session)}`;
   }
 
-  invalidateBusinessSnapshot(centerId = "") {
+  getAnalyticsCacheKey(block, options = {}, session = null) {
+    const centerId = this.getCenterId(session);
+    const startDate = String(options.startDate || "");
+    const endDate = String(options.endDate || "");
+    const mode = String(options.period || "");
+    const anchorDate = String(options.anchorDate || "");
+    const plan = this.getPlanLevel(session);
+    return `${centerId}:${plan}:${block}:${startDate}:${endDate}:${mode}:${anchorDate}`;
+  }
+
+  getDirtyBlockSet(centerId = "") {
+    const key = String(centerId || DEFAULT_CENTER_ID);
+    if (!this.analyticsDirtyBlocks.has(key)) this.analyticsDirtyBlocks.set(key, new Set());
+    return this.analyticsDirtyBlocks.get(key);
+  }
+
+  markAnalyticsBlocksStale(centerId = "", blocks = []) {
+    const normalizedCenterId = String(centerId || DEFAULT_CENTER_ID);
+    const normalizedBlocks = Array.from(new Set((Array.isArray(blocks) ? blocks : [blocks]).filter(Boolean)));
+    if (!normalizedBlocks.length) return;
+    const dirtySet = this.getDirtyBlockSet(normalizedCenterId);
+    normalizedBlocks.forEach((block) => dirtySet.add(block));
+    const prefix = `${normalizedCenterId}:`;
+    Array.from(this.analyticsCache.keys()).forEach((key) => {
+      if (!String(key).startsWith(prefix)) return;
+      if (normalizedBlocks.some((block) => String(key).includes(`:${block}:`))) {
+        this.analyticsCache.delete(key);
+      }
+    });
+  }
+
+  clearAnalyticsDirtyBlocks(centerId = "", blocks = []) {
+    const dirtySet = this.getDirtyBlockSet(centerId);
+    (Array.isArray(blocks) ? blocks : [blocks]).filter(Boolean).forEach((block) => dirtySet.delete(block));
+  }
+
+  getCachedAnalyticsBlock(block, options = {}, session = null) {
+    const centerId = this.getCenterId(session);
+    const dirtySet = this.getDirtyBlockSet(centerId);
+    if (dirtySet.has(block)) return null;
+    const key = this.getAnalyticsCacheKey(block, options, session);
+    const cached = this.analyticsCache.get(key);
+    if (!cached || cached.expiresAtMs <= Date.now()) {
+      this.analyticsCache.delete(key);
+      return null;
+    }
+    return {
+      ...cached.value,
+      meta: {
+        ...(cached.value?.meta || {}),
+        cached: true,
+        cacheAgeMs: Date.now() - cached.createdAtMs,
+        cacheBlock: block
+      }
+    };
+  }
+
+  setCachedAnalyticsBlock(block, options = {}, session = null, value = {}, ttlMs = ANALYTICS_CACHE_TTL_MS) {
+    const centerId = this.getCenterId(session);
+    const key = this.getAnalyticsCacheKey(block, options, session);
+    this.analyticsCache.set(key, {
+      value,
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + ttlMs
+    });
+    this.clearAnalyticsDirtyBlocks(centerId, block);
+    return value;
+  }
+
+  dirtyBlocksForRepository(repository) {
+    if (repository === this.clientsRepository) {
+      return [
+        ANALYTICS_BLOCKS.CLIENTS_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+        ANALYTICS_BLOCKS.RECALL_PRIORITY,
+        ANALYTICS_BLOCKS.MARKETING_RECALL,
+        ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+        ANALYTICS_BLOCKS.CENTER_HEALTH
+      ];
+    }
+    if (repository === this.appointmentsRepository) {
+      return [
+        ANALYTICS_BLOCKS.APPOINTMENTS_QUALITY,
+        ANALYTICS_BLOCKS.PAYMENTS_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+        ANALYTICS_BLOCKS.RECALL_PRIORITY,
+        ANALYTICS_BLOCKS.MARKETING_RECALL,
+        ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+        ANALYTICS_BLOCKS.CENTER_HEALTH,
+        ANALYTICS_BLOCKS.PROFITABILITY,
+        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
+        ANALYTICS_BLOCKS.PAYMENT_ISSUES
+      ];
+    }
+    if (repository === this.paymentsRepository) {
+      return [
+        ANALYTICS_BLOCKS.PAYMENTS_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+        ANALYTICS_BLOCKS.PAYMENT_ISSUES,
+        ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+        ANALYTICS_BLOCKS.CENTER_HEALTH,
+        ANALYTICS_BLOCKS.PROFITABILITY,
+        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY
+      ];
+    }
+    if (repository === this.servicesRepository) {
+      return [
+        ANALYTICS_BLOCKS.SERVICES_QUALITY,
+        ANALYTICS_BLOCKS.PROFITABILITY_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+        ANALYTICS_BLOCKS.PROFITABILITY,
+        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
+        ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+        ANALYTICS_BLOCKS.MARKETING_RECALL
+      ];
+    }
+    if (repository === this.staffRepository) {
+      return [
+        ANALYTICS_BLOCKS.OPERATORS_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+        ANALYTICS_BLOCKS.OPERATOR_SIGNALS,
+        ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+        ANALYTICS_BLOCKS.CENTER_HEALTH,
+        ANALYTICS_BLOCKS.PROFITABILITY
+      ];
+    }
+    if (repository === this.shiftsRepository || repository === this.shiftTemplatesRepository) {
+      return [ANALYTICS_BLOCKS.SHIFT_SIGNALS, ANALYTICS_BLOCKS.OPERATOR_SIGNALS];
+    }
+    if (repository === this.inventoryRepository || repository === this.inventoryMovementsRepository || repository === this.resourcesRepository) {
+      return [
+        ANALYTICS_BLOCKS.INVENTORY_QUALITY,
+        ANALYTICS_BLOCKS.PROFITABILITY_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY,
+        ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+        ANALYTICS_BLOCKS.INVENTORY_OVERVIEW,
+        ANALYTICS_BLOCKS.PROFITABILITY,
+        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY
+      ];
+    }
+    return [
+      ANALYTICS_BLOCKS.DATA_QUALITY,
+      ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+      ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+      ANALYTICS_BLOCKS.PROFITABILITY,
+      ANALYTICS_BLOCKS.MARKETING_RECALL
+    ];
+  }
+
+  invalidateBusinessSnapshot(centerId = "", blocks = []) {
+    const dirtyBlocks = Array.isArray(blocks) && blocks.length ? blocks : [
+      ANALYTICS_BLOCKS.DATA_QUALITY,
+      ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+      ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+      ANALYTICS_BLOCKS.PROFITABILITY,
+      ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
+      ANALYTICS_BLOCKS.PAYMENT_ISSUES,
+      ANALYTICS_BLOCKS.MARKETING_RECALL,
+      ANALYTICS_BLOCKS.CENTER_HEALTH,
+      ANALYTICS_BLOCKS.INVENTORY_OVERVIEW,
+      ANALYTICS_BLOCKS.OPERATOR_SIGNALS
+    ];
     if (!centerId) {
       this.businessSnapshotCache.clear();
+      this.analyticsCache.clear();
+      this.analyticsDirtyBlocks.clear();
       return;
     }
+    this.markAnalyticsBlocksStale(centerId, dirtyBlocks);
     const prefix = `${centerId}:`;
     Array.from(this.businessSnapshotCache.keys()).forEach((key) => {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
@@ -957,7 +1152,7 @@ class DesktopMirrorService {
       throw new Error("Elemento non trovato");
     }
     const updated = repository.update(id, updater);
-    this.invalidateBusinessSnapshot(centerId);
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(repository));
     return updated;
   }
 
@@ -968,7 +1163,7 @@ class DesktopMirrorService {
       return { success: false };
     }
     const success = repository.delete(id);
-    if (success) this.invalidateBusinessSnapshot(centerId);
+    if (success) this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(repository));
     return { success };
   }
 
@@ -1912,7 +2107,7 @@ class DesktopMirrorService {
 
     if (!payload.id) {
       this.clientsRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
       return entity;
     }
 
@@ -2064,7 +2259,7 @@ class DesktopMirrorService {
 
     if (!payload.id) {
       this.appointmentsRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       return entity;
     }
 
@@ -2127,7 +2322,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.servicesRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.servicesRepository));
       return entity;
     }
     return this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2166,7 +2361,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.staffRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
       return entity;
     }
     return this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2177,6 +2372,8 @@ class DesktopMirrorService {
   }
 
   listShifts(view = "month", anchorDate = nowIso(), staffId = "", session = null) {
+    const settings = this.getSettings(session);
+    if (settings.shiftsBaseEnabled === false) return [];
     const date = toDateOnly(anchorDate);
     let shifts = this.filterByCenter(this.shiftsRepository.list(), session);
     if (staffId) {
@@ -2189,6 +2386,10 @@ class DesktopMirrorService {
   }
 
   saveShift(payload = {}, session = null) {
+    const settings = this.getSettings(session);
+    if (settings.shiftsBaseEnabled === false) {
+      throw new Error("Modulo turni non attivo");
+    }
     const existing = !payload.id ? this.findExistingByIdempotency(this.shiftsRepository, payload, session) : null;
     if (existing) return existing;
     const staffName = cleanText(payload.staffName || "", "", 120);
@@ -2233,7 +2434,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.shiftsRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.shiftsRepository));
       return entity;
     }
     return this.updateInCenter(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2318,7 +2519,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.resourcesRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.resourcesRepository));
       return entity;
     }
     return this.updateInCenter(this.resourcesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2366,7 +2567,7 @@ class DesktopMirrorService {
     };
     if (!payload.id) {
       this.inventoryRepository.create(entity);
-      this.invalidateBusinessSnapshot(this.getCenterId(session));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
       return entity;
     }
     return this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
@@ -2396,7 +2597,7 @@ class DesktopMirrorService {
       createdAt: nowIso()
     };
     this.inventoryMovementsRepository.create(movement);
-    this.invalidateBusinessSnapshot(centerId);
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
     if (movement.itemId) {
       const signedQuantity = ["unload", "internal_use", "sale"].includes(movement.type)
         ? -movement.quantity
@@ -2412,12 +2613,15 @@ class DesktopMirrorService {
   }
 
   getInventoryOverview(session = null) {
+    const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.INVENTORY_OVERVIEW, {}, session);
+    if (cached) return cached;
     const items = this.filterByCenter(this.inventoryRepository.list(), session);
-    return {
+    const overview = {
       totalItems: items.length,
       totalQuantity: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
       lowStock: items.filter((item) => Number(item.quantity || 0) <= Number(item.minQuantity || 0))
     };
+    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.INVENTORY_OVERVIEW, {}, session, overview);
   }
 
   listTreatments(clientId = "", session = null) {
@@ -2435,7 +2639,7 @@ class DesktopMirrorService {
       createdAt: nowIso()
     };
     this.treatmentsRepository.create(treatment);
-    this.invalidateBusinessSnapshot(this.getCenterId(session));
+    this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return treatment;
   }
 
@@ -2498,7 +2702,7 @@ class DesktopMirrorService {
       createdAt: now
     };
     this.protocolsRepository.create(protocol);
-    this.invalidateBusinessSnapshot(this.getCenterId(session));
+    this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return protocol;
   }
 
@@ -3042,9 +3246,14 @@ class DesktopMirrorService {
       });
   }
 
-  listUnlinkedPayments(session = null) {
+  listUnlinkedPayments(session = null, options = {}) {
+    const cacheOptions = { period: "manual", forceRefresh: Boolean(options.forceRefresh) };
+    if (!cacheOptions.forceRefresh) {
+      const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.PAYMENT_ISSUES, cacheOptions, session);
+      if (cached) return cached.items || [];
+    }
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
-    return this.filterByCenter(this.paymentsRepository.list(), session)
+    const items = this.filterByCenter(this.paymentsRepository.list(), session)
       .filter((payment) => !["free", "ignored"].includes(String(payment.reconciliationStatus || "")))
       .filter((payment) => !payment.appointmentId || !payment.clientId)
       .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
@@ -3062,6 +3271,8 @@ class DesktopMirrorService {
           suggestions: this.buildPaymentLinkSuggestions(payment, session)
         };
       });
+    this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PAYMENT_ISSUES, cacheOptions, session, { items }, 90000);
+    return items;
   }
 
   linkPayment(paymentId, payload = {}, session = null) {
@@ -3107,7 +3318,12 @@ class DesktopMirrorService {
     };
   }
 
-  getDataQuality(session = null) {
+  getDataQuality(session = null, options = {}) {
+    const cacheBlock = options.summaryOnly ? ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY : ANALYTICS_BLOCKS.DATA_QUALITY;
+    if (!options.forceRefresh) {
+      const cached = this.getCachedAnalyticsBlock(cacheBlock, {}, session);
+      if (cached) return cached;
+    }
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -3322,7 +3538,7 @@ class DesktopMirrorService {
     const score = Math.round(Math.max(0, Math.min(100, rawScore)));
     const state = score >= 85 ? "alto" : score >= 65 ? "medio" : score >= 40 ? "basso" : "critico";
     const status = state === "alto" ? "buono" : state === "critico" ? "basso" : state;
-    return {
+    const quality = {
       clients: clientsQuality,
       services: servicesQuality,
       payments: paymentsQuality,
@@ -3399,6 +3615,61 @@ class DesktopMirrorService {
         inventoryMissingCost: inventoryMissingCost.slice(0, 5).map(inventoryPreview)
       }
     };
+    const summary = {
+      state: quality.state,
+      score: quality.score,
+      status: quality.status,
+      totalPenalty: quality.totalPenalty,
+      updatedAt: quality.updatedAt,
+      metrics: quality.metrics,
+      alerts: quality.alerts,
+      scoreDetails: quality.scoreDetails,
+      clients: {
+        totalRecords: quality.clients.totalRecords,
+        missingCount: quality.clients.missingCount,
+        penalty: quality.clients.penalty,
+        severity: quality.clients.severity
+      },
+      services: {
+        totalRecords: quality.services.totalRecords,
+        missingCount: quality.services.missingCount,
+        penalty: quality.services.penalty,
+        severity: quality.services.severity
+      },
+      payments: {
+        totalRecords: quality.payments.totalRecords,
+        missingCount: quality.payments.missingCount,
+        penalty: quality.payments.penalty,
+        severity: quality.payments.severity
+      },
+      appointments: {
+        totalRecords: quality.appointments.totalRecords,
+        missingCount: quality.appointments.missingCount,
+        penalty: quality.appointments.penalty,
+        severity: quality.appointments.severity
+      },
+      operators: {
+        totalRecords: quality.operators.totalRecords,
+        missingCount: quality.operators.missingCount,
+        penalty: quality.operators.penalty,
+        severity: quality.operators.severity
+      },
+      inventory: {
+        totalRecords: quality.inventory.totalRecords,
+        missingCount: quality.inventory.missingCount,
+        penalty: quality.inventory.penalty,
+        severity: quality.inventory.severity
+      },
+      profitability: {
+        totalRecords: quality.profitability.totalRecords,
+        missingCount: quality.profitability.missingCount,
+        penalty: quality.profitability.penalty,
+        severity: quality.profitability.severity
+      }
+    };
+    this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.DATA_QUALITY, {}, session, quality);
+    this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY, {}, session, summary);
+    return options.summaryOnly ? summary : quality;
   }
 
   getPaymentsSummary(options = {}, session = null) {
@@ -3499,7 +3770,7 @@ class DesktopMirrorService {
       createdAt
     };
     this.paymentsRepository.create(payment);
-    this.invalidateBusinessSnapshot(this.getCenterId(session));
+    this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.paymentsRepository));
     return payment;
   }
 
@@ -3561,6 +3832,11 @@ class DesktopMirrorService {
       const swap = startDate;
       startDate = endDate;
       endDate = swap;
+    }
+    const cacheOptions = { startDate, endDate, period };
+    if (!options.forceRefresh) {
+      const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.OPERATIONAL_REPORT, cacheOptions, session);
+      if (cached) return cached;
     }
     const inRange = (value) => {
       const dateOnly = toDateOnly(value || "");
@@ -3670,7 +3946,7 @@ class DesktopMirrorService {
     if (completedAppointments === 0) insights.push("Completa e incassa gli appuntamenti per attivare un report più preciso.");
     if (topServices[0]) insights.push(`Servizio più richiesto nel periodo: ${topServices[0].name}.`);
     if (inactiveClients[0]) insights.push(`${inactiveClients.length} clienti sono da richiamare o a rischio.`);
-    return {
+    const report = {
       period,
       generatedAt: nowIso(),
       dateLabel: startDate === endDate ? startDate : `${startDate} - ${endDate}`,
@@ -3697,6 +3973,7 @@ class DesktopMirrorService {
       lowTechnologyUsage: [],
       insights
     };
+    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.OPERATIONAL_REPORT, cacheOptions, session, report);
   }
 
   exportOperationalReport(options = {}, format = "pdf", session = null) {
@@ -3766,6 +4043,11 @@ class DesktopMirrorService {
     const nowDate = toDateOnly(nowIso());
     const startDate = toDateOnly(options.startDate || `${nowDate.slice(0, 7)}-01`);
     const endDate = toDateOnly(options.endDate || nowDate);
+    const cacheOptions = { startDate, endDate };
+    if (!precomputedOperational && !options.forceRefresh) {
+      const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.CENTER_HEALTH, cacheOptions, session);
+      if (cached) return cached;
+    }
     const startMs = new Date(`${startDate}T00:00:00`).getTime();
     const endMs = new Date(`${endDate}T00:00:00`).getTime();
     const dayCount = Number.isFinite(startMs) && Number.isFinite(endMs)
@@ -3825,7 +4107,7 @@ class DesktopMirrorService {
     const reason = blockers.length
       ? blockers.join(" · ")
       : "fatturato, saturazione agenda e continuità clienti sono coerenti con il periodo.";
-    return {
+    const health = {
       status,
       statusLabel,
       level,
@@ -3844,6 +4126,10 @@ class DesktopMirrorService {
       reason,
       note: "La salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini."
     };
+    if (!precomputedOperational) {
+      return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.CENTER_HEALTH, cacheOptions, session, health);
+    }
+    return health;
   }
 
   openExportsFolder() {
@@ -3855,6 +4141,11 @@ class DesktopMirrorService {
   getProfitabilityOverview(options = {}, session = null, precomputed = {}) {
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
+    const cacheOptions = { startDate, endDate };
+    if (!options.forceRefresh && !precomputed.centerHealth) {
+      const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.PROFITABILITY, cacheOptions, session);
+      if (cached) return cached;
+    }
     const inRange = (value) => {
       const dateOnly = toDateOnly(value || "");
       if (!dateOnly) return false;
@@ -4031,7 +4322,7 @@ class DesktopMirrorService {
           : "Il servizio rende poco rispetto al ricavo: verifica durata reale e consumo prodotti.",
         serviceId: item.id
       }));
-    return {
+    const overview = {
       totals,
       centerHealth: precomputed.centerHealth || this.getCenterHealth({ startDate, endDate }, session),
       services: serviceRows,
@@ -4042,6 +4333,10 @@ class DesktopMirrorService {
       revenueCents: totals.revenueCents,
       inventoryCostCents: totals.costCents
     };
+    if (!precomputed.centerHealth) {
+      return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PROFITABILITY, cacheOptions, session, overview);
+    }
+    return overview;
   }
 
   getAiGoldMarketing(session = null) {
@@ -4054,6 +4349,8 @@ class DesktopMirrorService {
         suggestions: []
       };
     }
+    const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session);
+    if (cached) return cached;
     const now = Date.now();
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -4316,7 +4613,7 @@ class DesktopMirrorService {
     const historicInactiveClients = allSuggestions.filter((item) => item.recallStatus === "storico")
       .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
       .slice(0, 40);
-    return {
+    const marketing = {
       goldEnabled: true,
       generatedAt: nowIso(),
       suggestions: prioritySuggestions,
@@ -4328,6 +4625,7 @@ class DesktopMirrorService {
         historic: historicInactiveClients.length
       }
     };
+    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session, marketing, 180000);
   }
 
   getAiMarketingAutopilot(session = null) {
@@ -4550,7 +4848,7 @@ class DesktopMirrorService {
     );
     const profitability = this.buildAiGoldProfitabilityFromOverview(profitabilityOverview);
     const inventory = this.getInventoryOverview(session);
-    const dataQuality = this.getDataQuality(session);
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const treatments = this.filterByCenter(this.treatmentsRepository.list(), session);
@@ -4591,7 +4889,7 @@ class DesktopMirrorService {
       snapshotVersion: "1.0",
       sourceLayer: "business_snapshot",
       generatedAt: nowIso(),
-      expiresAt: new Date(nowMs + 60000).toISOString(),
+      expiresAt: new Date(nowMs + SNAPSHOT_CACHE_TTL_MS).toISOString(),
       plan,
       period: {
         startDate: snapshotStartDate,
@@ -4599,9 +4897,16 @@ class DesktopMirrorService {
       },
       meta: {
         cached: false,
-        cacheTtlMs: 60000,
+        cacheTtlMs: SNAPSHOT_CACHE_TTL_MS,
         freshness: "fresh",
-        rule: "Core calcola, Report ordina, Snapshot prepara, AI Gold decide."
+        rule: "Core calcola, Report ordina, Snapshot prepara, AI Gold decide.",
+        dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session)))
+      },
+      blockMeta: {
+        realtime: ["agenda_giorno", "cassa_giorno", "pagamenti_live", "crud_operativi"],
+        eventDriven: ["centerHealth", "recallPriority", "dataQualitySummary", "paymentIssues", "dashboardGoldAlerts"],
+        batchTimeout: ["dataQuality", "profitability", "operationalReport", "lostClients", "historicInactive", "paymentsUnlinked"],
+        snapshotRead: ["decisionCenter", "aiGoldMarketing", "aiGoldProfitability", "dashboardGoldAlerts"]
       },
       core: {
         appointments: appointments.length,
@@ -4634,7 +4939,7 @@ class DesktopMirrorService {
     };
     this.businessSnapshotCache.set(cacheKey, {
       createdAtMs: nowMs,
-      expiresAtMs: nowMs + 60000,
+      expiresAtMs: nowMs + SNAPSHOT_CACHE_TTL_MS,
       snapshot
     });
     return snapshot;
