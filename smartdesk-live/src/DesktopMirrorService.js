@@ -4237,19 +4237,6 @@ class DesktopMirrorService {
                 : "mantieni controllo operativo",
             button: "Apri dashboard",
             target: "dashboard"
-          },
-          {
-            id: "center-health-rule",
-            level: "info",
-            area: "regola",
-            conclusion: "Prodotti e tecnologie non determinano lo stato del centro",
-            reason: "Prima valuta se il centro lavora abbastanza, poi ottimizza margini e tecnologie.",
-            details: "Margini prodotto o resa tecnologia sono letture secondarie: non compensano fatturato basso, pochi clienti o agenda vuota.",
-            impactCents: 0,
-            riskCents: 0,
-            action: "prima sopravvivenza del centro, poi ottimizzazione margini",
-            button: "Apri redditività",
-            target: "profitability"
           }
         ]
       },
@@ -4345,8 +4332,9 @@ class DesktopMirrorService {
             impactCents: Number(topOperator.revenueCents || 0),
             riskCents: 0,
             action: "usa come benchmark operativo",
-            button: "Apri turni",
-            target: "shifts"
+            button: "Apri operatore",
+            target: "shifts",
+            staffId: topOperator.staffId
           } : null,
           weakOperator && topOperator && String(weakOperator.staffId || "") !== String(topOperator.staffId || "") ? {
             id: `operator-weak-${weakOperator.staffId}`,
@@ -4358,8 +4346,9 @@ class DesktopMirrorService {
             impactCents: 0,
             riskCents: 0,
             action: "verifica operatore",
-            button: "Apri turni",
-            target: "shifts"
+            button: "Apri operatore",
+            target: "shifts",
+            staffId: weakOperator.staffId
           } : null
         ].filter(Boolean)
       },
