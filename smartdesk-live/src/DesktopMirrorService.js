@@ -636,7 +636,7 @@ function relationStateFromMarketingAction(action) {
   return "non_contattato";
 }
 
-const OMEGA_WEIGHTS = Object.freeze({
+const GOLD_DECISION_WEIGHTS = Object.freeze({
   default: { need: 1.0, value: 1.0, urgency: 0.9, coherence: 1.0, friction: 1.3, bias: -1.15 },
   cliente: { need: 1.1, value: 1.0, urgency: 0.8, coherence: 1.1, friction: 1.45, bias: -1.1 },
   marketing: { need: 1.1, value: 1.0, urgency: 0.8, coherence: 1.1, friction: 1.45, bias: -1.1 },
@@ -650,11 +650,13 @@ const OMEGA_WEIGHTS = Object.freeze({
   centro: { need: 1.1, value: 1.2, urgency: 0.8, coherence: 1.0, friction: 1.3, bias: -1.1 }
 });
 
+// Gold Decision Engine: layer premium sopra i dati del gestionale.
+// Non e' usato dal Core operativo Base/Silver e non sostituisce CRUD, agenda, cassa o report.
 function sigmoid(value) {
   return 1 / (1 + Math.exp(-Number(value || 0)));
 }
 
-function omegaBand(score) {
+function goldDecisionBand(score) {
   const value = Number(score || 0);
   if (value >= 0.75) return { key: "alta", label: "Priorità alta" };
   if (value >= 0.55) return { key: "media", label: "Priorità media" };
@@ -715,9 +717,9 @@ function computeFriction(entityType, entity = {}, context = {}) {
   return normalizeScore(entity.frictionScore ?? context.frictionScore ?? 0);
 }
 
-function computeOmega(entityType, entity = {}, context = {}) {
+function computeGoldDecisionScore(entityType, entity = {}, context = {}) {
   const type = String(entityType || "default");
-  const weights = { ...OMEGA_WEIGHTS.default, ...(OMEGA_WEIGHTS[type] || {}) };
+  const weights = { ...GOLD_DECISION_WEIGHTS.default, ...(GOLD_DECISION_WEIGHTS[type] || {}) };
   const axes = {
     need: computeNeed(type, entity, context),
     value: computeValue(type, entity, context),
@@ -732,7 +734,7 @@ function computeOmega(entityType, entity = {}, context = {}) {
     - (weights.friction * axes.friction)
     + weights.bias;
   const score = normalizeScore(sigmoid(raw));
-  const band = omegaBand(score);
+  const band = goldDecisionBand(score);
   const suggestedAction = entity.suggestedAction
     || (band.key === "alta" ? "agire ora" : band.key === "media" ? "programmare azione" : band.key === "bassa" ? "tenere monitorato" : "non agire ora");
   const explanation = entity.explanation
@@ -5250,7 +5252,7 @@ class DesktopMirrorService {
       };
     }
     const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session);
-    if (cached?.coreVersion === "omega_v1") return cached;
+    if (cached?.coreVersion === "gold_phi_marketing_v1") return cached;
     const now = Date.now();
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -5440,7 +5442,7 @@ class DesktopMirrorService {
               : lostOrHistoric
                   ? "Fuori dalla lista giornaliera: usare riattivazione separata."
                   : "";
-      const omega = computeOmega("marketing", {
+      const goldDecision = computeGoldDecisionScore("marketing", {
         needScore: Math.min(timing.timingScore, 2) / 2,
         valueScoreNormalized,
         timingFit,
@@ -5452,21 +5454,21 @@ class DesktopMirrorService {
           ? antiInvasiveReason
           : `Routine ${routine.expectedRoutineDays} gg, fuori di ${timing.deltaDays} gg: ${timing.timingLabel.toLowerCase()}.`
       });
-      const shouldContact = !antiInvasiveReason && omega.score >= 0.55;
+      const shouldContact = !antiInvasiveReason && goldDecision.score >= 0.55;
       const followUpSuggested = (relationState === "contattato" || relationState === "in_attesa")
         && daysSinceLastMarketingContact !== null
         && daysSinceLastMarketingContact >= 3
         && daysSinceLastMarketingContact <= 7
         && responseProbability >= 0.6
-        && omega.score >= 0.55;
+        && goldDecision.score >= 0.55;
       const segment = timing.timingClass === "storico"
         ? "storico"
         : timing.timingClass === "perso"
           ? "perso"
           : timing.timingClass;
-      const priority = omega.score >= 0.75 && shouldContact
+      const priority = goldDecision.score >= 0.75 && shouldContact
         ? "alta"
-        : omega.score >= 0.55 && shouldContact
+        : goldDecision.score >= 0.55 && shouldContact
           ? "media"
           : "bassa";
       const pattern = segment === "perso"
@@ -5587,11 +5589,11 @@ class DesktopMirrorService {
         economicScore: Number(economicScore.toFixed(2)),
         economicConvenienceLabel: economicClass.label,
         economicConvenienceClass: economicClass.key,
-        finalScore: Number(omega.score.toFixed(2)),
-        finalScorePercent: omega.scorePercent,
-        finalPriorityLabel: omega.priorityLabel,
-        finalPriorityClass: omega.priorityBand,
-        omega,
+        finalScore: Number(goldDecision.score.toFixed(2)),
+        finalScorePercent: goldDecision.scorePercent,
+        finalPriorityLabel: goldDecision.priorityLabel,
+        finalPriorityClass: goldDecision.priorityBand,
+        goldDecision,
         timingScore: Number(timing.timingScore.toFixed(2)),
         timingClass: timing.timingClass,
         timingLabel: timing.timingLabel,
@@ -5663,7 +5665,7 @@ class DesktopMirrorService {
     const potentialRecoveryScore = prioritySuggestions.reduce((sum, item) => sum + Number(item.economicScore || 0), 0);
     const marketing = {
       goldEnabled: true,
-      coreVersion: "omega_v1",
+      coreVersion: "gold_phi_marketing_v1",
       generatedAt: nowIso(),
       suggestions: prioritySuggestions,
       lostClients,
