@@ -18,6 +18,11 @@ const DEFAULT_TRIAL_DAYS = 7;
 const DEFAULT_TRIAL_VERIFICATION_MINUTES = 30;
 const ANALYTICS_CACHE_TTL_MS = 120000;
 const SNAPSHOT_CACHE_TTL_MS = 60000;
+const GOLD_DECISION_HISTORY_LIMIT = 10;
+const GOLD_TEMPORAL_EPSILON = 0.03;
+const GOLD_TEMPORAL_CONFIDENCE_NU = 0.30;
+const GOLD_TREND_MU1 = 0.20;
+const GOLD_TREND_MU2 = 0.10;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
@@ -408,6 +413,13 @@ function average(values) {
   const clean = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(Number(value)));
   if (!clean.length) return 0;
   return clean.reduce((sum, value) => sum + Number(value), 0) / clean.length;
+}
+
+function stddev(values) {
+  const clean = (Array.isArray(values) ? values : []).filter((value) => Number.isFinite(Number(value))).map(Number);
+  if (clean.length <= 1) return 0;
+  const avg = average(clean);
+  return Math.sqrt(average(clean.map((value) => (value - avg) ** 2)));
 }
 
 function clamp(value, min, max) {
@@ -1296,6 +1308,7 @@ class DesktopMirrorService {
     this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
     this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
+    this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
@@ -1925,6 +1938,7 @@ class DesktopMirrorService {
         { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
         { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
+        { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
@@ -6106,6 +6120,185 @@ class DesktopMirrorService {
     return updated;
   }
 
+  getGoldDecisionHistoryKey(item = {}) {
+    return `${String(item.domain || "unknown")}:${String(item.entityId || "unknown")}`;
+  }
+
+  getGoldDecisionHistoryMap(session = null) {
+    const rows = this.filterByCenter(this.goldDecisionHistoryRepository.list(), session);
+    const map = new Map();
+    rows.forEach((row) => {
+      const key = String(row.historyKey || "");
+      if (!key) return;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(row);
+    });
+    map.forEach((items) => {
+      items.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+    });
+    return map;
+  }
+
+  compactGoldDecisionHistoryItem(item = {}, session = null, timestamp = nowIso()) {
+    const historyKey = this.getGoldDecisionHistoryKey(item);
+    return {
+      id: `${historyKey}:${timestamp}`,
+      centerId: this.getCenterId(session),
+      historyKey,
+      timestamp,
+      domain: String(item.domain || ""),
+      entityId: String(item.entityId || ""),
+      phi: Number(item.phi || 0),
+      confidence: Number(item.confidence || 0),
+      confidenceTemporal: Number(item.confidenceTemporal ?? item.confidence ?? 0),
+      expectedValue: Number(item.expectedValue || 0),
+      riskAdjustedPriority: Number(item.riskAdjustedPriority || 0),
+      riskAdjustedPriorityTrend: Number(item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0),
+      need: Number(item.factors?.need || 0),
+      value: Number(item.factors?.value || 0),
+      urgency: Number(item.factors?.urgency || 0),
+      coherence: Number(item.factors?.coherence || 0),
+      friction: Number(item.factors?.friction || 0),
+      dataQuality: Number(item.factors?.dataQuality || 0),
+      band: String(item.band || ""),
+      action: String(item.action || ""),
+      tone: String(item.tone || ""),
+      penaltyApplied: Boolean(item.penaltyApplied),
+      explanationShort: String(item.explanationShort || item.output || "").slice(0, 240)
+    };
+  }
+
+  trendLabelFromMetrics({ deltaRAP = 0, accelerationRAP = 0, volatilityRAP = 0, snapshots = 0 }) {
+    if (snapshots <= 1) return "recent_unconfirmed";
+    if (volatilityRAP >= 0.18) return "noisy";
+    if (deltaRAP > GOLD_TEMPORAL_EPSILON && accelerationRAP > GOLD_TEMPORAL_EPSILON) return "rising_fast";
+    if (deltaRAP > GOLD_TEMPORAL_EPSILON) return "rising";
+    if (deltaRAP < -GOLD_TEMPORAL_EPSILON && accelerationRAP < -GOLD_TEMPORAL_EPSILON) return "falling_fast";
+    if (deltaRAP < -GOLD_TEMPORAL_EPSILON) return "falling";
+    return "stable";
+  }
+
+  trendExplanation(label) {
+    switch (label) {
+      case "rising_fast":
+        return "Priorità in crescita accelerata rispetto agli ultimi rilevamenti.";
+      case "rising":
+        return "Priorità in crescita rispetto all'ultimo rilevamento.";
+      case "falling_fast":
+        return "Pressione in forte calo: evitare di promuovere come urgenza massima.";
+      case "falling":
+        return "Pressione in calo: monitorare senza forzare.";
+      case "noisy":
+        return "Segnale alto ma instabile: trattare con prudenza.";
+      case "recent_unconfirmed":
+        return "Segnale recente, non ancora consolidato nello storico.";
+      case "stable":
+      default:
+        return "Segnale stabile negli ultimi snapshot.";
+    }
+  }
+
+  applyGoldTemporalLayerToItems(items = [], historyMap = new Map()) {
+    return (Array.isArray(items) ? items : []).map((item) => {
+      const historyKey = this.getGoldDecisionHistoryKey(item);
+      const history = historyMap.get(historyKey) || [];
+      const previous = history[0] || null;
+      const previous2 = history[1] || null;
+      const phi = Number(item.phi || 0);
+      const rap = Number(item.riskAdjustedPriority || 0);
+      const confidence = Number(item.confidence || 0);
+      const prevPhi = Number(previous?.phi ?? phi);
+      const prevRap = Number(previous?.riskAdjustedPriorityTrend ?? previous?.riskAdjustedPriority ?? rap);
+      const prevConfidence = Number(previous?.confidence ?? confidence);
+      const prev2Phi = Number(previous2?.phi ?? prevPhi);
+      const prev2Rap = Number(previous2?.riskAdjustedPriorityTrend ?? previous2?.riskAdjustedPriority ?? prevRap);
+      const deltaPhiRaw = previous ? phi - prevPhi : 0;
+      const deltaRAPRaw = previous ? rap - prevRap : 0;
+      const prevDeltaPhi = previous && previous2 ? prevPhi - prev2Phi : 0;
+      const prevDeltaRAP = previous && previous2 ? prevRap - prev2Rap : 0;
+      const accelerationPhiRaw = deltaPhiRaw - prevDeltaPhi;
+      const accelerationRAPRaw = deltaRAPRaw - prevDeltaRAP;
+      const phiSeries = [phi, ...history.slice(0, 4).map((row) => Number(row.phi || 0))];
+      const rapSeries = [rap, ...history.slice(0, 4).map((row) => Number(row.riskAdjustedPriorityTrend ?? row.riskAdjustedPriority ?? 0))];
+      const volatilityPhi = normalizeScore(stddev(phiSeries));
+      const volatilityRAP = normalizeScore(stddev(rapSeries));
+      const confidenceTemporal = normalizeScore(confidence * (1 - (GOLD_TEMPORAL_CONFIDENCE_NU * volatilityRAP)));
+      const trendBase = normalizeScore(rap + (GOLD_TREND_MU1 * deltaRAPRaw) + (GOLD_TREND_MU2 * accelerationRAPRaw));
+      const riskAdjustedPriorityTrend = normalizeScore(trendBase * (1 - (0.5 * volatilityRAP)));
+      const trendLabel = this.trendLabelFromMetrics({
+        deltaRAP: deltaRAPRaw,
+        accelerationRAP: accelerationRAPRaw,
+        volatilityRAP,
+        snapshots: history.length + 1
+      });
+      const temporalPenalty = volatilityRAP >= 0.18 || confidenceTemporal < 0.4;
+      const trendExplanation = this.trendExplanation(trendLabel);
+      return {
+        ...item,
+        confidenceTemporal: Number(confidenceTemporal.toFixed(3)),
+        confidenceTemporalPercent: Math.round(confidenceTemporal * 100),
+        riskAdjustedPriorityTrend: Number(riskAdjustedPriorityTrend.toFixed(3)),
+        riskAdjustedPriorityTrendPercent: Math.round(riskAdjustedPriorityTrend * 100),
+        temporalMode: "test_parallel",
+        temporalVersion: "gold_temporal_v1",
+        temporalPenaltyApplied: temporalPenalty,
+        trend: {
+          deltaPhi: Number((Math.abs(deltaPhiRaw) < GOLD_TEMPORAL_EPSILON ? 0 : deltaPhiRaw).toFixed(3)),
+          deltaRAP: Number((Math.abs(deltaRAPRaw) < GOLD_TEMPORAL_EPSILON ? 0 : deltaRAPRaw).toFixed(3)),
+          deltaConfidence: Number((Math.abs(confidence - prevConfidence) < GOLD_TEMPORAL_EPSILON ? 0 : confidence - prevConfidence).toFixed(3)),
+          accelerationPhi: Number((Math.abs(accelerationPhiRaw) < GOLD_TEMPORAL_EPSILON ? 0 : accelerationPhiRaw).toFixed(3)),
+          accelerationRAP: Number((Math.abs(accelerationRAPRaw) < GOLD_TEMPORAL_EPSILON ? 0 : accelerationRAPRaw).toFixed(3)),
+          volatilityPhi: Number(volatilityPhi.toFixed(3)),
+          volatilityRAP: Number(volatilityRAP.toFixed(3)),
+          snapshots: history.length + 1,
+          trendLabel
+        },
+        explanationLong: `${item.explanationLong || item.explanationShort || ""} ${trendExplanation}`.trim()
+      };
+    });
+  }
+
+  applyGoldTemporalLayer(branches = {}, session = null) {
+    const historyMap = this.getGoldDecisionHistoryMap(session);
+    const nextBranches = {};
+    Object.entries(branches || {}).forEach(([key, branch]) => {
+      nextBranches[key] = {
+        ...branch,
+        temporalMode: "test_parallel",
+        items: this.applyGoldTemporalLayerToItems(branch?.items || [], historyMap)
+      };
+    });
+    return nextBranches;
+  }
+
+  persistGoldDecisionHistory(branches = {}, session = null, timestamp = nowIso()) {
+    const centerId = this.getCenterId(session);
+    const incoming = Object.values(branches || {}).flatMap((branch) => branch?.items || [])
+      .filter((item) => item?.domain && item?.entityId)
+      .map((item) => this.compactGoldDecisionHistoryItem(item, session, timestamp));
+    if (!incoming.length) return { saved: 0, retained: 0 };
+    const existing = this.goldDecisionHistoryRepository.list()
+      .filter((row) => String(row.centerId || "") !== centerId);
+    const grouped = new Map();
+    incoming.forEach((row) => {
+      if (!grouped.has(row.historyKey)) grouped.set(row.historyKey, []);
+      grouped.get(row.historyKey).push(row);
+    });
+    this.filterByCenter(this.goldDecisionHistoryRepository.list(), session).forEach((row) => {
+      const key = String(row.historyKey || "");
+      if (!key) return;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(row);
+    });
+    const retained = [];
+    grouped.forEach((rows) => {
+      rows.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+      retained.push(...rows.slice(0, GOLD_DECISION_HISTORY_LIMIT));
+    });
+    this.goldDecisionHistoryRepository.write([...existing, ...retained]);
+    return { saved: incoming.length, retained: retained.length };
+  }
+
   getAiGoldMarketingSnapshot(session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
@@ -6455,7 +6648,7 @@ class DesktopMirrorService {
     };
   }
 
-  buildGoldDashboardDecisions(branches = {}, dataQuality = {}) {
+  buildGoldDashboardDecisions(branches = {}, dataQuality = {}, session = null) {
     const downgradeBand = (band) => {
       if (band === "alta") return { key: "media", label: "Priorità media" };
       if (band === "media") return { key: "bassa", label: "Priorità bassa" };
@@ -6469,6 +6662,7 @@ class DesktopMirrorService {
       const penalty = friction > 0.75 || coherence < 0.35 ? 0.7 : 0.8;
       const nextPhi = Number(Math.max(0, Number(item.phi || 0) * penalty).toFixed(3));
       const nextRap = Number(Math.max(0, Number(item.riskAdjustedPriority || 0) * penalty).toFixed(3));
+      const nextTrendRap = Number(Math.max(0, Number(item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0) * penalty).toFixed(3));
       const downgraded = downgradeBand(item.band);
       return {
         ...item,
@@ -6476,6 +6670,8 @@ class DesktopMirrorService {
         phiPercent: Math.round(nextPhi * 100),
         riskAdjustedPriority: nextRap,
         riskAdjustedPriorityPercent: Math.round(nextRap * 100),
+        riskAdjustedPriorityTrend: nextTrendRap,
+        riskAdjustedPriorityTrendPercent: Math.round(nextTrendRap * 100),
         band: downgraded.key,
         bandLabel: downgraded.label,
         reliabilityPenaltyApplied: true,
@@ -6493,7 +6689,7 @@ class DesktopMirrorService {
       ...(branches.profit?.items || [])
     ].map(reliabilityGate);
     const qualityNeed = normalizeScore((100 - Number(dataQuality.score || 100)) / 100);
-    const qualityDecision = qualityNeed > 0 ? this.toGoldDecisionItem("dashboard", "data-quality", computeGoldDecisionScore("data_quality_alert", {
+    let qualityDecision = qualityNeed > 0 ? this.toGoldDecisionItem("dashboard", "data-quality", computeGoldDecisionScore("data_quality_alert", {
       needScore: qualityNeed,
       valueScore: 0.55,
       urgencyScore: qualityNeed >= 0.35 ? 0.75 : 0.35,
@@ -6506,8 +6702,11 @@ class DesktopMirrorService {
       output: Number(dataQuality.score || 0) < 65 ? "rischio operativo reale" : "monitorare",
       target: "clients"
     }) : null;
+    if (qualityDecision) {
+      qualityDecision = this.applyGoldTemporalLayerToItems([qualityDecision], this.getGoldDecisionHistoryMap(session))[0];
+    }
     const allItems = [...branchItems, qualityDecision].filter(Boolean)
-      .sort((a, b) => Number(b.riskAdjustedPriority || 0) - Number(a.riskAdjustedPriority || 0) || Number(b.phi || 0) - Number(a.phi || 0))
+      .sort((a, b) => Number(b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.riskAdjustedPriority || 0) - Number(a.riskAdjustedPriority || 0) || Number(b.phi || 0) - Number(a.phi || 0))
       .slice(0, 12);
     return {
       domain: "dashboard",
@@ -6515,7 +6714,8 @@ class DesktopMirrorService {
       generatedAt: nowIso(),
       items: allItems,
       summary: {
-        rankingMethod: "risk_adjusted_priority",
+        rankingMethod: "risk_adjusted_priority_trend_test_parallel",
+        classicRankingAvailable: true,
         firstAction: allItems[0]?.suggestedAction || "nessuna azione urgente",
         mainProblem: allItems.find((item) => ["cash", "agenda", "profit"].includes(item.domain) && item.phi >= 0.5)?.explanationShort || "nessun problema urgente",
         bestOpportunity: allItems.find((item) => item.domain === "marketing" || item.output === "margine buono")?.explanationShort || "nessuna opportunità prioritaria",
@@ -6632,15 +6832,18 @@ class DesktopMirrorService {
         status: marketing.suggestions?.length ? "priorita_clienti" : "nessun_recall_urgente"
       }
     };
-    const goldAgendaBranch = this.buildGoldAgendaDecisions({ appointments, servicesById }, session);
-    const goldCashBranch = this.buildGoldCashDecisions({ payments }, session);
-    const goldProfitBranch = this.buildGoldProfitDecisions(profitability);
-    const goldDashboardBranch = this.buildGoldDashboardDecisions({
+    const rawGoldBranches = {
       marketing: goldMarketingBranch,
-      agenda: goldAgendaBranch,
-      cash: goldCashBranch,
-      profit: goldProfitBranch
-    }, dataQuality);
+      agenda: this.buildGoldAgendaDecisions({ appointments, servicesById }, session),
+      cash: this.buildGoldCashDecisions({ payments }, session),
+      profit: this.buildGoldProfitDecisions(profitability)
+    };
+    const temporalGoldBranches = this.applyGoldTemporalLayer(rawGoldBranches, session);
+    const goldDashboardBranch = this.buildGoldDashboardDecisions(temporalGoldBranches, dataQuality, session);
+    const goldHistoryWrite = this.persistGoldDecisionHistory({
+      ...temporalGoldBranches,
+      dashboard: goldDashboardBranch
+    }, session);
     const snapshot = {
       snapshotAvailable: true,
       snapshotVersion: "1.0",
@@ -6693,11 +6896,15 @@ class DesktopMirrorService {
       goldEngine: {
         engineLayer: "gold_decision_engine",
         engineVersion: "gold_phi_multi_domain_v1",
+        temporalLayer: "gold_temporal_v1",
+        temporalMode: "test_parallel",
+        temporalRule: "RAP classico resta disponibile; Dashboard valuta in parallelo RAP trend-adjusted, confidence temporale, volatilita e delta.",
+        history: goldHistoryWrite,
         rule: "Gold legge dati già presenti, pesa i segnali e produce priorità operative. Base e Silver non dipendono da questo motore.",
-        marketing: goldMarketingBranch,
-        agenda: goldAgendaBranch,
-        cash: goldCashBranch,
-        profit: goldProfitBranch,
+        marketing: temporalGoldBranches.marketing,
+        agenda: temporalGoldBranches.agenda,
+        cash: temporalGoldBranches.cash,
+        profit: temporalGoldBranches.profit,
         dashboard: goldDashboardBranch
       },
       operations: {
