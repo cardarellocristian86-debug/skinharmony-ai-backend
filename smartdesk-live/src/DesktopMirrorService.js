@@ -636,6 +636,127 @@ function relationStateFromMarketingAction(action) {
   return "non_contattato";
 }
 
+const OMEGA_WEIGHTS = Object.freeze({
+  default: { need: 1.0, value: 1.0, urgency: 0.9, coherence: 1.0, friction: 1.3, bias: -1.15 },
+  cliente: { need: 1.1, value: 1.0, urgency: 0.8, coherence: 1.1, friction: 1.45, bias: -1.1 },
+  marketing: { need: 1.1, value: 1.0, urgency: 0.8, coherence: 1.1, friction: 1.45, bias: -1.1 },
+  appuntamento: { need: 1.1, value: 0.8, urgency: 1.2, coherence: 0.8, friction: 1.4, bias: -1.1 },
+  pagamento: { need: 1.2, value: 1.1, urgency: 1.0, coherence: 0.9, friction: 1.5, bias: -1.15 },
+  servizio: { need: 1.0, value: 1.2, urgency: 0.7, coherence: 1.0, friction: 1.2, bias: -1.15 },
+  operatore: { need: 1.0, value: 1.1, urgency: 0.9, coherence: 0.9, friction: 1.3, bias: -1.1 },
+  prodotto: { need: 1.0, value: 0.9, urgency: 1.1, coherence: 0.8, friction: 1.2, bias: -1.1 },
+  tecnologia: { need: 1.0, value: 1.2, urgency: 0.7, coherence: 0.9, friction: 1.2, bias: -1.15 },
+  data_quality_alert: { need: 1.3, value: 0.9, urgency: 0.9, coherence: 1.0, friction: 1.1, bias: -1.0 },
+  centro: { need: 1.1, value: 1.2, urgency: 0.8, coherence: 1.0, friction: 1.3, bias: -1.1 }
+});
+
+function sigmoid(value) {
+  return 1 / (1 + Math.exp(-Number(value || 0)));
+}
+
+function omegaBand(score) {
+  const value = Number(score || 0);
+  if (value >= 0.75) return { key: "alta", label: "Priorità alta" };
+  if (value >= 0.55) return { key: "media", label: "Priorità media" };
+  if (value >= 0.35) return { key: "bassa", label: "Priorità bassa" };
+  return { key: "stop", label: "Non prioritario" };
+}
+
+function computeNeed(entityType, entity = {}, context = {}) {
+  const type = String(entityType || "default");
+  if (type === "cliente" || type === "marketing") {
+    return normalizeScore(Number(entity.needScore ?? Math.min(Number(entity.timingScore || 0), 2) / 2));
+  }
+  if (type === "appuntamento") return normalizeScore(entity.isIncomplete ? 1 : entity.needsConfirmation ? 0.75 : entity.needScore || 0);
+  if (type === "pagamento") return normalizeScore(entity.isUnlinked ? 1 : entity.isOpen ? 0.75 : entity.needScore || 0);
+  if (type === "servizio" || type === "tecnologia") return normalizeScore(entity.marginAlert ? 1 : entity.needScore || 0);
+  if (type === "operatore") return normalizeScore(entity.underTarget ? 1 : entity.needScore || 0);
+  if (type === "prodotto") return normalizeScore(entity.isUnderstock ? 1 : entity.needScore || 0);
+  if (type === "data_quality_alert") return normalizeScore(entity.issueRate ?? entity.needScore ?? 0);
+  if (type === "centro") return normalizeScore(entity.centerNeedScore ?? entity.needScore ?? 0);
+  return normalizeScore(entity.needScore ?? context.needScore ?? 0);
+}
+
+function computeValue(entityType, entity = {}, context = {}) {
+  const type = String(entityType || "default");
+  if (type === "cliente" || type === "marketing") return normalizeScore(entity.valueScoreNormalized ?? entity.valueScore ?? 0);
+  if (type === "pagamento") return normalizeScore(entity.amountScore ?? entity.valueScore ?? 0);
+  if (type === "servizio" || type === "tecnologia") return normalizeScore(entity.marginImpactScore ?? entity.valueScore ?? 0);
+  if (type === "centro") return normalizeScore(entity.businessImpactScore ?? entity.valueScore ?? 0);
+  return normalizeScore(entity.valueScore ?? context.valueScore ?? 0);
+}
+
+function computeUrgency(entityType, entity = {}, context = {}) {
+  const type = String(entityType || "default");
+  if (type === "cliente" || type === "marketing") return normalizeScore(entity.timingFit ?? entity.urgencyScore ?? 0);
+  if (type === "appuntamento") return normalizeScore(entity.startsSoon ? 1 : entity.urgencyScore || 0);
+  if (type === "pagamento") return normalizeScore(entity.closeDayUrgency ?? entity.urgencyScore ?? 0);
+  if (type === "prodotto") return normalizeScore(entity.stockUrgencyScore ?? entity.urgencyScore ?? 0);
+  return normalizeScore(entity.urgencyScore ?? context.urgencyScore ?? 0);
+}
+
+function computeCoherence(entityType, entity = {}, context = {}) {
+  const type = String(entityType || "default");
+  if (type === "cliente" || type === "marketing") return normalizeScore(entity.responseProbability ?? entity.coherenceScore ?? 0);
+  if (type === "pagamento") return normalizeScore(entity.matchConfidence ?? entity.coherenceScore ?? 0);
+  if (type === "data_quality_alert") return normalizeScore(1 - Number(entity.issueRate || 0));
+  return normalizeScore(entity.coherenceScore ?? context.coherenceScore ?? 0.5, 0.5);
+}
+
+function computeFriction(entityType, entity = {}, context = {}) {
+  const type = String(entityType || "default");
+  if (type === "cliente" || type === "marketing") {
+    if (entity.blockedByAntiInvasiveRule) return 1;
+    return normalizeScore(entity.frictionScore ?? 0);
+  }
+  if (type === "appuntamento") return normalizeScore(entity.hasConflict ? 1 : entity.frictionScore || 0);
+  if (type === "pagamento") return normalizeScore(entity.isAmbiguous ? 1 : entity.frictionScore || 0);
+  if (type === "servizio" || type === "tecnologia") return normalizeScore(entity.costUncertaintyScore ?? entity.frictionScore ?? 0);
+  return normalizeScore(entity.frictionScore ?? context.frictionScore ?? 0);
+}
+
+function computeOmega(entityType, entity = {}, context = {}) {
+  const type = String(entityType || "default");
+  const weights = { ...OMEGA_WEIGHTS.default, ...(OMEGA_WEIGHTS[type] || {}) };
+  const axes = {
+    need: computeNeed(type, entity, context),
+    value: computeValue(type, entity, context),
+    urgency: computeUrgency(type, entity, context),
+    coherence: computeCoherence(type, entity, context),
+    friction: computeFriction(type, entity, context)
+  };
+  const raw = (weights.need * axes.need)
+    + (weights.value * axes.value)
+    + (weights.urgency * axes.urgency)
+    + (weights.coherence * axes.coherence)
+    - (weights.friction * axes.friction)
+    + weights.bias;
+  const score = normalizeScore(sigmoid(raw));
+  const band = omegaBand(score);
+  const suggestedAction = entity.suggestedAction
+    || (band.key === "alta" ? "agire ora" : band.key === "media" ? "programmare azione" : band.key === "bassa" ? "tenere monitorato" : "non agire ora");
+  const explanation = entity.explanation
+    || `Priorità ${band.label.toLowerCase()}: necessita ${Math.round(axes.need * 100)}%, valore ${Math.round(axes.value * 100)}%, urgenza ${Math.round(axes.urgency * 100)}%, coerenza ${Math.round(axes.coherence * 100)}%, frizione ${Math.round(axes.friction * 100)}%.`;
+  return {
+    entityType: type,
+    score: Number(score.toFixed(3)),
+    scorePercent: Math.round(score * 100),
+    raw: Number(raw.toFixed(3)),
+    axes: {
+      need: Number(axes.need.toFixed(3)),
+      value: Number(axes.value.toFixed(3)),
+      urgency: Number(axes.urgency.toFixed(3)),
+      coherence: Number(axes.coherence.toFixed(3)),
+      friction: Number(axes.friction.toFixed(3))
+    },
+    weights,
+    priorityBand: band.key,
+    priorityLabel: band.label,
+    explanation,
+    suggestedAction
+  };
+}
+
 function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now(), serviceById = new Map()) {
   const clientId = String(client?.id || "");
   const visits = relevantClientAppointments(appointments, clientId, nowMs);
@@ -5298,6 +5419,14 @@ class DesktopMirrorService {
       const veryLowResponse = responseProbability < 0.35 && valueScoreNormalized < 0.95;
       const lostOrHistoric = timing.timingClass === "perso" || timing.timingClass === "storico";
       const inRoutine = timing.timingClass === "in_routine";
+      const frictionScore = normalizeScore(Math.max(
+        !hasMarketingConsent ? 1 : 0,
+        lockedRelation ? 0.95 : 0,
+        tooRecent ? 0.9 : 0,
+        lostOrHistoric ? 0.8 : 0,
+        veryLowResponse ? 0.55 : 0,
+        inRoutine ? 0.5 : 0
+      ));
       const antiInvasiveReason = !hasMarketingConsent
         ? "Consenso marketing non confermato."
         : lockedRelation
@@ -5308,24 +5437,36 @@ class DesktopMirrorService {
               ? "Probabilità risposta bassa: meglio non forzare il contatto."
               : inRoutine
                 ? "Cliente in routine: nessun contatto necessario."
-                : lostOrHistoric
+              : lostOrHistoric
                   ? "Fuori dalla lista giornaliera: usare riattivazione separata."
                   : "";
-      const shouldContact = !antiInvasiveReason && finalScore >= 0.5;
+      const omega = computeOmega("marketing", {
+        needScore: Math.min(timing.timingScore, 2) / 2,
+        valueScoreNormalized,
+        timingFit,
+        responseProbability,
+        frictionScore,
+        blockedByAntiInvasiveRule: Boolean(antiInvasiveReason),
+        suggestedAction: antiInvasiveReason || undefined,
+        explanation: antiInvasiveReason
+          ? antiInvasiveReason
+          : `Routine ${routine.expectedRoutineDays} gg, fuori di ${timing.deltaDays} gg: ${timing.timingLabel.toLowerCase()}.`
+      });
+      const shouldContact = !antiInvasiveReason && omega.score >= 0.55;
       const followUpSuggested = (relationState === "contattato" || relationState === "in_attesa")
         && daysSinceLastMarketingContact !== null
         && daysSinceLastMarketingContact >= 3
         && daysSinceLastMarketingContact <= 7
         && responseProbability >= 0.6
-        && finalScore >= 0.55;
+        && omega.score >= 0.55;
       const segment = timing.timingClass === "storico"
         ? "storico"
         : timing.timingClass === "perso"
           ? "perso"
           : timing.timingClass;
-      const priority = finalScore >= 0.7 && shouldContact
+      const priority = omega.score >= 0.75 && shouldContact
         ? "alta"
-        : finalScore >= 0.5 && shouldContact
+        : omega.score >= 0.55 && shouldContact
           ? "media"
           : "bassa";
       const pattern = segment === "perso"
@@ -5446,10 +5587,11 @@ class DesktopMirrorService {
         economicScore: Number(economicScore.toFixed(2)),
         economicConvenienceLabel: economicClass.label,
         economicConvenienceClass: economicClass.key,
-        finalScore: Number(finalScore.toFixed(2)),
-        finalScorePercent: Math.round(finalScore * 100),
-        finalPriorityLabel: finalClass.label,
-        finalPriorityClass: finalClass.key,
+        finalScore: Number(omega.score.toFixed(2)),
+        finalScorePercent: omega.scorePercent,
+        finalPriorityLabel: omega.priorityLabel,
+        finalPriorityClass: omega.priorityBand,
+        omega,
         timingScore: Number(timing.timingScore.toFixed(2)),
         timingClass: timing.timingClass,
         timingLabel: timing.timingLabel,
