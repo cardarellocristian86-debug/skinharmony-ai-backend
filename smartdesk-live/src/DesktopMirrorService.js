@@ -759,6 +759,41 @@ function computeGoldDecisionScore(entityType, entity = {}, context = {}) {
   };
 }
 
+function confidenceBand(confidence) {
+  const value = Number(confidence || 0);
+  if (value < 0.4) return { key: "bassa", label: "Bassa affidabilità" };
+  if (value < 0.65) return { key: "media", label: "Affidabilità media" };
+  return { key: "buona", label: "Buona affidabilità" };
+}
+
+function computeGoldDecisionControlMetrics(goldDecision = {}, options = {}) {
+  const factors = goldDecision.axes || {};
+  const coherence = normalizeScore(factors.coherence ?? options.coherence ?? 0);
+  const friction = normalizeScore(factors.friction ?? options.friction ?? 0);
+  const dataQuality = normalizeScore(options.dataQuality ?? coherence);
+  const value = normalizeScore(factors.value ?? options.value ?? 0);
+  const phi = normalizeScore(goldDecision.score || 0);
+  const confidence = normalizeScore((0.45 * coherence) + (0.35 * (1 - friction)) + (0.20 * dataQuality));
+  const pSuccess = normalizeScore(coherence * (1 - friction));
+  const expectedValue = normalizeScore(pSuccess * value);
+  const risk = normalizeScore(options.risk ?? friction);
+  const riskAdjustedPriority = normalizeScore(phi * confidence * (1 - risk));
+  const band = confidenceBand(confidence);
+  return {
+    confidence: Number(confidence.toFixed(3)),
+    confidencePercent: Math.round(confidence * 100),
+    confidenceBand: band.key,
+    confidenceLabel: band.label,
+    expectedValue: Number(expectedValue.toFixed(3)),
+    expectedValuePercent: Math.round(expectedValue * 100),
+    pSuccess: Number(pSuccess.toFixed(3)),
+    risk: Number(risk.toFixed(3)),
+    riskAdjustedPriority: Number(riskAdjustedPriority.toFixed(3)),
+    riskAdjustedPriorityPercent: Math.round(riskAdjustedPriority * 100),
+    dataQuality: Number(dataQuality.toFixed(3))
+  };
+}
+
 function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now(), serviceById = new Map()) {
   const clientId = String(client?.id || "");
   const visits = relevantClientAppointments(appointments, clientId, nowMs);
@@ -6012,24 +6047,52 @@ class DesktopMirrorService {
   }
 
   toGoldDecisionItem(domain, entityId, goldDecision, meta = {}) {
+    const control = computeGoldDecisionControlMetrics(goldDecision, {
+      dataQuality: meta.dataQuality,
+      risk: meta.risk
+    });
+    const lowConfidence = control.confidence < 0.4;
+    const safeOutput = lowConfidence && /buono|opportunit|spingi|forte/i.test(String(meta.output || meta.explanationShort || ""))
+      ? "dato da verificare"
+      : meta.output;
+    const safeAction = lowConfidence && /spingi|promuovi|contatta|agisci/i.test(String(meta.suggestedAction || goldDecision.suggestedAction || ""))
+      ? "verifica prima di agire"
+      : meta.suggestedAction || goldDecision.suggestedAction;
     return {
       domain,
       entityId: String(entityId || `${domain}-${Date.now()}`),
       phi: goldDecision.score,
       phiPercent: goldDecision.scorePercent,
+      confidence: control.confidence,
+      confidencePercent: control.confidencePercent,
+      confidenceBand: control.confidenceBand,
+      confidenceLabel: control.confidenceLabel,
+      expectedValue: control.expectedValue,
+      expectedValuePercent: control.expectedValuePercent,
+      pSuccess: control.pSuccess,
+      risk: control.risk,
+      riskAdjustedPriority: control.riskAdjustedPriority,
+      riskAdjustedPriorityPercent: control.riskAdjustedPriorityPercent,
       band: goldDecision.priorityBand,
       bandLabel: goldDecision.priorityLabel,
+      penaltyApplied: Boolean(meta.penaltyApplied || lowConfidence),
       factors: {
         need: goldDecision.axes.need,
         value: goldDecision.axes.value,
         urgency: goldDecision.axes.urgency,
         coherence: goldDecision.axes.coherence,
-        friction: goldDecision.axes.friction
+        friction: goldDecision.axes.friction,
+        dataQuality: control.dataQuality
       },
-      suggestedAction: meta.suggestedAction || goldDecision.suggestedAction,
-      explanationShort: meta.explanationShort || goldDecision.explanation,
-      explanationLong: meta.explanationLong || goldDecision.explanation,
-      ...meta
+      suggestedAction: safeAction,
+      explanationShort: safeOutput || meta.explanationShort || goldDecision.explanation,
+      explanationLong: lowConfidence
+        ? `${meta.explanationLong || goldDecision.explanation} Affidabilità bassa: trattare come segnale da verificare, non come certezza.`.trim()
+        : meta.explanationLong || goldDecision.explanation,
+      ...meta,
+      output: safeOutput,
+      suggestedAction: safeAction,
+      penaltyApplied: Boolean(meta.penaltyApplied || lowConfidence)
     };
   }
 
@@ -6292,11 +6355,14 @@ class DesktopMirrorService {
       if (!(coherence < 0.5 || friction > 0.6)) return item;
       const penalty = friction > 0.75 || coherence < 0.35 ? 0.7 : 0.8;
       const nextPhi = Number(Math.max(0, Number(item.phi || 0) * penalty).toFixed(3));
+      const nextRap = Number(Math.max(0, Number(item.riskAdjustedPriority || 0) * penalty).toFixed(3));
       const downgraded = downgradeBand(item.band);
       return {
         ...item,
         phi: nextPhi,
         phiPercent: Math.round(nextPhi * 100),
+        riskAdjustedPriority: nextRap,
+        riskAdjustedPriorityPercent: Math.round(nextRap * 100),
         band: downgraded.key,
         bandLabel: downgraded.label,
         reliabilityPenaltyApplied: true,
@@ -6328,7 +6394,7 @@ class DesktopMirrorService {
       target: "clients"
     }) : null;
     const allItems = [...branchItems, qualityDecision].filter(Boolean)
-      .sort((a, b) => b.phi - a.phi)
+      .sort((a, b) => Number(b.riskAdjustedPriority || 0) - Number(a.riskAdjustedPriority || 0) || Number(b.phi || 0) - Number(a.phi || 0))
       .slice(0, 12);
     return {
       domain: "dashboard",
@@ -6336,11 +6402,13 @@ class DesktopMirrorService {
       generatedAt: nowIso(),
       items: allItems,
       summary: {
+        rankingMethod: "risk_adjusted_priority",
         firstAction: allItems[0]?.suggestedAction || "nessuna azione urgente",
         mainProblem: allItems.find((item) => ["cash", "agenda", "profit"].includes(item.domain) && item.phi >= 0.5)?.explanationShort || "nessun problema urgente",
         bestOpportunity: allItems.find((item) => item.domain === "marketing" || item.output === "margine buono")?.explanationShort || "nessuna opportunità prioritaria",
         areaToAvoidNow: allItems.find((item) => item.factors?.friction >= 0.75)?.label || "",
         operationalRisk: allItems.find((item) => item.band === "alta")?.explanationShort || "rischio sotto controllo",
+        fragileDataArea: allItems.find((item) => item.confidence < 0.4 || item.reliabilityPenaltyApplied)?.label || "",
         totalSignals: allItems.length
       }
     };
