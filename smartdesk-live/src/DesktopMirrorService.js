@@ -5454,23 +5454,30 @@ class DesktopMirrorService {
           ? antiInvasiveReason
           : `Routine ${routine.expectedRoutineDays} gg, fuori di ${timing.deltaDays} gg: ${timing.timingLabel.toLowerCase()}.`
       });
-      const shouldContact = !antiInvasiveReason && goldDecision.score >= 0.55;
+      const shouldContactOld = !antiInvasiveReason && finalScore >= 0.5;
+      const shouldContactNew = !antiInvasiveReason && goldDecision.score >= 0.55;
       const followUpSuggested = (relationState === "contattato" || relationState === "in_attesa")
         && daysSinceLastMarketingContact !== null
         && daysSinceLastMarketingContact >= 3
         && daysSinceLastMarketingContact <= 7
         && responseProbability >= 0.6
-        && goldDecision.score >= 0.55;
+        && finalScore >= 0.55;
       const segment = timing.timingClass === "storico"
         ? "storico"
         : timing.timingClass === "perso"
           ? "perso"
           : timing.timingClass;
-      const priority = goldDecision.score >= 0.75 && shouldContact
+      const oldPriority = finalScore >= 0.7 && shouldContactOld
         ? "alta"
-        : goldDecision.score >= 0.55 && shouldContact
+        : finalScore >= 0.5 && shouldContactOld
           ? "media"
           : "bassa";
+      const newPriority = goldDecision.score >= 0.75 && shouldContactNew
+        ? "alta"
+        : goldDecision.score >= 0.55 && shouldContactNew
+          ? "media"
+          : "bassa";
+      const priority = oldPriority;
       const pattern = segment === "perso"
         ? "cliente a rischio perdita"
         : segment === "storico"
@@ -5544,12 +5551,12 @@ class DesktopMirrorService {
             : "non contattare ora";
       const safeAction = !hasMarketingConsent
         ? "Verifica consenso, poi chiama o scrivi in modo autorizzato."
-        : shouldContact
+        : shouldContactOld
           ? `Proponi un appuntamento semplice legato a ${lastService?.name || "servizio abituale"}.`
           : "Non inviare messaggi: resta in osservazione.";
       const upsellAction = !hasMarketingConsent
         ? "Dopo consenso, proponi check gratuito o consulenza breve."
-        : shouldContact && signal.push
+        : shouldContactOld && signal.push
           ? `Abbina ${signal.push}.`
           : "Nessun upsell ora.";
       const conclusion = priority === "alta"
@@ -5568,6 +5575,11 @@ class DesktopMirrorService {
         recupero_attivo: `${greeting}, il timing è già avanzato. Può essere utile rivederci per capire come mantenere o riprendere il percorso. Vuoi che ti proponga uno slot?`,
         perso: `${greeting}, se vuoi riprendere da dove avevamo lasciato, possiamo capire insieme cosa fare ora.`
       };
+      const fT = normalizeScore(Math.min(timing.timingScore, 2) / 2);
+      const fV = normalizeScore(valueScoreNormalized);
+      const fR = normalizeScore(responseProbability);
+      const fB = normalizeScore((affinityScore + timingFit) / 2);
+      const fS = normalizeScore(frictionScore);
       return {
         clientId,
         name: displayName,
@@ -5589,11 +5601,30 @@ class DesktopMirrorService {
         economicScore: Number(economicScore.toFixed(2)),
         economicConvenienceLabel: economicClass.label,
         economicConvenienceClass: economicClass.key,
-        finalScore: Number(goldDecision.score.toFixed(2)),
-        finalScorePercent: goldDecision.scorePercent,
-        finalPriorityLabel: goldDecision.priorityLabel,
-        finalPriorityClass: goldDecision.priorityBand,
+        finalScore: Number(finalScore.toFixed(2)),
+        finalScorePercent: Math.round(finalScore * 100),
+        finalPriorityLabel: finalClass.label,
+        finalPriorityClass: finalClass.key,
+        oldDecision: {
+          score: Number(finalScore.toFixed(3)),
+          scorePercent: Math.round(finalScore * 100),
+          priority: oldPriority,
+          priorityLabel: finalClass.label,
+          shouldContact: shouldContactOld
+        },
         goldDecision,
+        newDecision: {
+          phi: goldDecision.score,
+          phiPercent: goldDecision.scorePercent,
+          priority: newPriority,
+          priorityLabel: goldDecision.priorityLabel,
+          shouldContact: shouldContactNew,
+          fT: Number(fT.toFixed(3)),
+          fV: Number(fV.toFixed(3)),
+          fR: Number(fR.toFixed(3)),
+          fB: Number(fB.toFixed(3)),
+          fS: Number(fS.toFixed(3))
+        },
         timingScore: Number(timing.timingScore.toFixed(2)),
         timingClass: timing.timingClass,
         timingLabel: timing.timingLabel,
@@ -5602,7 +5633,9 @@ class DesktopMirrorService {
         daysOutOfRoutine: timing.deltaDays,
         daysSinceLastMarketingContact,
         relationState,
-        shouldContact,
+        shouldContact: shouldContactOld,
+        shouldContactOld,
+        shouldContactNew,
         followUpSuggested,
         antiInvasiveReason,
         segment,
@@ -5636,7 +5669,7 @@ class DesktopMirrorService {
             ? `Riferimento economico: ticket medio reale ${euro(referenceValueCents)}.`
             : `Riferimento economico: prezzo ultimo servizio ${euro(referenceValueCents)}.`,
         message: hasMarketingConsent
-          ? shouldContact
+          ? shouldContactOld
             ? messageByClass[timing.timingClass] || `${greeting}, ti propongo un controllo leggero sul tuo percorso. Vuoi che guardiamo uno slot comodo?`
             : antiInvasiveReason || "Nessun messaggio da inviare ora."
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
@@ -5657,6 +5690,114 @@ class DesktopMirrorService {
       .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
       .slice(0, 40);
     const blockedClients = allSuggestions.filter((item) => !item.shouldContact && item.recallStatus !== "perso" && item.recallStatus !== "storico");
+    const newPrioritySuggestions = allSuggestions.filter((item) => item.shouldContactNew && item.goldDecision?.score >= 0.55 && item.recallStatus !== "perso" && item.recallStatus !== "storico")
+      .sort((a, b) => Number(b.goldDecision?.score || 0) - Number(a.goldDecision?.score || 0)
+        || Number(b.economicScore || 0) - Number(a.economicScore || 0))
+      .slice(0, 20);
+    const oldTop10 = prioritySuggestions.slice(0, 10);
+    const newTop10 = newPrioritySuggestions.slice(0, 10);
+    const oldTopIds = new Set(oldTop10.map((item) => item.clientId));
+    const newTopIds = new Set(newTop10.map((item) => item.clientId));
+    const overlapIds = [...oldTopIds].filter((clientId) => newTopIds.has(clientId));
+    const oldOnlyIds = [...oldTopIds].filter((clientId) => !newTopIds.has(clientId));
+    const newOnlyIds = [...newTopIds].filter((clientId) => !oldTopIds.has(clientId));
+    const factorLabel = (item) => {
+      const factors = [
+        { key: "fT", label: "timing", value: Number(item.newDecision?.fT || 0) },
+        { key: "fV", label: "valore cliente", value: Number(item.newDecision?.fV || 0) },
+        { key: "fR", label: "probabilita risposta", value: Number(item.newDecision?.fR || 0) },
+        { key: "fB", label: "coerenza comportamento/messaggio", value: Number(item.newDecision?.fB || 0) },
+        { key: "fS", label: "frizione anti-spam", value: Number(item.newDecision?.fS || 0) }
+      ];
+      return factors.sort((a, b) => b.value - a.value)[0];
+    };
+    const priorityNumber = (priority) => ({ alta: 3, media: 2, bassa: 1 }[String(priority || "")] || 0);
+    const engineLogs = allSuggestions.map((item) => ({
+      customerId: item.clientId,
+      customerName: item.name,
+      D: item.daysSinceLastVisit,
+      R: item.expectedRoutineDays,
+      delta: item.daysOutOfRoutine,
+      OLD_priority: item.oldDecision?.priority || item.priority,
+      NEW_phi: item.goldDecision?.score || 0,
+      fT: item.newDecision?.fT || 0,
+      fV: item.newDecision?.fV || 0,
+      fR: item.newDecision?.fR || 0,
+      fB: item.newDecision?.fB || 0,
+      fS: item.newDecision?.fS || 0,
+      NEW_priority: item.newDecision?.priority || "bassa",
+      contactType: item.contactClassLabel,
+      shouldContact_NEW: Boolean(item.shouldContactNew),
+      shouldContact_OLD: Boolean(item.shouldContactOld)
+    }));
+    const differenceIds = new Set([...oldOnlyIds, ...newOnlyIds]);
+    const differences = [...differenceIds].map((clientId) => {
+      const item = allSuggestions.find((candidate) => candidate.clientId === clientId);
+      const factor = item ? factorLabel(item) : null;
+      const oldSelected = oldTopIds.has(clientId);
+      const newSelected = newTopIds.has(clientId);
+      return {
+        customerId: clientId,
+        customerName: item?.name || "Cliente",
+        oldSelected,
+        newSelected,
+        oldReason: oldSelected
+          ? `OLD lo include per score ${Math.round(Number(item?.oldDecision?.score || 0) * 100)}% e priorita ${item?.oldDecision?.priority || "bassa"}.`
+          : "OLD non lo include nella top 10.",
+        newReason: newSelected
+          ? `NEW lo include per Φ ${Math.round(Number(item?.goldDecision?.score || 0) * 100)}% e band ${item?.goldDecision?.priorityLabel || "non prioritario"}.`
+          : `NEW lo esclude o lo abbassa: ${item?.antiInvasiveReason || "score Φ non sufficiente per top list."}`,
+        strongestFactor: factor?.key || "",
+        strongestFactorLabel: factor?.label || "",
+        strongestFactorValue: factor ? Number(factor.value.toFixed(3)) : 0
+      };
+    });
+    const contactableOld = allSuggestions.filter((item) => item.shouldContactOld).length;
+    const contactableNew = allSuggestions.filter((item) => item.shouldContactNew).length;
+    const avoidedNewButNotOld = allSuggestions.filter((item) => item.shouldContactOld && !item.shouldContactNew).length;
+    const averagePriorityChange = allSuggestions.length
+      ? average(allSuggestions.map((item) => priorityNumber(item.newDecision?.priority) - priorityNumber(item.oldDecision?.priority)))
+      : 0;
+    const engineTest = {
+      mode: "dual_engine",
+      activeEngineForUi: "OLD",
+      testedEngine: "NEW_GOLD_PHI_MARKETING",
+      generatedAt: nowIso(),
+      records: engineLogs,
+      topOld: oldTop10.map((item) => ({ customerId: item.clientId, name: item.name, score: item.oldDecision?.score || 0, priority: item.oldDecision?.priority || item.priority })),
+      topNew: newTop10.map((item) => ({ customerId: item.clientId, name: item.name, phi: item.goldDecision?.score || 0, priority: item.newDecision?.priority || "bassa" })),
+      comparison: {
+        oldTopCount: oldTop10.length,
+        newTopCount: newTop10.length,
+        overlapCount: overlapIds.length,
+        changedCount: differenceIds.size,
+        oldOnly: oldOnlyIds,
+        newOnly: newOnlyIds
+      },
+      differences,
+      kpis: {
+        oldContactablePercent: allSuggestions.length ? Math.round((contactableOld / allSuggestions.length) * 100) : 0,
+        newContactablePercent: allSuggestions.length ? Math.round((contactableNew / allSuggestions.length) * 100) : 0,
+        avoidedNewButNotOldPercent: allSuggestions.length ? Math.round((avoidedNewButNotOld / allSuggestions.length) * 100) : 0,
+        averagePriorityChange: Number(averagePriorityChange.toFixed(2)),
+        phiOver07: allSuggestions.filter((item) => Number(item.goldDecision?.score || 0) > 0.7).length,
+        phiUnder03: allSuggestions.filter((item) => Number(item.goldDecision?.score || 0) < 0.3).length
+      },
+      qualitativeReviewTopNew: newTop10.map((item) => ({
+        customerId: item.clientId,
+        name: item.name,
+        makesSenseToContact: Boolean(item.shouldContactNew && !item.antiInvasiveReason),
+        timingOk: Number(item.newDecision?.fT || 0) > 0,
+        messageCoherent: Number(item.newDecision?.fB || 0) >= 0.5,
+        lessInvasiveThanOld: !item.shouldContactOld && item.shouldContactNew ? false : Number(item.newDecision?.fS || 0) < 0.5,
+        note: item.goldDecision?.explanation || item.recommendedAction || ""
+      })),
+      tuningSuggestions: [
+        avoidedNewButNotOld > contactableOld * 0.4 ? "NEW frena molti clienti rispetto a OLD: valutare riduzione peso frizione fS." : "",
+        allSuggestions.filter((item) => Number(item.goldDecision?.score || 0) > 0.7).length === 0 ? "Nessun cliente con Φ > 0.7: valutare soglia alta o bias marketing se la lista risulta troppo conservativa." : "",
+        contactableNew > contactableOld ? "NEW spinge piu contatti di OLD: controllare peso anti-spam prima di attivarlo come principale." : ""
+      ].filter(Boolean)
+    };
     const contactsMade = marketingActions.filter((item) => ["copied", "done"].includes(String(item.status || ""))).length;
     const bookingsGenerated = marketingActions.filter((item) => String(item.status || "") === "done").length;
     const recoveryValueCents = marketingActions
@@ -5686,7 +5827,8 @@ class DesktopMirrorService {
         recommendedToday: prioritySuggestions.length,
         avoidToday: blockedClients.length,
         waiting: allSuggestions.filter((item) => ["in_attesa", "risposto", "prenotato"].includes(item.relationState)).length
-      }
+      },
+      engineTest
     };
     return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session, marketing, 180000);
   }
