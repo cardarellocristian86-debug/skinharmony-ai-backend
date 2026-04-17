@@ -5250,7 +5250,7 @@ class DesktopMirrorService {
       };
     }
     const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session);
-    if (cached) return cached;
+    if (cached?.coreVersion === "omega_v1") return cached;
     const now = Date.now();
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -5663,6 +5663,7 @@ class DesktopMirrorService {
     const potentialRecoveryScore = prioritySuggestions.reduce((sum, item) => sum + Number(item.economicScore || 0), 0);
     const marketing = {
       goldEnabled: true,
+      coreVersion: "omega_v1",
       generatedAt: nowIso(),
       suggestions: prioritySuggestions,
       lostClients,
