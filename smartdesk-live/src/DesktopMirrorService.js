@@ -517,12 +517,123 @@ function expectedRecallRoutineFromService(serviceInput, fallbackDays = 45) {
 function classifyRecallStatus(daysSinceLastVisit, expectedRoutineDays) {
   const days = Number(daysSinceLastVisit || 0);
   const routine = Number(expectedRoutineDays || 45);
-  const overdueDays = days - routine;
-  if (days > 180) return { recallStatus: "storico", recallStatusLabel: "Storico", overdueDays };
-  if (overdueDays > 90) return { recallStatus: "perso", recallStatusLabel: "Perso", overdueDays };
-  if (overdueDays > 30) return { recallStatus: "a_rischio", recallStatusLabel: "A rischio", overdueDays };
-  if (overdueDays > 0) return { recallStatus: "da_richiamare", recallStatusLabel: "Da richiamare", overdueDays };
+  const overdueDays = Math.round(days - routine);
+  const timing = classifyMarketingTiming(days, routine);
+  if (timing.timingClass === "storico") return { recallStatus: "storico", recallStatusLabel: "Storico", overdueDays };
+  if (timing.timingClass === "perso") return { recallStatus: "perso", recallStatusLabel: "Perso", overdueDays };
+  if (timing.timingClass === "recupero_attivo" || timing.timingClass === "recupero_soft") {
+    return { recallStatus: "a_rischio", recallStatusLabel: "A rischio", overdueDays };
+  }
+  if (timing.timingClass === "mantenimento" || timing.timingClass === "promemoria_naturale") {
+    return { recallStatus: "da_richiamare", recallStatusLabel: "Da richiamare", overdueDays };
+  }
   return { recallStatus: "in_linea", recallStatusLabel: "In linea", overdueDays: Math.max(0, overdueDays) };
+}
+
+function normalizeScore(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(1, Math.max(0, numeric));
+}
+
+function classifyMarketingTiming(daysSinceLastVisit, routineDays) {
+  const days = Math.max(0, Number(daysSinceLastVisit || 0));
+  const routine = Math.max(1, Number(routineDays || 45));
+  const deltaDays = Math.round(days - routine);
+  const timingScore = Math.max(0, deltaDays / routine);
+  if (days > 180) {
+    return {
+      timingClass: "storico",
+      timingLabel: "Storico inattivo",
+      contactClassLabel: "Storico",
+      deltaDays,
+      timingScore
+    };
+  }
+  if (days > routine * 3) {
+    return {
+      timingClass: "perso",
+      timingLabel: "Cliente perso",
+      contactClassLabel: "Perso",
+      deltaDays,
+      timingScore
+    };
+  }
+  if (deltaDays <= 0) {
+    return {
+      timingClass: "in_routine",
+      timingLabel: "In routine",
+      contactClassLabel: "Non contattare",
+      deltaDays: 0,
+      timingScore: 0
+    };
+  }
+  if (deltaDays <= routine * 0.25) {
+    return {
+      timingClass: "promemoria_naturale",
+      timingLabel: "Promemoria naturale",
+      contactClassLabel: "Promemoria naturale",
+      deltaDays,
+      timingScore
+    };
+  }
+  if (deltaDays <= routine * 0.75) {
+    return {
+      timingClass: "mantenimento",
+      timingLabel: "Mantenimento",
+      contactClassLabel: "Mantenimento",
+      deltaDays,
+      timingScore
+    };
+  }
+  if (deltaDays <= routine * 1.5) {
+    return {
+      timingClass: "recupero_soft",
+      timingLabel: "Recupero soft",
+      contactClassLabel: "Recupero soft",
+      deltaDays,
+      timingScore
+    };
+  }
+  return {
+    timingClass: "recupero_attivo",
+    timingLabel: "Recupero attivo",
+    contactClassLabel: "Recupero attivo",
+    deltaDays,
+    timingScore
+  };
+}
+
+function freshnessScoreFromDays(daysSinceLastMarketingContact) {
+  const days = Number(daysSinceLastMarketingContact);
+  if (!Number.isFinite(days)) return 1;
+  if (days < 3) return 0;
+  if (days < 7) return 0.5;
+  return 1;
+}
+
+function timingFitScore(timingScore) {
+  const score = Number(timingScore || 0);
+  if (score <= 0) return 0;
+  if (score <= 0.75) return 1;
+  if (score <= 1.5) return 0.8;
+  if (score <= 3) return 0.5;
+  return 0.3;
+}
+
+function scoreClass(value, ranges) {
+  const score = Number(value || 0);
+  const match = ranges.find((item) => score < item.max);
+  return match || ranges[ranges.length - 1];
+}
+
+function relationStateFromMarketingAction(action) {
+  const status = String(action?.status || "");
+  if (!action) return "non_contattato";
+  if (status === "done") return "prenotato";
+  if (status === "copied") return "contattato";
+  if (status === "approved" || status === "to_approve") return "in_attesa";
+  return "non_contattato";
 }
 
 function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now(), serviceById = new Map()) {
@@ -5040,6 +5151,28 @@ class DesktopMirrorService {
       if (!first || /^(ai|gold|test|cliente|top|persa|perso|ferma|fermo|colore|cute|balayage|piega|keratina)$/i.test(first)) return "";
       return first;
     };
+    const marketingActions = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
+      .sort((a, b) => new Date(b.updatedAt || b.generatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.generatedAt || a.createdAt || 0).getTime());
+    const latestActionByClientId = new Map();
+    marketingActions.forEach((action) => {
+      const clientId = String(action.clientId || "");
+      if (!clientId || latestActionByClientId.has(clientId)) return;
+      latestActionByClientId.set(clientId, action);
+    });
+    const annualValuesByClientId = new Map(clients.map((client) => {
+      const clientId = String(client.id || "");
+      const clientAppointments = appointmentsByClientId.get(clientId) || [];
+      const clientPayments = paymentsByClientId.get(clientId) || [];
+      const totalSpentCents = clientPayments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
+      const averageTicketCents = clientPayments.length ? totalSpentCents / clientPayments.length : 0;
+      const firstVisitTime = clientAppointments[0]?.startAt ? new Date(clientAppointments[0].startAt).getTime() : now;
+      const observedDays = Number.isFinite(firstVisitTime) ? Math.max(30, Math.floor((now - firstVisitTime) / 86400000)) : 365;
+      const frequencyAnnual = clientAppointments.length
+        ? Math.max(1, clientAppointments.length * (365 / observedDays))
+        : 1;
+      return [clientId, averageTicketCents * frequencyAnnual];
+    }));
+    const maxAnnualValue = Math.max(1, ...Array.from(annualValuesByClientId.values()).map((value) => Number(value || 0)));
     const serviceSignal = (serviceName, clientName) => {
       const text = normalizeText(`${serviceName || ""} ${clientName || ""}`);
       if (text.includes("cute") || text.includes("o3") || text.includes("cuoio")) {
@@ -5117,51 +5250,109 @@ class DesktopMirrorService {
           ? "prezzo_ultimo_servizio"
           : "dato_non_disponibile";
       const hasMarketingConsent = Boolean(client.marketingConsent);
-      const segment = routine.recallStatus === "storico"
+      const timing = classifyMarketingTiming(daysSinceLastVisit, routine.expectedRoutineDays);
+      const latestAction = latestActionByClientId.get(clientId) || null;
+      const relationState = relationStateFromMarketingAction(latestAction);
+      const lastMarketingAt = latestAction?.copiedAt || latestAction?.approvedAt || latestAction?.generatedAt || latestAction?.createdAt || "";
+      const lastMarketingTime = lastMarketingAt ? new Date(lastMarketingAt).getTime() : NaN;
+      const daysSinceLastMarketingContact = Number.isFinite(lastMarketingTime)
+        ? Math.max(0, Math.floor((now - lastMarketingTime) / 86400000))
+        : null;
+      const annualValueCents = Number(annualValuesByClientId.get(clientId) || 0);
+      const valueScoreNormalized = normalizeScore(maxAnnualValue > 0 ? annualValueCents / maxAnnualValue : 0.6, totalSpentCents >= 50000 ? 1 : totalSpentCents > 15000 ? 0.6 : 0.3);
+      const historyScore = relationState === "prenotato"
+        ? 1
+        : relationState === "risposto"
+          ? 0.7
+          : relationState === "contattato" || relationState === "in_attesa"
+            ? 0.4
+            : hasMarketingConsent
+              ? 0.7
+              : 0.2;
+      const affinityScore = lastService?.name ? 1 : lastAppointment ? 0.7 : 0.4;
+      const freshness = freshnessScoreFromDays(daysSinceLastMarketingContact);
+      const timingFit = timingFitScore(timing.timingScore);
+      const responseProbability = normalizeScore((0.35 * historyScore) + (0.30 * affinityScore) + (0.20 * freshness) + (0.15 * timingFit));
+      const responseClass = scoreClass(responseProbability, [
+        { key: "bassa", label: "bassa probabilità risposta", max: 0.35 },
+        { key: "media", label: "media probabilità risposta", max: 0.60 },
+        { key: "buona", label: "buona probabilità risposta", max: 0.80 },
+        { key: "alta", label: "alta probabilità risposta", max: Infinity }
+      ]);
+      const economicScore = normalizeScore(responseProbability * valueScoreNormalized * Math.min(timing.timingScore, 2));
+      const economicClass = scoreClass(economicScore, [
+        { key: "bassa", label: "bassa convenienza", max: 0.20 },
+        { key: "media", label: "media convenienza", max: 0.45 },
+        { key: "buona", label: "buona convenienza", max: 0.70 },
+        { key: "alta", label: "alta convenienza", max: Infinity }
+      ]);
+      const finalScore = normalizeScore((0.45 * responseProbability) + (0.35 * valueScoreNormalized) + (0.20 * (Math.min(timing.timingScore, 2) / 2)));
+      const finalClass = scoreClass(finalScore, [
+        { key: "non_contattare", label: "Non contattare", max: 0.30 },
+        { key: "possibile", label: "Contatto possibile", max: 0.50 },
+        { key: "consigliato", label: "Contatto consigliato", max: 0.70 },
+        { key: "priorita_alta", label: "Priorità alta", max: Infinity }
+      ]);
+      const lockedRelation = ["in_attesa", "risposto", "prenotato"].includes(relationState);
+      const tooRecent = daysSinceLastMarketingContact !== null && daysSinceLastMarketingContact < 3;
+      const veryLowResponse = responseProbability < 0.35 && valueScoreNormalized < 0.95;
+      const lostOrHistoric = timing.timingClass === "perso" || timing.timingClass === "storico";
+      const inRoutine = timing.timingClass === "in_routine";
+      const antiInvasiveReason = !hasMarketingConsent
+        ? "Consenso marketing non confermato."
+        : lockedRelation
+          ? "Cliente già in gestione: non inviare un nuovo messaggio."
+          : tooRecent
+            ? "Contatto troppo recente: non disturbare ora."
+            : veryLowResponse
+              ? "Probabilità risposta bassa: meglio non forzare il contatto."
+              : inRoutine
+                ? "Cliente in routine: nessun contatto necessario."
+                : lostOrHistoric
+                  ? "Fuori dalla lista giornaliera: usare riattivazione separata."
+                  : "";
+      const shouldContact = !antiInvasiveReason && finalScore >= 0.5;
+      const followUpSuggested = (relationState === "contattato" || relationState === "in_attesa")
+        && daysSinceLastMarketingContact !== null
+        && daysSinceLastMarketingContact >= 3
+        && daysSinceLastMarketingContact <= 7
+        && responseProbability >= 0.6
+        && finalScore >= 0.55;
+      const segment = timing.timingClass === "storico"
         ? "storico"
-        : routine.recallStatus === "perso"
+        : timing.timingClass === "perso"
           ? "perso"
-          : routine.recallStatus === "a_rischio"
-            ? "a_rischio"
-            : routine.recallStatus === "da_richiamare"
-              ? "da_richiamare"
-              : routine.clientType === "occasionale"
-                ? "occasionale"
-            : totalSpentCents >= 50000 && routine.clientType !== "occasionale"
-              ? "top_cliente"
-                : "attivo";
-      const priority = !hasMarketingConsent
-        ? "media"
-        : segment === "a_rischio"
-          ? "alta"
-          : segment === "da_richiamare" || totalSpentCents >= 50000
-              ? "media"
-            : "bassa";
+          : timing.timingClass;
+      const priority = finalScore >= 0.7 && shouldContact
+        ? "alta"
+        : finalScore >= 0.5 && shouldContact
+          ? "media"
+          : "bassa";
       const pattern = segment === "perso"
         ? "cliente a rischio perdita"
         : segment === "storico"
           ? "cliente storico inattivo"
-        : segment === "a_rischio"
+        : timing.timingClass === "recupero_soft" || timing.timingClass === "recupero_attivo"
           ? "cliente in calo"
-          : segment === "da_richiamare"
+          : timing.timingClass === "promemoria_naturale" || timing.timingClass === "mantenimento"
             ? "cliente da richiamare"
           : routine.clientType === "abituale"
             ? "cliente abituale"
             : routine.clientType === "saltuario"
               ? "cliente saltuario"
               : "cliente occasionale";
-      const risk = !hasMarketingConsent
+      const risk = !hasMarketingConsent || antiInvasiveReason
         ? "medio"
-        : segment === "a_rischio"
+        : timing.timingScore >= 1.5
           ? "alto"
-          : segment === "perso"
+          : segment === "perso" || segment === "storico"
             ? "medio"
             : "basso";
       const operatingDecision = priority === "alta"
         ? "contattare oggi"
         : priority === "media"
           ? "contattare entro 3 giorni"
-          : "recall non urgente";
+          : "non contattare ora";
       const firstName = String(client.firstName || client.name || "Cliente").trim().split(/\s+/)[0] || "Cliente";
       const motive = !hasMarketingConsent
         ? "Consenso marketing non confermato: contatto solo se autorizzato."
@@ -5174,53 +5365,66 @@ class DesktopMirrorService {
         : segment === "storico"
           ? `Cliente storico: ${daysSinceLastVisit} giorni senza ritorno, fuori dalle priorità del giorno.`
         : segment === "perso"
-          ? `Cliente perso: oltre ${routine.overdueDays} giorni fuori routine.`
-        : segment === "a_rischio"
-            ? `Cliente a rischio: oltre ${routine.overdueDays} giorni fuori routine ${routine.expectedRoutineDays} giorni.`
-            : segment === "da_richiamare"
-              ? `Cliente da richiamare: oltre ${routine.overdueDays} giorni fuori routine ${routine.expectedRoutineDays} giorni.`
+          ? `Cliente perso: routine ${routine.expectedRoutineDays} gg, ultimo appuntamento ${daysSinceLastVisit} gg fa.`
+        : timing.deltaDays > 0
+            ? `Routine ${routine.expectedRoutineDays} gg, oggi fuori di ${timing.deltaDays} gg: ${timing.timingLabel.toLowerCase()}.`
             : totalSpentCents >= 50000
               ? "Cliente ad alto valore: conviene presidiare continuità e proposta."
-              : "Richiamo utile per mantenere continuità.";
-      const recommendedAction = !hasMarketingConsent
+              : "Cliente in routine: non serve un nuovo contatto.";
+      const recommendedAction = antiInvasiveReason
+        ? antiInvasiveReason
+        : !hasMarketingConsent
         ? "Apri scheda cliente e registra consenso prima di inviare comunicazioni."
-        : segment === "a_rischio"
-            ? "Recall mirato sul servizio abituale e proposta appuntamento entro 10 giorni."
-          : segment === "da_richiamare"
-              ? "Messaggio breve e proposta slot semplice prima che diventi a rischio."
+        : timing.timingClass === "recupero_soft"
+            ? "Invia un messaggio attento e proponi uno slot semplice."
+          : timing.timingClass === "recupero_attivo"
+              ? "Contatto diretto ma non commerciale: riprendere il percorso prima che si perda."
+            : timing.timingClass === "mantenimento"
+              ? "Messaggio consulenziale di mantenimento."
+            : timing.timingClass === "promemoria_naturale"
+              ? "Promemoria leggero, senza pressione."
             : segment === "perso"
               ? "Recupero non prioritario: usa una campagna separata, non la lista del giorno."
             : segment === "storico"
               ? "Non trattarlo come recall urgente: mantienilo nello storico inattivi."
-            : "Messaggio leggero di mantenimento e controllo prossimo appuntamento.";
+            : "Nessuna azione ora.";
       const clearReason = segment === "perso"
         ? "cliente perso"
         : segment === "storico"
           ? "storico inattivo"
-        : segment === "a_rischio"
+        : timing.timingClass === "recupero_soft" || timing.timingClass === "recupero_attivo"
           ? "cliente fuori ritmo"
-          : segment === "da_richiamare"
-            ? "cliente da richiamare"
+          : timing.timingClass === "promemoria_naturale" || timing.timingClass === "mantenimento"
+            ? "momento corretto per contatto leggero"
           : totalSpentCents >= 50000
             ? "cliente di valore da presidiare"
-            : "mantenimento relazione";
+            : "non contattare ora";
       const safeAction = !hasMarketingConsent
         ? "Verifica consenso, poi chiama o scrivi in modo autorizzato."
-        : `Proponi un appuntamento semplice legato a ${lastService?.name || "servizio abituale"}.`;
+        : shouldContact
+          ? `Proponi un appuntamento semplice legato a ${lastService?.name || "servizio abituale"}.`
+          : "Non inviare messaggi: resta in osservazione.";
       const upsellAction = !hasMarketingConsent
         ? "Dopo consenso, proponi check gratuito o consulenza breve."
-        : signal.push
+        : shouldContact && signal.push
           ? `Abbina ${signal.push}.`
-          : "Abbina un servizio premium coerente con lo storico cliente.";
+          : "Nessun upsell ora.";
       const conclusion = priority === "alta"
         ? `${displayName} va gestita oggi.`
         : priority === "media"
           ? `${displayName} va recuperata entro 3 giorni.`
-          : `${displayName} non è urgente, ma va mantenuta.`;
+          : `${displayName} non va contattata ora.`;
       const greeting = usableFirstName(displayName) ? `Ciao ${usableFirstName(displayName)}` : "Ciao";
-      const timing = daysSinceLastVisit >= 90
+      const timingText = daysSinceLastVisit >= 90
         ? `sono passati ${daysSinceLastVisit} giorni dall'ultimo appuntamento`
-        : `è il momento giusto per rivedere il percorso`;
+        : `siamo nel momento giusto per mantenere il risultato`;
+      const messageByClass = {
+        promemoria_naturale: `${greeting}, ${timingText}. Se vuoi, ti riservo uno slot per mantenere bene il risultato del tuo ultimo servizio.`,
+        mantenimento: `${greeting}, ti consiglio un controllo per mantenere bene il lavoro fatto con ${lastService?.name || "il tuo ultimo servizio"}. Vuoi che guardiamo insieme uno slot comodo?`,
+        recupero_soft: `${greeting}, ${timingText}. Meglio intervenire ora per non perdere il risultato: ti propongo ${signal.proposal}.`,
+        recupero_attivo: `${greeting}, il timing è già avanzato. Può essere utile rivederci per capire come mantenere o riprendere il percorso. Vuoi che ti proponga uno slot?`,
+        perso: `${greeting}, se vuoi riprendere da dove avevamo lasciato, possiamo capire insieme cosa fare ora.`
+      };
       return {
         clientId,
         name: displayName,
@@ -5233,6 +5437,30 @@ class DesktopMirrorService {
         valueSource,
         estimatedRecallValueCents: referenceValueCents,
         lossIfIgnoredCents: 0,
+        annualValueCents: Math.round(annualValueCents),
+        valueScoreNormalized: Number(valueScoreNormalized.toFixed(2)),
+        responseProbability: Number(responseProbability.toFixed(2)),
+        responseProbabilityPercent: Math.round(responseProbability * 100),
+        responseProbabilityLabel: responseClass.label,
+        responseClass: responseClass.key,
+        economicScore: Number(economicScore.toFixed(2)),
+        economicConvenienceLabel: economicClass.label,
+        economicConvenienceClass: economicClass.key,
+        finalScore: Number(finalScore.toFixed(2)),
+        finalScorePercent: Math.round(finalScore * 100),
+        finalPriorityLabel: finalClass.label,
+        finalPriorityClass: finalClass.key,
+        timingScore: Number(timing.timingScore.toFixed(2)),
+        timingClass: timing.timingClass,
+        timingLabel: timing.timingLabel,
+        contactClass: timing.timingClass,
+        contactClassLabel: timing.contactClassLabel,
+        daysOutOfRoutine: timing.deltaDays,
+        daysSinceLastMarketingContact,
+        relationState,
+        shouldContact,
+        followUpSuggested,
+        antiInvasiveReason,
         segment,
         pattern,
         priority,
@@ -5264,14 +5492,18 @@ class DesktopMirrorService {
             ? `Riferimento economico: ticket medio reale ${euro(referenceValueCents)}.`
             : `Riferimento economico: prezzo ultimo servizio ${euro(referenceValueCents)}.`,
         message: hasMarketingConsent
-          ? `${greeting}, ${timing}. Ti proporrei ${signal.proposal}: così controlliamo insieme cosa conviene fare adesso, senza aspettare che il risultato perda forza. Vuoi che ti riservi uno slot questa settimana o la prossima?`
+          ? shouldContact
+            ? messageByClass[timing.timingClass] || `${greeting}, ti propongo un controllo leggero sul tuo percorso. Vuoi che guardiamo uno slot comodo?`
+            : antiInvasiveReason || "Nessun messaggio da inviare ora."
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
       };
     });
-    const prioritySuggestions = allSuggestions.filter((item) => item.recallStatus === "da_richiamare" || item.recallStatus === "a_rischio")
+    const prioritySuggestions = allSuggestions.filter((item) => item.shouldContact && item.finalScore >= 0.5 && item.recallStatus !== "perso" && item.recallStatus !== "storico")
       .sort((a, b) => {
         const weight = { alta: 3, media: 2, bassa: 1 };
-        return (weight[b.priority] || 0) - (weight[a.priority] || 0) || b.overdueDays - a.overdueDays;
+        return Number(b.finalScore || 0) - Number(a.finalScore || 0)
+          || (weight[b.priority] || 0) - (weight[a.priority] || 0)
+          || Number(b.economicScore || 0) - Number(a.economicScore || 0);
       })
       .slice(0, 20);
     const lostClients = allSuggestions.filter((item) => item.recallStatus === "perso")
@@ -5280,6 +5512,13 @@ class DesktopMirrorService {
     const historicInactiveClients = allSuggestions.filter((item) => item.recallStatus === "storico")
       .sort((a, b) => b.daysSinceLastVisit - a.daysSinceLastVisit)
       .slice(0, 40);
+    const blockedClients = allSuggestions.filter((item) => !item.shouldContact && item.recallStatus !== "perso" && item.recallStatus !== "storico");
+    const contactsMade = marketingActions.filter((item) => ["copied", "done"].includes(String(item.status || ""))).length;
+    const bookingsGenerated = marketingActions.filter((item) => String(item.status || "") === "done").length;
+    const recoveryValueCents = marketingActions
+      .filter((item) => String(item.status || "") === "done")
+      .reduce((sum, item) => sum + Number(item.referenceValueCents || item.estimatedValueCents || 0), 0);
+    const potentialRecoveryScore = prioritySuggestions.reduce((sum, item) => sum + Number(item.economicScore || 0), 0);
     const marketing = {
       goldEnabled: true,
       generatedAt: nowIso(),
@@ -5289,7 +5528,19 @@ class DesktopMirrorService {
       counts: {
         priority: prioritySuggestions.length,
         lost: lostClients.length,
-        historic: historicInactiveClients.length
+        historic: historicInactiveClients.length,
+        avoid: blockedClients.length,
+        waiting: allSuggestions.filter((item) => ["in_attesa", "risposto", "prenotato"].includes(item.relationState)).length
+      },
+      kpis: {
+        contactsMade,
+        responseRate: contactsMade ? Math.round((bookingsGenerated / contactsMade) * 100) : 0,
+        bookingRate: contactsMade ? Math.round((bookingsGenerated / contactsMade) * 100) : 0,
+        revenueRecoveryCents: recoveryValueCents,
+        potentialRecoveryScore: Number(potentialRecoveryScore.toFixed(2)),
+        recommendedToday: prioritySuggestions.length,
+        avoidToday: blockedClients.length,
+        waiting: allSuggestions.filter((item) => ["in_attesa", "risposto", "prenotato"].includes(item.relationState)).length
       }
     };
     return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session, marketing, 180000);
