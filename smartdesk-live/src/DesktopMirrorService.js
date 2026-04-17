@@ -6085,24 +6085,37 @@ class DesktopMirrorService {
           ? "Appuntamento con dati incompleti: conviene sistemarlo prima dell'orario."
           : urgency >= 0.85 && status !== "confirmed"
             ? "Appuntamento vicino non ancora pienamente confermato."
-            : "Agenda sotto controllo per questo appuntamento."
+          : "Agenda sotto controllo per questo appuntamento."
       });
-      const output = decision.score >= 0.7
+      const gatedDecision = need < 0.2
+        ? {
+          ...decision,
+          score: Math.min(decision.score, 0.49),
+          scorePercent: Math.min(decision.scorePercent, 49),
+          priorityBand: "bassa",
+          priorityLabel: "Monitorare",
+          suggestedAction: "monitorare agenda",
+          explanation: "Agenda stabile: nessuna azione operativa necessaria ora."
+        }
+        : decision;
+      const output = need < 0.2
+        ? "Agenda stabile, monitorare"
+        : gatedDecision.score >= 0.7
         ? "da confermare ora"
-        : decision.score >= 0.5
+        : gatedDecision.score >= 0.5
           ? "appuntamento fragile"
-          : decision.score >= 0.3
+          : gatedDecision.score >= 0.3
             ? "può aspettare"
             : "nessuna azione urgente";
-      return this.toGoldDecisionItem("agenda", appointment.id, decision, {
+      return this.toGoldDecisionItem("agenda", appointment.id, gatedDecision, {
         label: appointment.clientName || appointment.walkInName || "Appuntamento",
         output,
         status,
         startAt: appointment.startAt || "",
         target: "agenda",
-        suggestedAction: output === "da confermare ora" ? "conferma o completa appuntamento" : decision.suggestedAction,
+        suggestedAction: need < 0.2 ? "nessuna azione operativa necessaria ora" : output === "da confermare ora" ? "conferma o completa appuntamento" : gatedDecision.suggestedAction,
         explanationShort: output,
-        explanationLong: decision.explanation
+        explanationLong: gatedDecision.explanation
       });
     }).sort((a, b) => b.phi - a.phi).slice(0, 10);
     return {
