@@ -6229,24 +6229,40 @@ class DesktopMirrorService {
               ? "Servizio venduto con margine migliorabile."
               : "Servizio con lettura positiva."
       });
-      const output = status === "MISSING_DATA"
+      const unreliableProfitData = coherence < 0.5 || friction > 0.6;
+      const gatedDecision = unreliableProfitData
+        ? {
+          ...decision,
+          score: Math.min(decision.score, 0.59),
+          scorePercent: Math.min(decision.scorePercent, 59),
+          priorityBand: decision.score >= 0.5 ? "media" : "bassa",
+          priorityLabel: decision.score >= 0.5 ? "Priorità media" : "Priorità bassa",
+          suggestedAction: "verifica dati redditività",
+          explanation: "Dati insufficienti per valutare il margine. Costi o tempi non completi: verifica prima di analizzare."
+        }
+        : decision;
+      const output = unreliableProfitData
+        ? status === "MISSING_DATA" || Number(service.averageCostCents || 0) <= 0
+          ? "dato incompleto"
+          : "margine da verificare"
+        : status === "MISSING_DATA"
         ? "dato incompleto"
-        : decision.score >= 0.7
+        : gatedDecision.score >= 0.7
           ? "servizio da correggere"
-          : decision.score >= 0.5
+          : gatedDecision.score >= 0.5
             ? "opportunità di ottimizzazione"
             : marginPercent >= 45
               ? "margine buono"
               : "margine sospetto";
-      return this.toGoldDecisionItem("profit", service.id || service.serviceId || service.name, decision, {
+      return this.toGoldDecisionItem("profit", service.id || service.serviceId || service.name, gatedDecision, {
         label: service.name || "Servizio",
         output,
         marginPercent,
         revenueCents: revenue,
         target: "profitability",
-        suggestedAction: output,
+        suggestedAction: unreliableProfitData ? "verifica costi o tempi prima di analizzare" : output,
         explanationShort: output,
-        explanationLong: decision.explanation
+        explanationLong: gatedDecision.explanation
       });
     }).sort((a, b) => b.phi - a.phi).slice(0, 10);
     return {
