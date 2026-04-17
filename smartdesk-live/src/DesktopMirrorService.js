@@ -794,6 +794,87 @@ function computeGoldDecisionControlMetrics(goldDecision = {}, options = {}) {
   };
 }
 
+function goldDecisionTone(confidence, friction) {
+  const k = Number(confidence || 0);
+  const f = Number(friction || 0);
+  if (k >= 0.65 && f < 0.4) return "direct";
+  if (k >= 0.5 && k < 0.65) return "consultative";
+  return "soft";
+}
+
+function goldDecisionActionBand(action) {
+  switch (String(action || "")) {
+    case "ACT_NOW":
+      return { key: "alta", label: "Azione prioritaria" };
+    case "SUGGEST":
+      return { key: "media", label: "Azione consigliata" };
+    case "MONITOR":
+      return { key: "bassa", label: "Monitorare" };
+    case "STOP":
+      return { key: "stop", label: "Non agire ora" };
+    case "VERIFY":
+    default:
+      return { key: "verify", label: "Da verificare" };
+  }
+}
+
+function applyGoldDecisionMatrixV1(goldDecision = {}, control = {}, meta = {}) {
+  const factors = goldDecision.axes || {};
+  const need = normalizeScore(factors.need ?? meta.need ?? 0);
+  const friction = normalizeScore(factors.friction ?? meta.friction ?? 0);
+  const confidence = normalizeScore(control.confidence ?? 0);
+  const coherence = normalizeScore(factors.coherence ?? meta.coherence ?? 0);
+  const phi = normalizeScore(goldDecision.score || 0);
+  let riskAdjustedPriority = normalizeScore(control.riskAdjustedPriority ?? 0);
+  let action = "";
+  const rules = [];
+
+  if (need < 0.2) {
+    action = "MONITOR";
+    riskAdjustedPriority = Math.min(riskAdjustedPriority, 0.49);
+    rules.push("need_gate");
+  }
+  if (confidence < 0.4) {
+    action = "VERIFY";
+    rules.push("confidence_gate");
+  }
+  if (friction >= 0.7) {
+    action = "STOP";
+    riskAdjustedPriority = Math.min(riskAdjustedPriority, 0.49);
+    rules.push("friction_gate");
+  }
+
+  if (!action) {
+    if (riskAdjustedPriority >= 0.6 && confidence >= 0.65 && need >= 0.5 && friction < 0.4) {
+      action = "ACT_NOW";
+    } else if (riskAdjustedPriority >= 0.5 && confidence >= 0.5 && need >= 0.3) {
+      action = "SUGGEST";
+    } else if (confidence >= 0.5) {
+      action = "MONITOR";
+    } else {
+      action = "VERIFY";
+    }
+  }
+
+  const band = goldDecisionActionBand(action);
+  const tone = goldDecisionTone(confidence, friction);
+  return {
+    matrixVersion: "gold_decision_matrix_v1",
+    phi: Number(phi.toFixed(3)),
+    confidence: Number(confidence.toFixed(3)),
+    coherence: Number(coherence.toFixed(3)),
+    need: Number(need.toFixed(3)),
+    friction: Number(friction.toFixed(3)),
+    riskAdjustedPriority: Number(riskAdjustedPriority.toFixed(3)),
+    riskAdjustedPriorityPercent: Math.round(riskAdjustedPriority * 100),
+    action,
+    tone,
+    band: band.key,
+    bandLabel: band.label,
+    rules
+  };
+}
+
 function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now(), serviceById = new Map()) {
   const clientId = String(client?.id || "");
   const visits = relevantClientAppointments(appointments, clientId, nowMs);
@@ -6051,13 +6132,31 @@ class DesktopMirrorService {
       dataQuality: meta.dataQuality,
       risk: meta.risk
     });
-    const lowConfidence = control.confidence < 0.4;
+    const matrix = applyGoldDecisionMatrixV1(goldDecision, control, meta);
+    const lowConfidence = matrix.action === "VERIFY" || control.confidence < 0.4;
+    const highFrictionStop = matrix.action === "STOP";
+    const monitorOnly = matrix.action === "MONITOR";
     const safeOutput = lowConfidence && /buono|opportunit|spingi|forte/i.test(String(meta.output || meta.explanationShort || ""))
       ? "dato da verificare"
+      : highFrictionStop && /buono|opportunit|spingi|forte|chiudi ora|agire/i.test(String(meta.output || meta.explanationShort || ""))
+        ? "da non forzare ora"
       : meta.output;
     const safeAction = lowConfidence && /spingi|promuovi|contatta|agisci/i.test(String(meta.suggestedAction || goldDecision.suggestedAction || ""))
       ? "verifica prima di agire"
+      : highFrictionStop
+        ? "non agire direttamente: verifica il dato"
+        : monitorOnly && /spingi|promuovi|contatta|agisci|chiudi ora/i.test(String(meta.suggestedAction || goldDecision.suggestedAction || ""))
+          ? "monitorare senza azione diretta"
       : meta.suggestedAction || goldDecision.suggestedAction;
+    const matrixExplanation = matrix.action === "ACT_NOW"
+      ? "Segnale forte, affidabile e con frizione bassa: azione consigliata ora."
+      : matrix.action === "SUGGEST"
+        ? "Segnale utile: suggerire l'azione mantenendo controllo operativo."
+        : matrix.action === "MONITOR"
+          ? "Segnale da monitorare: non serve forzare un'azione immediata."
+          : matrix.action === "STOP"
+            ? "Frizione alta: evitare azioni dirette finché il dato o il caso non è chiarito."
+            : "Affidabilità bassa: verificare prima di trasformare il segnale in azione.";
     return {
       domain,
       entityId: String(entityId || `${domain}-${Date.now()}`),
@@ -6071,11 +6170,17 @@ class DesktopMirrorService {
       expectedValuePercent: control.expectedValuePercent,
       pSuccess: control.pSuccess,
       risk: control.risk,
-      riskAdjustedPriority: control.riskAdjustedPriority,
-      riskAdjustedPriorityPercent: control.riskAdjustedPriorityPercent,
-      band: goldDecision.priorityBand,
-      bandLabel: goldDecision.priorityLabel,
-      penaltyApplied: Boolean(meta.penaltyApplied || lowConfidence),
+      riskAdjustedPriority: matrix.riskAdjustedPriority,
+      riskAdjustedPriorityPercent: matrix.riskAdjustedPriorityPercent,
+      action: matrix.action,
+      tone: matrix.tone,
+      decisionMatrixVersion: matrix.matrixVersion,
+      decisionRulesApplied: matrix.rules,
+      band: matrix.band,
+      bandLabel: matrix.bandLabel,
+      legacyBand: goldDecision.priorityBand,
+      legacyBandLabel: goldDecision.priorityLabel,
+      penaltyApplied: Boolean(meta.penaltyApplied || lowConfidence || highFrictionStop || matrix.rules.length),
       factors: {
         need: goldDecision.axes.need,
         value: goldDecision.axes.value,
@@ -6086,13 +6191,21 @@ class DesktopMirrorService {
       },
       suggestedAction: safeAction,
       explanationShort: safeOutput || meta.explanationShort || goldDecision.explanation,
-      explanationLong: lowConfidence
-        ? `${meta.explanationLong || goldDecision.explanation} Affidabilità bassa: trattare come segnale da verificare, non come certezza.`.trim()
-        : meta.explanationLong || goldDecision.explanation,
+      explanationLong: `${meta.explanationLong || goldDecision.explanation} ${matrixExplanation}`.trim(),
       ...meta,
       output: safeOutput,
       suggestedAction: safeAction,
-      penaltyApplied: Boolean(meta.penaltyApplied || lowConfidence)
+      riskAdjustedPriority: matrix.riskAdjustedPriority,
+      riskAdjustedPriorityPercent: matrix.riskAdjustedPriorityPercent,
+      action: matrix.action,
+      tone: matrix.tone,
+      decisionMatrixVersion: matrix.matrixVersion,
+      decisionRulesApplied: matrix.rules,
+      band: matrix.band,
+      bandLabel: matrix.bandLabel,
+      legacyBand: goldDecision.priorityBand,
+      legacyBandLabel: goldDecision.priorityLabel,
+      penaltyApplied: Boolean(meta.penaltyApplied || lowConfidence || highFrictionStop || matrix.rules.length)
     };
   }
 
