@@ -15,6 +15,8 @@ app.set("trust proxy", 1);
 const rateLimitBuckets = new Map();
 const safeModeMonitor = {
   activeRequests: 0,
+  activeRequestStartedAt: new Map(),
+  nextRequestId: 1,
   samples: [],
   active: false,
   enteredAt: 0,
@@ -22,11 +24,14 @@ const safeModeMonitor = {
   lastReason: "",
   thresholds: {
     windowMs: Number(process.env.SAFE_MODE_WINDOW_MS || 45000),
-    minSamples: Number(process.env.SAFE_MODE_MIN_SAMPLES || 80),
+    minSamples: Number(process.env.SAFE_MODE_MIN_SAMPLES || 40),
     p95Ms: Number(process.env.SAFE_MODE_P95_MS || 3000),
     avgMs: Number(process.env.SAFE_MODE_AVG_MS || 1200),
     errorRate: Number(process.env.SAFE_MODE_ERROR_RATE || 1),
-    concurrentRequests: Number(process.env.SAFE_MODE_CONCURRENT_REQUESTS || 120),
+    concurrentRequests: Number(process.env.SAFE_MODE_CONCURRENT_REQUESTS || 70),
+    activeRequestAgeMs: Number(process.env.SAFE_MODE_ACTIVE_REQUEST_AGE_MS || 8000),
+    oldestActiveRequestMs: Number(process.env.SAFE_MODE_OLDEST_ACTIVE_REQUEST_MS || 12000),
+    slowActiveRequests: Number(process.env.SAFE_MODE_SLOW_ACTIVE_REQUESTS || 8),
     minActiveMs: Number(process.env.SAFE_MODE_MIN_ACTIVE_MS || 90000),
     recoveryMs: Number(process.env.SAFE_MODE_RECOVERY_MS || 60000)
   }
@@ -48,6 +53,10 @@ function safeModeSnapshot(now = Date.now()) {
   const samples = safeModeMonitor.samples;
   const durations = samples.map((item) => item.ms);
   const errors = samples.filter((item) => item.status >= 500 || item.error).length;
+  const activeAges = Array.from(safeModeMonitor.activeRequestStartedAt.values())
+    .map((startedAt) => now - startedAt)
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const slowActiveRequests = activeAges.filter((age) => age >= safeModeMonitor.thresholds.activeRequestAgeMs).length;
   const avgMs = durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0;
   const p95Ms = Math.round(percentile(durations, 95));
   const errorRate = samples.length ? Number(((errors / samples.length) * 100).toFixed(2)) : 0;
@@ -55,6 +64,8 @@ function safeModeSnapshot(now = Date.now()) {
     active: safeModeMonitor.active || isSafeModeForced(),
     forced: isSafeModeForced(),
     activeRequests: safeModeMonitor.activeRequests,
+    slowActiveRequests,
+    oldestActiveRequestMs: activeAges.length ? Math.round(Math.max(...activeAges)) : 0,
     sampleCount: samples.length,
     avgMs,
     p95Ms,
@@ -84,6 +95,15 @@ function evaluateSafeMode() {
   const enoughSamples = snapshot.sampleCount >= safeModeMonitor.thresholds.minSamples;
   if (safeModeMonitor.activeRequests >= safeModeMonitor.thresholds.concurrentRequests) {
     reasons.push(`concorrenza ${safeModeMonitor.activeRequests} >= ${safeModeMonitor.thresholds.concurrentRequests}`);
+  }
+  if (snapshot.slowActiveRequests >= safeModeMonitor.thresholds.slowActiveRequests) {
+    reasons.push(`richieste lente attive ${snapshot.slowActiveRequests} >= ${safeModeMonitor.thresholds.slowActiveRequests}`);
+  }
+  if (
+    snapshot.oldestActiveRequestMs >= safeModeMonitor.thresholds.oldestActiveRequestMs &&
+    safeModeMonitor.activeRequests >= Math.max(5, Math.floor(safeModeMonitor.thresholds.slowActiveRequests / 2))
+  ) {
+    reasons.push(`richiesta attiva da ${snapshot.oldestActiveRequestMs}ms >= ${safeModeMonitor.thresholds.oldestActiveRequestMs}ms`);
   }
   if (enoughSamples && snapshot.p95Ms >= safeModeMonitor.thresholds.p95Ms) {
     reasons.push(`p95 ${snapshot.p95Ms}ms >= ${safeModeMonitor.thresholds.p95Ms}ms`);
@@ -127,6 +147,19 @@ function safeModePayload(message = "Sistema sotto carico: operazione temporaneam
     safeMode: safeModeSnapshot(),
     message
   };
+}
+
+function recordApiSample({ requestId, startedAt, status, error = false }) {
+  const endedAt = Date.now();
+  safeModeMonitor.activeRequestStartedAt.delete(requestId);
+  safeModeMonitor.activeRequests = Math.max(0, safeModeMonitor.activeRequests - 1);
+  safeModeMonitor.samples.push({
+    at: endedAt,
+    ms: endedAt - startedAt,
+    status: Number(status || 0),
+    error: Boolean(error || Number(status || 0) >= 500)
+  });
+  evaluateSafeMode();
 }
 
 function clientIp(req) {
@@ -409,21 +442,35 @@ app.use(express.json({
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api")) return next();
   const startedAt = Date.now();
+  const requestId = safeModeMonitor.nextRequestId++;
+  let sampleRecorded = false;
   safeModeMonitor.activeRequests += 1;
+  safeModeMonitor.activeRequestStartedAt.set(requestId, startedAt);
   res.setHeader("X-SmartDesk-Safe-Mode", isSafeModeActive() ? "1" : "0");
-  res.on("finish", () => {
-    const endedAt = Date.now();
-    safeModeMonitor.activeRequests = Math.max(0, safeModeMonitor.activeRequests - 1);
-    safeModeMonitor.samples.push({
-      at: endedAt,
-      ms: endedAt - startedAt,
-      status: Number(res.statusCode || 0),
-      error: Number(res.statusCode || 0) >= 500
+  const recordOnce = ({ aborted = false } = {}) => {
+    if (sampleRecorded) return;
+    sampleRecorded = true;
+    recordApiSample({
+      requestId,
+      startedAt,
+      status: Number(res.statusCode || (aborted ? 499 : 0)),
+      error: aborted || Number(res.statusCode || 0) >= 500
     });
-    evaluateSafeMode();
+  };
+  res.on("finish", () => {
+    recordOnce();
+  });
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      recordOnce({ aborted: true });
+    }
   });
   return next();
 });
+
+setInterval(() => {
+  evaluateSafeMode();
+}, Math.max(1000, Math.min(5000, Math.floor(safeModeMonitor.thresholds.activeRequestAgeMs / 2)))).unref();
 
 app.use("/assets", express.static(path.join(publicDir, "assets")));
 app.use("/exports", express.static(path.join(publicDir, "exports")));
