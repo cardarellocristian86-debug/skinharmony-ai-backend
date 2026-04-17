@@ -6280,12 +6280,39 @@ class DesktopMirrorService {
   }
 
   buildGoldDashboardDecisions(branches = {}, dataQuality = {}) {
+    const downgradeBand = (band) => {
+      if (band === "alta") return { key: "media", label: "Priorità media" };
+      if (band === "media") return { key: "bassa", label: "Priorità bassa" };
+      if (band === "bassa") return { key: "stop", label: "Non prioritario" };
+      return { key: band || "stop", label: "Non prioritario" };
+    };
+    const reliabilityGate = (item) => {
+      const coherence = Number(item.factors?.coherence || 0);
+      const friction = Number(item.factors?.friction || 0);
+      if (!(coherence < 0.5 || friction > 0.6)) return item;
+      const penalty = friction > 0.75 || coherence < 0.35 ? 0.7 : 0.8;
+      const nextPhi = Number(Math.max(0, Number(item.phi || 0) * penalty).toFixed(3));
+      const downgraded = downgradeBand(item.band);
+      return {
+        ...item,
+        phi: nextPhi,
+        phiPercent: Math.round(nextPhi * 100),
+        band: downgraded.key,
+        bandLabel: downgraded.label,
+        reliabilityPenaltyApplied: true,
+        reliabilityPenalty: Number((1 - penalty).toFixed(2)),
+        explanationShort: item.output === "margine buono" || item.output === "Buona opportunità"
+          ? "Segnale da verificare"
+          : item.explanationShort,
+        explanationLong: `${item.explanationLong || item.explanationShort || ""} Dato non abbastanza affidabile: priorità ridotta prima di mostrarlo come segnale operativo.`.trim()
+      };
+    };
     const branchItems = [
       ...(branches.marketing?.items || []),
       ...(branches.agenda?.items || []),
       ...(branches.cash?.items || []),
       ...(branches.profit?.items || [])
-    ];
+    ].map(reliabilityGate);
     const qualityNeed = normalizeScore((100 - Number(dataQuality.score || 100)) / 100);
     const qualityDecision = qualityNeed > 0 ? this.toGoldDecisionItem("dashboard", "data-quality", computeGoldDecisionScore("data_quality_alert", {
       needScore: qualityNeed,
