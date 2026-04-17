@@ -32,6 +32,8 @@ const safeModeMonitor = {
     activeRequestAgeMs: Number(process.env.SAFE_MODE_ACTIVE_REQUEST_AGE_MS || 8000),
     oldestActiveRequestMs: Number(process.env.SAFE_MODE_OLDEST_ACTIVE_REQUEST_MS || 12000),
     slowActiveRequests: Number(process.env.SAFE_MODE_SLOW_ACTIVE_REQUESTS || 8),
+    requestRatePerSecond: Number(process.env.SAFE_MODE_REQUEST_RATE_PER_SECOND || 12),
+    burstSamples: Number(process.env.SAFE_MODE_BURST_SAMPLES || 450),
     minActiveMs: Number(process.env.SAFE_MODE_MIN_ACTIVE_MS || 90000),
     recoveryMs: Number(process.env.SAFE_MODE_RECOVERY_MS || 60000)
   }
@@ -60,6 +62,7 @@ function safeModeSnapshot(now = Date.now()) {
   const avgMs = durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0;
   const p95Ms = Math.round(percentile(durations, 95));
   const errorRate = samples.length ? Number(((errors / samples.length) * 100).toFixed(2)) : 0;
+  const requestRatePerSecond = Number((samples.length / Math.max(1, windowMs / 1000)).toFixed(2));
   return {
     active: safeModeMonitor.active || isSafeModeForced(),
     forced: isSafeModeForced(),
@@ -67,6 +70,7 @@ function safeModeSnapshot(now = Date.now()) {
     slowActiveRequests,
     oldestActiveRequestMs: activeAges.length ? Math.round(Math.max(...activeAges)) : 0,
     sampleCount: samples.length,
+    requestRatePerSecond,
     avgMs,
     p95Ms,
     errorRate,
@@ -98,6 +102,12 @@ function evaluateSafeMode() {
   }
   if (snapshot.slowActiveRequests >= safeModeMonitor.thresholds.slowActiveRequests) {
     reasons.push(`richieste lente attive ${snapshot.slowActiveRequests} >= ${safeModeMonitor.thresholds.slowActiveRequests}`);
+  }
+  if (snapshot.sampleCount >= safeModeMonitor.thresholds.burstSamples) {
+    reasons.push(`burst API ${snapshot.sampleCount} campioni >= ${safeModeMonitor.thresholds.burstSamples}`);
+  }
+  if (snapshot.requestRatePerSecond >= safeModeMonitor.thresholds.requestRatePerSecond && snapshot.sampleCount >= safeModeMonitor.thresholds.minSamples) {
+    reasons.push(`pressione API ${snapshot.requestRatePerSecond}/s >= ${safeModeMonitor.thresholds.requestRatePerSecond}/s`);
   }
   if (
     snapshot.oldestActiveRequestMs >= safeModeMonitor.thresholds.oldestActiveRequestMs &&
