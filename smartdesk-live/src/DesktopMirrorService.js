@@ -6011,6 +6011,285 @@ class DesktopMirrorService {
     };
   }
 
+  toGoldDecisionItem(domain, entityId, goldDecision, meta = {}) {
+    return {
+      domain,
+      entityId: String(entityId || `${domain}-${Date.now()}`),
+      phi: goldDecision.score,
+      phiPercent: goldDecision.scorePercent,
+      band: goldDecision.priorityBand,
+      bandLabel: goldDecision.priorityLabel,
+      factors: {
+        need: goldDecision.axes.need,
+        value: goldDecision.axes.value,
+        urgency: goldDecision.axes.urgency,
+        coherence: goldDecision.axes.coherence,
+        friction: goldDecision.axes.friction
+      },
+      suggestedAction: meta.suggestedAction || goldDecision.suggestedAction,
+      explanationShort: meta.explanationShort || goldDecision.explanation,
+      explanationLong: meta.explanationLong || goldDecision.explanation,
+      ...meta
+    };
+  }
+
+  buildGoldAgendaDecisions(context = {}, session = null) {
+    const nowMs = Date.now();
+    const appointments = Array.isArray(context.appointments) ? context.appointments : [];
+    const servicesById = context.servicesById || new Map();
+    const maxServicePrice = Math.max(1, ...Array.from(servicesById.values()).map((service) => Number(service.priceCents || 0)));
+    const relevant = appointments
+      .filter((appointment) => !["cancelled", "no_show"].includes(String(appointment.status || "")))
+      .filter((appointment) => {
+        const time = new Date(appointment.startAt || appointment.createdAt || 0).getTime();
+        if (!Number.isFinite(time)) return false;
+        return time >= nowMs - 86400000 && time <= nowMs + (7 * 86400000);
+      })
+      .slice(0, 120);
+    const items = relevant.map((appointment) => {
+      const service = servicesById.get(String(appointment.serviceId || "")) || {};
+      const startMs = new Date(appointment.startAt || appointment.createdAt || 0).getTime();
+      const hoursToStart = Number.isFinite(startMs) ? (startMs - nowMs) / 3600000 : 168;
+      const status = String(appointment.status || "");
+      const missingClient = !appointment.clientId && !appointment.clientName && !appointment.walkInName;
+      const missingService = !appointment.serviceId && !appointment.serviceName && !appointment.service;
+      const missingOperator = !appointment.staffId && !appointment.operatorId && !appointment.staffName;
+      const incompleteScore = normalizeScore(([missingClient, missingService, missingOperator].filter(Boolean).length) / 3);
+      const need = normalizeScore(Math.max(
+        status === "requested" || status === "booked" ? 0.85 : 0,
+        incompleteScore ? 0.75 + (incompleteScore * 0.25) : 0,
+        status === "confirmed" ? 0.35 : 0
+      ));
+      const hour = Number(String(appointment.startAt || "").slice(11, 13));
+      const strategicHour = Number.isFinite(hour) && ((hour >= 10 && hour <= 12) || (hour >= 17 && hour <= 19));
+      const value = normalizeScore((Number(service.priceCents || appointment.amountCents || 0) / maxServicePrice) + (strategicHour ? 0.15 : 0));
+      const urgency = hoursToStart <= 2 ? 1 : hoursToStart <= 24 ? 0.85 : hoursToStart <= 72 ? 0.55 : 0.25;
+      const coherence = normalizeScore((Number(!missingClient) + Number(!missingService) + Number(!missingOperator)) / 3);
+      const friction = normalizeScore(Math.max(
+        incompleteScore,
+        status === "completed" || status === "ready_checkout" ? 0.9 : 0,
+        status === "confirmed" && hoursToStart > 24 ? 0.25 : 0
+      ));
+      const decision = computeGoldDecisionScore("appuntamento", {
+        needScore: need,
+        valueScore: value,
+        urgencyScore: urgency,
+        coherenceScore: coherence,
+        frictionScore: friction,
+        suggestedAction: need >= 0.75
+          ? "sistema appuntamento"
+          : urgency >= 0.85 && status !== "confirmed"
+            ? "conferma appuntamento"
+            : "monitora agenda",
+        explanation: missingClient || missingService || missingOperator
+          ? "Appuntamento con dati incompleti: conviene sistemarlo prima dell'orario."
+          : urgency >= 0.85 && status !== "confirmed"
+            ? "Appuntamento vicino non ancora pienamente confermato."
+            : "Agenda sotto controllo per questo appuntamento."
+      });
+      const output = decision.score >= 0.7
+        ? "da confermare ora"
+        : decision.score >= 0.5
+          ? "appuntamento fragile"
+          : decision.score >= 0.3
+            ? "può aspettare"
+            : "nessuna azione urgente";
+      return this.toGoldDecisionItem("agenda", appointment.id, decision, {
+        label: appointment.clientName || appointment.walkInName || "Appuntamento",
+        output,
+        status,
+        startAt: appointment.startAt || "",
+        target: "agenda",
+        suggestedAction: output === "da confermare ora" ? "conferma o completa appuntamento" : decision.suggestedAction,
+        explanationShort: output,
+        explanationLong: decision.explanation
+      });
+    }).sort((a, b) => b.phi - a.phi).slice(0, 10);
+    return {
+      domain: "agenda",
+      engineVersion: "gold_phi_agenda_v1",
+      generatedAt: nowIso(),
+      items,
+      summary: {
+        highPriority: items.filter((item) => item.band === "alta").length,
+        recommended: items.filter((item) => item.band === "media").length,
+        total: items.length,
+        status: items.some((item) => item.phi >= 0.7) ? "intervento_ora" : items.some((item) => item.phi >= 0.5) ? "attenzione" : "giornata_equilibrata"
+      }
+    };
+  }
+
+  buildGoldCashDecisions(context = {}, session = null) {
+    const payments = Array.isArray(context.payments) ? context.payments : [];
+    const unlinkedPayments = this.listUnlinkedPayments(session);
+    const maxAmount = Math.max(1, ...payments.map((payment) => Number(payment.amountCents || 0)));
+    const items = unlinkedPayments.slice(0, 40).map((payment) => {
+      const amount = Number(payment.amountCents || 0);
+      const ageDays = Math.max(0, Math.floor((Date.now() - new Date(payment.createdAt || nowIso()).getTime()) / 86400000));
+      const hasClient = Boolean(payment.clientId);
+      const hasAppointment = Boolean(payment.appointmentId);
+      const suggestionsCount = Array.isArray(payment.suggestions) ? payment.suggestions.length : 0;
+      const need = normalizeScore(!hasClient || !hasAppointment ? 1 : 0.2);
+      const value = normalizeScore(amount / maxAmount);
+      const urgency = ageDays === 0 ? 0.75 : ageDays <= 3 ? 0.9 : 1;
+      const coherence = normalizeScore((Number(hasClient) + Number(hasAppointment) + Number(Boolean(payment.method)) + (suggestionsCount === 1 ? 1 : suggestionsCount > 1 ? 0.6 : 0.2)) / 4);
+      const friction = normalizeScore(Math.max(
+        !hasClient && !hasAppointment ? 0.85 : 0.45,
+        suggestionsCount > 1 ? 0.7 : 0,
+        !payment.method ? 0.45 : 0
+      ));
+      const decision = computeGoldDecisionScore("pagamento", {
+        needScore: need,
+        valueScore: value,
+        urgencyScore: urgency,
+        coherenceScore: coherence,
+        frictionScore: friction,
+        suggestedAction: suggestionsCount === 1 ? "verifica collegamento" : "controlla pagamento",
+        explanation: suggestionsCount === 1
+          ? "Pagamento collegabile con buona probabilità: verifica e chiudi."
+          : suggestionsCount > 1
+            ? "Pagamento ambiguo: controlla prima di collegare."
+            : "Pagamento non collegato: serve verifica manuale."
+      });
+      const output = decision.score >= 0.7
+        ? "chiudi ora"
+        : decision.score >= 0.5
+          ? "verifica collegamento"
+          : friction >= 0.7
+            ? "dato poco affidabile"
+            : "non urgente";
+      return this.toGoldDecisionItem("cash", payment.id, decision, {
+        label: payment.clientName || payment.walkInName || "Pagamento",
+        output,
+        amountCents: amount,
+        ageDays,
+        target: "cashdesk",
+        suggestedAction: output,
+        explanationShort: output,
+        explanationLong: decision.explanation
+      });
+    }).sort((a, b) => b.phi - a.phi).slice(0, 10);
+    return {
+      domain: "cash",
+      engineVersion: "gold_phi_cash_v1",
+      generatedAt: nowIso(),
+      items,
+      summary: {
+        highPriority: items.filter((item) => item.band === "alta").length,
+        recommended: items.filter((item) => item.band === "media").length,
+        total: items.length,
+        status: items.some((item) => item.phi >= 0.7) ? "chiudere_ora" : items.length ? "verificare" : "cassa_chiara"
+      }
+    };
+  }
+
+  buildGoldProfitDecisions(profitability = {}) {
+    const services = Array.isArray(profitability.suggestions) ? profitability.suggestions : [];
+    const maxRevenue = Math.max(1, ...services.map((service) => Number(service.revenueCents || service.averageRevenueCents || 0)));
+    const items = services.slice(0, 80).map((service) => {
+      const status = String(service.status || "");
+      const marginPercent = Number(service.marginPercent || 0);
+      const revenue = Number(service.revenueCents || service.averageRevenueCents || 0);
+      const need = normalizeScore(status === "LOSS" ? 1 : status === "LOW_MARGIN" ? 0.75 : marginPercent < 35 ? 0.45 : 0.15);
+      const value = normalizeScore(revenue / maxRevenue);
+      const urgency = normalizeScore(Number(service.appointments || service.salesCount || 0) >= 10 ? 0.85 : Number(service.appointments || service.salesCount || 0) >= 4 ? 0.55 : 0.25);
+      const coherence = normalizeScore(status === "MISSING_DATA" || Number(service.averageCostCents || 0) <= 0 ? 0.25 : 0.85);
+      const friction = normalizeScore(status === "MISSING_DATA" ? 1 : Number(service.averageCostCents || 0) <= 0 ? 0.8 : status === "LOSS" ? 0.35 : 0.15);
+      const decision = computeGoldDecisionScore("servizio", {
+        needScore: need,
+        valueScore: value,
+        urgencyScore: urgency,
+        coherenceScore: coherence,
+        frictionScore: friction,
+        suggestedAction: status === "MISSING_DATA"
+          ? "completa costi"
+          : status === "LOSS"
+            ? "correggi servizio"
+            : status === "LOW_MARGIN"
+              ? "ottimizza margine"
+              : "spingi servizio",
+        explanation: status === "MISSING_DATA"
+          ? "Dato incompleto: prima completa costi e durata."
+          : status === "LOSS"
+            ? "Servizio con margine negativo o sospetto: controllare prezzo, costo e tempo."
+            : status === "LOW_MARGIN"
+              ? "Servizio venduto con margine migliorabile."
+              : "Servizio con lettura positiva."
+      });
+      const output = status === "MISSING_DATA"
+        ? "dato incompleto"
+        : decision.score >= 0.7
+          ? "servizio da correggere"
+          : decision.score >= 0.5
+            ? "opportunità di ottimizzazione"
+            : marginPercent >= 45
+              ? "margine buono"
+              : "margine sospetto";
+      return this.toGoldDecisionItem("profit", service.id || service.serviceId || service.name, decision, {
+        label: service.name || "Servizio",
+        output,
+        marginPercent,
+        revenueCents: revenue,
+        target: "profitability",
+        suggestedAction: output,
+        explanationShort: output,
+        explanationLong: decision.explanation
+      });
+    }).sort((a, b) => b.phi - a.phi).slice(0, 10);
+    return {
+      domain: "profit",
+      engineVersion: "gold_phi_profit_v1",
+      generatedAt: nowIso(),
+      items,
+      summary: {
+        highPriority: items.filter((item) => item.band === "alta").length,
+        recommended: items.filter((item) => item.band === "media").length,
+        total: items.length,
+        status: items.some((item) => item.output === "servizio da correggere") ? "margini_da_correggere" : items.length ? "ottimizzazione" : "nessun_segnale"
+      }
+    };
+  }
+
+  buildGoldDashboardDecisions(branches = {}, dataQuality = {}) {
+    const branchItems = [
+      ...(branches.marketing?.items || []),
+      ...(branches.agenda?.items || []),
+      ...(branches.cash?.items || []),
+      ...(branches.profit?.items || [])
+    ];
+    const qualityNeed = normalizeScore((100 - Number(dataQuality.score || 100)) / 100);
+    const qualityDecision = qualityNeed > 0 ? this.toGoldDecisionItem("dashboard", "data-quality", computeGoldDecisionScore("data_quality_alert", {
+      needScore: qualityNeed,
+      valueScore: 0.55,
+      urgencyScore: qualityNeed >= 0.35 ? 0.75 : 0.35,
+      coherenceScore: normalizeScore(Number(dataQuality.score || 0) / 100),
+      frictionScore: qualityNeed >= 0.5 ? 0.65 : 0.25,
+      suggestedAction: "migliora qualità dati",
+      explanation: `Qualità dati ${dataQuality.score || 0}%: correggi solo ciò che blocca letture affidabili.`
+    }), {
+      label: "Qualità dati",
+      output: Number(dataQuality.score || 0) < 65 ? "rischio operativo reale" : "monitorare",
+      target: "clients"
+    }) : null;
+    const allItems = [...branchItems, qualityDecision].filter(Boolean)
+      .sort((a, b) => b.phi - a.phi)
+      .slice(0, 12);
+    return {
+      domain: "dashboard",
+      engineVersion: "gold_phi_dashboard_v1",
+      generatedAt: nowIso(),
+      items: allItems,
+      summary: {
+        firstAction: allItems[0]?.suggestedAction || "nessuna azione urgente",
+        mainProblem: allItems.find((item) => ["cash", "agenda", "profit"].includes(item.domain) && item.phi >= 0.5)?.explanationShort || "nessun problema urgente",
+        bestOpportunity: allItems.find((item) => item.domain === "marketing" || item.output === "margine buono")?.explanationShort || "nessuna opportunità prioritaria",
+        areaToAvoidNow: allItems.find((item) => item.factors?.friction >= 0.75)?.label || "",
+        operationalRisk: allItems.find((item) => item.band === "alta")?.explanationShort || "rischio sotto controllo",
+        totalSignals: allItems.length
+      }
+    };
+  }
+
   getBusinessSnapshot(options = {}, session = null) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
@@ -6055,6 +6334,9 @@ class DesktopMirrorService {
     const inventory = this.getInventoryOverview(session);
     const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const servicesById = mapById(services);
     const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const treatments = this.filterByCenter(this.treatmentsRepository.list(), session);
     const protocols = this.listProtocols("", session);
@@ -6089,6 +6371,39 @@ class DesktopMirrorService {
     const weakOperator = operational.topOperators?.slice().reverse()[0] || leastLoadedOperator || null;
     const topClient = operational.topClientsBySpend?.[0] || null;
     const focusClient = marketing.suggestions?.[0] || null;
+    const goldMarketingBranch = {
+      domain: "marketing",
+      engineVersion: "gold_phi_marketing_v1",
+      generatedAt: nowIso(),
+      items: (Array.isArray(marketing.suggestions) ? marketing.suggestions : [])
+        .filter((item) => item.goldDecision)
+        .map((item) => this.toGoldDecisionItem("marketing", item.clientId, item.goldDecision, {
+          label: item.name || "Cliente",
+          output: item.contactClassLabel || item.finalPriorityLabel || "Marketing",
+          target: "marketing",
+          clientId: item.clientId,
+          suggestedAction: item.recommendedAction || item.operatingDecision || "gestisci cliente",
+          explanationShort: item.contactClassLabel || item.clearReason || "Priorità marketing",
+          explanationLong: item.goldDecision?.explanation || item.urgencyReason || ""
+        }))
+        .sort((a, b) => b.phi - a.phi)
+        .slice(0, 10),
+      summary: {
+        highPriority: (marketing.suggestions || []).filter((item) => Number(item.goldDecision?.score || 0) >= 0.7).length,
+        recommended: (marketing.suggestions || []).filter((item) => Number(item.goldDecision?.score || 0) >= 0.5).length,
+        total: (marketing.suggestions || []).length,
+        status: marketing.suggestions?.length ? "priorita_clienti" : "nessun_recall_urgente"
+      }
+    };
+    const goldAgendaBranch = this.buildGoldAgendaDecisions({ appointments, servicesById }, session);
+    const goldCashBranch = this.buildGoldCashDecisions({ payments }, session);
+    const goldProfitBranch = this.buildGoldProfitDecisions(profitability);
+    const goldDashboardBranch = this.buildGoldDashboardDecisions({
+      marketing: goldMarketingBranch,
+      agenda: goldAgendaBranch,
+      cash: goldCashBranch,
+      profit: goldProfitBranch
+    }, dataQuality);
     const snapshot = {
       snapshotAvailable: true,
       snapshotVersion: "1.0",
@@ -6138,6 +6453,16 @@ class DesktopMirrorService {
       profitability,
       inventory,
       dataQuality,
+      goldEngine: {
+        engineLayer: "gold_decision_engine",
+        engineVersion: "gold_phi_multi_domain_v1",
+        rule: "Gold legge dati già presenti, pesa i segnali e produce priorità operative. Base e Silver non dipendono da questo motore.",
+        marketing: goldMarketingBranch,
+        agenda: goldAgendaBranch,
+        cash: goldCashBranch,
+        profit: goldProfitBranch,
+        dashboard: goldDashboardBranch
+      },
       operations: {
         upcomingAppointments,
         weakestUpcomingDay,
@@ -6173,6 +6498,20 @@ class DesktopMirrorService {
     const centerHealth = snapshot.report?.centerHealth || {};
     const inventory = snapshot.inventory || {};
     const dataQuality = snapshot.dataQuality || {};
+    const goldEngine = snapshot.goldEngine || {};
+    const goldEnginePriorityItems = (goldEngine.dashboard?.items || []).slice(0, 5).map((item) => ({
+      id: `gold-engine-${item.domain}-${item.entityId}`,
+      level: item.band === "alta" ? "critical" : item.band === "media" ? "warning" : item.band === "bassa" ? "info" : "success",
+      area: item.domain,
+      conclusion: item.explanationShort || item.output || "Segnale Gold",
+      reason: item.explanationLong || item.suggestedAction || "Priorità calcolata dal Gold Decision Engine.",
+      details: `Necessità ${Math.round(Number(item.factors?.need || 0) * 100)} · Valore ${Math.round(Number(item.factors?.value || 0) * 100)} · Urgenza ${Math.round(Number(item.factors?.urgency || 0) * 100)} · Coerenza ${Math.round(Number(item.factors?.coherence || 0) * 100)} · Frizione ${Math.round(Number(item.factors?.friction || 0) * 100)}`,
+      impactCents: Number(item.amountCents || item.revenueCents || 0),
+      riskCents: 0,
+      action: item.suggestedAction || "gestisci priorità",
+      button: item.domain === "cash" ? "Apri cassa" : item.domain === "agenda" ? "Apri agenda" : item.domain === "profit" ? "Apri redditività" : item.domain === "marketing" ? "Apri marketing" : "Apri dettaglio",
+      target: item.target || (item.domain === "cash" ? "cashdesk" : item.domain === "profit" ? "profitability" : item.domain)
+    }));
     const focusClient = snapshot.marketing?.focusClient || null;
     const marginAlert = profitability.suggestions?.find((item) => item.status !== "HEALTHY") || null;
     const bestService = profitability.suggestions?.slice().sort((a, b) => Number(b.marginPercent || 0) - Number(a.marginPercent || 0))[0] || null;
@@ -6214,6 +6553,11 @@ class DesktopMirrorService {
             target: "dashboard"
           }
         ]
+      },
+      {
+        key: "gold_engine",
+        title: "Gold Decision Engine",
+        items: goldEnginePriorityItems
       },
       {
         key: "daily",
