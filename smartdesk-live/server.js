@@ -5,10 +5,12 @@ const nodemailer = require("nodemailer");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
 const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter");
+const { WhatsappService } = require("./src/WhatsappService");
 
 const app = express();
 let service = null;
 let assistantService = null;
+let whatsappService = null;
 const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
 
@@ -448,6 +450,7 @@ app.use(express.json({
     req.rawBody = buf.toString("utf8");
   }
 }));
+app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api")) return next();
@@ -627,6 +630,22 @@ app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
     res.status(400).json({
       success: false,
       message: error instanceof Error ? error.message : "Impossibile collegare ordine WooCommerce"
+    });
+  }
+});
+
+app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
+  const expectedToken = String(process.env.TWILIO_WEBHOOK_TOKEN || "").trim();
+  const providedToken = String(req.query.token || req.headers["x-smartdesk-webhook-token"] || "").trim();
+  if (expectedToken && providedToken !== expectedToken) {
+    return res.status(401).json({ success: false, message: "Webhook non autorizzato" });
+  }
+  try {
+    res.json(service.handleWhatsappWebhook(req.body || {}, whatsappService));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Webhook WhatsApp non gestibile"
     });
   }
 });
@@ -1086,6 +1105,34 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
   }
 });
 
+app.get("/api/ai-gold/whatsapp/status", requirePlan("gold"), (req, res) => {
+  res.json(service.getGoldWhatsappStatus(req.session, whatsappService));
+});
+
+app.post("/api/ai-gold/whatsapp/preview", requirePlan("gold"), (req, res) => {
+  try {
+    res.json(service.previewGoldWhatsappAction(req.body || {}, req.session, whatsappService));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile preparare WhatsApp Gold");
+  }
+});
+
+app.post("/api/ai-gold/whatsapp/send", requirePlan("gold"), async (req, res) => {
+  try {
+    res.json(await service.sendGoldWhatsappAction(req.body || {}, req.session, whatsappService));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare WhatsApp Gold");
+  }
+});
+
+app.post("/api/ai-gold/whatsapp/bulk-send", requirePlan("gold"), async (req, res) => {
+  try {
+    res.json(await service.sendGoldWhatsappBulk(req.body || {}, req.session, whatsappService));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare WhatsApp Gold");
+  }
+});
+
 app.post("/api/ai-gold/protocols/draft", requireSuperAdmin, requirePlan("silver"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione protocolli temporaneamente limitata"));
@@ -1236,10 +1283,12 @@ async function bootstrap() {
   service = new DesktopMirrorService({ persistenceAdapter });
   await service.init();
   assistantService = new AssistantService(service);
+  whatsappService = new WhatsappService();
 
   app.listen(port, () => {
     console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
     console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
+    console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
   });
 }
 

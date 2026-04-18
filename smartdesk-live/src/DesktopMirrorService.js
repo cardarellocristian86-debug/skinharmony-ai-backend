@@ -26,6 +26,7 @@ const GOLD_TREND_MU2 = 0.10;
 const GOLD_ENTERPRISE_RISK_RHO = Object.freeze({ friction: 0.45, dataGap: 0.30, instability: 0.25 });
 const GOLD_ENTERPRISE_ACTION_COST = Object.freeze({ ACT_NOW: 0.06, SUGGEST: 0.04, MONITOR: 0.015, VERIFY: 0.025, STOP: 0 });
 const GOLD_ENTERPRISE_BAYES_PRIOR = Object.freeze({ alpha: 2, beta: 2 });
+const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
@@ -1371,6 +1372,7 @@ class DesktopMirrorService {
     this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
     this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
     this.goldActionOutcomesRepository = this.createRepository("gold_action_outcomes", []);
+    this.whatsappMessagesRepository = this.createRepository("whatsapp_messages", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
@@ -1919,6 +1921,7 @@ class DesktopMirrorService {
       treatments: this.treatmentsRepository,
       protocols: this.protocolsRepository,
       aiMarketingActions: this.aiMarketingActionsRepository,
+      whatsappMessages: this.whatsappMessagesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -1960,6 +1963,7 @@ class DesktopMirrorService {
       treatments: this.treatmentsRepository,
       protocols: this.protocolsRepository,
       aiMarketingActions: this.aiMarketingActionsRepository,
+      whatsappMessages: this.whatsappMessagesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -2002,6 +2006,7 @@ class DesktopMirrorService {
         { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
         { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
+        { name: "whatsapp_messages", filePath: path.join(DATA_DIR, "whatsapp_messages.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
@@ -6181,6 +6186,366 @@ class DesktopMirrorService {
       updated.push(next);
     });
     return updated;
+  }
+
+  getGoldWhatsappStatus(session = null, whatsappService = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        enabled: false,
+        fallback: "copy",
+        message: "WhatsApp API disponibile solo con piano Gold."
+      };
+    }
+    const messages = this.filterByCenter(this.whatsappMessagesRepository.list(), session)
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime())
+      .slice(0, 50);
+    return {
+      goldEnabled: true,
+      enabled: Boolean(whatsappService?.isConfigured?.()),
+      fallback: whatsappService?.isConfigured?.() ? "" : "copy",
+      costPerMessageEur: GOLD_WHATSAPP_MESSAGE_COST_EUR,
+      templates: ["recupero_soft", "recupero_attivo", "mantenimento", "riattivazione_cliente_perso", "reminder_appuntamento"],
+      messages
+    };
+  }
+
+  getGoldWhatsappContext(clientId, session = null) {
+    const normalizedClientId = String(clientId || "");
+    const client = this.findByIdInCenter(this.clientsRepository, normalizedClientId, session);
+    const snapshot = this.getBusinessSnapshot({}, session);
+    const suggestions = [
+      ...(snapshot.marketing?.suggestions || []),
+      ...(snapshot.marketing?.lostClients || []),
+      ...(snapshot.marketing?.historicInactiveClients || [])
+    ];
+    const suggestion = suggestions.find((item) => String(item.clientId || "") === normalizedClientId) || null;
+    const goldItem = (snapshot.goldEngine?.marketing?.items || [])
+      .find((item) => String(item.entityId || "") === normalizedClientId) || null;
+    return { client, snapshot, suggestion, goldItem };
+  }
+
+  getGoldWhatsappTemplate(suggestion = {}) {
+    const contactClass = String(suggestion.contactClass || suggestion.timingClass || suggestion.segment || "").toLowerCase();
+    if (contactClass.includes("perso") || contactClass.includes("storico")) {
+      return {
+        key: "riattivazione_cliente_perso",
+        label: "Riattivazione cliente perso",
+        type: "riattivazione"
+      };
+    }
+    if (contactClass.includes("recupero_attivo")) {
+      return { key: "recupero_attivo", label: "Recupero attivo", type: "recupero" };
+    }
+    if (contactClass.includes("recupero_soft")) {
+      return { key: "recupero_soft", label: "Recupero soft", type: "recupero" };
+    }
+    if (contactClass.includes("mantenimento")) {
+      return { key: "mantenimento", label: "Mantenimento", type: "mantenimento" };
+    }
+    return { key: "reminder_appuntamento", label: "Reminder appuntamento", type: "reminder" };
+  }
+
+  buildGoldWhatsappMessage(client = {}, suggestion = {}, overrideMessage = "") {
+    const text = cleanText(overrideMessage || suggestion.message || "", "", 1200);
+    if (text) return text;
+    const firstName = cleanText(client.firstName || suggestion.name || client.name || "Cliente", "Cliente", 80).split(/\s+/)[0] || "Cliente";
+    const service = cleanText(suggestion.lastServiceName || "il tuo percorso", "il tuo percorso", 120);
+    const proposal = cleanText(suggestion.recommendedAction || "ti propongo uno slot comodo questa settimana", "ti propongo uno slot comodo questa settimana", 180);
+    const template = this.getGoldWhatsappTemplate(suggestion);
+    if (template.key === "riattivazione_cliente_perso") {
+      return `Ciao ${firstName}, se vuoi riprendere da dove avevamo lasciato, possiamo capire insieme cosa fare ora. ${proposal}`;
+    }
+    if (template.key === "recupero_attivo") {
+      return `Ciao ${firstName}, il timing è già avanzato per ${service}. Vuoi che ti proponga uno slot per riprendere il percorso?`;
+    }
+    if (template.key === "recupero_soft") {
+      return `Ciao ${firstName}, siamo nel momento giusto per mantenere ${service}. Vuoi che ti proponga uno slot questa settimana?`;
+    }
+    if (template.key === "mantenimento") {
+      return `Ciao ${firstName}, ti consiglio un controllo per mantenere bene ${service}. Vuoi che guardiamo insieme uno slot comodo?`;
+    }
+    return `Ciao ${firstName}, ti ricordiamo il tuo appuntamento. Se hai bisogno di modifiche, rispondi pure a questo messaggio.`;
+  }
+
+  evaluateGoldWhatsappEligibility(clientId, payload = {}, session = null) {
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        allowed: false,
+        fallback: "copy",
+        reason: "plan_locked",
+        message: "WhatsApp API disponibile solo con piano Gold."
+      };
+    }
+    const { client, suggestion, goldItem } = this.getGoldWhatsappContext(clientId, session);
+    if (!client) {
+      return { allowed: false, fallback: "copy", reason: "client_not_found", message: "Cliente non trovato." };
+    }
+    const phone = cleanPhone(client.phone || suggestion?.phone || "");
+    const message = this.buildGoldWhatsappMessage(client, suggestion || {}, payload.message || "");
+    const template = this.getGoldWhatsappTemplate(suggestion || {});
+    const friction = normalizeScore(goldItem?.factors?.friction ?? suggestion?.newDecision?.fS ?? suggestion?.goldDecision?.axes?.friction ?? 0);
+    const confidence = normalizeScore(goldItem?.confidenceTemporal ?? goldItem?.confidence ?? suggestion?.responseProbability ?? 0);
+    const action = String(goldItem?.action || (suggestion?.shouldContact ? "SUGGEST" : "MONITOR"));
+    const daysSinceLastMarketingContact = suggestion?.daysSinceLastMarketingContact ?? null;
+    const activeStatuses = new Set(["sent", "delivered", "read", "approved", "queued"]);
+    const centerMessages = this.filterByCenter(this.whatsappMessagesRepository.list(), session)
+      .filter((item) => String(item.clientId || "") === String(client.id || ""));
+    const activeMessage = centerMessages.find((item) => activeStatuses.has(String(item.status || "")));
+    const attempts = centerMessages.filter((item) => !["failed", "fallback_copy"].includes(String(item.status || ""))).length;
+    const blocks = [];
+    if (!phone || phone.length < 7) blocks.push({ reason: "invalid_phone", message: "Numero cliente non valido." });
+    if (!client.marketingConsent && !suggestion?.hasMarketingConsent) blocks.push({ reason: "missing_consent", message: "Consenso marketing non presente." });
+    if (!["ACT_NOW", "SUGGEST"].includes(action)) blocks.push({ reason: "decision_not_actionable", message: "Decision Matrix non autorizza un invio ora." });
+    if (confidence < 0.5) blocks.push({ reason: "low_confidence", message: "Confidence sotto soglia: usare copia manuale o verificare." });
+    if (friction > 0.6) blocks.push({ reason: "high_friction", message: "Frizione alta: evitare invio diretto." });
+    if (daysSinceLastMarketingContact !== null && Number(daysSinceLastMarketingContact) < 3) {
+      blocks.push({ reason: "too_recent", message: "Cliente contattato da meno di 3 giorni." });
+    }
+    if (activeMessage) blocks.push({ reason: "active_message", message: "Esiste già un messaggio WhatsApp attivo per questo cliente." });
+    if (attempts >= 2) blocks.push({ reason: "attempts_limit", message: "Dopo 2 tentativi il contatto va fermato." });
+    return {
+      allowed: blocks.length === 0,
+      fallback: blocks.length ? "copy" : "",
+      reason: blocks[0]?.reason || "",
+      message: blocks[0]?.message || "Invio WhatsApp approvabile.",
+      blocks,
+      client,
+      suggestion,
+      goldItem,
+      template,
+      whatsapp: {
+        phone,
+        message,
+        costEur: GOLD_WHATSAPP_MESSAGE_COST_EUR,
+        action,
+        confidence,
+        friction,
+        EV: Number(goldItem?.expectedValue ?? suggestion?.economicScore ?? 0),
+        RAP: Number(goldItem?.riskAdjustedPriority2 ?? goldItem?.riskAdjustedPriority ?? suggestion?.goldDecision?.score ?? 0)
+      }
+    };
+  }
+
+  previewGoldWhatsappAction(payload = {}, session = null, whatsappService = null) {
+    this.assertCanOperate(session);
+    const result = this.evaluateGoldWhatsappEligibility(payload.clientId, payload, session);
+    if (!result.client) return result;
+    return {
+      goldEnabled: this.hasGoldIntelligence(session),
+      apiConfigured: Boolean(whatsappService?.isConfigured?.()),
+      allowed: result.allowed,
+      fallback: result.fallback || (whatsappService?.isConfigured?.() ? "" : "copy"),
+      reason: result.reason,
+      blockMessage: result.message,
+      cliente: {
+        id: result.client.id,
+        name: result.suggestion?.name || result.client.name || `${result.client.firstName || ""} ${result.client.lastName || ""}`.trim(),
+        phone: result.whatsapp.phone
+      },
+      messaggio: result.whatsapp.message,
+      template: result.template,
+      stato: result.allowed ? "ready" : "blocked",
+      EV: result.whatsapp.EV,
+      RAP: result.whatsapp.RAP,
+      costo: GOLD_WHATSAPP_MESSAGE_COST_EUR,
+      risposta: "",
+      conversione: false
+    };
+  }
+
+  upsertWhatsappMarketingAction(context = {}, status = "copied", session = null) {
+    const client = context.client || {};
+    const suggestion = context.suggestion || {};
+    const centerId = this.getCenterId(session);
+    const existing = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
+      .find((item) => String(item.clientId || "") === String(client.id || "") && !["done", "archived"].includes(String(item.status || "")));
+    const now = nowIso();
+    if (existing) {
+      return this.aiMarketingActionsRepository.update(existing.id, (current) => ({
+        ...current,
+        status,
+        updatedAt: now,
+        copiedAt: status === "copied" ? now : current.copiedAt || "",
+        approvedAt: current.approvedAt || now
+      }));
+    }
+    return this.aiMarketingActionsRepository.create({
+      id: makeId("aimkt"),
+      centerId,
+      centerName: this.getCenterName(session),
+      clientId: String(client.id || ""),
+      clientName: suggestion.name || client.name || `${client.firstName || ""} ${client.lastName || ""}`.trim() || "Cliente",
+      type: "recall",
+      status,
+      priority: suggestion.priority || "media",
+      risk: suggestion.risk || "medio",
+      reason: suggestion.motive || "Invio WhatsApp approvato da Marketing Gold.",
+      recommendedAction: suggestion.recommendedAction || "",
+      estimatedValueCents: Number(suggestion.estimatedRecallValueCents || 0),
+      referenceValueCents: Number(suggestion.referenceValueCents || suggestion.estimatedRecallValueCents || 0),
+      suggestedMessage: context.message || suggestion.message || "",
+      source: "whatsapp_gold",
+      aiProvider: "gold_engine",
+      generatedAt: now,
+      updatedAt: now,
+      completedAt: "",
+      archivedAt: "",
+      approvedAt: now,
+      copiedAt: status === "copied" ? now : ""
+    });
+  }
+
+  async sendGoldWhatsappAction(payload = {}, session = null, whatsappService = null) {
+    this.assertCanOperate(session);
+    const eligibility = this.evaluateGoldWhatsappEligibility(payload.clientId, payload, session);
+    const preview = this.previewGoldWhatsappAction(payload, session, whatsappService);
+    if (!eligibility.client) return preview;
+    const baseRecord = {
+      id: makeId("wapp"),
+      centerId: this.getCenterId(session),
+      centerName: this.getCenterName(session),
+      clientId: String(eligibility.client.id || ""),
+      clientName: preview.cliente.name,
+      phone: eligibility.whatsapp.phone,
+      template: eligibility.template.key,
+      templateLabel: eligibility.template.label,
+      type: eligibility.template.type,
+      message: eligibility.whatsapp.message,
+      status: "approved",
+      provider: "twilio_whatsapp",
+      messageId: "",
+      costEur: GOLD_WHATSAPP_MESSAGE_COST_EUR,
+      EV: eligibility.whatsapp.EV,
+      RAP: eligibility.whatsapp.RAP,
+      confidence: eligibility.whatsapp.confidence,
+      friction: eligibility.whatsapp.friction,
+      response: "",
+      conversion: false,
+      error: "",
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    if (!eligibility.allowed) {
+      const record = this.whatsappMessagesRepository.create({
+        ...baseRecord,
+        status: "fallback_copy",
+        error: eligibility.message
+      });
+      return {
+        ...preview,
+        sent: false,
+        fallback: "copy",
+        stato: record.status,
+        record,
+        message: eligibility.message
+      };
+    }
+    const sendResult = await whatsappService?.sendMessage?.({
+      to: eligibility.whatsapp.phone,
+      body: eligibility.whatsapp.message
+    });
+    if (!sendResult?.ok) {
+      const record = this.whatsappMessagesRepository.create({
+        ...baseRecord,
+        status: "fallback_copy",
+        error: sendResult?.message || "WhatsApp API non disponibile."
+      });
+      return {
+        ...preview,
+        sent: false,
+        fallback: "copy",
+        stato: record.status,
+        record,
+        message: sendResult?.message || "WhatsApp API non disponibile: usa copia messaggio."
+      };
+    }
+    const action = this.upsertWhatsappMarketingAction({
+      client: eligibility.client,
+      suggestion: eligibility.suggestion,
+      message: eligibility.whatsapp.message
+    }, "copied", session);
+    const record = this.whatsappMessagesRepository.create({
+      ...baseRecord,
+      status: sendResult.status || "sent",
+      messageId: sendResult.messageId || "",
+      linkedActionId: action?.id || "",
+      twilioRaw: sendResult.raw || null
+    });
+    return {
+      ...preview,
+      sent: true,
+      fallback: "",
+      stato: record.status,
+      record,
+      message: "Messaggio WhatsApp inviato."
+    };
+  }
+
+  async sendGoldWhatsappBulk(payload = {}, session = null, whatsappService = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      throw new Error("WhatsApp Gold disponibile solo con piano Gold");
+    }
+    const items = Array.isArray(payload.items) ? payload.items.slice(0, 5) : [];
+    const results = [];
+    for (const item of items) {
+      results.push(await this.sendGoldWhatsappAction(item, session, whatsappService));
+    }
+    return {
+      success: true,
+      sequential: true,
+      requested: items.length,
+      sent: results.filter((item) => item.sent).length,
+      fallback: results.filter((item) => item.fallback === "copy").length,
+      estimatedCostEur: Number((results.filter((item) => item.sent).length * GOLD_WHATSAPP_MESSAGE_COST_EUR).toFixed(2)),
+      results
+    };
+  }
+
+  handleWhatsappWebhook(payload = {}, whatsappService = null) {
+    const messageId = String(payload.MessageSid || payload.SmsSid || payload.SmsMessageSid || "");
+    const status = whatsappService?.mapStatus?.(payload.MessageStatus || payload.SmsStatus || (payload.Body ? "received" : "")) || "";
+    const from = cleanPhone(String(payload.From || "").replace(/^whatsapp:/, ""));
+    const now = nowIso();
+    const rows = this.whatsappMessagesRepository.list();
+    let target = messageId
+      ? rows.find((item) => String(item.messageId || "") === messageId)
+      : null;
+    if (!target && from) {
+      target = rows.find((item) => cleanPhone(item.phone || "") === from && ["sent", "delivered", "read"].includes(String(item.status || "")));
+    }
+    if (!target) {
+      return { success: true, matched: false, status };
+    }
+    const updated = this.whatsappMessagesRepository.update(target.id, (current) => ({
+      ...current,
+      status: status || current.status || "sent",
+      response: payload.Body ? String(payload.Body || "").slice(0, 1000) : current.response || "",
+      repliedAt: payload.Body ? now : current.repliedAt || "",
+      deliveredAt: status === "delivered" ? now : current.deliveredAt || "",
+      readAt: status === "read" ? now : current.readAt || "",
+      failedAt: status === "failed" ? now : current.failedAt || "",
+      error: status === "failed" ? String(payload.ErrorMessage || payload.ErrorCode || current.error || "") : current.error || "",
+      updatedAt: now,
+      webhookRaw: payload
+    }));
+    if (updated && status === "replied") {
+      this.goldActionOutcomesRepository.create({
+        id: crypto.randomUUID(),
+        centerId: updated.centerId,
+        createdAt: now,
+        domain: "marketing",
+        entityId: String(updated.clientId || ""),
+        action: "SUGGEST",
+        outcome: "replied",
+        success: true,
+        valueCents: 0,
+        note: "Risposta WhatsApp registrata via webhook Twilio."
+      });
+    }
+    return { success: true, matched: true, status: updated?.status || status, record: updated };
   }
 
   getGoldDecisionHistoryKey(item = {}) {
