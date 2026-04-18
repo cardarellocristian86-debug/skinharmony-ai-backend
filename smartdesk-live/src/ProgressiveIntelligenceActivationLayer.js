@@ -15,6 +15,23 @@ const DEFAULT_THRESHOLDS = {
   l5: { maturity: 0.85, minHistoryCoverage: 0.8, minCostCompleteness: 0.75, minStateStability: 0.95, minCrmQuality: 0.75, minDataVolume: 0.75, minEconomicReliability: 0.75 }
 };
 
+const ORACLE_THRESHOLDS = {
+  minLevel: 5,
+  minHistoryCoverage: 0.8,
+  minCostCompleteness: 0.75,
+  minStateStability: 0.95,
+  minEconomicReliability: 0.75
+};
+
+const LEVEL_DEFINITIONS = [
+  { level: 0, code: "L0", label: "bootstrap / insufficient data", productLabel: "boot" },
+  { level: 1, code: "L1", label: "operational basic", productLabel: "operativo_base" },
+  { level: 2, code: "L2", label: "operational enriched", productLabel: "analitico_base" },
+  { level: 3, code: "L3", label: "economic analytical", productLabel: "analitico_avanzato" },
+  { level: 4, code: "L4", label: "strategic optimization", productLabel: "strategico" },
+  { level: 5, code: "L5", label: "predictive / oracle-ready", productLabel: "previsionale_oracle_ready" }
+];
+
 const FEATURE_CATALOG = [
   { key: "quality_alerts", label: "Alert qualità dati", minLevel: 0 },
   { key: "startup_checklist", label: "Checklist avvio", minLevel: 0 },
@@ -74,6 +91,7 @@ class ProgressiveIntelligenceActivationLayer {
   constructor(options = {}) {
     this.weights = { ...DEFAULT_WEIGHTS, ...(options.weights || {}) };
     this.thresholds = { ...DEFAULT_THRESHOLDS, ...(options.thresholds || {}) };
+    this.oracleThresholds = { ...ORACLE_THRESHOLDS, ...(options.oracleThresholds || {}) };
     this.featureCatalog = options.featureCatalog || FEATURE_CATALOG;
   }
 
@@ -135,6 +153,15 @@ class ProgressiveIntelligenceActivationLayer {
     }))), 4);
   }
 
+  computeTrustFunction(qualityVector = {}) {
+    const maturityScore = this.computeMaturityScore(qualityVector);
+    return {
+      maturityScore,
+      trustScore: maturityScore,
+      interpretation: "Il maturity score misura quanto è legittimo produrre intelligenza avanzata per questo tenant."
+    };
+  }
+
   computeActivationLevel(maturityScore = 0, qualityVector = {}, context = {}) {
     const rawCounts = context.rawCounts || {};
     const historyMonths = Number(context.historyMonths || 0);
@@ -190,8 +217,65 @@ class ProgressiveIntelligenceActivationLayer {
     }
     return {
       level,
-      label: ["boot", "operativo_base", "analitico_base", "analitico_avanzato", "strategico", "previsionale_marketing_intelligente"][level] || "boot",
+      code: LEVEL_DEFINITIONS[level]?.code || "L0",
+      label: LEVEL_DEFINITIONS[level]?.productLabel || "boot",
+      enterpriseLabel: LEVEL_DEFINITIONS[level]?.label || "bootstrap / insufficient data",
       reasons
+    };
+  }
+
+  computeOracleStatus(activationLevel = 0, qualityVector = {}) {
+    const failed = [];
+    if (activationLevel < this.oracleThresholds.minLevel) failed.push(`richiede livello L${this.oracleThresholds.minLevel}`);
+    if (qualityVector.historyCoverage < this.oracleThresholds.minHistoryCoverage) failed.push("storico insufficiente");
+    if (qualityVector.costCompleteness < this.oracleThresholds.minCostCompleteness) failed.push("completezza costi insufficiente");
+    if (qualityVector.stateStability < this.oracleThresholds.minStateStability) failed.push("stato non abbastanza stabile");
+    if (qualityVector.economicReliability < this.oracleThresholds.minEconomicReliability) failed.push("affidabilità economica insufficiente");
+    const enabled = failed.length === 0;
+    return {
+      enabled,
+      mode: enabled ? "predictive_scenarios" : "descriptive_benchmark_only",
+      reason: enabled ? "" : failed.join("; "),
+      thresholds: this.oracleThresholds
+    };
+  }
+
+  computePrudentialForecast(context = {}, oracleStatus = {}) {
+    if (!oracleStatus.enabled) {
+      return {
+        available: false,
+        reason: oracleStatus.reason || "Oracolo non abilitato",
+        outputPolicy: "benchmark descrittivo, nessuna previsione rigida"
+      };
+    }
+    const state = context.goldState || {};
+    const components = state.components || {};
+    const revenue = Math.max(0, Number(components.Rev || 0));
+    const confidence = clamp01(components.Conf ?? 0);
+    const stability = clamp01(this.computeQualityVector(context).stateStability || 0);
+    const scenarioBase = revenue * confidence * stability;
+    return {
+      available: true,
+      outputPolicy: "scenari prudenziali, non valore puntuale garantito",
+      conservativeScenario: round(scenarioBase * 0.92, 2),
+      centralScenario: round(scenarioBase, 2),
+      favorableScenario: round(scenarioBase * 1.08, 2),
+      confidenceInterval: {
+        low: round(Math.max(0, scenarioBase * 0.88), 2),
+        high: round(scenarioBase * 1.12, 2)
+      },
+      mainRiskFactors: [
+        "qualità dati",
+        "completezza costi",
+        "stabilità stato incrementale",
+        "continuità clienti"
+      ],
+      leverageActions: [
+        "migliorare completezza costi",
+        "ridurre pagamenti non collegati",
+        "rafforzare continuità clienti",
+        "mantenere stato no-drift"
+      ]
     };
   }
 
@@ -223,18 +307,25 @@ class ProgressiveIntelligenceActivationLayer {
 
   compute(context = {}) {
     const qualityVector = this.computeQualityVector(context);
-    const maturityScore = this.computeMaturityScore(qualityVector);
+    const trust = this.computeTrustFunction(qualityVector);
+    const maturityScore = trust.maturityScore;
     const activation = this.computeActivationLevel(maturityScore, qualityVector, context);
     const localConfidence = Number(context.goldState?.components?.Conf ?? qualityVector.economicReliability ?? 0);
     const features = this.getEnabledAIFeatures(activation.level, qualityVector, localConfidence);
+    const oracle = this.computeOracleStatus(activation.level, qualityVector);
+    const prudentialForecast = this.computePrudentialForecast(context, oracle);
     const result = {
       centerId: context.centerId || "",
       maturityScore,
+      trustFunction: trust,
       activationLevel: activation.level,
+      activationCode: activation.code,
       activationLabel: activation.label,
+      activationEnterpriseLabel: activation.enterpriseLabel,
       qualityVector,
       thresholds: this.thresholds,
       weights: this.weights,
+      hardConstraints: this.thresholds,
       enabledFeatures: features.enabledFeatures,
       blockedFeatures: features.blockedFeatures,
       reasons: {
@@ -243,8 +334,15 @@ class ProgressiveIntelligenceActivationLayer {
       },
       forecastAllowed: activation.level >= 5 && features.enabledFeatures.some((item) => item.key === "forecast_scenarios"),
       marketingReady: activation.level >= 5 && features.enabledFeatures.some((item) => item.key === "intelligent_marketing"),
+      oracle,
+      prudentialForecast,
+      framework: {
+        flow: "raw_data -> state_layer -> maturity_layer -> decision_layer -> oracle_layer",
+        predictionPolicy: "nessuna previsione puntuale rigida; solo scenari condizionati e prudenti",
+        noResponsibilityPolicy: "assenza di confidenza = blocco prudenziale corretto, non errore del sistema"
+      },
       generatedAt: new Date().toISOString(),
-      sourceLayer: "progressive_intelligence_activation_layer_v1"
+      sourceLayer: "progressive_intelligence_activation_layer_v2"
     };
     return {
       ...result,
@@ -257,5 +355,7 @@ module.exports = {
   ProgressiveIntelligenceActivationLayer,
   DEFAULT_WEIGHTS,
   DEFAULT_THRESHOLDS,
+  ORACLE_THRESHOLDS,
+  LEVEL_DEFINITIONS,
   FEATURE_CATALOG
 };

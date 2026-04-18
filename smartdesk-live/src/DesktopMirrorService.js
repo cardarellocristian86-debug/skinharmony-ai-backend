@@ -2043,6 +2043,10 @@ class DesktopMirrorService {
     const saved = this.goldStateRepository.findById(recordId)
       ? this.goldStateRepository.update(recordId, () => rebuilt)
       : this.goldStateRepository.create(rebuilt);
+    const progressiveIntelligence = this.recomputeProgressiveIntelligenceStatus(targetSession, {
+      reason: "gold_state_rebuild",
+      force: true
+    });
     console.log("[gold_state_rebuild]", JSON.stringify({
       centerId,
       phase: "rebuild_complete",
@@ -2061,6 +2065,7 @@ class DesktopMirrorService {
       rawCounts,
       valid: validation.valid,
       validation,
+      progressiveIntelligence,
       state: saved || rebuilt
     };
   }
@@ -2097,7 +2102,7 @@ class DesktopMirrorService {
     };
   }
 
-  getProgressiveIntelligenceStatus(session = null) {
+  computeProgressiveIntelligenceStatus(session = null) {
     this.assertCanOperate(session);
     const centerId = this.getCenterId(session);
     const plan = this.getPlanLevel(session);
@@ -2119,8 +2124,76 @@ class DesktopMirrorService {
         oldestDate: rawContext.oldestDate,
         newestDate: rawContext.newestDate
       },
-      rawCounts: rawContext.rawCounts
+      rawCounts: rawContext.rawCounts,
+      goldStateEventSeq: Number(goldState?.eventSeq || 0)
     };
+  }
+
+  shouldUseCachedProgressiveIntelligence(cached = {}, goldState = null, maxAgeMs = 24 * 60 * 60 * 1000) {
+    if (!cached || !cached.generatedAt) return false;
+    const ageMs = Date.now() - new Date(cached.generatedAt).getTime();
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > maxAgeMs) return false;
+    const cachedSeq = Number(cached.goldStateEventSeq || 0);
+    const currentSeq = Number(goldState?.eventSeq || 0);
+    return cachedSeq === currentSeq;
+  }
+
+  recomputeProgressiveIntelligenceStatus(session = null, options = {}) {
+    const status = this.computeProgressiveIntelligenceStatus(session);
+    const next = {
+      ...status,
+      cached: true,
+      recomputeReason: options.reason || "manual_or_structural_trigger",
+      persistedAt: nowIso()
+    };
+    if (String(status.currentPlan || "").toLowerCase() === "gold") {
+      this.saveSettings({ progressiveIntelligenceStatus: next }, session);
+    }
+    console.log("[progressive_intelligence_recompute]", JSON.stringify({
+      centerId: this.getCenterId(session),
+      reason: next.recomputeReason,
+      maturityScore: next.maturityScore,
+      activationLevel: next.activationLevel,
+      oracleEnabled: Boolean(next.oracle?.enabled),
+      goldStateEventSeq: next.goldStateEventSeq
+    }));
+    return next;
+  }
+
+  getProgressiveIntelligenceStatus(session = null, options = {}) {
+    this.assertCanOperate(session);
+    const plan = this.getPlanLevel(session);
+    if (plan !== "gold") return this.computeProgressiveIntelligenceStatus(session);
+    const goldState = this.getGoldState(session);
+    const cached = this.getSettings(session).progressiveIntelligenceStatus || null;
+    if (!options.force && this.shouldUseCachedProgressiveIntelligence(cached, goldState)) {
+      return {
+        ...cached,
+        cached: true,
+        source: "batch_cache"
+      };
+    }
+    return {
+      ...this.recomputeProgressiveIntelligenceStatus(session, {
+        reason: options.reason || "cache_miss_or_state_changed",
+        force: true
+      }),
+      source: "recomputed"
+    };
+  }
+
+  recomputeProgressiveIntelligenceForTenant(payload = {}, adminSession = null) {
+    if (!this.isSuperAdminSession(adminSession)) {
+      throw new Error("Recompute PIAL riservato al super admin");
+    }
+    const user = this.findUserForGoldStateRebuild(payload);
+    assertValid(Boolean(user), "Tenant Gold non trovato per recompute PIAL");
+    const normalized = this.normalizeUserAccount(user);
+    assertValid(String(normalized.subscriptionPlan || "").toLowerCase() === "gold", "PIAL è disponibile solo per tenant Gold");
+    const targetSession = this.buildGoldStateRebuildSession(normalized);
+    return this.recomputeProgressiveIntelligenceStatus(targetSession, {
+      reason: payload.reason || "admin_recompute"
+    });
   }
 
   getFeatureActivation(status = {}, featureKey = "") {

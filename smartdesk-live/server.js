@@ -1055,7 +1055,10 @@ app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
 });
 
 app.get("/api/ai-gold/progressive-intelligence", requirePlan("gold"), (req, res) => {
-  res.json(service.getProgressiveIntelligenceStatus(req.session));
+  res.json(service.getProgressiveIntelligenceStatus(req.session, {
+    force: req.query.force === "1",
+    reason: req.query.force === "1" ? "api_force_refresh" : "api_read"
+  }));
 });
 
 app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
@@ -1294,6 +1297,14 @@ app.post("/api/admin/gold-state/rebuild", requireSuperAdmin, (req, res) => {
     res.json(service.rebuildGoldStateForTenant(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile ricostruire Gold State");
+  }
+});
+
+app.post("/api/admin/progressive-intelligence/recompute", requireSuperAdmin, (req, res) => {
+  try {
+    res.json(service.recomputeProgressiveIntelligenceForTenant(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile ricalcolare Progressive Intelligence");
   }
 });
 
