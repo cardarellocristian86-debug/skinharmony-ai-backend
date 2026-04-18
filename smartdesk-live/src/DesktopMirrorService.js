@@ -7,6 +7,7 @@ const {
   skinHarmonyProtocolLibrary
 } = require("./SkinHarmonyProtocolLibrary");
 const { ProgressiveIntelligenceActivationLayer } = require("./ProgressiveIntelligenceActivationLayer");
+const { FleetIntelligenceLayer } = require("./fleet_intelligence_layer");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -1398,6 +1399,18 @@ class DesktopMirrorService {
     this.dashboardRefreshLocks = new Set();
     this.appointmentsDayCache = new Map();
     this.progressiveIntelligenceLayer = new ProgressiveIntelligenceActivationLayer();
+    this.fleetIntelligenceLayer = null;
+  }
+
+  getFleetIntelligenceLayer() {
+    if (!this.fleetIntelligenceLayer) {
+      this.fleetIntelligenceLayer = new FleetIntelligenceLayer({
+        usersRepository: this.usersRepository,
+        goldStateRepository: this.goldStateRepository,
+        settingsRepository: this.settingsRepository
+      });
+    }
+    return this.fleetIntelligenceLayer;
   }
 
   getCenterId(session = null) {
@@ -2203,6 +2216,30 @@ class DesktopMirrorService {
       enabled,
       reason: enabled ? "" : blocked?.reason || "funzione non disponibile al livello dati corrente"
     };
+  }
+
+  getFleetOverview(session = null, filters = {}) {
+    return this.getFleetIntelligenceLayer().getFleetOverview(session, filters);
+  }
+
+  getFleetMaturity(session = null, filters = {}) {
+    return this.getFleetIntelligenceLayer().getFleetMaturity(session, filters);
+  }
+
+  getFleetOutliers(session = null, filters = {}) {
+    return this.getFleetIntelligenceLayer().getFleetOutliers(session, filters);
+  }
+
+  getFleetAlerts(session = null, filters = {}) {
+    return this.getFleetIntelligenceLayer().getFleetAlerts(session, filters);
+  }
+
+  getFleetPerformance(session = null, filters = {}) {
+    return this.getFleetIntelligenceLayer().getFleetPerformance(session, filters);
+  }
+
+  getFleetOracleSummary(session = null, filters = {}) {
+    return this.getFleetIntelligenceLayer().getFleetOracleSummary(session, filters);
   }
 
   getGoldStateDecision(session = null) {

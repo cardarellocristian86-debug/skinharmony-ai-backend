@@ -382,6 +382,25 @@ function requireSuperAdmin(req, res, next) {
   });
 }
 
+function requireSuperAdminFleet(req, res, next) {
+  if (String(req.session?.role || "").toLowerCase() === "superadmin") {
+    req.fleetMode = "SUPER_ADMIN_FLEET";
+    return next();
+  }
+  return res.status(403).json({
+    success: false,
+    code: "superadmin_fleet_only",
+    message: "Fleet Intelligence disponibile solo in modalita Super Admin Fleet."
+  });
+}
+
+function fleetFilters(req) {
+  return {
+    fleetId: req.query.fleetId || "",
+    centerIds: req.query.centerIds || ""
+  };
+}
+
 const planWeight = {
   base: 1,
   silver: 2,
@@ -490,6 +509,10 @@ app.use("/exports", express.static(path.join(publicDir, "exports")));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "skinharmony-smartdesk-live" });
+});
+
+app.get("/fleet-intelligence", (_req, res) => {
+  res.sendFile(path.join(publicDir, "fleet-intelligence.html"));
 });
 
 app.post("/api/auth/login", loginRateLimit, (req, res) => {
@@ -1082,6 +1105,30 @@ app.get("/api/ai-gold/state/signals", requirePlan("gold"), (req, res) => {
 
 app.get("/api/ai-gold/state/decision", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldState(req.session).decision || {});
+});
+
+app.get("/api/fleet/overview", requireSuperAdminFleet, (req, res) => {
+  res.json(service.getFleetOverview(req.session, fleetFilters(req)));
+});
+
+app.get("/api/fleet/maturity", requireSuperAdminFleet, (req, res) => {
+  res.json(service.getFleetMaturity(req.session, fleetFilters(req)));
+});
+
+app.get("/api/fleet/outliers", requireSuperAdminFleet, (req, res) => {
+  res.json(service.getFleetOutliers(req.session, fleetFilters(req)));
+});
+
+app.get("/api/fleet/alerts", requireSuperAdminFleet, (req, res) => {
+  res.json(service.getFleetAlerts(req.session, fleetFilters(req)));
+});
+
+app.get("/api/fleet/performance", requireSuperAdminFleet, (req, res) => {
+  res.json(service.getFleetPerformance(req.session, fleetFilters(req)));
+});
+
+app.get("/api/fleet/oracle", requireSuperAdminFleet, (req, res) => {
+  res.json(service.getFleetOracleSummary(req.session, fleetFilters(req)));
 });
 
 app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
