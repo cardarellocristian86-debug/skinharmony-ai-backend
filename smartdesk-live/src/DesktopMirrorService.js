@@ -1777,10 +1777,85 @@ class DesktopMirrorService {
     const centerId = this.getCenterId(session);
     const recordId = this.getGoldStateRecordId(centerId);
     const existing = this.goldStateRepository.findById(recordId);
-    if (existing) return this.refreshGoldDerivedState(existing);
+    if (existing) {
+      if (Number(existing.eventSeq || 0) <= 0) {
+        const bootstrapped = this.bootstrapGoldStateFromRepositories(existing, session);
+        if (bootstrapped) return bootstrapped;
+      }
+      return this.refreshGoldDerivedState(existing);
+    }
     const state = this.buildDefaultGoldState(centerId, this.getCenterName(session));
+    const bootstrapped = this.bootstrapGoldStateFromRepositories(state, session);
+    if (bootstrapped) return bootstrapped;
     this.goldStateRepository.create(state);
     return this.refreshGoldDerivedState(state);
+  }
+
+  bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
+    if (this.getPlanLevel(session) !== "gold") return null;
+    const centerId = this.getCenterId(session);
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const hasData = clients.length + appointments.length + payments.length + services.length + staff.length + inventory.length > 0;
+    if (!hasData) return null;
+    const counters = {
+      revenueTotalCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0),
+      paymentCount: payments.length,
+      unlinkedPayments: payments.filter((item) => this.goldPaymentIsUnlinked(item)).length,
+      todayAppointments: appointments.filter((item) => this.goldAppointmentActiveForToday(item)).length,
+      appointmentSlots: Math.max(24, staff.filter((item) => item.active !== false).length * 8),
+      clientsTotal: clients.length,
+      activeClients: clients.filter((item) => this.goldClientIsActive(item)).length,
+      clientsWithContact: clients.filter((item) => this.goldClientHasContact(item)).length,
+      servicesTotal: services.length,
+      servicesWithPrice: services.filter((item) => this.goldServiceHasPrice(item)).length,
+      servicesWithCost: services.filter((item) => this.goldServiceHasCost(item)).length,
+      staffActive: staff.filter((item) => item.active !== false).length,
+      staffTotal: staff.length,
+      inventoryTotal: inventory.length,
+      lowStock: inventory.filter((item) => this.goldInventoryIsLow(item)).length,
+      marginTotal: 0,
+      marginSamples: 0
+    };
+    services.forEach((service) => {
+      const ratio = this.goldServiceMarginRatio(service);
+      if (ratio === null) return;
+      counters.marginTotal += ratio;
+      counters.marginSamples += 1;
+    });
+    const next = this.refreshGoldDerivedState({
+      ...this.buildDefaultGoldState(centerId, this.getCenterName(session)),
+      ...baseState,
+      id: this.getGoldStateRecordId(centerId),
+      centerId,
+      centerName: this.getCenterName(session),
+      eventSeq: 1,
+      lastEvent: {
+        type: "bootstrap_existing_data",
+        at: nowIso(),
+        reason: "one_time_state_initialization"
+      },
+      counters,
+      updatedAt: nowIso()
+    });
+    if (this.goldStateRepository.findById(next.id)) {
+      this.goldStateRepository.update(next.id, () => next);
+    } else {
+      this.goldStateRepository.create(next);
+    }
+    console.log("[gold_state_bootstrap]", JSON.stringify({
+      centerId,
+      eventSeq: next.eventSeq,
+      clients: clients.length,
+      appointments: appointments.length,
+      payments: payments.length,
+      services: services.length
+    }));
+    return next;
   }
 
   getGoldStateDecision(session = null) {
