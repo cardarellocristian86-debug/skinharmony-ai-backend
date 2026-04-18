@@ -1382,6 +1382,7 @@ class DesktopMirrorService {
     this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
     this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
+    this.goldStateRepository = this.createRepository("gold_state", []);
     this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
     this.goldActionOutcomesRepository = this.createRepository("gold_action_outcomes", []);
     this.whatsappMessagesRepository = this.createRepository("whatsapp_messages", []);
@@ -1677,6 +1678,410 @@ class DesktopMirrorService {
     });
   }
 
+  getGoldStateRecordId(centerId = "") {
+    return `gold_state:${String(centerId || DEFAULT_CENTER_ID)}`;
+  }
+
+  buildDefaultGoldState(centerId = "", centerName = "") {
+    return {
+      id: this.getGoldStateRecordId(centerId),
+      version: "gold_state_v1",
+      centerId: String(centerId || DEFAULT_CENTER_ID),
+      centerName: String(centerName || DEFAULT_CENTER_NAME),
+      updatedAt: nowIso(),
+      lastEvent: null,
+      eventSeq: 0,
+      components: {
+        Rev: 0,
+        U: 0,
+        Sat: 0,
+        Act: 0,
+        Cont: 0,
+        Ticket: 0,
+        Prod: 0,
+        DQ: 1,
+        CostConf: 1,
+        Margin: 0,
+        Conf: 1
+      },
+      counters: {
+        revenueTotalCents: 0,
+        paymentCount: 0,
+        unlinkedPayments: 0,
+        todayAppointments: 0,
+        appointmentSlots: 24,
+        clientsTotal: 0,
+        activeClients: 0,
+        clientsWithContact: 0,
+        servicesTotal: 0,
+        servicesWithPrice: 0,
+        servicesWithCost: 0,
+        staffActive: 0,
+        staffTotal: 0,
+        inventoryTotal: 0,
+        lowStock: 0,
+        marginTotal: 0,
+        marginSamples: 0
+      },
+      dirty: {
+        components: [],
+        snapshots: [],
+        signals: []
+      },
+      snapshots: {},
+      signals: {},
+      decision: null,
+      graph: {
+        eventToState: {
+          appointment_created: ["Sat", "Prod"],
+          appointment_updated: ["Sat", "Prod", "DQ"],
+          appointment_deleted: ["Sat", "Prod"],
+          client_created: ["Act", "Cont", "DQ"],
+          client_updated: ["Act", "Cont", "DQ"],
+          client_deleted: ["Act", "Cont", "DQ"],
+          payment_created: ["Rev", "U", "Ticket", "Conf"],
+          payment_updated: ["Rev", "U", "Ticket", "Conf"],
+          service_created: ["CostConf", "Margin", "DQ"],
+          service_updated: ["CostConf", "Margin", "DQ"],
+          service_deleted: ["CostConf", "Margin", "DQ"],
+          staff_created: ["Prod"],
+          staff_updated: ["Prod"],
+          staff_deleted: ["Prod"],
+          inventory_created: ["DQ"],
+          inventory_updated: ["DQ"],
+          inventory_deleted: ["DQ"]
+        },
+        stateToSnapshot: {
+          Rev: ["business", "profitability", "report"],
+          U: ["business", "report"],
+          Sat: ["business", "report"],
+          Act: ["business", "report"],
+          Cont: ["business", "report"],
+          Ticket: ["business", "profitability", "report"],
+          Prod: ["business", "report"],
+          DQ: ["business", "profitability", "report"],
+          CostConf: ["profitability"],
+          Margin: ["profitability"],
+          Conf: ["business", "profitability"]
+        },
+        snapshotToSignal: {
+          business: ["operationalRisk", "centerBelowThreshold", "opportunity"],
+          profitability: ["marginAnomaly", "dataReliability"],
+          report: ["cashAnomaly", "productivitySignal"]
+        }
+      }
+    };
+  }
+
+  getGoldState(session = null) {
+    const centerId = this.getCenterId(session);
+    const recordId = this.getGoldStateRecordId(centerId);
+    const existing = this.goldStateRepository.findById(recordId);
+    if (existing) return this.refreshGoldDerivedState(existing);
+    const state = this.buildDefaultGoldState(centerId, this.getCenterName(session));
+    this.goldStateRepository.create(state);
+    return this.refreshGoldDerivedState(state);
+  }
+
+  goldClamp01(value) {
+    return Math.max(0, Math.min(1, Number.isFinite(Number(value)) ? Number(value) : 0));
+  }
+
+  goldSafeDivide(value, total) {
+    return Number(total || 0) > 0 ? Number(value || 0) / Number(total || 0) : 0;
+  }
+
+  goldRound(value, decimals = 4) {
+    const factor = 10 ** decimals;
+    return Math.round((Number(value) || 0) * factor) / factor;
+  }
+
+  goldAppointmentActiveForToday(item = {}) {
+    const status = String(item.status || "").toLowerCase();
+    return toDateOnly(item.startAt || item.createdAt || "") === toDateOnly(nowIso())
+      && !["cancelled", "no_show", "deleted"].includes(status);
+  }
+
+  goldClientHasContact(item = {}) {
+    return Boolean(String(item.phone || "").trim() || String(item.email || "").trim());
+  }
+
+  goldClientIsActive(item = {}) {
+    return item.active !== false && item.active !== 0 && String(item.status || "").toLowerCase() !== "inactive";
+  }
+
+  goldPaymentIsUnlinked(item = {}) {
+    if (["free", "ignored"].includes(String(item.reconciliationStatus || "").toLowerCase())) return false;
+    return !item.appointmentId || !item.clientId;
+  }
+
+  goldServiceHasPrice(item = {}) {
+    return Number(item.priceCents || item.price || 0) > 0;
+  }
+
+  goldServiceHasCost(item = {}) {
+    return Number(item.estimatedProductCostCents || item.productCostCents || 0) > 0
+      || Number(item.technologyCostCents || 0) > 0
+      || (Array.isArray(item.productLinks) && item.productLinks.length > 0)
+      || (Array.isArray(item.technologyLinks) && item.technologyLinks.length > 0);
+  }
+
+  goldServiceMarginRatio(item = {}) {
+    const price = Number(item.priceCents || item.price || 0);
+    if (price <= 0) return null;
+    const cost = Number(item.estimatedProductCostCents || item.productCostCents || 0) + Number(item.technologyCostCents || 0);
+    return this.goldClamp01((price - cost) / price);
+  }
+
+  goldInventoryIsLow(item = {}) {
+    const quantity = Number(item.quantity ?? item.stockQuantity ?? item.stock ?? 0);
+    const threshold = Number(item.minQuantity ?? item.thresholdQuantity ?? item.threshold ?? 0);
+    return quantity <= threshold;
+  }
+
+  markGoldStateDirty(state, eventType) {
+    const changed = state.graph?.eventToState?.[eventType] || [];
+    const snapshots = Array.from(new Set(changed.flatMap((key) => state.graph?.stateToSnapshot?.[key] || [])));
+    const signals = Array.from(new Set(snapshots.flatMap((key) => state.graph?.snapshotToSignal?.[key] || [])));
+    state.dirty = { components: changed, snapshots, signals };
+  }
+
+  normalizeGoldStateComponents(state) {
+    const c = state.counters || {};
+    const cmp = state.components || {};
+    cmp.Rev = Math.max(0, Math.round(Number(c.revenueTotalCents || 0)));
+    cmp.U = Math.max(0, Number(c.unlinkedPayments || 0));
+    cmp.Sat = this.goldClamp01(this.goldSafeDivide(c.todayAppointments, c.appointmentSlots || 24));
+    cmp.Act = Math.max(0, Number(c.activeClients || 0));
+    cmp.Cont = this.goldClamp01(this.goldSafeDivide(c.activeClients, c.clientsTotal));
+    cmp.Ticket = Math.max(0, Math.round(this.goldSafeDivide(c.revenueTotalCents, c.paymentCount)));
+    cmp.Prod = this.goldClamp01(this.goldSafeDivide(c.todayAppointments, Math.max(1, Number(c.staffActive || 0)) * 6));
+    cmp.DQ = this.goldClamp01(
+      (this.goldSafeDivide(c.clientsWithContact, c.clientsTotal) * 0.45)
+      + (this.goldSafeDivide(c.servicesWithPrice, c.servicesTotal) * 0.2)
+      + (this.goldSafeDivide(c.servicesWithCost, c.servicesTotal) * 0.2)
+      + ((1 - this.goldSafeDivide(c.lowStock, Math.max(1, Number(c.inventoryTotal || 0)))) * 0.15)
+    );
+    cmp.CostConf = this.goldClamp01(this.goldSafeDivide(c.servicesWithCost, c.servicesTotal));
+    cmp.Margin = this.goldRound(this.goldSafeDivide(c.marginTotal, c.marginSamples), 4);
+    cmp.Conf = this.goldClamp01(c.clientsTotal || c.servicesTotal || c.paymentCount ? cmp.DQ * (0.7 + cmp.CostConf * 0.3) : 1);
+    state.components = cmp;
+    return state;
+  }
+
+  buildGoldSnapshotsFromState(state = {}) {
+    const s = state.components || {};
+    return {
+      business: {
+        type: "business_snapshot",
+        source: "gold_state",
+        revenueCents: Number(s.Rev || 0),
+        unlinkedPayments: Number(s.U || 0),
+        agendaSaturation: Number(s.Sat || 0),
+        activeClients: Number(s.Act || 0),
+        clientContinuity: Number(s.Cont || 0),
+        averageTicketCents: Number(s.Ticket || 0),
+        productivity: Number(s.Prod || 0),
+        dataQuality: Number(s.DQ || 0),
+        confidence: Number(s.Conf || 0),
+        status: Number(s.Conf || 0) < 0.5 ? "dato_da_verificare" : Number(s.Sat || 0) > 0.85 ? "centro_sotto_pressione" : "centro_monitorato"
+      },
+      profitability: {
+        type: "profitability_snapshot",
+        source: "gold_state",
+        revenueCents: Number(s.Rev || 0),
+        averageMargin: Number(s.Margin || 0),
+        costConfidence: Number(s.CostConf || 0),
+        economicConfidence: Number(s.Conf || 0),
+        status: Number(s.CostConf || 0) < 0.5 || Number(s.Conf || 0) < 0.5 ? "margine_da_verificare" : Number(s.Margin || 0) < 0.35 ? "margine_sotto_soglia" : "margine_monitorato"
+      },
+      report: {
+        type: "report_snapshot",
+        source: "gold_state",
+        revenueCents: Number(s.Rev || 0),
+        averageTicketCents: Number(s.Ticket || 0),
+        productivity: Number(s.Prod || 0),
+        agendaSaturation: Number(s.Sat || 0),
+        continuity: Number(s.Cont || 0),
+        dataQuality: Number(s.DQ || 0),
+        unlinkedPayments: Number(s.U || 0)
+      }
+    };
+  }
+
+  buildGoldSignalsFromState(state = {}) {
+    const s = state.components || {};
+    const c = state.counters || {};
+    const hasOperationalData = Number(c.clientsTotal || 0) + Number(c.paymentCount || 0) + Number(c.todayAppointments || 0) + Number(c.servicesTotal || 0) > 0;
+    if (!hasOperationalData) {
+      return {
+        operationalRisk: 0,
+        centerBelowThreshold: 0,
+        opportunity: 0,
+        cashAnomaly: 0,
+        marginAnomaly: 0,
+        dataReliability: Number(s.Conf ?? 1),
+        productivitySignal: 0
+      };
+    }
+    return {
+      operationalRisk: this.goldClamp01((Number(s.Sat || 0) * 0.35) + ((1 - Number(s.DQ || 0)) * 0.35) + (Math.min(Number(s.U || 0), 5) / 5) * 0.3),
+      centerBelowThreshold: this.goldClamp01(((1 - Number(s.Cont || 0)) * 0.45) + ((1 - Number(s.Prod || 0)) * 0.25) + ((1 - Number(s.Conf || 0)) * 0.3)),
+      opportunity: this.goldClamp01((Number(s.Conf || 0) * 0.4) + (Number(s.Cont || 0) * 0.25) + (Number(s.Ticket || 0) > 0 ? 0.2 : 0) + (Number(s.Sat || 0) < 0.7 ? 0.15 : 0)),
+      cashAnomaly: this.goldClamp01(Math.min(Number(s.U || 0), 5) / 5),
+      marginAnomaly: this.goldClamp01((1 - Number(s.CostConf || 0)) * 0.55 + (Number(s.Margin || 0) < 0.35 ? 0.45 : 0)),
+      dataReliability: Number(s.Conf || 0),
+      productivitySignal: Number(s.Prod || 0)
+    };
+  }
+
+  buildGoldDecisionFromState(state = {}) {
+    const signals = state.signals || this.buildGoldSignalsFromState(state);
+    const entries = [
+      ["cash", signals.cashAnomaly || 0, "Verifica pagamenti non collegati"],
+      ["profitability", signals.marginAnomaly || 0, "Verifica marginalita e costi"],
+      ["operations", signals.operationalRisk || 0, "Controlla rischio operativo"],
+      ["growth", signals.opportunity || 0, "Valuta opportunita operative"],
+      ["data_quality", 1 - (signals.dataReliability ?? state.components?.Conf ?? 1), "Completa qualita dati"]
+    ].sort((a, b) => b[1] - a[1]);
+    const [domain, score, label] = entries[0];
+    const action = score >= 0.7 ? "ACT_NOW" : score >= 0.45 ? "SUGGEST" : "MONITOR";
+    return {
+      source: "gold_state",
+      domain,
+      score: this.goldRound(score),
+      action,
+      primaryAction: { domain, action, label },
+      secondaryActions: entries.slice(1, 3).map(([itemDomain, itemScore, itemLabel]) => ({
+        domain: itemDomain,
+        score: this.goldRound(itemScore),
+        label: itemLabel
+      })),
+      blockedActions: Number(state.components?.Conf || 1) < 0.4 ? ["output_assertivi", "azioni_automatiche"] : [],
+      explanationShort: score >= 0.7 ? `${label}: priorita alta.` : score >= 0.45 ? `${label}: suggerito.` : "Centro stabile: monitorare.",
+      updatedAt: state.updatedAt || nowIso()
+    };
+  }
+
+  refreshGoldDerivedState(state = {}) {
+    const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
+    next.snapshots = this.buildGoldSnapshotsFromState(next);
+    next.signals = this.buildGoldSignalsFromState(next);
+    next.decision = this.buildGoldDecisionFromState(next);
+    return next;
+  }
+
+  applyGoldStateEvent(eventType, payload = {}, session = null) {
+    if (this.getPlanLevel(session) !== "gold") return null;
+    const centerId = this.getCenterId(session);
+    const recordId = this.getGoldStateRecordId(centerId);
+    const existing = this.goldStateRepository.findById(recordId) || this.buildDefaultGoldState(centerId, this.getCenterName(session));
+    const state = this.refreshGoldDerivedState(existing);
+    const counters = state.counters;
+    const before = payload.before || null;
+    const after = payload.after || payload.item || null;
+    const addServiceMargin = (item, direction = 1) => {
+      const ratio = this.goldServiceMarginRatio(item);
+      if (ratio === null) return;
+      counters.marginTotal += ratio * direction;
+      counters.marginSamples = Math.max(0, counters.marginSamples + direction);
+    };
+
+    if (eventType === "appointment_created" && this.goldAppointmentActiveForToday(after)) counters.todayAppointments += 1;
+    if (eventType === "appointment_deleted" && this.goldAppointmentActiveForToday(before)) counters.todayAppointments = Math.max(0, counters.todayAppointments - 1);
+    if (eventType === "appointment_updated") {
+      if (this.goldAppointmentActiveForToday(before) && !this.goldAppointmentActiveForToday(after)) counters.todayAppointments = Math.max(0, counters.todayAppointments - 1);
+      if (!this.goldAppointmentActiveForToday(before) && this.goldAppointmentActiveForToday(after)) counters.todayAppointments += 1;
+    }
+
+    if (eventType === "client_created") {
+      counters.clientsTotal += 1;
+      if (this.goldClientIsActive(after)) counters.activeClients += 1;
+      if (this.goldClientHasContact(after)) counters.clientsWithContact += 1;
+    }
+    if (eventType === "client_deleted") {
+      counters.clientsTotal = Math.max(0, counters.clientsTotal - 1);
+      if (this.goldClientIsActive(before)) counters.activeClients = Math.max(0, counters.activeClients - 1);
+      if (this.goldClientHasContact(before)) counters.clientsWithContact = Math.max(0, counters.clientsWithContact - 1);
+    }
+    if (eventType === "client_updated") {
+      if (!this.goldClientIsActive(before) && this.goldClientIsActive(after)) counters.activeClients += 1;
+      if (this.goldClientIsActive(before) && !this.goldClientIsActive(after)) counters.activeClients = Math.max(0, counters.activeClients - 1);
+      if (!this.goldClientHasContact(before) && this.goldClientHasContact(after)) counters.clientsWithContact += 1;
+      if (this.goldClientHasContact(before) && !this.goldClientHasContact(after)) counters.clientsWithContact = Math.max(0, counters.clientsWithContact - 1);
+    }
+
+    if (eventType === "payment_created") {
+      counters.revenueTotalCents += Number(after?.amountCents || 0);
+      counters.paymentCount += 1;
+      if (this.goldPaymentIsUnlinked(after)) counters.unlinkedPayments += 1;
+    }
+    if (eventType === "payment_updated") {
+      counters.revenueTotalCents += Number(after?.amountCents || 0) - Number(before?.amountCents || 0);
+      if (this.goldPaymentIsUnlinked(before) && !this.goldPaymentIsUnlinked(after)) counters.unlinkedPayments = Math.max(0, counters.unlinkedPayments - 1);
+      if (!this.goldPaymentIsUnlinked(before) && this.goldPaymentIsUnlinked(after)) counters.unlinkedPayments += 1;
+    }
+
+    if (eventType === "service_created") {
+      counters.servicesTotal += 1;
+      if (this.goldServiceHasPrice(after)) counters.servicesWithPrice += 1;
+      if (this.goldServiceHasCost(after)) counters.servicesWithCost += 1;
+      addServiceMargin(after, 1);
+    }
+    if (eventType === "service_deleted") {
+      counters.servicesTotal = Math.max(0, counters.servicesTotal - 1);
+      if (this.goldServiceHasPrice(before)) counters.servicesWithPrice = Math.max(0, counters.servicesWithPrice - 1);
+      if (this.goldServiceHasCost(before)) counters.servicesWithCost = Math.max(0, counters.servicesWithCost - 1);
+      addServiceMargin(before, -1);
+    }
+    if (eventType === "service_updated") {
+      if (!this.goldServiceHasPrice(before) && this.goldServiceHasPrice(after)) counters.servicesWithPrice += 1;
+      if (this.goldServiceHasPrice(before) && !this.goldServiceHasPrice(after)) counters.servicesWithPrice = Math.max(0, counters.servicesWithPrice - 1);
+      if (!this.goldServiceHasCost(before) && this.goldServiceHasCost(after)) counters.servicesWithCost += 1;
+      if (this.goldServiceHasCost(before) && !this.goldServiceHasCost(after)) counters.servicesWithCost = Math.max(0, counters.servicesWithCost - 1);
+      addServiceMargin(before, -1);
+      addServiceMargin(after, 1);
+    }
+
+    if (eventType === "staff_created") {
+      counters.staffTotal += 1;
+      if (after?.active !== false && after?.active !== 0) counters.staffActive += 1;
+    }
+    if (eventType === "staff_deleted") {
+      counters.staffTotal = Math.max(0, counters.staffTotal - 1);
+      if (before?.active !== false && before?.active !== 0) counters.staffActive = Math.max(0, counters.staffActive - 1);
+    }
+    if (eventType === "staff_updated") {
+      if ((before?.active === false || before?.active === 0) && after?.active !== false && after?.active !== 0) counters.staffActive += 1;
+      if (before?.active !== false && before?.active !== 0 && (after?.active === false || after?.active === 0)) counters.staffActive = Math.max(0, counters.staffActive - 1);
+    }
+
+    if (eventType === "inventory_created") {
+      counters.inventoryTotal += 1;
+      if (this.goldInventoryIsLow(after)) counters.lowStock += 1;
+    }
+    if (eventType === "inventory_deleted") {
+      counters.inventoryTotal = Math.max(0, counters.inventoryTotal - 1);
+      if (this.goldInventoryIsLow(before)) counters.lowStock = Math.max(0, counters.lowStock - 1);
+    }
+    if (eventType === "inventory_updated") {
+      if (!this.goldInventoryIsLow(before) && this.goldInventoryIsLow(after)) counters.lowStock += 1;
+      if (this.goldInventoryIsLow(before) && !this.goldInventoryIsLow(after)) counters.lowStock = Math.max(0, counters.lowStock - 1);
+    }
+
+    this.markGoldStateDirty(state, eventType);
+    state.eventSeq += 1;
+    state.updatedAt = nowIso();
+    state.lastEvent = { type: eventType, at: state.updatedAt, entityId: after?.id || before?.id || "" };
+    const next = this.refreshGoldDerivedState(state);
+    if (this.goldStateRepository.findById(recordId)) {
+      this.goldStateRepository.update(recordId, () => next);
+    } else {
+      this.goldStateRepository.create(next);
+    }
+    return next;
+  }
+
   hasProtocolAiAccess(session = null) {
     if (this.isSuperAdminSession(session)) return true;
     const plan = this.getPlanLevel(session);
@@ -1933,6 +2338,7 @@ class DesktopMirrorService {
       treatments: this.treatmentsRepository,
       protocols: this.protocolsRepository,
       aiMarketingActions: this.aiMarketingActionsRepository,
+      goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
       sales: this.salesRepository
     };
@@ -1975,6 +2381,7 @@ class DesktopMirrorService {
       treatments: this.treatmentsRepository,
       protocols: this.protocolsRepository,
       aiMarketingActions: this.aiMarketingActionsRepository,
+      goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
       sales: this.salesRepository
     };
@@ -2016,6 +2423,7 @@ class DesktopMirrorService {
         { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
         { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
+        { name: "gold_state", filePath: path.join(DATA_DIR, "gold_state.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
         { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
         { name: "whatsapp_messages", filePath: path.join(DATA_DIR, "whatsapp_messages.json"), defaultValue: [] },
@@ -2882,14 +3290,18 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.clientsRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
+      this.applyGoldStateEvent("client_created", { after: entity }, session);
       return entity;
     }
 
-    return this.updateInCenter(this.clientsRepository, payload.id, (current) => ({
+    const before = this.findByIdInCenter(this.clientsRepository, payload.id, session);
+    const updated = this.updateInCenter(this.clientsRepository, payload.id, (current) => ({
       ...current,
       ...entity,
       createdAt: current.createdAt || entity.createdAt
     }), session);
+    this.applyGoldStateEvent("client_updated", { before, after: updated }, session);
+    return updated;
   }
 
   getClientDetail(clientId, session = null) {
@@ -3103,6 +3515,7 @@ class DesktopMirrorService {
       this.appointmentsRepository.create(entity);
       this.invalidateAppointmentsDayCache(centerId, [entity.startAt]);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
+      this.applyGoldStateEvent("appointment_created", { after: entity }, session);
       return entity;
     }
 
@@ -3116,6 +3529,7 @@ class DesktopMirrorService {
       currentAppointment?.startAt || "",
       updated?.startAt || entity.startAt
     ]);
+    this.applyGoldStateEvent("appointment_updated", { before: currentAppointment, after: updated }, session);
     return updated;
   }
 
@@ -3124,6 +3538,7 @@ class DesktopMirrorService {
     const result = this.deleteInCenter(this.appointmentsRepository, id, session);
     if (result?.success) {
       this.invalidateAppointmentsDayCache(this.getCenterId(session), [currentAppointment?.startAt || ""]);
+      this.applyGoldStateEvent("appointment_deleted", { before: currentAppointment }, session);
     }
     return result;
   }
@@ -3177,13 +3592,20 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.servicesRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.servicesRepository));
+      this.applyGoldStateEvent("service_created", { after: entity }, session);
       return entity;
     }
-    return this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const before = this.findByIdInCenter(this.servicesRepository, payload.id, session);
+    const updated = this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    this.applyGoldStateEvent("service_updated", { before, after: updated }, session);
+    return updated;
   }
 
   deleteService(id, session = null) {
-    return this.deleteInCenter(this.servicesRepository, id, session);
+    const before = this.findByIdInCenter(this.servicesRepository, id, session);
+    const result = this.deleteInCenter(this.servicesRepository, id, session);
+    if (result?.success) this.applyGoldStateEvent("service_deleted", { before }, session);
+    return result;
   }
 
   listStaff(session = null) {
@@ -3216,13 +3638,20 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.staffRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
+      this.applyGoldStateEvent("staff_created", { after: entity }, session);
       return entity;
     }
-    return this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const before = this.findByIdInCenter(this.staffRepository, payload.id, session);
+    const updated = this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    this.applyGoldStateEvent("staff_updated", { before, after: updated }, session);
+    return updated;
   }
 
   deleteStaff(id, session = null) {
-    return this.deleteInCenter(this.staffRepository, id, session);
+    const before = this.findByIdInCenter(this.staffRepository, id, session);
+    const result = this.deleteInCenter(this.staffRepository, id, session);
+    if (result?.success) this.applyGoldStateEvent("staff_deleted", { before }, session);
+    return result;
   }
 
   listShifts(view = "month", anchorDate = nowIso(), staffId = "", session = null) {
@@ -3422,13 +3851,20 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.inventoryRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
+      this.applyGoldStateEvent("inventory_created", { after: entity }, session);
       return entity;
     }
-    return this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const before = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
+    const updated = this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    this.applyGoldStateEvent("inventory_updated", { before, after: updated }, session);
+    return updated;
   }
 
   deleteInventoryItem(id, session = null) {
-    return this.deleteInCenter(this.inventoryRepository, id, session);
+    const before = this.findByIdInCenter(this.inventoryRepository, id, session);
+    const result = this.deleteInCenter(this.inventoryRepository, id, session);
+    if (result?.success) this.applyGoldStateEvent("inventory_deleted", { before }, session);
+    return result;
   }
 
   listInventoryMovements(itemId = "", session = null) {
@@ -4141,6 +4577,7 @@ class DesktopMirrorService {
     const payment = this.findByIdInCenter(this.paymentsRepository, paymentId, session);
     assertValid(Boolean(payment), "Pagamento non trovato");
     if (payload.markAsFree || payload.ignoreReconciliation) {
+      const before = { ...payment };
       const updatedFreePayment = this.updateInCenter(this.paymentsRepository, paymentId, (current) => ({
         ...current,
         reconciliationStatus: payload.ignoreReconciliation ? "ignored" : "free",
@@ -4148,6 +4585,7 @@ class DesktopMirrorService {
         linkedAt: nowIso(),
         updatedAt: nowIso()
       }), session);
+      this.applyGoldStateEvent("payment_updated", { before, after: updatedFreePayment }, session);
       return {
         success: true,
         payment: updatedFreePayment,
@@ -4157,6 +4595,7 @@ class DesktopMirrorService {
     const appointmentId = String(payload.appointmentId || payment.appointmentId || "");
     const appointment = appointmentId ? this.findByIdInCenter(this.appointmentsRepository, appointmentId, session) : null;
     const clientId = String(payload.clientId || appointment?.clientId || payment.clientId || "");
+    const before = { ...payment };
     const updated = this.updateInCenter(this.paymentsRepository, paymentId, (current) => ({
       ...current,
       appointmentId,
@@ -4165,13 +4604,15 @@ class DesktopMirrorService {
       linkedAt: nowIso(),
       updatedAt: nowIso()
     }), session);
+    this.applyGoldStateEvent("payment_updated", { before, after: updated }, session);
     if (appointment && !["completed", "cancelled", "no_show"].includes(String(appointment.status || ""))) {
-      this.updateInCenter(this.appointmentsRepository, appointment.id, (current) => ({
+      const updatedAppointment = this.updateInCenter(this.appointmentsRepository, appointment.id, (current) => ({
         ...current,
         status: "completed",
         locked: 1,
         updatedAt: nowIso()
       }), session);
+      this.applyGoldStateEvent("appointment_updated", { before: appointment, after: updatedAppointment }, session);
       this.invalidateAppointmentsDayCache(this.getCenterId(session), [appointment.startAt || ""]);
     }
     return {
@@ -4700,6 +5141,7 @@ class DesktopMirrorService {
     };
     this.paymentsRepository.create(payment);
     this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.paymentsRepository));
+    this.applyGoldStateEvent("payment_created", { after: payment }, session);
     return payment;
   }
 

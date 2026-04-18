@@ -1061,6 +1061,22 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
+app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
+  res.json(service.getGoldState(req.session));
+});
+
+app.get("/api/ai-gold/state/snapshots", requirePlan("gold"), (req, res) => {
+  res.json(service.getGoldState(req.session).snapshots || {});
+});
+
+app.get("/api/ai-gold/state/signals", requirePlan("gold"), (req, res) => {
+  res.json(service.getGoldState(req.session).signals || {});
+});
+
+app.get("/api/ai-gold/state/decision", requirePlan("gold"), (req, res) => {
+  res.json(service.getGoldState(req.session).decision || {});
+});
+
 app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: AI temporaneamente limitata, agenda e cassa restano operative"));
