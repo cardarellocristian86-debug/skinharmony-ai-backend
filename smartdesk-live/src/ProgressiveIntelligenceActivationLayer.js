@@ -105,18 +105,19 @@ class ProgressiveIntelligenceActivationLayer {
     const components = state.components || {};
     const counters = state.counters || {};
     const rawCounts = context.rawCounts || state.metadata?.rawCounts || {};
+    const operationalRecords = Number(rawCounts.clients || 0) + Number(rawCounts.appointments || 0) + Number(rawCounts.payments || 0) + Number(rawCounts.services || 0);
     const validation = state.metadata?.validation || {};
     const validationValid = validation.valid !== false;
     const diffCount = Object.keys(validation.diffSummary || {}).length;
     const historyMonths = Number(context.historyMonths || 0);
     const costCompleteness = clamp01(components.CostConf ?? (counters.servicesTotal ? Number(counters.servicesWithCost || 0) / Number(counters.servicesTotal || 1) : 0));
-    const crmQuality = clamp01(
+    const crmQuality = operationalRecords > 0 ? clamp01(
       components.DQ ?? (counters.clientsTotal ? Number(counters.clientsWithContact || 0) / Number(counters.clientsTotal || 1) : 0)
-    );
-    const stateStability = validationValid
+    ) : 0;
+    const stateStability = operationalRecords > 0 && validationValid
       ? clamp01((Number(state.eventSeq || 0) > 0 ? 0.7 : 0.25) + (state.metadata?.rebuiltFromRaw ? 0.3 : 0.15) - Math.min(0.5, diffCount * 0.1))
       : 0.25;
-    const economicReliability = clamp01(components.Conf ?? 0);
+    const economicReliability = operationalRecords > 0 ? clamp01(components.Conf ?? 0) : 0;
     return {
       historyCoverage: round(this.computeHistoryCoverage(historyMonths), 4),
       dataVolume: this.computeDataVolume(rawCounts),

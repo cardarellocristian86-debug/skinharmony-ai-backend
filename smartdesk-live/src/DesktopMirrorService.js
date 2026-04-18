@@ -8282,7 +8282,7 @@ class DesktopMirrorService {
         hasSimulation: goldEnabled && hasFeature("forecast_scenarios"),
         hasLearning: goldEnabled && progressiveIntelligence?.activationLevel >= 3,
         hasWhatsAppAPI: whatsappEnabled,
-        hasTrendLayer: goldEnabled && progressiveIntelligence?.qualityVector?.stateStability >= 0.75,
+        hasTrendLayer: goldEnabled && progressiveIntelligence?.activationLevel >= 3 && progressiveIntelligence?.qualityVector?.stateStability >= 0.75,
         hasProgressiveActivation: goldEnabled,
         hasForecastScenarios: goldEnabled && hasFeature("forecast_scenarios"),
         hasIntelligentMarketing: goldEnabled && hasFeature("intelligent_marketing")
