@@ -6565,6 +6565,89 @@ class DesktopMirrorService {
     };
   }
 
+  buildGoldEconomicReading(context = {}, dataQuality = {}) {
+    const appointments = Array.isArray(context.appointments) ? context.appointments : [];
+    const payments = Array.isArray(context.payments) ? context.payments : [];
+    const servicesById = context.servicesById || new Map();
+    const period = context.period || {};
+    const inPeriod = (value) => {
+      const date = toDateOnly(value || "");
+      if (!date) return false;
+      if (period.startDate && date < period.startDate) return false;
+      if (period.endDate && date > period.endDate) return false;
+      return true;
+    };
+    const completedAppointments = appointments.filter((appointment) => (
+      ["completed", "ready_checkout"].includes(String(appointment.status || "")) &&
+      inPeriod(appointment.startAt || appointment.createdAt)
+    ));
+    const operationalRevenueCents = completedAppointments.reduce((sum, appointment) => {
+      const service = servicesById.get(String(appointment.serviceId || ""));
+      return sum + Number(appointment.amountCents || appointment.priceCents || service?.priceCents || 0);
+    }, 0);
+    const cashRevenueCents = payments
+      .filter((payment) => inPeriod(payment.createdAt || payment.paidAt))
+      .reduce((sum, payment) => sum + Number(payment.amountCents || 0), 0);
+    const gapCents = operationalRevenueCents - cashRevenueCents;
+    const gapAbs = Math.abs(gapCents);
+    const reference = Math.max(operationalRevenueCents, cashRevenueCents, 1);
+    const gapRatio = normalizeScore(gapAbs / reference);
+    const thresholdCents = Math.max(5000, Math.round(reference * 0.03));
+    const dataQualityScore = normalizeScore(Number(dataQuality.score || 0) / 100);
+    const friction = normalizeScore(gapRatio);
+    const confidenceEcon = normalizeScore(dataQualityScore * (1 - friction));
+    let status = "sistema_allineato";
+    let signal = "sistema allineato";
+    let action = "OK";
+    let suggestedAction = "nessuna azione economica necessaria";
+    if (confidenceEcon < 0.5) {
+      status = "dato_non_affidabile";
+      signal = "dato non affidabile";
+      action = "VERIFY";
+      suggestedAction = "verifica dati cassa e qualita dati";
+    } else if (gapCents > thresholdCents && confidenceEcon >= 0.65) {
+      status = "incasso_incompleto";
+      signal = "incasso incompleto";
+      action = "ACT_NOW";
+      suggestedAction = "apri cassa e verifica incassi mancanti";
+    } else if (gapCents < -thresholdCents) {
+      status = "servizi_incompleti";
+      signal = "dati servizi incompleti";
+      action = "VERIFY";
+      suggestedAction = "verifica servizi e appuntamenti collegati agli incassi";
+    } else if (gapAbs <= thresholdCents) {
+      status = "sistema_allineato";
+      signal = "sistema allineato";
+      action = "OK";
+      suggestedAction = "mantieni controllo ordinario";
+    } else {
+      status = "gap_da_verificare";
+      signal = "gap economico da verificare";
+      action = "VERIFY";
+      suggestedAction = "controlla differenza tra servizi completati e incassi";
+    }
+    return {
+      domain: "economic",
+      engineVersion: "gold_economic_reading_v1",
+      generatedAt: nowIso(),
+      period,
+      operationalRevenueCents,
+      cashRevenueCents,
+      gapCents,
+      gapRatio: Number(gapRatio.toFixed(3)),
+      thresholdCents,
+      dataQuality: Number(dataQualityScore.toFixed(3)),
+      friction: Number(friction.toFixed(3)),
+      confidenceEcon: Number(confidenceEcon.toFixed(3)),
+      status,
+      signal,
+      action,
+      suggestedAction,
+      explanationShort: `${signal}: operativo ${euro(operationalRevenueCents)}, incasso reale ${euro(cashRevenueCents)}, gap ${euro(gapCents)}.`,
+      explanationLong: `F_operativo = servizi completati nel periodo. F_cash = pagamenti registrati nel periodo. Gap = F_operativo - F_cash. Confidence economica ${Math.round(confidenceEcon * 100)}%.`
+    };
+  }
+
   buildGoldProfitDecisions(profitability = {}) {
     const services = Array.isArray(profitability.suggestions) ? profitability.suggestions : [];
     const maxRevenue = Math.max(1, ...services.map((service) => Number(service.revenueCents || service.averageRevenueCents || 0)));
@@ -6648,7 +6731,7 @@ class DesktopMirrorService {
     };
   }
 
-  buildGoldDashboardDecisions(branches = {}, dataQuality = {}, session = null) {
+  buildGoldDashboardDecisions(branches = {}, dataQuality = {}, session = null, economicReading = null) {
     const downgradeBand = (band) => {
       if (band === "alta") return { key: "media", label: "Priorità media" };
       if (band === "media") return { key: "bassa", label: "Priorità bassa" };
@@ -6705,7 +6788,41 @@ class DesktopMirrorService {
     if (qualityDecision) {
       qualityDecision = this.applyGoldTemporalLayerToItems([qualityDecision], this.getGoldDecisionHistoryMap(session))[0];
     }
-    const allItems = [...branchItems, qualityDecision].filter(Boolean)
+    let economicDecision = null;
+    if (economicReading) {
+      const need = economicReading.action === "ACT_NOW" ? 0.9 : economicReading.action === "VERIFY" ? 0.55 : 0.1;
+      const urgency = economicReading.action === "ACT_NOW" ? 0.9 : economicReading.action === "VERIFY" ? 0.55 : 0.2;
+      const value = normalizeScore(Math.abs(Number(economicReading.gapCents || 0)) / Math.max(Number(economicReading.operationalRevenueCents || 0), Number(economicReading.cashRevenueCents || 0), 1));
+      const decision = computeGoldDecisionScore("pagamento", {
+        needScore: need,
+        valueScore: value,
+        urgencyScore: urgency,
+        coherenceScore: economicReading.confidenceEcon,
+        frictionScore: economicReading.friction,
+        suggestedAction: economicReading.suggestedAction,
+        explanation: economicReading.explanationLong
+      });
+      economicDecision = this.toGoldDecisionItem("economic", "revenue-gap", decision, {
+        label: "Lettura economica",
+        output: economicReading.signal,
+        target: "cashdesk",
+        dataQuality: economicReading.confidenceEcon,
+        risk: economicReading.friction,
+        suggestedAction: economicReading.suggestedAction,
+        explanationShort: economicReading.explanationShort,
+        explanationLong: economicReading.explanationLong,
+        economicReading
+      });
+      economicDecision = {
+        ...economicDecision,
+        action: economicReading.action === "OK" ? "OK" : economicDecision.action,
+        suggestedAction: economicReading.suggestedAction,
+        band: economicReading.action === "OK" ? "ok" : economicDecision.band,
+        bandLabel: economicReading.action === "OK" ? "Sistema allineato" : economicDecision.bandLabel
+      };
+      economicDecision = this.applyGoldTemporalLayerToItems([economicDecision], this.getGoldDecisionHistoryMap(session))[0];
+    }
+    const allItems = [...branchItems, qualityDecision, economicDecision].filter(Boolean)
       .sort((a, b) => Number(b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.riskAdjustedPriority || 0) - Number(a.riskAdjustedPriority || 0) || Number(b.phi || 0) - Number(a.phi || 0))
       .slice(0, 12);
     return {
@@ -6839,7 +6956,13 @@ class DesktopMirrorService {
       profit: this.buildGoldProfitDecisions(profitability)
     };
     const temporalGoldBranches = this.applyGoldTemporalLayer(rawGoldBranches, session);
-    const goldDashboardBranch = this.buildGoldDashboardDecisions(temporalGoldBranches, dataQuality, session);
+    const economicReading = this.buildGoldEconomicReading({
+      appointments,
+      payments,
+      servicesById,
+      period: { startDate: snapshotStartDate, endDate: snapshotEndDate }
+    }, dataQuality);
+    const goldDashboardBranch = this.buildGoldDashboardDecisions(temporalGoldBranches, dataQuality, session, economicReading);
     const goldHistoryWrite = this.persistGoldDecisionHistory({
       ...temporalGoldBranches,
       dashboard: goldDashboardBranch
@@ -6893,6 +7016,7 @@ class DesktopMirrorService {
       profitability,
       inventory,
       dataQuality,
+      economic: economicReading,
       goldEngine: {
         engineLayer: "gold_decision_engine",
         engineVersion: "gold_phi_multi_domain_v1",
