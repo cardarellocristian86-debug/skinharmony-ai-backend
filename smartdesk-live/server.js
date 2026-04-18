@@ -512,7 +512,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/fleet-intelligence", (_req, res) => {
-  res.sendFile(path.join(publicDir, "fleet-intelligence.html"));
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
 app.post("/api/auth/login", loginRateLimit, (req, res) => {
