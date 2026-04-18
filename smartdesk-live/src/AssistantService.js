@@ -374,6 +374,24 @@ class AssistantService {
     }
   }
 
+  getGoldCapabilitiesSafe(session = null) {
+    if (!this.desktopMirror?.getGoldCapabilities) return null;
+    try {
+      return this.desktopMirror.getGoldCapabilities(session) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  getGoldDecisionContextSafe(session = null) {
+    if (!this.desktopMirror?.getGoldDecisionContext) return null;
+    try {
+      return this.desktopMirror.getGoldDecisionContext({}, session) || null;
+    } catch {
+      return null;
+    }
+  }
+
   listClientsSafe(context = {}, session = null) {
     if (this.desktopMirror?.listClients) {
       try {
@@ -431,6 +449,8 @@ class AssistantService {
     const currentPlan = this.desktopMirror?.getPlanLevel
       ? this.desktopMirror.getPlanLevel(session)
       : String(session?.subscriptionPlan || "base").toLowerCase();
+    const goldCapabilities = currentPlan === "gold" ? this.getGoldCapabilitiesSafe(session) : null;
+    const goldDecisionContext = currentPlan === "gold" ? this.getGoldDecisionContextSafe(session) : null;
 
     return {
       centerId: String(session?.centerId || ""),
@@ -451,6 +471,8 @@ class AssistantService {
         enableTrainingHub: Boolean(settings.enableTrainingHub),
         operatorReportsEnabled: Boolean(settings.operatorReportsEnabled)
       },
+      goldCapabilities,
+      goldDecisionContext,
       dashboard: {
         todayAppointments: Number(dashboard.todayAppointments || 0),
         inactiveClientsCount: Number(dashboard.inactiveClientsCount || 0),
@@ -628,6 +650,37 @@ class AssistantService {
         "",
         "Gli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold."
       ].join("\n");
+    }
+    const goldContext = context.goldDecisionContext || {};
+    const primary = goldContext.primaryAction || null;
+    const secondary = Array.isArray(goldContext.secondaryActions) ? goldContext.secondaryActions : [];
+    const blocked = Array.isArray(goldContext.blockedActions) ? goldContext.blockedActions : [];
+    if (primary || secondary.length || blocked.length) {
+      const lines = [
+        "Lettura Smart allineata al Gold Decision Engine.",
+        "",
+        "Priorità principale:",
+        primary
+          ? `- ${primary.label || primary.domain}: ${primary.suggestedAction || primary.explanationShort || "azione da valutare"}`
+          : "- Nessuna priorità principale disponibile.",
+        primary
+          ? `  RAP_2 ${Math.round(Number(primary.RAP_2 || primary.priority || 0) * 100)}% · confidence ${Math.round(Number(primary.confidence || 0) * 100)}% · rischio ${Math.round(Number(primary.risk || 0) * 100)}%`
+          : "",
+        primary?.NEU !== undefined ? `  Utilità netta stimata: ${Number(primary.NEU || 0).toFixed(2)}` : "",
+        primary?.trend?.trendLabel ? `  Trend: ${primary.trend.trendLabel}` : "",
+        "",
+        "Azioni consigliate:",
+        ...(secondary.length ? secondary.slice(0, 3).map((item, index) => `${index + 1}. ${item.label || item.domain}: ${item.suggestedAction || item.explanationShort || "monitorare"}`) : ["1. Nessuna azione secondaria prioritaria."]),
+        "",
+        "Blocchi e verifiche:",
+        ...(blocked.length ? blocked.slice(0, 3).map((item) => `- ${item.label || item.domain}: ${item.explanationShort || "verificare prima di agire"}`) : ["- Nessun blocco critico dal Gold Engine."]),
+        "",
+        "Esecuzione:",
+        primary?.canExecute
+          ? "Posso accompagnarti all'azione, ma ogni esecuzione resta confermata dall'operatore."
+          : "Non eseguo azioni dirette se Gold segnala rischio, frizione o confidence insufficiente."
+      ].filter(Boolean);
+      return lines.join("\n");
     }
     const dashboard = context.dashboard || {};
     const quality = context.dataQuality || {};
@@ -970,6 +1023,11 @@ class AssistantService {
       "Non creare appuntamenti senza clientId o walkInName, date e time.",
       "Non creare turni senza staffId, date, startTime ed endTime.",
       "Se mancano dati obbligatori, non aprire schermate: spiega esattamente cosa manca e proponi un esempio di comando completo.",
+      "Se il contesto contiene goldDecisionContext o goldCapabilities, trattali come fonte ufficiale per priorità, blocchi, rischio, confidence, WhatsApp e azioni consentite.",
+      "Non duplicare logiche Gold: leggi primaryAction, secondaryActions, blockedActions, canExecute, risk, confidence, EV, NEU e trend se presenti.",
+      "Se una decisione Gold ha canExecute=false o compare nei blockedActions, non proporre azione diretta: guida solo alla verifica.",
+      "Se goldCapabilities.limits.whatsappEnabled=true puoi proporre invio WhatsApp controllato; altrimenti proponi fallback manuale/copia.",
+      "Devi essere forward-compatible: se trovi campi Gold nuovi, usali nella spiegazione; se mancano, ignora senza inventare.",
       "Non inventare dati che non sono nel contesto."
     ].join("\n");
 
@@ -1101,13 +1159,19 @@ class AssistantService {
     const snapshot = this.desktopMirror.getBusinessSnapshot
       ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
       : null;
+    const goldCapabilities = this.getGoldCapabilitiesSafe(session);
+    const goldDecisionContext = this.getGoldDecisionContextSafe(session);
     const context = snapshot?.snapshotAvailable ? {
       businessSnapshot: snapshot,
+      goldCapabilities,
+      goldDecisionContext,
       dashboard: this.getDashboardSafe(session),
       settings: this.getSettingsSafe(session)
     } : {
       marketing: this.desktopMirror.getAiGoldMarketing(session),
       profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
+      goldCapabilities,
+      goldDecisionContext,
       dashboard: this.getDashboardSafe(session),
       settings: this.getSettingsSafe(session)
     };
@@ -1130,6 +1194,9 @@ class AssistantService {
       "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
       "Suggerisci azioni concrete che l'operatore deve confermare.",
       "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
+      "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
+      "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
+      "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
       "Evita claim medici, terapeutici o promesse di risultato.",
       "Rispondi in italiano, tono premium, chiaro, pratico.",
       "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."

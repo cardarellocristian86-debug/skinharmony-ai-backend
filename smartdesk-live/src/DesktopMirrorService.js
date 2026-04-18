@@ -6914,6 +6914,164 @@ class DesktopMirrorService {
     };
   }
 
+  getGoldCapabilities(session = null) {
+    this.assertCanOperate(session);
+    const plan = this.getPlanLevel(session);
+    const goldEnabled = plan === "gold";
+    const settings = this.getSettings(session);
+    const whatsappEnabled = goldEnabled && String(settings.whatsappGoldMode || "") === "active";
+    return {
+      goldEnabled,
+      currentPlan: plan,
+      version: "gold_enterprise_v1",
+      goldEngineVersion: "gold_phi_multi_domain_v1",
+      decisionMatrixVersion: "gold_decision_matrix_v1",
+      features: {
+        hasDecisionMatrix: goldEnabled,
+        hasRiskModel: goldEnabled,
+        hasEconomicEngine: goldEnabled,
+        hasSimulation: goldEnabled,
+        hasLearning: goldEnabled,
+        hasWhatsAppAPI: whatsappEnabled,
+        hasTrendLayer: goldEnabled
+      },
+      limits: {
+        whatsappEnabled,
+        maxMessagesPerMonth: Number(settings.whatsappMonthlyQuota || 0),
+        monthlyUsed: Number(settings.whatsappMonthlyUsed || 0),
+        automationAllowed: false
+      },
+      rules: {
+        execution: {
+          allowedActions: ["ACT_NOW", "SUGGEST"],
+          minConfidence: 0.5,
+          maxRisk: 0.6,
+          maxFriction: 0.6,
+          requiresGold: true,
+          requiresOperatorConfirmation: true
+        },
+        whatsapp: {
+          requiresConsent: true,
+          requiresValidPhone: true,
+          fallback: whatsappEnabled ? "" : "manual_copy"
+        }
+      }
+    };
+  }
+
+  canExecuteAction(decision = {}, context = {}) {
+    const capabilities = context.capabilities || {};
+    const plan = String(context.plan || capabilities.currentPlan || "").toLowerCase();
+    const action = String(decision.action || decision.primaryAction || "").toUpperCase();
+    const confidence = normalizeScore(decision.confidenceTemporal ?? decision.confidence ?? 0);
+    const risk = normalizeScore(decision.enterpriseRisk ?? decision.risk ?? 0);
+    const friction = normalizeScore(decision.factors?.friction ?? decision.friction ?? 0);
+    const blocked = Boolean(decision.blocked || ["STOP", "VERIFY"].includes(action) || decision.band === "stop");
+    const reasons = [];
+    if (plan !== "gold") reasons.push("Piano non Gold");
+    if (!["ACT_NOW", "SUGGEST"].includes(action)) reasons.push("Azione non eseguibile dal motore Gold");
+    if (blocked) reasons.push("Azione bloccata dal Gold Engine");
+    if (confidence < 0.5) reasons.push("Confidence sotto soglia");
+    if (risk > 0.6) reasons.push("Rischio sopra soglia");
+    if (friction > 0.6) reasons.push("Frizione sopra soglia");
+    return {
+      allowed: reasons.length === 0,
+      reasons,
+      action,
+      confidence,
+      risk,
+      friction,
+      requiresOperatorConfirmation: true,
+      source: "gold_capability_layer"
+    };
+  }
+
+  compactGoldDecisionForSmart(item = null, context = {}) {
+    if (!item) return null;
+    const execution = this.canExecuteAction(item, context);
+    const priority = Number(item.riskAdjustedPriority2 ?? item.RAP_trend_adj ?? item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? item.phi ?? 0);
+    return {
+      domain: item.domain || "",
+      entityId: item.entityId || "",
+      label: item.label || "",
+      action: item.action || "",
+      suggestedAction: item.suggestedAction || "",
+      output: item.output || item.explanationShort || "",
+      explanationShort: item.explanationShort || item.output || "",
+      explanationLong: item.explanationLong || "",
+      priority,
+      RAP_2: Number(item.riskAdjustedPriority2 ?? 0),
+      RAP_trend_adj: Number(item.RAP_trend_adj ?? item.riskAdjustedPriorityTrend ?? 0),
+      phi: Number(item.phi || 0),
+      confidence: Number(item.confidenceTemporal ?? item.confidence ?? 0),
+      risk: Number(item.enterpriseRisk ?? item.risk ?? 0),
+      EV: Number(item.expectedValue || 0),
+      OC: Number(item.opportunityCost || 0),
+      NEU: Number(item.netExpectedUtility || 0),
+      trend: item.trend || null,
+      band: item.band || "",
+      tone: item.tone || "",
+      penaltyApplied: Boolean(item.penaltyApplied || item.reliabilityPenaltyApplied || item.temporalPenaltyApplied),
+      decisionMatrixVersion: item.decisionMatrixVersion || "",
+      goldEngineVersion: item.enterpriseLayer || item.temporalVersion || "",
+      canExecute: execution.allowed,
+      execution
+    };
+  }
+
+  getGoldDecisionContext(options = {}, session = null) {
+    this.assertCanOperate(session);
+    const capabilities = this.getGoldCapabilities(session);
+    if (!capabilities.goldEnabled) {
+      return {
+        goldEnabled: false,
+        currentPlan: capabilities.currentPlan,
+        primaryAction: null,
+        secondaryActions: [],
+        blockedActions: [],
+        topSignals: [],
+        globalConfidence: 0,
+        systemRisk: 0,
+        lastUpdate: "",
+        capabilities
+      };
+    }
+    const snapshot = this.getBusinessSnapshot(options || {}, session);
+    const dashboard = snapshot.goldEngine?.dashboard || {};
+    const topSignals = (dashboard.items || []).map((item) => this.compactGoldDecisionForSmart(item, {
+      plan: "gold",
+      capabilities
+    })).filter(Boolean);
+    const primaryAction = this.compactGoldDecisionForSmart(dashboard.primaryAction || null, {
+      plan: "gold",
+      capabilities
+    });
+    const secondaryActions = (dashboard.secondaryActions || []).map((item) => this.compactGoldDecisionForSmart(item, {
+      plan: "gold",
+      capabilities
+    })).filter(Boolean);
+    const blockedActions = (dashboard.blockedActions || []).map((item) => this.compactGoldDecisionForSmart(item, {
+      plan: "gold",
+      capabilities
+    })).filter(Boolean);
+    const confidenceValues = topSignals.map((item) => Number(item.confidence || 0));
+    const riskValues = topSignals.map((item) => Number(item.risk || 0));
+    return {
+      goldEnabled: true,
+      capabilities,
+      primaryAction,
+      secondaryActions,
+      blockedActions,
+      topSignals,
+      globalConfidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : 0,
+      systemRisk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : 0,
+      lastUpdate: snapshot.generatedAt || nowIso(),
+      decisionMatrixVersion: capabilities.decisionMatrixVersion,
+      goldEngineVersion: snapshot.goldEngine?.engineVersion || capabilities.goldEngineVersion,
+      sourceLayer: "gold_decision_context"
+    };
+  }
+
   toGoldDecisionItem(domain, entityId, goldDecision, meta = {}) {
     const control = computeGoldDecisionControlMetrics(goldDecision, {
       dataQuality: meta.dataQuality,
