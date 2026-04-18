@@ -6269,6 +6269,27 @@ class DesktopMirrorService {
     return `Ciao ${firstName}, ti ricordiamo il tuo appuntamento. Se hai bisogno di modifiche, rispondi pure a questo messaggio.`;
   }
 
+  buildGoldWhatsappTemplateVariables(client = {}, suggestion = {}) {
+    const name = cleanText(client.firstName || suggestion.name || client.name || "Cliente", "Cliente", 80).split(/\s+/)[0] || "Cliente";
+    const service = cleanText(suggestion.lastServiceName || "il tuo percorso", "il tuo percorso", 120);
+    const time = suggestion.daysOutOfRoutine !== undefined && suggestion.daysOutOfRoutine !== null
+      ? `${Math.max(0, Number(suggestion.daysOutOfRoutine || 0))} giorni fuori routine`
+      : suggestion.daysSinceLastVisit
+        ? `${Number(suggestion.daysSinceLastVisit || 0)} giorni dall'ultimo appuntamento`
+        : "nel momento giusto";
+    const proposal = cleanText(suggestion.recommendedAction || "ti propongo uno slot questa settimana", "ti propongo uno slot questa settimana", 180);
+    return {
+      "1": name,
+      "2": service,
+      "3": time,
+      "4": proposal,
+      nome_cliente: name,
+      servizio: service,
+      tempo: time,
+      proposta: proposal
+    };
+  }
+
   evaluateGoldWhatsappEligibility(clientId, payload = {}, session = null) {
     if (!this.hasGoldIntelligence(session)) {
       return {
@@ -6285,6 +6306,7 @@ class DesktopMirrorService {
     const phone = cleanPhone(client.phone || suggestion?.phone || "");
     const message = this.buildGoldWhatsappMessage(client, suggestion || {}, payload.message || "");
     const template = this.getGoldWhatsappTemplate(suggestion || {});
+    const templateVariables = this.buildGoldWhatsappTemplateVariables(client, suggestion || {});
     const friction = normalizeScore(goldItem?.factors?.friction ?? suggestion?.newDecision?.fS ?? suggestion?.goldDecision?.axes?.friction ?? 0);
     const confidence = normalizeScore(goldItem?.confidenceTemporal ?? goldItem?.confidence ?? suggestion?.responseProbability ?? 0);
     const action = String(goldItem?.action || (suggestion?.shouldContact ? "SUGGEST" : "MONITOR"));
@@ -6315,6 +6337,7 @@ class DesktopMirrorService {
       suggestion,
       goldItem,
       template,
+      templateVariables,
       whatsapp: {
         phone,
         message,
@@ -6346,6 +6369,7 @@ class DesktopMirrorService {
       },
       messaggio: result.whatsapp.message,
       template: result.template,
+      templateVariables: result.templateVariables,
       stato: result.allowed ? "ready" : "blocked",
       EV: result.whatsapp.EV,
       RAP: result.whatsapp.RAP,
@@ -6411,6 +6435,7 @@ class DesktopMirrorService {
       phone: eligibility.whatsapp.phone,
       template: eligibility.template.key,
       templateLabel: eligibility.template.label,
+      templateVariables: eligibility.templateVariables,
       type: eligibility.template.type,
       message: eligibility.whatsapp.message,
       status: "approved",
@@ -6444,7 +6469,9 @@ class DesktopMirrorService {
     }
     const sendResult = await whatsappService?.sendMessage?.({
       to: eligibility.whatsapp.phone,
-      body: eligibility.whatsapp.message
+      body: eligibility.whatsapp.message,
+      templateKey: eligibility.template.key,
+      contentVariables: eligibility.templateVariables
     });
     if (!sendResult?.ok) {
       const record = this.whatsappMessagesRepository.create({

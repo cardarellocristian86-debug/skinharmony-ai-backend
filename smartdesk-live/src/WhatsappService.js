@@ -3,6 +3,13 @@ class WhatsappService {
     this.accountSid = String(env.TWILIO_ACCOUNT_SID || "").trim();
     this.authToken = String(env.TWILIO_AUTH_TOKEN || "").trim();
     this.from = String(env.TWILIO_WHATSAPP_FROM || "").trim();
+    this.templateSids = {
+      recupero_soft: String(env.TWILIO_WHATSAPP_TEMPLATE_RECUPERO_SOFT || "").trim(),
+      recupero_attivo: String(env.TWILIO_WHATSAPP_TEMPLATE_RECUPERO_ATTIVO || "").trim(),
+      mantenimento: String(env.TWILIO_WHATSAPP_TEMPLATE_MANTENIMENTO || "").trim(),
+      riattivazione_cliente_perso: String(env.TWILIO_WHATSAPP_TEMPLATE_RIATTIVAZIONE || "").trim(),
+      reminder_appuntamento: String(env.TWILIO_WHATSAPP_TEMPLATE_REMINDER || "").trim()
+    };
   }
 
   isConfigured() {
@@ -32,7 +39,11 @@ class WhatsappService {
     return value || "unknown";
   }
 
-  async sendMessage({ to, body }) {
+  getTemplateSid(templateKey = "") {
+    return this.templateSids[String(templateKey || "")] || "";
+  }
+
+  async sendMessage({ to, body, templateKey = "", contentVariables = {} }) {
     const normalizedTo = this.normalizePhone(to);
     if (!this.isConfigured()) {
       return {
@@ -51,7 +62,8 @@ class WhatsappService {
       };
     }
     const text = String(body || "").trim();
-    if (!text) {
+    const contentSid = this.getTemplateSid(templateKey);
+    if (!text && !contentSid) {
       return {
         ok: false,
         fallbackRequired: true,
@@ -63,7 +75,12 @@ class WhatsappService {
     const form = new URLSearchParams();
     form.set("From", this.from);
     form.set("To", normalizedTo);
-    form.set("Body", text);
+    if (contentSid) {
+      form.set("ContentSid", contentSid);
+      form.set("ContentVariables", JSON.stringify(contentVariables || {}));
+    } else {
+      form.set("Body", text);
+    }
 
     const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(this.accountSid)}/Messages.json`, {
       method: "POST",
