@@ -6,6 +6,7 @@ const {
   SKINHARMONY_LIBRARY_CENTER_ID,
   skinHarmonyProtocolLibrary
 } = require("./SkinHarmonyProtocolLibrary");
+const { ProgressiveIntelligenceActivationLayer } = require("./ProgressiveIntelligenceActivationLayer");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -1396,6 +1397,7 @@ class DesktopMirrorService {
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
     this.appointmentsDayCache = new Map();
+    this.progressiveIntelligenceLayer = new ProgressiveIntelligenceActivationLayer();
   }
 
   getCenterId(session = null) {
@@ -2060,6 +2062,73 @@ class DesktopMirrorService {
       valid: validation.valid,
       validation,
       state: saved || rebuilt
+    };
+  }
+
+  getProgressiveIntelligenceRawContext(session = null) {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const dates = [
+      ...appointments.map((item) => item.startAt || item.createdAt || ""),
+      ...payments.map((item) => item.createdAt || ""),
+      ...clients.map((item) => item.lastVisit || item.createdAt || "")
+    ]
+      .map((value) => new Date(value).getTime())
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const oldest = dates.length ? Math.min(...dates) : Date.now();
+    const newest = dates.length ? Math.max(...dates) : Date.now();
+    const historyMonths = dates.length > 1 ? Math.max(0, (newest - oldest) / (1000 * 60 * 60 * 24 * 30.4375)) : 0;
+    return {
+      rawCounts: {
+        clients: clients.length,
+        appointments: appointments.length,
+        payments: payments.length,
+        services: services.length,
+        staff: staff.length,
+        inventory: inventory.length
+      },
+      historyMonths,
+      oldestDate: dates.length ? new Date(oldest).toISOString() : "",
+      newestDate: dates.length ? new Date(newest).toISOString() : ""
+    };
+  }
+
+  getProgressiveIntelligenceStatus(session = null) {
+    this.assertCanOperate(session);
+    const centerId = this.getCenterId(session);
+    const plan = this.getPlanLevel(session);
+    const rawContext = this.getProgressiveIntelligenceRawContext(session);
+    const goldState = plan === "gold" ? this.getGoldState(session) : null;
+    const status = this.progressiveIntelligenceLayer.compute({
+      centerId,
+      plan,
+      goldState,
+      rawCounts: rawContext.rawCounts,
+      historyMonths: rawContext.historyMonths
+    });
+    return {
+      ...status,
+      currentPlan: plan,
+      centerName: this.getCenterName(session),
+      historyMonths: this.goldRound(rawContext.historyMonths, 2),
+      historyRange: {
+        oldestDate: rawContext.oldestDate,
+        newestDate: rawContext.newestDate
+      },
+      rawCounts: rawContext.rawCounts
+    };
+  }
+
+  getFeatureActivation(status = {}, featureKey = "") {
+    const enabled = (status.enabledFeatures || []).some((item) => item.key === featureKey);
+    const blocked = (status.blockedFeatures || []).find((item) => item.key === featureKey);
+    return {
+      enabled,
+      reason: enabled ? "" : blocked?.reason || "funzione non disponibile al livello dati corrente"
     };
   }
 
@@ -8167,7 +8236,10 @@ class DesktopMirrorService {
       };
     }
     const snapshot = this.getBusinessSnapshot({}, session);
-    return snapshot.marketing || {
+    const progressiveIntelligence = this.getProgressiveIntelligenceStatus(session);
+    const marketingFeature = this.getFeatureActivation(progressiveIntelligence, "intelligent_marketing");
+    const recallFeature = this.getFeatureActivation(progressiveIntelligence, "recall");
+    const marketing = snapshot.marketing || {
       goldEnabled: true,
       generatedAt: snapshot.generatedAt || nowIso(),
       suggestions: [],
@@ -8175,6 +8247,16 @@ class DesktopMirrorService {
       historicInactiveClients: [],
       counts: { priority: 0, lost: 0, historic: 0 },
       sourceLayer: "business_snapshot"
+    };
+    return {
+      ...marketing,
+      progressiveIntelligence,
+      activation: {
+        recallEnabled: recallFeature.enabled,
+        intelligentMarketingEnabled: marketingFeature.enabled,
+        blockedReason: marketingFeature.enabled ? "" : marketingFeature.reason,
+        rule: "PIAL abilita marketing avanzato solo con storico, CRM, volume e affidabilità sufficienti."
+      }
     };
   }
 
@@ -8184,20 +8266,26 @@ class DesktopMirrorService {
     const goldEnabled = plan === "gold";
     const settings = this.getSettings(session);
     const whatsappEnabled = goldEnabled && String(settings.whatsappGoldMode || "") === "active";
+    const progressiveIntelligence = goldEnabled ? this.getProgressiveIntelligenceStatus(session) : null;
+    const hasFeature = (key) => Boolean(progressiveIntelligence?.enabledFeatures?.some((item) => item.key === key));
     return {
       goldEnabled,
       currentPlan: plan,
       version: "gold_enterprise_v1",
       goldEngineVersion: "gold_phi_multi_domain_v1",
       decisionMatrixVersion: "gold_decision_matrix_v1",
+      progressiveIntelligence,
       features: {
         hasDecisionMatrix: goldEnabled,
         hasRiskModel: goldEnabled,
-        hasEconomicEngine: goldEnabled,
-        hasSimulation: goldEnabled,
-        hasLearning: goldEnabled,
+        hasEconomicEngine: goldEnabled && hasFeature("margin_analysis"),
+        hasSimulation: goldEnabled && hasFeature("forecast_scenarios"),
+        hasLearning: goldEnabled && progressiveIntelligence?.activationLevel >= 3,
         hasWhatsAppAPI: whatsappEnabled,
-        hasTrendLayer: goldEnabled
+        hasTrendLayer: goldEnabled && progressiveIntelligence?.qualityVector?.stateStability >= 0.75,
+        hasProgressiveActivation: goldEnabled,
+        hasForecastScenarios: goldEnabled && hasFeature("forecast_scenarios"),
+        hasIntelligentMarketing: goldEnabled && hasFeature("intelligent_marketing")
       },
       limits: {
         whatsappEnabled,
@@ -8218,6 +8306,11 @@ class DesktopMirrorService {
           requiresConsent: true,
           requiresValidPhone: true,
           fallback: whatsappEnabled ? "" : "manual_copy"
+        },
+        progressiveActivation: {
+          activationLevel: progressiveIntelligence?.activationLevel ?? 0,
+          maturityScore: progressiveIntelligence?.maturityScore ?? 0,
+          blockedFeatures: progressiveIntelligence?.blockedFeatures || []
         }
       }
     };
@@ -8231,6 +8324,20 @@ class DesktopMirrorService {
     const risk = normalizeScore(decision.enterpriseRisk ?? decision.risk ?? 0);
     const friction = normalizeScore(decision.factors?.friction ?? decision.friction ?? 0);
     const blocked = Boolean(decision.blocked || ["STOP", "VERIFY"].includes(action) || decision.band === "stop");
+    const progressive = capabilities.progressiveIntelligence || null;
+    const decisionDomain = String(decision.domain || "").toLowerCase();
+    const requiredFeatureByDomain = {
+      marketing: "recall",
+      profit: "margin_analysis",
+      profitability: "margin_analysis",
+      agenda: "daily_priorities_basic",
+      cash: "daily_priorities_basic",
+      data_quality: "quality_alerts"
+    };
+    const requiredFeature = requiredFeatureByDomain[decisionDomain] || "";
+    const blockedFeature = requiredFeature
+      ? (progressive?.blockedFeatures || []).find((item) => item.key === requiredFeature)
+      : null;
     const reasons = [];
     if (plan !== "gold") reasons.push("Piano non Gold");
     if (!["ACT_NOW", "SUGGEST"].includes(action)) reasons.push("Azione non eseguibile dal motore Gold");
@@ -8238,6 +8345,7 @@ class DesktopMirrorService {
     if (confidence < 0.5) reasons.push("Confidence sotto soglia");
     if (risk > 0.6) reasons.push("Rischio sopra soglia");
     if (friction > 0.6) reasons.push("Frizione sopra soglia");
+    if (blockedFeature) reasons.push(`PIAL: ${blockedFeature.label} bloccato (${blockedFeature.reason})`);
     return {
       allowed: reasons.length === 0,
       reasons,
@@ -8323,6 +8431,7 @@ class DesktopMirrorService {
     return {
       goldEnabled: true,
       capabilities,
+      progressiveIntelligence: capabilities.progressiveIntelligence,
       primaryAction,
       secondaryActions,
       blockedActions,

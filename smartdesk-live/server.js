@@ -1054,6 +1054,10 @@ app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldCapabilities(req.session));
 });
 
+app.get("/api/ai-gold/progressive-intelligence", requirePlan("gold"), (req, res) => {
+  res.json(service.getProgressiveIntelligenceStatus(req.session));
+});
+
 app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldDecisionContext({
     startDate: req.query.startDate || "",
