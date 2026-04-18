@@ -1791,6 +1791,348 @@ class DesktopMirrorService {
     } : null;
   }
 
+  logGoldStateEndpoint(endpoint, session = null, payload = {}) {
+    console.log(`[${endpoint}_source]`, JSON.stringify({
+      centerId: this.getCenterId(session),
+      endpoint,
+      source: payload.source || "raw_fallback",
+      valid: Boolean(payload.valid),
+      reason: payload.reason || "",
+      eventSeq: payload.eventSeq ?? null
+    }));
+  }
+
+  getValidGoldStateSnapshot(snapshotKey = "", session = null) {
+    if (this.getPlanLevel(session) !== "gold") {
+      return { valid: false, reason: "not_gold" };
+    }
+    const state = this.getGoldState(session);
+    const eventSeq = Number(state?.eventSeq || 0);
+    if (!state || eventSeq <= 0) {
+      return { valid: false, reason: "empty_state", state, eventSeq };
+    }
+    const snapshots = state.snapshots || {};
+    const snapshot = snapshotKey ? snapshots[snapshotKey] : snapshots;
+    if (!snapshot || (snapshotKey && snapshot.source !== "gold_state")) {
+      return { valid: false, reason: "invalid_snapshot", state, eventSeq };
+    }
+    const confidence = Number(state.components?.Conf ?? snapshot.confidence ?? snapshot.economicConfidence ?? 0);
+    if (Number.isFinite(confidence) && confidence < 0.15) {
+      return { valid: false, reason: "drift_flag", state, snapshot, eventSeq };
+    }
+    return { valid: true, reason: "ok", state, snapshot, eventSeq };
+  }
+
+  buildGoldStateCenterHealth(state = {}) {
+    const business = state.snapshots?.business || {};
+    const revenueCents = Number(business.revenueCents || 0);
+    const saturationPercent = Math.round(Number(business.agendaSaturation || 0) * 100);
+    const continuityPercent = Math.round(Number(business.clientContinuity || 0) * 100);
+    const confidencePercent = Math.round(Number(business.confidence || 0) * 100);
+    const status = business.status === "centro_sotto_pressione"
+      ? "fragile"
+      : business.status === "dato_da_verificare"
+        ? "sotto_soglia"
+        : "stabile";
+    return {
+      source: "gold_state",
+      status,
+      statusLabel: status === "sotto_soglia" ? "da verificare" : status,
+      level: status === "sotto_soglia" ? "warning" : status === "fragile" ? "warning" : "success",
+      businessModel: "standard",
+      period: { startDate: "", endDate: "", dayCount: 1, monthsEquivalent: 1 },
+      thresholds: {},
+      revenueCents,
+      monthlyRevenueCents: revenueCents,
+      revenuePerOperatorCents: 0,
+      activeOperators: Number(state.counters?.staffActive || state.counters?.staffTotal || 0),
+      appointments: Number(state.counters?.todayAppointments || 0),
+      saturationPercent,
+      activeClients: Number(business.activeClients || 0),
+      returningClients: 0,
+      continuityPercent,
+      reason: `Gold State: saturazione ${saturationPercent}%, continuità ${continuityPercent}%, confidenza ${confidencePercent}%.`,
+      note: "Lettura da Gold State Layer con fallback raw disponibile."
+    };
+  }
+
+  buildDashboardStatsFromGoldState(options = {}, session = null) {
+    const validState = this.getValidGoldStateSnapshot("business", session);
+    if (!validState.valid) {
+      this.logGoldStateEndpoint("dashboard", session, { source: "raw_fallback", ...validState });
+      return null;
+    }
+    const state = validState.state;
+    const business = state.snapshots?.business || {};
+    const report = state.snapshots?.report || {};
+    const payload = {
+      todayAppointments: Number(state.counters?.todayAppointments || 0),
+      inactiveClientsCount: 0,
+      inactiveClients: [],
+      centerAverageFrequencyDays: 45,
+      completedAppointments: 0,
+      confirmedAppointments: 0,
+      arrivedAppointments: 0,
+      inProgressAppointments: 0,
+      readyCheckoutAppointments: 0,
+      pendingConfirmations: 0,
+      upcomingAppointments: Number(state.counters?.todayAppointments || 0),
+      revenueCents: Number(business.revenueCents || 0),
+      todayRevenueCents: Number(business.revenueCents || 0),
+      activeClients: Number(business.activeClients || state.counters?.activeClients || 0),
+      activeClientsCount: Number(business.activeClients || state.counters?.activeClients || 0),
+      paymentSummary: {
+        period: options.period || "day",
+        startDate: toDateOnly(options.anchorDate || nowIso()),
+        endDate: toDateOnly(options.anchorDate || nowIso()),
+        totals: {
+          count: Number(state.counters?.paymentCount || 0),
+          revenueCents: Number(business.revenueCents || 0)
+        },
+        byMethod: [],
+        byDay: [],
+        recentPayments: []
+      },
+      dataQuality: {
+        summaryOnly: true,
+        score: Math.round(Number(report.dataQuality ?? business.dataQuality ?? 0) * 100),
+        metrics: {
+          unlinkedPayments: Number(business.unlinkedPayments || 0)
+        },
+        sourceLayer: "gold_state"
+      },
+      dashboardCache: {
+        cached: true,
+        source: "gold_state",
+        generatedAt: state.updatedAt || nowIso(),
+        ageMs: Math.max(0, Date.now() - new Date(state.updatedAt || nowIso()).getTime()),
+        stale: false,
+        autoRefreshMs: DASHBOARD_AUTO_REFRESH_MS,
+        manualCooldownMs: DASHBOARD_MANUAL_COOLDOWN_MS,
+        nextAutoRefreshAt: "",
+        eventSeq: validState.eventSeq
+      }
+    };
+    this.logGoldStateEndpoint("dashboard", session, { source: "gold_state", ...validState });
+    return payload;
+  }
+
+  buildOperationalReportFromGoldState(options = {}, session = null) {
+    const validState = this.getValidGoldStateSnapshot("report", session);
+    if (!validState.valid) {
+      this.logGoldStateEndpoint("report_operational", session, { source: "raw_fallback", ...validState });
+      return null;
+    }
+    const state = validState.state;
+    const report = state.snapshots?.report || {};
+    const startDate = toDateOnly(options.startDate || nowIso());
+    const endDate = toDateOnly(options.endDate || startDate);
+    const revenueCents = Number(report.revenueCents || 0);
+    const appointments = Number(state.counters?.todayAppointments || 0);
+    const result = {
+      period: String(options.period || "day"),
+      generatedAt: nowIso(),
+      dateLabel: startDate === endDate ? startDate : `${startDate} - ${endDate}`,
+      totals: {
+        appointments,
+        completedAppointments: 0,
+        cancelledAppointments: 0,
+        noShowAppointments: 0,
+        revenueCents,
+        averageTicketCents: Number(report.averageTicketCents || 0),
+        activeClients: Number(state.counters?.activeClients || 0),
+        returningClients: 0,
+        occasionalClients: 0,
+        rebookingRate: Math.round(Number(report.continuity || 0) * 100)
+      },
+      timeline: [],
+      topOperators: [],
+      topServices: [],
+      lowServices: [],
+      topClientsBySpend: [],
+      frequentClients: [],
+      inactiveClients: [],
+      technologyUsage: [],
+      lowTechnologyUsage: [],
+      insights: [
+        `Report letto da Gold State Layer: fatturato ${euro(revenueCents)}, ticket medio ${euro(report.averageTicketCents || 0)}.`,
+        Number(report.unlinkedPayments || 0) ? `${Number(report.unlinkedPayments || 0)} pagamenti da collegare.` : "Nessuna anomalia cassa aggregata nello stato."
+      ],
+      meta: {
+        source: "gold_state",
+        eventSeq: validState.eventSeq,
+        fallbackAvailable: true
+      }
+    };
+    this.logGoldStateEndpoint("report_operational", session, { source: "gold_state", ...validState });
+    return result;
+  }
+
+  buildProfitabilityOverviewFromGoldState(options = {}, session = null) {
+    const validState = this.getValidGoldStateSnapshot("profitability", session);
+    if (!validState.valid) {
+      this.logGoldStateEndpoint("profitability_overview", session, { source: "raw_fallback", ...validState });
+      return null;
+    }
+    const state = validState.state;
+    const profitability = state.snapshots?.profitability || {};
+    const revenueCents = Number(profitability.revenueCents || 0);
+    const marginRatio = Number(profitability.averageMargin || 0);
+    const costCents = Math.round(revenueCents * Math.max(0, 1 - marginRatio));
+    const profitCents = Math.max(0, revenueCents - costCents);
+    const status = profitability.status === "margine_da_verificare"
+      ? "LOW_MARGIN"
+      : profitability.status === "margine_sotto_soglia"
+        ? "LOW_MARGIN"
+        : "HEALTHY";
+    const aggregateService = {
+      id: "gold-state-profitability",
+      name: "Margine aggregato centro",
+      executions: Number(state.counters?.marginSamples || state.counters?.paymentCount || 0),
+      revenueCents,
+      costCents,
+      profitCents,
+      averageRevenueCents: Number(state.components?.Ticket || 0),
+      averageCostCents: Number(state.components?.Ticket || 0) ? Math.round(Number(state.components.Ticket) * Math.max(0, 1 - marginRatio)) : 0,
+      marginPercent: Math.round(marginRatio * 100),
+      status
+    };
+    const result = {
+      totals: {
+        executions: aggregateService.executions,
+        revenueCents,
+        costCents,
+        profitCents
+      },
+      centerHealth: this.buildGoldStateCenterHealth(state),
+      services: [aggregateService],
+      products: [],
+      technologies: [],
+      monthlyTrend: [],
+      alerts: status === "HEALTHY" ? [] : [{
+        area: "servizi",
+        level: "warning",
+        title: profitability.status === "margine_da_verificare" ? "Margine da verificare" : "Margine sotto soglia",
+        body: "Gold State segnala costo/confidenza non sufficienti per promuovere una lettura forte.",
+        serviceId: aggregateService.id
+      }],
+      revenueCents,
+      inventoryCostCents: costCents,
+      meta: {
+        source: "gold_state",
+        eventSeq: validState.eventSeq,
+        fallbackAvailable: true,
+        economicConfidence: Number(profitability.economicConfidence || 0),
+        costConfidence: Number(profitability.costConfidence || 0)
+      }
+    };
+    this.logGoldStateEndpoint("profitability_overview", session, { source: "gold_state", ...validState });
+    return result;
+  }
+
+  buildBusinessSnapshotFromGoldState(options = {}, session = null) {
+    const validState = this.getValidGoldStateSnapshot("business", session);
+    if (!validState.valid) {
+      this.logGoldStateEndpoint("business_snapshot", session, { source: "raw_fallback", ...validState });
+      return null;
+    }
+    const state = validState.state;
+    const business = state.snapshots?.business || {};
+    const report = this.buildOperationalReportFromGoldState(options, session) || {};
+    const centerHealth = this.buildGoldStateCenterHealth(state);
+    const profitability = this.buildProfitabilityOverviewFromGoldState(options, session) || {};
+    const dataQualityScore = Math.round(Number(business.dataQuality || 0) * 100);
+    const snapshot = {
+      snapshotAvailable: true,
+      snapshotVersion: "1.0",
+      sourceLayer: "gold_state",
+      generatedAt: state.updatedAt || nowIso(),
+      expiresAt: "",
+      plan: this.getPlanLevel(session),
+      period: {
+        startDate: String(options.startDate || ""),
+        endDate: String(options.endDate || "")
+      },
+      meta: {
+        cached: true,
+        cacheTtlMs: SNAPSHOT_CACHE_TTL_MS,
+        freshness: "state",
+        rule: "Gold State Layer primario con fallback raw disponibile.",
+        dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session))),
+        source: "gold_state",
+        eventSeq: validState.eventSeq
+      },
+      core: {
+        appointments: Number(state.counters?.todayAppointments || 0),
+        treatments: 0,
+        protocols: 0,
+        technologies: 0
+      },
+      report: {
+        operational: report,
+        centerHealth
+      },
+      marketing: {
+        goldEnabled: true,
+        generatedAt: state.updatedAt || nowIso(),
+        suggestions: [],
+        priorityClients: [],
+        lostClients: [],
+        historicInactiveClients: [],
+        focusClient: null,
+        sourceLayer: "gold_state"
+      },
+      profitability,
+      inventory: {
+        lowStock: [],
+        items: [],
+        summary: {
+          total: Number(state.counters?.inventoryTotal || 0),
+          lowStock: Number(state.counters?.lowStock || 0)
+        },
+        sourceLayer: "gold_state"
+      },
+      dataQuality: {
+        summaryOnly: true,
+        score: dataQualityScore,
+        metrics: {
+          unlinkedPayments: Number(business.unlinkedPayments || 0)
+        },
+        sourceLayer: "gold_state"
+      },
+      economic: {
+        sourceLayer: "gold_state",
+        operationalRevenueCents: Number(business.revenueCents || 0),
+        cashRevenueCents: Number(business.revenueCents || 0),
+        gapCents: 0,
+        confidence: Number(business.confidence || 0),
+        status: Number(business.unlinkedPayments || 0) > 0 ? "incasso_da_verificare" : "sistema_allineato",
+        action: Number(business.unlinkedPayments || 0) > 0 ? "VERIFY" : "OK"
+      },
+      goldEngine: {
+        engineLayer: "gold_decision_engine",
+        engineVersion: "gold_state_v1",
+        enterpriseLayer: "gold_enterprise_v1",
+        rule: "Gold legge Gold State Layer e mantiene fallback raw.",
+        dashboard: {
+          source: "gold_state",
+          items: [],
+          summary: state.decision || null
+        }
+      },
+      operations: {
+        upcomingAppointments: [],
+        weakestUpcomingDay: null,
+        leastLoadedOperator: null,
+        topOperator: null,
+        weakOperator: null,
+        topClient: null
+      }
+    };
+    this.logGoldStateEndpoint("business_snapshot", session, { source: "gold_state", ...validState });
+    return snapshot;
+  }
+
   buildDecisionCenterFromGoldState(options = {}, session = null) {
     const stateDecision = this.getGoldStateDecision(session);
     const state = stateDecision?.state || null;
@@ -4703,6 +5045,34 @@ class DesktopMirrorService {
   listUnlinkedPayments(session = null, options = {}) {
     const cacheOptions = { period: "manual", forceRefresh: Boolean(options.forceRefresh) };
     if (!cacheOptions.forceRefresh) {
+      const validState = this.getValidGoldStateSnapshot("business", session);
+      if (validState.valid) {
+        const expectedCount = Number(validState.snapshot?.unlinkedPayments || 0);
+        if (expectedCount <= 0) {
+          this.logGoldStateEndpoint("payments_unlinked", session, { source: "gold_state", ...validState });
+          return [];
+        }
+        const items = this.filterByCenter(this.paymentsRepository.list(), session)
+          .filter((payment) => this.goldPaymentIsUnlinked(payment))
+          .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+          .slice(0, Math.max(1, Math.min(80, expectedCount)))
+          .map((payment) => ({
+            ...payment,
+            clientName: payment.walkInName || "Cliente occasionale",
+            linkState: payment.appointmentId && payment.clientId
+              ? "complete"
+              : payment.appointmentId
+                ? "missing_client"
+                : "missing_appointment",
+            suggestions: [],
+            sourceLayer: "gold_state"
+          }));
+        this.logGoldStateEndpoint("payments_unlinked", session, { source: "gold_state", ...validState });
+        return items;
+      }
+      this.logGoldStateEndpoint("payments_unlinked", session, { source: "raw_fallback", ...validState });
+    }
+    if (!cacheOptions.forceRefresh) {
       const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.PAYMENT_ISSUES, cacheOptions, session);
       if (cached) return cached.items || [];
     }
@@ -5393,6 +5763,8 @@ class DesktopMirrorService {
 
   getDashboardStats(options = {}, session = null) {
     const normalized = this.normalizeDashboardStatsOptions(options);
+    const stateDashboard = this.buildDashboardStatsFromGoldState(normalized, session);
+    if (stateDashboard) return stateDashboard;
     const snapshot = this.findDashboardSnapshot(normalized, session);
     if (snapshot?.payload) {
       return this.decorateDashboardSnapshot(snapshot, session);
@@ -5546,6 +5918,10 @@ class DesktopMirrorService {
       const swap = startDate;
       startDate = endDate;
       endDate = swap;
+    }
+    if (!options.forceRefresh) {
+      const stateReport = this.buildOperationalReportFromGoldState({ ...options, period, startDate, endDate }, session);
+      if (stateReport) return stateReport;
     }
     const cacheOptions = { startDate, endDate, period };
     if (!options.forceRefresh) {
@@ -5857,6 +6233,10 @@ class DesktopMirrorService {
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
     const cacheOptions = { startDate, endDate };
+    if (!options.forceRefresh && !precomputed.centerHealth) {
+      const stateOverview = this.buildProfitabilityOverviewFromGoldState(options, session);
+      if (stateOverview) return stateOverview;
+    }
     if (!options.forceRefresh && !precomputed.centerHealth) {
       const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.PROFITABILITY, cacheOptions, session);
       if (cached) return cached;
@@ -8252,6 +8632,8 @@ class DesktopMirrorService {
         message: "Business Snapshot disponibile solo come fonte decisionale del piano Gold."
       };
     }
+    const stateSnapshot = this.buildBusinessSnapshotFromGoldState(options, session);
+    if (stateSnapshot) return stateSnapshot;
 
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
@@ -8865,6 +9247,21 @@ class DesktopMirrorService {
         suggestions: []
       };
     }
+    const stateOverview = this.buildProfitabilityOverviewFromGoldState(options, session);
+    if (stateOverview) {
+      this.logGoldStateEndpoint("ai_profitability", session, {
+        source: "gold_state",
+        valid: true,
+        reason: "ok",
+        eventSeq: stateOverview.meta?.eventSeq ?? null
+      });
+      return this.buildAiGoldProfitabilityFromOverview(stateOverview);
+    }
+    this.logGoldStateEndpoint("ai_profitability", session, {
+      source: "raw_fallback",
+      valid: false,
+      reason: "state_unavailable"
+    });
     const snapshot = this.getBusinessSnapshot(options, session);
     return snapshot.profitability || {
       goldEnabled: true,
