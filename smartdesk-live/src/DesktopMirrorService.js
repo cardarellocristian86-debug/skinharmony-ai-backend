@@ -342,7 +342,19 @@ const defaultSettings = {
   membershipGoldThresholdCents: 120000,
   membershipPearlDiscountPercent: 5,
   membershipSilverDiscountPercent: 10,
-  membershipGoldDiscountPercent: 15
+  membershipGoldDiscountPercent: 15,
+  whatsappSilverRedirectEnabled: true,
+  whatsappGoldMode: "not_active",
+  whatsappBusinessPhone: "",
+  whatsappActivationRequestedAt: "",
+  whatsappCenterNumberConfirmed: false,
+  whatsappCustomerConsentConfirmed: false,
+  whatsappMonthlyQuota: 100,
+  whatsappMonthlyUsed: 0,
+  whatsappMode: "silver_redirect",
+  whatsappProvider: "twilio",
+  whatsappTemplatesReady: false,
+  whatsappWebhookReady: false
 };
 
 const DEFAULT_STAFF = [
