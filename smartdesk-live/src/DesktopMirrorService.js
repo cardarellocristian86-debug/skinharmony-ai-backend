@@ -1783,6 +1783,168 @@ class DesktopMirrorService {
     return this.refreshGoldDerivedState(state);
   }
 
+  getGoldStateDecision(session = null) {
+    const state = this.getGoldState(session);
+    return state?.decision ? {
+      state,
+      decision: state.decision
+    } : null;
+  }
+
+  buildDecisionCenterFromGoldState(options = {}, session = null) {
+    const stateDecision = this.getGoldStateDecision(session);
+    const state = stateDecision?.state || null;
+    const decision = stateDecision?.decision || null;
+    if (!state || !decision || !decision.primaryAction || Number(state.eventSeq || 0) <= 0) {
+      return null;
+    }
+    const snapshots = state.snapshots || {};
+    const signals = state.signals || {};
+    const business = snapshots.business || {};
+    const profitability = snapshots.profitability || {};
+    const report = snapshots.report || {};
+    const decisionScore = Number(decision.score || 0);
+    const level = decision.action === "ACT_NOW" ? "critical" : decision.action === "SUGGEST" ? "warning" : "info";
+    const centerHealth = {
+      source: "gold_state",
+      status: business.status === "centro_sotto_pressione" ? "fragile" : business.status === "dato_da_verificare" ? "sotto_soglia" : "stabile",
+      statusLabel: business.status === "centro_sotto_pressione" ? "sotto pressione" : business.status === "dato_da_verificare" ? "da verificare" : "stabile",
+      level: business.status === "dato_da_verificare" ? "warning" : business.status === "centro_sotto_pressione" ? "warning" : "success",
+      reason: `State layer: saturazione ${Math.round(Number(business.agendaSaturation || 0) * 100)}%, continuita ${Math.round(Number(business.clientContinuity || 0) * 100)}%, confidenza ${Math.round(Number(business.confidence || 0) * 100)}%.`,
+      revenuePerOperatorCents: 0,
+      monthlyRevenueCents: Number(business.revenueCents || 0),
+      saturationPercent: Math.round(Number(business.agendaSaturation || 0) * 100),
+      continuityPercent: Math.round(Number(business.clientContinuity || 0) * 100)
+    };
+    const primaryItem = {
+      id: `gold-state-${decision.domain}`,
+      level,
+      area: decision.domain || "gold",
+      conclusion: decision.primaryAction?.label || decision.explanationShort || "Priorita Gold",
+      reason: decision.explanationShort || "Priorita letta dal Gold State Layer.",
+      details: `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Fonte gold_state`,
+      impactCents: Number(business.revenueCents || profitability.revenueCents || report.revenueCents || 0),
+      riskCents: decision.domain === "profitability" ? Number(profitability.revenueCents || 0) : 0,
+      action: decision.primaryAction?.label || "gestisci priorita",
+      button: decision.domain === "cash" ? "Apri cassa" : decision.domain === "profitability" ? "Apri redditività" : decision.domain === "operations" ? "Apri dashboard" : decision.domain === "growth" ? "Apri marketing" : "Apri dettaglio",
+      target: decision.domain === "cash" ? "cashdesk" : decision.domain === "profitability" ? "profitability" : decision.domain === "operations" ? "dashboard" : decision.domain === "growth" ? "marketing" : "dashboard"
+    };
+    const secondaryItems = (decision.secondaryActions || []).slice(0, 3).map((item, index) => ({
+      id: `gold-state-secondary-${item.domain || index}`,
+      level: Number(item.score || 0) >= 0.7 ? "critical" : Number(item.score || 0) >= 0.45 ? "warning" : "info",
+      area: item.domain || "gold",
+      conclusion: item.label || "Segnale secondario Gold",
+      reason: "Segnale secondario letto dal Gold State Layer.",
+      details: `Score ${Math.round(Number(item.score || 0) * 100)} · Fonte gold_state`,
+      impactCents: 0,
+      riskCents: 0,
+      action: item.label || "monitorare",
+      button: item.domain === "cash" ? "Apri cassa" : item.domain === "profitability" ? "Apri redditività" : "Apri dettaglio",
+      target: item.domain === "cash" ? "cashdesk" : item.domain === "profitability" ? "profitability" : "dashboard"
+    }));
+    const blockedItems = (decision.blockedActions || []).slice(0, 3).map((label, index) => ({
+      id: `gold-state-blocked-${index}`,
+      level: "warning",
+      area: "controllo",
+      conclusion: String(label || "Azione bloccata"),
+      reason: "Il Gold State Layer segnala confidenza insufficiente o dato fragile.",
+      details: "Output assertivi bloccati fino a dato piu affidabile.",
+      impactCents: 0,
+      riskCents: 0,
+      action: "verifica prima di agire",
+      button: "Apri dashboard",
+      target: "dashboard"
+    }));
+    const sections = [
+      {
+        key: "center_health",
+        title: "Stato centro",
+        items: [{
+          id: "center-health-main",
+          level: centerHealth.level,
+          area: "salute centro",
+          conclusion: `Centro ${centerHealth.statusLabel}`,
+          reason: centerHealth.reason,
+          details: `Fatturato ${euro(Number(business.revenueCents || 0))} · ticket medio ${euro(Number(business.averageTicketCents || 0))} · pagamenti non collegati ${Number(business.unlinkedPayments || 0)}`,
+          impactCents: Number(business.revenueCents || 0),
+          riskCents: 0,
+          action: centerHealth.status === "sotto_soglia" ? "verifica dati e operativita" : "mantieni controllo operativo",
+          button: "Apri dashboard",
+          target: "dashboard"
+        }]
+      },
+      {
+        key: "gold_engine",
+        title: "Gold Decision Engine",
+        items: [primaryItem, ...secondaryItems].slice(0, 4)
+      },
+      {
+        key: "daily",
+        title: "Priorità del giorno",
+        items: [primaryItem, ...secondaryItems].filter((item) => item.area !== "profitability").slice(0, 4)
+      },
+      {
+        key: "profitability",
+        title: "Redditività prodotti e tecnologie",
+        items: [primaryItem, ...secondaryItems].filter((item) => item.area === "profitability").slice(0, 4)
+      },
+      {
+        key: "performance",
+        title: "Performance centro",
+        items: []
+      },
+      {
+        key: "hidden",
+        title: "Opportunità nascoste",
+        items: [primaryItem, ...secondaryItems].filter((item) => item.area === "growth").slice(0, 4)
+      },
+      {
+        key: "actions",
+        title: "Azioni immediate",
+        items: blockedItems.length ? blockedItems : [primaryItem]
+      }
+    ];
+    return {
+      goldEnabled: true,
+      generatedAt: nowIso(),
+      summary: {
+        totalInsights: sections.reduce((sum, section) => sum + section.items.length, 0),
+        centerHealth,
+        modulesConnected: [
+          "agenda",
+          "clienti",
+          "servizi",
+          "cassa",
+          "magazzino",
+          "turni",
+          "trattamenti",
+          "protocolli",
+          "redditività",
+          "operatori",
+          "membership",
+          "AI cliente"
+        ],
+        snapshot: {
+          sourceLayer: "gold_state",
+          cached: true,
+          generatedAt: state.updatedAt,
+          expiresAt: ""
+        },
+        treatments: 0,
+        protocols: 0,
+        technologies: 0
+      },
+      sections,
+      meta: {
+        source: "gold_state",
+        fallbackAvailable: true,
+        stateVersion: state.version,
+        eventSeq: state.eventSeq,
+        lastEvent: state.lastEvent || null
+      }
+    };
+  }
+
   goldClamp01(value) {
     return Math.max(0, Math.min(1, Number.isFinite(Number(value)) ? Number(value) : 0));
   }
@@ -8295,6 +8457,24 @@ class DesktopMirrorService {
         sections: []
       };
     }
+    if (this.getPlanLevel(session) === "gold") {
+      try {
+        const stateDecisionCenter = this.buildDecisionCenterFromGoldState(options, session);
+        if (stateDecisionCenter) {
+          console.log("[decision_center_source]", JSON.stringify({
+            centerId: this.getCenterId(session),
+            source: "gold_state"
+          }));
+          return stateDecisionCenter;
+        }
+      } catch (error) {
+        console.warn("[gold_state_decision_error]", error?.message || error);
+      }
+    }
+    console.log("[decision_center_source]", JSON.stringify({
+      centerId: this.getCenterId(session),
+      source: "raw_fallback"
+    }));
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
     const snapshot = this.getBusinessSnapshot({ startDate, endDate }, session);
