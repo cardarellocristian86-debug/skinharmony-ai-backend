@@ -1858,6 +1858,211 @@ class DesktopMirrorService {
     return next;
   }
 
+  findUserForGoldStateRebuild(payload = {}) {
+    const centerId = String(payload.centerId || "").trim();
+    const username = String(payload.username || "").trim().toLowerCase();
+    const query = String(payload.query || "").trim().toLowerCase();
+    const users = this.usersRepository.list();
+    return users.find((user) => {
+      if (centerId && String(user.centerId || "") === centerId) return true;
+      if (username && String(user.username || "").toLowerCase() === username) return true;
+      if (query) {
+        const haystack = [
+          user.username,
+          user.centerName,
+          user.businessName,
+          user.contactEmail,
+          user.ownerName
+        ].join(" ").toLowerCase();
+        return query.split(/\s+/).filter(Boolean).every((part) => haystack.includes(part));
+      }
+      return false;
+    });
+  }
+
+  buildGoldStateRebuildSession(user = {}) {
+    const normalized = this.normalizeUserAccount(user);
+    return {
+      userId: normalized.id,
+      username: normalized.username,
+      role: normalized.role || "owner",
+      centerId: normalized.centerId || DEFAULT_CENTER_ID,
+      centerName: normalized.centerName || DEFAULT_CENTER_NAME,
+      subscriptionPlan: normalized.subscriptionPlan || "base",
+      planType: normalized.planType || "active",
+      paymentStatus: normalized.paymentStatus || "paid",
+      accountStatus: normalized.accountStatus || "active",
+      accessState: normalized.accessState || "active",
+      supportMode: true
+    };
+  }
+
+  buildGoldStateCountersFromRepositories(session = null) {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const counters = {
+      revenueTotalCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0),
+      paymentCount: payments.length,
+      unlinkedPayments: payments.filter((item) => this.goldPaymentIsUnlinked(item)).length,
+      todayAppointments: appointments.filter((item) => this.goldAppointmentActiveForToday(item)).length,
+      appointmentSlots: Math.max(24, staff.filter((item) => item.active !== false).length * 8),
+      clientsTotal: clients.length,
+      activeClients: clients.filter((item) => this.goldClientIsActive(item)).length,
+      clientsWithContact: clients.filter((item) => this.goldClientHasContact(item)).length,
+      servicesTotal: services.length,
+      servicesWithPrice: services.filter((item) => this.goldServiceHasPrice(item)).length,
+      servicesWithCost: services.filter((item) => this.goldServiceHasCost(item)).length,
+      staffActive: staff.filter((item) => item.active !== false).length,
+      staffTotal: staff.length,
+      inventoryTotal: inventory.length,
+      lowStock: inventory.filter((item) => this.goldInventoryIsLow(item)).length,
+      marginTotal: 0,
+      marginSamples: 0
+    };
+    services.forEach((service) => {
+      const ratio = this.goldServiceMarginRatio(service);
+      if (ratio === null) return;
+      counters.marginTotal += ratio;
+      counters.marginSamples += 1;
+    });
+    return {
+      counters,
+      rawCounts: {
+        clients: clients.length,
+        appointments: appointments.length,
+        payments: payments.length,
+        services: services.length,
+        staff: staff.length,
+        inventory: inventory.length
+      }
+    };
+  }
+
+  compareGoldStateToRaw(state = {}, session = null) {
+    const rebuilt = this.refreshGoldDerivedState({
+      ...this.buildDefaultGoldState(this.getCenterId(session), this.getCenterName(session)),
+      counters: this.buildGoldStateCountersFromRepositories(session).counters
+    });
+    const metrics = [
+      ["Rev", rebuilt.components?.Rev, state.components?.Rev, 0],
+      ["U", rebuilt.components?.U, state.components?.U, 0],
+      ["Sat", rebuilt.components?.Sat, state.components?.Sat, 0.0001],
+      ["Act", rebuilt.components?.Act, state.components?.Act, 0],
+      ["Cont", rebuilt.components?.Cont, state.components?.Cont, 0.0001],
+      ["Ticket", rebuilt.components?.Ticket, state.components?.Ticket, 1],
+      ["Prod", rebuilt.components?.Prod, state.components?.Prod, 0.0001],
+      ["DQ", rebuilt.components?.DQ, state.components?.DQ, 0.0001],
+      ["CostConf", rebuilt.components?.CostConf, state.components?.CostConf, 0.0001],
+      ["Margin", rebuilt.components?.Margin, state.components?.Margin, 0.0001],
+      ["Conf", rebuilt.components?.Conf, state.components?.Conf, 0.0001]
+    ].map(([metric, rawValue, stateValue, tolerance]) => {
+      const diff = Math.abs(Number(rawValue || 0) - Number(stateValue || 0));
+      return {
+        metric,
+        raw: rawValue,
+        state: stateValue,
+        diff: this.goldRound(diff, 6),
+        tolerance,
+        ok: diff <= tolerance
+      };
+    });
+    return {
+      valid: metrics.every((item) => item.ok),
+      metrics,
+      diffSummary: metrics.reduce((acc, item) => {
+        if (!item.ok) acc[item.metric] = item.diff;
+        return acc;
+      }, {})
+    };
+  }
+
+  rebuildGoldStateForTenant(payload = {}, adminSession = null) {
+    if (!this.isSuperAdminSession(adminSession)) {
+      throw new Error("Rebuild Gold State riservato al super admin");
+    }
+    const user = this.findUserForGoldStateRebuild(payload);
+    assertValid(Boolean(user), "Tenant Gold non trovato per rebuild");
+    const normalized = this.normalizeUserAccount(user);
+    assertValid(String(normalized.subscriptionPlan || "").toLowerCase() === "gold", "Il rebuild Gold State è disponibile solo per tenant Gold");
+    const targetSession = this.buildGoldStateRebuildSession(normalized);
+    const centerId = this.getCenterId(targetSession);
+    const recordId = this.getGoldStateRecordId(centerId);
+    const startedAt = nowIso();
+    console.log("[gold_state_rebuild]", JSON.stringify({
+      centerId,
+      phase: "rebuild_start",
+      rebuiltAt: startedAt,
+      requestedBy: adminSession?.username || ""
+    }));
+    const existing = this.goldStateRepository.findById(recordId);
+    const { counters, rawCounts } = this.buildGoldStateCountersFromRepositories(targetSession);
+    const rawEventSeq = Object.values(rawCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+    const eventSeq = Math.max(1, Number(existing?.eventSeq || 0), rawEventSeq);
+    const rebuilt = this.refreshGoldDerivedState({
+      ...this.buildDefaultGoldState(centerId, this.getCenterName(targetSession)),
+      id: recordId,
+      centerId,
+      centerName: this.getCenterName(targetSession),
+      eventSeq,
+      counters,
+      dirty: {
+        components: ["Rev", "U", "Sat", "Act", "Cont", "Ticket", "Prod", "DQ", "CostConf", "Margin", "Conf"],
+        snapshots: ["business", "profitability", "report"],
+        signals: ["operationalRisk", "centerBelowThreshold", "opportunity", "cashAnomaly", "marginAnomaly", "dataReliability", "productivitySignal"]
+      },
+      metadata: {
+        ...(existing?.metadata || {}),
+        version: "gold_state_rebuild_v1",
+        rebuiltAt: startedAt,
+        rebuiltFromRaw: true,
+        rebuildMode: "manual_tenant_reconciliation",
+        previousEventSeq: Number(existing?.eventSeq || 0),
+        rawCounts,
+        valid: true
+      },
+      lastEvent: {
+        type: "rebuild_initial_state",
+        at: startedAt,
+        reason: "manual_tenant_reconciliation",
+        previousEventSeq: Number(existing?.eventSeq || 0)
+      },
+      updatedAt: startedAt
+    });
+    const validation = this.compareGoldStateToRaw(rebuilt, targetSession);
+    rebuilt.metadata = {
+      ...(rebuilt.metadata || {}),
+      valid: validation.valid,
+      validation
+    };
+    const saved = this.goldStateRepository.findById(recordId)
+      ? this.goldStateRepository.update(recordId, () => rebuilt)
+      : this.goldStateRepository.create(rebuilt);
+    console.log("[gold_state_rebuild]", JSON.stringify({
+      centerId,
+      phase: "rebuild_complete",
+      metricsCompared: validation.metrics.map((item) => item.metric),
+      diffSummary: validation.diffSummary,
+      valid: validation.valid,
+      rebuiltAt: startedAt,
+      eventSeq
+    }));
+    return {
+      success: true,
+      centerId,
+      centerName: this.getCenterName(targetSession),
+      username: normalized.username || "",
+      eventSeq,
+      rawCounts,
+      valid: validation.valid,
+      validation,
+      state: saved || rebuilt
+    };
+  }
+
   getGoldStateDecision(session = null) {
     const state = this.getGoldState(session);
     return state?.decision ? {

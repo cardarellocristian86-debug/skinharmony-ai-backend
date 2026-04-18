@@ -1285,6 +1285,14 @@ app.post("/api/admin/reset-center-data", requireSuperAdmin, (req, res) => {
   }
 });
 
+app.post("/api/admin/gold-state/rebuild", requireSuperAdmin, (req, res) => {
+  try {
+    res.json(service.rebuildGoldStateForTenant(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile ricostruire Gold State");
+  }
+});
+
 app.get("/api/admin/database-usage", requireSuperAdmin, async (req, res) => {
   try {
     res.json(await service.getDatabaseUsage(req.session));
