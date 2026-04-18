@@ -23,6 +23,9 @@ const GOLD_TEMPORAL_EPSILON = 0.03;
 const GOLD_TEMPORAL_CONFIDENCE_NU = 0.30;
 const GOLD_TREND_MU1 = 0.20;
 const GOLD_TREND_MU2 = 0.10;
+const GOLD_ENTERPRISE_RISK_RHO = Object.freeze({ friction: 0.45, dataGap: 0.30, instability: 0.25 });
+const GOLD_ENTERPRISE_ACTION_COST = Object.freeze({ ACT_NOW: 0.06, SUGGEST: 0.04, MONITOR: 0.015, VERIFY: 0.025, STOP: 0 });
+const GOLD_ENTERPRISE_BAYES_PRIOR = Object.freeze({ alpha: 2, beta: 2 });
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
@@ -887,6 +890,64 @@ function applyGoldDecisionMatrixV1(goldDecision = {}, control = {}, meta = {}) {
   };
 }
 
+function clampSignedScore(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(-1, Math.min(1, number));
+}
+
+function computeBayesianSuccessRate(stats = {}) {
+  const successes = Number(stats.successes || 0);
+  const failures = Number(stats.failures || 0);
+  const alpha = GOLD_ENTERPRISE_BAYES_PRIOR.alpha + Math.max(0, successes);
+  const beta = GOLD_ENTERPRISE_BAYES_PRIOR.beta + Math.max(0, failures);
+  return normalizeScore(alpha / Math.max(alpha + beta, 1));
+}
+
+function allowedEnterpriseActions(item = {}) {
+  const action = String(item.action || "");
+  const friction = Number(item.factors?.friction || 0);
+  const confidence = Number(item.confidenceTemporal ?? item.confidence ?? 0);
+  const need = Number(item.factors?.need || 0);
+  if (friction >= 0.70 || action === "STOP") return ["STOP", "VERIFY"];
+  if (confidence < 0.40 || action === "VERIFY") return ["VERIFY", "MONITOR", "STOP"];
+  if (need < 0.20) return ["MONITOR", "VERIFY", "STOP"];
+  return ["ACT_NOW", "SUGGEST", "MONITOR", "VERIFY", "STOP"];
+}
+
+function simulateGoldEnterpriseActions(item = {}, enterprise = {}) {
+  const allowed = allowedEnterpriseActions(item);
+  const value = normalizeScore(item.factors?.value ?? 0);
+  const need = normalizeScore(item.factors?.need ?? 0);
+  const risk = normalizeScore(enterprise.risk ?? item.risk ?? 0);
+  const pSuccess = normalizeScore(enterprise.pSuccessLearned ?? item.pSuccess ?? 0);
+  const candidates = allowed.map((action) => {
+    const actionMultiplier = action === "ACT_NOW" ? 1
+      : action === "SUGGEST" ? 0.82
+        : action === "MONITOR" ? 0.42
+          : action === "VERIFY" ? 0.28
+            : 0;
+    const cost = Number(GOLD_ENTERPRISE_ACTION_COST[action] ?? 0.03);
+    const estimatedSuccess = normalizeScore(pSuccess * actionMultiplier);
+    const estimatedOutcome = clampSignedScore((estimatedSuccess * value) - (risk * 0.18) - cost);
+    return {
+      action,
+      pSuccess: Number(estimatedSuccess.toFixed(3)),
+      outcome: Number(estimatedOutcome.toFixed(3)),
+      ev: Number(normalizeScore(estimatedSuccess * value * Math.max(0.25, need)).toFixed(3)),
+      cost: Number(cost.toFixed(3))
+    };
+  }).sort((a, b) => Number(b.ev || 0) - Number(a.ev || 0) || Number(b.outcome || 0) - Number(a.outcome || 0));
+  return {
+    version: "gold_simulation_v1",
+    mode: "base",
+    candidates,
+    bestAction: candidates[0]?.action || String(item.action || "MONITOR"),
+    bestExpectedValue: Number(candidates[0]?.ev || 0),
+    bestOutcome: Number(candidates[0]?.outcome || 0)
+  };
+}
+
 function classifyClientRoutine(client, appointments, centerAverageFrequencyDays, nowMs = Date.now(), serviceById = new Map()) {
   const clientId = String(client?.id || "");
   const visits = relevantClientAppointments(appointments, clientId, nowMs);
@@ -1309,6 +1370,7 @@ class DesktopMirrorService {
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
     this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
     this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
+    this.goldActionOutcomesRepository = this.createRepository("gold_action_outcomes", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
@@ -1939,6 +2001,7 @@ class DesktopMirrorService {
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
         { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
+        { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
@@ -6152,6 +6215,11 @@ class DesktopMirrorService {
       confidence: Number(item.confidence || 0),
       confidenceTemporal: Number(item.confidenceTemporal ?? item.confidence ?? 0),
       expectedValue: Number(item.expectedValue || 0),
+      opportunityCost: Number(item.opportunityCost || 0),
+      netExpectedUtility: Number(item.netExpectedUtility || 0),
+      enterpriseRisk: Number(item.enterpriseRisk ?? item.risk ?? 0),
+      riskAdjustedPriority2: Number(item.riskAdjustedPriority2 ?? item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0),
+      primaryAction: String(item.primaryAction || ""),
       riskAdjustedPriority: Number(item.riskAdjustedPriority || 0),
       riskAdjustedPriorityTrend: Number(item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0),
       need: Number(item.factors?.need || 0),
@@ -6166,6 +6234,50 @@ class DesktopMirrorService {
       penaltyApplied: Boolean(item.penaltyApplied),
       explanationShort: String(item.explanationShort || item.output || "").slice(0, 240)
     };
+  }
+
+  getGoldLearningStatsMap(session = null) {
+    const rows = this.filterByCenter(this.goldActionOutcomesRepository.list(), session);
+    const map = new Map();
+    rows.forEach((row) => {
+      const key = `${String(row.domain || "unknown")}:${String(row.action || "unknown")}`;
+      const current = map.get(key) || { attempts: 0, successes: 0, failures: 0 };
+      current.attempts += 1;
+      if (row.success === true || ["success", "completed", "booked", "resolved"].includes(String(row.outcome || ""))) {
+        current.successes += 1;
+      } else {
+        current.failures += 1;
+      }
+      map.set(key, current);
+    });
+    return map;
+  }
+
+  getGoldLearningStatsForItem(item = {}, learningMap = new Map()) {
+    const domain = String(item.domain || "unknown");
+    const action = String(item.action || "unknown");
+    return learningMap.get(`${domain}:${action}`) || { attempts: 0, successes: 0, failures: 0 };
+  }
+
+  recordGoldActionOutcome(payload = {}, session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      throw new Error("Outcome Gold disponibile solo con piano Gold");
+    }
+    const row = {
+      id: crypto.randomUUID(),
+      centerId: this.getCenterId(session),
+      createdAt: nowIso(),
+      domain: String(payload.domain || ""),
+      entityId: String(payload.entityId || ""),
+      action: String(payload.action || ""),
+      outcome: String(payload.outcome || ""),
+      success: Boolean(payload.success),
+      valueCents: Number(payload.valueCents || 0),
+      note: String(payload.note || "").slice(0, 500)
+    };
+    this.goldActionOutcomesRepository.create(row);
+    return row;
   }
 
   trendLabelFromMetrics({ deltaRAP = 0, accelerationRAP = 0, volatilityRAP = 0, snapshots = 0 }) {
@@ -6266,6 +6378,84 @@ class DesktopMirrorService {
         ...branch,
         temporalMode: "test_parallel",
         items: this.applyGoldTemporalLayerToItems(branch?.items || [], historyMap)
+      };
+    });
+    return nextBranches;
+  }
+
+  applyGoldEnterpriseLayerToItems(items = [], learningMap = new Map()) {
+    return (Array.isArray(items) ? items : []).map((item) => {
+      const friction = normalizeScore(item.factors?.friction ?? 0);
+      const dataQuality = normalizeScore(item.factors?.dataQuality ?? item.confidence ?? 0);
+      const instability = normalizeScore(item.trend?.volatilityRAP ?? 0);
+      const risk = normalizeScore(
+        (GOLD_ENTERPRISE_RISK_RHO.friction * friction)
+        + (GOLD_ENTERPRISE_RISK_RHO.dataGap * (1 - dataQuality))
+        + (GOLD_ENTERPRISE_RISK_RHO.instability * instability)
+      );
+      const confidence = normalizeScore(item.confidenceTemporal ?? item.confidence ?? 0);
+      const value = normalizeScore(item.factors?.value ?? 0);
+      const need = normalizeScore(item.factors?.need ?? 0);
+      const rapTrendAdj = normalizeScore(item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0);
+      const riskAdjustedPriority2 = normalizeScore(rapTrendAdj * (1 - risk));
+      const stats = this.getGoldLearningStatsForItem(item, learningMap);
+      const pSuccessLearned = stats.attempts > 0 ? computeBayesianSuccessRate(stats) : normalizeScore(item.pSuccess ?? confidence * (1 - friction));
+      const expectedValue = normalizeScore(confidence * (1 - risk) * value);
+      const pLoss = normalizeScore(risk * Math.max(need, 1 - confidence));
+      const opportunityCost = normalizeScore(value * pLoss);
+      const actionCost = Number(GOLD_ENTERPRISE_ACTION_COST[item.action] ?? 0.03);
+      const netExpectedUtility = clampSignedScore(expectedValue - opportunityCost - actionCost);
+      const simulation = simulateGoldEnterpriseActions(item, {
+        risk,
+        pSuccessLearned,
+        expectedValue
+      });
+      return {
+        ...item,
+        enterpriseLayer: "gold_enterprise_v1",
+        RAP_trend_adj: Number(rapTrendAdj.toFixed(3)),
+        risk: Number(risk.toFixed(3)),
+        enterpriseRisk: Number(risk.toFixed(3)),
+        riskModel: {
+          version: "gold_risk_model_v1",
+          formula: "R = rho1*F + rho2*(1-Q) + rho3*instability",
+          friction: Number(friction.toFixed(3)),
+          dataGap: Number((1 - dataQuality).toFixed(3)),
+          instability: Number(instability.toFixed(3)),
+          rho: GOLD_ENTERPRISE_RISK_RHO,
+          value: Number(risk.toFixed(3))
+        },
+        riskAdjustedPriority2: Number(riskAdjustedPriority2.toFixed(3)),
+        riskAdjustedPriority2Percent: Math.round(riskAdjustedPriority2 * 100),
+        expectedValue: Number(expectedValue.toFixed(3)),
+        expectedValuePercent: Math.round(expectedValue * 100),
+        opportunityCost: Number(opportunityCost.toFixed(3)),
+        opportunityCostPercent: Math.round(opportunityCost * 100),
+        netExpectedUtility: Number(netExpectedUtility.toFixed(3)),
+        pSuccessLearned: Number(pSuccessLearned.toFixed(3)),
+        learning: {
+          version: "gold_learning_v1",
+          method: "bayesian_update",
+          attempts: stats.attempts,
+          successes: stats.successes,
+          failures: stats.failures,
+          pSuccess: Number(pSuccessLearned.toFixed(3))
+        },
+        simulation,
+        simulatedBestAction: simulation.bestAction,
+        primaryAction: simulation.bestAction
+      };
+    });
+  }
+
+  applyGoldEnterpriseLayer(branches = {}, session = null) {
+    const learningMap = this.getGoldLearningStatsMap(session);
+    const nextBranches = {};
+    Object.entries(branches || {}).forEach(([key, branch]) => {
+      nextBranches[key] = {
+        ...branch,
+        enterpriseLayer: "gold_enterprise_v1",
+        items: this.applyGoldEnterpriseLayerToItems(branch?.items || [], learningMap)
       };
     });
     return nextBranches;
@@ -6732,6 +6922,7 @@ class DesktopMirrorService {
   }
 
   buildGoldDashboardDecisions(branches = {}, dataQuality = {}, session = null, economicReading = null) {
+    const learningMap = this.getGoldLearningStatsMap(session);
     const downgradeBand = (band) => {
       if (band === "alta") return { key: "media", label: "Priorità media" };
       if (band === "media") return { key: "bassa", label: "Priorità bassa" };
@@ -6746,6 +6937,7 @@ class DesktopMirrorService {
       const nextPhi = Number(Math.max(0, Number(item.phi || 0) * penalty).toFixed(3));
       const nextRap = Number(Math.max(0, Number(item.riskAdjustedPriority || 0) * penalty).toFixed(3));
       const nextTrendRap = Number(Math.max(0, Number(item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0) * penalty).toFixed(3));
+      const nextRap2 = Number(Math.max(0, Number(item.riskAdjustedPriority2 ?? item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? 0) * penalty).toFixed(3));
       const downgraded = downgradeBand(item.band);
       return {
         ...item,
@@ -6755,6 +6947,8 @@ class DesktopMirrorService {
         riskAdjustedPriorityPercent: Math.round(nextRap * 100),
         riskAdjustedPriorityTrend: nextTrendRap,
         riskAdjustedPriorityTrendPercent: Math.round(nextTrendRap * 100),
+        riskAdjustedPriority2: nextRap2,
+        riskAdjustedPriority2Percent: Math.round(nextRap2 * 100),
         band: downgraded.key,
         bandLabel: downgraded.label,
         reliabilityPenaltyApplied: true,
@@ -6787,6 +6981,7 @@ class DesktopMirrorService {
     }) : null;
     if (qualityDecision) {
       qualityDecision = this.applyGoldTemporalLayerToItems([qualityDecision], this.getGoldDecisionHistoryMap(session))[0];
+      qualityDecision = this.applyGoldEnterpriseLayerToItems([qualityDecision], learningMap)[0];
     }
     let economicDecision = null;
     if (economicReading) {
@@ -6821,19 +7016,55 @@ class DesktopMirrorService {
         bandLabel: economicReading.action === "OK" ? "Sistema allineato" : economicDecision.bandLabel
       };
       economicDecision = this.applyGoldTemporalLayerToItems([economicDecision], this.getGoldDecisionHistoryMap(session))[0];
+      economicDecision = this.applyGoldEnterpriseLayerToItems([economicDecision], learningMap)[0];
     }
     const allItems = [...branchItems, qualityDecision, economicDecision].filter(Boolean)
-      .sort((a, b) => Number(b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.riskAdjustedPriority || 0) - Number(a.riskAdjustedPriority || 0) || Number(b.phi || 0) - Number(a.phi || 0))
+      .sort((a, b) => Number(b.riskAdjustedPriority2 ?? b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriority2 ?? a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.netExpectedUtility || 0) - Number(a.netExpectedUtility || 0) || Number(b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.phi || 0) - Number(a.phi || 0))
       .slice(0, 12);
+    const actionableItems = allItems.filter((item) => !["STOP", "VERIFY"].includes(String(item.action || "")) && Number(item.riskAdjustedPriority2 ?? 0) >= 0.25);
+    const primaryAction = actionableItems[0] || allItems.find((item) => String(item.action || "") === "VERIFY") || allItems[0] || null;
+    const secondaryActions = allItems.filter((item) => primaryAction && `${item.domain}:${item.entityId}` !== `${primaryAction.domain}:${primaryAction.entityId}` && !["STOP", "VERIFY"].includes(String(item.action || ""))).slice(0, 3);
+    const blockedActions = allItems.filter((item) => ["STOP", "VERIFY"].includes(String(item.action || ""))).slice(0, 5);
     return {
       domain: "dashboard",
       engineVersion: "gold_phi_dashboard_v1",
+      enterpriseLayer: "gold_enterprise_v1",
       generatedAt: nowIso(),
       items: allItems,
+      primaryAction,
+      secondaryActions,
+      blockedActions,
       summary: {
-        rankingMethod: "risk_adjusted_priority_trend_test_parallel",
+        rankingMethod: "risk_adjusted_priority_2_enterprise",
         classicRankingAvailable: true,
-        firstAction: allItems[0]?.suggestedAction || "nessuna azione urgente",
+        firstAction: primaryAction?.suggestedAction || "nessuna azione urgente",
+        primaryAction: primaryAction ? {
+          domain: primaryAction.domain,
+          entityId: primaryAction.entityId,
+          label: primaryAction.label,
+          action: primaryAction.action,
+          suggestedAction: primaryAction.suggestedAction,
+          RAP_trend_adj: primaryAction.RAP_trend_adj ?? primaryAction.riskAdjustedPriorityTrend,
+          risk: primaryAction.enterpriseRisk ?? primaryAction.risk,
+          EV: primaryAction.expectedValue,
+          OC: primaryAction.opportunityCost,
+          NEU: primaryAction.netExpectedUtility
+        } : null,
+        secondaryActions: secondaryActions.map((item) => ({
+          domain: item.domain,
+          entityId: item.entityId,
+          label: item.label,
+          action: item.action,
+          suggestedAction: item.suggestedAction,
+          riskAdjustedPriority2: item.riskAdjustedPriority2
+        })),
+        blockedActions: blockedActions.map((item) => ({
+          domain: item.domain,
+          entityId: item.entityId,
+          label: item.label,
+          action: item.action,
+          reason: item.explanationShort || item.output
+        })),
         mainProblem: allItems.find((item) => ["cash", "agenda", "profit"].includes(item.domain) && item.phi >= 0.5)?.explanationShort || "nessun problema urgente",
         bestOpportunity: allItems.find((item) => item.domain === "marketing" || item.output === "margine buono")?.explanationShort || "nessuna opportunità prioritaria",
         areaToAvoidNow: allItems.find((item) => item.factors?.friction >= 0.75)?.label || "",
@@ -6956,15 +7187,16 @@ class DesktopMirrorService {
       profit: this.buildGoldProfitDecisions(profitability)
     };
     const temporalGoldBranches = this.applyGoldTemporalLayer(rawGoldBranches, session);
+    const enterpriseGoldBranches = this.applyGoldEnterpriseLayer(temporalGoldBranches, session);
     const economicReading = this.buildGoldEconomicReading({
       appointments,
       payments,
       servicesById,
       period: { startDate: snapshotStartDate, endDate: snapshotEndDate }
     }, dataQuality);
-    const goldDashboardBranch = this.buildGoldDashboardDecisions(temporalGoldBranches, dataQuality, session, economicReading);
+    const goldDashboardBranch = this.buildGoldDashboardDecisions(enterpriseGoldBranches, dataQuality, session, economicReading);
     const goldHistoryWrite = this.persistGoldDecisionHistory({
-      ...temporalGoldBranches,
+      ...enterpriseGoldBranches,
       dashboard: goldDashboardBranch
     }, session);
     const snapshot = {
@@ -7020,15 +7252,17 @@ class DesktopMirrorService {
       goldEngine: {
         engineLayer: "gold_decision_engine",
         engineVersion: "gold_phi_multi_domain_v1",
+        enterpriseLayer: "gold_enterprise_v1",
+        enterpriseRule: "Gold Enterprise ordina con storico, rischio esplicito, valore atteso, costo opportunita, utilita netta, simulazione V1 e learning bayesiano sugli outcome.",
         temporalLayer: "gold_temporal_v1",
         temporalMode: "test_parallel",
         temporalRule: "RAP classico resta disponibile; Dashboard valuta in parallelo RAP trend-adjusted, confidence temporale, volatilita e delta.",
         history: goldHistoryWrite,
         rule: "Gold legge dati già presenti, pesa i segnali e produce priorità operative. Base e Silver non dipendono da questo motore.",
-        marketing: temporalGoldBranches.marketing,
-        agenda: temporalGoldBranches.agenda,
-        cash: temporalGoldBranches.cash,
-        profit: temporalGoldBranches.profit,
+        marketing: enterpriseGoldBranches.marketing,
+        agenda: enterpriseGoldBranches.agenda,
+        cash: enterpriseGoldBranches.cash,
+        profit: enterpriseGoldBranches.profit,
         dashboard: goldDashboardBranch
       },
       operations: {
