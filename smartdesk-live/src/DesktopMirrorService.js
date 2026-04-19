@@ -14,6 +14,7 @@ const { computeCashSnapshot } = require("./core/cash/CashCore");
 const { adaptCashSnapshotToLegacyComparable } = require("./core/cash/CashPolicyAdapter");
 const { computeDataQualitySnapshot } = require("./core/data-quality/DataQualityCore");
 const { adaptDataQualitySnapshotToLegacyComparable } = require("./core/data-quality/DQPolicyAdapter");
+const { buildDecisionSnapshot } = require("./core/decision/DecisionCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -70,6 +71,17 @@ const DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({
   dataQualityScore: 0.35,
   paymentQuality: 0.15,
   appointmentQuality: 0.15
+});
+const DECISION_PARALLEL_WEIGHTS = Object.freeze({
+  primaryAction: 0.30,
+  actionBand: 0.20,
+  tone: 0.10,
+  top3: 0.20,
+  priorityDistance: 0.20
+});
+const DECISION_PARALLEL_WARNING_THRESHOLDS = Object.freeze({
+  top3Overlap: 0.67,
+  priorityDistance: 0.75
 });
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
@@ -1812,6 +1824,7 @@ class DesktopMirrorService {
       snapshots: {},
       signals: {},
       decision: null,
+      decisionParallel: null,
       cashParallel: null,
       cashSelection: null,
       cashPrimarySnapshot: null,
@@ -3966,6 +3979,325 @@ class DesktopMirrorService {
     };
   }
 
+  normalizeLegacyDecisionAction(item = {}, index = 0, source = "legacy") {
+    const domain = String(item.domain || item.actionKey || `legacy_${index}`);
+    const actionBand = String(item.action || item.actionBand || (Number(item.score || 0) >= 0.7 ? "ACT_NOW" : Number(item.score || 0) >= 0.45 ? "SUGGEST" : "MONITOR")).toUpperCase();
+    const priorityScore = this.goldClamp01(Number(item.priorityScore ?? item.score ?? item.riskAdjustedPriority2 ?? item.riskAdjustedPriority ?? 0));
+    const tone = item.tone || (actionBand === "ACT_NOW" ? "direct" : actionBand === "SUGGEST" || actionBand === "VERIFY" ? "consultative" : "soft");
+    return {
+      actionKey: String(item.actionKey || domain),
+      domain,
+      label: item.label || "",
+      need: null,
+      urgency: null,
+      value: null,
+      risk: Number(item.risk ?? 0),
+      confidence: Number(item.confidence ?? 0),
+      friction: null,
+      trend: null,
+      maturity: null,
+      dataQuality: null,
+      phi: Number(item.phi ?? item.score ?? 0),
+      rap: Number(item.rap ?? item.RAP ?? item.riskAdjustedPriority ?? priorityScore),
+      rap2: Number(item.rap2 ?? item.RAP_2 ?? item.riskAdjustedPriority2 ?? priorityScore),
+      ev: Number(item.ev ?? item.EV ?? item.expectedValue ?? 0),
+      oc: Number(item.oc ?? item.OC ?? item.opportunityCost ?? 0),
+      neu: Number(item.neu ?? item.NEU ?? item.netExpectedUtility ?? 0),
+      priorityScore: this.goldRound(priorityScore, 4),
+      actionBand,
+      tone,
+      eligible: !["VERIFY", "STOP"].includes(actionBand),
+      blockReasons: Array.isArray(item.blockReasons) ? item.blockReasons : [],
+      sourceFlags: [`decision:${source}`],
+      rank: index + 1
+    };
+  }
+
+  buildLegacyDecisionSnapshotForParallel(state = {}) {
+    const decision = state.decision || this.buildGoldDecisionFromState(state);
+    const primary = decision?.primaryAction
+      ? this.normalizeLegacyDecisionAction({
+        ...decision.primaryAction,
+        actionKey: decision.primaryAction.domain || decision.domain,
+        score: decision.score,
+        action: decision.action
+      }, 0)
+      : null;
+    const secondary = (decision?.secondaryActions || []).map((item, index) => this.normalizeLegacyDecisionAction({
+      ...item,
+      actionKey: item.domain,
+      action: Number(item.score || 0) >= 0.7 ? "ACT_NOW" : Number(item.score || 0) >= 0.45 ? "SUGGEST" : "MONITOR"
+    }, index + 1));
+    const blocked = (decision?.blockedActions || []).map((item, index) => {
+      if (typeof item === "string") {
+        return this.normalizeLegacyDecisionAction({
+          actionKey: item,
+          domain: item,
+          label: item,
+          score: 0,
+          action: "STOP",
+          blockReasons: [item]
+        }, index + 1, "legacy_blocked");
+      }
+      return this.normalizeLegacyDecisionAction({ ...item, action: item.action || "STOP" }, index + 1, "legacy_blocked");
+    });
+    const actions = [primary, ...secondary, ...blocked].filter(Boolean);
+    return {
+      source: "legacy",
+      primaryAction: primary,
+      secondaryActions: secondary,
+      blockedActions: blocked,
+      summary: {
+        topPriorityScore: this.goldRound(primary?.priorityScore || 0, 4),
+        averageConfidence: actions.length ? this.goldRound(average(actions.map((item) => Number(item.confidence || 0))), 4) : 0,
+        averageRisk: actions.length ? this.goldRound(average(actions.map((item) => Number(item.risk || 0))), 4) : 0
+      },
+      actions
+    };
+  }
+
+  buildDecisionCoreCandidatesFromGoldState(state = {}) {
+    const signals = state.signals || this.buildGoldSignalsFromState(state);
+    const components = state.components || {};
+    const cashPrimary = state.cashPrimarySnapshot || {};
+    const dataQualityPrimary = state.dataQualityPrimarySnapshot || {};
+    const profitability = state.snapshots?.profitability || {};
+    const maturityScore = Number(state.progressiveIntelligence?.maturityScore ?? components.Conf ?? 0);
+    const pialLevel = Number(state.progressiveIntelligence?.activationLevel ?? (Number(components.Conf || 0) >= 0.75 ? 4 : Number(components.Conf || 0) >= 0.5 ? 3 : 1));
+    const dataQuality = this.goldClamp01(Number(dataQualityPrimary.dataQualityScore ?? components.DQ ?? 0));
+    const cashConfidence = this.goldClamp01(Number(cashPrimary.confidenceScore ?? components.Conf ?? 0));
+    const profitabilityConfidence = this.goldClamp01(Number(profitability.economicConfidence ?? profitability.costConfidence ?? components.CostConf ?? 0));
+    const context = {
+      horizon: { at: state.updatedAt || nowIso(), centerId: state.centerId || "" },
+      activationLevel: pialLevel,
+      pial: {
+        activationLevel: pialLevel,
+        maturityScore: maturityScore || Number(components.Conf || 0)
+      },
+      dataQualityPrimarySnapshot: {
+        dataQualityScore: dataQuality,
+        band: dataQualityPrimary.band || (dataQuality >= 0.9 ? "REAL" : dataQuality >= 0.75 ? "STANDARD" : dataQuality >= 0.5 ? "ESTIMATED" : "INCOMPLETE")
+      },
+      cashPrimarySnapshot: {
+        confidenceScore: cashConfidence,
+        confidence: cashPrimary.confidence || (cashConfidence >= 0.9 ? "REAL" : cashConfidence >= 0.75 ? "STANDARD" : cashConfidence >= 0.5 ? "ESTIMATED" : "INCOMPLETE")
+      },
+      profitabilitySnapshot: {
+        confidenceScore: profitabilityConfidence,
+        confidence: profitability.confidence || (profitabilityConfidence >= 0.75 ? "STANDARD" : profitabilityConfidence >= 0.5 ? "ESTIMATED" : "INCOMPLETE")
+      }
+    };
+    const candidates = [
+      {
+        actionKey: "cash",
+        domain: "cash",
+        label: "Verifica pagamenti non collegati",
+        need: signals.cashAnomaly || 0,
+        urgency: signals.cashAnomaly >= 0.5 ? 0.85 : 0.35,
+        value: this.goldClamp01((Number(components.U || 0) / 5) || signals.cashAnomaly || 0),
+        baseRisk: Number(cashPrimary.ambiguityRatio ?? 0.2),
+        ambiguity: Number(cashPrimary.ambiguityRatio ?? signals.cashAnomaly ?? 0),
+        fragility: 1 - cashConfidence,
+        friction: this.goldClamp01(Number(cashPrimary.ambiguityRatio ?? 0) + (Number(cashPrimary.unlinkedCashCents || 0) > 0 ? 0.15 : 0)),
+        reversibility: 0.85,
+        cashConfidence,
+        dqConfidence: dataQuality,
+        minPialLevel: 1
+      },
+      {
+        actionKey: "profitability",
+        domain: "profitability",
+        label: "Verifica marginalita e costi",
+        need: signals.marginAnomaly || 0,
+        urgency: signals.marginAnomaly >= 0.5 ? 0.7 : 0.3,
+        value: this.goldClamp01(Math.abs(Number(components.Margin || 0) - 0.35) + 0.35),
+        baseRisk: 1 - profitabilityConfidence,
+        ambiguity: 1 - Number(components.CostConf || 0),
+        fragility: 1 - Number(components.Conf || 0),
+        friction: 1 - profitabilityConfidence,
+        reversibility: 0.75,
+        profitabilityConfidence,
+        dqConfidence: dataQuality,
+        minPialLevel: 3
+      },
+      {
+        actionKey: "operations",
+        domain: "operations",
+        label: "Controlla rischio operativo",
+        need: signals.operationalRisk || 0,
+        urgency: this.goldClamp01((signals.operationalRisk || 0) * 0.8),
+        value: this.goldClamp01((1 - Number(components.Prod || 0)) * 0.5 + (Number(components.Sat || 0) * 0.5)),
+        baseRisk: signals.operationalRisk || 0,
+        ambiguity: 1 - dataQuality,
+        fragility: 1 - Number(components.Conf || 0),
+        friction: this.goldClamp01(1 - Number(components.Conf || 0)),
+        reversibility: 0.7,
+        dqConfidence: dataQuality,
+        minPialLevel: 2
+      },
+      {
+        actionKey: "growth",
+        domain: "growth",
+        label: "Valuta opportunita operative",
+        need: signals.opportunity || 0,
+        urgency: signals.opportunity >= 0.75 ? 0.9 : this.goldClamp01((signals.opportunity || 0) * 0.65),
+        value: this.goldClamp01((signals.opportunity || 0) + 0.2),
+        baseRisk: signals.opportunity >= 0.75 && dataQuality >= 0.75 ? 0.1 : 0.25,
+        ambiguity: 1 - dataQuality,
+        fragility: 1 - Number(components.Conf || 0),
+        friction: this.goldClamp01((signals.opportunity >= 0.75 ? 0.08 : 0.2) + ((1 - dataQuality) * 0.25)),
+        reversibility: 0.8,
+        dqConfidence: dataQuality,
+        minPialLevel: 3
+      },
+      {
+        actionKey: "data_quality",
+        domain: "data_quality",
+        label: "Completa qualita dati",
+        need: 1 - (signals.dataReliability ?? components.Conf ?? 1),
+        urgency: dataQuality < 0.65 ? 0.8 : 0.35,
+        value: this.goldClamp01(1 - dataQuality),
+        baseRisk: 1 - dataQuality,
+        ambiguity: 1 - dataQuality,
+        fragility: 1 - dataQuality,
+        friction: dataQuality < 0.5 ? 0.6 : 0.25,
+        reversibility: 0.95,
+        dqConfidence: dataQuality,
+        minPialLevel: 0
+      }
+    ];
+    return { candidates, context };
+  }
+
+  bandOrdinal(band = "") {
+    const normalized = String(band || "").toUpperCase();
+    if (normalized === "ACT_NOW") return 4;
+    if (normalized === "SUGGEST") return 3;
+    if (normalized === "MONITOR") return 2;
+    if (normalized === "VERIFY") return 1;
+    if (normalized === "STOP") return 0;
+    return 1;
+  }
+
+  toneAgreement(legacyTone = "", coreTone = "") {
+    const order = { soft: 0, consultative: 1, direct: 2 };
+    const a = order[String(legacyTone || "").toLowerCase()];
+    const b = order[String(coreTone || "").toLowerCase()];
+    if (a === undefined || b === undefined) return 0.5;
+    if (a === b) return 1;
+    return Math.abs(a - b) === 1 ? 0.5 : 0;
+  }
+
+  compareDecisionSnapshots(legacySnapshot = {}, coreSnapshot = {}) {
+    const legacyPrimary = legacySnapshot.primaryAction || null;
+    const corePrimary = coreSnapshot.primaryAction || null;
+    if (!legacyPrimary || !corePrimary) {
+      return {
+        status: "not_comparable",
+        primaryActionMatch: 0,
+        actionBandMatch: 0,
+        toneMatch: 0,
+        top3Overlap: 0,
+        priorityDistance: 0,
+        agreementScore: null,
+        agreementBand: "N/A",
+        warnings: ["DECISION_NOT_COMPARABLE"]
+      };
+    }
+    const primaryActionMatch = legacyPrimary.actionKey === corePrimary.actionKey ? 1 : 0;
+    const actionBandMatch = this.goldClamp01(1 - (Math.abs(this.bandOrdinal(legacyPrimary.actionBand) - this.bandOrdinal(corePrimary.actionBand)) / 4));
+    const toneMatch = this.toneAgreement(legacyPrimary.tone, corePrimary.tone);
+    const legacyTop3 = (legacySnapshot.actions || []).slice(0, 3).map((item) => item.actionKey);
+    const coreTop3 = (coreSnapshot.actions || []).slice(0, 3).map((item) => item.actionKey);
+    const overlap = legacyTop3.filter((key) => coreTop3.includes(key)).length;
+    const top3Overlap = legacyTop3.length ? overlap / Math.max(legacyTop3.length, 3) : 0;
+    const coreByKey = new Map((coreSnapshot.actions || []).map((item) => [item.actionKey, item]));
+    const common = (legacySnapshot.actions || []).filter((item) => coreByKey.has(item.actionKey));
+    const priorityDistance = common.length
+      ? this.goldClamp01(1 - average(common.map((item) => Math.abs(Number(item.priorityScore || 0) - Number(coreByKey.get(item.actionKey)?.priorityScore || 0)))))
+      : 0;
+    const agreementScore = this.goldClamp01(
+      (DECISION_PARALLEL_WEIGHTS.primaryAction * primaryActionMatch)
+      + (DECISION_PARALLEL_WEIGHTS.actionBand * actionBandMatch)
+      + (DECISION_PARALLEL_WEIGHTS.tone * toneMatch)
+      + (DECISION_PARALLEL_WEIGHTS.top3 * top3Overlap)
+      + (DECISION_PARALLEL_WEIGHTS.priorityDistance * priorityDistance)
+    );
+    const warnings = [];
+    if (!primaryActionMatch) warnings.push("DECISION_PRIMARY_ACTION_DRIFT");
+    if (actionBandMatch < 1) warnings.push("DECISION_BAND_DRIFT");
+    if (toneMatch < 1) warnings.push("DECISION_TONE_DRIFT");
+    if (top3Overlap < DECISION_PARALLEL_WARNING_THRESHOLDS.top3Overlap) warnings.push("DECISION_TOP3_DRIFT");
+    if (priorityDistance < DECISION_PARALLEL_WARNING_THRESHOLDS.priorityDistance) warnings.push("DECISION_PRIORITY_DRIFT");
+    return {
+      status: "ok",
+      primaryActionMatch,
+      actionBandMatch: this.goldRound(actionBandMatch, 4),
+      toneMatch: this.goldRound(toneMatch, 4),
+      top3Overlap: this.goldRound(top3Overlap, 4),
+      priorityDistance: this.goldRound(priorityDistance, 4),
+      agreementScore: this.goldRound(agreementScore, 4),
+      agreementBand: agreementScore >= 0.9 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+      warnings
+    };
+  }
+
+  buildDecisionParallelState(state = {}, session = null) {
+    try {
+      const legacySnapshot = this.buildLegacyDecisionSnapshotForParallel(state);
+      const { candidates, context } = this.buildDecisionCoreCandidatesFromGoldState(state);
+      const coreSnapshot = buildDecisionSnapshot({
+        horizon: context.horizon,
+        context,
+        candidates
+      });
+      const diff = this.compareDecisionSnapshots(legacySnapshot, coreSnapshot);
+      if (diff.status === "not_comparable") {
+        return {
+          mode: "shadow",
+          status: "not_comparable",
+          mathCore: "decision_core_v1",
+          legacySnapshot,
+          coreSnapshot,
+          diffSnapshot: diff,
+          agreementScore: null,
+          agreementBand: "N/A",
+          sourceFlags: ["decision_parallel:not_comparable"]
+        };
+      }
+      return {
+        mode: "shadow",
+        status: "ok",
+        mathCore: "decision_core_v1",
+        legacySnapshot,
+        coreSnapshot,
+        diffSnapshot: diff,
+        agreementScore: diff.agreementScore,
+        agreementBand: diff.agreementBand,
+        sourceFlags: ["decision_parallel:shadow", "decision_core:not_primary"]
+      };
+    } catch (error) {
+      console.warn("[decision_parallel_error]", JSON.stringify({
+        centerId: this.getCenterId(session),
+        message: error.message
+      }));
+      return {
+        mode: "shadow",
+        status: "error",
+        mathCore: "decision_core_v1",
+        legacySnapshot: null,
+        coreSnapshot: null,
+        diffSnapshot: {
+          warnings: ["DECISION_PARALLEL_ERROR"],
+          error: error.message
+        },
+        agreementScore: null,
+        agreementBand: "N/A",
+        sourceFlags: ["decision_parallel:error"]
+      };
+    }
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.cashParallel = this.buildGoldCashParallelState(next, session);
@@ -3986,6 +4318,7 @@ class DesktopMirrorService {
     next.marketingActions = this.buildGoldMarketingActionState(session);
     next.signals = this.buildGoldSignalsFromState(next);
     next.decision = this.buildGoldDecisionFromState(next);
+    next.decisionParallel = this.buildDecisionParallelState(next, session);
     return next;
   }
 
