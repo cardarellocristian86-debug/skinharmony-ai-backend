@@ -65,6 +65,7 @@ const ANALYTICS_BLOCKS = {
   PAYMENT_ISSUES: "paymentIssues",
   RECALL_PRIORITY: "recallPriority",
   MARKETING_RECALL: "marketingRecall",
+  GOLD_STATE: "goldState",
   CENTER_HEALTH: "centerHealth",
   INVENTORY_OVERVIEW: "inventoryOverview",
   OPERATOR_SIGNALS: "operatorSignals",
@@ -1691,7 +1692,8 @@ class DesktopMirrorService {
       ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
       ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
       ANALYTICS_BLOCKS.PROFITABILITY,
-      ANALYTICS_BLOCKS.MARKETING_RECALL
+      ANALYTICS_BLOCKS.MARKETING_RECALL,
+      ANALYTICS_BLOCKS.GOLD_STATE
     ];
   }
 
@@ -1704,6 +1706,7 @@ class DesktopMirrorService {
       ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
       ANALYTICS_BLOCKS.PAYMENT_ISSUES,
       ANALYTICS_BLOCKS.MARKETING_RECALL,
+      ANALYTICS_BLOCKS.GOLD_STATE,
       ANALYTICS_BLOCKS.CENTER_HEALTH,
       ANALYTICS_BLOCKS.INVENTORY_OVERVIEW,
       ANALYTICS_BLOCKS.OPERATOR_SIGNALS
@@ -2624,6 +2627,7 @@ class DesktopMirrorService {
     }
     const state = validState.state;
     const business = state.snapshots?.business || {};
+    const marketingActions = state.marketingActions || this.buildGoldMarketingActionState(session);
     const report = this.buildOperationalReportFromGoldState(options, session) || {};
     const centerHealth = this.buildGoldStateCenterHealth(state);
     const profitability = this.buildProfitabilityOverviewFromGoldState(options, session) || {};
@@ -2661,11 +2665,29 @@ class DesktopMirrorService {
       marketing: {
         goldEnabled: true,
         generatedAt: state.updatedAt || nowIso(),
-        suggestions: [],
-        priorityClients: [],
+        suggestions: marketingActions.actions || [],
+        actions: marketingActions.actions || [],
+        priorityClients: marketingActions.actions || [],
         lostClients: [],
         historicInactiveClients: [],
-        focusClient: null,
+        focusClient: (marketingActions.actions || [])[0] || null,
+        counts: {
+          priority: marketingActions.counters?.totalActions || 0,
+          lost: 0,
+          historic: 0,
+          avoid: marketingActions.debug?.excludedByFilter || 0,
+          waiting: marketingActions.counters?.toApprove || 0
+        },
+        kpis: {
+          recommendedToday: marketingActions.counters?.totalActions || 0,
+          avoidToday: marketingActions.debug?.excludedByFilter || 0,
+          waiting: marketingActions.counters?.toApprove || 0,
+          opportunitiesActive: marketingActions.counters?.approvedActions || 0,
+          callableApproved: marketingActions.counters?.callableApproved || 0,
+          clientsAtRiskToday: marketingActions.counters?.clientsAtRiskToday || 0
+        },
+        debug: marketingActions.debug || {},
+        counters: marketingActions.counters || {},
         sourceLayer: "gold_state"
       },
       profitability,
@@ -3524,6 +3546,7 @@ class DesktopMirrorService {
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.snapshots = this.buildGoldSnapshotsFromState(next);
+    next.marketingActions = this.buildGoldMarketingActionState(session);
     next.cashParallel = this.buildGoldCashParallelState(next, session);
     const cashSwitch = this.buildGoldCashControlledSwitch(next.cashParallel, state.cashSelection?.primarySource || next.cashSelection?.primarySource || "legacy");
     next.cashSelection = cashSwitch.cashSelection;
@@ -7946,7 +7969,152 @@ class DesktopMirrorService {
       },
       engineTest
     };
-    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session, marketing, 180000);
+    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session, marketing, 30000);
+  }
+
+  normalizeGoldMarketingStatus(status = "") {
+    const normalized = String(status || "").toLowerCase();
+    if (["approved", "copied", "queued", "sent", "delivered", "read", "done"].includes(normalized)) return "approved";
+    if (["archived", "discarded", "rejected", "scartata", "scartato"].includes(normalized)) return "discarded";
+    return "to_approve";
+  }
+
+  buildGoldMarketingActionState(session = null) {
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        source: "gold_decision_engine",
+        sourceEndpoint: "/api/ai-gold/state",
+        generatedAt: nowIso(),
+        actions: [],
+        counters: {
+          clientsAtRiskToday: 0,
+          totalActions: 0,
+          approvedActions: 0,
+          callableApproved: 0
+        },
+        debug: {
+          clientsAnalyzed: 0,
+          excludedByFilter: 0,
+          nonContactable: 0,
+          inCooldown: 0,
+          generatedActions: 0
+        }
+      };
+    }
+    const marketing = this.getAiGoldMarketing(session);
+    const suggestions = Array.isArray(marketing?.suggestions) ? marketing.suggestions : [];
+    const analyzed = Array.isArray(marketing?.engineTest?.records)
+      ? marketing.engineTest.records.length
+      : suggestions.length
+        + (Array.isArray(marketing?.lostClients) ? marketing.lostClients.length : 0)
+        + (Array.isArray(marketing?.historicInactiveClients) ? marketing.historicInactiveClients.length : 0)
+        + Number(marketing?.counts?.avoid || 0);
+    const persistedActions = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
+      .filter((item) => String(item.type || "recall") === "recall")
+      .sort((a, b) => new Date(b.updatedAt || b.generatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.generatedAt || a.createdAt || 0).getTime());
+    const persistedByClientId = new Map();
+    persistedActions.forEach((action) => {
+      const clientId = String(action.clientId || "");
+      if (!clientId || persistedByClientId.has(clientId)) return;
+      persistedByClientId.set(clientId, action);
+    });
+    const actions = suggestions.map((suggestion) => {
+      const clientId = String(suggestion.clientId || "");
+      const persisted = persistedByClientId.get(clientId) || null;
+      const status = this.normalizeGoldMarketingStatus(persisted?.status || suggestion.status || "to_approve");
+      const contactable = Boolean(suggestion.hasMarketingConsent && (suggestion.phone || suggestion.email || suggestion.clientPhone));
+      const inCooldown = Number(suggestion.daysSinceLastMarketingContact ?? 999) < 3;
+      const valueCents = Number(suggestion.referenceValueCents || suggestion.estimatedRecallValueCents || suggestion.averageTicketCents || 0);
+      const riskClient = ["recupero_soft", "recupero_attivo", "perso"].includes(String(suggestion.recallStatus || suggestion.timingClass || suggestion.segment || ""));
+      return {
+        id: persisted?.id || `gold-action-${clientId}`,
+        virtual: !persisted,
+        generatedByGold: true,
+        source: "gold_decision_engine",
+        sourceEndpoint: "/api/ai-gold/state",
+        clientId,
+        clientName: suggestion.name || "Cliente",
+        name: suggestion.name || "Cliente",
+        phone: suggestion.phone || "",
+        type: "recall",
+        status,
+        statusLabel: status === "approved" ? "approvata" : status === "discarded" ? "scartata" : "da approvare",
+        priority: suggestion.priority || "media",
+        priorityLabel: suggestion.priority === "alta" ? "Critico" : suggestion.priority === "media" ? "Attenzione" : "OK",
+        risk: suggestion.risk || "basso",
+        riskLabel: riskClient ? "Rischio" : "Presidio",
+        isImmediateRisk: Boolean(riskClient && ["alta", "media"].includes(String(suggestion.priority || ""))),
+        highValueOpportunity: suggestion.priority === "alta" || valueCents >= 10000,
+        contactable,
+        inCooldown,
+        hasMarketingConsent: Boolean(suggestion.hasMarketingConsent),
+        pattern: suggestion.pattern || "",
+        segment: suggestion.segment || "",
+        reason: suggestion.motive || suggestion.urgencyReason || "Azione marketing generata da AI Gold.",
+        motive: suggestion.motive || "",
+        operatingDecision: suggestion.operatingDecision || "",
+        clearReason: suggestion.clearReason || "",
+        safeAction: suggestion.safeAction || "",
+        upsellAction: suggestion.upsellAction || "",
+        conclusion: suggestion.conclusion || "",
+        urgencyReason: suggestion.urgencyReason || "",
+        recommendedAction: suggestion.recommendedAction || "",
+        estimatedValueCents: Number(suggestion.estimatedRecallValueCents || valueCents || 0),
+        referenceValueCents: valueCents,
+        valueSource: suggestion.valueSource || "",
+        valueLabel: suggestion.valueLabel || "",
+        lossIfIgnoredCents: Number(suggestion.lossIfIgnoredCents || 0),
+        suggestedMessage: suggestion.message || "",
+        message: suggestion.message || "",
+        responseProbabilityPercent: Number(suggestion.responseProbabilityPercent || 0),
+        economicConvenienceLabel: suggestion.economicConvenienceLabel || "",
+        finalPriorityLabel: suggestion.finalPriorityLabel || "",
+        relationState: suggestion.relationState || "non_contattato",
+        daysSinceLastMarketingContact: suggestion.daysSinceLastMarketingContact ?? null,
+        goldDecision: suggestion.goldDecision || null,
+        generatedAt: persisted?.generatedAt || marketing.generatedAt || nowIso(),
+        updatedAt: persisted?.updatedAt || marketing.generatedAt || nowIso()
+      };
+    });
+    const approvedActions = actions.filter((item) => item.status === "approved").length;
+    const callableApproved = actions.filter((item) => item.status === "approved" && item.contactable && !item.inCooldown).length;
+    const debug = {
+      clientsAnalyzed: analyzed,
+      excludedByFilter: Math.max(0, analyzed - actions.length),
+      nonContactable: actions.filter((item) => !item.contactable).length,
+      inCooldown: actions.filter((item) => item.inCooldown).length,
+      generatedActions: actions.length
+    };
+    const counters = {
+      clientsAtRiskToday: actions.filter((item) => item.isImmediateRisk).length,
+      totalActions: actions.length,
+      approvedActions,
+      callableApproved,
+      highValueOpportunities: actions.filter((item) => item.highValueOpportunity).length,
+      toApprove: actions.filter((item) => item.status === "to_approve").length,
+      discarded: actions.filter((item) => item.status === "discarded").length
+    };
+    if (actions.length > 0 && debug.generatedActions === 0) {
+      console.error("[gold_marketing_alignment_error]", JSON.stringify({
+        centerId: this.getCenterId(session),
+        reason: "actions_present_generated_zero",
+        actions: actions.length,
+        debug
+      }));
+    }
+    return {
+      source: "gold_decision_engine",
+      sourceEndpoint: "/api/ai-gold/state",
+      generatedAt: marketing.generatedAt || nowIso(),
+      actions,
+      counters,
+      debug,
+      semantics: {
+        critical: "opportunita_ad_alto_valore",
+        risk: "cliente_che_puo_perdersi",
+        marketingActions: "opportunita_generate_da_ai"
+      }
+    };
   }
 
   getAiMarketingAutopilot(session = null) {
@@ -7958,23 +8126,28 @@ class DesktopMirrorService {
         actions: []
       };
     }
-    const actions = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
+    const marketingActions = this.getGoldState(session).marketingActions || this.buildGoldMarketingActionState(session);
+    const actions = (marketingActions.actions || [])
       .sort((a, b) => {
         const priorityRank = { alta: 3, media: 2, bassa: 1 };
-        const statusRank = { to_approve: 4, approved: 3, copied: 2, done: 1, archived: 0 };
+        const statusRank = { to_approve: 4, approved: 3, copied: 2, done: 1, archived: 0, discarded: 0 };
         return (priorityRank[String(b.priority || "")] || 0) - (priorityRank[String(a.priority || "")] || 0)
           || (statusRank[String(b.status || "")] || 0) - (statusRank[String(a.status || "")] || 0)
           || new Date(b.generatedAt || b.createdAt || 0).getTime() - new Date(a.generatedAt || a.createdAt || 0).getTime();
       });
     return {
       goldEnabled: true,
-      generatedAt: nowIso(),
+      generatedAt: marketingActions.generatedAt || nowIso(),
       actions,
+      debug: marketingActions.debug || {},
+      counters: marketingActions.counters || {},
+      sourceEndpoint: "/api/ai-gold/state",
       summary: {
         total: actions.length,
-        pending: actions.filter((item) => ["new", "to_approve", "approved"].includes(String(item.status || ""))).length,
+        pending: actions.filter((item) => ["new", "to_approve"].includes(String(item.status || ""))).length,
+        approved: actions.filter((item) => String(item.status || "") === "approved").length,
         done: actions.filter((item) => item.status === "done").length,
-        archived: actions.filter((item) => item.status === "archived").length
+        archived: actions.filter((item) => ["archived", "discarded"].includes(String(item.status || ""))).length
       }
     };
   }
@@ -8053,6 +8226,9 @@ class DesktopMirrorService {
       this.aiMarketingActionsRepository.create(action);
       created.push(action);
     });
+    if (created.length) {
+      this.invalidateBusinessSnapshot(centerId, [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
+    }
 
     return {
       goldEnabled: true,
@@ -8067,19 +8243,63 @@ class DesktopMirrorService {
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Marketing Autopilot disponibile solo con piano Gold");
     }
-    const allowed = new Set(["to_approve", "approved", "copied", "done", "archived"]);
+    const allowed = new Set(["to_approve", "approved", "copied", "done", "archived", "discarded"]);
     const status = String(payload.status || "").toLowerCase();
     if (!allowed.has(status)) {
       throw new Error("Stato azione non valido");
     }
+    if (String(actionId || "").startsWith("gold-action-")) {
+      const clientId = String(actionId || "").replace(/^gold-action-/, "");
+      const state = this.getGoldState(session);
+      const action = (state.marketingActions?.actions || []).find((item) => String(item.clientId || "") === clientId);
+      if (!action) throw new Error("Azione Gold non trovata");
+      const now = nowIso();
+      const created = this.aiMarketingActionsRepository.create({
+        id: makeId("aimkt"),
+        centerId: this.getCenterId(session),
+        centerName: this.getCenterName(session),
+        clientId,
+        clientName: action.clientName || action.name || "Cliente",
+        type: "recall",
+        status,
+        priority: action.priority || "media",
+        risk: action.risk || "basso",
+        pattern: action.pattern || "",
+        operatingDecision: action.operatingDecision || "",
+        clearReason: action.clearReason || "",
+        safeAction: action.safeAction || "",
+        upsellAction: action.upsellAction || "",
+        conclusion: action.conclusion || "",
+        segment: action.segment || "",
+        reason: action.reason || action.motive || "Azione marketing generata da AI Gold.",
+        urgencyReason: action.urgencyReason || "",
+        recommendedAction: action.recommendedAction || "",
+        estimatedValueCents: Number(action.estimatedValueCents || 0),
+        referenceValueCents: Number(action.referenceValueCents || action.estimatedValueCents || 0),
+        valueSource: action.valueSource || "",
+        valueLabel: action.valueLabel || "",
+        lossIfIgnoredCents: Number(action.lossIfIgnoredCents || 0),
+        suggestedMessage: action.suggestedMessage || action.message || "",
+        source: "gold_decision_engine",
+        aiProvider: "gold_engine",
+        generatedAt: action.generatedAt || now,
+        updatedAt: now,
+        completedAt: status === "done" ? now : "",
+        archivedAt: ["archived", "discarded"].includes(status) ? now : "",
+        approvedAt: status === "approved" ? now : "",
+        copiedAt: status === "copied" ? now : ""
+      });
+      this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
+      return created;
+    }
     const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
       ...current,
-      status,
+      status: status === "discarded" ? "archived" : status,
       updatedAt: nowIso(),
       approvedAt: status === "approved" ? nowIso() : current.approvedAt || "",
       copiedAt: status === "copied" ? nowIso() : current.copiedAt || "",
       completedAt: status === "done" ? nowIso() : current.completedAt || "",
-      archivedAt: status === "archived" ? nowIso() : current.archivedAt || ""
+      archivedAt: ["archived", "discarded"].includes(status) ? nowIso() : current.archivedAt || ""
     }), session);
     return updated;
   }
@@ -8305,15 +8525,17 @@ class DesktopMirrorService {
       .find((item) => String(item.clientId || "") === String(client.id || "") && !["done", "archived"].includes(String(item.status || "")));
     const now = nowIso();
     if (existing) {
-      return this.aiMarketingActionsRepository.update(existing.id, (current) => ({
+      const updated = this.aiMarketingActionsRepository.update(existing.id, (current) => ({
         ...current,
         status,
         updatedAt: now,
         copiedAt: status === "copied" ? now : current.copiedAt || "",
         approvedAt: current.approvedAt || now
       }));
+      this.invalidateBusinessSnapshot(centerId, [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
+      return updated;
     }
-    return this.aiMarketingActionsRepository.create({
+    const created = this.aiMarketingActionsRepository.create({
       id: makeId("aimkt"),
       centerId,
       centerName: this.getCenterName(session),
@@ -8337,6 +8559,8 @@ class DesktopMirrorService {
       approvedAt: now,
       copiedAt: status === "copied" ? now : ""
     });
+    this.invalidateBusinessSnapshot(centerId, [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
+    return created;
   }
 
   async sendGoldWhatsappAction(payload = {}, session = null, whatsappService = null) {
@@ -8808,18 +9032,44 @@ class DesktopMirrorService {
         suggestions: []
       };
     }
-    const snapshot = this.getBusinessSnapshot({}, session);
+    const state = this.getGoldState(session);
+    const marketingActions = state.marketingActions || this.buildGoldMarketingActionState(session);
     const progressiveIntelligence = this.getProgressiveIntelligenceStatus(session);
     const marketingFeature = this.getFeatureActivation(progressiveIntelligence, "intelligent_marketing");
     const recallFeature = this.getFeatureActivation(progressiveIntelligence, "recall");
-    const marketing = snapshot.marketing || {
+    const marketing = {
       goldEnabled: true,
-      generatedAt: snapshot.generatedAt || nowIso(),
-      suggestions: [],
+      generatedAt: marketingActions.generatedAt || state.updatedAt || nowIso(),
+      suggestions: marketingActions.actions || [],
+      actions: marketingActions.actions || [],
+      priorityClients: marketingActions.actions || [],
       lostClients: [],
       historicInactiveClients: [],
-      counts: { priority: 0, lost: 0, historic: 0 },
-      sourceLayer: "business_snapshot"
+      counts: {
+        priority: marketingActions.counters?.totalActions || 0,
+        lost: 0,
+        historic: 0,
+        avoid: marketingActions.debug?.excludedByFilter || 0,
+        waiting: marketingActions.counters?.toApprove || 0
+      },
+      kpis: {
+        contactsMade: 0,
+        responseRate: 0,
+        bookingRate: 0,
+        revenueRecoveryCents: 0,
+        potentialRecoveryScore: (marketingActions.actions || []).reduce((sum, item) => sum + Number(item.goldDecision?.score || 0), 0),
+        recommendedToday: marketingActions.counters?.totalActions || 0,
+        avoidToday: marketingActions.debug?.excludedByFilter || 0,
+        waiting: marketingActions.counters?.toApprove || 0,
+        opportunitiesActive: marketingActions.counters?.approvedActions || 0,
+        callableApproved: marketingActions.counters?.callableApproved || 0,
+        clientsAtRiskToday: marketingActions.counters?.clientsAtRiskToday || 0
+      },
+      debug: marketingActions.debug || {},
+      counters: marketingActions.counters || {},
+      semantics: marketingActions.semantics || {},
+      sourceLayer: "gold_state",
+      sourceEndpoint: "/api/ai-gold/state"
     };
     return {
       ...marketing,
