@@ -1,5 +1,16 @@
 const crypto = require("crypto");
 
+const MAX_IMPORT_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_XLSX_FILE_BYTES = 4 * 1024 * 1024;
+const ALLOWED_EXTENSIONS = new Set([".csv", ".xlsx"]);
+const ALLOWED_MIME_TYPES = new Set([
+  "",
+  "text/csv",
+  "application/csv",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+]);
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -16,6 +27,19 @@ function normalizeText(value = "") {
     .trim();
 }
 
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeFileContentForHash(value = "") {
+  return String(value || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+}
+
+function fileExtension(name = "") {
+  const match = String(name || "").toLowerCase().match(/(\.[a-z0-9]+)$/);
+  return match ? match[1] : "";
+}
+
 function normalizeKey(value = "") {
   return normalizeText(value).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
@@ -25,7 +49,10 @@ function cleanText(value = "", max = 500) {
 }
 
 function cleanPhone(value = "") {
-  return String(value || "").replace(/[^\d+]/g, "").slice(0, 30);
+  const phone = String(value || "").replace(/[^\d+]/g, "").slice(0, 30);
+  if (phone.startsWith("+39")) return phone.slice(3);
+  if (phone.startsWith("0039")) return phone.slice(4);
+  return phone;
 }
 
 function cleanEmail(value = "") {
@@ -102,24 +129,46 @@ function parseCsv(content = "") {
   });
 }
 
-function parseXlsx(buffer) {
+function parseXlsx(buffer, fileName = "import.xlsx") {
   let xlsx = null;
   try {
     xlsx = require("xlsx");
   } catch {
     throw new Error("Parser Excel non disponibile sul backend. Carica CSV oppure installa la dipendenza xlsx.");
   }
-  const workbook = xlsx.read(buffer, { type: "buffer", cellDates: true });
-  return workbook.SheetNames.flatMap((sheetName) => {
-    const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
-    return rows.map((row, index) => {
-      const normalized = { __sheetName: sheetName, __rowNumber: index + 2 };
-      Object.entries(row).forEach(([key, value]) => {
-        normalized[normalizeKey(key)] = value;
+  try {
+    const workbook = xlsx.read(buffer, { type: "buffer", cellDates: true, bookVBA: false });
+    const formulaCells = [];
+    workbook.SheetNames.forEach((sheetName) => {
+      const sheet = workbook.Sheets[sheetName];
+      Object.entries(sheet || {}).forEach(([cell, value]) => {
+        if (cell.startsWith("!")) return;
+        if (value && typeof value === "object" && value.f) {
+          formulaCells.push(`${sheetName}!${cell}`);
+        }
       });
-      return normalized;
     });
-  });
+    if (formulaCells.length) {
+      throw new Error(`File Excel ${fileName}: contiene formule. Esporta in CSV o incolla valori statici prima dell'import.`);
+    }
+    return workbook.SheetNames.flatMap((sheetName) => {
+      const rows = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "", raw: true });
+      return rows.map((row, index) => {
+        const normalized = { __sheetName: sheetName, __rowNumber: index + 2 };
+        Object.entries(row).forEach(([key, value]) => {
+          normalized[normalizeKey(key)] = value;
+        });
+        return normalized;
+      });
+    });
+  } catch (error) {
+    console.warn("[gold_onboarding_parser_error]", JSON.stringify({
+      fileName,
+      format: "xlsx",
+      message: error instanceof Error ? error.message : "Excel non leggibile"
+    }));
+    throw error instanceof Error ? error : new Error(`File Excel ${fileName}: errore lettura.`);
+  }
 }
 
 const FIELD_SYNONYMS = {
@@ -177,24 +226,103 @@ function indexExistingClients(clients = []) {
   return { byEmail, byPhone, byName };
 }
 
+function customerComparableName(customer = {}) {
+  return normalizeText(customer.name || `${customer.firstName || ""} ${customer.lastName || ""}`);
+}
+
+function phoneCompatible(a = "", b = "") {
+  const left = cleanPhone(a);
+  const right = cleanPhone(b);
+  if (!left || !right) return false;
+  return left === right || (left.length >= 7 && right.length >= 7 && (left.endsWith(right) || right.endsWith(left)));
+}
+
+function evaluateCustomerMatch(customer = {}, clientIndex = {}) {
+  const email = cleanEmail(customer.email || "");
+  const phone = cleanPhone(customer.phone || "");
+  const name = customerComparableName(customer);
+  if (email && clientIndex.byEmail?.has(email)) {
+    return { confidence: 1, reason: "Email già presente", duplicateOf: clientIndex.byEmail.get(email) };
+  }
+  if (phone && clientIndex.byPhone?.has(phone)) {
+    return { confidence: 0.96, reason: "Telefono già presente", duplicateOf: clientIndex.byPhone.get(phone) };
+  }
+  const sameName = name ? clientIndex.byName?.get(name) : null;
+  if (sameName && phoneCompatible(phone, sameName.phone)) {
+    return { confidence: 0.86, reason: "Nome e telefono compatibili", duplicateOf: sameName };
+  }
+  if (sameName && email && cleanEmail(sameName.email || "") === email) {
+    return { confidence: 0.86, reason: "Nome ed email compatibili", duplicateOf: sameName };
+  }
+  if (sameName && (phone || email || customer.birthDate)) {
+    return { confidence: 0.62, reason: "Nome già presente con dati parziali compatibili", duplicateOf: sameName };
+  }
+  if (sameName) {
+    return { confidence: 0.48, reason: "Nome già presente, dati insufficienti", duplicateOf: sameName };
+  }
+  return { confidence: 0, reason: "", duplicateOf: null };
+}
+
+function pushSnapshotRow(block, item) {
+  if (item.status === "SAFE") {
+    block.validRows.push(item);
+  } else if (item.status === "REVIEW") {
+    block.reviewRows.push(item);
+    if (item.duplicateOf || item.matchConfidence >= 0.45) block.duplicates.push(item);
+  } else {
+    block.invalidRows.push(item);
+  }
+}
+
 class GoldOnboardingEngine {
   constructor({ service, importRepository }) {
     this.service = service;
     this.importRepository = importRepository;
   }
 
-  decodeFile(file = {}) {
+  validateRawFile(file = {}) {
     const name = cleanText(file.name || "import.csv", 240);
+    const ext = fileExtension(name);
+    const mimeType = String(file.mimeType || file.type || "").toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      throw new Error(`File ${name}: formato non ammesso. Usa CSV o XLSX.`);
+    }
+    if (!ALLOWED_MIME_TYPES.has(mimeType)) {
+      throw new Error(`File ${name}: tipo file non ammesso. Usa CSV o XLSX esportati dal gestionale.`);
+    }
+    if (ext === ".xlsm" || String(name).toLowerCase().endsWith(".xlsm")) {
+      throw new Error(`File ${name}: macro non ammesse. Esporta in CSV o XLSX senza macro.`);
+    }
+    const base64 = String(file.contentBase64 || "");
+    const rawContent = String(file.content || "");
+    const estimatedBytes = base64 ? Math.ceil((base64.length * 3) / 4) : Buffer.byteLength(rawContent, "utf8");
+    const limit = ext === ".xlsx" ? MAX_XLSX_FILE_BYTES : MAX_IMPORT_FILE_BYTES;
+    if (estimatedBytes > limit) {
+      throw new Error(`File ${name}: dimensione troppo alta. Limite ${Math.round(limit / 1024 / 1024)} MB.`);
+    }
+    return { name, ext, mimeType, estimatedBytes };
+  }
+
+  decodeFile(file = {}) {
+    const validation = this.validateRawFile(file);
+    const name = validation.name;
     const lower = name.toLowerCase();
     const rawContent = String(file.content || "");
     const base64 = String(file.contentBase64 || "");
     if (lower.endsWith(".xlsx")) {
       if (!base64) throw new Error(`File Excel ${name}: contenuto base64 mancante`);
       const buffer = Buffer.from(base64, "base64");
-      return { name, format: "xlsx", rows: parseXlsx(buffer) };
+      const fileHash = sha256(buffer);
+      const rows = parseXlsx(buffer, name);
+      if (!rows.length) throw new Error(`File Excel ${name}: nessuna riga leggibile.`);
+      return { name, format: "xlsx", fileHash, bytes: validation.estimatedBytes, rows };
     }
     const text = rawContent || (base64 ? Buffer.from(base64, "base64").toString("utf8") : "");
-    return { name, format: "csv", rows: parseCsv(text) };
+    const normalizedText = normalizeFileContentForHash(text);
+    const rows = parseCsv(normalizedText);
+    if (!rows.length) throw new Error(`File CSV ${name}: nessuna riga leggibile.`);
+    const fileHash = sha256(Buffer.from(normalizedText, "utf8"));
+    return { name, format: "csv", fileHash, bytes: validation.estimatedBytes, rows };
   }
 
   detectFileType(file) {
@@ -271,11 +399,13 @@ class GoldOnboardingEngine {
       import_payments_snapshot: { validRows: [], reviewRows: [], invalidRows: [], duplicates: [] }
     };
     const fileSummaries = [];
+    const fileHashes = [];
 
     files.forEach((rawFile) => {
       const file = this.decodeFile(rawFile);
       const detectedType = this.detectFileType(file);
-      fileSummaries.push({ name: file.name, format: file.format, detectedType, rows: file.rows.length });
+      fileHashes.push(file.fileHash);
+      fileSummaries.push({ name: file.name, format: file.format, fileHash: file.fileHash, detectedType, rows: file.rows.length, bytes: file.bytes });
       const headers = Object.keys(file.rows[0] || {}).filter((key) => !key.startsWith("__"));
       const mapping = buildMapping(headers);
 
@@ -285,62 +415,105 @@ class GoldOnboardingEngine {
         if (shouldCreateCustomer) {
           const customer = this.normalizeCustomer(row, mapping);
           const duplicateKey = customer.email || customer.phone || normalizeText(customer.name);
-          const existing = customer.email ? clientIndex.byEmail.get(customer.email) : customer.phone ? clientIndex.byPhone.get(customer.phone) : clientIndex.byName.get(normalizeText(customer.name));
+          const match = evaluateCustomerMatch(customer, clientIndex);
           const duplicateInFile = duplicateKey && seenCustomers.has(duplicateKey);
           if (duplicateKey) seenCustomers.add(duplicateKey);
           if (!customer.name || customer.name.length < 2) {
-            snapshots.import_customers_snapshot.invalidRows.push(this.recordSnapshotItem("customer", row, customer, "INVALID", ["Nome cliente mancante"]));
-          } else if (existing || duplicateInFile) {
-            const item = this.recordSnapshotItem("customer", row, customer, "REVIEW", [existing ? "Possibile cliente già presente" : "Possibile duplicato nel file"], { duplicateOf: existing?.id || "" });
-            snapshots.import_customers_snapshot.reviewRows.push(item);
-            snapshots.import_customers_snapshot.duplicates.push(item);
+            pushSnapshotRow(snapshots.import_customers_snapshot, this.recordSnapshotItem("customer", row, customer, "INVALID", ["Nome cliente mancante"]));
+          } else if (match.confidence >= 0.45 || duplicateInFile) {
+            pushSnapshotRow(snapshots.import_customers_snapshot, this.recordSnapshotItem("customer", row, customer, "REVIEW", [duplicateInFile ? "Possibile duplicato nel file" : match.reason], {
+              duplicateOf: match.duplicateOf?.id || "",
+              matchConfidence: match.confidence
+            }));
+          } else if (!customer.phone && !customer.email) {
+            pushSnapshotRow(snapshots.import_customers_snapshot, this.recordSnapshotItem("customer", row, customer, "REVIEW", ["Contatto cliente mancante"], { matchConfidence: 0.25 }));
           } else {
-            snapshots.import_customers_snapshot.validRows.push(this.recordSnapshotItem("customer", row, customer, "SAFE"));
+            pushSnapshotRow(snapshots.import_customers_snapshot, this.recordSnapshotItem("customer", row, customer, "SAFE", [], { matchConfidence: 0 }));
           }
         }
 
         if (type === "appointments" || detectedType === "mixed") {
           const appointment = this.normalizeAppointment(row, mapping);
           if (!appointment.startAt || !appointment.clientName) {
-            snapshots.import_appointments_snapshot.invalidRows.push(this.recordSnapshotItem("appointment", row, appointment, "INVALID", ["Data o cliente appuntamento mancante"]));
+            pushSnapshotRow(snapshots.import_appointments_snapshot, this.recordSnapshotItem("appointment", row, appointment, "INVALID", ["Data o cliente appuntamento mancante"]));
           } else if (!appointment.serviceName || !appointment.staffName) {
-            snapshots.import_appointments_snapshot.reviewRows.push(this.recordSnapshotItem("appointment", row, appointment, "REVIEW", ["Servizio o operatore da confermare"]));
+            pushSnapshotRow(snapshots.import_appointments_snapshot, this.recordSnapshotItem("appointment", row, appointment, "REVIEW", ["Servizio o operatore da confermare"]));
           } else {
-            snapshots.import_appointments_snapshot.validRows.push(this.recordSnapshotItem("appointment", row, appointment, "SAFE"));
+            pushSnapshotRow(snapshots.import_appointments_snapshot, this.recordSnapshotItem("appointment", row, appointment, "SAFE"));
           }
         }
 
         if (type === "payments" || detectedType === "mixed") {
           const payment = this.normalizePayment(row, mapping);
           if (payment.amountCents <= 0) {
-            snapshots.import_payments_snapshot.invalidRows.push(this.recordSnapshotItem("payment", row, payment, "INVALID", ["Importo pagamento non valido"]));
+            pushSnapshotRow(snapshots.import_payments_snapshot, this.recordSnapshotItem("payment", row, payment, "INVALID", ["Importo pagamento non valido"]));
           } else if (!payment.walkInName) {
-            snapshots.import_payments_snapshot.reviewRows.push(this.recordSnapshotItem("payment", row, payment, "REVIEW", ["Cliente pagamento da confermare"]));
+            pushSnapshotRow(snapshots.import_payments_snapshot, this.recordSnapshotItem("payment", row, payment, "REVIEW", ["Cliente pagamento da confermare"]));
           } else {
-            snapshots.import_payments_snapshot.validRows.push(this.recordSnapshotItem("payment", row, payment, "SAFE"));
+            pushSnapshotRow(snapshots.import_payments_snapshot, this.recordSnapshotItem("payment", row, payment, "SAFE"));
           }
         }
       });
     });
 
-    return { snapshots, fileSummaries };
+    return {
+      snapshots,
+      fileSummaries,
+      importHash: sha256(fileHashes.sort().join("|"))
+    };
   }
 
   analyze(payload = {}, session = null) {
     const files = Array.isArray(payload.files) ? payload.files : [];
     if (!files.length) throw new Error("Carica almeno un file CSV o Excel.");
-    const { snapshots, fileSummaries } = this.buildSnapshots(files, session);
+    let snapshots;
+    let fileSummaries;
+    let importHash;
+    try {
+      ({ snapshots, fileSummaries, importHash } = this.buildSnapshots(files, session));
+    } catch (error) {
+      console.warn("[gold_onboarding_analyze_error]", JSON.stringify({
+        centerId: this.service.getCenterId(session),
+        createdBy: session?.username || session?.role || "",
+        message: error instanceof Error ? error.message : "Analisi import non riuscita"
+      }));
+      throw error;
+    }
+    const existingImport = this.importRepository.list().find((item) => (
+      String(item.centerId || "") === this.service.getCenterId(session) &&
+      String(item.importHash || "") === importHash &&
+      ["analyzed", "imported"].includes(String(item.status || ""))
+    ));
+    if (existingImport) {
+      return {
+        success: true,
+        duplicateImport: true,
+        importId: existingImport.id,
+        ...existingImport
+      };
+    }
     const importId = makeId("gold_import");
+    const summary = this.summarizeSnapshots(snapshots);
     const record = {
       id: importId,
+      importId,
+      importHash,
+      fileName: fileSummaries.map((item) => item.name).join(", "),
+      fileHash: fileSummaries.map((item) => item.fileHash).join(","),
+      detectedType: Array.from(new Set(fileSummaries.map((item) => item.detectedType))).join(","),
       centerId: this.service.getCenterId(session),
       centerName: this.service.getCenterName(session),
       status: "analyzed",
+      createdBy: session?.username || session?.role || "",
       createdAt: nowIso(),
       updatedAt: nowIso(),
       fileSummaries,
       snapshots,
-      summary: this.summarizeSnapshots(snapshots),
+      summary,
+      createdCounts: { customers: 0, appointments: 0, payments: 0 },
+      reviewCounts: summary.reviewByType,
+      invalidCounts: summary.invalidByType,
+      confirmedAt: "",
       aiResolution: {
         enabled: true,
         mode: "assisted_review",
@@ -348,16 +521,44 @@ class GoldOnboardingEngine {
       }
     };
     this.importRepository.create(record);
+    console.log("[gold_onboarding_analyze]", JSON.stringify({
+      centerId: record.centerId,
+      importId,
+      importHash,
+      files: fileSummaries.length,
+      summary
+    }));
     return { success: true, importId, ...record };
   }
 
   summarizeSnapshots(snapshots = {}) {
-    const blocks = Object.values(snapshots);
-    const safe = blocks.reduce((sum, block) => sum + block.validRows.length, 0);
-    const review = blocks.reduce((sum, block) => sum + block.reviewRows.length, 0);
-    const invalid = blocks.reduce((sum, block) => sum + block.invalidRows.length, 0);
-    const duplicates = blocks.reduce((sum, block) => sum + block.duplicates.length, 0);
-    return { safeRecords: safe, reviewRecords: review, invalidRecords: invalid, duplicates };
+    const blocks = Object.entries(snapshots);
+    const byType = (field) => blocks.reduce((acc, [key, block]) => {
+      const label = key.includes("customers") ? "customers" : key.includes("appointments") ? "appointments" : "payments";
+      acc[label] = Number(block?.[field]?.length || 0);
+      return acc;
+    }, { customers: 0, appointments: 0, payments: 0 });
+    const blockValues = blocks.map(([, block]) => block);
+    const safeByType = byType("validRows");
+    const reviewByType = byType("reviewRows");
+    const invalidByType = byType("invalidRows");
+    const safe = blockValues.reduce((sum, block) => sum + block.validRows.length, 0);
+    const review = blockValues.reduce((sum, block) => sum + block.reviewRows.length, 0);
+    const invalid = blockValues.reduce((sum, block) => sum + block.invalidRows.length, 0);
+    const duplicates = blockValues.reduce((sum, block) => sum + block.duplicates.length, 0);
+    return {
+      safeRecords: safe,
+      reviewRecords: review,
+      invalidRecords: invalid,
+      duplicates,
+      customersFound: safeByType.customers + reviewByType.customers + invalidByType.customers,
+      customersNew: safeByType.customers,
+      appointmentsFound: safeByType.appointments + reviewByType.appointments + invalidByType.appointments,
+      paymentsFound: safeByType.payments + reviewByType.payments + invalidByType.payments,
+      safeByType,
+      reviewByType,
+      invalidByType
+    };
   }
 
   confirm(payload = {}, session = null) {
@@ -366,15 +567,25 @@ class GoldOnboardingEngine {
     if (!record || String(record.centerId || "") !== this.service.getCenterId(session)) {
       throw new Error("Import Gold non trovato per questo centro.");
     }
-    if (record.status === "imported") return record.result;
+    if (record.status === "imported") {
+      return {
+        ...(record.result || {}),
+        success: true,
+        duplicateConfirm: true,
+        status: "imported"
+      };
+    }
     const decisions = payload.decisions && typeof payload.decisions === "object" ? payload.decisions : {};
     const shouldImportReview = (item) => decisions[item.id] === "approve";
     const snapshots = record.snapshots || {};
     const created = { customers: [], appointments: [], payments: [] };
+    const skippedDuplicates = { customers: 0, appointments: 0, payments: 0 };
     const skippedReview = [];
     const clientByName = new Map();
+    const existingClients = this.service.filterByCenter(this.service.clientsRepository.list(), session);
+    const clientIndex = indexExistingClients(existingClients);
 
-    this.service.filterByCenter(this.service.clientsRepository.list(), session).forEach((client) => {
+    existingClients.forEach((client) => {
       clientByName.set(normalizeText(client.name || `${client.firstName || ""} ${client.lastName || ""}`), client);
     });
 
@@ -385,8 +596,12 @@ class GoldOnboardingEngine {
     (snapshots.import_customers_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
     customerRows.forEach((item) => {
       const customer = item.normalized || {};
-      const existing = clientByName.get(normalizeText(customer.name));
-      if (existing && item.status !== "SAFE") return;
+      const existing = evaluateCustomerMatch(customer, clientIndex).duplicateOf || clientByName.get(normalizeText(customer.name));
+      if (existing) {
+        skippedDuplicates.customers += 1;
+        clientByName.set(normalizeText(customer.name), existing);
+        return;
+      }
       const saved = this.service.saveClient({
         ...customer,
         idempotencyKey: `gold-onboarding:${importId}:customer:${item.id}`,
@@ -394,6 +609,9 @@ class GoldOnboardingEngine {
       }, session);
       created.customers.push(saved);
       clientByName.set(normalizeText(saved.name), saved);
+      if (saved.email) clientIndex.byEmail.set(cleanEmail(saved.email), saved);
+      if (saved.phone) clientIndex.byPhone.set(cleanPhone(saved.phone), saved);
+      clientIndex.byName.set(customerComparableName(saved), saved);
     });
 
     const appointmentRows = [
@@ -404,6 +622,15 @@ class GoldOnboardingEngine {
     appointmentRows.forEach((item) => {
       const appointment = item.normalized || {};
       const client = clientByName.get(normalizeText(appointment.clientName || ""));
+      const duplicateAppointment = this.service.filterByCenter(this.service.appointmentsRepository.list(), session).find((existing) => (
+        normalizeText(existing.clientName || existing.walkInName || "") === normalizeText(appointment.clientName || "") &&
+        String(existing.startAt || "").slice(0, 16) === String(appointment.startAt || "").slice(0, 16) &&
+        normalizeText(existing.serviceName || "") === normalizeText(appointment.serviceName || "")
+      ));
+      if (duplicateAppointment) {
+        skippedDuplicates.appointments += 1;
+        return;
+      }
       const saved = this.service.saveAppointment({
         ...appointment,
         clientId: client?.id || "",
@@ -427,6 +654,15 @@ class GoldOnboardingEngine {
       const client = clientByName.get(normalizeText(payment.walkInName || ""));
       const dateKey = `${normalizeText(payment.walkInName || "")}:${String(payment.createdAt || "").slice(0, 10)}`;
       const appointment = appointmentByClientAndDay.get(dateKey);
+      const duplicatePayment = this.service.filterByCenter(this.service.paymentsRepository.list(), session).find((existing) => (
+        Number(existing.amountCents || 0) === Number(payment.amountCents || 0) &&
+        String(existing.createdAt || "").slice(0, 10) === String(payment.createdAt || "").slice(0, 10) &&
+        normalizeText(existing.walkInName || "") === normalizeText(payment.walkInName || "")
+      ));
+      if (duplicatePayment) {
+        skippedDuplicates.payments += 1;
+        return;
+      }
       const saved = this.service.createPayment({
         ...payment,
         clientId: client?.id || "",
@@ -441,15 +677,34 @@ class GoldOnboardingEngine {
       importId
     });
     const pial = this.service.getProgressiveIntelligenceStatus(session, { force: true, reason: "gold_onboarding_import" });
+    const summary = this.summarizeSnapshots(snapshots);
     const result = {
       success: true,
       importId,
+      importHash: record.importHash || "",
+      status: "imported",
       imported: {
         customers: created.customers.length,
         appointments: created.appointments.length,
         payments: created.payments.length
       },
+      createdCounts: {
+        customers: created.customers.length,
+        appointments: created.appointments.length,
+        payments: created.payments.length
+      },
+      finalSummary: {
+        customersFound: summary.customersFound,
+        customersNew: created.customers.length,
+        duplicatesReview: summary.duplicates,
+        appointmentsImported: created.appointments.length,
+        paymentsImported: created.payments.length,
+        invalidExcluded: summary.invalidRecords,
+        skippedDuplicates,
+        finalStatus: "imported"
+      },
       skippedReview,
+      skippedDuplicates,
       excludedInvalid: this.summarizeSnapshots(snapshots).invalidRecords,
       rebuild: {
         valid: rebuild.valid,
@@ -464,9 +719,21 @@ class GoldOnboardingEngine {
     this.importRepository.update(importId, (current) => ({
       ...current,
       status: "imported",
+      createdCounts: result.createdCounts,
       result,
+      confirmedAt: nowIso(),
       importedAt: nowIso(),
       updatedAt: nowIso()
+    }));
+    console.log("[gold_onboarding_confirm]", JSON.stringify({
+      centerId: this.service.getCenterId(session),
+      importId,
+      importHash: record.importHash || "",
+      createdCounts: result.createdCounts,
+      skippedDuplicates,
+      invalidExcluded: result.excludedInvalid,
+      rebuildValid: rebuild.valid,
+      pialLevel: pial.activationLevel
     }));
     return result;
   }
@@ -480,6 +747,15 @@ class GoldOnboardingEngine {
         status: item.status,
         createdAt: item.createdAt,
         importedAt: item.importedAt || "",
+        confirmedAt: item.confirmedAt || "",
+        importHash: item.importHash || "",
+        fileName: item.fileName || "",
+        fileHash: item.fileHash || "",
+        detectedType: item.detectedType || "",
+        createdCounts: item.createdCounts || { customers: 0, appointments: 0, payments: 0 },
+        reviewCounts: item.reviewCounts || {},
+        invalidCounts: item.invalidCounts || {},
+        createdBy: item.createdBy || "",
         summary: item.summary,
         fileSummaries: item.fileSummaries || [],
         result: item.result || null
