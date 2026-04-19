@@ -56,6 +56,21 @@ const DATA_QUALITY_PARALLEL_WEIGHTS = Object.freeze({
   consistencyQuality: 0.10
 });
 const DATA_QUALITY_PARALLEL_WARNING_THRESHOLD = 0.15;
+const DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
+  // Core DQ diventa primario solo quando agreement comparabile e qualità operativa sono entrambi robusti.
+  agreementScore: 0.90,
+  dataQualityScore: 0.80,
+  paymentQuality: 0.75,
+  appointmentQuality: 0.70,
+  hysteresisOn: 0.88,
+  hysteresisOff: 0.72
+});
+const DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({
+  agreementScore: 0.35,
+  dataQualityScore: 0.35,
+  paymentQuality: 0.15,
+  appointmentQuality: 0.15
+});
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
@@ -1802,6 +1817,10 @@ class DesktopMirrorService {
       cashPrimarySnapshot: null,
       cashShadowSnapshot: null,
       dataQualityParallel: null,
+      dataQualitySelection: null,
+      dataQualityPrimarySnapshot: null,
+      dataQualityShadowSnapshot: null,
+      dataQualityComparableSnapshot: null,
       graph: {
         eventToState: {
           appointment_created: ["Sat", "Prod"],
@@ -2277,7 +2296,7 @@ class DesktopMirrorService {
       goldStateEventSeq: Number(goldState?.eventSeq || 0)
     };
     if (plan === "gold") {
-      result.pialDataQualityComparison = this.buildPialDataQualityComparison(goldState?.dataQualityParallel || null);
+      result.pialDataQualityComparison = this.buildPialDataQualityComparison(goldState?.dataQualityParallel || null, goldState);
     }
     return result;
   }
@@ -2464,6 +2483,10 @@ class DesktopMirrorService {
     const state = validState.state;
     const business = state.snapshots?.business || {};
     const report = state.snapshots?.report || {};
+    const dataQualityPrimary = state.dataQualityPrimarySnapshot || null;
+    const dataQuality = this.buildGoldDataQualitySummary(dataQualityPrimary, report.dataQuality ?? business.dataQuality ?? 0, {
+      unlinkedPayments: Number(business.unlinkedPayments || 0)
+    });
     const payload = {
       todayAppointments: Number(state.counters?.todayAppointments || 0),
       inactiveClientsCount: 0,
@@ -2492,14 +2515,7 @@ class DesktopMirrorService {
         byDay: [],
         recentPayments: []
       },
-      dataQuality: {
-        summaryOnly: true,
-        score: Math.round(Number(report.dataQuality ?? business.dataQuality ?? 0) * 100),
-        metrics: {
-          unlinkedPayments: Number(business.unlinkedPayments || 0)
-        },
-        sourceLayer: "gold_state"
-      },
+      dataQuality,
       dashboardCache: {
         cached: true,
         source: "gold_state",
@@ -2526,6 +2542,8 @@ class DesktopMirrorService {
     const report = state.snapshots?.report || {};
     const cashPrimary = state.cashPrimarySnapshot || null;
     const cashSelection = state.cashSelection || null;
+    const dataQualityPrimary = state.dataQualityPrimarySnapshot || null;
+    const dataQualitySelection = state.dataQualitySelection || null;
     const startDate = toDateOnly(options.startDate || nowIso());
     const endDate = toDateOnly(options.endDate || startDate);
     const revenueCents = Number(cashPrimary?.reconciledCashCents ?? report.revenueCents ?? 0);
@@ -2560,10 +2578,15 @@ class DesktopMirrorService {
         `Report letto da Gold State Layer: incasso ${euro(revenueCents)}, ticket medio ${euro(report.averageTicketCents || 0)}.`,
         unlinkedCashCents > 0 ? `${euro(unlinkedCashCents)} da collegare o verificare.` : "Nessuna anomalia cassa aggregata nello stato."
       ],
+      dataQuality: this.buildGoldDataQualitySummary(dataQualityPrimary, report.dataQuality || 0, {
+        unlinkedPayments: Number(report.unlinkedPayments || 0)
+      }),
       meta: {
         source: "gold_state",
         cashSource: cashPrimary?.sourceUsed || "legacy",
         cashSelection,
+        dataQualitySource: dataQualityPrimary?.sourceUsed || "legacy",
+        dataQualitySelection,
         eventSeq: validState.eventSeq,
         fallbackAvailable: true
       }
@@ -2648,7 +2671,10 @@ class DesktopMirrorService {
     const report = this.buildOperationalReportFromGoldState(options, session) || {};
     const centerHealth = this.buildGoldStateCenterHealth(state);
     const profitability = this.buildProfitabilityOverviewFromGoldState(options, session) || {};
-    const dataQualityScore = Math.round(Number(business.dataQuality || 0) * 100);
+    const dataQualityPrimary = state.dataQualityPrimarySnapshot || null;
+    const dataQuality = this.buildGoldDataQualitySummary(dataQualityPrimary, business.dataQuality || 0, {
+      unlinkedPayments: Number(business.unlinkedPayments || 0)
+    });
     const snapshot = {
       snapshotAvailable: true,
       snapshotVersion: "1.0",
@@ -2717,14 +2743,7 @@ class DesktopMirrorService {
         },
         sourceLayer: "gold_state"
       },
-      dataQuality: {
-        summaryOnly: true,
-        score: dataQualityScore,
-        metrics: {
-          unlinkedPayments: Number(business.unlinkedPayments || 0)
-        },
-        sourceLayer: "gold_state"
-      },
+      dataQuality,
       economic: {
         sourceLayer: "gold_state",
         operationalRevenueCents: Number(business.revenueCents || 0),
@@ -2772,6 +2791,8 @@ class DesktopMirrorService {
     const report = snapshots.report || {};
     const cashPrimary = state.cashPrimarySnapshot || null;
     const cashSelection = state.cashSelection || null;
+    const dataQualityPrimary = state.dataQualityPrimarySnapshot || null;
+    const dataQualitySelection = state.dataQualitySelection || null;
     const decisionScore = Number(decision.score || 0);
     const level = decision.action === "ACT_NOW" ? "critical" : decision.action === "SUGGEST" ? "warning" : "info";
     const centerHealth = {
@@ -2791,7 +2812,7 @@ class DesktopMirrorService {
       area: decision.domain || "gold",
       conclusion: decision.primaryAction?.label || decision.explanationShort || "Priorita Gold",
       reason: decision.explanationShort || "Priorita letta dal Gold State Layer.",
-      details: `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Cash ${cashSelection?.primarySource || "legacy"}`,
+      details: `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(dataQualityPrimary?.dataQualityScore ?? signals.dataReliability ?? business.confidence ?? 0) * 100)} · DQ ${dataQualitySelection?.primarySource || "legacy"} · Cash ${cashSelection?.primarySource || "legacy"}`,
       impactCents: decision.domain === "cash"
         ? Number(cashPrimary?.unlinkedCashCents || 0) + Number(cashPrimary?.ambiguousCashCents || 0) + Number(cashPrimary?.overdueCents || 0)
         : Number(business.revenueCents || profitability.revenueCents || report.revenueCents || 0),
@@ -3643,6 +3664,50 @@ class DesktopMirrorService {
     };
   }
 
+  normalizeGoldDataQualitySnapshot(snapshot = {}, sourceUsed = "legacy") {
+    const score = this.goldClamp01(Number(snapshot?.dataQualityScore ?? snapshot?.score ?? 0));
+    const band = snapshot?.band || this.normalizeDataQualityBandFromScore(score);
+    return {
+      mathCore: sourceUsed === "core" ? "data_quality_core_v1" : sourceUsed === "core_comparable" ? "dq_policy_adapter_v1" : "legacy_data_quality_penalty_model",
+      sourceUsed,
+      dataQualityScore: this.goldRound(score, 4),
+      score: this.goldRound(score, 4),
+      band,
+      crmQuality: snapshot?.crmQuality === null || snapshot?.crmQuality === undefined ? null : this.goldRound(Number(snapshot.crmQuality || 0), 4),
+      appointmentQuality: snapshot?.appointmentQuality === null || snapshot?.appointmentQuality === undefined ? null : this.goldRound(Number(snapshot.appointmentQuality || 0), 4),
+      paymentQuality: snapshot?.paymentQuality === null || snapshot?.paymentQuality === undefined ? null : this.goldRound(Number(snapshot.paymentQuality || 0), 4),
+      costQuality: snapshot?.costQuality === null || snapshot?.costQuality === undefined ? null : this.goldRound(Number(snapshot.costQuality || 0), 4),
+      linkQuality: snapshot?.linkQuality === null || snapshot?.linkQuality === undefined ? null : this.goldRound(Number(snapshot.linkQuality || 0), 4),
+      consistencyQuality: snapshot?.consistencyQuality === null || snapshot?.consistencyQuality === undefined ? null : this.goldRound(Number(snapshot.consistencyQuality || 0), 4),
+      temporalQuality: snapshot?.temporalQuality === null || snapshot?.temporalQuality === undefined ? null : this.goldRound(Number(snapshot.temporalQuality || 0), 4),
+      gate: snapshot?.gate || {},
+      sourceFlags: [
+        ...(Array.isArray(snapshot?.sourceFlags) ? snapshot.sourceFlags : []),
+        `data_quality_source:${sourceUsed}`
+      ]
+    };
+  }
+
+  buildGoldDataQualitySummary(primarySnapshot = {}, fallbackScore = 1, metrics = {}) {
+    const score01 = this.goldClamp01(Number(primarySnapshot?.dataQualityScore ?? fallbackScore ?? 0));
+    const score = Math.round(score01 * 100);
+    const band = primarySnapshot?.band || this.normalizeDataQualityBandFromScore(score01);
+    const status = score >= 85 ? "buono" : score >= 65 ? "medio" : score >= 40 ? "basso" : "critico";
+    return {
+      summaryOnly: true,
+      score,
+      status,
+      state: score >= 85 ? "alto" : status,
+      band,
+      metrics,
+      gate: primarySnapshot?.gate || {},
+      sourceLayer: "gold_state",
+      sourceUsed: primarySnapshot?.sourceUsed || "legacy",
+      mathCore: primarySnapshot?.mathCore || "legacy_data_quality_penalty_model",
+      sourceFlags: primarySnapshot?.sourceFlags || []
+    };
+  }
+
   buildDataQualityDiffSnapshot(legacySnapshot = {}, coreSnapshot = {}) {
     const metricMap = {
       dataQualityScore: { warning: "DQ_TOTAL_DRIFT" },
@@ -3781,14 +3846,89 @@ class DesktopMirrorService {
     }
   }
 
-  buildPialDataQualityComparison(dataQualityParallel = null) {
+  buildGoldDataQualityControlledSwitch(dataQualityParallel = {}, previousSource = "legacy") {
+    const normalizedPreviousSource = previousSource === "core" ? "core" : "legacy";
+    const status = dataQualityParallel?.status || "error";
+    const legacyRaw = dataQualityParallel?.legacySnapshot || null;
+    const coreRaw = dataQualityParallel?.operationalSnapshot || dataQualityParallel?.coreSnapshot || null;
+    const comparableRaw = dataQualityParallel?.comparableSnapshot || null;
+    const agreementScore = Number(dataQualityParallel?.agreementScore ?? 0);
+    const agreementBand = dataQualityParallel?.agreementBand || "N/A";
+    const coreBand = coreRaw?.band || "INCOMPLETE";
+    const coreScore = Number(coreRaw?.dataQualityScore ?? coreRaw?.score ?? 0);
+    const paymentQuality = Number(coreRaw?.paymentQuality ?? 0);
+    const appointmentQuality = Number(coreRaw?.appointmentQuality ?? 0);
+    const switchEligible = status === "ok"
+      && ["ALIGNED", "WATCH"].includes(agreementBand)
+      && agreementScore >= DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.agreementScore
+      && ["REAL", "STANDARD"].includes(coreBand)
+      && coreScore >= DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.dataQualityScore
+      && paymentQuality >= DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.paymentQuality
+      && appointmentQuality >= DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.appointmentQuality;
+    const reliabilityScore = this.goldRound(this.goldClamp01(
+      (DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS.agreementScore * agreementScore)
+      + (DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS.dataQualityScore * coreScore)
+      + (DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS.paymentQuality * paymentQuality)
+      + (DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS.appointmentQuality * appointmentQuality)
+    ), 4);
+    const staysOnCore = normalizedPreviousSource === "core"
+      && status === "ok"
+      && agreementBand !== "DRIFT"
+      && coreBand !== "INCOMPLETE"
+      && reliabilityScore >= DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOff;
+    const switchesOnCore = normalizedPreviousSource === "legacy"
+      && switchEligible
+      && reliabilityScore >= DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOn;
+    const primarySource = staysOnCore || switchesOnCore ? "core" : "legacy";
+    const fallbackReasons = [];
+    if (status !== "ok") fallbackReasons.push(`status_${status}`);
+    if (!["ALIGNED", "WATCH"].includes(agreementBand)) fallbackReasons.push(`agreement_${agreementBand}`);
+    if (agreementScore < DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.agreementScore) fallbackReasons.push("agreement_below_threshold");
+    if (!["REAL", "STANDARD"].includes(coreBand)) fallbackReasons.push(`core_band_${coreBand}`);
+    if (coreScore < DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.dataQualityScore) fallbackReasons.push("core_score_below_threshold");
+    if (paymentQuality < DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.paymentQuality) fallbackReasons.push("payment_quality_below_threshold");
+    if (appointmentQuality < DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.appointmentQuality) fallbackReasons.push("appointment_quality_below_threshold");
+    if (normalizedPreviousSource === "core" && primarySource === "legacy" && reliabilityScore < DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOff) fallbackReasons.push("hysteresis_off");
+    return {
+      dataQualitySelection: {
+        mode: "controlled_switch",
+        primarySource,
+        previousSource: normalizedPreviousSource,
+        shadowSource: primarySource === "core" ? "legacy" : "core",
+        comparableSource: "core_comparable",
+        switchEligible,
+        reliabilityScore,
+        agreementScore: this.goldRound(agreementScore, 4),
+        agreementBand,
+        coreBand,
+        coreScore: this.goldRound(coreScore, 4),
+        paymentQuality: this.goldRound(paymentQuality, 4),
+        appointmentQuality: this.goldRound(appointmentQuality, 4),
+        thresholds: DATA_QUALITY_CONTROLLED_SWITCH_THRESHOLDS,
+        switchReason: primarySource === "core"
+          ? (switchesOnCore ? "eligible_reliability_above_on_threshold" : "hysteresis_keep_core")
+          : "",
+        fallbackReason: primarySource === "legacy" ? (fallbackReasons.join("|") || "legacy_default") : ""
+      },
+      dataQualityPrimarySnapshot: this.normalizeGoldDataQualitySnapshot(primarySource === "core" ? coreRaw : legacyRaw, primarySource),
+      dataQualityShadowSnapshot: this.normalizeGoldDataQualitySnapshot(primarySource === "core" ? legacyRaw : coreRaw, primarySource === "core" ? "legacy" : "core"),
+      dataQualityComparableSnapshot: this.normalizeGoldDataQualitySnapshot(comparableRaw || {}, "core_comparable")
+    };
+  }
+
+  buildPialDataQualityComparison(dataQualityParallel = null, goldState = null) {
     const legacy = dataQualityParallel?.legacySnapshot || null;
     const core = dataQualityParallel?.coreSnapshot || null;
     const agreementScore = dataQualityParallel?.agreementScore ?? null;
     const agreementBand = dataQualityParallel?.agreementBand || "N/A";
     const coreBand = core?.band || "N/A";
+    const selection = goldState?.dataQualitySelection || null;
+    const primary = goldState?.dataQualityPrimarySnapshot || null;
+    const shadow = goldState?.dataQualityShadowSnapshot || null;
     let recommendedSource = "legacy";
-    if (dataQualityParallel?.status === "error" || agreementBand === "DRIFT") {
+    if (selection?.primarySource) {
+      recommendedSource = selection.primarySource;
+    } else if (dataQualityParallel?.status === "error" || agreementBand === "DRIFT") {
       recommendedSource = "legacy";
     } else if (agreementBand === "WATCH" || agreementBand === "N/A") {
       recommendedSource = "watch";
@@ -3809,20 +3949,34 @@ class DesktopMirrorService {
       rawAgreementBand: dataQualityParallel?.rawAgreementBand || "N/A",
       agreementScore,
       agreementBand,
+      primarySource: selection?.primarySource || "legacy",
+      primaryScore: primary?.dataQualityScore ?? null,
+      primaryBand: primary?.band || "N/A",
+      shadowSource: selection?.shadowSource || "core",
+      shadowScore: shadow?.dataQualityScore ?? null,
+      selection,
       recommendedSource
     };
   }
 
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
-    next.snapshots = this.buildGoldSnapshotsFromState(next);
-    next.marketingActions = this.buildGoldMarketingActionState(session);
     next.cashParallel = this.buildGoldCashParallelState(next, session);
     next.dataQualityParallel = this.buildDataQualityParallelState(next, session);
     const cashSwitch = this.buildGoldCashControlledSwitch(next.cashParallel, state.cashSelection?.primarySource || next.cashSelection?.primarySource || "legacy");
     next.cashSelection = cashSwitch.cashSelection;
     next.cashPrimarySnapshot = cashSwitch.cashPrimarySnapshot;
     next.cashShadowSnapshot = cashSwitch.cashShadowSnapshot;
+    const dataQualitySwitch = this.buildGoldDataQualityControlledSwitch(next.dataQualityParallel, state.dataQualitySelection?.primarySource || next.dataQualitySelection?.primarySource || "legacy");
+    next.dataQualitySelection = dataQualitySwitch.dataQualitySelection;
+    next.dataQualityPrimarySnapshot = dataQualitySwitch.dataQualityPrimarySnapshot;
+    next.dataQualityShadowSnapshot = dataQualitySwitch.dataQualityShadowSnapshot;
+    next.dataQualityComparableSnapshot = dataQualitySwitch.dataQualityComparableSnapshot;
+    if (Number.isFinite(Number(next.dataQualityPrimarySnapshot?.dataQualityScore))) {
+      next.components.DQ = this.goldClamp01(Number(next.dataQualityPrimarySnapshot.dataQualityScore || 0));
+    }
+    next.snapshots = this.buildGoldSnapshotsFromState(next);
+    next.marketingActions = this.buildGoldMarketingActionState(session);
     next.signals = this.buildGoldSignalsFromState(next);
     next.decision = this.buildGoldDecisionFromState(next);
     return next;

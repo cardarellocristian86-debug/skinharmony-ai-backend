@@ -100,18 +100,21 @@ function planOf(user = {}) {
 function chooseTenants(users = []) {
   const normalized = users.filter((user) => planOf(user) === "gold");
   const privilege = normalized.find((user) => /privilege/i.test(userLabel(user))) || normalized.find((user) => /privilege/i.test(user.username || ""));
-  const withGoldNumber = normalized
+  const centro073 = normalized
     .filter((user) => user.id !== privilege?.id)
     .find((user) => /073|centro.*73|gold.*073|gold100_gold_073/i.test([userLabel(user), user.username, user.centerId].join(" ")));
-  const medium = withGoldNumber
+  const medium = centro073
     || normalized.filter((user) => user.id !== privilege?.id).find((user) => /gold100_gold_0(2[5-9]|[3-7][0-9])|gold_0(2[5-9]|[3-7][0-9])/i.test([user.username, user.centerId].join(" ")))
     || normalized.find((user) => user.id !== privilege?.id);
-  const fragile = normalized
+  const centro001 = normalized
     .filter((user) => ![privilege?.id, medium?.id].includes(user.id))
+    .find((user) => /001|centro.*1|gold.*001|gold100_gold_001/i.test([userLabel(user), user.username, user.centerId].join(" ")));
+  const fragile = normalized
+    .filter((user) => ![privilege?.id, medium?.id, centro001?.id].includes(user.id))
     .reverse()
     .find((user) => /100|fragile|incomplet|gold100_gold_100/i.test([userLabel(user), user.username, user.centerId].join(" ")))
-    || normalized.find((user) => ![privilege?.id, medium?.id].includes(user.id));
-  return [privilege, medium, fragile].filter(Boolean);
+    || normalized.find((user) => ![privilege?.id, medium?.id, centro001?.id].includes(user.id));
+  return [privilege, medium, centro001, fragile].filter(Boolean);
 }
 
 function normalizeEndpointRows(data) {
@@ -266,6 +269,9 @@ async function auditTenant(baseUrl, adminToken, tenant) {
     request(baseUrl, "/api/catalog/resources", { token }).catch(() => [])
   ]);
   const parallel = state.dataQualityParallel || {};
+  const selection = state.dataQualitySelection || {};
+  const primarySnapshot = state.dataQualityPrimarySnapshot || {};
+  const shadowSnapshot = state.dataQualityShadowSnapshot || {};
   const rawDeltas = componentDeltas(parallel);
   const comparableDeltas = comparableComponentDeltas(parallel);
   const raw = {
@@ -309,6 +315,34 @@ async function auditTenant(baseUrl, adminToken, tenant) {
       policyAdapter: parallel.policyAdapter || null,
       coreGate: parallel.coreSnapshot?.gate || {},
       sourceFlags: parallel.sourceFlags || []
+    },
+    dataQualitySelection: {
+      primarySource: selection.primarySource || "missing",
+      previousSource: selection.previousSource || "",
+      shadowSource: selection.shadowSource || "",
+      switchEligible: selection.switchEligible ?? null,
+      reliabilityScore: selection.reliabilityScore ?? null,
+      agreementScore: selection.agreementScore ?? null,
+      agreementBand: selection.agreementBand || "N/A",
+      coreScore: selection.coreScore ?? null,
+      coreBand: selection.coreBand || "N/A",
+      switchReason: selection.switchReason || "",
+      fallbackReason: selection.fallbackReason || "",
+      primarySnapshot: {
+        sourceUsed: primarySnapshot.sourceUsed || "",
+        dataQualityScore: primarySnapshot.dataQualityScore ?? null,
+        band: primarySnapshot.band || "N/A"
+      },
+      shadowSnapshot: {
+        sourceUsed: shadowSnapshot.sourceUsed || "",
+        dataQualityScore: shadowSnapshot.dataQualityScore ?? null,
+        band: shadowSnapshot.band || "N/A"
+      },
+      comparableSnapshot: {
+        sourceUsed: state.dataQualityComparableSnapshot?.sourceUsed || "",
+        dataQualityScore: state.dataQualityComparableSnapshot?.dataQualityScore ?? null,
+        band: state.dataQualityComparableSnapshot?.band || "N/A"
+      }
     },
     pialDataQualityComparison: pial.pialDataQualityComparison || null,
     causes: explainCauses({ deltas: rawDeltas, diffSnapshot: parallel.rawDiffSnapshot || parallel.diffSnapshot || {}, raw }),
