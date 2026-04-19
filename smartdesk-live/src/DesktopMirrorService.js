@@ -9,6 +9,7 @@ const {
 const { ProgressiveIntelligenceActivationLayer } = require("./ProgressiveIntelligenceActivationLayer");
 const { FleetIntelligenceLayer } = require("./fleet_intelligence_layer");
 const { GoldOnboardingEngine } = require("./GoldOnboardingEngine");
+const { computeCenterProfitabilitySnapshot } = require("./core/profitability/ProfitabilityCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -6815,179 +6816,22 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
     const resources = this.filterByCenter(this.resourcesRepository.list(), session);
-    const serviceById = new Map(services.map((item) => [String(item.id), item]));
-    const staffById = new Map(staff.map((item) => [String(item.id), item]));
-    const inventoryById = new Map(inventory.map((item) => [String(item.id), item]));
-    const resourceById = new Map(resources.map((item) => [String(item.id), item]));
-    const inventoryCostAverage = inventory.length
-      ? Math.round(inventory.reduce((sum, item) => sum + Number(item.costCents || 0), 0) / inventory.length)
-      : 0;
-    const serviceMap = new Map();
-    const productMap = new Map();
-    const technologyMap = new Map();
-    const monthlyMap = new Map();
-    const paymentsByAppointmentId = groupByAppointmentId(payments);
-    appointments.forEach((appointment) => {
-      const service = serviceById.get(String(appointment.serviceId || "")) || {};
-      const serviceId = String(service.id || appointment.serviceId || "unknown");
-      const current = serviceMap.get(serviceId) || {
-        id: serviceId,
-        name: service.name || appointment.serviceName || "Servizio non configurato",
-        executions: 0,
-        revenueCents: 0,
-        costCents: 0,
-        profitCents: 0,
-        marginPercent: 0,
-        status: "HEALTHY"
-      };
-      const linkedPayments = paymentsByAppointmentId.get(String(appointment.id || "")) || [];
-      const revenueCents = linkedPayments.length
-        ? linkedPayments.reduce((sum, payment) => sum + Number(payment.amountCents || 0), 0)
-        : Number(service.priceCents || appointment.priceCents || 0);
-      const operator = staffById.get(String(appointment.staffId || ""));
-      const durationMin = Number(appointment.durationMin || service.durationMin || 60);
-      const operatorCostCents = Math.round((Number(operator?.hourlyCostCents || 0) / 60) * durationMin);
-      const productCostCents = Number(service.estimatedProductCostCents || service.productCostCents || inventoryCostAverage || 0);
-      const technologyCostCents = Number(service.technologyCostCents || 0);
-      const costCents = operatorCostCents + productCostCents + technologyCostCents;
-      const productLinks = Array.isArray(service.productLinks) ? service.productLinks : [];
-      const technologyLinks = Array.isArray(service.technologyLinks) ? service.technologyLinks : [];
-      productLinks.forEach((link) => {
-        const product = inventoryById.get(String(link.productId || ""));
-        if (!product) return;
-        const usageUnits = Number(link.usageUnits || 1);
-        const unitCostCents = Number(product.costPerUseCents || product.costCents || product.unitCostCents || 0);
-        const consumedCents = Math.round(unitCostCents * usageUnits);
-        const allocatedRevenueCents = Math.round(revenueCents / Math.max(productLinks.length, 1));
-        const currentProduct = productMap.get(String(product.id)) || {
-          id: String(product.id),
-          name: product.name || "Prodotto",
-          totalUses: 0,
-          costConsumedCents: 0,
-          revenueCents: 0,
-          profitCents: 0,
-          marginPercent: 0,
-          status: "HEALTHY"
-        };
-        currentProduct.totalUses += usageUnits;
-        currentProduct.costConsumedCents += consumedCents;
-        currentProduct.revenueCents += allocatedRevenueCents;
-        currentProduct.profitCents += allocatedRevenueCents - consumedCents;
-        productMap.set(String(product.id), currentProduct);
-      });
-      technologyLinks.forEach((link) => {
-        const technology = resourceById.get(String(link.technologyId || ""));
-        if (!technology) return;
-        const usageUnits = Number(link.usageUnits || 1);
-        const costPerUseCents = Number(technology.costPerUseCents || 0);
-        const consumedCents = Math.round(costPerUseCents * usageUnits);
-        const allocatedRevenueCents = Math.round(revenueCents / Math.max(technologyLinks.length, 1));
-        const currentTechnology = technologyMap.get(String(technology.id)) || {
-          id: String(technology.id),
-          name: technology.name || "Tecnologia",
-          totalUses: 0,
-          monthlyCostCents: Number(technology.monthlyCostCents || 0),
-          revenueCents: 0,
-          costCents: 0,
-          profitCents: 0,
-          marginPercent: 0,
-          status: "HEALTHY"
-        };
-        currentTechnology.totalUses += usageUnits;
-        currentTechnology.revenueCents += allocatedRevenueCents;
-        currentTechnology.costCents += consumedCents;
-        currentTechnology.profitCents += allocatedRevenueCents - consumedCents;
-        technologyMap.set(String(technology.id), currentTechnology);
-      });
-      const monthKey = String(appointment.startAt || appointment.createdAt || "").slice(0, 7) || "senza-data";
-      const monthly = monthlyMap.get(monthKey) || {
-        month: monthKey,
-        executions: 0,
-        revenueCents: 0,
-        costCents: 0,
-        profitCents: 0,
-        marginPercent: 0,
-        deltaRevenueCents: 0,
-        signal: "stable"
-      };
-      current.executions += 1;
-      current.revenueCents += revenueCents;
-      current.costCents += costCents;
-      current.profitCents += revenueCents - costCents;
-      monthly.executions += 1;
-      monthly.revenueCents += revenueCents;
-      monthly.costCents += costCents;
-      monthly.profitCents += revenueCents - costCents;
-      serviceMap.set(serviceId, current);
-      monthlyMap.set(monthKey, monthly);
+    const profitabilitySnapshot = computeCenterProfitabilitySnapshot({
+      appointments,
+      services,
+      staff,
+      payments,
+      inventory,
+      resources
     });
-    const serviceRows = Array.from(serviceMap.values()).map((item) => {
-      const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
-      const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
-      const executions = Number(item.executions || 0);
-      return {
-        ...item,
-        averageRevenueCents: executions ? Math.round(Number(item.revenueCents || 0) / executions) : 0,
-        averageCostCents: executions ? Math.round(Number(item.costCents || 0) / executions) : 0,
-        marginPercent,
-        status
-      };
-    }).sort((a, b) => a.marginPercent - b.marginPercent);
-    const productRows = Array.from(productMap.values()).map((item) => {
-      const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
-      const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
-      return { ...item, marginPercent, status };
-    }).sort((a, b) => a.marginPercent - b.marginPercent);
-    const technologyRows = Array.from(technologyMap.values()).map((item) => {
-      const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
-      const status = item.profitCents < 0 ? "LOSS" : marginPercent < 30 ? "LOW_MARGIN" : "HEALTHY";
-      return { ...item, marginPercent, status };
-    }).sort((a, b) => a.marginPercent - b.marginPercent);
-    const totals = serviceRows.reduce((summary, item) => ({
-      executions: summary.executions + Number(item.executions || 0),
-      revenueCents: summary.revenueCents + Number(item.revenueCents || 0),
-      costCents: summary.costCents + Number(item.costCents || 0),
-      profitCents: summary.profitCents + Number(item.profitCents || 0)
-    }), { executions: 0, revenueCents: 0, costCents: 0, profitCents: 0 });
-    const monthlyTrend = Array.from(monthlyMap.values())
-      .sort((a, b) => String(a.month).localeCompare(String(b.month)))
-      .map((item, index, rows) => {
-        const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
-        const previous = rows[index - 1];
-        const deltaRevenueCents = previous ? item.revenueCents - Number(previous.revenueCents || 0) : 0;
-        const signal = deltaRevenueCents <= -300000
-          ? "drop"
-          : deltaRevenueCents >= 300000
-            ? "growth"
-            : "stable";
-        return {
-          ...item,
-          marginPercent,
-          deltaRevenueCents,
-          signal
-        };
-      });
-    const alerts = serviceRows
-      .filter((item) => item.status !== "HEALTHY")
-      .map((item) => ({
-        area: "servizi",
-        level: item.status === "LOSS" ? "critical" : "warning",
-        title: item.status === "LOSS" ? `${item.name} lavora in perdita` : `${item.name} ha margine basso`,
-        body: item.status === "LOSS"
-          ? "Controlla prezzo, durata, costo operatore e prodotti usati prima di proporlo ancora."
-          : "Il servizio rende poco rispetto al ricavo: verifica durata reale e consumo prodotti.",
-        serviceId: item.id
-      }));
     const overview = {
-      totals,
+      ...profitabilitySnapshot,
       centerHealth: precomputed.centerHealth || this.getCenterHealth({ startDate, endDate }, session),
-      services: serviceRows,
-      products: productRows,
-      technologies: technologyRows,
-      monthlyTrend,
-      alerts,
-      revenueCents: totals.revenueCents,
-      inventoryCostCents: totals.costCents
+      meta: {
+        ...(profitabilitySnapshot.meta || {}),
+        source: "profitability_core",
+        legacyFallbackSeparated: true
+      }
     };
     if (!precomputed.centerHealth) {
       return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PROFITABILITY, cacheOptions, session, overview);
