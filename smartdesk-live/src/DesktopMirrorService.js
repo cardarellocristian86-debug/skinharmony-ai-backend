@@ -10,6 +10,7 @@ const { ProgressiveIntelligenceActivationLayer } = require("./ProgressiveIntelli
 const { FleetIntelligenceLayer } = require("./fleet_intelligence_layer");
 const { GoldOnboardingEngine } = require("./GoldOnboardingEngine");
 const { CONFIDENCE, computeCenterProfitabilitySnapshot } = require("./core/profitability/ProfitabilityCore");
+const { computeCashSnapshot } = require("./core/cash/CashCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -30,6 +31,8 @@ const GOLD_TREND_MU2 = 0.10;
 const GOLD_ENTERPRISE_RISK_RHO = Object.freeze({ friction: 0.45, dataGap: 0.30, instability: 0.25 });
 const GOLD_ENTERPRISE_ACTION_COST = Object.freeze({ ACT_NOW: 0.06, SUGGEST: 0.04, MONITOR: 0.015, VERIFY: 0.025, STOP: 0 });
 const GOLD_ENTERPRISE_BAYES_PRIOR = Object.freeze({ alpha: 2, beta: 2 });
+const CASH_PARALLEL_DIFF_WEIGHTS = Object.freeze({ reconciledCash: 0.35, unlinkedCash: 0.20, gap: 0.30, overdue: 0.15 });
+const CASH_PARALLEL_WARNING_THRESHOLDS = Object.freeze({ reconciledCash: 0.15, unlinkedCash: 0.20, gap: 0.15, overdue: 0.20 });
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
@@ -1768,6 +1771,7 @@ class DesktopMirrorService {
       snapshots: {},
       signals: {},
       decision: null,
+      cashParallel: null,
       graph: {
         eventToState: {
           appointment_created: ["Sat", "Prod"],
@@ -1819,13 +1823,13 @@ class DesktopMirrorService {
         const bootstrapped = this.bootstrapGoldStateFromRepositories(existing, session);
         if (bootstrapped) return bootstrapped;
       }
-      return this.refreshGoldDerivedState(existing);
+      return this.refreshGoldDerivedState(existing, session);
     }
     const state = this.buildDefaultGoldState(centerId, this.getCenterName(session));
     const bootstrapped = this.bootstrapGoldStateFromRepositories(state, session);
     if (bootstrapped) return bootstrapped;
     this.goldStateRepository.create(state);
-    return this.refreshGoldDerivedState(state);
+    return this.refreshGoldDerivedState(state, session);
   }
 
   bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
@@ -1874,7 +1878,7 @@ class DesktopMirrorService {
       },
       counters,
       updatedAt: nowIso()
-    });
+    }, session);
     if (this.goldStateRepository.findById(next.id)) {
       this.goldStateRepository.update(next.id, () => next);
     } else {
@@ -1975,7 +1979,7 @@ class DesktopMirrorService {
     const rebuilt = this.refreshGoldDerivedState({
       ...this.buildDefaultGoldState(this.getCenterId(session), this.getCenterName(session)),
       counters: this.buildGoldStateCountersFromRepositories(session).counters
-    });
+    }, session);
     const metrics = [
       ["Rev", rebuilt.components?.Rev, state.components?.Rev, 0],
       ["U", rebuilt.components?.U, state.components?.U, 0],
@@ -2060,7 +2064,7 @@ class DesktopMirrorService {
         previousEventSeq: Number(existing?.eventSeq || 0)
       },
       updatedAt: startedAt
-    });
+    }, targetSession);
     const validation = this.compareGoldStateToRaw(rebuilt, targetSession);
     rebuilt.metadata = {
       ...(rebuilt.metadata || {}),
@@ -2134,7 +2138,7 @@ class DesktopMirrorService {
         previousEventSeq: Number(existing?.eventSeq || 0)
       },
       updatedAt: startedAt
-    });
+    }, session);
     const validation = this.compareGoldStateToRaw(rebuilt, session);
     rebuilt.metadata = {
       ...(rebuilt.metadata || {}),
@@ -3091,11 +3095,252 @@ class DesktopMirrorService {
     };
   }
 
-  refreshGoldDerivedState(state = {}) {
+  buildGoldCashParallelHorizon(appointments = [], payments = []) {
+    const dates = [
+      ...appointments.map((item) => toDateOnly(item.startAt || item.createdAt || item.dueAt || "")),
+      ...payments.map((item) => toDateOnly(item.createdAt || item.paidAt || ""))
+    ].filter(Boolean).sort();
+    return {
+      startDate: dates[0] || "",
+      endDate: dates[dates.length - 1] || "",
+      mode: dates.length ? "all_observed_data" : "empty"
+    };
+  }
+
+  buildGoldCashLegacySnapshotForParallel({ appointments = [], payments = [], services = [] } = {}, horizon = {}) {
+    const servicesById = mapById(services);
+    const inHorizon = (value) => {
+      const date = toDateOnly(value || "");
+      if (!date) return false;
+      if (horizon.startDate && date < horizon.startDate) return false;
+      if (horizon.endDate && date > horizon.endDate) return false;
+      return true;
+    };
+    const periodPayments = payments.filter((payment) => inHorizon(payment.createdAt || payment.paidAt));
+    const periodAppointments = appointments.filter((appointment) => inHorizon(appointment.startAt || appointment.createdAt || appointment.dueAt));
+    const recordedCashCents = periodPayments.reduce((sum, payment) => sum + Number(payment.amountCents || 0), 0);
+    const unlinkedPayments = periodPayments.filter((payment) => this.goldPaymentIsUnlinked(payment));
+    const unlinkedCashCents = unlinkedPayments.reduce((sum, payment) => sum + Math.max(0, Number(payment.amountCents || 0)), 0);
+    const operationalRevenueCents = periodAppointments
+      .filter((appointment) => ["completed", "ready_checkout"].includes(String(appointment.status || "")))
+      .reduce((sum, appointment) => {
+        const service = servicesById.get(String(appointment.serviceId || ""));
+        return sum + Number(appointment.amountCents || appointment.priceCents || service?.priceCents || 0);
+      }, 0);
+    return {
+      source: "gold_state_legacy_cash",
+      recordedCashCents,
+      // Legacy does not distinguish reconciled cash; this is the closest comparable cash metric available today.
+      reconciledCashCents: recordedCashCents,
+      operationalRevenueCents,
+      unlinkedPaymentCount: unlinkedPayments.length,
+      unlinkedCashCents,
+      gapCents: operationalRevenueCents - recordedCashCents,
+      overdueCents: null,
+      sourceFlags: ["legacy_cash:recorded_cash_used_as_cash_equivalent", "legacy_cash:no_overdue_metric"]
+    };
+  }
+
+  symmetricRelativeError(coreValue, legacyValue) {
+    const core = Number(coreValue || 0);
+    const legacy = Number(legacyValue || 0);
+    return this.goldClamp01(Math.abs(core - legacy) / Math.max(1, Math.max(Math.abs(core), Math.abs(legacy))));
+  }
+
+  buildGoldCashParallelDiff(coreSnapshot = {}, legacySnapshot = {}) {
+    const metricDefinitions = [
+      {
+        key: "reconciledCash",
+        deltaKey: "reconciledCashDeltaCents",
+        errorKey: "reconciledCashError",
+        warning: "CASH_RECONCILIATION_DRIFT",
+        coreValue: Number(coreSnapshot.recordedCashCents || 0),
+        legacyValue: Number(legacySnapshot.reconciledCashCents || 0),
+        weight: CASH_PARALLEL_DIFF_WEIGHTS.reconciledCash,
+        threshold: CASH_PARALLEL_WARNING_THRESHOLDS.reconciledCash,
+        comparable: true,
+        sourceFlag: "compare:core_recorded_cash_vs_legacy_recorded_cash"
+      },
+      {
+        key: "unlinkedCash",
+        deltaKey: "unlinkedCashDeltaCents",
+        errorKey: "unlinkedCashError",
+        warning: "CASH_UNLINKED_DRIFT",
+        coreValue: Number(coreSnapshot.unlinkedCashCents || 0) + Number(coreSnapshot.ambiguousCashCents || 0),
+        legacyValue: Number(legacySnapshot.unlinkedCashCents || 0),
+        weight: CASH_PARALLEL_DIFF_WEIGHTS.unlinkedCash,
+        threshold: CASH_PARALLEL_WARNING_THRESHOLDS.unlinkedCash,
+        comparable: true,
+        sourceFlag: "compare:core_unlinked_plus_ambiguous_vs_legacy_unlinked"
+      },
+      {
+        key: "gap",
+        deltaKey: "gapDeltaCents",
+        errorKey: "gapError",
+        warning: "CASH_GAP_DRIFT",
+        coreValue: Number(coreSnapshot.gapCents || 0),
+        legacyValue: Number(legacySnapshot.gapCents || 0),
+        weight: CASH_PARALLEL_DIFF_WEIGHTS.gap,
+        threshold: CASH_PARALLEL_WARNING_THRESHOLDS.gap,
+        comparable: true,
+        sourceFlag: "compare:core_gap_vs_legacy_operational_gap"
+      },
+      {
+        key: "overdue",
+        deltaKey: "overdueDeltaCents",
+        errorKey: "overdueError",
+        warning: "CASH_OVERDUE_DRIFT",
+        coreValue: Number(coreSnapshot.overdueCents || 0),
+        legacyValue: Number(legacySnapshot.overdueCents || 0),
+        weight: CASH_PARALLEL_DIFF_WEIGHTS.overdue,
+        threshold: CASH_PARALLEL_WARNING_THRESHOLDS.overdue,
+        comparable: Number.isFinite(Number(legacySnapshot.overdueCents)),
+        sourceFlag: "compare:core_overdue_vs_legacy_overdue"
+      }
+    ];
+    const comparableMetrics = metricDefinitions.filter((metric) => metric.comparable);
+    const deltas = {};
+    const relativeErrors = {};
+    const warnings = [];
+    const sourceFlags = [];
+    const totalWeight = comparableMetrics.reduce((sum, metric) => sum + Number(metric.weight || 0), 0);
+    if (!comparableMetrics.length || totalWeight <= 0) {
+      return {
+        comparableMetrics: [],
+        deltas: {
+          reconciledCashDeltaCents: null,
+          unlinkedCashDeltaCents: null,
+          gapDeltaCents: null,
+          overdueDeltaCents: null
+        },
+        relativeErrors: {
+          reconciledCashError: null,
+          unlinkedCashError: null,
+          gapError: null,
+          overdueError: null
+        },
+        agreementScore: null,
+        agreementBand: "N/A",
+        warnings: ["CASH_PARALLEL_NOT_COMPARABLE"],
+        sourceFlags: ["cash_parallel:no_comparable_metrics"]
+      };
+    }
+    let weightedError = 0;
+    comparableMetrics.forEach((metric) => {
+      const delta = Number(metric.coreValue || 0) - Number(metric.legacyValue || 0);
+      const error = this.symmetricRelativeError(metric.coreValue, metric.legacyValue);
+      deltas[metric.deltaKey] = Math.round(delta);
+      relativeErrors[metric.errorKey] = this.goldRound(error, 4);
+      weightedError += (Number(metric.weight || 0) / totalWeight) * error;
+      sourceFlags.push(metric.sourceFlag);
+      if (error > metric.threshold) warnings.push(metric.warning);
+    });
+    metricDefinitions.filter((metric) => !metric.comparable).forEach((metric) => {
+      deltas[metric.deltaKey] = null;
+      relativeErrors[metric.errorKey] = null;
+      warnings.push("CASH_PARALLEL_NOT_COMPARABLE");
+      sourceFlags.push(`${metric.key}:not_comparable`);
+    });
+    const agreementScore = this.goldRound(1 - this.goldClamp01(weightedError), 4);
+    const criticalDrift = warnings.some((item) => item !== "CASH_PARALLEL_NOT_COMPARABLE");
+    const agreementBand = agreementScore >= 0.90 && !criticalDrift
+      ? "ALIGNED"
+      : agreementScore >= 0.75
+        ? "WATCH"
+        : "DRIFT";
+    return {
+      comparableMetrics: comparableMetrics.map((metric) => metric.key),
+      deltas,
+      relativeErrors,
+      agreementScore,
+      agreementBand,
+      warnings: Array.from(new Set(warnings)),
+      sourceFlags
+    };
+  }
+
+  buildGoldCashParallelState(state = {}, session = null) {
+    const centerId = state.centerId || this.getCenterId(session);
+    const shadowSession = session || {
+      centerId,
+      centerName: state.centerName || this.getCenterName(session),
+      subscriptionPlan: "gold",
+      supportMode: true
+    };
+    try {
+      const appointments = this.filterByCenter(this.appointmentsRepository.list(), shadowSession);
+      const payments = this.filterByCenter(this.paymentsRepository.list(), shadowSession);
+      const services = this.filterByCenter(this.servicesRepository.list(), shadowSession);
+      const horizon = this.buildGoldCashParallelHorizon(appointments, payments);
+      const period = horizon.startDate && horizon.endDate
+        ? { startDate: horizon.startDate, endDate: horizon.endDate }
+        : {};
+      const core = computeCashSnapshot({
+        appointments,
+        payments,
+        services,
+        period,
+        options: { today: state.updatedAt || nowIso() }
+      });
+      const legacySnapshot = this.buildGoldCashLegacySnapshotForParallel({ appointments, payments, services }, horizon);
+      const diffSnapshot = this.buildGoldCashParallelDiff(core, legacySnapshot);
+      return {
+        mode: "shadow",
+        status: diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok",
+        mathCore: "cash_core_v1",
+        horizon,
+        legacySnapshot,
+        coreSnapshot: {
+          billedDueCents: Number(core.billedDueCents || 0),
+          reconciledCashCents: Number(core.reconciledCashCents || 0),
+          recordedCashCents: Number(core.recordedCashCents || 0),
+          unlinkedCashCents: Number(core.unlinkedCashCents || 0),
+          ambiguousCashCents: Number(core.ambiguousCashCents || 0),
+          overdueCents: Number(core.overdueCents || 0),
+          openResidualCents: Number(core.openResidualCents || 0),
+          gapCents: Number(core.gapCents || 0),
+          collectionRatio: core.collectionRatio,
+          reconciliationRatio: core.reconciliationRatio,
+          ambiguityRatio: core.ambiguityRatio,
+          overdueRatio: core.overdueRatio,
+          confidence: core.confidence,
+          confidenceScore: core.confidenceScore
+        },
+        diffSnapshot,
+        sourceFlags: [
+          "cash_parallel:shadow_only",
+          "cash_parallel:no_primary_switch",
+          "cash_parallel:no_allocation_persistence",
+          ...diffSnapshot.sourceFlags
+        ],
+        updatedAt: nowIso()
+      };
+    } catch (error) {
+      console.warn("[cash_parallel_error]", JSON.stringify({
+        centerId,
+        error: error?.message || String(error)
+      }));
+      return {
+        mode: "shadow",
+        status: "error",
+        mathCore: "cash_core_v1",
+        horizon: null,
+        legacySnapshot: null,
+        coreSnapshot: null,
+        diffSnapshot: null,
+        sourceFlags: ["cash_parallel:error", "cash_parallel:legacy_untouched"],
+        error: error?.message || String(error),
+        updatedAt: nowIso()
+      };
+    }
+  }
+
+  refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.snapshots = this.buildGoldSnapshotsFromState(next);
     next.signals = this.buildGoldSignalsFromState(next);
     next.decision = this.buildGoldDecisionFromState(next);
+    next.cashParallel = this.buildGoldCashParallelState(next, session);
     return next;
   }
 
@@ -3104,7 +3349,7 @@ class DesktopMirrorService {
     const centerId = this.getCenterId(session);
     const recordId = this.getGoldStateRecordId(centerId);
     const existing = this.goldStateRepository.findById(recordId) || this.buildDefaultGoldState(centerId, this.getCenterName(session));
-    const state = this.refreshGoldDerivedState(existing);
+    const state = this.refreshGoldDerivedState(existing, session);
     const counters = state.counters;
     const before = payload.before || null;
     const after = payload.after || payload.item || null;
@@ -3221,7 +3466,7 @@ class DesktopMirrorService {
     state.eventSeq += 1;
     state.updatedAt = nowIso();
     state.lastEvent = { type: eventType, at: state.updatedAt, entityId: after?.id || before?.id || "" };
-    const next = this.refreshGoldDerivedState(state);
+    const next = this.refreshGoldDerivedState(state, session);
     if (this.goldStateRepository.findById(recordId)) {
       this.goldStateRepository.update(recordId, () => next);
     } else {
