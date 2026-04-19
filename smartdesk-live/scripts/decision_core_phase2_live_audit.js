@@ -33,7 +33,7 @@ function chooseTenants(users = []) {
   const privilege = gold.find((user) => /privilege/i.test(label(user))) || gold[0];
   const medium = gold.find((user) => user.id !== privilege?.id && /073|centro.*73|gold.*073|gold100_gold_073/i.test([label(user), user.username, user.centerId].join(" ")))
     || gold.find((user) => user.id !== privilege?.id);
-  const fragile = [...gold].reverse().find((user) => ![privilege?.id, medium?.id].includes(user.id) && /100|fragile|incomplet|gold100_gold_100/i.test([label(user), user.username, user.centerId].join(" ")))
+  const fragile = gold.find((user) => ![privilege?.id, medium?.id].includes(user.id) && /gold100_gold_100|centro 100|centro.*100|fragile|incomplet/i.test([label(user), user.username, user.centerId].join(" ")))
     || gold.find((user) => ![privilege?.id, medium?.id].includes(user.id));
   return [privilege, medium, fragile].filter(Boolean);
 }
