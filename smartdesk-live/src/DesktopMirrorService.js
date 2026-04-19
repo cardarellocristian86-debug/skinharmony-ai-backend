@@ -2307,7 +2307,14 @@ class DesktopMirrorService {
     if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > maxAgeMs) return false;
     const cachedSeq = Number(cached.goldStateEventSeq || 0);
     const currentSeq = Number(goldState?.eventSeq || 0);
-    return cachedSeq === currentSeq;
+    if (cachedSeq !== currentSeq) return false;
+    const selection = goldState?.dataQualitySelection || null;
+    if (selection) {
+      const cachedDQ = cached.pialDataQualityComparison || null;
+      if (!cachedDQ || cachedDQ.primarySource !== selection.primarySource) return false;
+      if (cachedDQ.agreementScore !== selection.agreementScore) return false;
+    }
+    return true;
   }
 
   recomputeProgressiveIntelligenceStatus(session = null, options = {}) {
