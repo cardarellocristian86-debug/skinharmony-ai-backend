@@ -12,6 +12,7 @@ const { GoldOnboardingEngine } = require("./GoldOnboardingEngine");
 const { CONFIDENCE, computeCenterProfitabilitySnapshot } = require("./core/profitability/ProfitabilityCore");
 const { computeCashSnapshot } = require("./core/cash/CashCore");
 const { adaptCashSnapshotToLegacyComparable } = require("./core/cash/CashPolicyAdapter");
+const { computeDataQualitySnapshot } = require("./core/data-quality/DataQualityCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -44,6 +45,16 @@ const CASH_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
   hysteresisOff: 0.70
 });
 const CASH_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({ agreementScore: 0.40, coreConfidenceScore: 0.40, dataCompleteness: 0.20 });
+const DATA_QUALITY_PARALLEL_WEIGHTS = Object.freeze({
+  dataQualityScore: 0.30,
+  paymentQuality: 0.15,
+  costQuality: 0.15,
+  crmQuality: 0.10,
+  appointmentQuality: 0.10,
+  linkQuality: 0.10,
+  consistencyQuality: 0.10
+});
+const DATA_QUALITY_PARALLEL_WARNING_THRESHOLD = 0.15;
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
@@ -1789,6 +1800,7 @@ class DesktopMirrorService {
       cashSelection: null,
       cashPrimarySnapshot: null,
       cashShadowSnapshot: null,
+      dataQualityParallel: null,
       graph: {
         eventToState: {
           appointment_created: ["Sat", "Prod"],
@@ -2251,7 +2263,7 @@ class DesktopMirrorService {
       rawCounts: rawContext.rawCounts,
       historyMonths: rawContext.historyMonths
     });
-    return {
+    const result = {
       ...status,
       currentPlan: plan,
       centerName: this.getCenterName(session),
@@ -2263,6 +2275,10 @@ class DesktopMirrorService {
       rawCounts: rawContext.rawCounts,
       goldStateEventSeq: Number(goldState?.eventSeq || 0)
     };
+    if (plan === "gold") {
+      result.pialDataQualityComparison = this.buildPialDataQualityComparison(goldState?.dataQualityParallel || null);
+    }
+    return result;
   }
 
   shouldUseCachedProgressiveIntelligence(cached = {}, goldState = null, maxAgeMs = 24 * 60 * 60 * 1000) {
@@ -3543,11 +3559,231 @@ class DesktopMirrorService {
     };
   }
 
+  buildDataQualityCoreInput(session = null, state = {}) {
+    return {
+      horizon: { startDate: "", endDate: "" },
+      clients: this.filterByCenter(this.clientsRepository.list(), session),
+      appointments: this.filterByCenter(this.appointmentsRepository.list(), session),
+      payments: this.filterByCenter(this.paymentsRepository.list(), session),
+      services: this.filterByCenter(this.servicesRepository.list(), session),
+      staff: this.filterByCenter(this.staffRepository.list(), session),
+      inventory: this.filterByCenter(this.inventoryRepository.list(), session),
+      resources: this.filterByCenter(this.resourcesRepository.list(), session),
+      goldState: state
+    };
+  }
+
+  normalizeDataQualityBandFromScore(score = 0) {
+    const value = Number(score || 0);
+    if (value >= 0.90) return "REAL";
+    if (value >= 0.75) return "STANDARD";
+    if (value >= 0.50) return "ESTIMATED";
+    return "INCOMPLETE";
+  }
+
+  scoreLegacyQualityBlock(block = {}) {
+    if (!block || typeof block !== "object") return null;
+    if (Number.isFinite(Number(block.issueRate))) return this.goldClamp01(1 - Number(block.issueRate || 0));
+    const total = Number(block.totalRecords || 0);
+    if (total <= 0) return null;
+    return this.goldClamp01(1 - (Number(block.missingCount || 0) / total));
+  }
+
+  normalizeLegacyDataQualitySnapshot(legacy = {}) {
+    const score = this.goldClamp01(Number(legacy.score || 0) / 100);
+    const crmQuality = this.scoreLegacyQualityBlock(legacy.clients);
+    const appointmentQuality = this.scoreLegacyQualityBlock(legacy.appointments);
+    const paymentQuality = this.scoreLegacyQualityBlock(legacy.payments);
+    const servicesQuality = this.scoreLegacyQualityBlock(legacy.services);
+    const profitabilityQuality = this.scoreLegacyQualityBlock(legacy.profitability);
+    const costValues = [servicesQuality, profitabilityQuality].filter((value) => value !== null && value !== undefined);
+    const costQuality = costValues.length ? this.goldRound(average(costValues), 4) : null;
+    return {
+      source: "legacy",
+      score,
+      band: this.normalizeDataQualityBandFromScore(score),
+      crmQuality,
+      appointmentQuality,
+      paymentQuality,
+      costQuality,
+      linkQuality: null,
+      consistencyQuality: null,
+      temporalQuality: null,
+      dataQualityScore: score,
+      gate: {
+        aiGoldEligible: score >= 0.75,
+        decisionEligible: score >= 0.80,
+        forecastEligible: false,
+        profitabilityReliable: costQuality !== null ? costQuality >= 0.75 : false,
+        cashReliable: paymentQuality !== null ? paymentQuality >= 0.75 : false,
+        marketingReliable: crmQuality !== null ? crmQuality >= 0.75 : false,
+        reportReliable: score >= 0.70
+      },
+      sourceFlags: ["legacy:data_quality_penalty_model"]
+    };
+  }
+
+  normalizeCoreDataQualitySnapshot(core = {}) {
+    const scores = core.scores || {};
+    return {
+      source: "core",
+      score: Number(scores.dataQualityScore || 0),
+      band: core.band || this.normalizeDataQualityBandFromScore(scores.dataQualityScore || 0),
+      crmQuality: Number(scores.crmQuality || 0),
+      appointmentQuality: Number(scores.appointmentQuality || 0),
+      paymentQuality: Number(scores.paymentQuality || 0),
+      costQuality: Number(scores.costQuality || 0),
+      linkQuality: Number(scores.linkQuality || 0),
+      consistencyQuality: scores.consistencyQuality === null || scores.consistencyQuality === undefined ? null : Number(scores.consistencyQuality || 0),
+      temporalQuality: Number(scores.temporalQuality || 0),
+      dataQualityScore: Number(scores.dataQualityScore || 0),
+      gate: core.gate || {},
+      sourceFlags: core.sourceFlags || []
+    };
+  }
+
+  buildDataQualityDiffSnapshot(legacySnapshot = {}, coreSnapshot = {}) {
+    const metricMap = {
+      dataQualityScore: { warning: "DQ_TOTAL_DRIFT" },
+      paymentQuality: { warning: "DQ_PAYMENT_DRIFT" },
+      costQuality: { warning: "DQ_COST_DRIFT" },
+      crmQuality: { warning: "DQ_CRM_DRIFT" },
+      appointmentQuality: { warning: "DQ_APPOINTMENT_DRIFT" },
+      linkQuality: { warning: "DQ_LINK_DRIFT" },
+      consistencyQuality: { warning: "DQ_CONSISTENCY_DRIFT" },
+      temporalQuality: { warning: "DQ_TEMPORAL_DRIFT" }
+    };
+    const comparableMetrics = Object.keys(metricMap).filter((metric) => (
+      legacySnapshot[metric] !== null
+      && legacySnapshot[metric] !== undefined
+      && coreSnapshot[metric] !== null
+      && coreSnapshot[metric] !== undefined
+      && Number.isFinite(Number(legacySnapshot[metric]))
+      && Number.isFinite(Number(coreSnapshot[metric]))
+    ));
+    if (!comparableMetrics.length) {
+      return {
+        comparableMetrics: [],
+        deltas: {},
+        relativeErrors: {},
+        agreementScore: null,
+        agreementBand: "N/A",
+        warnings: ["DQ_PARALLEL_NOT_COMPARABLE"],
+        weightsUsed: {}
+      };
+    }
+    const totalWeight = comparableMetrics.reduce((sum, metric) => sum + Number(DATA_QUALITY_PARALLEL_WEIGHTS[metric] || 0), 0) || comparableMetrics.length;
+    const deltas = {};
+    const relativeErrors = {};
+    const weightsUsed = {};
+    const warnings = [];
+    const weightedError = comparableMetrics.reduce((sum, metric) => {
+      const legacyValue = Number(legacySnapshot[metric] || 0);
+      const coreValue = Number(coreSnapshot[metric] || 0);
+      const delta = this.goldRound(coreValue - legacyValue, 4);
+      const error = this.goldRound(Math.abs(coreValue - legacyValue), 4);
+      const weight = Number(DATA_QUALITY_PARALLEL_WEIGHTS[metric] || 0) / totalWeight;
+      deltas[metric] = delta;
+      relativeErrors[metric] = error;
+      weightsUsed[metric] = this.goldRound(weight, 4);
+      if (error > DATA_QUALITY_PARALLEL_WARNING_THRESHOLD) warnings.push(metricMap[metric].warning);
+      return sum + (weight * error);
+    }, 0);
+    const agreementScore = this.goldClamp01(1 - weightedError);
+    const agreementBand = agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT";
+    return {
+      comparableMetrics,
+      deltas,
+      relativeErrors,
+      agreementScore: this.goldRound(agreementScore, 4),
+      agreementBand,
+      warnings,
+      weightsUsed
+    };
+  }
+
+  buildDataQualityParallelState(state = {}, session = null) {
+    try {
+      const legacyRaw = this.getDataQuality(session, { summaryOnly: true });
+      const legacySnapshot = this.normalizeLegacyDataQualitySnapshot(legacyRaw);
+      const coreRaw = computeDataQualitySnapshot(this.buildDataQualityCoreInput(session, state));
+      const coreSnapshot = this.normalizeCoreDataQualitySnapshot(coreRaw);
+      const diffSnapshot = this.buildDataQualityDiffSnapshot(legacySnapshot, coreSnapshot);
+      const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
+      return {
+        mode: "shadow",
+        status,
+        mathCore: "data_quality_core_v1",
+        horizon: coreRaw.horizon || { startDate: "", endDate: "" },
+        legacySnapshot,
+        coreSnapshot,
+        diffSnapshot,
+        agreementScore: diffSnapshot.agreementScore,
+        agreementBand: diffSnapshot.agreementBand,
+        sourceFlags: [
+          ...(legacySnapshot.sourceFlags || []),
+          ...(coreSnapshot.sourceFlags || []),
+          status === "not_comparable" ? "data_quality_parallel:not_comparable" : ""
+        ].filter(Boolean)
+      };
+    } catch (error) {
+      console.error("[data_quality_parallel_error]", JSON.stringify({
+        centerId: this.getCenterId(session),
+        message: error?.message || String(error)
+      }));
+      return {
+        mode: "shadow",
+        status: "error",
+        mathCore: "data_quality_core_v1",
+        horizon: { startDate: "", endDate: "" },
+        legacySnapshot: null,
+        coreSnapshot: null,
+        diffSnapshot: {
+          comparableMetrics: [],
+          deltas: {},
+          relativeErrors: {},
+          agreementScore: null,
+          agreementBand: "N/A",
+          warnings: ["DQ_PARALLEL_ERROR"]
+        },
+        agreementScore: null,
+        agreementBand: "N/A",
+        sourceFlags: ["data_quality_parallel:error"]
+      };
+    }
+  }
+
+  buildPialDataQualityComparison(dataQualityParallel = null) {
+    const legacy = dataQualityParallel?.legacySnapshot || null;
+    const core = dataQualityParallel?.coreSnapshot || null;
+    const agreementScore = dataQualityParallel?.agreementScore ?? null;
+    const agreementBand = dataQualityParallel?.agreementBand || "N/A";
+    let recommendedSource = "legacy";
+    if (dataQualityParallel?.status === "error" || agreementBand === "DRIFT") {
+      recommendedSource = "legacy";
+    } else if (agreementBand === "WATCH" || agreementBand === "N/A") {
+      recommendedSource = "watch";
+    } else if (agreementBand === "ALIGNED") {
+      recommendedSource = "core";
+    }
+    return {
+      mode: "shadow",
+      legacyScore: legacy?.dataQualityScore ?? null,
+      coreScore: core?.dataQualityScore ?? null,
+      legacyBand: legacy?.band || "N/A",
+      coreBand: core?.band || "N/A",
+      agreementScore,
+      agreementBand,
+      recommendedSource
+    };
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.snapshots = this.buildGoldSnapshotsFromState(next);
     next.marketingActions = this.buildGoldMarketingActionState(session);
     next.cashParallel = this.buildGoldCashParallelState(next, session);
+    next.dataQualityParallel = this.buildDataQualityParallelState(next, session);
     const cashSwitch = this.buildGoldCashControlledSwitch(next.cashParallel, state.cashSelection?.primarySource || next.cashSelection?.primarySource || "legacy");
     next.cashSelection = cashSwitch.cashSelection;
     next.cashPrimarySnapshot = cashSwitch.cashPrimarySnapshot;
