@@ -33,6 +33,16 @@ const GOLD_ENTERPRISE_ACTION_COST = Object.freeze({ ACT_NOW: 0.06, SUGGEST: 0.04
 const GOLD_ENTERPRISE_BAYES_PRIOR = Object.freeze({ alpha: 2, beta: 2 });
 const CASH_PARALLEL_DIFF_WEIGHTS = Object.freeze({ reconciledCash: 0.35, unlinkedCash: 0.20, gap: 0.30, overdue: 0.15 });
 const CASH_PARALLEL_WARNING_THRESHOLDS = Object.freeze({ reconciledCash: 0.15, unlinkedCash: 0.20, gap: 0.15, overdue: 0.20 });
+const CASH_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
+  agreementScore: 0.85,
+  coreConfidenceScore: 0.80,
+  dataCompleteness: 0.75,
+  reconciliationRatio: 0.80,
+  ambiguityRatio: 0.20,
+  hysteresisOn: 0.85,
+  hysteresisOff: 0.70
+});
+const CASH_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({ agreementScore: 0.40, coreConfidenceScore: 0.40, dataCompleteness: 0.20 });
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
@@ -1772,6 +1782,9 @@ class DesktopMirrorService {
       signals: {},
       decision: null,
       cashParallel: null,
+      cashSelection: null,
+      cashPrimarySnapshot: null,
+      cashShadowSnapshot: null,
       graph: {
         eventToState: {
           appointment_created: ["Sat", "Prod"],
@@ -2490,9 +2503,12 @@ class DesktopMirrorService {
     }
     const state = validState.state;
     const report = state.snapshots?.report || {};
+    const cashPrimary = state.cashPrimarySnapshot || null;
+    const cashSelection = state.cashSelection || null;
     const startDate = toDateOnly(options.startDate || nowIso());
     const endDate = toDateOnly(options.endDate || startDate);
-    const revenueCents = Number(report.revenueCents || 0);
+    const revenueCents = Number(cashPrimary?.reconciledCashCents ?? report.revenueCents ?? 0);
+    const unlinkedCashCents = Number(cashPrimary?.unlinkedCashCents || 0) + Number(cashPrimary?.ambiguousCashCents || 0);
     const appointments = Number(state.counters?.todayAppointments || 0);
     const result = {
       period: String(options.period || "day"),
@@ -2520,11 +2536,13 @@ class DesktopMirrorService {
       technologyUsage: [],
       lowTechnologyUsage: [],
       insights: [
-        `Report letto da Gold State Layer: fatturato ${euro(revenueCents)}, ticket medio ${euro(report.averageTicketCents || 0)}.`,
-        Number(report.unlinkedPayments || 0) ? `${Number(report.unlinkedPayments || 0)} pagamenti da collegare.` : "Nessuna anomalia cassa aggregata nello stato."
+        `Report letto da Gold State Layer: incasso ${euro(revenueCents)}, ticket medio ${euro(report.averageTicketCents || 0)}.`,
+        unlinkedCashCents > 0 ? `${euro(unlinkedCashCents)} da collegare o verificare.` : "Nessuna anomalia cassa aggregata nello stato."
       ],
       meta: {
         source: "gold_state",
+        cashSource: cashPrimary?.sourceUsed || "legacy",
+        cashSelection,
         eventSeq: validState.eventSeq,
         fallbackAvailable: true
       }
@@ -2712,6 +2730,8 @@ class DesktopMirrorService {
     const business = snapshots.business || {};
     const profitability = snapshots.profitability || {};
     const report = snapshots.report || {};
+    const cashPrimary = state.cashPrimarySnapshot || null;
+    const cashSelection = state.cashSelection || null;
     const decisionScore = Number(decision.score || 0);
     const level = decision.action === "ACT_NOW" ? "critical" : decision.action === "SUGGEST" ? "warning" : "info";
     const centerHealth = {
@@ -2731,8 +2751,10 @@ class DesktopMirrorService {
       area: decision.domain || "gold",
       conclusion: decision.primaryAction?.label || decision.explanationShort || "Priorita Gold",
       reason: decision.explanationShort || "Priorita letta dal Gold State Layer.",
-      details: `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Fonte gold_state`,
-      impactCents: Number(business.revenueCents || profitability.revenueCents || report.revenueCents || 0),
+      details: `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Cash ${cashSelection?.primarySource || "legacy"}`,
+      impactCents: decision.domain === "cash"
+        ? Number(cashPrimary?.unlinkedCashCents || 0) + Number(cashPrimary?.ambiguousCashCents || 0) + Number(cashPrimary?.overdueCents || 0)
+        : Number(business.revenueCents || profitability.revenueCents || report.revenueCents || 0),
       riskCents: decision.domain === "profitability" ? Number(profitability.revenueCents || 0) : 0,
       action: decision.primaryAction?.label || "gestisci priorita",
       button: decision.domain === "cash" ? "Apri cassa" : decision.domain === "profitability" ? "Apri redditività" : decision.domain === "operations" ? "Apri dashboard" : decision.domain === "growth" ? "Apri marketing" : "Apri dettaglio",
@@ -2839,6 +2861,11 @@ class DesktopMirrorService {
           generatedAt: state.updatedAt,
           expiresAt: ""
         },
+        cash: {
+          primarySource: cashSelection?.primarySource || "legacy",
+          reliabilityScore: cashSelection?.reliabilityScore ?? null,
+          agreementBand: cashSelection?.agreementBand || "N/A"
+        },
         treatments: 0,
         protocols: 0,
         technologies: 0
@@ -2849,6 +2876,7 @@ class DesktopMirrorService {
         fallbackAvailable: true,
         stateVersion: state.version,
         eventSeq: state.eventSeq,
+        cashSelection,
         lastEvent: state.lastEvent || null
       }
     };
@@ -3045,6 +3073,13 @@ class DesktopMirrorService {
     const s = state.components || {};
     const c = state.counters || {};
     const hasOperationalData = Number(c.clientsTotal || 0) + Number(c.paymentCount || 0) + Number(c.todayAppointments || 0) + Number(c.servicesTotal || 0) > 0;
+    const cashPrimary = state.cashPrimarySnapshot || null;
+    const cashAnomalyScore = cashPrimary
+      ? this.goldClamp01(
+        Number(cashPrimary.ambiguityRatio ?? 0)
+        || (Number(cashPrimary.unlinkedCashCents || 0) + Number(cashPrimary.ambiguousCashCents || 0) > 0 ? 0.5 : 0)
+      )
+      : this.goldClamp01(Math.min(Number(s.U || 0), 5) / 5);
     if (!hasOperationalData) {
       return {
         operationalRisk: 0,
@@ -3057,10 +3092,10 @@ class DesktopMirrorService {
       };
     }
     return {
-      operationalRisk: this.goldClamp01((Number(s.Sat || 0) * 0.35) + ((1 - Number(s.DQ || 0)) * 0.35) + (Math.min(Number(s.U || 0), 5) / 5) * 0.3),
+      operationalRisk: this.goldClamp01((Number(s.Sat || 0) * 0.35) + ((1 - Number(s.DQ || 0)) * 0.35) + cashAnomalyScore * 0.3),
       centerBelowThreshold: this.goldClamp01(((1 - Number(s.Cont || 0)) * 0.45) + ((1 - Number(s.Prod || 0)) * 0.25) + ((1 - Number(s.Conf || 0)) * 0.3)),
       opportunity: this.goldClamp01((Number(s.Conf || 0) * 0.4) + (Number(s.Cont || 0) * 0.25) + (Number(s.Ticket || 0) > 0 ? 0.2 : 0) + (Number(s.Sat || 0) < 0.7 ? 0.15 : 0)),
-      cashAnomaly: this.goldClamp01(Math.min(Number(s.U || 0), 5) / 5),
+      cashAnomaly: cashAnomalyScore,
       marginAnomaly: this.goldClamp01((1 - Number(s.CostConf || 0)) * 0.55 + (Number(s.Margin || 0) < 0.35 ? 0.45 : 0)),
       dataReliability: Number(s.Conf || 0),
       productivitySignal: Number(s.Prod || 0)
@@ -3304,7 +3339,9 @@ class DesktopMirrorService {
           ambiguityRatio: core.ambiguityRatio,
           overdueRatio: core.overdueRatio,
           confidence: core.confidence,
-          confidenceScore: core.confidenceScore
+          confidenceScore: core.confidenceScore,
+          confidenceBreakdown: core.confidenceBreakdown || null,
+          sourceFlags: core.sourceFlags || []
         },
         diffSnapshot,
         sourceFlags: [
@@ -3335,12 +3372,127 @@ class DesktopMirrorService {
     }
   }
 
+  normalizeGoldCashSnapshot(snapshot = {}, sourceUsed = "legacy") {
+    const isCore = sourceUsed === "core";
+    const billedDueCents = Number(isCore ? snapshot.billedDueCents : snapshot.operationalRevenueCents || snapshot.billedDueCents || 0);
+    const reconciledCashCents = Number(snapshot.reconciledCashCents ?? snapshot.recordedCashCents ?? 0);
+    const recordedCashCents = Number(snapshot.recordedCashCents ?? reconciledCashCents);
+    const unlinkedCashCents = Number(snapshot.unlinkedCashCents || 0);
+    const ambiguousCashCents = Number(isCore ? snapshot.ambiguousCashCents || 0 : 0);
+    const overdueCents = Number.isFinite(Number(snapshot.overdueCents)) ? Number(snapshot.overdueCents || 0) : 0;
+    const openResidualCents = Number.isFinite(Number(snapshot.openResidualCents))
+      ? Number(snapshot.openResidualCents || 0)
+      : Math.max(0, Number(snapshot.gapCents || 0));
+    const gapCents = Number(snapshot.gapCents ?? (billedDueCents - reconciledCashCents));
+    const collectionRatio = snapshot.collectionRatio ?? this.goldSafeDivide(reconciledCashCents, billedDueCents);
+    const reconciliationRatio = snapshot.reconciliationRatio ?? this.goldSafeDivide(Math.max(0, recordedCashCents - unlinkedCashCents - ambiguousCashCents), recordedCashCents);
+    const ambiguityRatio = snapshot.ambiguityRatio ?? this.goldSafeDivide(unlinkedCashCents + ambiguousCashCents, recordedCashCents);
+    const overdueRatio = snapshot.overdueRatio ?? (openResidualCents > 0 ? this.goldSafeDivide(overdueCents, openResidualCents) : 0);
+    return {
+      mathCore: isCore ? "cash_core_v1" : "legacy_cash",
+      sourceUsed,
+      billedDueCents,
+      reconciledCashCents,
+      recordedCashCents,
+      unlinkedCashCents,
+      ambiguousCashCents,
+      overdueCents,
+      openResidualCents,
+      gapCents,
+      collectionRatio,
+      reconciliationRatio,
+      ambiguityRatio,
+      overdueRatio,
+      confidence: isCore ? snapshot.confidence || "INCOMPLETE" : snapshot.confidence || "ESTIMATED",
+      confidenceScore: Number(isCore ? snapshot.confidenceScore || 0 : snapshot.confidenceScore ?? 0.65),
+      sourceFlags: [
+        `cash_primary_candidate:${sourceUsed}`,
+        ...((snapshot.sourceFlags || []).map((item) => String(item)))
+      ]
+    };
+  }
+
+  buildGoldCashControlledSwitch(cashParallel = {}, previousSource = "legacy") {
+    const status = cashParallel?.status || "error";
+    const diff = cashParallel?.diffSnapshot || {};
+    const coreRaw = cashParallel?.coreSnapshot || {};
+    const legacyRaw = cashParallel?.legacySnapshot || {};
+    const agreementScore = diff.agreementScore == null ? 0 : Number(diff.agreementScore || 0);
+    const agreementBand = diff.agreementBand || "N/A";
+    const coreConfidence = coreRaw.confidence || "INCOMPLETE";
+    const coreConfidenceScore = Number(coreRaw.confidenceScore || 0);
+    const dataCompleteness = Number(coreRaw.confidenceBreakdown?.dataCompleteness ?? 0);
+    const reconciliationRatio = Number(coreRaw.reconciliationRatio ?? 0);
+    const ambiguityRatio = Number(coreRaw.ambiguityRatio ?? 1);
+    const switchEligible = status === "ok"
+      && ["ALIGNED", "WATCH"].includes(agreementBand)
+      && ["REAL", "STANDARD"].includes(coreConfidence)
+      && agreementScore >= CASH_CONTROLLED_SWITCH_THRESHOLDS.agreementScore
+      && coreConfidenceScore >= CASH_CONTROLLED_SWITCH_THRESHOLDS.coreConfidenceScore
+      && dataCompleteness >= CASH_CONTROLLED_SWITCH_THRESHOLDS.dataCompleteness
+      && reconciliationRatio >= CASH_CONTROLLED_SWITCH_THRESHOLDS.reconciliationRatio
+      && ambiguityRatio <= CASH_CONTROLLED_SWITCH_THRESHOLDS.ambiguityRatio;
+    const reliabilityScore = this.goldRound(
+      (CASH_CONTROLLED_SWITCH_WEIGHTS.agreementScore * agreementScore)
+      + (CASH_CONTROLLED_SWITCH_WEIGHTS.coreConfidenceScore * coreConfidenceScore)
+      + (CASH_CONTROLLED_SWITCH_WEIGHTS.dataCompleteness * dataCompleteness),
+      4
+    );
+    const normalizedPreviousSource = previousSource === "core" ? "core" : "legacy";
+    const staysOnCore = normalizedPreviousSource === "core"
+      && status === "ok"
+      && agreementBand !== "DRIFT"
+      && reliabilityScore >= CASH_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOff;
+    const switchesOnCore = normalizedPreviousSource === "legacy"
+      && switchEligible
+      && reliabilityScore >= CASH_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOn;
+    const primarySource = staysOnCore || switchesOnCore ? "core" : "legacy";
+    const fallbackReasons = [];
+    if (status !== "ok") fallbackReasons.push(`status_${status}`);
+    if (!["ALIGNED", "WATCH"].includes(agreementBand)) fallbackReasons.push(`agreement_${agreementBand}`);
+    if (!["REAL", "STANDARD"].includes(coreConfidence)) fallbackReasons.push(`confidence_${coreConfidence}`);
+    if (agreementScore < CASH_CONTROLLED_SWITCH_THRESHOLDS.agreementScore) fallbackReasons.push("agreement_below_threshold");
+    if (coreConfidenceScore < CASH_CONTROLLED_SWITCH_THRESHOLDS.coreConfidenceScore) fallbackReasons.push("core_confidence_below_threshold");
+    if (dataCompleteness < CASH_CONTROLLED_SWITCH_THRESHOLDS.dataCompleteness) fallbackReasons.push("data_completeness_below_threshold");
+    if (reconciliationRatio < CASH_CONTROLLED_SWITCH_THRESHOLDS.reconciliationRatio) fallbackReasons.push("reconciliation_below_threshold");
+    if (ambiguityRatio > CASH_CONTROLLED_SWITCH_THRESHOLDS.ambiguityRatio) fallbackReasons.push("ambiguity_above_threshold");
+    if (normalizedPreviousSource === "core" && primarySource === "legacy" && reliabilityScore < CASH_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOff) fallbackReasons.push("hysteresis_off");
+    return {
+      cashSelection: {
+        mode: "controlled_switch",
+        primarySource,
+        previousSource: normalizedPreviousSource,
+        shadowSource: primarySource === "core" ? "legacy" : "core",
+        switchEligible,
+        reliabilityScore,
+        agreementScore,
+        agreementBand,
+        coreConfidence,
+        coreConfidenceScore,
+        dataCompleteness,
+        reconciliationRatio,
+        ambiguityRatio,
+        thresholds: CASH_CONTROLLED_SWITCH_THRESHOLDS,
+        switchReason: primarySource === "core"
+          ? (switchesOnCore ? "eligible_reliability_above_on_threshold" : "hysteresis_keep_core")
+          : "",
+        fallbackReason: primarySource === "legacy" ? (fallbackReasons.join("|") || "legacy_default") : ""
+      },
+      cashPrimarySnapshot: this.normalizeGoldCashSnapshot(primarySource === "core" ? coreRaw : legacyRaw, primarySource),
+      cashShadowSnapshot: this.normalizeGoldCashSnapshot(primarySource === "core" ? legacyRaw : coreRaw, primarySource === "core" ? "legacy" : "core")
+    };
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.snapshots = this.buildGoldSnapshotsFromState(next);
+    next.cashParallel = this.buildGoldCashParallelState(next, session);
+    const cashSwitch = this.buildGoldCashControlledSwitch(next.cashParallel, state.cashSelection?.primarySource || next.cashSelection?.primarySource || "legacy");
+    next.cashSelection = cashSwitch.cashSelection;
+    next.cashPrimarySnapshot = cashSwitch.cashPrimarySnapshot;
+    next.cashShadowSnapshot = cashSwitch.cashShadowSnapshot;
     next.signals = this.buildGoldSignalsFromState(next);
     next.decision = this.buildGoldDecisionFromState(next);
-    next.cashParallel = this.buildGoldCashParallelState(next, session);
     return next;
   }
 
