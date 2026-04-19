@@ -1107,6 +1107,36 @@ app.get("/api/ai-gold/state/decision", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldState(req.session).decision || {});
 });
 
+app.get("/api/ai-gold/onboarding/imports", requirePlan("gold"), (req, res) => {
+  try {
+    res.json(service.listGoldOnboardingImports(req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Import Gold non disponibile");
+  }
+});
+
+app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
+  if (isSafeModeActive()) {
+    return res.status(429).json(safeModePayload("Sistema sotto carico: analisi import Gold temporaneamente limitata"));
+  }
+  try {
+    res.json(service.analyzeGoldOnboardingImport(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile analizzare i file");
+  }
+});
+
+app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
+  if (isSafeModeActive()) {
+    return res.status(429).json(safeModePayload("Sistema sotto carico: import Gold temporaneamente limitato"));
+  }
+  try {
+    res.json(service.confirmGoldOnboardingImport(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile completare import Gold");
+  }
+});
+
 app.get("/api/fleet/overview", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetOverview(req.session, fleetFilters(req)));
 });

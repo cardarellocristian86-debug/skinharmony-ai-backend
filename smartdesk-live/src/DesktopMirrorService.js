@@ -8,6 +8,7 @@ const {
 } = require("./SkinHarmonyProtocolLibrary");
 const { ProgressiveIntelligenceActivationLayer } = require("./ProgressiveIntelligenceActivationLayer");
 const { FleetIntelligenceLayer } = require("./fleet_intelligence_layer");
+const { GoldOnboardingEngine } = require("./GoldOnboardingEngine");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -1387,6 +1388,7 @@ class DesktopMirrorService {
     this.goldStateRepository = this.createRepository("gold_state", []);
     this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
     this.goldActionOutcomesRepository = this.createRepository("gold_action_outcomes", []);
+    this.goldImportRepository = this.createRepository("gold_imports", []);
     this.whatsappMessagesRepository = this.createRepository("whatsapp_messages", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
@@ -1400,6 +1402,17 @@ class DesktopMirrorService {
     this.appointmentsDayCache = new Map();
     this.progressiveIntelligenceLayer = new ProgressiveIntelligenceActivationLayer();
     this.fleetIntelligenceLayer = null;
+    this.goldOnboardingEngine = null;
+  }
+
+  getGoldOnboardingEngine() {
+    if (!this.goldOnboardingEngine) {
+      this.goldOnboardingEngine = new GoldOnboardingEngine({
+        service: this,
+        importRepository: this.goldImportRepository
+      });
+    }
+    return this.goldOnboardingEngine;
   }
 
   getFleetIntelligenceLayer() {
@@ -2081,6 +2094,94 @@ class DesktopMirrorService {
       progressiveIntelligence,
       state: saved || rebuilt
     };
+  }
+
+  rebuildGoldStateForCurrentGoldTenant(session = null, options = {}) {
+    this.assertCanOperate(session);
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    const centerId = this.getCenterId(session);
+    const recordId = this.getGoldStateRecordId(centerId);
+    const startedAt = nowIso();
+    const existing = this.goldStateRepository.findById(recordId);
+    const { counters, rawCounts } = this.buildGoldStateCountersFromRepositories(session);
+    const rawEventSeq = Object.values(rawCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+    const eventSeq = Math.max(1, Number(existing?.eventSeq || 0), rawEventSeq);
+    const rebuilt = this.refreshGoldDerivedState({
+      ...this.buildDefaultGoldState(centerId, this.getCenterName(session)),
+      id: recordId,
+      centerId,
+      centerName: this.getCenterName(session),
+      eventSeq,
+      counters,
+      metadata: {
+        ...(existing?.metadata || {}),
+        version: "gold_state_rebuild_v1",
+        rebuiltAt: startedAt,
+        rebuiltFromRaw: true,
+        rebuildMode: "gold_onboarding_reconciliation",
+        reason: options.reason || "gold_onboarding_import",
+        importId: options.importId || "",
+        previousEventSeq: Number(existing?.eventSeq || 0),
+        rawCounts,
+        valid: true
+      },
+      lastEvent: {
+        type: "rebuild_after_gold_onboarding",
+        at: startedAt,
+        reason: options.reason || "gold_onboarding_import",
+        importId: options.importId || "",
+        previousEventSeq: Number(existing?.eventSeq || 0)
+      },
+      updatedAt: startedAt
+    });
+    const validation = this.compareGoldStateToRaw(rebuilt, session);
+    rebuilt.metadata = {
+      ...(rebuilt.metadata || {}),
+      valid: validation.valid,
+      validation
+    };
+    const saved = this.goldStateRepository.findById(recordId)
+      ? this.goldStateRepository.update(recordId, () => rebuilt)
+      : this.goldStateRepository.create(rebuilt);
+    const progressiveIntelligence = this.recomputeProgressiveIntelligenceStatus(session, {
+      reason: options.reason || "gold_onboarding_import",
+      force: true
+    });
+    console.log("[gold_onboarding_rebuild]", JSON.stringify({
+      centerId,
+      importId: options.importId || "",
+      valid: validation.valid,
+      eventSeq,
+      diffSummary: validation.diffSummary
+    }));
+    return {
+      success: true,
+      centerId,
+      eventSeq,
+      rawCounts,
+      valid: validation.valid,
+      validation,
+      progressiveIntelligence,
+      state: saved || rebuilt
+    };
+  }
+
+  analyzeGoldOnboardingImport(payload = {}, session = null) {
+    this.assertCanOperate(session);
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    return this.getGoldOnboardingEngine().analyze(payload, session);
+  }
+
+  confirmGoldOnboardingImport(payload = {}, session = null) {
+    this.assertCanOperate(session);
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    return this.getGoldOnboardingEngine().confirm(payload, session);
+  }
+
+  listGoldOnboardingImports(session = null) {
+    this.assertCanOperate(session);
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    return this.getGoldOnboardingEngine().list(session);
   }
 
   getProgressiveIntelligenceRawContext(session = null) {
