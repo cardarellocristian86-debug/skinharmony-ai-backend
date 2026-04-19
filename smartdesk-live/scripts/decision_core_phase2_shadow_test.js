@@ -160,13 +160,19 @@ function runTenant(label, centerId, mode) {
   assert.strictEqual(state.decisionParallel.mode, "shadow", `${label}: decisionParallel must be shadow`);
   assert(["ok", "not_comparable"].includes(state.decisionParallel.status), `${label}: invalid decisionParallel status`);
   assert(state.decisionParallel.coreSnapshot?.primaryAction, `${label}: missing core primary action`);
+  assert(state.decisionParallel.comparableSnapshot?.primaryAction, `${label}: missing comparable primary action`);
+  assert(state.decisionParallel.policyAdapter?.mathAdapter === "decision_policy_adapter_v1", `${label}: missing DecisionPolicyAdapter`);
   assert(state.decisionParallel.legacySnapshot?.primaryAction, `${label}: missing legacy primary action`);
   assert.strictEqual(state.decision.source, "gold_state", `${label}: legacy decision source changed`);
   return {
     tenant: label,
     legacyPrimary: state.decisionParallel.legacySnapshot.primaryAction.actionKey,
     corePrimary: state.decisionParallel.coreSnapshot.primaryAction.actionKey,
+    comparablePrimary: state.decisionParallel.comparableSnapshot.primaryAction.actionKey,
     corePrimaryBand: state.decisionParallel.coreSnapshot.primaryAction.actionBand,
+    comparablePrimaryBand: state.decisionParallel.comparableSnapshot.primaryAction.actionBand,
+    rawAgreementScore: state.decisionParallel.rawAgreementScore,
+    rawAgreementBand: state.decisionParallel.rawAgreementBand,
     agreementScore: state.decisionParallel.agreementScore,
     agreementBand: state.decisionParallel.agreementBand,
     diff: state.decisionParallel.diffSnapshot,

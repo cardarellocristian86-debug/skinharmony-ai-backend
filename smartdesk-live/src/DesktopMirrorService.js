@@ -15,6 +15,7 @@ const { adaptCashSnapshotToLegacyComparable } = require("./core/cash/CashPolicyA
 const { computeDataQualitySnapshot } = require("./core/data-quality/DataQualityCore");
 const { adaptDataQualitySnapshotToLegacyComparable } = require("./core/data-quality/DQPolicyAdapter");
 const { buildDecisionSnapshot } = require("./core/decision/DecisionCore");
+const { adaptDecisionSnapshotToLegacyComparable } = require("./core/decision/DecisionPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -4251,7 +4252,10 @@ class DesktopMirrorService {
         context,
         candidates
       });
-      const diff = this.compareDecisionSnapshots(legacySnapshot, coreSnapshot);
+      const adapter = adaptDecisionSnapshotToLegacyComparable(coreSnapshot, legacySnapshot, context);
+      const comparableSnapshot = adapter.comparableSnapshot;
+      const rawDiff = this.compareDecisionSnapshots(legacySnapshot, coreSnapshot);
+      const diff = this.compareDecisionSnapshots(legacySnapshot, comparableSnapshot);
       if (diff.status === "not_comparable") {
         return {
           mode: "shadow",
@@ -4259,10 +4263,15 @@ class DesktopMirrorService {
           mathCore: "decision_core_v1",
           legacySnapshot,
           coreSnapshot,
+          comparableSnapshot,
+          policyAdapter: adapter,
+          rawDiffSnapshot: rawDiff,
           diffSnapshot: diff,
+          rawAgreementScore: rawDiff.agreementScore ?? null,
+          rawAgreementBand: rawDiff.agreementBand || "N/A",
           agreementScore: null,
           agreementBand: "N/A",
-          sourceFlags: ["decision_parallel:not_comparable"]
+          sourceFlags: ["decision_parallel:not_comparable", "decision_policy_adapter:comparison"]
         };
       }
       return {
@@ -4271,10 +4280,15 @@ class DesktopMirrorService {
         mathCore: "decision_core_v1",
         legacySnapshot,
         coreSnapshot,
+        comparableSnapshot,
+        policyAdapter: adapter,
+        rawDiffSnapshot: rawDiff,
         diffSnapshot: diff,
+        rawAgreementScore: rawDiff.agreementScore,
+        rawAgreementBand: rawDiff.agreementBand,
         agreementScore: diff.agreementScore,
         agreementBand: diff.agreementBand,
-        sourceFlags: ["decision_parallel:shadow", "decision_core:not_primary"]
+        sourceFlags: ["decision_parallel:shadow", "decision_core:not_primary", "decision_policy_adapter:comparison"]
       };
     } catch (error) {
       console.warn("[decision_parallel_error]", JSON.stringify({

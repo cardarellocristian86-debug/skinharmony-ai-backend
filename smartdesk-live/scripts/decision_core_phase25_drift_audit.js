@@ -71,6 +71,7 @@ function compactAction(action = {}) {
     actionBand: action.actionBand || "",
     tone: action.tone || "",
     priorityScore: round(action.priorityScore || 0),
+    priorityScoreComparable: action.priorityScoreComparable === undefined ? undefined : round(action.priorityScoreComparable || 0),
     eligible: action.eligible ?? null,
     blockReasons: action.blockReasons || []
   };
@@ -221,24 +222,24 @@ function promotePrimaryOnly({ diff = {}, vector = {} }) {
 
 function recommendation(audits = []) {
   const strong = audits.filter((item) => /privilege|073/i.test(item.tenant));
-  const primaryStable = strong.every((item) => item.diff?.primaryActionMatch === 1 && Number(item.diff?.actionBandMatch || 0) >= 1);
-  const mostlySecondary = strong.every((item) => ["topk", "priority"].includes(item.driftVector?.dominantDrift));
-  const anyFragileDrift = audits.some((item) => /100|fragile/i.test(item.tenant) && item.agreementBand === "DRIFT");
-  if (primaryStable && mostlySecondary && anyFragileDrift) {
+  const primaryStable = strong.every((item) => item.after?.diff?.primaryActionMatch === 1 && Number(item.after?.diff?.actionBandMatch || 0) >= 1);
+  const comparableAligned = strong.every((item) => Number(item.after?.agreementScore || 0) >= 0.9);
+  const anyFragileDrift = audits.some((item) => /100|fragile/i.test(item.tenant) && item.after?.agreementBand === "DRIFT");
+  if (primaryStable && comparableAligned && anyFragileDrift) {
     return {
       selected: "SELECTOR_A_DUE_LIVELLI",
-      reason: "Tenant forti stabili su primary/band, ma ranking secondario e tenant fragile non sono ancora allineati."
+      reason: "Adapter allinea i tenant forti, ma il tenant fragile deve restare protetto da fallback/selector."
     };
   }
-  if (primaryStable && !anyFragileDrift) {
+  if (primaryStable && comparableAligned && !anyFragileDrift) {
     return {
       selected: "FASE_3_DIRETTA",
-      reason: "Primary e band sono stabili e non emerge drift fragile rilevante."
+      reason: "Primary, band e confronto comparabile sono stabili anche dopo normalizzazione."
     };
   }
   return {
     selected: "DECISION_POLICY_ADAPTER",
-    reason: "Serve normalizzazione comparabile di ranking, scale priority o gating prima dello switch."
+    reason: "Il confronto comparabile non è ancora abbastanza stabile per uno switch."
   };
 }
 
@@ -248,14 +249,35 @@ async function auditTenant(baseUrl, adminToken, tenant) {
   const parallel = state.decisionParallel || {};
   const legacy = parallel.legacySnapshot || {};
   const core = parallel.coreSnapshot || {};
+  const comparable = parallel.comparableSnapshot || {};
+  const rawDiff = parallel.rawDiffSnapshot || parallel.diffSnapshot || {};
   const diff = parallel.diffSnapshot || {};
-  const vector = driftVector(diff);
-  const causes = classifyCauses({ legacy, core, diff, vector, tenant: label(tenant) });
+  const vectorRaw = driftVector(rawDiff);
+  const vectorCmp = driftVector(diff);
+  const causesRaw = classifyCauses({ legacy, core, diff: rawDiff, vector: vectorRaw, tenant: label(tenant) });
+  const causesCmp = classifyCauses({ legacy, core: comparable, diff, vector: vectorCmp, tenant: label(tenant) });
   return {
     tenant: label(tenant),
     username: tenant.username || "",
     centerId: tenant.centerId || "",
     status: parallel.status || "missing",
+    policyAdapter: parallel.policyAdapter?.mathAdapter || "",
+    before: {
+      agreementScore: parallel.rawAgreementScore ?? rawDiff.agreementScore ?? null,
+      agreementBand: parallel.rawAgreementBand || rawDiff.agreementBand || "N/A",
+      diff: rawDiff,
+      driftVector: vectorRaw,
+      dominantDrift: vectorRaw.dominantDrift,
+      causes: causesRaw
+    },
+    after: {
+      agreementScore: parallel.agreementScore ?? diff.agreementScore ?? null,
+      agreementBand: parallel.agreementBand || diff.agreementBand || "N/A",
+      diff,
+      driftVector: vectorCmp,
+      dominantDrift: vectorCmp.dominantDrift,
+      causes: causesCmp
+    },
     agreementScore: parallel.agreementScore ?? null,
     agreementBand: parallel.agreementBand || "N/A",
     legacyDecision: {
@@ -266,18 +288,38 @@ async function auditTenant(baseUrl, adminToken, tenant) {
       primary: compactAction(core.primaryAction),
       top3: (core.actions || []).slice(0, 3).map(compactAction)
     },
-    metrics: {
-      PA: diff.primaryActionMatch ?? null,
-      AB: diff.actionBandMatch ?? null,
-      TM: diff.toneMatch ?? null,
-      TK_3: diff.top3Overlap ?? null,
-      PD: diff.priorityDistance ?? null,
-      A_dec: parallel.agreementScore ?? diff.agreementScore ?? null
+    comparableDecision: {
+      primary: compactAction(comparable.primaryAction),
+      top3: (comparable.actions || []).slice(0, 3).map(compactAction)
     },
-    driftVector: vector,
-    dominantDrift: vector.dominantDrift,
-    causes,
-    promotePrimaryOnly: promotePrimaryOnly({ diff, vector }),
+    metrics: {
+      raw: {
+        PA: rawDiff.primaryActionMatch ?? null,
+        AB: rawDiff.actionBandMatch ?? null,
+        TM: rawDiff.toneMatch ?? null,
+        TK_3: rawDiff.top3Overlap ?? null,
+        PD: rawDiff.priorityDistance ?? null,
+        A_dec: parallel.rawAgreementScore ?? rawDiff.agreementScore ?? null
+      },
+      comparable: {
+        PA: diff.primaryActionMatch ?? null,
+        AB: diff.actionBandMatch ?? null,
+        TM: diff.toneMatch ?? null,
+        TK_3: diff.top3Overlap ?? null,
+        PD: diff.priorityDistance ?? null,
+        A_dec: parallel.agreementScore ?? diff.agreementScore ?? null
+      }
+    },
+    improvement: round((Number(parallel.agreementScore ?? diff.agreementScore ?? 0) - Number(parallel.rawAgreementScore ?? rawDiff.agreementScore ?? 0))),
+    driftVector: vectorCmp,
+    dominantDrift: vectorCmp.dominantDrift,
+    causes: causesCmp,
+    promotePrimaryOnly: promotePrimaryOnly({ diff, vector: vectorCmp }),
+    finalDecision: Number(parallel.agreementScore ?? diff.agreementScore ?? 0) >= 0.9 && diff.primaryActionMatch === 1
+      ? "pronto per Fase 3 controllata"
+      : Number(parallel.agreementScore ?? diff.agreementScore ?? 0) >= 0.75
+        ? "quasi pronto"
+        : "non pronto",
     legacyStillPrimary: Boolean(state.decision && state.decision.source === "gold_state"),
     decisionParallelPresent: Boolean(state.decisionParallel)
   };
