@@ -2,6 +2,7 @@
 "use strict";
 
 const { computeCashSnapshot } = require("../src/core/cash/CashCore");
+const { adaptCashSnapshotToLegacyComparable } = require("../src/core/cash/CashPolicyAdapter");
 
 const DEFAULT_BASE_URL = "https://skinharmony-smartdesk-live.onrender.com";
 const TENANT_IDS = [
@@ -203,6 +204,30 @@ function classifyCauses(delta, decompB, decompU, core = {}, legacy = {}) {
   return Array.from(new Set(causes));
 }
 
+function buildAgreement(coreLike = {}, legacy = {}, includeOverdue = true) {
+  const metrics = [
+    ["billedDue", coreLike.billedDueCents, legacy.billedDueCents, 0.25],
+    ["reconciledCash", coreLike.recordedCashCents ?? coreLike.reconciledCashCents, legacy.reconciledCashCents, 0.35],
+    ["unlinkedCash", positive(coreLike.unlinkedCashCents) + positive(coreLike.ambiguousCashCents), positive(legacy.unlinkedCashCents) + positive(legacy.ambiguousCashCents), 0.20],
+    ["gap", coreLike.gapCents, legacy.gapCents, 0.20]
+  ];
+  if (includeOverdue) metrics.push(["overdue", coreLike.overdueCents, legacy.overdueCents, 0.15]);
+  const totalWeight = metrics.reduce((sum, item) => sum + item[3], 0);
+  const errors = {};
+  const weighted = metrics.reduce((sum, [key, coreValue, legacyValue, weight]) => {
+    const error = ratioDelta(coreValue, legacyValue);
+    errors[key] = error;
+    return sum + (weight / totalWeight) * error;
+  }, 0);
+  const agreementScore = Math.max(0, Math.min(1, 1 - weighted));
+  return {
+    agreementScore: Number(agreementScore.toFixed(4)),
+    agreementBand: agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+    relativeErrors: errors,
+    comparableMetrics: metrics.map(([key]) => key)
+  };
+}
+
 function buildAudit({ tenant, state, appointments, payments, services }) {
   const horizon = buildHorizon(appointments, payments);
   const legacy = buildLegacySnapshot(appointments, payments, services, horizon);
@@ -213,6 +238,10 @@ function buildAudit({ tenant, state, appointments, payments, services }) {
     period: horizon.startDate && horizon.endDate ? { startDate: horizon.startDate, endDate: horizon.endDate } : {},
     options: { today: state.updatedAt || new Date().toISOString() }
   });
+  const adapter = adaptCashSnapshotToLegacyComparable(core);
+  const comparable = adapter.comparableSnapshot;
+  const rawAgreement = buildAgreement(core, legacy, true);
+  const comparableAgreement = buildAgreement(comparable, legacy, false);
   const coreU = positive(core.unlinkedCashCents) + positive(core.ambiguousCashCents);
   const legacyU = positive(legacy.unlinkedCashCents) + positive(legacy.ambiguousCashCents);
   const deltas = {
@@ -260,8 +289,27 @@ function buildAudit({ tenant, state, appointments, payments, services }) {
       confidence: core.confidence,
       confidenceScore: core.confidenceScore
     },
+    comparable: {
+      mathAdapter: comparable.mathAdapter,
+      billedDueCents: comparable.billedDueCents,
+      reconciledCashCents: comparable.reconciledCashCents,
+      recordedCashCents: comparable.recordedCashCents,
+      unlinkedCashCents: comparable.unlinkedCashCents,
+      ambiguousCashCents: comparable.ambiguousCashCents,
+      overdueCents: comparable.overdueCents,
+      openResidualCents: comparable.openResidualCents,
+      gapCents: comparable.gapCents,
+      confidence: comparable.confidence,
+      confidenceScore: comparable.confidenceScore,
+      policyBreakdown: comparable.policyBreakdown
+    },
     deltas,
     relativeErrors,
+    agreement: {
+      raw: rawAgreement,
+      comparable: comparableAgreement,
+      agreementRecovery: Number((comparableAgreement.agreementScore - rawAgreement.agreementScore).toFixed(4))
+    },
     rootCauses,
     dominantCause,
     decomposition: {
@@ -293,7 +341,8 @@ function buildAudit({ tenant, state, appointments, payments, services }) {
         : "mantenere fallback finche dati cash non maturano",
     recommendedThresholdImpact: {
       currentSelector: state.cashSelection || null,
-      expectedAfterAlignment: "agreementScore dovrebbe salire solo se legacy e core condividono status policy, overdue policy e service shape"
+      adapterAgreementScore: comparableAgreement.agreementScore,
+      expectedAfterAlignment: "agreementScore usa K_cmp; lo switch resta bloccato se confidence/completezza/RR/AR non superano soglia"
     }
   };
 }

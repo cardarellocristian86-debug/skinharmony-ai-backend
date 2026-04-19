@@ -11,6 +11,7 @@ const { FleetIntelligenceLayer } = require("./fleet_intelligence_layer");
 const { GoldOnboardingEngine } = require("./GoldOnboardingEngine");
 const { CONFIDENCE, computeCenterProfitabilitySnapshot } = require("./core/profitability/ProfitabilityCore");
 const { computeCashSnapshot } = require("./core/cash/CashCore");
+const { adaptCashSnapshotToLegacyComparable } = require("./core/cash/CashPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -31,8 +32,8 @@ const GOLD_TREND_MU2 = 0.10;
 const GOLD_ENTERPRISE_RISK_RHO = Object.freeze({ friction: 0.45, dataGap: 0.30, instability: 0.25 });
 const GOLD_ENTERPRISE_ACTION_COST = Object.freeze({ ACT_NOW: 0.06, SUGGEST: 0.04, MONITOR: 0.015, VERIFY: 0.025, STOP: 0 });
 const GOLD_ENTERPRISE_BAYES_PRIOR = Object.freeze({ alpha: 2, beta: 2 });
-const CASH_PARALLEL_DIFF_WEIGHTS = Object.freeze({ reconciledCash: 0.35, unlinkedCash: 0.20, gap: 0.30, overdue: 0.15 });
-const CASH_PARALLEL_WARNING_THRESHOLDS = Object.freeze({ reconciledCash: 0.15, unlinkedCash: 0.20, gap: 0.15, overdue: 0.20 });
+const CASH_PARALLEL_DIFF_WEIGHTS = Object.freeze({ billedDue: 0.25, reconciledCash: 0.35, unlinkedCash: 0.20, gap: 0.20 });
+const CASH_PARALLEL_WARNING_THRESHOLDS = Object.freeze({ billedDue: 0.15, reconciledCash: 0.15, unlinkedCash: 0.20, gap: 0.15 });
 const CASH_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
   agreementScore: 0.85,
   coreConfidenceScore: 0.80,
@@ -3185,6 +3186,18 @@ class DesktopMirrorService {
   buildGoldCashParallelDiff(coreSnapshot = {}, legacySnapshot = {}) {
     const metricDefinitions = [
       {
+        key: "billedDue",
+        deltaKey: "billedDueDeltaCents",
+        errorKey: "billedDueError",
+        warning: "CASH_BILLED_DUE_DRIFT",
+        coreValue: Number(coreSnapshot.billedDueCents || 0),
+        legacyValue: Number(legacySnapshot.operationalRevenueCents ?? legacySnapshot.billedDueCents ?? 0),
+        weight: CASH_PARALLEL_DIFF_WEIGHTS.billedDue,
+        threshold: CASH_PARALLEL_WARNING_THRESHOLDS.billedDue,
+        comparable: true,
+        sourceFlag: "compare:adapter_billed_due_vs_legacy_operational_revenue"
+      },
+      {
         key: "reconciledCash",
         deltaKey: "reconciledCashDeltaCents",
         errorKey: "reconciledCashError",
@@ -3206,7 +3219,7 @@ class DesktopMirrorService {
         weight: CASH_PARALLEL_DIFF_WEIGHTS.unlinkedCash,
         threshold: CASH_PARALLEL_WARNING_THRESHOLDS.unlinkedCash,
         comparable: true,
-        sourceFlag: "compare:core_unlinked_plus_ambiguous_vs_legacy_unlinked"
+        sourceFlag: "compare:adapter_missing_link_unlinked_vs_legacy_unlinked"
       },
       {
         key: "gap",
@@ -3218,19 +3231,7 @@ class DesktopMirrorService {
         weight: CASH_PARALLEL_DIFF_WEIGHTS.gap,
         threshold: CASH_PARALLEL_WARNING_THRESHOLDS.gap,
         comparable: true,
-        sourceFlag: "compare:core_gap_vs_legacy_operational_gap"
-      },
-      {
-        key: "overdue",
-        deltaKey: "overdueDeltaCents",
-        errorKey: "overdueError",
-        warning: "CASH_OVERDUE_DRIFT",
-        coreValue: Number(coreSnapshot.overdueCents || 0),
-        legacyValue: Number(legacySnapshot.overdueCents || 0),
-        weight: CASH_PARALLEL_DIFF_WEIGHTS.overdue,
-        threshold: CASH_PARALLEL_WARNING_THRESHOLDS.overdue,
-        comparable: Number.isFinite(Number(legacySnapshot.overdueCents)),
-        sourceFlag: "compare:core_overdue_vs_legacy_overdue"
+        sourceFlag: "compare:adapter_gap_vs_legacy_operational_gap"
       }
     ];
     const comparableMetrics = metricDefinitions.filter((metric) => metric.comparable);
@@ -3243,21 +3244,21 @@ class DesktopMirrorService {
       return {
         comparableMetrics: [],
         deltas: {
+          billedDueDeltaCents: null,
           reconciledCashDeltaCents: null,
           unlinkedCashDeltaCents: null,
-          gapDeltaCents: null,
-          overdueDeltaCents: null
+          gapDeltaCents: null
         },
         relativeErrors: {
+          billedDueError: null,
           reconciledCashError: null,
           unlinkedCashError: null,
-          gapError: null,
-          overdueError: null
+          gapError: null
         },
         agreementScore: null,
         agreementBand: "N/A",
         warnings: ["CASH_PARALLEL_NOT_COMPARABLE"],
-        sourceFlags: ["cash_parallel:no_comparable_metrics"]
+        sourceFlags: ["cash_parallel:no_comparable_metrics", "cash_policy_adapter:overdue_excluded_from_agreement"]
       };
     }
     let weightedError = 0;
@@ -3290,7 +3291,13 @@ class DesktopMirrorService {
       agreementScore,
       agreementBand,
       warnings: Array.from(new Set(warnings)),
-      sourceFlags
+      excludedFromAgreement: {
+        overdueCents: {
+          reason: "legacy_has_no_real_overdue_metric",
+          sourceFlag: "cash_policy_adapter:overdue_excluded_from_agreement"
+        }
+      },
+      sourceFlags: [...sourceFlags, "cash_policy_adapter:overdue_excluded_from_agreement"]
     };
   }
 
@@ -3317,12 +3324,15 @@ class DesktopMirrorService {
         period,
         options: { today: state.updatedAt || nowIso() }
       });
+      const policyAdapter = adaptCashSnapshotToLegacyComparable(core);
       const legacySnapshot = this.buildGoldCashLegacySnapshotForParallel({ appointments, payments, services }, horizon);
-      const diffSnapshot = this.buildGoldCashParallelDiff(core, legacySnapshot);
+      const comparableSnapshot = policyAdapter.comparableSnapshot || {};
+      const diffSnapshot = this.buildGoldCashParallelDiff(comparableSnapshot, legacySnapshot);
       return {
         mode: "shadow",
         status: diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok",
         mathCore: "cash_core_v1",
+        mathAdapter: "cash_policy_adapter_v1",
         horizon,
         legacySnapshot,
         coreSnapshot: {
@@ -3343,11 +3353,39 @@ class DesktopMirrorService {
           confidenceBreakdown: core.confidenceBreakdown || null,
           sourceFlags: core.sourceFlags || []
         },
+        comparableSnapshot: {
+          mathAdapter: comparableSnapshot.mathAdapter || "cash_policy_adapter_v1",
+          billedDueCents: Number(comparableSnapshot.billedDueCents || 0),
+          reconciledCashCents: Number(comparableSnapshot.reconciledCashCents || 0),
+          recordedCashCents: Number(comparableSnapshot.recordedCashCents || 0),
+          unlinkedCashCents: Number(comparableSnapshot.unlinkedCashCents || 0),
+          ambiguousCashCents: Number(comparableSnapshot.ambiguousCashCents || 0),
+          overdueCents: null,
+          openResidualCents: Number(comparableSnapshot.openResidualCents || 0),
+          gapCents: Number(comparableSnapshot.gapCents || 0),
+          collectionRatio: comparableSnapshot.collectionRatio,
+          reconciliationRatio: comparableSnapshot.reconciliationRatio,
+          ambiguityRatio: comparableSnapshot.ambiguityRatio,
+          overdueRatio: null,
+          confidence: comparableSnapshot.confidence,
+          confidenceScore: comparableSnapshot.confidenceScore,
+          confidenceBreakdown: comparableSnapshot.confidenceBreakdown || null,
+          sourceFlags: comparableSnapshot.sourceFlags || [],
+          policyBreakdown: comparableSnapshot.policyBreakdown || null
+        },
+        policyAdapter: {
+          mathAdapter: policyAdapter.mathAdapter,
+          policyDeltas: policyAdapter.policyDeltas,
+          excludedFromAgreement: policyAdapter.excludedFromAgreement,
+          policyFlags: policyAdapter.policyFlags,
+          explanations: policyAdapter.explanations
+        },
         diffSnapshot,
         sourceFlags: [
           "cash_parallel:shadow_only",
           "cash_parallel:no_primary_switch",
           "cash_parallel:no_allocation_persistence",
+          "cash_parallel:agreement_uses_policy_adapter_comparable_snapshot",
           ...diffSnapshot.sourceFlags
         ],
         updatedAt: nowIso()
