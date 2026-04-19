@@ -84,6 +84,18 @@ const DECISION_PARALLEL_WARNING_THRESHOLDS = Object.freeze({
   top3Overlap: 0.67,
   priorityDistance: 0.75
 });
+const DECISION_TWO_LEVEL_SWITCH_THRESHOLDS = Object.freeze({
+  primaryAgreement: 0.90,
+  primaryBandMatch: 0.95,
+  primaryOn: 0.88,
+  primaryOff: 0.72,
+  secondaryAgreement: 0.93,
+  secondaryTop3: 0.80,
+  secondaryPriorityDistance: 0.80,
+  secondaryMaxFragility: 0.40,
+  secondaryOn: 0.90,
+  secondaryOff: 0.78
+});
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
@@ -1826,6 +1838,10 @@ class DesktopMirrorService {
       signals: {},
       decision: null,
       decisionParallel: null,
+      decisionSelection: null,
+      decisionPrimarySnapshot: null,
+      decisionSecondarySnapshot: null,
+      decisionComparableSnapshot: null,
       cashParallel: null,
       cashSelection: null,
       cashPrimarySnapshot: null,
@@ -4312,6 +4328,178 @@ class DesktopMirrorService {
     }
   }
 
+  extractDecisionAdapterFragility(decisionParallel = {}) {
+    const flags = Array.isArray(decisionParallel.policyAdapter?.policyFlags) ? decisionParallel.policyAdapter.policyFlags : [];
+    const flag = flags.find((item) => String(item || "").startsWith("fragility:"));
+    const value = flag ? Number(String(flag).split(":")[1]) : NaN;
+    if (Number.isFinite(value)) return this.goldClamp01(value);
+    const core = decisionParallel.coreSnapshot || {};
+    return this.goldClamp01(1 - Number(core.summary?.averageConfidence ?? 0.75));
+  }
+
+  hasDecisionStructuralFragileMismatch(decisionParallel = {}, fragility = 0) {
+    const diff = decisionParallel.diffSnapshot || {};
+    const actions = decisionParallel.comparableSnapshot?.actions || [];
+    const adapterFlags = actions.flatMap((action) => action.policyFlags || []);
+    return Boolean(
+      (Number(diff.primaryActionMatch || 0) < 1 && fragility > DECISION_TWO_LEVEL_SWITCH_THRESHOLDS.secondaryMaxFragility)
+      || adapterFlags.includes("eligibility_adapter:fragile_domain_downgrade")
+      || (Number(diff.primaryActionMatch || 0) < 1 && String(decisionParallel.agreementBand || "") === "DRIFT")
+    );
+  }
+
+  buildDecisionTwoLevelSelection(decisionParallel = {}, previousPrimarySource = "legacy", previousSecondarySource = "legacy") {
+    const thresholds = DECISION_TWO_LEVEL_SWITCH_THRESHOLDS;
+    const status = decisionParallel.status || "error";
+    const diff = decisionParallel.diffSnapshot || {};
+    const agreementScore = Number(decisionParallel.agreementScore || 0);
+    const agreementBand = String(decisionParallel.agreementBand || "N/A");
+    const fragility = this.extractDecisionAdapterFragility(decisionParallel);
+    const structuralFragileMismatch = this.hasDecisionStructuralFragileMismatch(decisionParallel, fragility);
+    const primaryActionMatch = this.goldClamp01(Number(diff.primaryActionMatch || 0));
+    const actionBandMatch = this.goldClamp01(Number(diff.actionBandMatch || 0));
+    const toneMatch = this.goldClamp01(Number(diff.toneMatch || 0));
+    const top3Overlap = this.goldClamp01(Number(diff.top3Overlap || 0));
+    const priorityDistance = this.goldClamp01(Number(diff.priorityDistance || 0));
+    const validComparableBand = Boolean(decisionParallel.comparableSnapshot?.primaryAction?.actionBand);
+    const primaryEligible = status === "ok"
+      && ["ALIGNED", "WATCH"].includes(agreementBand)
+      && agreementScore >= thresholds.primaryAgreement
+      && primaryActionMatch === 1
+      && actionBandMatch >= thresholds.primaryBandMatch
+      && validComparableBand
+      && !structuralFragileMismatch;
+    const primaryReliability = this.goldRound(this.goldClamp01(
+      (0.35 * agreementScore)
+      + (0.25 * primaryActionMatch)
+      + (0.15 * actionBandMatch)
+      + (0.10 * toneMatch)
+      + (0.15 * (1 - fragility))
+    ), 4);
+    let primarySource = "legacy";
+    let switchReasonPrimary = "";
+    let fallbackReasonPrimary = "";
+    if (status === "error") {
+      fallbackReasonPrimary = "decision_parallel_error";
+    } else if (agreementBand === "DRIFT") {
+      fallbackReasonPrimary = "agreement_drift";
+    } else if (structuralFragileMismatch) {
+      fallbackReasonPrimary = "structural_fragile_mismatch";
+    } else if (previousPrimarySource === "core" && status === "ok" && agreementBand !== "DRIFT" && primaryReliability >= thresholds.primaryOff) {
+      primarySource = "core";
+      switchReasonPrimary = "hysteresis_hold_core";
+    } else if (previousPrimarySource !== "core" && primaryEligible && primaryReliability >= thresholds.primaryOn) {
+      primarySource = "core";
+      switchReasonPrimary = "primary_selector_eligible";
+    } else {
+      fallbackReasonPrimary = "primary_threshold_not_met";
+    }
+
+    const severeSecondaryWarnings = new Set(["DECISION_TOP3_DRIFT", "DECISION_PRIORITY_DRIFT", "DECISION_PRIMARY_ACTION_DRIFT"]);
+    const hasSevereSecondaryWarning = (diff.warnings || []).some((warning) => severeSecondaryWarnings.has(warning)) || structuralFragileMismatch;
+    const secondaryEligible = status === "ok"
+      && agreementBand === "ALIGNED"
+      && agreementScore >= thresholds.secondaryAgreement
+      && top3Overlap >= thresholds.secondaryTop3
+      && priorityDistance >= thresholds.secondaryPriorityDistance
+      && fragility <= thresholds.secondaryMaxFragility
+      && !hasSevereSecondaryWarning;
+    const secondaryReliability = this.goldRound(this.goldClamp01(
+      (0.30 * agreementScore)
+      + (0.25 * top3Overlap)
+      + (0.25 * priorityDistance)
+      + (0.20 * (1 - fragility))
+    ), 4);
+    let secondarySource = "legacy";
+    let switchReasonSecondary = "";
+    let fallbackReasonSecondary = "";
+    if (status === "error") {
+      fallbackReasonSecondary = "decision_parallel_error";
+    } else if (agreementBand === "DRIFT") {
+      fallbackReasonSecondary = "agreement_drift";
+    } else if (structuralFragileMismatch) {
+      fallbackReasonSecondary = "structural_fragile_mismatch";
+    } else if (hasSevereSecondaryWarning) {
+      fallbackReasonSecondary = "secondary_ranking_or_priority_warning";
+    } else if (previousSecondarySource === "core" && status === "ok" && agreementBand === "ALIGNED" && secondaryReliability >= thresholds.secondaryOff) {
+      secondarySource = "core";
+      switchReasonSecondary = "hysteresis_hold_core";
+    } else if (previousSecondarySource !== "core" && secondaryEligible && secondaryReliability >= thresholds.secondaryOn) {
+      secondarySource = "core";
+      switchReasonSecondary = "secondary_selector_eligible";
+    } else {
+      fallbackReasonSecondary = "secondary_threshold_not_met";
+    }
+
+    return {
+      mode: "two_level_controlled_switch",
+      primarySource,
+      secondarySource,
+      previousPrimarySource: previousPrimarySource || "legacy",
+      previousSecondarySource: previousSecondarySource || "legacy",
+      agreementScore: decisionParallel.agreementScore ?? null,
+      agreementBand,
+      rawAgreementScore: decisionParallel.rawAgreementScore ?? null,
+      rawAgreementBand: decisionParallel.rawAgreementBand || "N/A",
+      primaryReliability,
+      secondaryReliability,
+      thresholds,
+      switchReasonPrimary,
+      switchReasonSecondary,
+      fallbackReasonPrimary,
+      fallbackReasonSecondary,
+      diagnostics: {
+        primaryEligible,
+        secondaryEligible,
+        fragility: this.goldRound(fragility, 4),
+        structuralFragileMismatch,
+        primaryActionMatch,
+        actionBandMatch,
+        toneMatch,
+        top3Overlap,
+        priorityDistance
+      }
+    };
+  }
+
+  composeTwoLevelDecision(decisionParallel = {}, decisionSelection = {}) {
+    const legacy = decisionParallel.legacySnapshot || {};
+    const core = decisionParallel.coreSnapshot || {};
+    const primarySnapshot = decisionSelection.primarySource === "core" ? core : legacy;
+    const secondarySnapshot = decisionSelection.secondarySource === "core" ? core : legacy;
+    const primaryAction = primarySnapshot.primaryAction || legacy.primaryAction || core.primaryAction || null;
+    const primaryKey = primaryAction?.actionKey || "";
+    const secondaryActions = (secondarySnapshot.secondaryActions || secondarySnapshot.actions || [])
+      .filter((action) => action && action.actionKey !== primaryKey)
+      .slice(0, 3);
+    const blockedActions = (secondarySnapshot.blockedActions || [])
+      .filter((action) => action && action.actionKey !== primaryKey);
+    const actions = [primaryAction, ...secondaryActions, ...blockedActions].filter(Boolean);
+    return {
+      source: "decision_two_level_selector",
+      primarySource: decisionSelection.primarySource,
+      secondarySource: decisionSelection.secondarySource,
+      rankingSource: decisionSelection.secondarySource,
+      primaryAction,
+      actionBand: primaryAction?.actionBand || "",
+      tone: primaryAction?.tone || "",
+      secondaryActions,
+      blockedActions,
+      summary: {
+        topPriorityScore: this.goldRound(primaryAction?.priorityScore || 0, 4),
+        averageConfidence: actions.length ? this.goldRound(average(actions.map((item) => Number(item.confidence || 0))), 4) : 0,
+        averageRisk: actions.length ? this.goldRound(average(actions.map((item) => Number(item.risk || 0))), 4) : 0
+      },
+      actions,
+      sourceFlags: [
+        "decision_selector:two_level",
+        `primary:${decisionSelection.primarySource}`,
+        `secondary:${decisionSelection.secondarySource}`,
+        "decision_core:no_actions_executed"
+      ]
+    };
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.cashParallel = this.buildGoldCashParallelState(next, session);
@@ -4333,6 +4521,19 @@ class DesktopMirrorService {
     next.signals = this.buildGoldSignalsFromState(next);
     next.decision = this.buildGoldDecisionFromState(next);
     next.decisionParallel = this.buildDecisionParallelState(next, session);
+    next.decisionSelection = this.buildDecisionTwoLevelSelection(
+      next.decisionParallel,
+      state.decisionSelection?.primarySource || next.decisionSelection?.primarySource || "legacy",
+      state.decisionSelection?.secondarySource || next.decisionSelection?.secondarySource || "legacy"
+    );
+    next.decisionPrimarySnapshot = next.decisionSelection.primarySource === "core"
+      ? next.decisionParallel.coreSnapshot
+      : next.decisionParallel.legacySnapshot;
+    next.decisionSecondarySnapshot = next.decisionSelection.secondarySource === "core"
+      ? next.decisionParallel.coreSnapshot
+      : next.decisionParallel.legacySnapshot;
+    next.decisionComparableSnapshot = next.decisionParallel.comparableSnapshot || null;
+    next.decision = this.composeTwoLevelDecision(next.decisionParallel, next.decisionSelection);
     return next;
   }
 

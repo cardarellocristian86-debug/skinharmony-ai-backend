@@ -252,6 +252,7 @@ async function auditTenant(baseUrl, adminToken, tenant) {
   const comparable = parallel.comparableSnapshot || {};
   const rawDiff = parallel.rawDiffSnapshot || parallel.diffSnapshot || {};
   const diff = parallel.diffSnapshot || {};
+  const selection = state.decisionSelection || {};
   const vectorRaw = driftVector(rawDiff);
   const vectorCmp = driftVector(diff);
   const causesRaw = classifyCauses({ legacy, core, diff: rawDiff, vector: vectorRaw, tenant: label(tenant) });
@@ -311,6 +312,17 @@ async function auditTenant(baseUrl, adminToken, tenant) {
       }
     },
     improvement: round((Number(parallel.agreementScore ?? diff.agreementScore ?? 0) - Number(parallel.rawAgreementScore ?? rawDiff.agreementScore ?? 0))),
+    decisionSelection: {
+      primarySource: selection.primarySource || "",
+      secondarySource: selection.secondarySource || "",
+      primaryReliability: selection.primaryReliability ?? null,
+      secondaryReliability: selection.secondaryReliability ?? null,
+      switchReasonPrimary: selection.switchReasonPrimary || "",
+      switchReasonSecondary: selection.switchReasonSecondary || "",
+      fallbackReasonPrimary: selection.fallbackReasonPrimary || "",
+      fallbackReasonSecondary: selection.fallbackReasonSecondary || "",
+      diagnostics: selection.diagnostics || null
+    },
     driftVector: vectorCmp,
     dominantDrift: vectorCmp.dominantDrift,
     causes: causesCmp,
@@ -320,7 +332,7 @@ async function auditTenant(baseUrl, adminToken, tenant) {
       : Number(parallel.agreementScore ?? diff.agreementScore ?? 0) >= 0.75
         ? "quasi pronto"
         : "non pronto",
-    legacyStillPrimary: Boolean(state.decision && state.decision.source === "gold_state"),
+    decisionSource: state.decision?.source || "",
     decisionParallelPresent: Boolean(state.decisionParallel)
   };
 }

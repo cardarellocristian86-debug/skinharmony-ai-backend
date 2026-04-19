@@ -163,18 +163,35 @@ function runTenant(label, centerId, mode) {
   assert(state.decisionParallel.comparableSnapshot?.primaryAction, `${label}: missing comparable primary action`);
   assert(state.decisionParallel.policyAdapter?.mathAdapter === "decision_policy_adapter_v1", `${label}: missing DecisionPolicyAdapter`);
   assert(state.decisionParallel.legacySnapshot?.primaryAction, `${label}: missing legacy primary action`);
-  assert.strictEqual(state.decision.source, "gold_state", `${label}: legacy decision source changed`);
+  assert(state.decisionSelection, `${label}: missing decisionSelection`);
+  assert(["legacy", "core"].includes(state.decisionSelection.primarySource), `${label}: invalid primarySource`);
+  assert(["legacy", "core"].includes(state.decisionSelection.secondarySource), `${label}: invalid secondarySource`);
+  assert(state.decisionPrimarySnapshot?.primaryAction, `${label}: missing decisionPrimarySnapshot`);
+  assert(state.decisionSecondarySnapshot?.primaryAction, `${label}: missing decisionSecondarySnapshot`);
+  assert.strictEqual(state.decision.source, "decision_two_level_selector", `${label}: decision selector not active`);
+  if (mode === "fragile") {
+    assert.strictEqual(state.decisionSelection.primarySource, "legacy", `${label}: fragile primary must fallback to legacy`);
+    assert.strictEqual(state.decisionSelection.secondarySource, "legacy", `${label}: fragile secondary must fallback to legacy`);
+  }
+  const hysteresis = service.buildDecisionTwoLevelSelection(state.decisionParallel, "core", "core");
+  if (mode !== "fragile" && state.decisionParallel.agreementBand !== "DRIFT") {
+    assert.strictEqual(hysteresis.primarySource, "core", `${label}: primary hysteresis should hold core above off threshold`);
+  }
   return {
     tenant: label,
     legacyPrimary: state.decisionParallel.legacySnapshot.primaryAction.actionKey,
     corePrimary: state.decisionParallel.coreSnapshot.primaryAction.actionKey,
     comparablePrimary: state.decisionParallel.comparableSnapshot.primaryAction.actionKey,
+    primarySource: state.decisionSelection.primarySource,
+    secondarySource: state.decisionSelection.secondarySource,
     corePrimaryBand: state.decisionParallel.coreSnapshot.primaryAction.actionBand,
     comparablePrimaryBand: state.decisionParallel.comparableSnapshot.primaryAction.actionBand,
     rawAgreementScore: state.decisionParallel.rawAgreementScore,
     rawAgreementBand: state.decisionParallel.rawAgreementBand,
     agreementScore: state.decisionParallel.agreementScore,
     agreementBand: state.decisionParallel.agreementBand,
+    selection: state.decisionSelection,
+    hysteresis,
     diff: state.decisionParallel.diffSnapshot,
     status: state.decisionParallel.status
   };
@@ -193,8 +210,8 @@ assert.strictEqual(errorState.status, "error", "Forced failure must return statu
 
 console.log(JSON.stringify({
   ok: true,
-  mode: "shadow",
-  note: "Read-only DecisionCore shadow integration test. Legacy decision remains primary.",
+  mode: "two_level_controlled_switch",
+  note: "Read-only DecisionCore selector test. Primary/secondary source can switch only through deterministic fallback rules.",
   tenants: results,
   forcedError: {
     status: errorState.status,
