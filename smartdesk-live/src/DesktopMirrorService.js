@@ -9,7 +9,7 @@ const {
 const { ProgressiveIntelligenceActivationLayer } = require("./ProgressiveIntelligenceActivationLayer");
 const { FleetIntelligenceLayer } = require("./fleet_intelligence_layer");
 const { GoldOnboardingEngine } = require("./GoldOnboardingEngine");
-const { computeCenterProfitabilitySnapshot } = require("./core/profitability/ProfitabilityCore");
+const { CONFIDENCE, computeCenterProfitabilitySnapshot } = require("./core/profitability/ProfitabilityCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -1750,7 +1750,15 @@ class DesktopMirrorService {
         inventoryTotal: 0,
         lowStock: 0,
         marginTotal: 0,
-        marginSamples: 0
+        marginSamples: 0,
+        profitabilityRevenueCents: 0,
+        profitabilityCostCents: 0,
+        profitabilityProfitCents: 0,
+        profitabilitySamples: 0,
+        profitabilityReal: 0,
+        profitabilityStandard: 0,
+        profitabilityEstimated: 0,
+        profitabilityIncomplete: 0
       },
       dirty: {
         components: [],
@@ -1829,6 +1837,7 @@ class DesktopMirrorService {
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const staff = this.filterByCenter(this.staffRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const hasData = clients.length + appointments.length + payments.length + services.length + staff.length + inventory.length > 0;
     if (!hasData) return null;
     const counters = {
@@ -1850,12 +1859,7 @@ class DesktopMirrorService {
       marginTotal: 0,
       marginSamples: 0
     };
-    services.forEach((service) => {
-      const ratio = this.goldServiceMarginRatio(service);
-      if (ratio === null) return;
-      counters.marginTotal += ratio;
-      counters.marginSamples += 1;
-    });
+    this.applyGoldProfitabilityCoreCounters(counters, { appointments, services, staff, payments, inventory, resources });
     const next = this.refreshGoldDerivedState({
       ...this.buildDefaultGoldState(centerId, this.getCenterName(session)),
       ...baseState,
@@ -1933,6 +1937,7 @@ class DesktopMirrorService {
     const services = this.filterByCenter(this.servicesRepository.list(), session);
     const staff = this.filterByCenter(this.staffRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const resources = this.filterByCenter(this.resourcesRepository.list(), session);
     const counters = {
       revenueTotalCents: payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0),
       paymentCount: payments.length,
@@ -1952,12 +1957,7 @@ class DesktopMirrorService {
       marginTotal: 0,
       marginSamples: 0
     };
-    services.forEach((service) => {
-      const ratio = this.goldServiceMarginRatio(service);
-      if (ratio === null) return;
-      counters.marginTotal += ratio;
-      counters.marginSamples += 1;
-    });
+    this.applyGoldProfitabilityCoreCounters(counters, { appointments, services, staff, payments, inventory, resources });
     return {
       counters,
       rawCounts: {
@@ -2537,10 +2537,10 @@ class DesktopMirrorService {
     }
     const state = validState.state;
     const profitability = state.snapshots?.profitability || {};
-    const revenueCents = Number(profitability.revenueCents || 0);
+    const revenueCents = Number(profitability.coreRevenueCents || profitability.revenueCents || 0);
     const marginRatio = Number(profitability.averageMargin || 0);
-    const costCents = Math.round(revenueCents * Math.max(0, 1 - marginRatio));
-    const profitCents = Math.max(0, revenueCents - costCents);
+    const costCents = Number(profitability.coreCostCents || 0) || Math.round(revenueCents * Math.max(0, 1 - marginRatio));
+    const profitCents = Number(profitability.coreProfitCents || 0) || Math.max(0, revenueCents - costCents);
     const status = profitability.status === "margine_da_verificare"
       ? "LOW_MARGIN"
       : profitability.status === "margine_sotto_soglia"
@@ -2581,6 +2581,8 @@ class DesktopMirrorService {
       inventoryCostCents: costCents,
       meta: {
         source: "gold_state",
+        mathCore: profitability.mathCore || "gold_state_aggregate",
+        confidenceBreakdown: profitability.confidenceBreakdown || {},
         eventSeq: validState.eventSeq,
         fallbackAvailable: true,
         economicConfidence: Number(profitability.economicConfidence || 0),
@@ -2898,6 +2900,42 @@ class DesktopMirrorService {
     return this.goldClamp01((price - cost) / price);
   }
 
+  applyGoldProfitabilityCoreCounters(counters = {}, collections = {}) {
+    const snapshot = computeCenterProfitabilitySnapshot({
+      appointments: (collections.appointments || []).filter((item) => item.status === "completed"),
+      services: collections.services || [],
+      staff: collections.staff || [],
+      payments: collections.payments || [],
+      inventory: collections.inventory || [],
+      resources: collections.resources || []
+    });
+    const breakdowns = Array.isArray(snapshot.appointmentBreakdowns) ? snapshot.appointmentBreakdowns : [];
+    counters.profitabilityRevenueCents = Number(snapshot.totals?.revenueCents || 0);
+    counters.profitabilityCostCents = Number(snapshot.totals?.costCents || 0);
+    counters.profitabilityProfitCents = Number(snapshot.totals?.profitCents || 0);
+    counters.profitabilitySamples = breakdowns.length;
+    counters.profitabilityReal = breakdowns.filter((item) => item.confidence === CONFIDENCE.REAL).length;
+    counters.profitabilityStandard = breakdowns.filter((item) => item.confidence === CONFIDENCE.STANDARD).length;
+    counters.profitabilityEstimated = breakdowns.filter((item) => item.confidence === CONFIDENCE.ESTIMATED).length;
+    counters.profitabilityIncomplete = breakdowns.filter((item) => item.confidence === CONFIDENCE.INCOMPLETE).length;
+    counters.marginTotal = Number(snapshot.totals?.revenueCents || 0) > 0
+      ? Number(snapshot.totals.profitCents || 0) / Number(snapshot.totals.revenueCents || 1)
+      : 0;
+    counters.marginSamples = Number(snapshot.totals?.revenueCents || 0) > 0 ? 1 : 0;
+    return counters;
+  }
+
+  refreshGoldProfitabilityCountersFromRepositories(counters = {}, session = null) {
+    return this.applyGoldProfitabilityCoreCounters(counters, {
+      appointments: this.filterByCenter(this.appointmentsRepository.list(), session),
+      services: this.filterByCenter(this.servicesRepository.list(), session),
+      staff: this.filterByCenter(this.staffRepository.list(), session),
+      payments: this.filterByCenter(this.paymentsRepository.list(), session),
+      inventory: this.filterByCenter(this.inventoryRepository.list(), session),
+      resources: this.filterByCenter(this.resourcesRepository.list(), session)
+    });
+  }
+
   goldInventoryIsLow(item = {}) {
     const quantity = Number(item.quantity ?? item.stockQuantity ?? item.stock ?? 0);
     const threshold = Number(item.minQuantity ?? item.thresholdQuantity ?? item.threshold ?? 0);
@@ -2927,9 +2965,23 @@ class DesktopMirrorService {
       + (this.goldSafeDivide(c.servicesWithCost, c.servicesTotal) * 0.2)
       + ((1 - this.goldSafeDivide(c.lowStock, Math.max(1, Number(c.inventoryTotal || 0)))) * 0.15)
     );
-    cmp.CostConf = this.goldClamp01(this.goldSafeDivide(c.servicesWithCost, c.servicesTotal));
-    cmp.Margin = this.goldRound(this.goldSafeDivide(c.marginTotal, c.marginSamples), 4);
-    cmp.Conf = this.goldClamp01(c.clientsTotal || c.servicesTotal || c.paymentCount ? cmp.DQ * (0.7 + cmp.CostConf * 0.3) : 1);
+    const profitabilitySamples = Number(c.profitabilitySamples || 0);
+    const reliableProfitabilitySamples = Number(c.profitabilityReal || 0) + Number(c.profitabilityStandard || 0);
+    cmp.CostConf = profitabilitySamples
+      ? this.goldClamp01(this.goldSafeDivide(reliableProfitabilitySamples, profitabilitySamples))
+      : this.goldClamp01(this.goldSafeDivide(c.servicesWithCost, c.servicesTotal));
+    cmp.Margin = Number(c.profitabilityRevenueCents || 0) > 0
+      ? this.goldRound(Number(c.profitabilityProfitCents || 0) / Number(c.profitabilityRevenueCents || 1), 4)
+      : this.goldRound(this.goldSafeDivide(c.marginTotal, c.marginSamples), 4);
+    const economicReliability = profitabilitySamples
+      ? this.goldClamp01(
+        (Number(c.profitabilityReal || 0) * 1
+        + Number(c.profitabilityStandard || 0) * 0.82
+        + Number(c.profitabilityEstimated || 0) * 0.45)
+        / profitabilitySamples
+      )
+      : cmp.CostConf;
+    cmp.Conf = this.goldClamp01(c.clientsTotal || c.servicesTotal || c.paymentCount ? cmp.DQ * (0.65 + economicReliability * 0.35) : 1);
     state.components = cmp;
     return state;
   }
@@ -2955,9 +3007,20 @@ class DesktopMirrorService {
         type: "profitability_snapshot",
         source: "gold_state",
         revenueCents: Number(s.Rev || 0),
+        coreRevenueCents: Number(state.counters?.profitabilityRevenueCents || 0),
+        coreCostCents: Number(state.counters?.profitabilityCostCents || 0),
+        coreProfitCents: Number(state.counters?.profitabilityProfitCents || 0),
         averageMargin: Number(s.Margin || 0),
         costConfidence: Number(s.CostConf || 0),
         economicConfidence: Number(s.Conf || 0),
+        coreSamples: Number(state.counters?.profitabilitySamples || 0),
+        confidenceBreakdown: {
+          real: Number(state.counters?.profitabilityReal || 0),
+          standard: Number(state.counters?.profitabilityStandard || 0),
+          estimated: Number(state.counters?.profitabilityEstimated || 0),
+          incomplete: Number(state.counters?.profitabilityIncomplete || 0)
+        },
+        mathCore: "profitability_core_v1",
         status: Number(s.CostConf || 0) < 0.5 || Number(s.Conf || 0) < 0.5 ? "margine_da_verificare" : Number(s.Margin || 0) < 0.35 ? "margine_sotto_soglia" : "margine_monitorato"
       },
       report: {
@@ -3051,6 +3114,22 @@ class DesktopMirrorService {
       counters.marginTotal += ratio * direction;
       counters.marginSamples = Math.max(0, counters.marginSamples + direction);
     };
+    const profitabilityCoreEvents = new Set([
+      "appointment_created",
+      "appointment_updated",
+      "appointment_deleted",
+      "payment_created",
+      "payment_updated",
+      "service_created",
+      "service_updated",
+      "service_deleted",
+      "staff_created",
+      "staff_updated",
+      "staff_deleted",
+      "inventory_created",
+      "inventory_updated",
+      "inventory_deleted"
+    ]);
 
     if (eventType === "appointment_created" && this.goldAppointmentActiveForToday(after)) counters.todayAppointments += 1;
     if (eventType === "appointment_deleted" && this.goldAppointmentActiveForToday(before)) counters.todayAppointments = Math.max(0, counters.todayAppointments - 1);
@@ -3132,6 +3211,10 @@ class DesktopMirrorService {
     if (eventType === "inventory_updated") {
       if (!this.goldInventoryIsLow(before) && this.goldInventoryIsLow(after)) counters.lowStock += 1;
       if (this.goldInventoryIsLow(before) && !this.goldInventoryIsLow(after)) counters.lowStock = Math.max(0, counters.lowStock - 1);
+    }
+
+    if (profitabilityCoreEvents.has(eventType)) {
+      this.refreshGoldProfitabilityCountersFromRepositories(counters, session);
     }
 
     this.markGoldStateDirty(state, eventType);
@@ -9637,9 +9720,14 @@ class DesktopMirrorService {
         revenueCents: Number(service.revenueCents || 0),
         costCents: Number(service.costCents || 0),
         profitCents: Number(service.profitCents || 0),
+        laborCostCents: Number(service.laborCostCents || 0),
+        materialCostCents: Number(service.materialCostCents || 0),
+        technologyCostCents: Number(service.technologyCostCents || 0),
         marginPercent: Number(service.marginPercent || 0),
         averageRevenueCents,
         averageCostCents,
+        confidence: service.confidence || overview.meta?.confidence || "",
+        sourceFlags: Array.isArray(service.sourceFlags) ? service.sourceFlags : [],
         economicGapCents,
         clearConclusion,
         operatingAction,
