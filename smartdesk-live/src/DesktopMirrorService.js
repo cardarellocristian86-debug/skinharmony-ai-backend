@@ -13,6 +13,7 @@ const { CONFIDENCE, computeCenterProfitabilitySnapshot } = require("./core/profi
 const { computeCashSnapshot } = require("./core/cash/CashCore");
 const { adaptCashSnapshotToLegacyComparable } = require("./core/cash/CashPolicyAdapter");
 const { computeDataQualitySnapshot } = require("./core/data-quality/DataQualityCore");
+const { adaptDataQualitySnapshotToLegacyComparable } = require("./core/data-quality/DQPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -3704,25 +3705,46 @@ class DesktopMirrorService {
 
   buildDataQualityParallelState(state = {}, session = null) {
     try {
+      const coreInput = this.buildDataQualityCoreInput(session, state);
       const legacyRaw = this.getDataQuality(session, { summaryOnly: true });
       const legacySnapshot = this.normalizeLegacyDataQualitySnapshot(legacyRaw);
-      const coreRaw = computeDataQualitySnapshot(this.buildDataQualityCoreInput(session, state));
-      const coreSnapshot = this.normalizeCoreDataQualitySnapshot(coreRaw);
-      const diffSnapshot = this.buildDataQualityDiffSnapshot(legacySnapshot, coreSnapshot);
+      const coreRaw = computeDataQualitySnapshot(coreInput);
+      const operationalSnapshot = this.normalizeCoreDataQualitySnapshot(coreRaw);
+      const adapter = adaptDataQualitySnapshotToLegacyComparable(operationalSnapshot, {
+        rawData: coreInput,
+        legacySnapshot
+      });
+      const comparableSnapshot = adapter.comparableSnapshot || operationalSnapshot;
+      const rawDiffSnapshot = this.buildDataQualityDiffSnapshot(legacySnapshot, operationalSnapshot);
+      const diffSnapshot = this.buildDataQualityDiffSnapshot(legacySnapshot, comparableSnapshot);
       const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
       return {
         mode: "shadow",
         status,
         mathCore: "data_quality_core_v1",
+        mathAdapter: "dq_policy_adapter_v1",
         horizon: coreRaw.horizon || { startDate: "", endDate: "" },
         legacySnapshot,
-        coreSnapshot,
+        coreSnapshot: operationalSnapshot,
+        operationalSnapshot,
+        comparableSnapshot,
+        rawDiffSnapshot,
         diffSnapshot,
         agreementScore: diffSnapshot.agreementScore,
         agreementBand: diffSnapshot.agreementBand,
+        rawAgreementScore: rawDiffSnapshot.agreementScore,
+        rawAgreementBand: rawDiffSnapshot.agreementBand,
+        policyAdapter: {
+          mathAdapter: adapter.mathAdapter,
+          policyDeltas: adapter.policyDeltas,
+          excludedFromAgreement: adapter.excludedFromAgreement,
+          policyFlags: adapter.policyFlags,
+          policyNotes: adapter.policyNotes
+        },
         sourceFlags: [
           ...(legacySnapshot.sourceFlags || []),
-          ...(coreSnapshot.sourceFlags || []),
+          ...(operationalSnapshot.sourceFlags || []),
+          ...(comparableSnapshot.sourceFlags || []),
           status === "not_comparable" ? "data_quality_parallel:not_comparable" : ""
         ].filter(Boolean)
       };
@@ -3735,9 +3757,13 @@ class DesktopMirrorService {
         mode: "shadow",
         status: "error",
         mathCore: "data_quality_core_v1",
+        mathAdapter: "dq_policy_adapter_v1",
         horizon: { startDate: "", endDate: "" },
         legacySnapshot: null,
         coreSnapshot: null,
+        operationalSnapshot: null,
+        comparableSnapshot: null,
+        rawDiffSnapshot: null,
         diffSnapshot: {
           comparableMetrics: [],
           deltas: {},
@@ -3748,6 +3774,8 @@ class DesktopMirrorService {
         },
         agreementScore: null,
         agreementBand: "N/A",
+        rawAgreementScore: null,
+        rawAgreementBand: "N/A",
         sourceFlags: ["data_quality_parallel:error"]
       };
     }
@@ -3758,20 +3786,27 @@ class DesktopMirrorService {
     const core = dataQualityParallel?.coreSnapshot || null;
     const agreementScore = dataQualityParallel?.agreementScore ?? null;
     const agreementBand = dataQualityParallel?.agreementBand || "N/A";
+    const coreBand = core?.band || "N/A";
     let recommendedSource = "legacy";
     if (dataQualityParallel?.status === "error" || agreementBand === "DRIFT") {
       recommendedSource = "legacy";
     } else if (agreementBand === "WATCH" || agreementBand === "N/A") {
       recommendedSource = "watch";
-    } else if (agreementBand === "ALIGNED") {
+    } else if (agreementBand === "ALIGNED" && ["REAL", "STANDARD"].includes(coreBand)) {
       recommendedSource = "core";
+    } else if (agreementBand === "ALIGNED") {
+      recommendedSource = "watch";
     }
     return {
       mode: "shadow",
       legacyScore: legacy?.dataQualityScore ?? null,
       coreScore: core?.dataQualityScore ?? null,
+      comparableScore: dataQualityParallel?.comparableSnapshot?.dataQualityScore ?? null,
       legacyBand: legacy?.band || "N/A",
-      coreBand: core?.band || "N/A",
+      coreBand,
+      comparableBand: dataQualityParallel?.comparableSnapshot?.band || "N/A",
+      rawAgreementScore: dataQualityParallel?.rawAgreementScore ?? null,
+      rawAgreementBand: dataQualityParallel?.rawAgreementBand || "N/A",
       agreementScore,
       agreementBand,
       recommendedSource
