@@ -1092,7 +1092,11 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
 });
 
 app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
-  res.json(service.getGoldState(req.session));
+  const state = service.getGoldState(req.session);
+  if (req.query.full === "1" || req.query.full === "true") {
+    return res.json(state);
+  }
+  return res.json(service.getGoldStateSummaryForApi(state, req.session));
 });
 
 app.get("/api/ai-gold/state/snapshots", requirePlan("gold"), (req, res) => {

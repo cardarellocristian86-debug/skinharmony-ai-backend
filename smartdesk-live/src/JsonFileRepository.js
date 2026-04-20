@@ -6,21 +6,43 @@ class JsonFileRepository {
     this.defaultValue = defaultValue;
     this.adapter = options.adapter || null;
     this.collectionName = options.collectionName || null;
+    this.cache = null;
   }
 
   ensureFile() {
     if (!fs.existsSync(this.filePath)) {
       fs.writeFileSync(this.filePath, JSON.stringify(this.defaultValue, null, 2));
+      this.cache = null;
     }
   }
 
   list() {
     this.ensureFile();
-    return JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+    const stat = fs.statSync(this.filePath);
+    if (
+      this.cache
+      && this.cache.mtimeMs === stat.mtimeMs
+      && this.cache.size === stat.size
+    ) {
+      return this.cache.items;
+    }
+    const items = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+    this.cache = {
+      items,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size
+    };
+    return items;
   }
 
   write(items) {
     fs.writeFileSync(this.filePath, JSON.stringify(items, null, 2));
+    const stat = fs.statSync(this.filePath);
+    this.cache = {
+      items,
+      mtimeMs: stat.mtimeMs,
+      size: stat.size
+    };
     if (this.adapter && this.collectionName) {
       void this.adapter.enqueueWrite(this.collectionName, items);
     }

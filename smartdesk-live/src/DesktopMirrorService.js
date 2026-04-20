@@ -126,6 +126,7 @@ const ANALYTICS_BLOCKS = {
   CLIENTS_QUALITY: "clientsQuality",
   SERVICES_QUALITY: "servicesQuality",
   PAYMENTS_QUALITY: "paymentsQuality",
+  PAYMENTS_SUMMARY: "paymentsSummary",
   APPOINTMENTS_QUALITY: "appointmentsQuality",
   OPERATORS_QUALITY: "operatorsQuality",
   INVENTORY_QUALITY: "inventoryQuality",
@@ -1485,6 +1486,7 @@ class DesktopMirrorService {
 
     this.sessions = new Map();
     this.businessSnapshotCache = new Map();
+    this.goldStateReadCache = new Map();
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
@@ -1700,6 +1702,7 @@ class DesktopMirrorService {
       return [
         ANALYTICS_BLOCKS.APPOINTMENTS_QUALITY,
         ANALYTICS_BLOCKS.PAYMENTS_QUALITY,
+        ANALYTICS_BLOCKS.PAYMENTS_SUMMARY,
         ANALYTICS_BLOCKS.DATA_QUALITY,
         ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
         ANALYTICS_BLOCKS.RECALL_PRIORITY,
@@ -1795,6 +1798,7 @@ class DesktopMirrorService {
     Array.from(this.businessSnapshotCache.keys()).forEach((key) => {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
     });
+    this.goldStateReadCache.delete(normalizedCenterId);
   }
 
   getGoldStateRecordId(centerId = "") {
@@ -1925,13 +1929,132 @@ class DesktopMirrorService {
         const bootstrapped = this.bootstrapGoldStateFromRepositories(existing, session);
         if (bootstrapped) return bootstrapped;
       }
-      return this.refreshGoldDerivedState(existing, session);
+      const nowMs = Date.now();
+      const cached = this.goldStateReadCache.get(centerId);
+      if (
+        cached
+        && cached.expiresAtMs > nowMs
+        && cached.eventSeq === Number(existing.eventSeq || 0)
+        && cached.updatedAt === String(existing.updatedAt || "")
+      ) {
+        return cached.state;
+      }
+      const refreshed = this.refreshGoldDerivedState(existing, session);
+      this.goldStateReadCache.set(centerId, {
+        state: refreshed,
+        eventSeq: Number(existing.eventSeq || 0),
+        updatedAt: String(existing.updatedAt || ""),
+        expiresAtMs: nowMs + 30000
+      });
+      return refreshed;
     }
     const state = this.buildDefaultGoldState(centerId, this.getCenterName(session));
     const bootstrapped = this.bootstrapGoldStateFromRepositories(state, session);
     if (bootstrapped) return bootstrapped;
     this.goldStateRepository.create(state);
     return this.refreshGoldDerivedState(state, session);
+  }
+
+  compactGoldStateParallel(parallel = null) {
+    if (!parallel || typeof parallel !== "object") return parallel || null;
+    const compactCore = (snapshot = null) => {
+      if (!snapshot || typeof snapshot !== "object") return snapshot || null;
+      const topCandidates = Array.isArray(snapshot.topCandidates) ? snapshot.topCandidates.slice(0, 5) : undefined;
+      return {
+        crmQuality: snapshot.crmQuality,
+        appointmentQuality: snapshot.appointmentQuality,
+        paymentQuality: snapshot.paymentQuality,
+        costQuality: snapshot.costQuality,
+        linkQuality: snapshot.linkQuality,
+        consistencyQuality: snapshot.consistencyQuality,
+        temporalQuality: snapshot.temporalQuality,
+        dataQualityScore: snapshot.dataQualityScore,
+        band: snapshot.band,
+        gate: snapshot.gate,
+        saturation: snapshot.saturation,
+        pressure: snapshot.pressure,
+        fragility: snapshot.fragility,
+        noShowRisk: snapshot.noShowRisk,
+        slotValue: snapshot.slotValue,
+        urgency: snapshot.urgency,
+        readiness: snapshot.readiness,
+        agendaScore: snapshot.agendaScore,
+        averageOpportunity: snapshot.averageOpportunity,
+        averageChurnRisk: snapshot.averageChurnRisk,
+        averageContactability: snapshot.averageContactability,
+        averageSpamPressure: snapshot.averageSpamPressure,
+        eligibleClients: snapshot.eligibleClients,
+        contactableClients: snapshot.contactableClients,
+        suppressedClients: snapshot.suppressedClients,
+        topCandidates,
+        primaryAction: snapshot.primaryAction,
+        secondaryActions: Array.isArray(snapshot.secondaryActions) ? snapshot.secondaryActions.slice(0, 3) : snapshot.secondaryActions,
+        blockedActions: Array.isArray(snapshot.blockedActions) ? snapshot.blockedActions.slice(0, 3) : snapshot.blockedActions,
+        summary: snapshot.summary,
+        sourceFlags: snapshot.sourceFlags
+      };
+    };
+    const diff = parallel.diffSnapshot || {};
+    return {
+      mode: parallel.mode,
+      status: parallel.status,
+      mathCore: parallel.mathCore,
+      horizon: parallel.horizon,
+      agreementScore: parallel.agreementScore,
+      agreementBand: parallel.agreementBand,
+      legacySnapshot: compactCore(parallel.legacySnapshot),
+      coreSnapshot: compactCore(parallel.coreSnapshot),
+      comparableSnapshot: compactCore(parallel.comparableSnapshot),
+      diffSnapshot: {
+        comparableMetrics: diff.comparableMetrics || [],
+        deltas: diff.deltas || {},
+        top3Overlap: diff.top3Overlap,
+        agreementScore: diff.agreementScore,
+        agreementBand: diff.agreementBand,
+        warnings: diff.warnings || []
+      },
+      sourceFlags: parallel.sourceFlags || []
+    };
+  }
+
+  getGoldStateSummaryForApi(state = {}, session = null) {
+    return {
+      id: state.id,
+      version: state.version,
+      centerId: state.centerId,
+      centerName: state.centerName,
+      updatedAt: state.updatedAt,
+      lastEvent: state.lastEvent || null,
+      eventSeq: state.eventSeq,
+      components: state.components || {},
+      counters: state.counters || {},
+      dirty: state.dirty || {},
+      snapshots: state.snapshots || {},
+      signals: state.signals || {},
+      decision: state.decision || null,
+      marketingActions: state.marketingActions || null,
+      cashSelection: state.cashSelection || null,
+      cashPrimarySnapshot: state.cashPrimarySnapshot || null,
+      cashShadowSnapshot: state.cashShadowSnapshot || null,
+      dataQualitySelection: state.dataQualitySelection || null,
+      dataQualityPrimarySnapshot: state.dataQualityPrimarySnapshot || null,
+      dataQualityShadowSnapshot: state.dataQualityShadowSnapshot || null,
+      dataQualityComparableSnapshot: state.dataQualityComparableSnapshot || null,
+      decisionSelection: state.decisionSelection || null,
+      decisionPrimarySnapshot: state.decisionPrimarySnapshot || null,
+      decisionSecondarySnapshot: state.decisionSecondarySnapshot || null,
+      decisionComparableSnapshot: state.decisionComparableSnapshot || null,
+      cashParallel: this.compactGoldStateParallel(state.cashParallel),
+      dataQualityParallel: this.compactGoldStateParallel(state.dataQualityParallel),
+      decisionParallel: this.compactGoldStateParallel(state.decisionParallel),
+      agendaParallel: this.compactGoldStateParallel(state.agendaParallel),
+      marketingParallel: this.compactGoldStateParallel(state.marketingParallel),
+      meta: {
+        responseMode: "summary",
+        fullPayload: "/api/ai-gold/state?full=1",
+        centerId: this.getCenterId(session)
+      }
+    };
   }
 
   bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
@@ -2176,6 +2299,7 @@ class DesktopMirrorService {
     const saved = this.goldStateRepository.findById(recordId)
       ? this.goldStateRepository.update(recordId, () => rebuilt)
       : this.goldStateRepository.create(rebuilt);
+    this.goldStateReadCache.delete(centerId);
     const progressiveIntelligence = this.recomputeProgressiveIntelligenceStatus(targetSession, {
       reason: "gold_state_rebuild",
       force: true
@@ -2250,6 +2374,7 @@ class DesktopMirrorService {
     const saved = this.goldStateRepository.findById(recordId)
       ? this.goldStateRepository.update(recordId, () => rebuilt)
       : this.goldStateRepository.create(rebuilt);
+    this.goldStateReadCache.delete(centerId);
     const progressiveIntelligence = this.recomputeProgressiveIntelligenceStatus(session, {
       reason: options.reason || "gold_onboarding_import",
       force: true
@@ -5194,6 +5319,7 @@ class DesktopMirrorService {
     } else {
       this.goldStateRepository.create(next);
     }
+    this.goldStateReadCache.delete(centerId);
     return next;
   }
 
@@ -8151,6 +8277,10 @@ class DesktopMirrorService {
       endDate = swap;
     }
 
+    const cacheOptions = { period: mode, anchorDate, startDate, endDate };
+    const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.PAYMENTS_SUMMARY, cacheOptions, session);
+    if (cached) return cached;
+
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const clientNames = new Map(clients.map((client) => [
       String(client.id || ""),
@@ -8175,7 +8305,7 @@ class DesktopMirrorService {
       byDay[day] = (byDay[day] || 0) + amountCents;
     });
 
-    return {
+    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PAYMENTS_SUMMARY, cacheOptions, session, {
       period: mode,
       startDate,
       endDate,
@@ -8191,7 +8321,7 @@ class DesktopMirrorService {
         ...payment,
         clientName: payment.clientId ? clientNames.get(String(payment.clientId)) || "Cliente" : payment.walkInName || "Cliente occasionale"
       }))
-    };
+    }, 30000);
   }
 
   closeCashdesk(payload = {}, session = null) {
@@ -11353,9 +11483,6 @@ class DesktopMirrorService {
         message: "Business Snapshot disponibile solo come fonte decisionale del piano Gold."
       };
     }
-    const stateSnapshot = this.buildBusinessSnapshotFromGoldState(options, session);
-    if (stateSnapshot) return stateSnapshot;
-
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
     const cacheKey = this.getBusinessSnapshotCacheKey({ startDate, endDate }, session);
@@ -11370,6 +11497,16 @@ class DesktopMirrorService {
           cacheAgeMs: nowMs - cached.createdAtMs
         }
       };
+    }
+
+    const stateSnapshot = this.buildBusinessSnapshotFromGoldState(options, session);
+    if (stateSnapshot) {
+      this.businessSnapshotCache.set(cacheKey, {
+        createdAtMs: nowMs,
+        expiresAtMs: nowMs + SNAPSHOT_CACHE_TTL_MS,
+        snapshot: stateSnapshot
+      });
+      return stateSnapshot;
     }
 
     const nowDate = toDateOnly(nowIso());
