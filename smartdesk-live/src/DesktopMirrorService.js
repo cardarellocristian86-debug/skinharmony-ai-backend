@@ -5358,12 +5358,23 @@ class DesktopMirrorService {
     }
   }
 
-  buildReportParallelHorizon() {
+  buildReportParallelHorizon(appointments = [], payments = []) {
     const today = toDateOnly(nowIso());
+    const observedDates = [
+      ...(Array.isArray(appointments) ? appointments : []).map((item) => item.startAt || item.createdAt),
+      ...(Array.isArray(payments) ? payments : []).map((item) => item.paidAt || item.createdAt || item.date)
+    ].map(toDateOnly).filter(Boolean).sort();
+    if (observedDates.length) {
+      return {
+        startDate: observedDates[0],
+        endDate: observedDates[observedDates.length - 1],
+        mode: "gold_report_shadow_observed_tenant_data"
+      };
+    }
     return {
       startDate: today,
       endDate: today,
-      mode: "gold_report_shadow_current_day"
+      mode: "gold_report_shadow_empty_current_day"
     };
   }
 
@@ -5548,9 +5559,10 @@ class DesktopMirrorService {
   buildReportParallelState(state = {}, session = null) {
     const centerId = state.centerId || this.getCenterId(session);
     try {
-      const horizon = this.buildReportParallelHorizon();
+      const coreInput = this.buildReportCoreInput(state, session);
+      const horizon = this.buildReportParallelHorizon(coreInput.appointments, coreInput.payments);
       const legacySnapshot = this.normalizeLegacyReportSnapshot(state);
-      const coreRaw = computeReportSnapshot(this.buildReportCoreInput(state, session), horizon);
+      const coreRaw = computeReportSnapshot(coreInput, horizon);
       const coreSnapshot = this.normalizeCoreReportSnapshot(coreRaw);
       const diffSnapshot = this.buildReportDiffSnapshot(legacySnapshot, coreSnapshot);
       const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
