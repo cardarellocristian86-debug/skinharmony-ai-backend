@@ -24,6 +24,7 @@ const { computeInventoryCostSnapshot } = require("./core/inventory-cost/Inventor
 const { computeReportSnapshot } = require("./core/report/ReportCore");
 const { adaptReportSnapshotToLegacyComparable } = require("./core/report/ReportPolicyAdapter");
 const { computeOperatorProductivitySnapshot } = require("./core/operator-productivity/OperatorProductivityCore");
+const { adaptOperatorProductivityToLegacyComparable } = require("./core/operator-productivity/OperatorProductivityPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -5904,15 +5905,30 @@ class DesktopMirrorService {
       const legacySnapshot = this.normalizeLegacyOperatorProductivitySnapshot(state, session, horizon);
       const coreRaw = computeOperatorProductivitySnapshot(coreInput);
       const coreSnapshot = this.normalizeCoreOperatorProductivitySnapshot(coreRaw);
-      const diffSnapshot = this.buildOperatorProductivityDiffSnapshot(legacySnapshot, coreSnapshot);
+      const policyAdapter = adaptOperatorProductivityToLegacyComparable(coreSnapshot, legacySnapshot, { state, horizon });
+      const comparableSnapshot = policyAdapter.comparableSnapshot || {};
+      const rawDiffSnapshot = this.buildOperatorProductivityDiffSnapshot(legacySnapshot, coreSnapshot);
+      const diffSnapshot = this.buildOperatorProductivityDiffSnapshot(legacySnapshot, comparableSnapshot);
       const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
       return {
         mode: "shadow",
         status,
         mathCore: "operator_productivity_core_v1",
+        mathAdapter: "operator_productivity_policy_adapter_v1",
         horizon: coreSnapshot.horizon || horizon,
         legacySnapshot,
         coreSnapshot,
+        comparableSnapshot,
+        policyAdapter: {
+          mathAdapter: policyAdapter.mathAdapter,
+          policyDeltas: policyAdapter.policyDeltas,
+          excludedFromAgreement: policyAdapter.excludedFromAgreement,
+          policyFlags: policyAdapter.policyFlags,
+          policyMethods: policyAdapter.policyMethods
+        },
+        rawDiffSnapshot,
+        rawAgreementScore: rawDiffSnapshot.agreementScore,
+        rawAgreementBand: rawDiffSnapshot.agreementBand,
         diffSnapshot,
         agreementScore: diffSnapshot.agreementScore,
         agreementBand: diffSnapshot.agreementBand,
@@ -5920,11 +5936,14 @@ class DesktopMirrorService {
           "operator_productivity_parallel:shadow_only",
           "operator_productivity_parallel:legacy_primary",
           "operator_productivity_parallel:no_primary_switch",
+          "operator_productivity_parallel:agreement_uses_policy_adapter_comparable_snapshot",
           "operator_productivity_parallel:no_staff_write",
           "operator_productivity_parallel:no_shift_write",
           "operator_productivity_parallel:no_assignment_write",
           ...legacySnapshot.sourceFlags,
           ...coreSnapshot.sourceFlags,
+          ...(comparableSnapshot.sourceFlags || []),
+          ...(policyAdapter.policyFlags || []).map((flag) => `operator_productivity_policy_adapter:${flag}`),
           ...diffSnapshot.sourceFlags
         ],
         updatedAt: nowIso()
