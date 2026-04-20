@@ -23,6 +23,7 @@ const { adaptMarketingSnapshotToLegacyComparable } = require("./core/marketing/M
 const { computeInventoryCostSnapshot } = require("./core/inventory-cost/InventoryCostCore");
 const { computeReportSnapshot } = require("./core/report/ReportCore");
 const { adaptReportSnapshotToLegacyComparable } = require("./core/report/ReportPolicyAdapter");
+const { computeOperatorProductivitySnapshot } = require("./core/operator-productivity/OperatorProductivityCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -148,6 +149,20 @@ const REPORT_PARALLEL_WARNING_THRESHOLDS = Object.freeze({
   ticket: 0.15,
   appointments: 0.15,
   activeClients: 0.15
+});
+const OPERATOR_PRODUCTIVITY_PARALLEL_WEIGHTS = Object.freeze({
+  operatorCount: 0.15,
+  appointments: 0.25,
+  revenue: 0.20,
+  productivity: 0.20,
+  saturation: 0.20
+});
+const OPERATOR_PRODUCTIVITY_PARALLEL_WARNING_THRESHOLDS = Object.freeze({
+  operatorCount: 0.10,
+  appointments: 0.15,
+  revenue: 0.15,
+  productivity: 0.20,
+  saturation: 0.20
 });
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
@@ -1903,6 +1918,7 @@ class DesktopMirrorService {
       inventoryCostPrimarySnapshot: null,
       inventoryCostShadowSnapshot: null,
       reportParallel: null,
+      operatorProductivityParallel: null,
       agendaParallel: null,
       cashParallel: null,
       cashSelection: null,
@@ -1930,6 +1946,9 @@ class DesktopMirrorService {
           staff_created: ["Prod"],
           staff_updated: ["Prod"],
           staff_deleted: ["Prod"],
+          shift_created: ["Prod"],
+          shift_updated: ["Prod"],
+          shift_deleted: ["Prod"],
           inventory_created: ["DQ"],
           inventory_updated: ["DQ"],
           inventory_deleted: ["DQ"]
@@ -2022,6 +2041,21 @@ class DesktopMirrorService {
         eligibleClients: snapshot.eligibleClients,
         contactableClients: snapshot.contactableClients,
         suppressedClients: snapshot.suppressedClients,
+        staffReadiness: snapshot.staffReadiness,
+        averageProductivity: snapshot.averageProductivity,
+        averageSaturation: snapshot.averageSaturation,
+        averageEfficiency: snapshot.averageEfficiency,
+        averageYield: snapshot.averageYield,
+        centerBand: snapshot.centerBand,
+        operatorCount: snapshot.operatorCount,
+        topOperators: Array.isArray(snapshot.topOperators) ? snapshot.topOperators.slice(0, 5) : snapshot.topOperators,
+        weakOperator: snapshot.weakOperator,
+        leastLoadedOperator: snapshot.leastLoadedOperator,
+        revenuePerOperator: snapshot.revenuePerOperator,
+        appointmentsPerOperator: snapshot.appointmentsPerOperator,
+        productivityProxy: snapshot.productivityProxy,
+        saturationProxy: snapshot.saturationProxy,
+        operators: Array.isArray(snapshot.operators) ? snapshot.operators.slice(0, 5) : snapshot.operators,
         revenue: snapshot.revenue,
         cash: snapshot.cash,
         gap: snapshot.gap,
@@ -2058,10 +2092,13 @@ class DesktopMirrorService {
       diffSnapshot: {
         comparableMetrics: diff.comparableMetrics || [],
         deltas: diff.deltas || {},
+        relativeErrors: diff.relativeErrors || {},
         top3Overlap: diff.top3Overlap,
         agreementScore: diff.agreementScore,
         agreementBand: diff.agreementBand,
-        warnings: diff.warnings || []
+        warnings: diff.warnings || [],
+        weightsUsed: diff.weightsUsed || {},
+        excludedFromAgreement: diff.excludedFromAgreement || {}
       },
       sourceFlags: parallel.sourceFlags || []
     };
@@ -2103,6 +2140,7 @@ class DesktopMirrorService {
       agendaParallel: this.compactGoldStateParallel(state.agendaParallel),
       marketingParallel: this.compactGoldStateParallel(state.marketingParallel),
       reportParallel: this.compactGoldStateParallel(state.reportParallel),
+      operatorProductivityParallel: this.compactGoldStateParallel(state.operatorProductivityParallel),
       meta: {
         responseMode: "summary",
         fullPayload: "/api/ai-gold/state?full=1",
@@ -5635,6 +5673,298 @@ class DesktopMirrorService {
     }
   }
 
+  buildOperatorProductivityHorizon(appointments = [], payments = []) {
+    const dates = [
+      ...appointments.map((item) => item.startAt || item.date || item.createdAt),
+      ...payments.map((item) => item.createdAt || item.paidAt || item.date)
+    ].map((value) => toDateOnly(value || "")).filter(Boolean).sort();
+    if (dates.length) {
+      return {
+        startDate: dates[0],
+        endDate: dates[dates.length - 1],
+        mode: "observed_operator_productivity_data"
+      };
+    }
+    const today = toDateOnly(nowIso());
+    return {
+      startDate: today,
+      endDate: today,
+      mode: "empty_operator_productivity_data"
+    };
+  }
+
+  buildOperatorProductivityCoreInput(state = {}, session = null) {
+    return {
+      appointments: this.filterByCenter(this.appointmentsRepository.list(), session),
+      payments: this.filterByCenter(this.paymentsRepository.list(), session),
+      services: this.filterByCenter(this.servicesRepository.list(), session),
+      staff: this.filterByCenter(this.staffRepository.list(), session),
+      shifts: this.filterByCenter(this.shiftsRepository.list(), session),
+      goldState: state
+    };
+  }
+
+  normalizeCoreOperatorProductivitySnapshot(coreRaw = {}) {
+    const scores = coreRaw.scores || {};
+    return {
+      mathCore: coreRaw.mathCore || "operator_productivity_core_v1",
+      horizon: coreRaw.horizon || null,
+      staffReadiness: this.goldRound(scores.staffReadiness || 0, 4),
+      averageProductivity: this.goldRound(scores.averageProductivity || 0, 4),
+      averageSaturation: this.goldRound(scores.averageSaturation || 0, 4),
+      averageEfficiency: this.goldRound(scores.averageEfficiency || 0, 4),
+      averageYield: Math.round(Number(scores.averageYield || 0)),
+      centerBand: coreRaw.band || "CRITICAL",
+      operatorCount: Number(coreRaw.counts?.operators || 0),
+      appointments: Number(coreRaw.counts?.appointments || 0),
+      linkedAppointments: Number(coreRaw.counts?.linkedAppointments || 0),
+      scheduledOperators: Number(coreRaw.counts?.scheduledOperators || 0),
+      revenuePerOperator: this.goldRound((coreRaw.operators || []).reduce((sum, item) => sum + Number(item.revenue || 0), 0) / Math.max(1, Number(coreRaw.counts?.operators || 0)), 4),
+      appointmentsPerOperator: this.goldRound(Number(coreRaw.counts?.appointments || 0) / Math.max(1, Number(coreRaw.counts?.operators || 0)), 4),
+      productivityProxy: this.goldRound(scores.averageProductivity || 0, 4),
+      saturationProxy: this.goldRound(scores.averageSaturation || 0, 4),
+      operators: (coreRaw.operators || []).map((operator) => ({
+        operatorId: operator.operatorId,
+        operatorName: operator.operatorName,
+        revenue: Number(operator.revenue || 0),
+        cash: operator.cash ?? null,
+        appointments: Number(operator.appointments || 0),
+        completed: Number(operator.completed || 0),
+        saturation: this.goldRound(operator.saturation || 0, 4),
+        efficiency: this.goldRound(operator.efficiency || 0, 4),
+        yieldPerHour: Math.round(Number(operator.yieldPerHour || 0)),
+        readiness: this.goldRound(operator.readiness || 0, 4),
+        productivityScore: this.goldRound(operator.productivityScore || 0, 4),
+        band: operator.band || "CRITICAL",
+        sourceFlags: operator.sourceFlags || []
+      })),
+      sourceFlags: coreRaw.sourceFlags || []
+    };
+  }
+
+  normalizeLegacyOperatorProductivitySnapshot(state = {}, session = null, horizon = null) {
+    const c = state.counters || {};
+    const components = state.components || {};
+    const startDate = horizon?.startDate || toDateOnly(nowIso());
+    const endDate = horizon?.endDate || startDate;
+    const operational = this.getOperationalReport({ startDate, endDate }, session);
+    const staffActive = Number(c.staffActive || 0);
+    const topOperators = Array.isArray(operational.topOperators) ? operational.topOperators : [];
+    const revenueSum = topOperators.reduce((sum, item) => sum + Number(item.revenueCents || 0), 0);
+    const appointmentsSum = topOperators.reduce((sum, item) => sum + Number(item.appointments || 0), 0);
+    const operatorCount = staffActive || topOperators.length;
+    const weakOperator = topOperators.slice().reverse()[0] || null;
+    return {
+      source: "legacy_operational_report_staff_metrics",
+      horizon: { startDate, endDate },
+      operatorCount,
+      topOperators: topOperators.map((item) => ({
+        operatorId: item.staffId,
+        operatorName: item.name,
+        revenue: Number(item.revenueCents || 0),
+        appointments: Number(item.appointments || 0),
+        completed: Number(item.completed || 0)
+      })),
+      weakOperator: weakOperator ? {
+        operatorId: weakOperator.staffId,
+        operatorName: weakOperator.name,
+        revenue: Number(weakOperator.revenueCents || 0),
+        appointments: Number(weakOperator.appointments || 0),
+        completed: Number(weakOperator.completed || 0)
+      } : null,
+      leastLoadedOperator: state.snapshots?.business?.leastLoadedOperator || null,
+      revenuePerOperator: this.goldRound(revenueSum / Math.max(1, operatorCount), 4),
+      appointmentsPerOperator: this.goldRound(appointmentsSum / Math.max(1, operatorCount), 4),
+      productivityProxy: this.goldRound(Number(components.Prod || 0), 4),
+      saturationProxy: this.goldRound(Number(components.Sat || 0), 4),
+      sourceFlags: [
+        "operator_productivity_legacy:operational_report_topOperators",
+        "operator_productivity_legacy:gold_components_prod_sat",
+        "operator_productivity_legacy:staffActive_counter"
+      ]
+    };
+  }
+
+  buildOperatorProductivityDiffSnapshot(legacySnapshot = {}, coreSnapshot = {}) {
+    const definitions = [
+      {
+        metric: "operatorCount",
+        legacyValue: legacySnapshot.operatorCount,
+        coreValue: coreSnapshot.operatorCount,
+        weight: OPERATOR_PRODUCTIVITY_PARALLEL_WEIGHTS.operatorCount,
+        threshold: OPERATOR_PRODUCTIVITY_PARALLEL_WARNING_THRESHOLDS.operatorCount,
+        warning: "OPR_OPERATOR_COUNT_DRIFT"
+      },
+      {
+        metric: "appointments",
+        legacyValue: legacySnapshot.appointmentsPerOperator,
+        coreValue: coreSnapshot.appointmentsPerOperator,
+        weight: OPERATOR_PRODUCTIVITY_PARALLEL_WEIGHTS.appointments,
+        threshold: OPERATOR_PRODUCTIVITY_PARALLEL_WARNING_THRESHOLDS.appointments,
+        warning: "OPR_APPOINTMENTS_DRIFT"
+      },
+      {
+        metric: "revenue",
+        legacyValue: legacySnapshot.revenuePerOperator,
+        coreValue: coreSnapshot.revenuePerOperator,
+        weight: OPERATOR_PRODUCTIVITY_PARALLEL_WEIGHTS.revenue,
+        threshold: OPERATOR_PRODUCTIVITY_PARALLEL_WARNING_THRESHOLDS.revenue,
+        warning: "OPR_REVENUE_DRIFT"
+      },
+      {
+        metric: "productivity",
+        legacyValue: legacySnapshot.productivityProxy,
+        coreValue: coreSnapshot.productivityProxy,
+        weight: OPERATOR_PRODUCTIVITY_PARALLEL_WEIGHTS.productivity,
+        threshold: OPERATOR_PRODUCTIVITY_PARALLEL_WARNING_THRESHOLDS.productivity,
+        warning: "OPR_PRODUCTIVITY_DRIFT"
+      },
+      {
+        metric: "saturation",
+        legacyValue: legacySnapshot.saturationProxy,
+        coreValue: coreSnapshot.saturationProxy,
+        weight: OPERATOR_PRODUCTIVITY_PARALLEL_WEIGHTS.saturation,
+        threshold: OPERATOR_PRODUCTIVITY_PARALLEL_WARNING_THRESHOLDS.saturation,
+        warning: "OPR_SATURATION_DRIFT"
+      }
+    ].map((item) => ({
+      ...item,
+      comparable: Number.isFinite(Number(item.legacyValue)) && Number.isFinite(Number(item.coreValue))
+    }));
+    const comparableMetrics = definitions.filter((item) => item.comparable);
+    const deltas = {};
+    const relativeErrors = {};
+    const excludedFromAgreement = {};
+    const warnings = [];
+    const sourceFlags = [];
+    definitions.filter((item) => !item.comparable).forEach((item) => {
+      deltas[item.metric] = null;
+      relativeErrors[item.metric] = null;
+      excludedFromAgreement[item.metric] = {
+        reason: "legacy_metric_not_available_or_not_homogeneous",
+        sourceFlag: `operator_productivity_parallel:${item.metric}_excluded_from_agreement`
+      };
+      sourceFlags.push(`operator_productivity_parallel:${item.metric}_excluded_from_agreement`);
+    });
+    if (!comparableMetrics.length) {
+      return {
+        comparableMetrics: [],
+        deltas,
+        relativeErrors,
+        agreementScore: null,
+        agreementBand: "N/A",
+        warnings: ["OPR_NOT_COMPARABLE"],
+        weightsUsed: {},
+        excludedFromAgreement,
+        sourceFlags: ["operator_productivity_parallel:no_comparable_metrics", ...sourceFlags]
+      };
+    }
+    const totalWeight = comparableMetrics.reduce((sum, item) => sum + item.weight, 0) || comparableMetrics.length;
+    let weightedError = 0;
+    const weightsUsed = {};
+    comparableMetrics.forEach((item) => {
+      const legacyValue = Number(item.legacyValue || 0);
+      const coreValue = Number(item.coreValue || 0);
+      const delta = coreValue - legacyValue;
+      const error = Math.abs(delta) / Math.max(1, Math.max(Math.abs(coreValue), Math.abs(legacyValue)));
+      const weight = item.weight / totalWeight;
+      deltas[item.metric] = Number.isInteger(delta) ? delta : this.goldRound(delta, 4);
+      relativeErrors[item.metric] = this.goldRound(error, 4);
+      weightsUsed[item.metric] = this.goldRound(weight, 4);
+      weightedError += weight * error;
+      sourceFlags.push(`operator_productivity_parallel:compare_${item.metric}`);
+      if (error > item.threshold) warnings.push(item.warning);
+    });
+    if ((coreSnapshot.sourceFlags || []).includes("schedule:no_shifts_available")) warnings.push("OPR_SCHEDULE_FALLBACK_DRIFT");
+    if ((coreSnapshot.sourceFlags || []).includes("appointments:missing_operator_link")) warnings.push("OPR_APPOINTMENTS_DRIFT");
+    const hasCapacityFallback = (coreSnapshot.operators || []).some((item) => (item.sourceFlags || []).includes("capacity:fallback_8h_day"));
+    if (hasCapacityFallback) warnings.push("OPR_CAPACITY_POLICY_DRIFT");
+    const hasCashGap = (coreSnapshot.operators || []).some((item) => (item.sourceFlags || []).includes("cash:not_linked_to_operator"));
+    if (hasCashGap) warnings.push("OPR_CASH_LINK_DRIFT");
+    const agreementScore = this.goldRound(1 - this.goldClamp01(weightedError), 4);
+    return {
+      comparableMetrics: comparableMetrics.map((item) => item.metric),
+      deltas,
+      relativeErrors,
+      agreementScore,
+      agreementBand: agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+      warnings: Array.from(new Set(warnings)),
+      weightsUsed,
+      excludedFromAgreement,
+      sourceFlags
+    };
+  }
+
+  buildOperatorProductivityParallelState(state = {}, session = null) {
+    const centerId = state.centerId || this.getCenterId(session);
+    try {
+      const coreInput = this.buildOperatorProductivityCoreInput(state, session);
+      const horizon = this.buildOperatorProductivityHorizon(coreInput.appointments, coreInput.payments);
+      coreInput.horizon = horizon;
+      const legacySnapshot = this.normalizeLegacyOperatorProductivitySnapshot(state, session, horizon);
+      const coreRaw = computeOperatorProductivitySnapshot(coreInput);
+      const coreSnapshot = this.normalizeCoreOperatorProductivitySnapshot(coreRaw);
+      const diffSnapshot = this.buildOperatorProductivityDiffSnapshot(legacySnapshot, coreSnapshot);
+      const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
+      return {
+        mode: "shadow",
+        status,
+        mathCore: "operator_productivity_core_v1",
+        horizon: coreSnapshot.horizon || horizon,
+        legacySnapshot,
+        coreSnapshot,
+        diffSnapshot,
+        agreementScore: diffSnapshot.agreementScore,
+        agreementBand: diffSnapshot.agreementBand,
+        sourceFlags: [
+          "operator_productivity_parallel:shadow_only",
+          "operator_productivity_parallel:legacy_primary",
+          "operator_productivity_parallel:no_primary_switch",
+          "operator_productivity_parallel:no_staff_write",
+          "operator_productivity_parallel:no_shift_write",
+          "operator_productivity_parallel:no_assignment_write",
+          ...legacySnapshot.sourceFlags,
+          ...coreSnapshot.sourceFlags,
+          ...diffSnapshot.sourceFlags
+        ],
+        updatedAt: nowIso()
+      };
+    } catch (error) {
+      console.warn("[operator_productivity_parallel_error]", JSON.stringify({
+        centerId,
+        message: error.message
+      }));
+      return {
+        mode: "shadow",
+        status: "error",
+        mathCore: "operator_productivity_core_v1",
+        horizon: null,
+        legacySnapshot: null,
+        coreSnapshot: null,
+        diffSnapshot: {
+          comparableMetrics: [],
+          deltas: {},
+          relativeErrors: {},
+          agreementScore: null,
+          agreementBand: "N/A",
+          warnings: ["OPR_PARALLEL_ERROR"],
+          error: error.message
+        },
+        agreementScore: null,
+        agreementBand: "N/A",
+        sourceFlags: [
+          "operator_productivity_parallel:error",
+          "operator_productivity_parallel:legacy_untouched",
+          "operator_productivity_parallel:no_staff_write",
+          "operator_productivity_parallel:no_shift_write",
+          "operator_productivity_parallel:no_assignment_write"
+        ],
+        error: error.message,
+        updatedAt: nowIso()
+      };
+    }
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.cashParallel = this.buildGoldCashParallelState(next, session);
@@ -5666,6 +5996,7 @@ class DesktopMirrorService {
     }
     next.snapshots = this.buildGoldSnapshotsFromState(next);
     next.reportParallel = this.buildReportParallelState(next, session);
+    next.operatorProductivityParallel = this.buildOperatorProductivityParallelState(next, session);
     next.marketingActions = this.buildGoldMarketingActionState(session);
     next.marketingParallel = this.buildMarketingParallelState(next, session);
     next.signals = this.buildGoldSignalsFromState(next);
@@ -7455,13 +7786,20 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.shiftsRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.shiftsRepository));
+      this.applyGoldStateEvent("shift_created", { after: entity }, session);
       return entity;
     }
-    return this.updateInCenter(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const before = this.findByIdInCenter(this.shiftsRepository, payload.id, session);
+    const updated = this.updateInCenter(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    this.applyGoldStateEvent("shift_updated", { before, after: updated }, session);
+    return updated;
   }
 
   deleteShift(id, session = null) {
-    return this.deleteInCenter(this.shiftsRepository, id, session);
+    const before = this.findByIdInCenter(this.shiftsRepository, id, session);
+    const result = this.deleteInCenter(this.shiftsRepository, id, session);
+    if (result?.success) this.applyGoldStateEvent("shift_deleted", { before }, session);
+    return result;
   }
 
   exportShiftReport(_options = {}, _session = null) {
