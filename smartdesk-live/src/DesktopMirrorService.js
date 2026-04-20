@@ -17,6 +17,7 @@ const { adaptDataQualitySnapshotToLegacyComparable } = require("./core/data-qual
 const { buildDecisionSnapshot } = require("./core/decision/DecisionCore");
 const { adaptDecisionSnapshotToLegacyComparable } = require("./core/decision/DecisionPolicyAdapter");
 const { computeAgendaSnapshot } = require("./core/agenda/AgendaCore");
+const { adaptAgendaSnapshotToLegacyComparable } = require("./core/agenda/AgendaPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -4692,15 +4693,30 @@ class DesktopMirrorService {
       const legacySnapshot = this.normalizeLegacyAgendaSnapshot(legacyBranch, state);
       const operationalCore = computeAgendaSnapshot({ appointments, services, staff, resources, clients, horizon });
       const coreSnapshot = this.normalizeAgendaCoreSnapshot(operationalCore);
-      const diffSnapshot = this.compareAgendaSnapshots(legacySnapshot, coreSnapshot);
+      const policyAdapter = adaptAgendaSnapshotToLegacyComparable(operationalCore, legacySnapshot, { state, horizon });
+      const comparableSnapshot = policyAdapter.comparableSnapshot || {};
+      const rawDiffSnapshot = this.compareAgendaSnapshots(legacySnapshot, coreSnapshot);
+      const diffSnapshot = this.compareAgendaSnapshots(legacySnapshot, comparableSnapshot);
       return {
         mode: "shadow",
         status: diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok",
         mathCore: "agenda_core_v1",
+        mathAdapter: "agenda_policy_adapter_v1",
         horizon,
         legacySnapshot,
         coreSnapshot,
+        comparableSnapshot,
         operationalSnapshot: operationalCore,
+        policyAdapter: {
+          mathAdapter: policyAdapter.mathAdapter,
+          policyDeltas: policyAdapter.policyDeltas,
+          excludedFromAgreement: policyAdapter.excludedFromAgreement,
+          policyFlags: policyAdapter.policyFlags,
+          policyMethods: policyAdapter.policyMethods
+        },
+        rawDiffSnapshot,
+        rawAgreementScore: rawDiffSnapshot.agreementScore,
+        rawAgreementBand: rawDiffSnapshot.agreementBand,
         diffSnapshot,
         agreementScore: diffSnapshot.agreementScore,
         agreementBand: diffSnapshot.agreementBand,
@@ -4709,8 +4725,10 @@ class DesktopMirrorService {
           "agenda_parallel:legacy_primary",
           "agenda_parallel:no_primary_switch",
           "agenda_parallel:no_appointment_mutation",
+          "agenda_parallel:agreement_uses_policy_adapter_comparable_snapshot",
           ...legacySnapshot.sourceFlags,
           ...coreSnapshot.sourceFlags,
+          ...comparableSnapshot.sourceFlags,
           ...diffSnapshot.sourceFlags
         ],
         updatedAt: nowIso()

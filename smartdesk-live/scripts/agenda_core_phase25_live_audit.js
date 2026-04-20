@@ -2,6 +2,7 @@
 "use strict";
 
 const { computeAgendaSnapshot } = require("../src/core/agenda/AgendaCore");
+const { adaptAgendaSnapshotToLegacyComparable } = require("../src/core/agenda/AgendaPolicyAdapter");
 
 const DEFAULT_BASE_URL = "https://skinharmony-smartdesk-live.onrender.com";
 const AGENDA_WEIGHTS = Object.freeze({ saturation: 0.25, pressure: 0.25, need: 0.20, band: 0.15, load: 0.15 });
@@ -317,9 +318,14 @@ async function auditTenant(baseUrl, adminToken, tenant) {
   const legacy = buildLegacyAgendaSnapshot({ state, appointments, services });
   const coreRaw = state.agendaParallel?.operationalSnapshot || computeAgendaSnapshot({ appointments, services, staff, resources, clients: [], horizon });
   const core = state.agendaParallel?.coreSnapshot || normalizeCoreAgendaSnapshot(coreRaw);
-  const diff = state.agendaParallel?.diffSnapshot || compareAgenda(legacy, core);
+  const adapter = state.agendaParallel?.policyAdapter || adaptAgendaSnapshotToLegacyComparable(coreRaw, legacy, { horizon });
+  const comparable = state.agendaParallel?.comparableSnapshot || adapter.comparableSnapshot || {};
+  const rawDiff = state.agendaParallel?.rawDiffSnapshot || compareAgenda(legacy, core);
+  const diff = state.agendaParallel?.diffSnapshot || compareAgenda(legacy, comparable);
+  const rawContributions = driftContribution(rawDiff);
   const contributions = driftContribution(diff);
-  const causes = classifyCauses({ legacy, core, diff, appointments, staff, resources });
+  const rawCauses = classifyCauses({ legacy, core, diff: rawDiff, appointments, staff, resources });
+  const causes = classifyCauses({ legacy, core: comparable, diff, appointments, staff, resources });
   const audit = {
     tenantId: tenant.centerId || tenant.id,
     tenantName: tenantLabel(tenant),
@@ -348,6 +354,32 @@ async function auditTenant(baseUrl, adminToken, tenant) {
       readiness: round(core.readiness),
       agendaScore: round(core.agendaScore)
     },
+    comparable: {
+      saturation: round(comparable.saturation),
+      pressure: round(comparable.pressure),
+      need: round(comparable.need),
+      band: comparable.band || "",
+      bandProxy: round(comparable.bandProxy),
+      agendaScoreComparable: round(comparable.agendaScoreComparable)
+    },
+    beforeAdapter: {
+      agreementScore: rawDiff.agreementScore ?? null,
+      agreementBand: rawDiff.agreementBand || "N/A",
+      deltas: rawDiff.deltas || {},
+      relativeErrors: rawDiff.relativeErrors || {},
+      contributions: rawContributions,
+      dominantDrift: dominantDrift(rawCauses, rawContributions),
+      causes: rawCauses
+    },
+    afterAdapter: {
+      agreementScore: diff.agreementScore ?? null,
+      agreementBand: diff.agreementBand || "N/A",
+      deltas: diff.deltas || {},
+      relativeErrors: diff.relativeErrors || {},
+      contributions,
+      dominantDrift: dominantDrift(causes, contributions),
+      causes
+    },
     deltas: diff.deltas || {},
     relativeErrors: diff.relativeErrors || {},
     comparableMetrics: diff.comparableMetrics || [],
@@ -355,7 +387,14 @@ async function auditTenant(baseUrl, adminToken, tenant) {
     agreementBand: diff.agreementBand || "N/A",
     warnings: diff.warnings || [],
     contributions,
-    sourceFlags: Array.from(new Set([...(legacy.sourceFlags || []), ...(core.sourceFlags || []), ...(diff.sourceFlags || [])])),
+    sourceFlags: Array.from(new Set([...(legacy.sourceFlags || []), ...(core.sourceFlags || []), ...(comparable.sourceFlags || []), ...(diff.sourceFlags || [])])),
+    policyAdapter: {
+      mathAdapter: adapter.mathAdapter || "agenda_policy_adapter_v1",
+      policyDeltas: adapter.policyDeltas || null,
+      excludedFromAgreement: adapter.excludedFromAgreement || null,
+      policyFlags: adapter.policyFlags || comparable.sourceFlags || [],
+      policyMethods: adapter.policyMethods || null
+    },
     causes,
     dominantDrift: dominantDrift(causes, contributions),
     sampleRecords: causes.flatMap((cause) => cause.sampleRecords || []).slice(0, 8),
