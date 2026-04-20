@@ -12284,7 +12284,8 @@ class DesktopMirrorService {
       summary: overview.totals,
       monthlyTrend: overview.monthlyTrend || [],
       alerts,
-      suggestions
+      suggestions,
+      meta: overview.meta || {}
     };
   }
 
