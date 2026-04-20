@@ -18,6 +18,7 @@ const { buildDecisionSnapshot } = require("./core/decision/DecisionCore");
 const { adaptDecisionSnapshotToLegacyComparable } = require("./core/decision/DecisionPolicyAdapter");
 const { computeAgendaSnapshot } = require("./core/agenda/AgendaCore");
 const { adaptAgendaSnapshotToLegacyComparable } = require("./core/agenda/AgendaPolicyAdapter");
+const { computeMarketingSnapshot } = require("./core/marketing/MarketingCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -106,6 +107,15 @@ const DECISION_TWO_LEVEL_SWITCH_THRESHOLDS = Object.freeze({
   secondaryOn: 0.90,
   secondaryOff: 0.78
 });
+const MARKETING_PARALLEL_WEIGHTS = Object.freeze({
+  readiness: 0.20,
+  eligibleRatio: 0.15,
+  contactableRatio: 0.15,
+  suppressedRatio: 0.15,
+  top3Overlap: 0.20,
+  averageOpportunity: 0.15
+});
+const MARKETING_PARALLEL_WARNING_THRESHOLD = 0.20;
 const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
@@ -1862,6 +1872,7 @@ class DesktopMirrorService {
       dataQualityPrimarySnapshot: null,
       dataQualityShadowSnapshot: null,
       dataQualityComparableSnapshot: null,
+      marketingParallel: null,
       graph: {
         eventToState: {
           appointment_created: ["Sat", "Prod"],
@@ -4762,6 +4773,236 @@ class DesktopMirrorService {
     }
   }
 
+  buildMarketingCoreInput(session = null) {
+    const endDate = toDateOnly(nowIso());
+    const start = new Date(`${endDate}T00:00:00.000Z`);
+    start.setDate(start.getDate() - 365);
+    return {
+      horizon: {
+        startDate: toDateOnly(start.toISOString()),
+        endDate,
+        mode: "last_365_days_marketing_shadow"
+      },
+      now: nowIso(),
+      goal: { type: "recall", seasonFit: 0.5 },
+      schedule: {},
+      clients: this.filterByCenter(this.clientsRepository.list(), session),
+      appointments: this.filterByCenter(this.appointmentsRepository.list(), session),
+      payments: this.filterByCenter(this.paymentsRepository.list(), session),
+      services: this.filterByCenter(this.servicesRepository.list(), session),
+      marketingHistory: [
+        ...this.filterByCenter(this.aiMarketingActionsRepository.list(), session),
+        ...this.filterByCenter(this.whatsappMessagesRepository.list(), session)
+      ]
+    };
+  }
+
+  normalizeCoreMarketingSnapshot(core = {}) {
+    const scores = core.scores || {};
+    const counts = core.counts || {};
+    return {
+      source: "core",
+      readiness: Number(scores.marketingReadiness || 0),
+      averageOpportunity: Number(scores.averageOpportunity || 0),
+      averageChurnRisk: Number(scores.averageChurnRisk || 0),
+      averageContactability: Number(scores.averageContactability || 0),
+      averageSpamPressure: Number(scores.averageSpamPressure || 0),
+      clients: Number(counts.clients || 0),
+      eligibleClients: Number(counts.eligibleClients || 0),
+      contactableClients: Number(counts.contactableClients || 0),
+      suppressedClients: Number(counts.suppressedClients || 0),
+      eligibleRatio: this.goldSafeDivide(counts.eligibleClients || 0, counts.clients || 0),
+      contactableRatio: this.goldSafeDivide(counts.contactableClients || 0, counts.clients || 0),
+      suppressedRatio: this.goldSafeDivide(counts.suppressedClients || 0, counts.clients || 0),
+      topCandidates: (core.topCandidates || []).map((item) => ({
+        clientId: String(item.clientId || ""),
+        clientName: item.clientName || item.name || "Cliente",
+        opportunityScore: Number(item.opportunityScore || 0),
+        actionBand: item.actionBand || "MONITOR",
+        contactability: Number(item.contactability || 0),
+        spamPressure: Number(item.spamPressure || 0),
+        reasonCodes: item.reasonCodes || [],
+        sourceFlags: item.sourceFlags || []
+      })),
+      sourceFlags: core.sourceFlags || []
+    };
+  }
+
+  normalizeLegacyMarketingSnapshot(marketingActions = {}) {
+    const actions = Array.isArray(marketingActions.actions) ? marketingActions.actions : [];
+    const debug = marketingActions.debug || {};
+    const counters = marketingActions.counters || {};
+    const analyzed = Number(debug.clientsAnalyzed || actions.length || 0);
+    const eligibleClients = Number(counters.totalActions ?? actions.length);
+    const contactableClients = actions.filter((item) => item.contactable || (item.hasMarketingConsent && (item.phone || item.email))).length;
+    const suppressedClients = Number(debug.excludedByFilter || debug.nonContactable || 0);
+    const scores = actions
+      .map((item) => Number(item.goldDecision?.score ?? item.priorityScore ?? item.score ?? 0))
+      .filter(Number.isFinite);
+    const topCandidates = actions.map((item) => ({
+      clientId: String(item.clientId || ""),
+      clientName: item.clientName || item.name || "Cliente",
+      opportunityScore: Number(item.goldDecision?.score ?? item.priorityScore ?? item.score ?? 0),
+      actionBand: item.goldDecision?.action || item.actionBand || "",
+      status: item.status || "",
+      contactable: Boolean(item.contactable),
+      sourceFlags: ["legacy:gold_marketing_action_state"]
+    }));
+    return {
+      source: "legacy",
+      readiness: null,
+      averageOpportunity: scores.length ? this.goldRound(average(scores), 4) : null,
+      averageChurnRisk: null,
+      averageContactability: null,
+      averageSpamPressure: null,
+      clients: analyzed,
+      eligibleClients,
+      contactableClients,
+      suppressedClients,
+      eligibleRatio: analyzed ? this.goldSafeDivide(eligibleClients, analyzed) : null,
+      contactableRatio: analyzed ? this.goldSafeDivide(contactableClients, analyzed) : null,
+      suppressedRatio: analyzed ? this.goldSafeDivide(suppressedClients, analyzed) : null,
+      topCandidates,
+      sourceFlags: ["legacy:gold_marketing_action_state", "legacy:readiness_not_available"]
+    };
+  }
+
+  buildMarketingDiffSnapshot(legacySnapshot = {}, coreSnapshot = {}) {
+    const scalarMetrics = {
+      readiness: { warning: "MARKETING_READINESS_DRIFT" },
+      eligibleRatio: { warning: "MARKETING_ELIGIBLE_DRIFT" },
+      contactableRatio: { warning: "MARKETING_CONTACTABLE_DRIFT" },
+      suppressedRatio: { warning: "MARKETING_SUPPRESSED_DRIFT" },
+      averageOpportunity: { warning: "MARKETING_OPPORTUNITY_DRIFT" }
+    };
+    const comparableScalars = Object.keys(scalarMetrics).filter((metric) => (
+      legacySnapshot[metric] !== null
+      && legacySnapshot[metric] !== undefined
+      && coreSnapshot[metric] !== null
+      && coreSnapshot[metric] !== undefined
+      && Number.isFinite(Number(legacySnapshot[metric]))
+      && Number.isFinite(Number(coreSnapshot[metric]))
+    ));
+    const legacyTop = (legacySnapshot.topCandidates || []).map((item) => String(item.clientId || "")).filter(Boolean).slice(0, 3);
+    const coreTop = (coreSnapshot.topCandidates || []).map((item) => String(item.clientId || "")).filter(Boolean).slice(0, 3);
+    const top3Comparable = legacyTop.length > 0 && coreTop.length > 0;
+    const top3Overlap = top3Comparable
+      ? this.goldSafeDivide(legacyTop.filter((clientId) => coreTop.includes(clientId)).length, Math.max(1, Math.min(3, legacyTop.length, coreTop.length)))
+      : null;
+    const comparableMetrics = [
+      ...comparableScalars,
+      ...(top3Comparable ? ["top3Overlap"] : [])
+    ];
+    if (!comparableMetrics.length) {
+      return {
+        comparableMetrics: [],
+        deltas: {},
+        relativeErrors: {},
+        top3Overlap: null,
+        agreementScore: null,
+        agreementBand: "N/A",
+        warnings: ["MARKETING_NOT_COMPARABLE"],
+        weightsUsed: {}
+      };
+    }
+    const rawWeights = {};
+    comparableScalars.forEach((metric) => {
+      rawWeights[metric] = Number(MARKETING_PARALLEL_WEIGHTS[metric] || 0);
+    });
+    if (top3Comparable) rawWeights.top3Overlap = MARKETING_PARALLEL_WEIGHTS.top3Overlap;
+    const totalWeight = Object.values(rawWeights).reduce((sum, value) => sum + Number(value || 0), 0) || comparableMetrics.length;
+    const deltas = {};
+    const relativeErrors = {};
+    const weightsUsed = {};
+    const warnings = [];
+    let weightedAgreement = 0;
+    comparableScalars.forEach((metric) => {
+      const legacyValue = Number(legacySnapshot[metric] || 0);
+      const coreValue = Number(coreSnapshot[metric] || 0);
+      const delta = this.goldRound(coreValue - legacyValue, 4);
+      const error = this.goldRound(Math.abs(delta), 4);
+      const match = this.goldClamp01(1 - error);
+      const weight = Number(rawWeights[metric] || 0) / totalWeight;
+      deltas[metric] = delta;
+      relativeErrors[metric] = error;
+      weightsUsed[metric] = this.goldRound(weight, 4);
+      weightedAgreement += weight * match;
+      if (error > MARKETING_PARALLEL_WARNING_THRESHOLD) warnings.push(scalarMetrics[metric].warning);
+    });
+    if (top3Comparable) {
+      const weight = Number(rawWeights.top3Overlap || 0) / totalWeight;
+      weightsUsed.top3Overlap = this.goldRound(weight, 4);
+      weightedAgreement += weight * top3Overlap;
+      if (top3Overlap < 0.67) warnings.push("MARKETING_TOPK_DRIFT");
+    }
+    const agreementScore = this.goldClamp01(weightedAgreement);
+    const agreementBand = agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT";
+    return {
+      comparableMetrics,
+      deltas,
+      relativeErrors,
+      top3Overlap: top3Overlap === null ? null : this.goldRound(top3Overlap, 4),
+      agreementScore: this.goldRound(agreementScore, 4),
+      agreementBand,
+      warnings,
+      weightsUsed
+    };
+  }
+
+  buildMarketingParallelState(state = {}, session = null) {
+    try {
+      const legacySnapshot = this.normalizeLegacyMarketingSnapshot(state.marketingActions || this.buildGoldMarketingActionState(session));
+      const coreRaw = computeMarketingSnapshot(this.buildMarketingCoreInput(session));
+      const coreSnapshot = this.normalizeCoreMarketingSnapshot(coreRaw);
+      const diffSnapshot = this.buildMarketingDiffSnapshot(legacySnapshot, coreSnapshot);
+      const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
+      return {
+        mode: "shadow",
+        status,
+        mathCore: "marketing_core_v1",
+        horizon: coreRaw.horizon || {},
+        legacySnapshot,
+        coreSnapshot,
+        diffSnapshot,
+        agreementScore: diffSnapshot.agreementScore,
+        agreementBand: diffSnapshot.agreementBand,
+        sourceFlags: [
+          "marketing_parallel:shadow_only",
+          "marketing_parallel:no_primary_switch",
+          "marketing_parallel:no_message_send",
+          ...(legacySnapshot.sourceFlags || []),
+          ...(coreSnapshot.sourceFlags || []),
+          status === "not_comparable" ? "marketing_parallel:not_comparable" : ""
+        ].filter(Boolean)
+      };
+    } catch (error) {
+      console.error("[marketing_parallel_error]", JSON.stringify({
+        centerId: this.getCenterId(session),
+        message: error?.message || String(error)
+      }));
+      return {
+        mode: "shadow",
+        status: "error",
+        mathCore: "marketing_core_v1",
+        horizon: { startDate: "", endDate: "" },
+        legacySnapshot: null,
+        coreSnapshot: null,
+        diffSnapshot: {
+          comparableMetrics: [],
+          deltas: {},
+          relativeErrors: {},
+          top3Overlap: null,
+          agreementScore: null,
+          agreementBand: "N/A",
+          warnings: ["MARKETING_PARALLEL_ERROR"]
+        },
+        agreementScore: null,
+        agreementBand: "N/A",
+        sourceFlags: ["marketing_parallel:error", "marketing_parallel:legacy_untouched"]
+      };
+    }
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     next.cashParallel = this.buildGoldCashParallelState(next, session);
@@ -4781,6 +5022,7 @@ class DesktopMirrorService {
     }
     next.snapshots = this.buildGoldSnapshotsFromState(next);
     next.marketingActions = this.buildGoldMarketingActionState(session);
+    next.marketingParallel = this.buildMarketingParallelState(next, session);
     next.signals = this.buildGoldSignalsFromState(next);
     next.decision = this.buildGoldDecisionFromState(next);
     next.decisionParallel = this.buildDecisionParallelState(next, session);
