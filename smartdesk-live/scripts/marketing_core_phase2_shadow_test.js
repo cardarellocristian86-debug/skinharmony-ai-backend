@@ -98,10 +98,15 @@ const parallel = service.buildMarketingParallelState(legacyState, session);
 assert.strictEqual(parallel.mode, "shadow");
 assert.strictEqual(parallel.status, "ok");
 assert.strictEqual(parallel.mathCore, "marketing_core_v1");
+assert.strictEqual(parallel.mathAdapter, "marketing_policy_adapter_v1");
 assert(parallel.coreSnapshot);
+assert(parallel.comparableSnapshot);
 assert(parallel.legacySnapshot);
 assert(parallel.diffSnapshot.comparableMetrics.includes("eligibleRatio"));
 assert(Number.isFinite(parallel.agreementScore));
+assert(Number.isFinite(parallel.rawAgreementScore));
+assert(parallel.agreementScore >= parallel.rawAgreementScore);
+assert(parallel.sourceFlags.includes("marketing_parallel:agreement_uses_policy_adapter_comparable_snapshot"));
 
 installFixture(service, "fragile");
 const fragile = service.buildMarketingParallelState({
@@ -126,8 +131,16 @@ console.log(JSON.stringify({
     status: parallel.status,
     agreementScore: parallel.agreementScore,
     agreementBand: parallel.agreementBand,
+    rawAgreementScore: parallel.rawAgreementScore,
+    rawAgreementBand: parallel.rawAgreementBand,
     comparableMetrics: parallel.diffSnapshot.comparableMetrics,
     warnings: parallel.diffSnapshot.warnings,
+    comparable: {
+      averageOpportunity: parallel.comparableSnapshot.averageOpportunity,
+      eligibleClients: parallel.comparableSnapshot.eligibleClients,
+      contactableClients: parallel.comparableSnapshot.contactableClients,
+      suppressedClients: parallel.comparableSnapshot.suppressedClients
+    },
     core: {
       readiness: parallel.coreSnapshot.readiness,
       averageOpportunity: parallel.coreSnapshot.averageOpportunity,

@@ -19,6 +19,7 @@ const { adaptDecisionSnapshotToLegacyComparable } = require("./core/decision/Dec
 const { computeAgendaSnapshot } = require("./core/agenda/AgendaCore");
 const { adaptAgendaSnapshotToLegacyComparable } = require("./core/agenda/AgendaPolicyAdapter");
 const { computeMarketingSnapshot } = require("./core/marketing/MarketingCore");
+const { adaptMarketingSnapshotToLegacyComparable } = require("./core/marketing/MarketingPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -4954,15 +4955,35 @@ class DesktopMirrorService {
       const legacySnapshot = this.normalizeLegacyMarketingSnapshot(state.marketingActions || this.buildGoldMarketingActionState(session));
       const coreRaw = computeMarketingSnapshot(this.buildMarketingCoreInput(session));
       const coreSnapshot = this.normalizeCoreMarketingSnapshot(coreRaw);
-      const diffSnapshot = this.buildMarketingDiffSnapshot(legacySnapshot, coreSnapshot);
+      const policyAdapter = adaptMarketingSnapshotToLegacyComparable(coreRaw, legacySnapshot, {
+        state,
+        session,
+        horizon: coreRaw.horizon || {}
+      });
+      const comparableSnapshot = policyAdapter.comparableSnapshot || {};
+      const rawDiffSnapshot = this.buildMarketingDiffSnapshot(legacySnapshot, coreSnapshot);
+      const diffSnapshot = this.buildMarketingDiffSnapshot(legacySnapshot, comparableSnapshot);
       const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
       return {
         mode: "shadow",
         status,
         mathCore: "marketing_core_v1",
+        mathAdapter: "marketing_policy_adapter_v1",
         horizon: coreRaw.horizon || {},
         legacySnapshot,
         coreSnapshot,
+        comparableSnapshot,
+        operationalSnapshot: coreRaw,
+        policyAdapter: {
+          mathAdapter: policyAdapter.mathAdapter,
+          policyDeltas: policyAdapter.policyDeltas,
+          excludedFromAgreement: policyAdapter.excludedFromAgreement,
+          policyFlags: policyAdapter.policyFlags,
+          policyMethods: policyAdapter.policyMethods
+        },
+        rawDiffSnapshot,
+        rawAgreementScore: rawDiffSnapshot.agreementScore,
+        rawAgreementBand: rawDiffSnapshot.agreementBand,
         diffSnapshot,
         agreementScore: diffSnapshot.agreementScore,
         agreementBand: diffSnapshot.agreementBand,
@@ -4970,8 +4991,11 @@ class DesktopMirrorService {
           "marketing_parallel:shadow_only",
           "marketing_parallel:no_primary_switch",
           "marketing_parallel:no_message_send",
+          "marketing_parallel:agreement_uses_policy_adapter_comparable_snapshot",
           ...(legacySnapshot.sourceFlags || []),
           ...(coreSnapshot.sourceFlags || []),
+          ...(comparableSnapshot.sourceFlags || []),
+          ...(policyAdapter.policyFlags || []).map((flag) => `marketing_policy_adapter:${flag}`),
           status === "not_comparable" ? "marketing_parallel:not_comparable" : ""
         ].filter(Boolean)
       };

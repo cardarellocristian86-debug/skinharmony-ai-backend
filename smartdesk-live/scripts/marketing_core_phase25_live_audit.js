@@ -2,6 +2,7 @@
 "use strict";
 
 const { computeMarketingSnapshot } = require("../src/core/marketing/MarketingCore");
+const { adaptMarketingSnapshotToLegacyComparable } = require("../src/core/marketing/MarketingPolicyAdapter");
 
 const DEFAULT_BASE_URL = "https://skinharmony-smartdesk-live.onrender.com";
 
@@ -309,6 +310,9 @@ function promotionDecision(audit = {}) {
   const agreement = Number(audit.agreementScore || 0);
   const readiness = Number(audit.core?.readiness || 0);
   const warnings = new Set(audit.warnings || []);
+  const sourceFlags = new Set(audit.sourceFlags || []);
+  if (sourceFlags.has("marketing_policy_adapter:legacy_top_candidates_missing")) return "NO";
+  if (sourceFlags.has("marketing_policy_adapter:marketing_history_missing") && agreement < 0.95) return "NO";
   if (agreement >= 0.90 && readiness >= 0.75 && !warnings.has("MARKETING_CONTACTABLE_DRIFT") && !warnings.has("MARKETING_ELIGIBLE_DRIFT")) return "YES";
   if (agreement >= 0.75) return "WATCH";
   return "NO";
@@ -366,8 +370,13 @@ async function auditTenant(baseUrl, adminToken, tenant) {
   const localCoreRaw = buildCoreFromLiveRaw(raw);
   const localCore = normalizeCoreSnapshot(localCoreRaw);
   const core = liveParallel?.coreSnapshot || localCore;
-  const diff = liveParallel?.diffSnapshot || computeAgreement(legacy, core);
-  const causes = explainMarketingDrift(diff, raw, core);
+  const localAdapter = adaptMarketingSnapshotToLegacyComparable(localCoreRaw, legacy, {});
+  const localComparable = liveParallel?.comparableSnapshot || localAdapter.comparableSnapshot || localCore;
+  const comparable = liveParallel?.comparableSnapshot || localComparable;
+  const rawDiff = liveParallel?.rawDiffSnapshot || computeAgreement(legacy, core);
+  const diff = liveParallel?.diffSnapshot || computeAgreement(legacy, comparable);
+  const rawCauses = explainMarketingDrift(rawDiff, raw, core);
+  const causes = explainMarketingDrift(diff, raw, comparable);
   const audit = {
     tenantId: tenant.id,
     username: tenant.username,
@@ -380,13 +389,19 @@ async function auditTenant(baseUrl, adminToken, tenant) {
     rawCounts: Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value.length])),
     legacy,
     core,
+    comparable,
     localCoreShadow: localCore,
+    localComparableShadow: localComparable,
+    rawDiffSnapshot: rawDiff,
     diffSnapshot: diff,
-    eligibleRatio: { legacy: legacy.eligibleRatio, core: core.eligibleRatio },
-    contactableRatio: { legacy: legacy.contactableRatio, core: core.contactableRatio },
-    suppressedRatio: { legacy: legacy.suppressedRatio, core: core.suppressedRatio },
-    averageOpportunity: { legacy: legacy.averageOpportunity, core: core.averageOpportunity },
+    eligibleRatio: { legacy: legacy.eligibleRatio, op: core.eligibleRatio, cmp: comparable.eligibleRatio },
+    contactableRatio: { legacy: legacy.contactableRatio, op: core.contactableRatio, cmp: comparable.contactableRatio },
+    suppressedRatio: { legacy: legacy.suppressedRatio, op: core.suppressedRatio, cmp: comparable.suppressedRatio },
+    averageOpportunity: { legacy: legacy.averageOpportunity, op: core.averageOpportunity, cmp: comparable.averageOpportunity },
+    top3OverlapRaw: rawDiff.top3Overlap,
     top3Overlap: diff.top3Overlap,
+    rawAgreementScore: rawDiff.agreementScore,
+    rawAgreementBand: rawDiff.agreementBand,
     agreementScore: diff.agreementScore,
     agreementBand: diff.agreementBand,
     warnings: diff.warnings || [],
@@ -394,9 +409,13 @@ async function auditTenant(baseUrl, adminToken, tenant) {
       ...(liveParallel?.sourceFlags || []),
       ...(legacy.sourceFlags || []),
       ...(core.sourceFlags || []),
+      ...(comparable.sourceFlags || []),
       !liveParallel ? "marketing_parallel:not_present_live" : ""
     ].filter(Boolean),
+    rawCauses,
     causes,
+    dominantDriftBefore: rawCauses[0]?.category || "NO_DOMINANT_DRIFT",
+    dominantDriftAfter: causes[0]?.category || "NO_DOMINANT_DRIFT",
     dominantDrift: causes[0]?.category || "NO_DOMINANT_DRIFT"
   };
   audit.promoteToCoreMarketing = promotionDecision(audit);
