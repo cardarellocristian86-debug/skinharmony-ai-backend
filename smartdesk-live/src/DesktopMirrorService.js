@@ -20,6 +20,7 @@ const { computeAgendaSnapshot } = require("./core/agenda/AgendaCore");
 const { adaptAgendaSnapshotToLegacyComparable } = require("./core/agenda/AgendaPolicyAdapter");
 const { computeMarketingSnapshot } = require("./core/marketing/MarketingCore");
 const { adaptMarketingSnapshotToLegacyComparable } = require("./core/marketing/MarketingPolicyAdapter");
+const { computeInventoryCostSnapshot } = require("./core/inventory-cost/InventoryCostCore");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -84,6 +85,20 @@ const DATA_QUALITY_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({
   dataQualityScore: 0.35,
   paymentQuality: 0.15,
   appointmentQuality: 0.15
+});
+const INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
+  // Il costo materiali core diventa primario solo quando agreement, readiness e coverage sono robusti.
+  agreementScore: 0.90,
+  readiness: 0.75,
+  coverage: 0.75,
+  hysteresisOn: 0.88,
+  hysteresisOff: 0.72
+});
+const INVENTORY_COST_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({
+  agreementScore: 0.40,
+  readiness: 0.30,
+  coverage: 0.20,
+  bandStrength: 0.10
 });
 const DECISION_PARALLEL_WEIGHTS = Object.freeze({
   primaryAction: 0.30,
@@ -1867,6 +1882,9 @@ class DesktopMirrorService {
       decisionPrimarySnapshot: null,
       decisionSecondarySnapshot: null,
       decisionComparableSnapshot: null,
+      inventoryCostSelection: null,
+      inventoryCostPrimarySnapshot: null,
+      inventoryCostShadowSnapshot: null,
       agendaParallel: null,
       cashParallel: null,
       cashSelection: null,
@@ -2044,6 +2062,9 @@ class DesktopMirrorService {
       decisionPrimarySnapshot: state.decisionPrimarySnapshot || null,
       decisionSecondarySnapshot: state.decisionSecondarySnapshot || null,
       decisionComparableSnapshot: state.decisionComparableSnapshot || null,
+      inventoryCostSelection: state.inventoryCostSelection || null,
+      inventoryCostPrimarySnapshot: state.inventoryCostPrimarySnapshot || null,
+      inventoryCostShadowSnapshot: state.inventoryCostShadowSnapshot || null,
       cashParallel: this.compactGoldStateParallel(state.cashParallel),
       dataQualityParallel: this.compactGoldStateParallel(state.dataQualityParallel),
       decisionParallel: this.compactGoldStateParallel(state.decisionParallel),
@@ -2837,7 +2858,10 @@ class DesktopMirrorService {
         eventSeq: validState.eventSeq,
         fallbackAvailable: true,
         economicConfidence: Number(profitability.economicConfidence || 0),
-        costConfidence: Number(profitability.costConfidence || 0)
+        costConfidence: Number(profitability.costConfidence || 0),
+        inventoryCostSelection: state.inventoryCostSelection || null,
+        inventoryCostSource: state.inventoryCostSelection?.primarySource || "legacy",
+        inventoryCostPrimarySnapshot: state.inventoryCostPrimarySnapshot || null
       }
     };
     this.logGoldStateEndpoint("profitability_overview", session, { source: "gold_state", ...validState });
@@ -3178,10 +3202,15 @@ class DesktopMirrorService {
     return this.goldClamp01((price - cost) / price);
   }
 
-  applyGoldProfitabilityCoreCounters(counters = {}, collections = {}) {
+  applyGoldProfitabilityCoreCounters(counters = {}, collections = {}, inventoryCostSelection = null, inventoryCostPrimarySnapshot = null) {
+    const services = this.applyInventoryCostSelectionToServices(
+      collections.services || [],
+      inventoryCostSelection,
+      inventoryCostPrimarySnapshot
+    );
     const snapshot = computeCenterProfitabilitySnapshot({
       appointments: (collections.appointments || []).filter((item) => item.status === "completed"),
-      services: collections.services || [],
+      services,
       staff: collections.staff || [],
       payments: collections.payments || [],
       inventory: collections.inventory || [],
@@ -3203,7 +3232,7 @@ class DesktopMirrorService {
     return counters;
   }
 
-  refreshGoldProfitabilityCountersFromRepositories(counters = {}, session = null) {
+  refreshGoldProfitabilityCountersFromRepositories(counters = {}, session = null, inventoryCostSelection = null, inventoryCostPrimarySnapshot = null) {
     return this.applyGoldProfitabilityCoreCounters(counters, {
       appointments: this.filterByCenter(this.appointmentsRepository.list(), session),
       services: this.filterByCenter(this.servicesRepository.list(), session),
@@ -3211,7 +3240,7 @@ class DesktopMirrorService {
       payments: this.filterByCenter(this.paymentsRepository.list(), session),
       inventory: this.filterByCenter(this.inventoryRepository.list(), session),
       resources: this.filterByCenter(this.resourcesRepository.list(), session)
-    });
+    }, inventoryCostSelection, inventoryCostPrimarySnapshot);
   }
 
   goldInventoryIsLow(item = {}) {
@@ -3298,6 +3327,8 @@ class DesktopMirrorService {
           estimated: Number(state.counters?.profitabilityEstimated || 0),
           incomplete: Number(state.counters?.profitabilityIncomplete || 0)
         },
+        inventoryCostSource: state.inventoryCostSelection?.primarySource || "legacy",
+        inventoryCostSelection: state.inventoryCostSelection || null,
         mathCore: "profitability_core_v1",
         status: Number(s.CostConf || 0) < 0.5 || Number(s.Conf || 0) < 0.5 ? "margine_da_verificare" : Number(s.Margin || 0) < 0.35 ? "margine_sotto_soglia" : "margine_monitorato"
       },
@@ -4099,6 +4130,148 @@ class DesktopMirrorService {
       dataQualityShadowSnapshot: this.normalizeGoldDataQualitySnapshot(primarySource === "core" ? legacyRaw : coreRaw, primarySource === "core" ? "legacy" : "core"),
       dataQualityComparableSnapshot: this.normalizeGoldDataQualitySnapshot(comparableRaw || {}, "core_comparable")
     };
+  }
+
+  normalizeInventoryCostSnapshot(snapshot = {}, source = "legacy") {
+    if (!snapshot || typeof snapshot !== "object") {
+      return {
+        mathCore: source === "core" ? "inventory_cost_core_v1" : "legacy_inventory_cost",
+        source,
+        status: "error",
+        readiness: 0,
+        coverage: 0,
+        band: "INCOMPLETE",
+        totals: {},
+        serviceCosts: [],
+        warnings: ["INVENTORY_COST_SNAPSHOT_MISSING"]
+      };
+    }
+    return {
+      mathCore: snapshot.mathCore || (source === "core" ? "inventory_cost_core_v1" : "legacy_inventory_cost"),
+      source,
+      status: snapshot.status || "ok",
+      readiness: this.goldRound(snapshot.readiness ?? 0, 4),
+      coverage: this.goldRound(snapshot.coverage ?? 0, 4),
+      fallbackRatio: this.goldRound(snapshot.fallbackRatio ?? 0, 4),
+      band: snapshot.band || "INCOMPLETE",
+      agreementScore: snapshot.agreementScore ?? null,
+      agreementBand: snapshot.agreementBand || "N/A",
+      counts: snapshot.counts || {},
+      totals: snapshot.totals || {},
+      warnings: Array.isArray(snapshot.warnings) ? snapshot.warnings : [],
+      sourceFlags: Array.isArray(snapshot.sourceFlags) ? snapshot.sourceFlags : [],
+      serviceCosts: Array.isArray(snapshot.serviceCosts) ? snapshot.serviceCosts : []
+    };
+  }
+
+  buildInventoryCostSnapshotForSession(session = null) {
+    return computeInventoryCostSnapshot({
+      services: this.filterByCenter(this.servicesRepository.list(), session),
+      inventory: this.filterByCenter(this.inventoryRepository.list(), session)
+    });
+  }
+
+  buildGoldInventoryCostControlledSwitch(coreSnapshot = {}, previousSource = "legacy") {
+    const normalizedPreviousSource = previousSource === "core" ? "core" : "legacy";
+    const status = coreSnapshot?.status || "error";
+    const agreementScore = Number(coreSnapshot?.agreementScore ?? 0);
+    const agreementBand = coreSnapshot?.agreementBand || "N/A";
+    const readiness = Number(coreSnapshot?.readiness ?? 0);
+    const coverage = Number(coreSnapshot?.coverage ?? 0);
+    const coreBand = coreSnapshot?.band || "INCOMPLETE";
+    const warnings = Array.isArray(coreSnapshot?.warnings) ? coreSnapshot.warnings : [];
+    const hasMassiveFallback = warnings.includes("INVENTORY_COST_MASSIVE_FALLBACK");
+    const bandStrength = coreBand === "REAL" ? 1 : coreBand === "STANDARD" ? 0.8 : coreBand === "ESTIMATED" ? 0.5 : 0;
+    const switchEligible = status === "ok"
+      && ["ALIGNED", "WATCH"].includes(agreementBand)
+      && agreementScore >= INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.agreementScore
+      && readiness >= INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.readiness
+      && ["REAL", "STANDARD"].includes(coreBand)
+      && coverage >= INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.coverage
+      && !hasMassiveFallback;
+    const reliabilityScore = this.goldRound(this.goldClamp01(
+      (INVENTORY_COST_CONTROLLED_SWITCH_WEIGHTS.agreementScore * agreementScore)
+      + (INVENTORY_COST_CONTROLLED_SWITCH_WEIGHTS.readiness * readiness)
+      + (INVENTORY_COST_CONTROLLED_SWITCH_WEIGHTS.coverage * coverage)
+      + (INVENTORY_COST_CONTROLLED_SWITCH_WEIGHTS.bandStrength * bandStrength)
+    ), 4);
+    const staysOnCore = normalizedPreviousSource === "core"
+      && status === "ok"
+      && agreementBand !== "DRIFT"
+      && reliabilityScore >= INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOff
+      && coreBand !== "INCOMPLETE";
+    const switchesOnCore = normalizedPreviousSource === "legacy"
+      && switchEligible
+      && reliabilityScore >= INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOn;
+    const primarySource = staysOnCore || switchesOnCore ? "core" : "legacy";
+    const legacySnapshot = {
+      mathCore: "legacy_inventory_cost",
+      status: "ok",
+      readiness: 1,
+      coverage: 1,
+      fallbackRatio: 1,
+      band: "STANDARD",
+      agreementScore,
+      agreementBand,
+      counts: coreSnapshot.counts || {},
+      totals: {
+        legacyMaterialCostCents: coreSnapshot.totals?.legacyMaterialCostCents || 0
+      },
+      warnings: ["INVENTORY_COST_LEGACY_FALLBACK_ACTIVE"],
+      sourceFlags: ["inventory_cost:legacy_primary_available"],
+      serviceCosts: (coreSnapshot.serviceCosts || []).map((item) => ({
+        serviceId: item.serviceId,
+        serviceName: item.serviceName,
+        legacyMaterialCostCents: item.legacyMaterialCostCents,
+        coreMaterialCostCents: item.coreMaterialCostCents
+      }))
+    };
+    const fallbackReasons = [];
+    if (status !== "ok") fallbackReasons.push(`status_${status}`);
+    if (!["ALIGNED", "WATCH"].includes(agreementBand)) fallbackReasons.push(`agreement_${agreementBand}`);
+    if (agreementScore < INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.agreementScore) fallbackReasons.push("agreement_below_threshold");
+    if (readiness < INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.readiness) fallbackReasons.push("readiness_below_threshold");
+    if (!["REAL", "STANDARD"].includes(coreBand)) fallbackReasons.push(`core_band_${coreBand}`);
+    if (coverage < INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.coverage) fallbackReasons.push("coverage_below_threshold");
+    if (hasMassiveFallback) fallbackReasons.push("massive_fallback_warning");
+    if (normalizedPreviousSource === "core" && primarySource === "legacy" && reliabilityScore < INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS.hysteresisOff) fallbackReasons.push("hysteresis_off");
+    return {
+      inventoryCostSelection: {
+        mode: "controlled_switch",
+        primarySource,
+        previousSource: normalizedPreviousSource,
+        switchEligible,
+        reliabilityScore,
+        agreementScore: Number.isFinite(agreementScore) ? this.goldRound(agreementScore, 4) : null,
+        agreementBand,
+        readiness: this.goldRound(readiness, 4),
+        coverage: this.goldRound(coverage, 4),
+        coreBand,
+        thresholds: INVENTORY_COST_CONTROLLED_SWITCH_THRESHOLDS,
+        switchReason: primarySource === "core"
+          ? (switchesOnCore ? "eligible_reliability_above_on_threshold" : "hysteresis_keep_core")
+          : "",
+        fallbackReason: primarySource === "legacy" ? (fallbackReasons.join("|") || "legacy_default") : ""
+      },
+      inventoryCostPrimarySnapshot: this.normalizeInventoryCostSnapshot(primarySource === "core" ? coreSnapshot : legacySnapshot, primarySource),
+      inventoryCostShadowSnapshot: this.normalizeInventoryCostSnapshot(primarySource === "core" ? legacySnapshot : coreSnapshot, primarySource === "core" ? "legacy" : "core")
+    };
+  }
+
+  applyInventoryCostSelectionToServices(services = [], inventoryCostSelection = null, inventoryCostPrimarySnapshot = null) {
+    if (inventoryCostSelection?.primarySource !== "core") return services;
+    const costsByServiceId = new Map((inventoryCostPrimarySnapshot?.serviceCosts || [])
+      .map((item) => [String(item.serviceId || ""), item]));
+    return (Array.isArray(services) ? services : []).map((service) => {
+      const row = costsByServiceId.get(String(service.id || ""));
+      if (!row || !Number.isFinite(Number(row.coreMaterialCostCents))) return service;
+      return {
+        ...service,
+        estimatedProductCostCents: Number(row.coreMaterialCostCents || 0),
+        productCostCents: Number(row.coreMaterialCostCents || 0),
+        inventoryCostSource: "inventory_cost_core_v1"
+      };
+    });
   }
 
   buildPialDataQualityComparison(dataQualityParallel = null, goldState = null) {
@@ -5168,6 +5341,18 @@ class DesktopMirrorService {
     next.dataQualityComparableSnapshot = dataQualitySwitch.dataQualityComparableSnapshot;
     if (Number.isFinite(Number(next.dataQualityPrimarySnapshot?.dataQualityScore))) {
       next.components.DQ = this.goldClamp01(Number(next.dataQualityPrimarySnapshot.dataQualityScore || 0));
+    }
+    const inventoryCostCoreSnapshot = this.buildInventoryCostSnapshotForSession(session);
+    const inventoryCostSwitch = this.buildGoldInventoryCostControlledSwitch(
+      inventoryCostCoreSnapshot,
+      state.inventoryCostSelection?.primarySource || next.inventoryCostSelection?.primarySource || "legacy"
+    );
+    next.inventoryCostSelection = inventoryCostSwitch.inventoryCostSelection;
+    next.inventoryCostPrimarySnapshot = inventoryCostSwitch.inventoryCostPrimarySnapshot;
+    next.inventoryCostShadowSnapshot = inventoryCostSwitch.inventoryCostShadowSnapshot;
+    if (next.inventoryCostSelection.primarySource === "core") {
+      this.refreshGoldProfitabilityCountersFromRepositories(next.counters, session, next.inventoryCostSelection, next.inventoryCostPrimarySnapshot);
+      this.normalizeGoldStateComponents(next);
     }
     next.snapshots = this.buildGoldSnapshotsFromState(next);
     next.marketingActions = this.buildGoldMarketingActionState(session);
@@ -8996,9 +9181,24 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
     const resources = this.filterByCenter(this.resourcesRepository.list(), session);
+    let inventoryCostSelection = null;
+    let inventoryCostPrimarySnapshot = null;
+    try {
+      const state = this.getGoldState(session);
+      inventoryCostSelection = state.inventoryCostSelection || null;
+      inventoryCostPrimarySnapshot = state.inventoryCostPrimarySnapshot || null;
+    } catch (_) {
+      inventoryCostSelection = null;
+      inventoryCostPrimarySnapshot = null;
+    }
+    const servicesForProfitability = this.applyInventoryCostSelectionToServices(
+      services,
+      inventoryCostSelection,
+      inventoryCostPrimarySnapshot
+    );
     const profitabilitySnapshot = computeCenterProfitabilitySnapshot({
       appointments,
-      services,
+      services: servicesForProfitability,
       staff,
       payments,
       inventory,
@@ -9010,7 +9210,10 @@ class DesktopMirrorService {
       meta: {
         ...(profitabilitySnapshot.meta || {}),
         source: "profitability_core",
-        legacyFallbackSeparated: true
+        legacyFallbackSeparated: true,
+        inventoryCostSource: inventoryCostSelection?.primarySource || "legacy",
+        inventoryCostSelection,
+        inventoryCostPrimarySnapshot
       }
     };
     if (!precomputed.centerHealth) {
