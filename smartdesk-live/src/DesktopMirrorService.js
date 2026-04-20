@@ -22,6 +22,7 @@ const { computeMarketingSnapshot } = require("./core/marketing/MarketingCore");
 const { adaptMarketingSnapshotToLegacyComparable } = require("./core/marketing/MarketingPolicyAdapter");
 const { computeInventoryCostSnapshot } = require("./core/inventory-cost/InventoryCostCore");
 const { computeReportSnapshot } = require("./core/report/ReportCore");
+const { adaptReportSnapshotToLegacyComparable } = require("./core/report/ReportPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -134,13 +135,10 @@ const MARKETING_PARALLEL_WEIGHTS = Object.freeze({
 });
 const MARKETING_PARALLEL_WARNING_THRESHOLD = 0.20;
 const REPORT_PARALLEL_WEIGHTS = Object.freeze({
-  revenue: 0.20,
-  cash: 0.20,
-  gap: 0.15,
-  margin: 0.15,
-  ticket: 0.10,
-  appointments: 0.10,
-  activeClients: 0.10
+  revenue: 0.30,
+  appointments: 0.30,
+  ticket: 0.20,
+  activeClients: 0.20
 });
 const REPORT_PARALLEL_WARNING_THRESHOLDS = Object.freeze({
   revenue: 0.15,
@@ -2052,6 +2050,8 @@ class DesktopMirrorService {
       horizon: parallel.horizon,
       agreementScore: parallel.agreementScore,
       agreementBand: parallel.agreementBand,
+      rawAgreementScore: parallel.rawAgreementScore,
+      rawAgreementBand: parallel.rawAgreementBand,
       legacySnapshot: compactCore(parallel.legacySnapshot),
       coreSnapshot: compactCore(parallel.coreSnapshot),
       comparableSnapshot: compactCore(parallel.comparableSnapshot),
@@ -5564,15 +5564,30 @@ class DesktopMirrorService {
       const legacySnapshot = this.normalizeLegacyReportSnapshot(state);
       const coreRaw = computeReportSnapshot(coreInput, horizon);
       const coreSnapshot = this.normalizeCoreReportSnapshot(coreRaw);
-      const diffSnapshot = this.buildReportDiffSnapshot(legacySnapshot, coreSnapshot);
+      const policyAdapter = adaptReportSnapshotToLegacyComparable(coreSnapshot, legacySnapshot, { state, horizon });
+      const comparableSnapshot = policyAdapter.comparableSnapshot || {};
+      const rawDiffSnapshot = this.buildReportDiffSnapshot(legacySnapshot, coreSnapshot);
+      const diffSnapshot = this.buildReportDiffSnapshot(legacySnapshot, comparableSnapshot);
       const status = diffSnapshot.agreementBand === "N/A" ? "not_comparable" : "ok";
       return {
         mode: "shadow",
         status,
         mathCore: "report_core_v1",
+        mathAdapter: "report_policy_adapter_v1",
         horizon: coreRaw.horizon || horizon,
         legacySnapshot,
         coreSnapshot,
+        comparableSnapshot,
+        policyAdapter: {
+          mathAdapter: policyAdapter.mathAdapter,
+          policyDeltas: policyAdapter.policyDeltas,
+          excludedFromAgreement: policyAdapter.excludedFromAgreement,
+          policyFlags: policyAdapter.policyFlags,
+          policyMethods: policyAdapter.policyMethods
+        },
+        rawDiffSnapshot,
+        rawAgreementScore: rawDiffSnapshot.agreementScore,
+        rawAgreementBand: rawDiffSnapshot.agreementBand,
         diffSnapshot,
         agreementScore: diffSnapshot.agreementScore,
         agreementBand: diffSnapshot.agreementBand,
@@ -5581,8 +5596,11 @@ class DesktopMirrorService {
           "report_parallel:legacy_primary",
           "report_parallel:no_primary_switch",
           "report_parallel:no_export_write",
+          "report_parallel:agreement_uses_policy_adapter_comparable_snapshot",
           ...legacySnapshot.sourceFlags,
           ...coreSnapshot.sourceFlags,
+          ...(comparableSnapshot.sourceFlags || []),
+          ...(policyAdapter.policyFlags || []).map((flag) => `report_policy_adapter:${flag}`),
           ...diffSnapshot.sourceFlags
         ],
         updatedAt: nowIso()
