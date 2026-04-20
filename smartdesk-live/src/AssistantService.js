@@ -159,6 +159,67 @@ function normalizeText(value) {
   return stripAccents(value).toLowerCase().trim();
 }
 
+function nowMs() {
+  return Number(process.hrtime.bigint()) / 1e6;
+}
+
+function elapsedMs(start) {
+  return Math.round((nowMs() - start) * 100) / 100;
+}
+
+function jsonSizeBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value ?? null), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function estimateTokensFromBytes(bytes) {
+  return Math.ceil(Number(bytes || 0) / 4);
+}
+
+function buildAiTimingPayload(timing, meta = {}) {
+  const total = Number(timing.t_total || 0) || Object.entries(timing)
+    .filter(([key]) => key.startsWith("t_") && key !== "t_total")
+    .reduce((sum, [, value]) => sum + Number(value || 0), 0);
+  const phases = {
+    auth: Number(timing.t_auth || 0),
+    stateLoad: Number(timing.t_state_load || 0),
+    snapshotFetch: Number(timing.t_snapshot_fetch || 0),
+    contextBuild: Number(timing.t_context_build || 0),
+    promptSerialize: Number(timing.t_prompt_serialize || 0),
+    llmRequest: Number(timing.t_llm_request || 0),
+    llmResponse: Number(timing.t_llm_response || 0),
+    postprocess: Number(timing.t_postprocess || 0)
+  };
+  const ratios = Object.fromEntries(Object.entries(phases).map(([key, value]) => [
+    key,
+    total > 0 ? Math.round((value / total) * 10000) / 10000 : 0
+  ]));
+  const dominant = Object.entries(ratios).sort((a, b) => b[1] - a[1])[0]?.[0] || "unknown";
+  const bottleneckMap = {
+    auth: "AUTH_BOTTLENECK",
+    stateLoad: "SNAPSHOT_LOAD_BOTTLENECK",
+    snapshotFetch: "SNAPSHOT_LOAD_BOTTLENECK",
+    contextBuild: "CONTEXT_BUILD_BOTTLENECK",
+    promptSerialize: "PROMPT_SIZE_BOTTLENECK",
+    llmRequest: "LLM_CALL_BOTTLENECK",
+    llmResponse: "LLM_CALL_BOTTLENECK",
+    postprocess: "POSTPROCESS_BOTTLENECK"
+  };
+  return {
+    mode: "ai_center_analysis_timing_v1",
+    ...meta,
+    timingsMs: {
+      ...timing,
+      t_total: Math.round(total * 100) / 100
+    },
+    phaseRatios: ratios,
+    dominantBottleneck: bottleneckMap[dominant] || "MIXED_BOTTLENECK"
+  };
+}
+
 function extractPhone(value) {
   const match = String(value || "").match(/(\+?\d[\d\s]{5,})$/);
   return match ? match[1].replace(/\s+/g, "") : "";
@@ -1145,22 +1206,58 @@ class AssistantService {
     return lines.join("\n");
   }
 
-  async aiGoldAsk(payload = {}, session = null) {
-    if (!this.desktopMirror?.hasGoldIntelligence?.(session)) {
+  async aiGoldAsk(payload = {}, session = null, requestTiming = {}) {
+    const totalStart = nowMs();
+    const timing = {
+      t_auth: Number(requestTiming.authMs || 0),
+      t_state_load: 0,
+      t_snapshot_fetch: 0,
+      t_context_build: 0,
+      t_prompt_serialize: 0,
+      t_llm_request: 0,
+      t_llm_response: 0,
+      t_postprocess: 0,
+      t_total: 0
+    };
+    const diagnosticsEnabled = Boolean(payload.diagnostics || payload.debugTiming || payload.includeTiming);
+    const tenantMeta = {
+      tenantId: String(session?.centerId || ""),
+      tenantName: String(session?.centerName || ""),
+      tenantType: String(payload.tenantType || session?.tenantType || "unknown")
+    };
+    const withDiagnostics = (result, extra = {}) => {
+      timing.t_total = elapsedMs(totalStart);
+      if (!diagnosticsEnabled) return result;
+      const diagnostics = buildAiTimingPayload(timing, { ...tenantMeta, ...extra });
+      console.log("[ai_center_analysis_timing]", JSON.stringify(diagnostics));
       return {
+        ...result,
+        diagnostics
+      };
+    };
+
+    if (!this.desktopMirror?.hasGoldIntelligence?.(session)) {
+      return withDiagnostics({
         goldEnabled: false,
         provider: "blocked",
         answer: "AI Gold disponibile solo con piano Gold.",
         actions: []
-      };
+      });
     }
 
     const question = String(payload.question || "").trim();
+    const snapshotStart = nowMs();
     const snapshot = this.desktopMirror.getBusinessSnapshot
       ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
       : null;
+    timing.t_snapshot_fetch += elapsedMs(snapshotStart);
+
+    const stateStart = nowMs();
     const goldCapabilities = this.getGoldCapabilitiesSafe(session);
     const goldDecisionContext = this.getGoldDecisionContextSafe(session);
+    timing.t_state_load += elapsedMs(stateStart);
+
+    const contextStart = nowMs();
     const context = snapshot?.snapshotAvailable ? {
       businessSnapshot: snapshot,
       goldCapabilities,
@@ -1175,16 +1272,29 @@ class AssistantService {
       dashboard: this.getDashboardSafe(session),
       settings: this.getSettingsSafe(session)
     };
+    timing.t_context_build += elapsedMs(contextStart);
+
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+    const contextBytes = jsonSizeBytes(context);
 
     if (!apiKey) {
-      return {
+      const postStart = nowMs();
+      const answer = this.buildAiGoldFallback(question, context);
+      timing.t_postprocess += elapsedMs(postStart);
+      return withDiagnostics({
         goldEnabled: true,
         provider: "fallback",
-        answer: this.buildAiGoldFallback(question, context),
+        answer,
         actions: []
-      };
+      }, {
+        model,
+        promptBytes: 0,
+        contextBytes,
+        estimatedInputTokens: estimateTokensFromBytes(contextBytes),
+        estimatedOutputTokens: estimateTokensFromBytes(jsonSizeBytes(answer)),
+        responseBytes: jsonSizeBytes(answer)
+      });
     }
 
     const instructions = [
@@ -1202,37 +1312,66 @@ class AssistantService {
       "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."
     ].join("\n");
 
+    let promptBytes = 0;
     try {
+      const promptStart = nowMs();
+      const requestBody = JSON.stringify({
+        model,
+        input: [
+          { role: "system", content: [{ type: "input_text", text: instructions }] },
+          { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context }) }] }
+        ]
+      });
+      timing.t_prompt_serialize += elapsedMs(promptStart);
+      promptBytes = Buffer.byteLength(requestBody, "utf8");
+
+      const llmRequestStart = nowMs();
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`
         },
-        body: JSON.stringify({
-          model,
-          input: [
-            { role: "system", content: [{ type: "input_text", text: instructions }] },
-            { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context }) }] }
-          ]
-        })
+        body: requestBody
       });
+      timing.t_llm_request += elapsedMs(llmRequestStart);
       if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
+      const llmResponseStart = nowMs();
       const data = await response.json();
+      timing.t_llm_response += elapsedMs(llmResponseStart);
+      const postStart = nowMs();
       const answer = data?.output_text || data?.output?.[0]?.content?.[0]?.text || this.buildAiGoldFallback(question, context);
-      return {
+      timing.t_postprocess += elapsedMs(postStart);
+      return withDiagnostics({
         goldEnabled: true,
         provider: "openai",
         answer,
         actions: []
-      };
+      }, {
+        model,
+        promptBytes,
+        contextBytes,
+        estimatedInputTokens: estimateTokensFromBytes(promptBytes),
+        estimatedOutputTokens: estimateTokensFromBytes(jsonSizeBytes(answer)),
+        responseBytes: jsonSizeBytes(answer)
+      });
     } catch {
-      return {
+      const postStart = nowMs();
+      const answer = this.buildAiGoldFallback(question, context);
+      timing.t_postprocess += elapsedMs(postStart);
+      return withDiagnostics({
         goldEnabled: true,
         provider: "fallback",
-        answer: this.buildAiGoldFallback(question, context),
+        answer,
         actions: []
-      };
+      }, {
+        model,
+        promptBytes,
+        contextBytes,
+        estimatedInputTokens: estimateTokensFromBytes(promptBytes || contextBytes),
+        estimatedOutputTokens: estimateTokensFromBytes(jsonSizeBytes(answer)),
+        responseBytes: jsonSizeBytes(answer)
+      });
     }
   }
 

@@ -342,8 +342,15 @@ function readToken(req) {
   return String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 }
 
+function diagnosticsNowMs() {
+  return Number(process.hrtime.bigint()) / 1e6;
+}
+
 function requireAuth(req, res, next) {
+  const startedAt = diagnosticsNowMs();
   const session = service.getSession(readToken(req));
+  req._smartdeskTiming = req._smartdeskTiming || {};
+  req._smartdeskTiming.authMs = Number(req._smartdeskTiming.authMs || 0) + (diagnosticsNowMs() - startedAt);
   if (!session) {
     return res.status(401).send("Sessione non valida");
   }
@@ -352,7 +359,11 @@ function requireAuth(req, res, next) {
 }
 
 function requireOperationalAccess(req, res, next) {
-  if (service.canOperate(req.session)) {
+  const startedAt = diagnosticsNowMs();
+  const canOperate = service.canOperate(req.session);
+  req._smartdeskTiming = req._smartdeskTiming || {};
+  req._smartdeskTiming.authMs = Number(req._smartdeskTiming.authMs || 0) + (diagnosticsNowMs() - startedAt);
+  if (canOperate) {
     return next();
   }
   return res.status(402).json({
@@ -1170,7 +1181,7 @@ app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
     return res.status(429).json(safeModePayload("Sistema sotto carico: AI temporaneamente limitata, agenda e cassa restano operative"));
   }
   try {
-    res.json(await assistantService.aiGoldAsk(req.body || {}, req.session));
+    res.json(await assistantService.aiGoldAsk(req.body || {}, req.session, req._smartdeskTiming || {}));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "AI Gold non disponibile");
   }
