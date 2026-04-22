@@ -1028,7 +1028,7 @@ function applyGoldDecisionMatrixV1(goldDecision = {}, control = {}, meta = {}) {
   const band = goldDecisionActionBand(action);
   const tone = goldDecisionTone(confidence, friction);
   return {
-    matrixVersion: "gold_decision_matrix_v1",
+    matrixVersion: "corelia_decision_matrix_v1",
     phi: Number(phi.toFixed(3)),
     confidence: Number(confidence.toFixed(3)),
     coherence: Number(coherence.toFixed(3)),
@@ -1856,7 +1856,7 @@ class DesktopMirrorService {
   buildDefaultGoldState(centerId = "", centerName = "") {
     return {
       id: this.getGoldStateRecordId(centerId),
-      version: "gold_state_v1",
+      version: "corelia_state_v1",
       centerId: String(centerId || DEFAULT_CENTER_ID),
       centerName: String(centerName || DEFAULT_CENTER_NAME),
       updatedAt: nowIso(),
@@ -3035,9 +3035,11 @@ class DesktopMirrorService {
         action: Number(business.unlinkedPayments || 0) > 0 ? "VERIFY" : "OK"
       },
       goldEngine: {
+        engineName: "Corelia",
+        runtimeStack: ["V0", "V2", "V7"],
         engineLayer: "gold_decision_engine",
-        engineVersion: "gold_state_v1",
-        enterpriseLayer: "gold_enterprise_v1",
+        engineVersion: "corelia_state_v1",
+        enterpriseLayer: "corelia_enterprise_v1",
         rule: "Gold legge Gold State Layer e mantiene fallback raw.",
         dashboard: {
           source: "gold_state",
@@ -11456,7 +11458,7 @@ class DesktopMirrorService {
       });
       return {
         ...item,
-        enterpriseLayer: "gold_enterprise_v1",
+        enterpriseLayer: "corelia_enterprise_v1",
         RAP_trend_adj: Number(rapTrendAdj.toFixed(3)),
         risk: Number(risk.toFixed(3)),
         enterpriseRisk: Number(risk.toFixed(3)),
@@ -11498,7 +11500,7 @@ class DesktopMirrorService {
     Object.entries(branches || {}).forEach(([key, branch]) => {
       nextBranches[key] = {
         ...branch,
-        enterpriseLayer: "gold_enterprise_v1",
+        enterpriseLayer: "corelia_enterprise_v1",
         items: this.applyGoldEnterpriseLayerToItems(branch?.items || [], learningMap)
       };
     });
@@ -11604,9 +11606,11 @@ class DesktopMirrorService {
     return {
       goldEnabled,
       currentPlan: plan,
-      version: "gold_enterprise_v1",
-      goldEngineVersion: "gold_phi_multi_domain_v1",
-      decisionMatrixVersion: "gold_decision_matrix_v1",
+      engineName: "Corelia",
+      runtimeStack: ["V0", "V2", "V7"],
+      version: "corelia_enterprise_v1",
+      goldEngineVersion: "corelia_phi_multi_domain_v1",
+      decisionMatrixVersion: "corelia_decision_matrix_v1",
       progressiveIntelligence,
       features: {
         hasDecisionMatrix: goldEnabled,
@@ -12296,7 +12300,7 @@ class DesktopMirrorService {
     return {
       domain: "dashboard",
       engineVersion: "gold_phi_dashboard_v1",
-      enterpriseLayer: "gold_enterprise_v1",
+      enterpriseLayer: "corelia_enterprise_v1",
       generatedAt: nowIso(),
       items: allItems,
       primaryAction,
@@ -12527,9 +12531,11 @@ class DesktopMirrorService {
       dataQuality,
       economic: economicReading,
       goldEngine: {
+        engineName: "Corelia",
+        runtimeStack: ["V0", "V2", "V7"],
         engineLayer: "gold_decision_engine",
-        engineVersion: "gold_phi_multi_domain_v1",
-        enterpriseLayer: "gold_enterprise_v1",
+        engineVersion: "corelia_phi_multi_domain_v1",
+        enterpriseLayer: "corelia_enterprise_v1",
         enterpriseRule: "Gold Enterprise ordina con storico, rischio esplicito, valore atteso, costo opportunita, utilita netta, simulazione V1 e learning bayesiano sugli outcome.",
         temporalLayer: "gold_temporal_v1",
         temporalMode: "test_parallel",
