@@ -1981,12 +1981,34 @@ class DesktopMirrorService {
     const recordId = this.getGoldStateRecordId(centerId);
     const existing = this.goldStateRepository.findById(recordId);
     if (existing) {
+      const hasDirtyState = Boolean(
+        (Array.isArray(existing.dirty?.components) && existing.dirty.components.length)
+        || (Array.isArray(existing.dirty?.snapshots) && existing.dirty.snapshots.length)
+        || (Array.isArray(existing.dirty?.signals) && existing.dirty.signals.length)
+      );
       if (Number(existing.eventSeq || 0) <= 0) {
         const bootstrapped = this.bootstrapGoldStateFromRepositories(existing, session);
         if (bootstrapped) return bootstrapped;
       }
       const nowMs = Date.now();
       const cached = this.goldStateReadCache.get(centerId);
+      if (!hasDirtyState) {
+        if (
+          cached
+          && cached.expiresAtMs > nowMs
+          && cached.eventSeq === Number(existing.eventSeq || 0)
+          && cached.updatedAt === String(existing.updatedAt || "")
+        ) {
+          return cached.state;
+        }
+        this.goldStateReadCache.set(centerId, {
+          state: existing,
+          eventSeq: Number(existing.eventSeq || 0),
+          updatedAt: String(existing.updatedAt || ""),
+          expiresAtMs: nowMs + 30000
+        });
+        return existing;
+      }
       if (
         cached
         && cached.expiresAtMs > nowMs
@@ -3057,6 +3079,14 @@ class DesktopMirrorService {
         engineVersion: "corelia_state_v1",
         enterpriseLayer: "corelia_enterprise_v1",
         rule: "Gold legge Gold State Layer e mantiene fallback raw.",
+        inventory: {
+          source: "gold_state",
+          summary: {
+            total: Number(state.counters?.inventoryTotal || 0),
+            lowStock: Number(state.counters?.lowStock || 0),
+            status: Number(state.counters?.lowStock || 0) > 0 ? "sottoscorta_attiva" : "stock_stabile"
+          }
+        },
         operators: {
           source: "gold_state",
           items: operatorSignals,
@@ -12219,6 +12249,49 @@ class DesktopMirrorService {
     };
   }
 
+  buildGoldInventoryDecisions(inventory = {}) {
+    const lowStockItems = Array.isArray(inventory.lowStock) ? inventory.lowStock : [];
+    const totalItems = Number(inventory.totalItems || 0);
+    const items = lowStockItems.slice(0, 8).map((item) => {
+      const quantity = Number(item.quantity || item.stockQuantity || 0);
+      const minQuantity = Number(item.minQuantity || 0);
+      const severity = minQuantity > 0 && quantity <= 0 ? 0.9 : minQuantity > 0 && quantity <= minQuantity ? 0.7 : 0.45;
+      const decision = computeGoldDecisionScore("magazzino", {
+        needScore: severity,
+        valueScore: normalizeScore(totalItems > 0 ? 1 - (quantity / Math.max(minQuantity, 1, totalItems)) : 0.4),
+        urgencyScore: severity >= 0.9 ? 0.9 : 0.6,
+        coherenceScore: 0.85,
+        frictionScore: 0.12,
+        suggestedAction: quantity <= 0 ? "riordina subito" : "programma riordino",
+        explanation: quantity <= 0
+          ? "Articolo esaurito o sotto zero: rischio operativo diretto."
+          : "Articolo sotto scorta: va riportato in sicurezza prima che blocchi il centro."
+      });
+      return this.toGoldDecisionItem("inventory", item.id || item.sku || item.name, decision, {
+        label: item.name || "Articolo",
+        output: quantity <= 0 ? "sottoscorta critica" : "sottoscorta da gestire",
+        target: "inventory",
+        quantity,
+        minQuantity,
+        suggestedAction: quantity <= 0 ? "riordina subito" : "programma riordino",
+        explanationShort: quantity <= 0 ? "sottoscorta critica" : "sottoscorta da gestire",
+        explanationLong: decision.explanation
+      });
+    }).sort((a, b) => b.phi - a.phi).slice(0, 8);
+    return {
+      domain: "inventory",
+      engineVersion: "gold_phi_inventory_v1",
+      generatedAt: nowIso(),
+      items,
+      summary: {
+        totalItems,
+        lowStock: lowStockItems.length,
+        highPriority: items.filter((item) => item.band === "alta").length,
+        status: lowStockItems.length ? "sottoscorta_attiva" : "stock_stabile"
+      }
+    };
+  }
+
   buildGoldDashboardDecisions(branches = {}, dataQuality = {}, session = null, economicReading = null) {
     const learningMap = this.getGoldLearningStatsMap(session);
     const downgradeBand = (band) => {
@@ -12261,7 +12334,8 @@ class DesktopMirrorService {
       ...(branches.marketing?.items || []),
       ...(branches.agenda?.items || []),
       ...(branches.cash?.items || []),
-      ...(branches.profit?.items || [])
+      ...(branches.profit?.items || []),
+      ...(branches.inventory?.items || [])
     ].map(reliabilityGate);
     const qualityNeed = normalizeScore((100 - Number(dataQuality.score || 100)) / 100);
     let qualityDecision = qualityNeed > 0 ? this.toGoldDecisionItem("dashboard", "data-quality", computeGoldDecisionScore("data_quality_alert", {
@@ -12363,7 +12437,7 @@ class DesktopMirrorService {
           action: item.action,
           reason: item.explanationShort || item.output
         })),
-        mainProblem: allItems.find((item) => ["cash", "agenda", "profit"].includes(item.domain) && item.phi >= 0.5)?.explanationShort || "nessun problema urgente",
+        mainProblem: allItems.find((item) => ["cash", "agenda", "profit", "inventory"].includes(item.domain) && item.phi >= 0.5)?.explanationShort || "nessun problema urgente",
         bestOpportunity: allItems.find((item) => item.domain === "marketing" || item.output === "margine buono")?.explanationShort || "nessuna opportunità prioritaria",
         areaToAvoidNow: allItems.find((item) => item.factors?.friction >= 0.75)?.label || "",
         operationalRisk: allItems.find((item) => item.band === "alta")?.explanationShort || "rischio sotto controllo",
@@ -12491,7 +12565,8 @@ class DesktopMirrorService {
       marketing: goldMarketingBranch,
       agenda: this.buildGoldAgendaDecisions({ appointments, servicesById }, session),
       cash: this.buildGoldCashDecisions({ payments }, session),
-      profit: this.buildGoldProfitDecisions(profitability)
+      profit: this.buildGoldProfitDecisions(profitability),
+      inventory: this.buildGoldInventoryDecisions(inventory)
     };
     const temporalGoldBranches = this.applyGoldTemporalLayer(rawGoldBranches, session);
     const enterpriseGoldBranches = this.applyGoldEnterpriseLayer(temporalGoldBranches, session);
@@ -12572,6 +12647,7 @@ class DesktopMirrorService {
         agenda: enterpriseGoldBranches.agenda,
         cash: enterpriseGoldBranches.cash,
         profit: enterpriseGoldBranches.profit,
+        inventory: enterpriseGoldBranches.inventory,
         dashboard: goldDashboardBranch
       },
       operations: {
