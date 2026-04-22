@@ -347,6 +347,20 @@ class AssistantService {
     this.desktopMirror = desktopMirror;
   }
 
+  getAiProviderMode() {
+    const mode = String(process.env.SMARTDESK_AI_PROVIDER || "corelia_only").trim().toLowerCase();
+    return ["corelia_only", "openai_only", "hybrid"].includes(mode) ? mode : "hybrid";
+  }
+
+  shouldUseOpenAI() {
+    if (this.getAiProviderMode() === "corelia_only") return false;
+    return Boolean(String(process.env.OPENAI_API_KEY || "").trim());
+  }
+
+  getFallbackProviderName() {
+    return this.getAiProviderMode() === "corelia_only" ? "corelia" : "fallback";
+  }
+
   getSettingsSafe(session = null) {
     if (!this.desktopMirror?.getSettings) return {};
     try {
@@ -837,13 +851,12 @@ class AssistantService {
     const localDecision = this.buildLocalDecision(message, context, session);
     const normalizedMessage = normalizeText(message);
     if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
-      return { ...localDecision, provider: "rules" };
+      return { ...localDecision, provider: this.getAiProviderMode() === "corelia_only" ? "corelia" : "rules" };
     }
-    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
-    if (!apiKey) {
-      return { ...localDecision, provider: "fallback" };
+    if (!this.shouldUseOpenAI()) {
+      return { ...localDecision, provider: this.getFallbackProviderName() };
     }
 
     const instructions = [
@@ -948,7 +961,7 @@ class AssistantService {
         provider: "openai"
       };
     } catch {
-      return { ...localDecision, provider: "fallback" };
+      return { ...localDecision, provider: this.getFallbackProviderName() };
     }
   }
 
@@ -1015,13 +1028,12 @@ class AssistantService {
       dashboard: this.getDashboardSafe(session),
       settings: this.getSettingsSafe(session)
     };
-    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
-    if (!apiKey) {
+    if (!this.shouldUseOpenAI()) {
       return {
         goldEnabled: true,
-        provider: "fallback",
+        provider: this.getFallbackProviderName(),
         answer: this.buildAiGoldFallback(question, context),
         actions: []
       };
@@ -1069,7 +1081,7 @@ class AssistantService {
     } catch {
       return {
         goldEnabled: true,
-        provider: "fallback",
+        provider: this.getFallbackProviderName(),
         answer: this.buildAiGoldFallback(question, context),
         actions: []
       };
@@ -1078,15 +1090,14 @@ class AssistantService {
 
   async enhanceMarketingAutopilotActions(actions = [], session = null) {
     const items = Array.isArray(actions) ? actions.slice(0, 12) : [];
-    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
     if (!items.length) {
-      return { provider: apiKey ? "openai" : "fallback", actions: [] };
+      return { provider: this.shouldUseOpenAI() ? "openai" : this.getFallbackProviderName(), actions: [] };
     }
-    if (!apiKey) {
+    if (!this.shouldUseOpenAI()) {
       return {
-        provider: "fallback",
-        actions: items.map((item) => ({ ...item, aiProvider: "rules" }))
+        provider: this.getFallbackProviderName(),
+        actions: items.map((item) => ({ ...item, aiProvider: "corelia_rules" }))
       };
     }
 
@@ -1183,8 +1194,8 @@ class AssistantService {
       };
     } catch {
       return {
-        provider: "fallback",
-        actions: items.map((item) => ({ ...item, aiProvider: "rules" }))
+        provider: this.getFallbackProviderName(),
+        actions: items.map((item) => ({ ...item, aiProvider: this.getAiProviderMode() === "corelia_only" ? "corelia_rules" : "rules" }))
       };
     }
   }
