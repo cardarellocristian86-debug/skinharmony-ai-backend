@@ -66,6 +66,22 @@ function summarizeDecisionItems(items = []) {
   }));
 }
 
+function isMeaningfulText(value, banned = []) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  if (/^gold state:/i.test(normalized)) return false;
+  if (/^state layer:/i.test(normalized)) return false;
+  if (/confidenza\s+\d+%/i.test(normalized) && /saturazione/i.test(normalized) && /continuita/i.test(normalized)) return false;
+  return !banned.includes(normalized.toLowerCase());
+}
+
+function pickFirstMeaningful(values = [], banned = []) {
+  for (const value of values) {
+    if (isMeaningfulText(value, banned)) return String(value).trim();
+  }
+  return "";
+}
+
 class CoreliaBridge {
   constructor(desktopMirror, options = {}) {
     this.desktopMirror = desktopMirror;
@@ -459,6 +475,7 @@ class CoreliaBridge {
     const v7 = this.computeV7Envelope(domain, state, domainSnapshot);
     const evidence = this.selectPrimaryEvidence(domain, state, domainSnapshot).filter((item) => item.value !== "" && item.value !== null && item.value !== undefined);
     const decisionContext = state.decisionContext || {};
+    const decisionSummary = state.decisionCenter?.summary || {};
     const snapshot = state.snapshot || {};
     const primaryActionCandidate = decisionContext.primaryAction || {};
     const centerHealth = snapshot.report?.centerHealth || {};
@@ -622,22 +639,93 @@ class CoreliaBridge {
         : "usa il report per confermare che il centro regga";
       sourceUsed = ["reportParallel", "decisionSelection", "goldStateSummary"];
     } else {
-      primarySignal = primaryActionCandidate.label || primaryActionCandidate.explanationShort || "Priorità operativa disponibile";
-      secondarySignals = uniqueStrings((Array.isArray(decisionContext.topSignals) ? decisionContext.topSignals : []).slice(0, 3).map((item) => item.explanationShort || item.label || item.domain));
-      primaryAction = primaryActionCandidate.suggestedAction || primaryActionCandidate.label || "verifica la priorità principale";
-      actionBand = severityToActionBand(primaryActionCandidate.action || state.goldState?.decision?.action || "MONITOR");
+      const progressive = decisionContext.progressiveIntelligence || {};
+      const progressiveMessage = pickFirstMeaningful([
+        progressive.message,
+        progressive.oracle?.reason,
+        progressive.prudentialForecast?.reason
+      ]);
+      const lowMaturity = (!primaryActionCandidate.label && !primaryActionCandidate.suggestedAction)
+        && (Number(progressive.activationLevel || 0) === 0 || /avvio prudenziale|insufficient data|storico insufficiente/i.test(progressiveMessage));
+      const mainProblem = pickFirstMeaningful([
+        centerHealth.reason,
+        decisionSummary.mainProblem,
+        primaryActionCandidate.explanationShort,
+        (Array.isArray(decisionContext.topSignals) ? decisionContext.topSignals : []).map((item) => item.explanationShort || item.label).find(Boolean)
+      ], ["nessun problema urgente", "lettura operativa disponibile"]);
+      const bestOpportunity = pickFirstMeaningful([
+        decisionSummary.bestOpportunity
+      ], ["nessuna opportunità prioritaria"]);
+      const operationalRisk = pickFirstMeaningful([
+        decisionSummary.operationalRisk
+      ], ["rischio sotto controllo"]);
+      const fragileDataArea = pickFirstMeaningful([decisionSummary.fragileDataArea]);
+      const firstAction = pickFirstMeaningful([
+        decisionSummary.firstAction,
+        primaryActionCandidate.suggestedAction,
+        primaryActionCandidate.label
+      ], ["nessuna azione urgente"]);
+      const centerHealthLead = pickFirstMeaningful([
+        centerHealth.statusLabel && centerHealth.reason ? `${centerHealth.statusLabel}: ${centerHealth.reason}` : "",
+        centerHealth.reason
+      ]);
+
+      if (lowMaturity) {
+        primarySignal = "Il centro è ancora in avvio prudenziale: i dati sono troppo pochi per una priorità forte";
+      } else if (intent === "ask_center_status") {
+        primarySignal = mainProblem
+          ? `Il punto da presidiare oggi è ${mainProblem}`
+          : centerHealthLead || "Centro sotto controllo";
+      } else if (intent === "ask_priority") {
+        primarySignal = firstAction
+          ? `La prima mossa di oggi è ${firstAction}`
+          : mainProblem
+            ? `Il collo operativo di oggi è ${mainProblem}`
+            : centerHealthLead || "Priorità operativa disponibile";
+      } else if (intent === "ask_general_explanation") {
+        primarySignal = centerHealthLead || mainProblem || "Lettura operativa disponibile";
+      } else {
+        primarySignal = mainProblem || centerHealthLead || primaryActionCandidate.label || primaryActionCandidate.explanationShort || "Priorità operativa disponibile";
+      }
+
+      secondarySignals = uniqueStrings([
+        lowMaturity ? progressiveMessage : "",
+        bestOpportunity ? `Opportunità: ${bestOpportunity}` : "",
+        operationalRisk ? `Rischio: ${operationalRisk}` : "",
+        fragileDataArea ? `Dato fragile: ${fragileDataArea}` : "",
+        ...((Array.isArray(decisionContext.topSignals) ? decisionContext.topSignals : [])
+          .slice(0, 2)
+          .map((item) => item.explanationShort || item.label || item.domain))
+      ]);
+      primaryAction = lowMaturity
+        ? "completa agenda, cassa e anagrafica prima di aspettarti letture più profonde"
+        : firstAction || "verifica la priorità principale";
+      actionBand = lowMaturity
+        ? "VERIFY"
+        : severityToActionBand(primaryActionCandidate.action || state.goldState?.decision?.action || "MONITOR");
       risks = uniqueStrings([
+        lowMaturity ? "dati insufficienti per priorità affidabili" : "",
         Number(decisionContext.systemRisk || 0) > 0.7 ? "rischio operativo alto" : "",
-        Number(snapshot.dataQuality?.score || 0) < 75 ? "dati da verificare" : ""
+        Number(snapshot.dataQuality?.score || 0) < 75 ? "dati da verificare" : "",
+        fragileDataArea ? `area dati fragile: ${fragileDataArea}` : ""
       ]);
       reasons = uniqueStrings([
+        lowMaturity ? progressiveMessage : "",
+        lowMaturity ? "Corelia qui deve restare prudente: descrive il centro ma non forza priorità artificiali" : "",
+        mainProblem ? `Il segnale dominante oggi è ${mainProblem}` : "",
+        bestOpportunity ? `L'opportunità più utile è ${bestOpportunity}` : "",
+        centerHealth.reason || "",
         primaryActionCandidate.explanationShort || "",
         state.goldState?.decision?.explanationShort || ""
       ]);
-      recommendedNextStep = primaryActionCandidate.canExecute === false
+      recommendedNextStep = lowMaturity
+        ? "chiudi i dati base del centro e poi rileggi AI Gold"
+        : primaryActionCandidate.canExecute === false
         ? "usa l'indicazione come guida e conferma l'azione dal modulo corretto"
-        : "apri il modulo suggerito e verifica il contesto prima di agire";
-      sourceUsed = ["decisionSelection", "decisionPrimarySnapshot", "goldStateSummary"];
+        : firstAction
+          ? `apri il modulo collegato e conferma: ${firstAction}`
+          : "apri il modulo suggerito e verifica il contesto prima di agire";
+      sourceUsed = ["decisionSelection", "decisionPrimarySnapshot", "goldStateSummary", "reportParallel"];
     }
 
     const humanSummary = `${primarySignal}. Azione: ${primaryAction}.`;

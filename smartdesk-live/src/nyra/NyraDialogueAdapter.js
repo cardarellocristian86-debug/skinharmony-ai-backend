@@ -41,32 +41,33 @@ function buildReply(z, opts = {}) {
   const action = String(z.primaryAction || "monitorare");
   const next = String(z.recommendedNextStep || action);
   const reason = Array.isArray(z.reasons) && z.reasons[0] ? String(z.reasons[0]) : "";
+  const detail = Array.isArray(z.secondarySignals) && z.secondarySignals[0] ? String(z.secondarySignals[0]) : "";
   const conflict = Number(z?.v7?.conflictIndex || 0);
   const conflictNote = conflict >= 0.45 ? " Il quadro è misto, quindi tengo la risposta stretta sui fatti già confermati." : "";
 
   if (brief) {
     if (tone === "direct") {
-      return `${primary}. Farei questo: ${action}.${conflictNote}`;
+      return `${primary}. Parti da ${action}.${conflictNote}`;
     }
     if (tone === "consultative") {
-      return `${primary}. La mossa giusta è ${action}.${conflictNote}`;
+      return `${primary}. Se fai una sola cosa, parti da ${action}.${conflictNote}`;
     }
     return `${primary}. Prima ${next}.${conflictNote}`;
   }
 
   if (replyMode === "diagnosis") {
-    return `${primary}. Il punto da leggere è ${action}. ${reason || "Questa è la parte che incide davvero sulla decisione."}${conflictNote}`;
+    return `${primary}. Il punto da leggere è ${action}. ${reason || detail || "Questa è la parte che incide davvero sulla decisione."}${conflictNote}`;
   }
   if (replyMode === "explanation") {
-    return `${primary}. In sintesi: ${reason || action}. ${next}.${conflictNote}`;
+    return `${primary}. In sintesi: ${reason || detail || action}. ${next}.${conflictNote}`;
   }
   if (tone === "direct") {
-    return `${primary}. La priorità è ${action}. ${reason || "Il segnale è abbastanza forte da muoversi ora."}${conflictNote}`;
+    return `${primary}. Parti da ${action}. ${reason || detail || "Il segnale è abbastanza forte da muoversi ora."}${conflictNote}`;
   }
   if (tone === "consultative") {
-    return `${primary}. Ti suggerisco ${action}. ${reason || "Il contesto è abbastanza leggibile per una scelta operativa."}${conflictNote}`;
+    return `${primary}. Ti guiderei da qui: ${action}. ${reason || detail || "Il contesto è abbastanza leggibile per una scelta operativa."}${conflictNote}`;
   }
-  return `${primary}. Resterei prudente: ${next}. ${reason || "Il quadro è utile ma va letto con cautela."}${conflictNote}`;
+  return `${primary}. Resterei prudente: ${next}. ${reason || detail || "Il quadro è utile ma va letto con cautela."}${conflictNote}`;
 }
 
 function coherenceCheck(z, r) {
