@@ -1,3 +1,6 @@
+const { CoreliaBridge } = require("./corelia/CoreliaBridge");
+const { NyraDialogueAdapter } = require("./nyra/NyraDialogueAdapter");
+
 const ACTIONS = [
   "open_dashboard",
   "open_agenda",
@@ -345,6 +348,8 @@ function hasAnyPayloadValue(payload = {}) {
 class AssistantService {
   constructor(desktopMirror) {
     this.desktopMirror = desktopMirror;
+    this.coreliaBridge = desktopMirror ? new CoreliaBridge(desktopMirror) : null;
+    this.nyraDialogue = new NyraDialogueAdapter();
   }
 
   getAiProviderMode() {
@@ -625,96 +630,256 @@ class AssistantService {
 
   extractShiftDraft(message, context = {}, session = null) {
     const normalized = normalizeText(message);
-    if (!/(aggiungi|crea|inserisci).*(turno|presenza)/.test(normalized)) return null;
+    if (!/(aggiungi|crea|inserisci|programma).*(turno|calendario|orario)/.test(normalized)) return null;
     const staff = this.findStaffMention(message, context, session);
     const date = parseDateFromText(message);
-    const [startTime = "", endTime = ""] = parseShiftTimesFromText(message);
+    const times = parseShiftTimesFromText(message);
     return {
       staffId: staff?.id || "",
       staffName: staff?.name || "",
       date,
-      startTime,
-      endTime,
-      note: "Turno preparato dal pulsante Smart con conferma operatore."
+      startTime: times[0] || "",
+      endTime: times[1] || "",
+      notes: "Turno creato dal pulsante Smart dopo conferma operatore."
     };
   }
 
-  buildLocalDecision(message, context = {}, session = null) {
+  buildSmartPriorityAnswer(context) {
+    const plan = String(context.subscriptionPlan || "base").toLowerCase();
+    if (plan !== "gold") {
+      if (plan === "silver") {
+        return [
+          "Nel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI.",
+          "",
+          "Cosa fare ora:",
+          "1. Apri Report per leggere andamento e numeri del periodo.",
+          "2. Apri Cassa per controllare incassi e pagamenti.",
+          "3. Apri Clienti o Agenda per correggere dati e appuntamenti.",
+          "",
+          "Le priorità automatiche e gli alert decisionali sono disponibili nel piano Gold."
+        ].join("\n");
+      }
+      return [
+        "Nel piano Base il pulsante Smart resta operativo, ma non usa priorità AI.",
+        "",
+        "Cosa puoi fare ora:",
+        "1. Apri Agenda.",
+        "2. Crea o cerca un cliente.",
+        "3. Apri Cassa e controlla gli incassi.",
+        "",
+        "Gli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold."
+      ].join("\n");
+    }
+    const goldContext = context.goldDecisionContext || {};
+    const primary = goldContext.primaryAction || null;
+    const secondary = Array.isArray(goldContext.secondaryActions) ? goldContext.secondaryActions : [];
+    const blocked = Array.isArray(goldContext.blockedActions) ? goldContext.blockedActions : [];
+    if (primary || secondary.length || blocked.length) {
+      const lines = [
+        "Lettura Smart allineata a Corelia Decision Engine.",
+        "",
+        "Priorità principale:",
+        primary
+          ? `- ${primary.label || primary.domain}: ${primary.suggestedAction || primary.explanationShort || "azione da valutare"}`
+          : "- Nessuna priorità principale disponibile.",
+        primary
+          ? `  RAP_2 ${Math.round(Number(primary.RAP_2 || primary.priority || 0) * 100)}% · confidence ${Math.round(Number(primary.confidence || 0) * 100)}% · rischio ${Math.round(Number(primary.risk || 0) * 100)}%`
+          : "",
+        primary?.NEU !== undefined ? `  Utilità netta stimata: ${Number(primary.NEU || 0).toFixed(2)}` : "",
+        primary?.trend?.trendLabel ? `  Trend: ${primary.trend.trendLabel}` : "",
+        "",
+        "Azioni consigliate:",
+        ...(secondary.length ? secondary.slice(0, 3).map((item, index) => `${index + 1}. ${item.label || item.domain}: ${item.suggestedAction || item.explanationShort || "monitorare"}`) : ["1. Nessuna azione secondaria prioritaria."]),
+        "",
+        "Blocchi e verifiche:",
+        ...(blocked.length ? blocked.slice(0, 3).map((item) => `- ${item.label || item.domain}: ${item.explanationShort || "verificare prima di agire"}`) : ["- Nessun blocco critico dal Gold Engine."]),
+        "",
+        "Esecuzione:",
+        primary?.canExecute
+          ? "Posso accompagnarti all'azione, ma ogni esecuzione resta confermata dall'operatore."
+          : "Non eseguo azioni dirette se Gold segnala rischio, frizione o confidence insufficiente."
+      ].filter(Boolean);
+      return lines.join("\n");
+    }
+    const dashboard = context.dashboard || {};
+    const quality = context.dataQuality || {};
+    const metrics = quality.metrics || {};
+    const alerts = [];
+
+    if (Number(dashboard.todayAppointments || 0) <= 2) {
+      alerts.push("Critico: centro sotto ritmo. Aumenta agenda e richiami prima di lavorare sui margini.");
+    }
+    if (Number(dashboard.inactiveClientsCount || 0) > 0) {
+      alerts.push("Attenzione: clienti da recuperare. Parti dai richiami prima di cercare nuovi clienti.");
+    }
+    if (Number(metrics.unlinkedPayments || 0) > 0) {
+      alerts.push("Attenzione: cassa da riallineare. Collega o archivia i pagamenti aperti.");
+    }
+    if (Number(metrics.appointmentsMissingPayment || 0) > 0) {
+      alerts.push("Attenzione: appuntamenti senza incasso collegato. Controlla la cassa prima dei report.");
+    }
+    if (Number(metrics.clientsMissingContact || 0) > 0) {
+      alerts.push("Attenzione: clienti non contattabili. Completa i dati quando fai recall o checkout.");
+    }
+    if (Number(metrics.servicesMissingCosts || 0) > 0) {
+      alerts.push("Attenzione: costi servizio incompleti. La redditività resta stimata finché non li completi.");
+    }
+    if (String(quality.status || "") === "basso") {
+      alerts.push("Critico: qualità dati bassa. Prima pulisci cassa, clienti e servizi, poi leggi l'analisi.");
+    }
+
+    if (!alerts.length) {
+      return "Non vedo priorita operative urgenti nei dati disponibili. Puoi lavorare normalmente su agenda, clienti e cassa.";
+    }
+
+    const actions = [];
+    if (Number(dashboard.inactiveClientsCount || 0) > 0) actions.push("1. Apri Marketing o Clienti e richiama prima i clienti inattivi.");
+    if (Number(dashboard.todayAppointments || 0) <= 2) actions.push("2. Riempi l'agenda: controlla slot liberi e clienti da recuperare.");
+    if (Number(metrics.unlinkedPayments || 0) > 0 || Number(metrics.appointmentsMissingPayment || 0) > 0) actions.push("3. Apri Cassa e collega pagamenti/appuntamenti prima di leggere i report.");
+    if (Number(metrics.clientsMissingContact || 0) > 0 || Number(metrics.servicesMissingCosts || 0) > 0) actions.push("4. Completa i dati mancanti per rendere report e AI piu affidabili.");
+
+    return [
+      "Ci sono priorita operative da gestire.",
+      "",
+      "Sintesi operativa:",
+      ...alerts.slice(0, 6).map((item) => `- ${item}`),
+      "",
+      "Cosa fare ora:",
+      ...(actions.length ? actions.slice(0, 4) : ["1. Controlla dashboard, agenda e cassa."])
+    ].join("\n");
+  }
+
+  buildLocalDecision(message, context, session) {
     const normalized = normalizeText(message);
 
+    if (!normalized) {
+      return buildAnswer("Scrivimi una richiesta breve: posso spiegarti un flusso, aprire una schermata o aiutarti con un cliente.");
+    }
+
+    if (/(disattiva|attiva|modifica impostazioni|cambia permessi|elimina.*operatore|elimina.*cliente|cancella.*cliente|cancella dati)/.test(normalized)) {
+      return buildBlocked(
+        "Non posso eseguire direttamente questa operazione. Ti apro Impostazioni o la sezione corretta e ti guido, ma non modifico dati sensibili in automatico.",
+        "open_settings",
+        { section: "general" }
+      );
+    }
+
+    if (/(come.*operatori|inser.*operatori|aggiung.*operatori|dove.*operatori)/.test(normalized)) {
+      return buildAnswer("Per inserire un operatore vai in Servizi > Operatori. Lì puoi aggiungere nome, colore e costo orario. Se vuoi posso aprire direttamente quella schermata.");
+    }
+
+    if (/(report.*dipendent|resa dipendent|report operatore|performance operatore)/.test(normalized) && /(come|dove)/.test(normalized)) {
+      return buildAnswer("Il report dipendenti è in Report business > Resa dipendenti. Da lì clicchi il nome dell’operatore e apri il suo report personale. Se vuoi posso aprire i report.");
+    }
+
+    if (/(come.*magazzino|funziona.*magazzino)/.test(normalized)) {
+      return buildAnswer("Il magazzino ti fa gestire articoli, movimenti, sottoscorta e controllo stock. Parti dalla panoramica, poi anagrafica articoli e infine movimenti. Se vuoi posso aprire il magazzino.");
+    }
+
+    if (/(chi sono|che centro|quale centro|che piano|abbonamento|riconosci)/.test(normalized)) {
+      return buildAnswer([
+        `Stai lavorando nel centro: ${context.centerName || "centro non indicato"}.`,
+        `Piano rilevato: ${context.subscriptionPlan || "non indicato"}.`,
+        `Ruolo sessione: ${context.userRole || "owner"}.`,
+        "Leggo solo i dati collegati a questa sessione e non uso dati di altri centri."
+      ].join("\n"));
+    }
+
+    if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalized)) {
+      return buildAnswer(this.buildSmartPriorityAnswer(context));
+    }
+
+    if (/(libreria skinharmony|protocolli skinharmony|come uso.*protocolli|cosa manca.*protocolli)/.test(normalized)) {
+      const skinHarmonyCount = (context.protocolsPreview || []).filter((item) => item.libraryScope === "skinharmony").length;
+      const centerCount = (context.protocolsPreview || []).filter((item) => item.libraryScope === "center").length;
+      return buildAnswer([
+        `Nel contesto leggo ${skinHarmonyCount} protocolli SkinHarmony e ${centerCount} protocolli del centro.`,
+        "Per partire: duplica un protocollo SkinHarmony nel centro, adattalo ai tuoi prodotti/tecnologie e poi usa Protocolli AI in modalità Ibrida.",
+        "Se manca un protocollo coerente, Protocolli AI deve fermarsi e chiedere di caricarlo invece di inventare."
+      ].join("\n"));
+    }
+
     const clientDraft = extractClientDraft(message);
-    if (clientDraft?.firstName) {
-      const payload = {
-        firstName: clientDraft.firstName,
-        lastName: clientDraft.lastName,
-        phone: clientDraft.phone,
-        noContact: clientDraft.noContact,
-        email: null,
-        note: clientDraft.noContact ? "Cliente inserito senza contatto su richiesta operatore." : null
-      };
-      return buildAction(
-        buildConfirmationMessage("create_client", payload),
-        "create_client",
-        payload,
-        true
+    if (clientDraft) {
+      if (clientDraft.firstName && (clientDraft.phone || clientDraft.noContact)) {
+        const noContactCopy = clientDraft.noContact ? " senza contatto telefonico/email registrato" : ` con telefono ${clientDraft.phone}`;
+        return buildAction(
+          `Ho preparato il cliente ${[clientDraft.firstName, clientDraft.lastName].filter(Boolean).join(" ")}${noContactCopy}. Confermi il salvataggio?`,
+          "create_client",
+          clientDraft,
+          true
+        );
+      }
+      return buildAnswer(
+        [
+          "Posso creare il cliente anche senza telefono, ma devi indicarlo chiaramente.",
+          "Esempi:",
+          "crea cliente Mario Rossi 3331234567",
+          "crea cliente Maria Rossi senza telefono"
+        ].join("\n"),
+        clientDraft
       );
     }
 
     const appointmentDraft = this.extractAppointmentDraft(message, context, session);
     if (appointmentDraft) {
-      if ((!appointmentDraft.clientId && !appointmentDraft.walkInName) || !appointmentDraft.date || !appointmentDraft.time) {
+      const missing = [];
+      if (!appointmentDraft.clientId && !appointmentDraft.walkInName) missing.push("cliente esistente oppure cliente occasionale");
+      if (!appointmentDraft.date) missing.push("data");
+      if (!appointmentDraft.time) missing.push("ora");
+      if (missing.length) {
         return buildAnswer(
-          "Per preparare l'appuntamento mi servono cliente esistente o cliente occasionale, data e ora. Esempio: aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
+          [
+            `Per creare l’appuntamento mi manca: ${missing.join(", ")}.`,
+            "Scrivi un comando più completo, ad esempio:",
+            "aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
+            "Oppure: aggiungi appuntamento cliente occasionale Maria domani alle 15 con Anna per colore.",
+            "Se il cliente non esiste ancora, crea prima il cliente."
+          ].join("\n"),
           appointmentDraft
         );
       }
-      const payload = {
-        clientId: appointmentDraft.clientId || null,
-        clientName: appointmentDraft.clientName || null,
-        walkInName: appointmentDraft.walkInName || null,
-        date: appointmentDraft.date,
-        time: appointmentDraft.time,
-        durationMin: appointmentDraft.durationMin,
-        staffId: appointmentDraft.staffId || null,
-        staffName: appointmentDraft.staffName || null,
-        serviceId: appointmentDraft.serviceId || null,
-        serviceName: appointmentDraft.serviceName || null,
-        status: appointmentDraft.status,
-        note: appointmentDraft.notes
-      };
-      return buildAction(
-        buildConfirmationMessage("create_appointment", payload),
-        "create_appointment",
-        payload,
-        true
-      );
+      const details = [
+        appointmentDraft.clientName || `cliente occasionale ${appointmentDraft.walkInName}`,
+        appointmentDraft.serviceName ? `servizio ${appointmentDraft.serviceName}` : "servizio non indicato",
+        appointmentDraft.staffName ? `con ${appointmentDraft.staffName}` : "operatore non indicato",
+        `${appointmentDraft.date} alle ${appointmentDraft.time}`
+      ].filter(Boolean).join(", ");
+      return buildAction(`Ho preparato l’appuntamento: ${details}. Confermi il salvataggio in agenda?`, "create_appointment", appointmentDraft, true);
     }
 
     const shiftDraft = this.extractShiftDraft(message, context, session);
     if (shiftDraft) {
-      if (!shiftDraft.staffId || !shiftDraft.date || !shiftDraft.startTime || !shiftDraft.endTime) {
+      const missing = [];
+      if (!shiftDraft.staffId) missing.push("operatore");
+      if (!shiftDraft.date) missing.push("data");
+      if (!shiftDraft.startTime) missing.push("ora inizio");
+      if (!shiftDraft.endTime) missing.push("ora fine");
+      if (missing.length) {
         return buildAnswer(
-          "Per preparare il turno mi servono operatore, data, ora inizio e ora fine. Esempio: crea turno Anna domani dalle 9 alle 18.",
+          [
+            `Per creare il turno mi manca: ${missing.join(", ")}.`,
+            "Scrivi un comando completo, ad esempio:",
+            "crea turno Anna domani dalle 9 alle 18."
+          ].join("\n"),
           shiftDraft
         );
       }
       return buildAction(
-        buildConfirmationMessage("create_shift", shiftDraft),
+        `Ho preparato il turno di ${shiftDraft.staffName} per ${shiftDraft.date}, dalle ${shiftDraft.startTime} alle ${shiftDraft.endTime}. Confermi il salvataggio?`,
         "create_shift",
         shiftDraft,
         true
       );
     }
 
-    const protocolsQuestion = /(protocolli|trattamenti|skin harmony method|analisi protocollo)/.test(normalized);
-    if (protocolsQuestion) {
-      return context.settings.enableProtocolsHub
-        ? buildAction("Apro l'area protocolli per lavorare sul caso corretto.", "open_protocols", {})
-        : buildBlocked("L'area protocolli non è attiva in questo centro. Posso portarti in Impostazioni per attivarla.", "open_settings", { section: "protocols" });
+    if (/(nuovo cliente|apri form cliente|apri nuovo cliente)/.test(normalized)) {
+      return buildAction("Apro il form cliente.", "open_client_form", {});
     }
 
-    if (/(cerca cliente|trova cliente|apri cliente|scheda cliente)/.test(normalized)) {
-      const query = message.replace(/.*(?:cliente|scheda cliente)\s*/i, "").trim();
+    const clientSearchMatch = message.match(/(?:cerca|trova)\s+cliente\s+(.+)/i);
+    if (clientSearchMatch) {
+      const query = clientSearchMatch[1].trim();
       const client = this.findClientByQuery(query, context, session);
       if (client) {
         const fullName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "cliente richiesto";
@@ -998,6 +1163,43 @@ class AssistantService {
     return lines.join("\n");
   }
 
+  buildAiGoldCoreliaResponse(payload = {}, session = null, context = null) {
+    if (!this.coreliaBridge) {
+      return {
+        goldEnabled: true,
+        provider: this.getFallbackProviderName(),
+        answer: this.buildAiGoldFallback(String(payload.question || ""), context || {}),
+        actions: []
+      };
+    }
+    try {
+      const structured = this.coreliaBridge.buildDialog({
+        message: String(payload.question || ""),
+        startDate: payload?.period?.startDate || "",
+        endDate: payload?.period?.endDate || ""
+      }, session);
+      const dialogue = this.nyraDialogue.render(structured, { message: String(payload.question || "") });
+      return {
+        goldEnabled: true,
+        provider: "corelia",
+        answer: String(dialogue.reply || structured.humanSummary || ""),
+        actions: [],
+        structured,
+        dialogue,
+        uiReadingBand: structured.uiReadingBand,
+        uiReadingLabel: structured.uiReadingLabel,
+        conflictIndex: Number(structured?.v7?.conflictIndex || 0)
+      };
+    } catch {
+      return {
+        goldEnabled: true,
+        provider: this.getFallbackProviderName(),
+        answer: this.buildAiGoldFallback(String(payload.question || ""), context || {}),
+        actions: []
+      };
+    }
+  }
+
   async aiGoldAsk(payload = {}, session = null) {
     if (!this.desktopMirror?.hasGoldIntelligence?.(session)) {
       return {
@@ -1031,12 +1233,7 @@ class AssistantService {
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!this.shouldUseOpenAI()) {
-      return {
-        goldEnabled: true,
-        provider: this.getFallbackProviderName(),
-        answer: this.buildAiGoldFallback(question, context),
-        actions: []
-      };
+      return this.buildAiGoldCoreliaResponse(payload, session, context);
     }
 
     const instructions = [
@@ -1079,12 +1276,7 @@ class AssistantService {
         actions: []
       };
     } catch {
-      return {
-        goldEnabled: true,
-        provider: this.getFallbackProviderName(),
-        answer: this.buildAiGoldFallback(question, context),
-        actions: []
-      };
+      return this.buildAiGoldCoreliaResponse(payload, session, context);
     }
   }
 
