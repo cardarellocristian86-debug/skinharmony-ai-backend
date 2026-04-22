@@ -646,13 +646,17 @@ app.get("/api/auth/users", requireAuth, (req, res) => {
   }
 });
 
-app.post("/api/auth/users/:id/support-access", requireAuth, requireSuperAdmin, (req, res) => {
+function handleSupportSessionStart(req, res) {
   try {
-    res.json(service.openSupportAccess(req.params.id, req.body || {}, req.session));
+    res.json({ success: true, ...service.createSupportSessionForUser(req.params.id, req.session) });
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile aprire accesso supporto");
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aprire la sessione supporto");
   }
-});
+}
+
+app.post("/api/auth/users/:id/support-access", requireAuth, requireSuperAdmin, handleSupportSessionStart);
+
+app.post("/api/auth/users/:id/support-session", requireAuth, requireSuperAdmin, handleSupportSessionStart);
 
 app.post("/api/auth/users/:id/status", requireAuth, requireSuperAdmin, (req, res) => {
   try {
