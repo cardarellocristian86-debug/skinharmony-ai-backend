@@ -29,6 +29,25 @@ function uniqueStrings(values = []) {
   return Array.from(new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean)));
 }
 
+function resolveUiReadingBand(v7 = {}, actionBand = "MONITOR") {
+  const conflictIndex = Number(v7.conflictIndex || 0);
+  const irreversibleMass = Number(v7.irreversibleMass || 0);
+  const normalizedBand = String(actionBand || "MONITOR").toUpperCase();
+  if (normalizedBand === "STOP" || normalizedBand === "VERIFY" || conflictIndex >= 0.45 || irreversibleMass >= 0.35) {
+    return "verify";
+  }
+  if (conflictIndex >= 0.25 || normalizedBand === "SUGGEST") {
+    return "confirm";
+  }
+  return "clear";
+}
+
+function uiReadingLabel(uiReadingBand = "clear") {
+  if (uiReadingBand === "verify") return "Quadro da verificare";
+  if (uiReadingBand === "confirm") return "Risposta da confermare";
+  return "Risposta chiara";
+}
+
 function severityToActionBand(level = "") {
   const normalized = String(level || "").toUpperCase();
   if (["ACT_NOW", "HIGH", "CRITICAL"].includes(normalized)) return "ACT_NOW";
@@ -36,6 +55,15 @@ function severityToActionBand(level = "") {
   if (["VERIFY", "LOW_CONFIDENCE"].includes(normalized)) return "VERIFY";
   if (["STOP", "BLOCKED"].includes(normalized)) return "STOP";
   return "MONITOR";
+}
+
+function summarizeDecisionItems(items = []) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    action: String(item?.action || ""),
+    confidence: clamp01(Number(item?.confidence || 0)),
+    risk: clamp01(Number(item?.risk || 0)),
+    priority: clamp01(Number(item?.riskAdjustedPriority || item?.phi || 0))
+  }));
 }
 
 class CoreliaBridge {
@@ -307,6 +335,62 @@ class CoreliaBridge {
     };
   }
 
+  computeV7Envelope(domain, state = {}, domainSnapshot = {}) {
+    const centerItems = summarizeDecisionItems(domainSnapshot.centerItems || []);
+    const topSignals = summarizeDecisionItems(state.decisionContext?.topSignals || []);
+    const primaryAction = summarizeDecisionItems([state.decisionContext?.primaryAction || {}]);
+    const items = [...centerItems, ...topSignals, ...primaryAction].filter((item) => item.action || item.priority > 0);
+    if (!items.length) {
+      return {
+        active: true,
+        stage: "compressed",
+        highMass: 0,
+        midMass: 0,
+        lowMass: 0,
+        irreversibleMass: 0,
+        overlapDensity: 0,
+        dominanceMargin: 0,
+        conflictIndex: 0
+      };
+    }
+    let highMass = 0;
+    let midMass = 0;
+    let lowMass = 0;
+    let irreversibleMass = 0;
+    items.forEach((item) => {
+      const mass = clamp01((0.55 * item.priority) + (0.25 * item.confidence) + (0.20 * (1 - item.risk)));
+      if (item.action === "ACT_NOW" || mass >= 0.72) {
+        highMass += mass;
+      } else if (item.action === "SUGGEST" || item.action === "VERIFY" || mass >= 0.45) {
+        midMass += mass;
+      } else {
+        lowMass += mass;
+      }
+      if (item.action === "STOP" || item.risk >= 0.75) {
+        irreversibleMass += Math.max(mass, item.risk);
+      }
+    });
+    const totalMass = Math.max(highMass + midMass + lowMass, 0.0001);
+    const normalizedHigh = round(highMass / totalMass);
+    const normalizedMid = round(midMass / totalMass);
+    const normalizedLow = round(lowMass / totalMass);
+    const normalizedIrreversible = round(clamp01(irreversibleMass / Math.max(items.length, 1)));
+    const ordered = [normalizedHigh, normalizedMid, normalizedLow].sort((a, b) => b - a);
+    const dominanceMargin = round(Math.max(0, ordered[0] - (ordered[1] || 0)));
+    const conflictIndex = round(clamp01(Math.min(normalizedHigh, normalizedMid) + (normalizedIrreversible * 0.35)));
+    return {
+      active: true,
+      stage: "compressed",
+      highMass: normalizedHigh,
+      midMass: normalizedMid,
+      lowMass: normalizedLow,
+      irreversibleMass: normalizedIrreversible,
+      overlapDensity: round(totalMass / Math.max(items.length, 1)),
+      dominanceMargin,
+      conflictIndex
+    };
+  }
+
   selectPrimaryEvidence(domain, state = {}, domainSnapshot = {}) {
     const snapshot = state.snapshot || {};
     const centerHealth = snapshot.report?.centerHealth || {};
@@ -372,6 +456,7 @@ class CoreliaBridge {
     const domainSnapshot = this.resolveDomainSnapshot(domain, state);
     const confidenceBlock = this.computeConfidence(domain, state, domainSnapshot);
     const urgencyBlock = this.computeUrgency(state);
+    const v7 = this.computeV7Envelope(domain, state, domainSnapshot);
     const evidence = this.selectPrimaryEvidence(domain, state, domainSnapshot).filter((item) => item.value !== "" && item.value !== null && item.value !== undefined);
     const decisionContext = state.decisionContext || {};
     const snapshot = state.snapshot || {};
@@ -556,6 +641,7 @@ class CoreliaBridge {
     }
 
     const humanSummary = `${primarySignal}. Azione: ${primaryAction}.`;
+    const uiReadingBand = resolveUiReadingBand(v7, actionBand);
     return {
       identity: "corelia",
       tenantId: String(state.snapshot?.centerId || state.goldState?.centerId || ""),
@@ -574,6 +660,9 @@ class CoreliaBridge {
       evidence,
       recommendedNextStep,
       humanSummary,
+      uiReadingBand,
+      uiReadingLabel: uiReadingLabel(uiReadingBand),
+      v7,
       confidenceBreakdown: confidenceBlock.parts,
       urgencyBreakdown: urgencyBlock.parts
     };
