@@ -623,7 +623,27 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/users", requireAuth, (req, res) => {
-  res.json(service.listUsers(req.session));
+  try {
+    res.json(service.listAccessUsers(req.session));
+  } catch (error) {
+    try {
+      const includeControlStats = String(req.session?.role || "").toLowerCase() === "superadmin";
+      const users = Array.isArray(service.usersRepository?.list?.()) ? service.usersRepository.list() : [];
+      const visible = includeControlStats
+        ? users
+        : users.filter((item) => service.belongsToCenter(item, req.session?.centerId));
+      const fallback = visible.map((item) => {
+        try {
+          return service.serializeUserSummary(item, { includeControlStats });
+        } catch {
+          return service.serializeUserSummary(item, { includeControlStats: false });
+        }
+      });
+      return res.json(fallback);
+    } catch {
+      return res.status(500).send(error instanceof Error ? error.message : "Impossibile leggere gli accessi");
+    }
+  }
 });
 
 app.post("/api/auth/users/:id/support-access", requireSuperAdmin, (req, res) => {
