@@ -2956,6 +2956,22 @@ class DesktopMirrorService {
     const dataQuality = this.buildGoldDataQualitySummary(dataQualityPrimary, business.dataQuality || 0, {
       unlinkedPayments: Number(business.unlinkedPayments || 0)
     });
+    const operatorSignals = Array.isArray(report.topOperators)
+      ? report.topOperators.slice(0, 5).map((operator, index) => {
+        const revenueCents = Number(operator.revenueCents || 0);
+        const appointments = Number(operator.appointments || 0);
+        return {
+          id: operator.staffId || operator.operatorId || operator.name || `operator-${index + 1}`,
+          label: operator.name || operator.operatorName || `Operatore ${index + 1}`,
+          output: index === 0 ? "benchmark operativo" : "operatore da monitorare",
+          target: "shifts",
+          appointments,
+          revenueCents
+        };
+      })
+      : [];
+    const topOperator = report.topOperators?.[0] || report.topOperator || null;
+    const weakOperator = report.weakOperator || (Array.isArray(report.topOperators) ? report.topOperators.slice().reverse()[0] : null) || null;
     const snapshot = {
       snapshotAvailable: true,
       snapshotVersion: "1.0",
@@ -3041,6 +3057,16 @@ class DesktopMirrorService {
         engineVersion: "corelia_state_v1",
         enterpriseLayer: "corelia_enterprise_v1",
         rule: "Gold legge Gold State Layer e mantiene fallback raw.",
+        operators: {
+          source: "gold_state",
+          items: operatorSignals,
+          summary: {
+            total: operatorSignals.length,
+            topOperator: topOperator?.name || topOperator?.operatorName || "",
+            weakOperator: weakOperator?.name || weakOperator?.operatorName || "",
+            status: operatorSignals.length ? "operators_visible_in_state" : "nessun_operatore"
+          }
+        },
         dashboard: {
           source: "gold_state",
           items: [],
@@ -3051,8 +3077,8 @@ class DesktopMirrorService {
         upcomingAppointments: [],
         weakestUpcomingDay: null,
         leastLoadedOperator: null,
-        topOperator: null,
-        weakOperator: null,
+        topOperator,
+        weakOperator,
         topClient: null
       }
     };
