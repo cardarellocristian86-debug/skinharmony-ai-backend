@@ -1841,8 +1841,9 @@ class DesktopMirrorService {
       this.analyticsDirtyBlocks.clear();
       return;
     }
-    this.markAnalyticsBlocksStale(centerId, dirtyBlocks);
-    const prefix = `${centerId}:`;
+    const normalizedCenterId = String(centerId || DEFAULT_CENTER_ID);
+    this.markAnalyticsBlocksStale(normalizedCenterId, dirtyBlocks);
+    const prefix = `${normalizedCenterId}:`;
     Array.from(this.businessSnapshotCache.keys()).forEach((key) => {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
     });
