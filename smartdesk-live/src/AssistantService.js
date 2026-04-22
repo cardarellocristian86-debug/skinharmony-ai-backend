@@ -159,67 +159,6 @@ function normalizeText(value) {
   return stripAccents(value).toLowerCase().trim();
 }
 
-function nowMs() {
-  return Number(process.hrtime.bigint()) / 1e6;
-}
-
-function elapsedMs(start) {
-  return Math.round((nowMs() - start) * 100) / 100;
-}
-
-function jsonSizeBytes(value) {
-  try {
-    return Buffer.byteLength(JSON.stringify(value ?? null), "utf8");
-  } catch {
-    return 0;
-  }
-}
-
-function estimateTokensFromBytes(bytes) {
-  return Math.ceil(Number(bytes || 0) / 4);
-}
-
-function buildAiTimingPayload(timing, meta = {}) {
-  const total = Number(timing.t_total || 0) || Object.entries(timing)
-    .filter(([key]) => key.startsWith("t_") && key !== "t_total")
-    .reduce((sum, [, value]) => sum + Number(value || 0), 0);
-  const phases = {
-    auth: Number(timing.t_auth || 0),
-    stateLoad: Number(timing.t_state_load || 0),
-    snapshotFetch: Number(timing.t_snapshot_fetch || 0),
-    contextBuild: Number(timing.t_context_build || 0),
-    promptSerialize: Number(timing.t_prompt_serialize || 0),
-    llmRequest: Number(timing.t_llm_request || 0),
-    llmResponse: Number(timing.t_llm_response || 0),
-    postprocess: Number(timing.t_postprocess || 0)
-  };
-  const ratios = Object.fromEntries(Object.entries(phases).map(([key, value]) => [
-    key,
-    total > 0 ? Math.round((value / total) * 10000) / 10000 : 0
-  ]));
-  const dominant = Object.entries(ratios).sort((a, b) => b[1] - a[1])[0]?.[0] || "unknown";
-  const bottleneckMap = {
-    auth: "AUTH_BOTTLENECK",
-    stateLoad: "SNAPSHOT_LOAD_BOTTLENECK",
-    snapshotFetch: "SNAPSHOT_LOAD_BOTTLENECK",
-    contextBuild: "CONTEXT_BUILD_BOTTLENECK",
-    promptSerialize: "PROMPT_SIZE_BOTTLENECK",
-    llmRequest: "LLM_CALL_BOTTLENECK",
-    llmResponse: "LLM_CALL_BOTTLENECK",
-    postprocess: "POSTPROCESS_BOTTLENECK"
-  };
-  return {
-    mode: "ai_center_analysis_timing_v1",
-    ...meta,
-    timingsMs: {
-      ...timing,
-      t_total: Math.round(total * 100) / 100
-    },
-    phaseRatios: ratios,
-    dominantBottleneck: bottleneckMap[dominant] || "MIXED_BOTTLENECK"
-  };
-}
-
 function extractPhone(value) {
   const match = String(value || "").match(/(\+?\d[\d\s]{5,})$/);
   return match ? match[1].replace(/\s+/g, "") : "";
@@ -672,256 +611,96 @@ class AssistantService {
 
   extractShiftDraft(message, context = {}, session = null) {
     const normalized = normalizeText(message);
-    if (!/(aggiungi|crea|inserisci|programma).*(turno|calendario|orario)/.test(normalized)) return null;
+    if (!/(aggiungi|crea|inserisci).*(turno|presenza)/.test(normalized)) return null;
     const staff = this.findStaffMention(message, context, session);
     const date = parseDateFromText(message);
-    const times = parseShiftTimesFromText(message);
+    const [startTime = "", endTime = ""] = parseShiftTimesFromText(message);
     return {
       staffId: staff?.id || "",
       staffName: staff?.name || "",
       date,
-      startTime: times[0] || "",
-      endTime: times[1] || "",
-      notes: "Turno creato dal pulsante Smart dopo conferma operatore."
+      startTime,
+      endTime,
+      note: "Turno preparato dal pulsante Smart con conferma operatore."
     };
   }
 
-  buildSmartPriorityAnswer(context) {
-    const plan = String(context.subscriptionPlan || "base").toLowerCase();
-    if (plan !== "gold") {
-      if (plan === "silver") {
-        return [
-          "Nel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI.",
-          "",
-          "Cosa fare ora:",
-          "1. Apri Report per leggere andamento e numeri del periodo.",
-          "2. Apri Cassa per controllare incassi e pagamenti.",
-          "3. Apri Clienti o Agenda per correggere dati e appuntamenti.",
-          "",
-          "Le priorità automatiche e gli alert decisionali sono disponibili nel piano Gold."
-        ].join("\n");
-      }
-      return [
-        "Nel piano Base il pulsante Smart resta operativo, ma non usa priorità AI.",
-        "",
-        "Cosa puoi fare ora:",
-        "1. Apri Agenda.",
-        "2. Crea o cerca un cliente.",
-        "3. Apri Cassa e controlla gli incassi.",
-        "",
-        "Gli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold."
-      ].join("\n");
-    }
-    const goldContext = context.goldDecisionContext || {};
-    const primary = goldContext.primaryAction || null;
-    const secondary = Array.isArray(goldContext.secondaryActions) ? goldContext.secondaryActions : [];
-    const blocked = Array.isArray(goldContext.blockedActions) ? goldContext.blockedActions : [];
-    if (primary || secondary.length || blocked.length) {
-      const lines = [
-        "Lettura Smart allineata al Gold Decision Engine.",
-        "",
-        "Priorità principale:",
-        primary
-          ? `- ${primary.label || primary.domain}: ${primary.suggestedAction || primary.explanationShort || "azione da valutare"}`
-          : "- Nessuna priorità principale disponibile.",
-        primary
-          ? `  RAP_2 ${Math.round(Number(primary.RAP_2 || primary.priority || 0) * 100)}% · confidence ${Math.round(Number(primary.confidence || 0) * 100)}% · rischio ${Math.round(Number(primary.risk || 0) * 100)}%`
-          : "",
-        primary?.NEU !== undefined ? `  Utilità netta stimata: ${Number(primary.NEU || 0).toFixed(2)}` : "",
-        primary?.trend?.trendLabel ? `  Trend: ${primary.trend.trendLabel}` : "",
-        "",
-        "Azioni consigliate:",
-        ...(secondary.length ? secondary.slice(0, 3).map((item, index) => `${index + 1}. ${item.label || item.domain}: ${item.suggestedAction || item.explanationShort || "monitorare"}`) : ["1. Nessuna azione secondaria prioritaria."]),
-        "",
-        "Blocchi e verifiche:",
-        ...(blocked.length ? blocked.slice(0, 3).map((item) => `- ${item.label || item.domain}: ${item.explanationShort || "verificare prima di agire"}`) : ["- Nessun blocco critico dal Gold Engine."]),
-        "",
-        "Esecuzione:",
-        primary?.canExecute
-          ? "Posso accompagnarti all'azione, ma ogni esecuzione resta confermata dall'operatore."
-          : "Non eseguo azioni dirette se Gold segnala rischio, frizione o confidence insufficiente."
-      ].filter(Boolean);
-      return lines.join("\n");
-    }
-    const dashboard = context.dashboard || {};
-    const quality = context.dataQuality || {};
-    const metrics = quality.metrics || {};
-    const alerts = [];
-
-    if (Number(dashboard.todayAppointments || 0) <= 2) {
-      alerts.push("Critico: centro sotto ritmo. Aumenta agenda e richiami prima di lavorare sui margini.");
-    }
-    if (Number(dashboard.inactiveClientsCount || 0) > 0) {
-      alerts.push("Attenzione: clienti da recuperare. Parti dai richiami prima di cercare nuovi clienti.");
-    }
-    if (Number(metrics.unlinkedPayments || 0) > 0) {
-      alerts.push("Attenzione: cassa da riallineare. Collega o archivia i pagamenti aperti.");
-    }
-    if (Number(metrics.appointmentsMissingPayment || 0) > 0) {
-      alerts.push("Attenzione: appuntamenti senza incasso collegato. Controlla la cassa prima dei report.");
-    }
-    if (Number(metrics.clientsMissingContact || 0) > 0) {
-      alerts.push("Attenzione: clienti non contattabili. Completa i dati quando fai recall o checkout.");
-    }
-    if (Number(metrics.servicesMissingCosts || 0) > 0) {
-      alerts.push("Attenzione: costi servizio incompleti. La redditività resta stimata finché non li completi.");
-    }
-    if (String(quality.status || "") === "basso") {
-      alerts.push("Critico: qualità dati bassa. Prima pulisci cassa, clienti e servizi, poi leggi l'analisi.");
-    }
-
-    if (!alerts.length) {
-      return "Non vedo priorita operative urgenti nei dati disponibili. Puoi lavorare normalmente su agenda, clienti e cassa.";
-    }
-
-    const actions = [];
-    if (Number(dashboard.inactiveClientsCount || 0) > 0) actions.push("1. Apri Marketing o Clienti e richiama prima i clienti inattivi.");
-    if (Number(dashboard.todayAppointments || 0) <= 2) actions.push("2. Riempi l'agenda: controlla slot liberi e clienti da recuperare.");
-    if (Number(metrics.unlinkedPayments || 0) > 0 || Number(metrics.appointmentsMissingPayment || 0) > 0) actions.push("3. Apri Cassa e collega pagamenti/appuntamenti prima di leggere i report.");
-    if (Number(metrics.clientsMissingContact || 0) > 0 || Number(metrics.servicesMissingCosts || 0) > 0) actions.push("4. Completa i dati mancanti per rendere report e AI piu affidabili.");
-
-    return [
-      "Ci sono priorita operative da gestire.",
-      "",
-      "Sintesi operativa:",
-      ...alerts.slice(0, 6).map((item) => `- ${item}`),
-      "",
-      "Cosa fare ora:",
-      ...(actions.length ? actions.slice(0, 4) : ["1. Controlla dashboard, agenda e cassa."])
-    ].join("\n");
-  }
-
-  buildLocalDecision(message, context, session) {
+  buildLocalDecision(message, context = {}, session = null) {
     const normalized = normalizeText(message);
 
-    if (!normalized) {
-      return buildAnswer("Scrivimi una richiesta breve: posso spiegarti un flusso, aprire una schermata o aiutarti con un cliente.");
-    }
-
-    if (/(disattiva|attiva|modifica impostazioni|cambia permessi|elimina.*operatore|elimina.*cliente|cancella.*cliente|cancella dati)/.test(normalized)) {
-      return buildBlocked(
-        "Non posso eseguire direttamente questa operazione. Ti apro Impostazioni o la sezione corretta e ti guido, ma non modifico dati sensibili in automatico.",
-        "open_settings",
-        { section: "general" }
-      );
-    }
-
-    if (/(come.*operatori|inser.*operatori|aggiung.*operatori|dove.*operatori)/.test(normalized)) {
-      return buildAnswer("Per inserire un operatore vai in Servizi > Operatori. Lì puoi aggiungere nome, colore e costo orario. Se vuoi posso aprire direttamente quella schermata.");
-    }
-
-    if (/(report.*dipendent|resa dipendent|report operatore|performance operatore)/.test(normalized) && /(come|dove)/.test(normalized)) {
-      return buildAnswer("Il report dipendenti è in Report business > Resa dipendenti. Da lì clicchi il nome dell’operatore e apri il suo report personale. Se vuoi posso aprire i report.");
-    }
-
-    if (/(come.*magazzino|funziona.*magazzino)/.test(normalized)) {
-      return buildAnswer("Il magazzino ti fa gestire articoli, movimenti, sottoscorta e controllo stock. Parti dalla panoramica, poi anagrafica articoli e infine movimenti. Se vuoi posso aprire il magazzino.");
-    }
-
-    if (/(chi sono|che centro|quale centro|che piano|abbonamento|riconosci)/.test(normalized)) {
-      return buildAnswer([
-        `Stai lavorando nel centro: ${context.centerName || "centro non indicato"}.`,
-        `Piano rilevato: ${context.subscriptionPlan || "non indicato"}.`,
-        `Ruolo sessione: ${context.userRole || "owner"}.`,
-        "Leggo solo i dati collegati a questa sessione e non uso dati di altri centri."
-      ].join("\n"));
-    }
-
-    if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalized)) {
-      return buildAnswer(this.buildSmartPriorityAnswer(context));
-    }
-
-    if (/(libreria skinharmony|protocolli skinharmony|come uso.*protocolli|cosa manca.*protocolli)/.test(normalized)) {
-      const skinHarmonyCount = (context.protocolsPreview || []).filter((item) => item.libraryScope === "skinharmony").length;
-      const centerCount = (context.protocolsPreview || []).filter((item) => item.libraryScope === "center").length;
-      return buildAnswer([
-        `Nel contesto leggo ${skinHarmonyCount} protocolli SkinHarmony e ${centerCount} protocolli del centro.`,
-        "Per partire: duplica un protocollo SkinHarmony nel centro, adattalo ai tuoi prodotti/tecnologie e poi usa Protocolli AI in modalità Ibrida.",
-        "Se manca un protocollo coerente, Protocolli AI deve fermarsi e chiedere di caricarlo invece di inventare."
-      ].join("\n"));
-    }
-
     const clientDraft = extractClientDraft(message);
-    if (clientDraft) {
-      if (clientDraft.firstName && (clientDraft.phone || clientDraft.noContact)) {
-        const noContactCopy = clientDraft.noContact ? " senza contatto telefonico/email registrato" : ` con telefono ${clientDraft.phone}`;
-        return buildAction(
-          `Ho preparato il cliente ${[clientDraft.firstName, clientDraft.lastName].filter(Boolean).join(" ")}${noContactCopy}. Confermi il salvataggio?`,
-          "create_client",
-          clientDraft,
-          true
-        );
-      }
-      return buildAnswer(
-        [
-          "Posso creare il cliente anche senza telefono, ma devi indicarlo chiaramente.",
-          "Esempi:",
-          "crea cliente Mario Rossi 3331234567",
-          "crea cliente Maria Rossi senza telefono"
-        ].join("\n"),
-        clientDraft
+    if (clientDraft?.firstName) {
+      const payload = {
+        firstName: clientDraft.firstName,
+        lastName: clientDraft.lastName,
+        phone: clientDraft.phone,
+        noContact: clientDraft.noContact,
+        email: null,
+        note: clientDraft.noContact ? "Cliente inserito senza contatto su richiesta operatore." : null
+      };
+      return buildAction(
+        buildConfirmationMessage("create_client", payload),
+        "create_client",
+        payload,
+        true
       );
     }
 
     const appointmentDraft = this.extractAppointmentDraft(message, context, session);
     if (appointmentDraft) {
-      const missing = [];
-      if (!appointmentDraft.clientId && !appointmentDraft.walkInName) missing.push("cliente esistente oppure cliente occasionale");
-      if (!appointmentDraft.date) missing.push("data");
-      if (!appointmentDraft.time) missing.push("ora");
-      if (missing.length) {
+      if ((!appointmentDraft.clientId && !appointmentDraft.walkInName) || !appointmentDraft.date || !appointmentDraft.time) {
         return buildAnswer(
-          [
-            `Per creare l’appuntamento mi manca: ${missing.join(", ")}.`,
-            "Scrivi un comando più completo, ad esempio:",
-            "aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
-            "Oppure: aggiungi appuntamento cliente occasionale Maria domani alle 15 con Anna per colore.",
-            "Se il cliente non esiste ancora, crea prima il cliente."
-          ].join("\n"),
+          "Per preparare l'appuntamento mi servono cliente esistente o cliente occasionale, data e ora. Esempio: aggiungi appuntamento a Maria Rossi domani alle 15 con Anna per colore.",
           appointmentDraft
         );
       }
-      const details = [
-        appointmentDraft.clientName || `cliente occasionale ${appointmentDraft.walkInName}`,
-        appointmentDraft.serviceName ? `servizio ${appointmentDraft.serviceName}` : "servizio non indicato",
-        appointmentDraft.staffName ? `con ${appointmentDraft.staffName}` : "operatore non indicato",
-        `${appointmentDraft.date} alle ${appointmentDraft.time}`
-      ].filter(Boolean).join(", ");
-      return buildAction(`Ho preparato l’appuntamento: ${details}. Confermi il salvataggio in agenda?`, "create_appointment", appointmentDraft, true);
+      const payload = {
+        clientId: appointmentDraft.clientId || null,
+        clientName: appointmentDraft.clientName || null,
+        walkInName: appointmentDraft.walkInName || null,
+        date: appointmentDraft.date,
+        time: appointmentDraft.time,
+        durationMin: appointmentDraft.durationMin,
+        staffId: appointmentDraft.staffId || null,
+        staffName: appointmentDraft.staffName || null,
+        serviceId: appointmentDraft.serviceId || null,
+        serviceName: appointmentDraft.serviceName || null,
+        status: appointmentDraft.status,
+        note: appointmentDraft.notes
+      };
+      return buildAction(
+        buildConfirmationMessage("create_appointment", payload),
+        "create_appointment",
+        payload,
+        true
+      );
     }
 
     const shiftDraft = this.extractShiftDraft(message, context, session);
     if (shiftDraft) {
-      const missing = [];
-      if (!shiftDraft.staffId) missing.push("operatore");
-      if (!shiftDraft.date) missing.push("data");
-      if (!shiftDraft.startTime) missing.push("ora inizio");
-      if (!shiftDraft.endTime) missing.push("ora fine");
-      if (missing.length) {
+      if (!shiftDraft.staffId || !shiftDraft.date || !shiftDraft.startTime || !shiftDraft.endTime) {
         return buildAnswer(
-          [
-            `Per creare il turno mi manca: ${missing.join(", ")}.`,
-            "Scrivi un comando completo, ad esempio:",
-            "crea turno Anna domani dalle 9 alle 18."
-          ].join("\n"),
+          "Per preparare il turno mi servono operatore, data, ora inizio e ora fine. Esempio: crea turno Anna domani dalle 9 alle 18.",
           shiftDraft
         );
       }
       return buildAction(
-        `Ho preparato il turno di ${shiftDraft.staffName} per ${shiftDraft.date}, dalle ${shiftDraft.startTime} alle ${shiftDraft.endTime}. Confermi il salvataggio?`,
+        buildConfirmationMessage("create_shift", shiftDraft),
         "create_shift",
         shiftDraft,
         true
       );
     }
 
-    if (/(nuovo cliente|apri form cliente|apri nuovo cliente)/.test(normalized)) {
-      return buildAction("Apro il form cliente.", "open_client_form", {});
+    const protocolsQuestion = /(protocolli|trattamenti|skin harmony method|analisi protocollo)/.test(normalized);
+    if (protocolsQuestion) {
+      return context.settings.enableProtocolsHub
+        ? buildAction("Apro l'area protocolli per lavorare sul caso corretto.", "open_protocols", {})
+        : buildBlocked("L'area protocolli non è attiva in questo centro. Posso portarti in Impostazioni per attivarla.", "open_settings", { section: "protocols" });
     }
 
-    const clientSearchMatch = message.match(/(?:cerca|trova)\s+cliente\s+(.+)/i);
-    if (clientSearchMatch) {
-      const query = clientSearchMatch[1].trim();
+    if (/(cerca cliente|trova cliente|apri cliente|scheda cliente)/.test(normalized)) {
+      const query = message.replace(/.*(?:cliente|scheda cliente)\s*/i, "").trim();
       const client = this.findClientByQuery(query, context, session);
       if (client) {
         const fullName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || "cliente richiesto";
@@ -1185,7 +964,7 @@ class AssistantService {
     const firstAlert = profitability.alerts?.[0];
     const lastDrop = [...monthlyTrend].reverse().find((item) => item.signal === "drop");
     const lines = [
-      "Lettura AI Gold operativa sui dati disponibili:",
+      "Lettura AI Gold operativa sui dati disponibili, con Corelia come motore decisionale:",
       centerHealth
         ? `Stato centro: ${centerHealth.statusLabel || centerHealth.status}. Azione: ${centerHealth.status === "sotto_soglia" ? "aumenta agenda e richiami prima dei margini" : "mantieni controllo operativo e correggi i punti deboli"}.`
         : "Stato centro: dato non disponibile nello snapshot.",
@@ -1206,58 +985,22 @@ class AssistantService {
     return lines.join("\n");
   }
 
-  async aiGoldAsk(payload = {}, session = null, requestTiming = {}) {
-    const totalStart = nowMs();
-    const timing = {
-      t_auth: Number(requestTiming.authMs || 0),
-      t_state_load: 0,
-      t_snapshot_fetch: 0,
-      t_context_build: 0,
-      t_prompt_serialize: 0,
-      t_llm_request: 0,
-      t_llm_response: 0,
-      t_postprocess: 0,
-      t_total: 0
-    };
-    const diagnosticsEnabled = Boolean(payload.diagnostics || payload.debugTiming || payload.includeTiming);
-    const tenantMeta = {
-      tenantId: String(session?.centerId || ""),
-      tenantName: String(session?.centerName || ""),
-      tenantType: String(payload.tenantType || session?.tenantType || "unknown")
-    };
-    const withDiagnostics = (result, extra = {}) => {
-      timing.t_total = elapsedMs(totalStart);
-      if (!diagnosticsEnabled) return result;
-      const diagnostics = buildAiTimingPayload(timing, { ...tenantMeta, ...extra });
-      console.log("[ai_center_analysis_timing]", JSON.stringify(diagnostics));
-      return {
-        ...result,
-        diagnostics
-      };
-    };
-
+  async aiGoldAsk(payload = {}, session = null) {
     if (!this.desktopMirror?.hasGoldIntelligence?.(session)) {
-      return withDiagnostics({
+      return {
         goldEnabled: false,
         provider: "blocked",
         answer: "AI Gold disponibile solo con piano Gold.",
         actions: []
-      });
+      };
     }
 
     const question = String(payload.question || "").trim();
-    const snapshotStart = nowMs();
     const snapshot = this.desktopMirror.getBusinessSnapshot
       ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
       : null;
-    timing.t_snapshot_fetch += elapsedMs(snapshotStart);
-
-    const stateStart = nowMs();
     const goldCapabilities = this.getGoldCapabilitiesSafe(session);
     const goldDecisionContext = this.getGoldDecisionContextSafe(session);
-    timing.t_state_load += elapsedMs(stateStart);
-
-    const contextStart = nowMs();
     const context = snapshot?.snapshotAvailable ? {
       businessSnapshot: snapshot,
       goldCapabilities,
@@ -1272,33 +1015,20 @@ class AssistantService {
       dashboard: this.getDashboardSafe(session),
       settings: this.getSettingsSafe(session)
     };
-    timing.t_context_build += elapsedMs(contextStart);
-
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
-    const contextBytes = jsonSizeBytes(context);
 
     if (!apiKey) {
-      const postStart = nowMs();
-      const answer = this.buildAiGoldFallback(question, context);
-      timing.t_postprocess += elapsedMs(postStart);
-      return withDiagnostics({
+      return {
         goldEnabled: true,
         provider: "fallback",
-        answer,
+        answer: this.buildAiGoldFallback(question, context),
         actions: []
-      }, {
-        model,
-        promptBytes: 0,
-        contextBytes,
-        estimatedInputTokens: estimateTokensFromBytes(contextBytes),
-        estimatedOutputTokens: estimateTokensFromBytes(jsonSizeBytes(answer)),
-        responseBytes: jsonSizeBytes(answer)
-      });
+      };
     }
 
     const instructions = [
-      "Sei AI Gold di SkinHarmony Smart Desk.",
+      "Sei AI Gold di SkinHarmony Smart Desk con Corelia come motore decisionale.",
       "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
       "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
       "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
@@ -1312,66 +1042,37 @@ class AssistantService {
       "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."
     ].join("\n");
 
-    let promptBytes = 0;
     try {
-      const promptStart = nowMs();
-      const requestBody = JSON.stringify({
-        model,
-        input: [
-          { role: "system", content: [{ type: "input_text", text: instructions }] },
-          { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context }) }] }
-        ]
-      });
-      timing.t_prompt_serialize += elapsedMs(promptStart);
-      promptBytes = Buffer.byteLength(requestBody, "utf8");
-
-      const llmRequestStart = nowMs();
       const response = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`
         },
-        body: requestBody
+        body: JSON.stringify({
+          model,
+          input: [
+            { role: "system", content: [{ type: "input_text", text: instructions }] },
+            { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context }) }] }
+          ]
+        })
       });
-      timing.t_llm_request += elapsedMs(llmRequestStart);
       if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
-      const llmResponseStart = nowMs();
       const data = await response.json();
-      timing.t_llm_response += elapsedMs(llmResponseStart);
-      const postStart = nowMs();
       const answer = data?.output_text || data?.output?.[0]?.content?.[0]?.text || this.buildAiGoldFallback(question, context);
-      timing.t_postprocess += elapsedMs(postStart);
-      return withDiagnostics({
+      return {
         goldEnabled: true,
         provider: "openai",
         answer,
         actions: []
-      }, {
-        model,
-        promptBytes,
-        contextBytes,
-        estimatedInputTokens: estimateTokensFromBytes(promptBytes),
-        estimatedOutputTokens: estimateTokensFromBytes(jsonSizeBytes(answer)),
-        responseBytes: jsonSizeBytes(answer)
-      });
+      };
     } catch {
-      const postStart = nowMs();
-      const answer = this.buildAiGoldFallback(question, context);
-      timing.t_postprocess += elapsedMs(postStart);
-      return withDiagnostics({
+      return {
         goldEnabled: true,
         provider: "fallback",
-        answer,
+        answer: this.buildAiGoldFallback(question, context),
         actions: []
-      }, {
-        model,
-        promptBytes,
-        contextBytes,
-        estimatedInputTokens: estimateTokensFromBytes(promptBytes || contextBytes),
-        estimatedOutputTokens: estimateTokensFromBytes(jsonSizeBytes(answer)),
-        responseBytes: jsonSizeBytes(answer)
-      });
+      };
     }
   }
 
@@ -1390,7 +1091,7 @@ class AssistantService {
     }
 
     const instructions = [
-      "Sei AI Gold Marketing di SkinHarmony Smart Desk.",
+      "Sei AI Gold Marketing di SkinHarmony Smart Desk con Corelia come motore decisionale.",
       "Rifinisci azioni recall gia generate da dati reali.",
       "Non inventare dati non presenti.",
       "Non promettere risultati medici o terapeutici.",
