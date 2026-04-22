@@ -1,0 +1,597 @@
+"use strict";
+
+const {
+  DEFAULT_ROUTER_VARIANT,
+  parseIntent,
+  routeDomain,
+  normalizeText
+} = require("./CoreliaIntentRouter");
+
+function clamp01(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
+}
+
+function round(value, digits = 3) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Number(number.toFixed(digits));
+}
+
+function average(values = []) {
+  const list = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (!list.length) return 0;
+  return list.reduce((sum, value) => sum + value, 0) / list.length;
+}
+
+function uniqueStrings(values = []) {
+  return Array.from(new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean)));
+}
+
+function severityToActionBand(level = "") {
+  const normalized = String(level || "").toUpperCase();
+  if (["ACT_NOW", "HIGH", "CRITICAL"].includes(normalized)) return "ACT_NOW";
+  if (["SUGGEST", "MEDIUM", "WARNING"].includes(normalized)) return "SUGGEST";
+  if (["VERIFY", "LOW_CONFIDENCE"].includes(normalized)) return "VERIFY";
+  if (["STOP", "BLOCKED"].includes(normalized)) return "STOP";
+  return "MONITOR";
+}
+
+class CoreliaBridge {
+  constructor(desktopMirror, options = {}) {
+    this.desktopMirror = desktopMirror;
+    this.routerVariant = options.routerVariant || DEFAULT_ROUTER_VARIANT;
+  }
+
+  buildSourceCatalog(period = {}, session = null) {
+    const goldState = this.desktopMirror.getGoldState(session);
+    const snapshot = this.desktopMirror.getBusinessSnapshot(period, session);
+    const decisionContext = this.desktopMirror.getGoldDecisionContext(period, session);
+    const decisionCenter = this.desktopMirror.getAiGoldDecisionCenter(period, session);
+    return {
+      goldState,
+      snapshot,
+      decisionContext,
+      decisionCenter,
+      sourceCatalog: {
+        decisionSelection: goldState?.decision || null,
+        decisionPrimarySnapshot: decisionContext?.primaryAction || null,
+        cashSelection: goldState?.cashSelection || null,
+        cashPrimarySnapshot: goldState?.cashPrimarySnapshot || null,
+        dataQualitySelection: goldState?.signals?.dataReliability != null
+          ? {
+              source: "gold_state",
+              score: Number(goldState.signals.dataReliability || 0),
+              band: Number(goldState.signals.dataReliability || 0) >= 0.75 ? "REAL" : "VERIFY"
+            }
+          : null,
+        dataQualityPrimarySnapshot: snapshot?.dataQuality || null,
+        reportParallel: snapshot?.report || null,
+        profitabilitySnapshot: snapshot?.profitability || null,
+        marketingParallel: goldState?.marketingParallel || snapshot?.marketing || null,
+        agendaParallel: snapshot?.goldEngine?.agenda || null,
+        operatorProductivityParallel: snapshot?.operations || null,
+        goldStateSummary: goldState?.decision || null
+      }
+    };
+  }
+
+  getBaseStateContext(period = {}, session = null, overrides = {}) {
+    const resolved = this.buildSourceCatalog(period, session);
+    return {
+      ...resolved,
+      goldState: overrides.goldState || resolved.goldState,
+      snapshot: overrides.snapshot || resolved.snapshot,
+      decisionContext: overrides.decisionContext || resolved.decisionContext,
+      decisionCenter: overrides.decisionCenter || resolved.decisionCenter
+    };
+  }
+
+  resolveDomainSnapshot(domain, state = {}) {
+    const snapshot = state.snapshot || {};
+    const decisionContext = state.decisionContext || {};
+    const decisionCenter = state.decisionCenter || {};
+    const sections = Array.isArray(decisionCenter.sections) ? decisionCenter.sections : [];
+    if (domain === "cash") {
+      return {
+        primary: state.goldState?.cashPrimarySnapshot || snapshot.dataQuality || {},
+        secondary: snapshot.dataQuality || {},
+        centerItems: sections.find((section) => section.key === "daily")?.items || []
+      };
+    }
+    if (domain === "marketing") {
+      return {
+        primary: snapshot.marketing || {},
+        secondary: state.goldState?.marketingParallel || {},
+        centerItems: sections.find((section) => section.key === "actions")?.items || []
+      };
+    }
+    if (domain === "agenda") {
+      return {
+        primary: snapshot.operations || {},
+        secondary: snapshot.goldEngine?.agenda || {},
+        centerItems: sections.find((section) => section.key === "daily")?.items || []
+      };
+    }
+    if (domain === "profitability") {
+      return {
+        primary: snapshot.profitability || {},
+        secondary: snapshot.economic || {},
+        centerItems: sections.find((section) => section.key === "profitability")?.items || []
+      };
+    }
+    if (domain === "operator") {
+      return {
+        primary: snapshot.operations || {},
+        secondary: snapshot.goldEngine?.operators || {},
+        centerItems: sections.find((section) => section.key === "performance")?.items || []
+      };
+    }
+    if (domain === "report") {
+      return {
+        primary: snapshot.report || {},
+        secondary: decisionCenter.summary || {},
+        centerItems: sections.find((section) => section.key === "center_health")?.items || []
+      };
+    }
+    if (domain === "data_quality") {
+      return {
+        primary: snapshot.dataQuality || {},
+        secondary: state.goldState?.signals || {},
+        centerItems: sections.find((section) => section.key === "actions")?.items || []
+      };
+    }
+    if (domain === "decision") {
+      return {
+        primary: decisionContext || {},
+        secondary: decisionCenter.summary || {},
+        centerItems: sections.find((section) => section.key === "gold_engine")?.items || []
+      };
+    }
+    return {
+      primary: decisionContext || snapshot.report?.centerHealth || {},
+      secondary: decisionCenter.summary || {},
+      centerItems: sections.flatMap((section) => section.items || []).slice(0, 4)
+    };
+  }
+
+  computeSourceConfidence(domain, state = {}, domainSnapshot = {}) {
+    const snapshot = state.snapshot || {};
+    const decisionContext = state.decisionContext || {};
+    const dataQualityScore = clamp01(Number(snapshot.dataQuality?.score || 0) / 100);
+    const goldDecisionConfidence = clamp01(Number(decisionContext.globalConfidence || 0));
+    const cashReliability = clamp01(Number(state.goldState?.cashSelection?.reliabilityScore || 0));
+    const profitabilityConfidence = clamp01(Number(snapshot.profitability?.summary?.confidenceScore || snapshot.profitability?.economicConfidence || 0));
+    const fallback = average([dataQualityScore, goldDecisionConfidence, cashReliability, profitabilityConfidence]);
+    if (domain === "cash") return round(average([cashReliability || fallback, dataQualityScore || fallback]));
+    if (domain === "profitability") return round(average([profitabilityConfidence || fallback, dataQualityScore || fallback]));
+    if (domain === "decision") return round(average([goldDecisionConfidence || fallback, dataQualityScore || fallback]));
+    if (domain === "marketing") return round(average([
+      Array.isArray(snapshot.marketing?.suggestions) ? 0.85 : 0.3,
+      dataQualityScore || fallback
+    ]));
+    if (domain === "agenda") return round(average([
+      snapshot.operations?.weakestUpcomingDay ? 0.8 : 0.45,
+      dataQualityScore || fallback
+    ]));
+    if (domain === "operator") return round(average([
+      snapshot.operations?.topOperator || snapshot.operations?.weakOperator ? 0.8 : 0.4,
+      dataQualityScore || fallback
+    ]));
+    return round(fallback);
+  }
+
+  computeReadiness(domain, state = {}, domainSnapshot = {}) {
+    const primary = domainSnapshot.primary || {};
+    const snapshot = state.snapshot || {};
+    if (domain === "cash") {
+      return round(average([
+        primary.source ? 1 : 0,
+        Number(snapshot.dataQuality?.metrics?.unlinkedPayments || 0) >= 0 ? 1 : 0,
+        state.goldState?.cashSelection ? 1 : 0
+      ]));
+    }
+    if (domain === "marketing") {
+      return round(average([
+        Array.isArray(snapshot.marketing?.suggestions) ? 1 : 0,
+        snapshot.marketing?.focusClient ? 1 : 0,
+        snapshot.report?.centerHealth ? 1 : 0
+      ]));
+    }
+    if (domain === "agenda") {
+      return round(average([
+        snapshot.operations?.weakestUpcomingDay ? 1 : 0,
+        Array.isArray(snapshot.operations?.upcomingAppointments) ? 1 : 0,
+        snapshot.report?.centerHealth ? 1 : 0
+      ]));
+    }
+    if (domain === "profitability") {
+      return round(average([
+        Array.isArray(snapshot.profitability?.suggestions) ? 1 : 0,
+        Array.isArray(snapshot.profitability?.alerts) ? 1 : 0,
+        snapshot.profitability?.summary ? 1 : 0
+      ]));
+    }
+    if (domain === "operator") {
+      return round(average([
+        snapshot.operations?.topOperator ? 1 : 0,
+        snapshot.operations?.weakOperator ? 1 : 0,
+        snapshot.report?.operational ? 1 : 0
+      ]));
+    }
+    if (domain === "data_quality") {
+      return round(average([
+        snapshot.dataQuality ? 1 : 0,
+        Array.isArray(snapshot.dataQuality?.alerts) ? 1 : 0,
+        state.goldState?.signals ? 1 : 0
+      ]));
+    }
+    return round(average([
+      snapshot.report?.centerHealth ? 1 : 0,
+      state.decisionContext?.primaryAction ? 1 : 0,
+      Array.isArray(domainSnapshot.centerItems) ? 1 : 0
+    ]));
+  }
+
+  computeConsistency(domain, state = {}, domainSnapshot = {}) {
+    const primaryActionDomain = String(state.decisionContext?.primaryAction?.domain || "");
+    const stateDecisionDomain = String(state.goldState?.decision?.domain || "");
+    const domainMatch = primaryActionDomain === domain || stateDecisionDomain === domain
+      ? 1
+      : domain === "decision" && ["operations", "growth", "cash", "profitability"].includes(primaryActionDomain)
+        ? 0.75
+        : 0.4;
+    const dataQualityScore = clamp01(Number(state.snapshot?.dataQuality?.score || 0) / 100);
+    const agreement = clamp01(Number(state.goldState?.cashSelection?.agreementScore || 0));
+    const reliability = clamp01(Number(state.goldState?.signals?.dataReliability || 0));
+    if (domain === "cash") return round(average([domainMatch, agreement || 0.5, reliability || dataQualityScore]));
+    return round(average([domainMatch, reliability || dataQualityScore, dataQualityScore]));
+  }
+
+  computeConfidence(domain, state = {}, domainSnapshot = {}) {
+    const SourceConf = this.computeSourceConfidence(domain, state, domainSnapshot);
+    const DataQuality = clamp01(Number(state.snapshot?.dataQuality?.score || 0) / 100);
+    const Readiness = this.computeReadiness(domain, state, domainSnapshot);
+    const Consistency = this.computeConsistency(domain, state, domainSnapshot);
+    const confidence = (0.40 * SourceConf) + (0.25 * DataQuality) + (0.20 * Readiness) + (0.15 * Consistency);
+    return {
+      confidence: round(confidence),
+      parts: {
+        SourceConf: round(SourceConf),
+        DataQuality: round(DataQuality),
+        Readiness: round(Readiness),
+        Consistency: round(Consistency)
+      }
+    };
+  }
+
+  computeUrgency(state = {}) {
+    const snapshot = state.snapshot || {};
+    const decisionContext = state.decisionContext || {};
+    const unlinkedPayments = Number(snapshot.dataQuality?.metrics?.unlinkedPayments || 0);
+    const cashAgreementRisk = Number(state.goldState?.cashPrimarySnapshot?.ambiguityRatio || 0);
+    const CashUrgency = round(Math.max(unlinkedPayments > 0 ? Math.min(1, unlinkedPayments / 4) : 0, cashAgreementRisk));
+    const DecisionUrgency = round(Math.max(
+      Number(decisionContext.systemRisk || 0),
+      Number(decisionContext.primaryAction?.risk || 0),
+      Number(decisionContext.primaryAction?.riskAdjustedPriority || 0)
+    ));
+    const weakestUpcomingDay = snapshot.operations?.weakestUpcomingDay || null;
+    const AgendaUrgency = round(
+      weakestUpcomingDay
+        ? (Number(weakestUpcomingDay[1] || 0) <= 1 ? 0.85 : Number(weakestUpcomingDay[1] || 0) <= 3 ? 0.65 : 0.35)
+        : 0
+    );
+    const focusClient = snapshot.marketing?.focusClient || null;
+    const MarketingUrgency = round(
+      focusClient
+        ? String(focusClient.priority || "") === "alta" ? 0.85 : String(focusClient.priority || "") === "media" ? 0.60 : 0.35
+        : 0
+    );
+    const centerHealth = snapshot.report?.centerHealth || {};
+    const profitabilityAlert = Array.isArray(snapshot.profitability?.alerts) ? snapshot.profitability.alerts[0] : null;
+    const ReportUrgency = round(Math.max(
+      String(centerHealth.status || "") === "sotto_soglia" ? 0.90 : String(centerHealth.status || "") === "fragile" ? 0.65 : 0.35,
+      profitabilityAlert ? 0.65 : 0
+    ));
+    return {
+      urgency: round(Math.max(CashUrgency, DecisionUrgency, AgendaUrgency, MarketingUrgency, ReportUrgency)),
+      parts: {
+        CashUrgency,
+        DecisionUrgency,
+        AgendaUrgency,
+        MarketingUrgency,
+        ReportUrgency
+      }
+    };
+  }
+
+  selectPrimaryEvidence(domain, state = {}, domainSnapshot = {}) {
+    const snapshot = state.snapshot || {};
+    const centerHealth = snapshot.report?.centerHealth || {};
+    if (domain === "cash") {
+      return [
+        { label: "Pagamenti da collegare", value: Number(snapshot.dataQuality?.metrics?.unlinkedPayments || 0), source: "dataQualityPrimarySnapshot" },
+        { label: "Fonte cash primaria", value: String(state.goldState?.cashSelection?.primarySource || "legacy"), source: "cashSelection" },
+        { label: "Reliability cash", value: round(state.goldState?.cashSelection?.reliabilityScore || 0), source: "cashSelection" }
+      ];
+    }
+    if (domain === "marketing") {
+      return [
+        { label: "Clienti prioritari", value: Array.isArray(snapshot.marketing?.suggestions) ? snapshot.marketing.suggestions.length : 0, source: "marketingParallel" },
+        { label: "Focus client", value: snapshot.marketing?.focusClient?.name || "", source: "marketingParallel" },
+        { label: "Continuità", value: Number(centerHealth.continuityPercent || 0), source: "reportParallel" }
+      ];
+    }
+    if (domain === "agenda") {
+      return [
+        { label: "Giorno debole", value: snapshot.operations?.weakestUpcomingDay?.[0] || "", source: "agendaParallel" },
+        { label: "Appuntamenti giorno debole", value: Number(snapshot.operations?.weakestUpcomingDay?.[1] || 0), source: "agendaParallel" },
+        { label: "Saturazione", value: Number(centerHealth.saturationPercent || 0), source: "reportParallel" }
+      ];
+    }
+    if (domain === "profitability") {
+      const top = Array.isArray(snapshot.profitability?.suggestions) ? snapshot.profitability.suggestions[0] : null;
+      return [
+        { label: "Alert redditività", value: Array.isArray(snapshot.profitability?.alerts) ? snapshot.profitability.alerts.length : 0, source: "profitabilitySnapshot" },
+        { label: "Servizio critico", value: top?.name || "", source: "profitabilitySnapshot" },
+        { label: "Margine medio", value: round(snapshot.profitability?.summary?.averageMargin || snapshot.profitability?.averageMargin || 0), source: "profitabilitySnapshot" }
+      ];
+    }
+    if (domain === "operator") {
+      return [
+        { label: "Top operatore", value: snapshot.operations?.topOperator?.name || "", source: "operatorProductivityParallel" },
+        { label: "Operatore debole", value: snapshot.operations?.weakOperator?.name || "", source: "operatorProductivityParallel" },
+        { label: "Produttività", value: round(snapshot.report?.operational?.productivityScore || 0), source: "reportParallel" }
+      ];
+    }
+    if (domain === "data_quality") {
+      return [
+        { label: "Score qualità dati", value: Number(snapshot.dataQuality?.score || 0), source: "dataQualityPrimarySnapshot" },
+        { label: "Alert qualità", value: Array.isArray(snapshot.dataQuality?.alerts) ? snapshot.dataQuality.alerts.length : 0, source: "dataQualityPrimarySnapshot" },
+        { label: "Reliability", value: round(state.goldState?.signals?.dataReliability || 0), source: "dataQualitySelection" }
+      ];
+    }
+    if (domain === "report") {
+      return [
+        { label: "Stato centro", value: centerHealth.statusLabel || centerHealth.status || "", source: "reportParallel" },
+        { label: "Fatturato per operatore", value: Number(centerHealth.revenuePerOperatorCents || 0), source: "reportParallel" },
+        { label: "Saturazione", value: Number(centerHealth.saturationPercent || 0), source: "reportParallel" }
+      ];
+    }
+    const primary = state.decisionContext?.primaryAction || {};
+    return [
+      { label: "Primary action", value: primary.label || primary.domain || "", source: "decisionPrimarySnapshot" },
+      { label: "System risk", value: round(state.decisionContext?.systemRisk || 0), source: "decisionSelection" },
+      { label: "Confidence globale", value: round(state.decisionContext?.globalConfidence || 0), source: "decisionSelection" }
+    ];
+  }
+
+  buildStructuredDomainAnswer(message, domain, intent, state = {}) {
+    const domainSnapshot = this.resolveDomainSnapshot(domain, state);
+    const confidenceBlock = this.computeConfidence(domain, state, domainSnapshot);
+    const urgencyBlock = this.computeUrgency(state);
+    const evidence = this.selectPrimaryEvidence(domain, state, domainSnapshot).filter((item) => item.value !== "" && item.value !== null && item.value !== undefined);
+    const decisionContext = state.decisionContext || {};
+    const snapshot = state.snapshot || {};
+    const primaryActionCandidate = decisionContext.primaryAction || {};
+    const centerHealth = snapshot.report?.centerHealth || {};
+
+    let primarySignal = "Centro sotto controllo";
+    let secondarySignals = [];
+    let primaryAction = "monitorare";
+    let actionBand = "MONITOR";
+    let risks = [];
+    let reasons = [];
+    let recommendedNextStep = "verifica il modulo collegato e conferma l'azione se serve";
+    let sourceUsed = ["goldStateSummary"];
+
+    if (domain === "cash") {
+      const unlinked = Number(snapshot.dataQuality?.metrics?.unlinkedPayments || 0);
+      primarySignal = unlinked > 0 ? `${unlinked} pagamenti da collegare` : "Cassa senza anomalie forti";
+      secondarySignals = uniqueStrings([
+        `Fonte primaria ${state.goldState?.cashSelection?.primarySource || "legacy"}`,
+        `Agreement ${state.goldState?.cashSelection?.agreementBand || "N/A"}`
+      ]);
+      primaryAction = unlinked > 0 ? "collega i pagamenti e verifica i movimenti ambigui" : "mantieni il controllo della cassa";
+      actionBand = unlinked > 0 ? "VERIFY" : "MONITOR";
+      risks = uniqueStrings([
+        unlinked > 0 ? "lettura report distorta finché la cassa resta sporca" : "",
+        Number(state.goldState?.cashPrimarySnapshot?.ambiguityRatio || 0) > 0.4 ? "ambiguità nei collegamenti cassa" : ""
+      ]);
+      reasons = uniqueStrings([
+        "La cassa sporca deforma report e priorità operative",
+        state.goldState?.cashSelection?.fallbackReason || ""
+      ]);
+      recommendedNextStep = unlinked > 0 ? "apri cassa e verifica i pagamenti non collegati" : "continua con il controllo ordinario";
+      sourceUsed = ["cashSelection", "cashPrimarySnapshot", "dataQualityPrimarySnapshot"];
+    } else if (domain === "marketing") {
+      const focusClient = snapshot.marketing?.focusClient || null;
+      primarySignal = focusClient ? `${focusClient.name} è il cliente da presidiare` : "Recall da monitorare";
+      secondarySignals = uniqueStrings([
+        `Clienti prioritari ${(snapshot.marketing?.suggestions || []).length}`,
+        focusClient?.clearReason || ""
+      ]);
+      primaryAction = focusClient
+        ? (focusClient.operatingDecision || "prepara un richiamo mirato")
+        : "rileggi la coda recall e seleziona i clienti ad alta priorità";
+      actionBand = focusClient && String(focusClient.priority || "") === "alta" ? "ACT_NOW" : "SUGGEST";
+      risks = uniqueStrings([
+        focusClient ? "perdita continuità cliente se non contattato" : "",
+        Number(snapshot.dataQuality?.score || 0) < 75 ? "dati contatto o storico incompleti" : ""
+      ]);
+      reasons = uniqueStrings([
+        focusClient?.clearReason || "Il marketing Gold ha già ordinato i clienti per urgenza reale",
+        "Corelia usa storico visite, frequenza e consenso"
+      ]);
+      recommendedNextStep = focusClient ? "apri marketing e prepara il messaggio da confermare" : "controlla marketing e valida la coda recall";
+      sourceUsed = ["marketingParallel", "reportParallel", "goldStateSummary"];
+    } else if (domain === "agenda") {
+      const weakDay = snapshot.operations?.weakestUpcomingDay || null;
+      primarySignal = weakDay ? `${weakDay[0]} è la giornata più debole` : "Agenda senza buchi evidenti";
+      secondarySignals = uniqueStrings([
+        weakDay ? `${weakDay[1]} appuntamenti previsti` : "",
+        `Saturazione ${Number(centerHealth.saturationPercent || 0)}%`
+      ]);
+      primaryAction = weakDay ? "riempi il buco agenda con recall mirati" : "mantieni monitorata l'agenda";
+      actionBand = weakDay && Number(weakDay[1] || 0) <= 2 ? "ACT_NOW" : weakDay ? "SUGGEST" : "MONITOR";
+      risks = uniqueStrings([
+        weakDay ? "agenda scarica nei prossimi giorni" : "",
+        Number(centerHealth.saturationPercent || 0) < 50 ? "volume appuntamenti fragile" : ""
+      ]);
+      reasons = uniqueStrings([
+        "Prima riempiere agenda, poi ottimizzare margini",
+        weakDay ? "La giornata più debole è il punto di intervento più economico" : ""
+      ]);
+      recommendedNextStep = weakDay ? "apri agenda o marketing e copri la giornata debole" : "nessuna azione immediata";
+      sourceUsed = ["agendaParallel", "reportParallel", "decisionPrimarySnapshot"];
+    } else if (domain === "profitability") {
+      const alert = Array.isArray(snapshot.profitability?.alerts) ? snapshot.profitability.alerts[0] : null;
+      const suggestion = Array.isArray(snapshot.profitability?.suggestions) ? snapshot.profitability.suggestions[0] : null;
+      primarySignal = alert?.title || suggestion?.name || "Redditività da monitorare";
+      secondarySignals = uniqueStrings([
+        suggestion?.clearConclusion || "",
+        `Alert ${(snapshot.profitability?.alerts || []).length}`
+      ]);
+      primaryAction = suggestion?.operatingAction || "controlla prezzo, durata e costi dei servizi critici";
+      actionBand = alert ? "VERIFY" : suggestion ? "SUGGEST" : "MONITOR";
+      risks = uniqueStrings([
+        alert ? "margine sotto soglia o dati costo da verificare" : "",
+        Number(snapshot.dataQuality?.score || 0) < 75 ? "lettura economica poco affidabile" : ""
+      ]);
+      reasons = uniqueStrings([
+        "La redditività va letta solo sui dati reali del gestionale",
+        suggestion?.clearConclusion || ""
+      ]);
+      recommendedNextStep = "apri redditività e verifica il servizio o la tecnologia più critica";
+      sourceUsed = ["profitabilitySnapshot", "reportParallel", "dataQualityPrimarySnapshot"];
+    } else if (domain === "operator") {
+      const topOperator = snapshot.operations?.topOperator || null;
+      const weakOperator = snapshot.operations?.weakOperator || null;
+      primarySignal = weakOperator
+        ? `${weakOperator.name} è l'operatore da verificare`
+        : topOperator
+          ? `${topOperator.name} è il riferimento del periodo`
+          : "Performance operatori da monitorare";
+      secondarySignals = uniqueStrings([
+        topOperator ? `Top ${topOperator.name}` : "",
+        weakOperator ? `Debole ${weakOperator.name}` : ""
+      ]);
+      primaryAction = weakOperator ? "verifica agenda, servizi assegnati e continuità cliente" : "usa l'operatore forte come benchmark";
+      actionBand = weakOperator ? "SUGGEST" : topOperator ? "MONITOR" : "VERIFY";
+      risks = uniqueStrings([
+        weakOperator ? "operatore sotto-utilizzato o con produttività bassa" : "",
+        Number(snapshot.dataQuality?.score || 0) < 75 ? "storico operatori poco pulito" : ""
+      ]);
+      reasons = uniqueStrings([
+        "Corelia confronta saturazione, volume e produzione",
+        weakOperator ? "serve capire se il problema è agenda o mix servizi" : ""
+      ]);
+      recommendedNextStep = weakOperator ? "apri turni o report operatore e confronta i volumi" : "mantieni benchmark e controllo";
+      sourceUsed = ["operatorProductivityParallel", "reportParallel", "goldStateSummary"];
+    } else if (domain === "data_quality") {
+      const dq = snapshot.dataQuality || {};
+      primarySignal = `Qualità dati ${Number(dq.score || 0)}%`;
+      secondarySignals = uniqueStrings([
+        Array.isArray(dq.alerts) ? dq.alerts[0] : "",
+        `Pagamenti scollegati ${Number(dq.metrics?.unlinkedPayments || 0)}`
+      ]);
+      primaryAction = "correggi i dati sporchi prima di fidarti delle letture Gold";
+      actionBand = Number(dq.score || 0) < 60 ? "ACT_NOW" : Number(dq.score || 0) < 75 ? "VERIFY" : "MONITOR";
+      risks = uniqueStrings([
+        "insight meno affidabili se la qualità dati resta bassa",
+        Number(dq.metrics?.unlinkedPayments || 0) > 0 ? "cassa sporca" : ""
+      ]);
+      reasons = uniqueStrings([
+        "AI Gold non corregge i numeri: segnala dove i dati vanno sistemati",
+        Array.isArray(dq.alerts) ? dq.alerts[0] : ""
+      ]);
+      recommendedNextStep = "apri i moduli che generano il dato sporco e ripulisci i record";
+      sourceUsed = ["dataQualitySelection", "dataQualityPrimarySnapshot", "cashPrimarySnapshot"];
+    } else if (domain === "report") {
+      primarySignal = `${centerHealth.statusLabel || "Stato centro"}: ${centerHealth.reason || "lettura operativa disponibile"}`;
+      secondarySignals = uniqueStrings([
+        `Fatturato/operatore ${Number(centerHealth.revenuePerOperatorCents || 0)}`,
+        `Saturazione ${Number(centerHealth.saturationPercent || 0)}%`,
+        `Continuità ${Number(centerHealth.continuityPercent || 0)}%`
+      ]);
+      primaryAction = ["sotto_soglia", "fragile"].includes(String(centerHealth.status || ""))
+        ? "aumenta volume agenda e continuità clienti"
+        : "mantieni il centro sotto controllo e correggi solo i punti deboli";
+      actionBand = String(centerHealth.status || "") === "sotto_soglia"
+        ? "ACT_NOW"
+        : String(centerHealth.status || "") === "fragile"
+          ? "SUGGEST"
+          : "MONITOR";
+      risks = uniqueStrings([
+        String(centerHealth.status || "") === "sotto_soglia" ? "centro sotto soglia" : "",
+        String(centerHealth.status || "") === "fragile" ? "volume operativo fragile" : ""
+      ]);
+      reasons = uniqueStrings([
+        "La salute centro pesa prima di margini e tecnologie",
+        centerHealth.reason || ""
+      ]);
+      recommendedNextStep = ["sotto_soglia", "fragile"].includes(String(centerHealth.status || ""))
+        ? "agisci su agenda e recall prima delle ottimizzazioni"
+        : "usa il report per confermare che il centro regga";
+      sourceUsed = ["reportParallel", "decisionSelection", "goldStateSummary"];
+    } else {
+      primarySignal = primaryActionCandidate.label || primaryActionCandidate.explanationShort || "Priorità operativa disponibile";
+      secondarySignals = uniqueStrings((Array.isArray(decisionContext.topSignals) ? decisionContext.topSignals : []).slice(0, 3).map((item) => item.explanationShort || item.label || item.domain));
+      primaryAction = primaryActionCandidate.suggestedAction || primaryActionCandidate.label || "verifica la priorità principale";
+      actionBand = severityToActionBand(primaryActionCandidate.action || state.goldState?.decision?.action || "MONITOR");
+      risks = uniqueStrings([
+        Number(decisionContext.systemRisk || 0) > 0.7 ? "rischio operativo alto" : "",
+        Number(snapshot.dataQuality?.score || 0) < 75 ? "dati da verificare" : ""
+      ]);
+      reasons = uniqueStrings([
+        primaryActionCandidate.explanationShort || "",
+        state.goldState?.decision?.explanationShort || ""
+      ]);
+      recommendedNextStep = primaryActionCandidate.canExecute === false
+        ? "usa l'indicazione come guida e conferma l'azione dal modulo corretto"
+        : "apri il modulo suggerito e verifica il contesto prima di agire";
+      sourceUsed = ["decisionSelection", "decisionPrimarySnapshot", "goldStateSummary"];
+    }
+
+    const humanSummary = `${primarySignal}. Azione: ${primaryAction}.`;
+    return {
+      identity: "corelia",
+      tenantId: String(state.snapshot?.centerId || state.goldState?.centerId || ""),
+      timestamp: state.snapshot?.generatedAt || new Date().toISOString(),
+      intent,
+      domain,
+      confidence: confidenceBlock.confidence,
+      urgency: urgencyBlock.urgency,
+      primarySignal,
+      secondarySignals,
+      sourceUsed,
+      primaryAction,
+      actionBand,
+      risks,
+      reasons,
+      evidence,
+      recommendedNextStep,
+      humanSummary,
+      confidenceBreakdown: confidenceBlock.parts,
+      urgencyBreakdown: urgencyBlock.parts
+    };
+  }
+
+  buildDialog(payload = {}, session = null) {
+    const message = String(payload.message || payload.question || "").trim();
+    const period = {
+      startDate: payload.startDate || "",
+      endDate: payload.endDate || ""
+    };
+    const state = this.getBaseStateContext(period, session, payload.sourceOverrides || {});
+    const routerIntent = parseIntent(message, payload.routerVariant || this.routerVariant);
+    const routerDomain = routeDomain(message, state, routerIntent.intent, payload.routerVariant || this.routerVariant);
+    return this.buildStructuredDomainAnswer(message, routerDomain.domain, routerIntent.intent, state);
+  }
+}
+
+module.exports = {
+  CoreliaBridge
+};

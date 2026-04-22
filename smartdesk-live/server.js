@@ -4,12 +4,16 @@ const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
+const { CoreliaBridge } = require("./src/corelia/CoreliaBridge");
+const { NyraDialogueAdapter } = require("./src/nyra/NyraDialogueAdapter");
 const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter");
 const { WhatsappService } = require("./src/WhatsappService");
 
 const app = express();
 let service = null;
 let assistantService = null;
+let coreliaBridge = null;
+let nyraDialogue = null;
 let whatsappService = null;
 const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
@@ -646,67 +650,190 @@ app.get("/api/auth/users", requireAuth, (req, res) => {
   }
 });
 
-function handleSupportSessionStart(req, res) {
+app.post("/api/auth/users", requireAuth, (req, res) => {
+  try {
+    res.status(201).json(service.createAccessUser(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile creare l'accesso");
+  }
+});
+
+app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
+  try {
+    res.json(service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare lo stato utente");
+  }
+});
+
+app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
   try {
     res.json({ success: true, ...service.createSupportSessionForUser(req.params.id, req.session) });
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aprire la sessione supporto");
   }
-}
+});
 
-app.post("/api/auth/users/:id/support-access", requireAuth, requireSuperAdmin, handleSupportSessionStart);
-
-app.post("/api/auth/users/:id/support-session", requireAuth, requireSuperAdmin, handleSupportSessionStart);
-
-app.post("/api/auth/users/:id/status", requireAuth, requireSuperAdmin, (req, res) => {
+app.post("/api/auth/subscription/request-change", requireAuth, (req, res) => {
   try {
-    res.json(service.updateUserStatus(req.params.id, req.body || {}, req.session));
+    res.json(service.requestSubscriptionChange(req.body || {}, req.session));
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare stato account");
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare la richiesta abbonamento");
   }
 });
 
-app.get("/api/dashboard/stats", requireAuth, requireOperationalAccess, (req, res) => {
-  res.json(service.getDashboardStats({ snapshotOnly: true }, req.session));
-});
-
-app.post("/api/dashboard/refresh", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
+  const verification = verifyWooCommerceWebhook(req);
+  if (!verification.ok) {
+    return res.status(401).json({ success: false, ...verification });
+  }
   try {
-    res.json(service.refreshDashboardSnapshot(req.session));
+    res.json(service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
   } catch (error) {
-    res.status(429).send(error instanceof Error ? error.message : "Aggiornamento dashboard non disponibile");
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Impossibile collegare ordine WooCommerce"
+    });
   }
 });
 
-app.get("/api/dashboard/snapshot-status", requireAuth, requireOperationalAccess, (req, res) => {
-  res.json(service.getDashboardSnapshotStatus(req.session));
+app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
+  const expectedToken = String(process.env.TWILIO_WEBHOOK_TOKEN || "").trim();
+  const providedToken = String(req.query.token || req.headers["x-smartdesk-webhook-token"] || "").trim();
+  if (expectedToken && providedToken !== expectedToken) {
+    return res.status(401).json({ success: false, message: "Webhook non autorizzato" });
+  }
+  try {
+    res.json(service.handleWhatsappWebhook(req.body || {}, whatsappService));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Webhook WhatsApp non gestibile"
+    });
+  }
 });
 
-app.get("/api/assistant/brief", requireAuth, requireOperationalAccess, (req, res) => {
-  res.json(service.getAssistantBrief(req.session));
+app.use("/api", (req, res, next) => {
+  if (req.path.startsWith("/auth/")) {
+    return next();
+  }
+  return requireAuth(req, res, () => requireOperationalAccess(req, res, next));
 });
 
-app.get("/api/assistant/priority-focus", requireAuth, requireOperationalAccess, (req, res) => {
-  res.json(service.getPriorityFocus(req.session));
+app.get("/api/system/safe-mode", (req, res) => {
+  res.json({
+    success: true,
+    safeMode: safeModeSnapshot()
+  });
 });
 
-app.get("/api/assistant/daily-vision", requireAuth, requireOperationalAccess, (req, res) => {
-  res.json(service.getDailyVision(req.session));
+app.get("/api/dashboard/stats", (req, res) => {
+  res.json(service.getDashboardStats({
+    period: req.query.period || "day",
+    anchorDate: req.query.anchorDate || new Date().toISOString()
+  }, req.session));
 });
 
-app.post("/api/assistant/chat", requireAuth, requireOperationalAccess, async (req, res) => {
+app.post("/api/dashboard/refresh", (req, res) => {
+  if (isSafeModeActive()) {
+    const dashboard = service.getDashboardStats({
+        period: req.body?.period || req.query.period || "day",
+        anchorDate: req.body?.anchorDate || req.query.anchorDate || new Date().toISOString()
+      }, req.session);
+    return res.json({
+      ...dashboard,
+      dashboardCache: {
+        ...(dashboard.dashboardCache || {}),
+        refreshStatus: "safe_mode",
+        message: "Sistema sotto carico: aggiornamento temporaneamente limitato per mantenere operatività",
+        safeMode: true
+      },
+      safeMode: safeModeSnapshot()
+    });
+  }
+  res.json(service.refreshDashboardStats({
+    period: req.body?.period || req.query.period || "day",
+    anchorDate: req.body?.anchorDate || req.query.anchorDate || new Date().toISOString()
+  }, req.session, { mode: "manual" }));
+});
+
+app.post("/api/assistant/chat", async (req, res) => {
   try {
     res.json(await assistantService.chat(req.body || {}, req.session));
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Assistente non disponibile");
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile usare l'assistente");
   }
 });
 
-app.get("/api/clients", requireAuth, requireOperationalAccess, (req, res) => {
-  res.json(service.listClients(req.query.q || "", req.session));
+app.get("/api/reports/operational", requirePlan("silver"), (req, res) => {
+  res.json(service.getOperationalReport({
+    period: req.query.period || "day",
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || "",
+    forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
+  }, req.session));
 });
 
-app.post("/api/clients", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/reports/export", requirePlan("silver"), (req, res) => {
+  res.json(service.exportOperationalReport({
+    period: req.query.period || "day",
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.query.format || "pdf", req.session));
+});
+
+app.get("/api/reports/open-exports", requirePlan("silver"), (_req, res) => {
+  res.json(service.openExportsFolder());
+});
+
+app.get("/api/reports/operator/:id", requirePlan("silver"), (req, res) => {
+  try {
+    res.json(service.getOperatorReport(req.params.id, {
+      period: req.query.period || "month",
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session));
+  } catch (error) {
+    res.status(404).send(error instanceof Error ? error.message : "Report operatore non disponibile");
+  }
+});
+
+app.get("/api/reports/operator/:id/export", requirePlan("silver"), (req, res) => {
+  try {
+    res.json(service.exportOperatorReport(req.params.id, {
+      period: req.query.period || "month",
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare il report operatore");
+  }
+});
+
+app.get("/api/clients", (req, res) => {
+  res.json(service.listClients(req.query.search, req.session, {
+    summaryOnly: req.query.summary === "1" || req.query.summary === "true",
+    limit: req.query.limit
+  }));
+});
+
+app.get("/api/clients/duplicates", (req, res) => {
+  res.json(service.listClientDuplicateGroups(req.session));
+});
+
+app.post("/api/clients/duplicate-suggestions", (req, res) => {
+  res.json(service.findClientDuplicateSuggestions(req.body || {}, req.session));
+});
+
+app.post("/api/clients/merge", (req, res) => {
+  try {
+    res.json(service.mergeClients(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile unire i clienti");
+  }
+});
+
+app.post("/api/clients", (req, res) => {
   try {
     res.status(201).json(service.saveClient(req.body || {}, req.session));
   } catch (error) {
@@ -714,7 +841,7 @@ app.post("/api/clients", requireAuth, requireOperationalAccess, (req, res) => {
   }
 });
 
-app.put("/api/clients/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/clients/:id", (req, res) => {
   try {
     res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -722,7 +849,7 @@ app.put("/api/clients/:id", requireAuth, requireOperationalAccess, (req, res) =>
   }
 });
 
-app.get("/api/clients/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/clients/:id", (req, res) => {
   try {
     res.json(service.getClientDetail(req.params.id, req.session));
   } catch (error) {
@@ -730,7 +857,7 @@ app.get("/api/clients/:id", requireAuth, requireOperationalAccess, (req, res) =>
   }
 });
 
-app.get("/api/clients/:id/consultation", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/clients/:id/consultation", (req, res) => {
   try {
     res.json(service.getClientConsultation(req.params.id, req.session));
   } catch (error) {
@@ -738,7 +865,7 @@ app.get("/api/clients/:id/consultation", requireAuth, requireOperationalAccess, 
   }
 });
 
-app.get("/api/clients/:id/consent-document", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/clients/:id/consent-document", (req, res) => {
   try {
     res.json(service.generateClientConsentDocument(req.params.id, req.session));
   } catch (error) {
@@ -746,7 +873,7 @@ app.get("/api/clients/:id/consent-document", requireAuth, requireOperationalAcce
   }
 });
 
-app.get("/api/appointments", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/appointments", (req, res) => {
   res.json(service.listAppointments(req.query.view || "day", req.query.anchorDate || new Date().toISOString(), false, req.session, {
     staffId: req.query.staffId || "",
     operatorId: req.query.operatorId || "",
@@ -756,7 +883,7 @@ app.get("/api/appointments", requireAuth, requireOperationalAccess, (req, res) =
   }));
 });
 
-app.post("/api/appointments", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/appointments", (req, res) => {
   try {
     res.status(201).json(service.saveAppointment(req.body || {}, req.session));
   } catch (error) {
@@ -764,7 +891,7 @@ app.post("/api/appointments", requireAuth, requireOperationalAccess, (req, res) 
   }
 });
 
-app.put("/api/appointments/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/appointments/:id", (req, res) => {
   try {
     res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -772,15 +899,15 @@ app.put("/api/appointments/:id", requireAuth, requireOperationalAccess, (req, re
   }
 });
 
-app.delete("/api/appointments/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/appointments/:id", (req, res) => {
   res.json(service.deleteAppointment(req.params.id, req.session));
 });
 
-app.get("/api/catalog/services", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/catalog/services", (req, res) => {
   res.json(service.listServices(req.session));
 });
 
-app.post("/api/catalog/services", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/catalog/services", (req, res) => {
   try {
     res.status(201).json(service.saveService(req.body || {}, req.session));
   } catch (error) {
@@ -788,7 +915,7 @@ app.post("/api/catalog/services", requireAuth, requireOperationalAccess, (req, r
   }
 });
 
-app.put("/api/catalog/services/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/catalog/services/:id", (req, res) => {
   try {
     res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -796,15 +923,15 @@ app.put("/api/catalog/services/:id", requireAuth, requireOperationalAccess, (req
   }
 });
 
-app.delete("/api/catalog/services/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/catalog/services/:id", (req, res) => {
   res.json(service.deleteService(req.params.id, req.session));
 });
 
-app.get("/api/catalog/staff", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/catalog/staff", (req, res) => {
   res.json(service.listStaff(req.session));
 });
 
-app.post("/api/catalog/staff", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/catalog/staff", (req, res) => {
   try {
     res.status(201).json(service.saveStaff(req.body || {}, req.session));
   } catch (error) {
@@ -812,7 +939,7 @@ app.post("/api/catalog/staff", requireAuth, requireOperationalAccess, (req, res)
   }
 });
 
-app.put("/api/catalog/staff/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/catalog/staff/:id", (req, res) => {
   try {
     res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -820,15 +947,15 @@ app.put("/api/catalog/staff/:id", requireAuth, requireOperationalAccess, (req, r
   }
 });
 
-app.delete("/api/catalog/staff/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/catalog/staff/:id", (req, res) => {
   res.json(service.deleteStaff(req.params.id, req.session));
 });
 
-app.get("/api/shifts", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/shifts", (req, res) => {
   res.json(service.listShifts(req.query.view || "month", req.query.anchorDate || new Date().toISOString(), req.query.staffId || "", req.session));
 });
 
-app.post("/api/shifts", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/shifts", (req, res) => {
   try {
     res.status(201).json(service.saveShift(req.body || {}, req.session));
   } catch (error) {
@@ -836,7 +963,7 @@ app.post("/api/shifts", requireAuth, requireOperationalAccess, (req, res) => {
   }
 });
 
-app.put("/api/shifts/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/shifts/:id", (req, res) => {
   try {
     res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -844,11 +971,11 @@ app.put("/api/shifts/:id", requireAuth, requireOperationalAccess, (req, res) => 
   }
 });
 
-app.delete("/api/shifts/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/shifts/:id", (req, res) => {
   res.json(service.deleteShift(req.params.id, req.session));
 });
 
-app.get("/api/shifts/export", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.get("/api/shifts/export", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.exportShiftReport(req.query || {}, req.session));
   } catch (error) {
@@ -856,11 +983,11 @@ app.get("/api/shifts/export", requireAuth, requireOperationalAccess, requirePlan
   }
 });
 
-app.get("/api/shifts/templates", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.get("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   res.json(service.listShiftTemplates(req.session));
 });
 
-app.post("/api/shifts/templates", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.post("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   try {
     res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
   } catch (error) {
@@ -868,7 +995,7 @@ app.post("/api/shifts/templates", requireAuth, requireOperationalAccess, require
   }
 });
 
-app.put("/api/shifts/templates/:id", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.put("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -876,11 +1003,11 @@ app.put("/api/shifts/templates/:id", requireAuth, requireOperationalAccess, requ
   }
 });
 
-app.delete("/api/shifts/templates/:id", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.delete("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
   res.json(service.deleteShiftTemplate(req.params.id, req.session));
 });
 
-app.post("/api/shifts/templates/generate", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.post("/api/shifts/templates/generate", requirePlan("silver"), (req, res) => {
   try {
     res.json(service.generateShiftTemplate(req.body || {}, req.session));
   } catch (error) {
@@ -888,11 +1015,11 @@ app.post("/api/shifts/templates/generate", requireAuth, requireOperationalAccess
   }
 });
 
-app.get("/api/catalog/resources", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/catalog/resources", (req, res) => {
   res.json(service.listResources(req.session));
 });
 
-app.post("/api/catalog/resources", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/catalog/resources", (req, res) => {
   try {
     res.status(201).json(service.saveResource(req.body || {}, req.session));
   } catch (error) {
@@ -900,7 +1027,7 @@ app.post("/api/catalog/resources", requireAuth, requireOperationalAccess, (req, 
   }
 });
 
-app.put("/api/catalog/resources/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/catalog/resources/:id", (req, res) => {
   try {
     res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -908,15 +1035,15 @@ app.put("/api/catalog/resources/:id", requireAuth, requireOperationalAccess, (re
   }
 });
 
-app.delete("/api/catalog/resources/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/catalog/resources/:id", (req, res) => {
   res.json(service.deleteResource(req.params.id, req.session));
 });
 
-app.get("/api/inventory/items", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/inventory/items", (req, res) => {
   res.json(service.listInventoryItems(req.session));
 });
 
-app.post("/api/inventory/items", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/inventory/items", (req, res) => {
   try {
     res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
   } catch (error) {
@@ -924,7 +1051,7 @@ app.post("/api/inventory/items", requireAuth, requireOperationalAccess, (req, re
   }
 });
 
-app.put("/api/inventory/items/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/inventory/items/:id", (req, res) => {
   try {
     res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -932,15 +1059,15 @@ app.put("/api/inventory/items/:id", requireAuth, requireOperationalAccess, (req,
   }
 });
 
-app.delete("/api/inventory/items/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/inventory/items/:id", (req, res) => {
   res.json(service.deleteInventoryItem(req.params.id, req.session));
 });
 
-app.get("/api/inventory/movements", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.get("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   res.json(service.listInventoryMovements(String(req.query.itemId || ""), req.session));
 });
 
-app.post("/api/inventory/movements", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.post("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   try {
     res.status(201).json(service.createInventoryMovement(req.body || {}, req.session));
   } catch (error) {
@@ -948,11 +1075,11 @@ app.post("/api/inventory/movements", requireAuth, requireOperationalAccess, requ
   }
 });
 
-app.get("/api/inventory/overview", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.get("/api/inventory/overview", requirePlan("silver"), (req, res) => {
   res.json(service.getInventoryOverview(req.session));
 });
 
-app.get("/api/profitability/overview", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.get("/api/profitability/overview", requirePlan("silver"), (req, res) => {
   res.json(service.getProfitabilityOverview({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
@@ -960,7 +1087,7 @@ app.get("/api/profitability/overview", requireAuth, requireOperationalAccess, re
   }, req.session));
 });
 
-app.get("/api/ai-gold/marketing", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/marketing", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     actions: [],
@@ -969,7 +1096,7 @@ app.get("/api/ai-gold/marketing", requireAuth, requireOperationalAccess, require
   }), () => service.getAiGoldMarketingSnapshot(req.session));
 });
 
-app.get("/api/ai-gold/profitability", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/profitability", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     summary: null,
@@ -981,7 +1108,7 @@ app.get("/api/ai-gold/profitability", requireAuth, requireOperationalAccess, req
   }, req.session));
 });
 
-app.get("/api/business-snapshot", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     generatedAt: new Date().toISOString(),
@@ -994,7 +1121,7 @@ app.get("/api/business-snapshot", requireAuth, requireOperationalAccess, require
   }, req.session));
 });
 
-app.get("/api/ai-gold/decision-center", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     title: "Corelia Decision Engine",
@@ -1006,7 +1133,7 @@ app.get("/api/ai-gold/decision-center", requireAuth, requireOperationalAccess, r
   }, req.session));
 });
 
-app.get("/api/ai-gold/capabilities", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1020,14 +1147,14 @@ app.get("/api/ai-gold/capabilities", requireAuth, requireOperationalAccess, requ
   }), () => service.getGoldCapabilities(req.session));
 });
 
-app.get("/api/ai-gold/progressive-intelligence", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/progressive-intelligence", requirePlan("gold"), (req, res) => {
   res.json(service.getProgressiveIntelligenceStatus(req.session, {
     force: req.query.force === "1",
     reason: req.query.force === "1" ? "api_force_refresh" : "api_read"
   }));
 });
 
-app.get("/api/ai-gold/decision-context", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1044,7 +1171,7 @@ app.get("/api/ai-gold/decision-context", requireAuth, requireOperationalAccess, 
   }, req.session));
 });
 
-app.get("/api/ai-gold/state", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     version: "corelia_state_v1",
@@ -1055,15 +1182,15 @@ app.get("/api/ai-gold/state", requireAuth, requireOperationalAccess, requirePlan
   }), () => service.getGoldState(req.session));
 });
 
-app.get("/api/ai-gold/state/snapshots", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/state/snapshots", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({}), () => service.getGoldState(req.session).snapshots || {});
 });
 
-app.get("/api/ai-gold/state/signals", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/state/signals", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({}), () => service.getGoldState(req.session).signals || {});
 });
 
-app.get("/api/corelia/capabilities", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/corelia/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1072,7 +1199,7 @@ app.get("/api/corelia/capabilities", requireAuth, requireOperationalAccess, requ
   }), () => service.getGoldCapabilities(req.session));
 });
 
-app.get("/api/corelia/decision-context", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/corelia/decision-context", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1087,7 +1214,7 @@ app.get("/api/corelia/decision-context", requireAuth, requireOperationalAccess, 
   }, req.session));
 });
 
-app.get("/api/corelia/decision-center", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/corelia/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     title: "Corelia Decision Engine",
@@ -1099,11 +1226,11 @@ app.get("/api/corelia/decision-center", requireAuth, requireOperationalAccess, r
   }, req.session));
 });
 
-app.get("/api/ai-gold/state/decision", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/state/decision", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldState(req.session).decision || {});
 });
 
-app.get("/api/ai-gold/onboarding/imports", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/onboarding/imports", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.listGoldOnboardingImports(req.session));
   } catch (error) {
@@ -1111,7 +1238,7 @@ app.get("/api/ai-gold/onboarding/imports", requireAuth, requireOperationalAccess
   }
 });
 
-app.post("/api/ai-gold/onboarding/analyze", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: analisi import Gold temporaneamente limitata"));
   }
@@ -1122,7 +1249,7 @@ app.post("/api/ai-gold/onboarding/analyze", requireAuth, requireOperationalAcces
   }
 });
 
-app.post("/api/ai-gold/onboarding/confirm", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: import Gold temporaneamente limitato"));
   }
@@ -1133,31 +1260,31 @@ app.post("/api/ai-gold/onboarding/confirm", requireAuth, requireOperationalAcces
   }
 });
 
-app.get("/api/fleet/overview", requireAuth, requireOperationalAccess, requireSuperAdminFleet, (req, res) => {
+app.get("/api/fleet/overview", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetOverview(req.session, fleetFilters(req)));
 });
 
-app.get("/api/fleet/maturity", requireAuth, requireOperationalAccess, requireSuperAdminFleet, (req, res) => {
+app.get("/api/fleet/maturity", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetMaturity(req.session, fleetFilters(req)));
 });
 
-app.get("/api/fleet/outliers", requireAuth, requireOperationalAccess, requireSuperAdminFleet, (req, res) => {
+app.get("/api/fleet/outliers", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetOutliers(req.session, fleetFilters(req)));
 });
 
-app.get("/api/fleet/alerts", requireAuth, requireOperationalAccess, requireSuperAdminFleet, (req, res) => {
+app.get("/api/fleet/alerts", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetAlerts(req.session, fleetFilters(req)));
 });
 
-app.get("/api/fleet/performance", requireAuth, requireOperationalAccess, requireSuperAdminFleet, (req, res) => {
+app.get("/api/fleet/performance", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetPerformance(req.session, fleetFilters(req)));
 });
 
-app.get("/api/fleet/oracle", requireAuth, requireOperationalAccess, requireSuperAdminFleet, (req, res) => {
+app.get("/api/fleet/oracle", requireSuperAdminFleet, (req, res) => {
   res.json(service.getFleetOracleSummary(req.session, fleetFilters(req)));
 });
 
-app.post("/api/ai-gold/ask", requireAuth, requireOperationalAccess, requirePlan("gold"), async (req, res) => {
+app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: AI temporaneamente limitata, agenda e cassa restano operative"));
   }
@@ -1168,7 +1295,23 @@ app.post("/api/ai-gold/ask", requireAuth, requireOperationalAccess, requirePlan(
   }
 });
 
-app.post("/api/ai-gold/command", requireAuth, requireOperationalAccess, requirePlan("gold"), async (req, res) => {
+app.post("/api/corelia/dialog", requirePlan("gold"), (req, res) => {
+  try {
+    const payload = req.body || {};
+    const structured = coreliaBridge.buildDialog(payload, req.session);
+    const dialogue = nyraDialogue.render(structured, { message: payload.message || payload.question || "" });
+    res.json({
+      identity: "corelia_nyra_bridge",
+      provider: "corelia_only",
+      structured,
+      dialogue
+    });
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Bridge Corelia/Nyra non disponibile");
+  }
+});
+
+app.post("/api/ai-gold/command", requirePlan("gold"), async (req, res) => {
   try {
     if (!service.hasGoldIntelligence(req.session)) {
       res.status(403).send("Comandi operativi disponibili solo con AI Gold.");
@@ -1180,11 +1323,11 @@ app.post("/api/ai-gold/command", requireAuth, requireOperationalAccess, requireP
   }
 });
 
-app.get("/api/ai-gold/marketing/autopilot", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/marketing/autopilot", requirePlan("gold"), (req, res) => {
   res.json(service.getAiMarketingAutopilot(req.session));
 });
 
-app.post("/api/ai-gold/marketing/autopilot/generate", requireAuth, requireOperationalAccess, requirePlan("gold"), async (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione marketing temporaneamente limitata"));
   }
@@ -1204,7 +1347,7 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requireAuth, requireOperat
   }
 });
 
-app.post("/api/ai-gold/marketing/autopilot/:id/status", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
@@ -1212,11 +1355,11 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requireAuth, requireOper
   }
 });
 
-app.get("/api/ai-gold/whatsapp/status", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/whatsapp/status", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldWhatsappStatus(req.session, whatsappService));
 });
 
-app.post("/api/ai-gold/whatsapp/preview", requireAuth, requireOperationalAccess, requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/whatsapp/preview", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.previewGoldWhatsappAction(req.body || {}, req.session, whatsappService));
   } catch (error) {
@@ -1224,7 +1367,7 @@ app.post("/api/ai-gold/whatsapp/preview", requireAuth, requireOperationalAccess,
   }
 });
 
-app.post("/api/ai-gold/whatsapp/send", requireAuth, requireOperationalAccess, requirePlan("gold"), async (req, res) => {
+app.post("/api/ai-gold/whatsapp/send", requirePlan("gold"), async (req, res) => {
   try {
     res.json(await service.sendGoldWhatsappAction(req.body || {}, req.session, whatsappService));
   } catch (error) {
@@ -1232,7 +1375,7 @@ app.post("/api/ai-gold/whatsapp/send", requireAuth, requireOperationalAccess, re
   }
 });
 
-app.post("/api/ai-gold/whatsapp/bulk-send", requireAuth, requireOperationalAccess, requirePlan("gold"), async (req, res) => {
+app.post("/api/ai-gold/whatsapp/bulk-send", requirePlan("gold"), async (req, res) => {
   try {
     res.json(await service.sendGoldWhatsappBulk(req.body || {}, req.session, whatsappService));
   } catch (error) {
@@ -1240,7 +1383,7 @@ app.post("/api/ai-gold/whatsapp/bulk-send", requireAuth, requireOperationalAcces
   }
 });
 
-app.post("/api/ai-gold/protocols/draft", requireAuth, requireOperationalAccess, requireSuperAdmin, requirePlan("silver"), async (req, res) => {
+app.post("/api/ai-gold/protocols/draft", requireSuperAdmin, requirePlan("silver"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione protocolli temporaneamente limitata"));
   }
@@ -1251,11 +1394,11 @@ app.post("/api/ai-gold/protocols/draft", requireAuth, requireOperationalAccess, 
   }
 });
 
-app.get("/api/treatments", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.get("/api/treatments", requirePlan("silver"), (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
-app.post("/api/treatments", requireAuth, requireOperationalAccess, requirePlan("silver"), (req, res) => {
+app.post("/api/treatments", requirePlan("silver"), (req, res) => {
   try {
     res.status(201).json(service.createTreatment(req.body || {}, req.session));
   } catch (error) {
@@ -1263,11 +1406,11 @@ app.post("/api/treatments", requireAuth, requireOperationalAccess, requirePlan("
   }
 });
 
-app.get("/api/protocols", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/protocols", (req, res) => {
   res.json(service.listProtocols(req.query.clientId, req.session));
 });
 
-app.post("/api/protocols", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/protocols", (req, res) => {
   try {
     res.status(201).json(service.saveProtocol(req.body || {}, req.session));
   } catch (error) {
@@ -1275,7 +1418,7 @@ app.post("/api/protocols", requireAuth, requireOperationalAccess, (req, res) => 
   }
 });
 
-app.put("/api/protocols/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/protocols/:id", (req, res) => {
   try {
     res.json(service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
@@ -1283,15 +1426,15 @@ app.put("/api/protocols/:id", requireAuth, requireOperationalAccess, (req, res) 
   }
 });
 
-app.delete("/api/protocols/:id", requireAuth, requireOperationalAccess, (req, res) => {
+app.delete("/api/protocols/:id", (req, res) => {
   res.json(service.deleteProtocol(req.params.id, req.session));
 });
 
-app.get("/api/payments", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/payments", (req, res) => {
   res.json(service.listPayments(req.query.clientId, req.session));
 });
 
-app.get("/api/payments/summary", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/payments/summary", (req, res) => {
   res.json(service.getPaymentsSummary({
     period: req.query.period || "day",
     anchorDate: req.query.anchorDate || "",
@@ -1300,13 +1443,13 @@ app.get("/api/payments/summary", requireAuth, requireOperationalAccess, (req, re
   }, req.session));
 });
 
-app.get("/api/payments/unlinked", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/payments/unlinked", (req, res) => {
   res.json(service.listUnlinkedPayments(req.session, {
     forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
   }));
 });
 
-app.post("/api/payments/cash-close", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/payments/cash-close", (req, res) => {
   try {
     res.json(service.closeCashdesk(req.body || {}, req.session));
   } catch (error) {
@@ -1314,7 +1457,7 @@ app.post("/api/payments/cash-close", requireAuth, requireOperationalAccess, (req
   }
 });
 
-app.post("/api/payments", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/payments", (req, res) => {
   try {
     res.status(201).json(service.createPayment(req.body || {}, req.session));
   } catch (error) {
@@ -1322,7 +1465,7 @@ app.post("/api/payments", requireAuth, requireOperationalAccess, (req, res) => {
   }
 });
 
-app.post("/api/payments/:id/link", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/payments/:id/link", (req, res) => {
   try {
     res.json(service.linkPayment(req.params.id, req.body || {}, req.session));
   } catch (error) {
@@ -1330,26 +1473,26 @@ app.post("/api/payments/:id/link", requireAuth, requireOperationalAccess, (req, 
   }
 });
 
-app.get("/api/data-quality", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/data-quality", (req, res) => {
   res.json(service.getDataQuality(req.session, {
     summaryOnly: isSafeModeActive() || req.query.summary === "1" || req.query.summary === "true",
     forceRefresh: !isSafeModeActive() && (req.query.forceRefresh === "1" || req.query.forceRefresh === "true")
   }));
 });
 
-app.get("/api/settings", requireAuth, requireOperationalAccess, (req, res) => {
+app.get("/api/settings", (req, res) => {
   res.json(service.getSettings(req.session));
 });
 
-app.put("/api/settings", requireAuth, requireOperationalAccess, (req, res) => {
+app.put("/api/settings", (req, res) => {
   res.json(service.saveSettings(req.body || {}, req.session));
 });
 
-app.post("/api/settings/reset", requireAuth, requireOperationalAccess, (req, res) => {
+app.post("/api/settings/reset", (req, res) => {
   res.json(service.resetSettings(req.session));
 });
 
-app.post("/api/admin/cleanup-test-data", requireAuth, requireOperationalAccess, requireSuperAdmin, (req, res) => {
+app.post("/api/admin/cleanup-test-data", requireSuperAdmin, (req, res) => {
   try {
     res.json(service.deleteSafeTestData(req.body || {}, req.session));
   } catch (error) {
@@ -1357,7 +1500,7 @@ app.post("/api/admin/cleanup-test-data", requireAuth, requireOperationalAccess, 
   }
 });
 
-app.post("/api/admin/reset-center-data", requireAuth, requireOperationalAccess, requireSuperAdmin, (req, res) => {
+app.post("/api/admin/reset-center-data", requireSuperAdmin, (req, res) => {
   try {
     res.json(service.resetCenterOperationalData(req.body || {}, req.session));
   } catch (error) {
@@ -1365,7 +1508,7 @@ app.post("/api/admin/reset-center-data", requireAuth, requireOperationalAccess, 
   }
 });
 
-app.post("/api/admin/gold-state/rebuild", requireAuth, requireOperationalAccess, requireSuperAdmin, (req, res) => {
+app.post("/api/admin/gold-state/rebuild", requireAuth, requireSuperAdmin, (req, res) => {
   try {
     res.json(service.rebuildGoldStateForTenant(req.body || {}, req.session));
   } catch (error) {
@@ -1373,7 +1516,7 @@ app.post("/api/admin/gold-state/rebuild", requireAuth, requireOperationalAccess,
   }
 });
 
-app.post("/api/admin/progressive-intelligence/recompute", requireAuth, requireOperationalAccess, requireSuperAdmin, (req, res) => {
+app.post("/api/admin/progressive-intelligence/recompute", requireAuth, requireSuperAdmin, (req, res) => {
   try {
     res.json(service.recomputeProgressiveIntelligenceForTenant(req.body || {}, req.session));
   } catch (error) {
@@ -1381,7 +1524,7 @@ app.post("/api/admin/progressive-intelligence/recompute", requireAuth, requireOp
   }
 });
 
-app.get("/api/admin/database-usage", requireAuth, requireOperationalAccess, requireSuperAdmin, async (req, res) => {
+app.get("/api/admin/database-usage", requireSuperAdmin, async (req, res) => {
   try {
     res.json(await service.getDatabaseUsage(req.session));
   } catch (error) {
@@ -1406,6 +1549,8 @@ async function bootstrap() {
   service = new DesktopMirrorService({ persistenceAdapter });
   await service.init();
   assistantService = new AssistantService(service);
+  coreliaBridge = new CoreliaBridge(service);
+  nyraDialogue = new NyraDialogueAdapter();
   whatsappService = new WhatsappService();
 
   app.listen(port, () => {
