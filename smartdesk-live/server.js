@@ -646,7 +646,7 @@ app.get("/api/auth/users", requireAuth, (req, res) => {
   }
 });
 
-app.post("/api/auth/users/:id/support-access", requireSuperAdmin, (req, res) => {
+app.post("/api/auth/users/:id/support-access", requireAuth, requireSuperAdmin, (req, res) => {
   try {
     res.json(service.openSupportAccess(req.params.id, req.body || {}, req.session));
   } catch (error) {
@@ -654,7 +654,7 @@ app.post("/api/auth/users/:id/support-access", requireSuperAdmin, (req, res) => 
   }
 });
 
-app.post("/api/auth/users/:id/status", requireSuperAdmin, (req, res) => {
+app.post("/api/auth/users/:id/status", requireAuth, requireSuperAdmin, (req, res) => {
   try {
     res.json(service.updateUserStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
