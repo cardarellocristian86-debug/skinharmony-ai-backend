@@ -1245,7 +1245,12 @@ app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.analyzeGoldOnboardingImport(req.body || {}, req.session));
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile analizzare i file");
+    const message = error instanceof Error ? error.message : "Impossibile analizzare i file";
+    res.status(400).json({
+      success: false,
+      code: "gold_onboarding_analyze_failed",
+      message
+    });
   }
 });
 
@@ -1256,7 +1261,12 @@ app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.confirmGoldOnboardingImport(req.body || {}, req.session));
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile completare import Gold");
+    const message = error instanceof Error ? error.message : "Impossibile completare import Gold";
+    res.status(400).json({
+      success: false,
+      code: "gold_onboarding_confirm_failed",
+      message
+    });
   }
 });
 
@@ -1505,6 +1515,17 @@ app.post("/api/admin/reset-center-data", requireSuperAdmin, (req, res) => {
     res.json(service.resetCenterOperationalData(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile eseguire reset centro");
+  }
+});
+
+app.post("/api/admin/cleanup-demo-centers", requireSuperAdmin, (req, res) => {
+  try {
+    res.json(service.cleanupDemoTestCenters(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Impossibile pulire i centri demo/test"
+    });
   }
 });
 
