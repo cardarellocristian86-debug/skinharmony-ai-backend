@@ -909,6 +909,253 @@ function computeGoldDecisionControlMetrics(goldDecision = {}, options = {}) {
   };
 }
 
+function clamp01(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(1, number));
+}
+
+function roundShadow(value, digits = 3) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Number(number.toFixed(digits));
+}
+
+function computeUniversalCoreShadowRisk(input = {}) {
+  const normalized = {
+    confidence: clamp01(input.confidence),
+    error_probability: clamp01(input.error_probability),
+    impact: clamp01(input.impact),
+    reversibility: clamp01(input.reversibility),
+    uncertainty: clamp01(input.uncertainty)
+  };
+  const weights = {
+    error: 0.35,
+    impact: 0.25,
+    reversibility: 0.25,
+    uncertainty: 0.15
+  };
+  const baseRisk =
+    normalized.error_probability * weights.error +
+    normalized.impact * weights.impact +
+    (1 - normalized.reversibility) * weights.reversibility +
+    normalized.uncertainty * weights.uncertainty;
+  const confidenceFactor = 1 - (normalized.confidence * 0.6);
+  let riskScore = clamp01(baseRisk * confidenceFactor);
+  const extremeIrreversibleCase =
+    normalized.impact > 0.9 &&
+    normalized.reversibility < 0.1 &&
+    normalized.error_probability > 0.6;
+  if (extremeIrreversibleCase) {
+    riskScore = Math.max(riskScore, 0.85);
+  }
+  let band = "low";
+  if (riskScore < 0.3) band = "low";
+  else if (riskScore < 0.55) band = "medium";
+  else if (riskScore < 0.8) band = "high";
+  else band = "blocked";
+  let shouldRetry =
+    normalized.error_probability > 0.4 &&
+    normalized.impact < 0.6 &&
+    normalized.reversibility > 0.5;
+  const shouldFallback =
+    band === "high" ||
+    riskScore > 0.55 ||
+    normalized.uncertainty > 0.6;
+  const shouldEscalate =
+    (riskScore > 0.8 || band === "blocked") &&
+    normalized.impact > 0.7 &&
+    normalized.reversibility < 0.3;
+  if (riskScore > 0.85) {
+    band = "blocked";
+    shouldRetry = false;
+  }
+  return {
+    version: "smartdesk_universal_core_shadow_risk_v1",
+    normalized,
+    weights,
+    risk_score: roundShadow(riskScore, 6),
+    band,
+    should_retry: shouldRetry,
+    should_fallback: shouldFallback,
+    should_escalate: shouldEscalate
+  };
+}
+
+function deriveUniversalCoreShadowDecision(risk = {}, validation = {}) {
+  const status = String(validation.status || "pass");
+  const impact = clamp01(risk.normalized?.impact || 0);
+  const reversibility = clamp01(risk.normalized?.reversibility || 0);
+  if (risk.band === "blocked") {
+    return { decision: "block", reason: "Risk score in blocked band" };
+  }
+  if (status === "escalate") {
+    return { decision: "escalate", reason: "Validation escalation" };
+  }
+  if (risk.band === "high" && impact > 0.7 && reversibility < 0.3) {
+    return { decision: "escalate", reason: "High risk with high impact and low reversibility" };
+  }
+  if (status === "fallback" || (risk.band === "high" && reversibility >= 0.3) || risk.should_fallback) {
+    return { decision: "fallback", reason: "Fallback triggered by risk or validation" };
+  }
+  if (risk.should_retry || status === "retry") {
+    return { decision: "retry", reason: "Retry condition met" };
+  }
+  return { decision: "allow", reason: "Risk acceptable and validation passed" };
+}
+
+function buildUniversalCoreShadow(decision = {}, context = {}) {
+  const confidence = clamp01(Number(decision.confidence ?? 0));
+  const rawRisk = clamp01(Number(decision.risk ?? 0));
+  const priority = clamp01(Number(decision.priority ?? decision.RAP_2 ?? decision.phi ?? 0));
+  const action = String(decision.action || "").toUpperCase();
+  const band = String(decision.band || "").toLowerCase();
+  const penaltyApplied = Boolean(decision.penaltyApplied);
+  const dataQualityScore = clamp01(Number(context.dataQualityScore ?? 0));
+  const isBlocked = action === "STOP" || action === "VERIFY" || band === "stop" || Boolean(decision.blocked);
+  const reversibility = clamp01(
+    action === "ACT_NOW"
+      ? 0.45
+      : action === "SUGGEST"
+        ? 0.7
+        : action === "MONITOR"
+          ? 0.9
+          : 0.35
+  );
+  const uncertainty = clamp01(
+    Math.max(
+      1 - confidence,
+      rawRisk * 0.55,
+      penaltyApplied ? 0.6 : 0,
+      dataQualityScore > 0 ? 1 - dataQualityScore : 0
+    )
+  );
+  const riskInput = {
+    confidence,
+    error_probability: clamp01(Math.max(1 - confidence, rawRisk * 0.7, penaltyApplied ? 0.45 : 0)),
+    impact: clamp01(Math.max(priority, rawRisk, action === "ACT_NOW" ? 0.65 : 0.35)),
+    reversibility,
+    uncertainty
+  };
+  const risk = computeUniversalCoreShadowRisk(riskInput);
+  const validation = {
+    status: isBlocked ? "fallback" : "pass",
+    gap_score: isBlocked ? roundShadow(Math.max(rawRisk, 0.55)) : 0
+  };
+  const governor = deriveUniversalCoreShadowDecision(risk, validation);
+  return {
+    version: "smartdesk_universal_core_shadow_v1",
+    risk,
+    validation,
+    governor,
+    runtime: {
+      selected_runtime: confidence >= 0.6 && rawRisk < 0.55 ? "v3_to_v2" : "v3_to_v0",
+      source: "smartdesk_shadow_bridge"
+    }
+  };
+}
+
+function sortByUniversalCoreShadow(items = []) {
+  const governorRank = {
+    allow: 0,
+    fallback: 1,
+    retry: 2,
+    escalate: 3,
+    block: 4
+  };
+  return [...items].sort((left, right) => {
+    const leftDecision = String(left?.universalCoreShadow?.governor?.decision || "allow");
+    const rightDecision = String(right?.universalCoreShadow?.governor?.decision || "allow");
+    const leftRank = governorRank[leftDecision] ?? 99;
+    const rightRank = governorRank[rightDecision] ?? 99;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return Number(right?.priority || right?.RAP_2 || right?.phi || 0) - Number(left?.priority || left?.RAP_2 || left?.phi || 0);
+  });
+}
+
+function partitionByUniversalCoreShadow(primaryAction = null, secondaryActions = [], blockedActions = []) {
+  const primaryKey = primaryAction ? `${String(primaryAction.domain || "")}:${String(primaryAction.entityId || "")}` : "";
+  const merged = [...secondaryActions, ...blockedActions]
+    .filter(Boolean)
+    .filter((item, index, array) => array.findIndex((candidate) => `${String(candidate?.domain || "")}:${String(candidate?.entityId || "")}` === `${String(item?.domain || "")}:${String(item?.entityId || "")}`) === index)
+    .filter((item) => `${String(item.domain || "")}:${String(item.entityId || "")}` !== primaryKey);
+  const nextBlocked = [];
+  const nextSecondary = [];
+  merged.forEach((item) => {
+    const shadowDecision = String(item?.universalCoreShadow?.governor?.decision || "");
+    const action = String(item?.action || "").toUpperCase();
+    const blocked =
+      shadowDecision === "block" ||
+      shadowDecision === "escalate" ||
+      action === "STOP" ||
+      action === "VERIFY" ||
+      Boolean(item?.blocked);
+    if (blocked) nextBlocked.push(item);
+    else nextSecondary.push(item);
+  });
+  return {
+    secondaryActions: sortByUniversalCoreShadow(nextSecondary),
+    blockedActions: sortByUniversalCoreShadow(nextBlocked),
+    alignment: {
+      secondary: nextSecondary.length,
+      blocked: nextBlocked.length,
+      blockedByShadow: nextBlocked.filter((item) => {
+        const decision = String(item?.universalCoreShadow?.governor?.decision || "");
+        return decision === "block" || decision === "escalate";
+      }).length
+    }
+  };
+}
+
+function chooseShadowValidatedPrimary(primaryAction = null, secondaryActions = [], options = {}) {
+  const profitabilityBlockedForConfig = Boolean(options.profitabilityBlockedForConfig);
+  if (profitabilityBlockedForConfig) {
+    return {
+      primaryAction,
+      promoted: false,
+      reason: "profitability_config_block"
+    };
+  }
+  const current = primaryAction || null;
+  const currentPriority = Number(current?.priority || current?.RAP_2 || current?.phi || 0);
+  const currentShadowDecision = String(current?.universalCoreShadow?.governor?.decision || "allow");
+  const currentAction = String(current?.action || "").toUpperCase();
+  const currentWeak =
+    !current ||
+    !String(current.label || "").trim() ||
+    ["MONITOR", "VERIFY", "STOP"].includes(currentAction) ||
+    ["block", "escalate"].includes(currentShadowDecision) ||
+    currentPriority < 0.45;
+  if (!currentWeak) {
+    return {
+      primaryAction: current,
+      promoted: false,
+      reason: "current_primary_stable"
+    };
+  }
+  const candidate = [...secondaryActions].find((item) => {
+    const decision = String(item?.universalCoreShadow?.governor?.decision || "allow");
+    const action = String(item?.action || "").toUpperCase();
+    const priority = Number(item?.priority || item?.RAP_2 || item?.phi || 0);
+    return (
+      ["allow", "fallback", "retry"].includes(decision) &&
+      !["VERIFY", "STOP"].includes(action) &&
+      priority >= Math.max(0.5, currentPriority + 0.08)
+    );
+  }) || null;
+  return candidate
+    ? {
+        primaryAction: candidate,
+        promoted: true,
+        reason: "shadow_candidate_promoted"
+      }
+    : {
+        primaryAction: current,
+        promoted: false,
+        reason: "no_stronger_shadow_candidate"
+      };
+}
+
 function goldDecisionTone(confidence, friction) {
   const k = Number(confidence || 0);
   const f = Number(friction || 0);
@@ -10192,6 +10439,19 @@ class DesktopMirrorService {
     if (!item) return null;
     const execution = this.canExecuteAction(item, context);
     const priority = Number(item.riskAdjustedPriority2 ?? item.RAP_trend_adj ?? item.riskAdjustedPriorityTrend ?? item.riskAdjustedPriority ?? item.phi ?? 0);
+    const universalCoreShadow = buildUniversalCoreShadow({
+      action: item.action,
+      band: item.band,
+      blocked: item.blocked,
+      confidence: Number(item.confidenceTemporal ?? item.confidence ?? 0),
+      risk: Number(item.enterpriseRisk ?? item.risk ?? 0),
+      priority,
+      RAP_2: Number(item.riskAdjustedPriority2 ?? 0),
+      phi: Number(item.phi || 0),
+      penaltyApplied: Boolean(item.penaltyApplied || item.reliabilityPenaltyApplied || item.temporalPenaltyApplied)
+    }, {
+      dataQualityScore: Number(context.dataQualityScore ?? 0)
+    });
     return {
       domain: item.domain || "",
       entityId: item.entityId || "",
@@ -10217,7 +10477,8 @@ class DesktopMirrorService {
       decisionMatrixVersion: item.decisionMatrixVersion || "",
       goldEngineVersion: item.enterpriseLayer || item.temporalVersion || "",
       canExecute: execution.allowed,
-      execution
+      execution,
+      universalCoreShadow
     };
   }
 
@@ -10240,25 +10501,29 @@ class DesktopMirrorService {
     }
     const snapshot = this.getBusinessSnapshot(options || {}, session);
     const dashboard = snapshot.goldEngine?.dashboard || {};
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     const topSignals = (dashboard.items || []).map((item) => this.compactGoldDecisionForSmart(item, {
       plan: "gold",
-      capabilities
+      capabilities,
+      dataQualityScore: Number(dataQuality.score || 0) / 100
     })).filter(Boolean);
     const primaryAction = this.compactGoldDecisionForSmart(dashboard.primaryAction || null, {
       plan: "gold",
-      capabilities
+      capabilities,
+      dataQualityScore: Number(dataQuality.score || 0) / 100
     });
     const secondaryActions = (dashboard.secondaryActions || []).map((item) => this.compactGoldDecisionForSmart(item, {
       plan: "gold",
-      capabilities
+      capabilities,
+      dataQualityScore: Number(dataQuality.score || 0) / 100
     })).filter(Boolean);
     const blockedActions = (dashboard.blockedActions || []).map((item) => this.compactGoldDecisionForSmart(item, {
       plan: "gold",
-      capabilities
+      capabilities,
+      dataQualityScore: Number(dataQuality.score || 0) / 100
     })).filter(Boolean);
     const confidenceValues = topSignals.map((item) => Number(item.confidence || 0));
     const riskValues = topSignals.map((item) => Number(item.risk || 0));
-    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     const profitabilityOverview = this.buildProfitabilityOverviewFromGoldState({}, session) || {};
     const anomalies = this.rankGoldDecisionAnomalies({
       dataQuality,
@@ -10279,20 +10544,58 @@ class DesktopMirrorService {
         suggestedAction: "apri servizi e operatori, poi completa costi e costo orario",
         explanationShort: `Il centro lavora gia, ma la redditivita resta bloccata finche completi ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`,
         explanationLong: `Non e un giudizio negativo sul centro. Volume, pagamenti e storico sono presenti, ma Gold evita letture economiche forti finche la configurazione economica non e completa. Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori per sbloccare redditivita e priorita economiche affidabili.`,
-        target: "profitability"
+        target: "profitability",
+        universalCoreShadow: buildUniversalCoreShadow({
+          action: "ACT_NOW",
+          band: "media",
+          blocked: false,
+          confidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : 0.45,
+          risk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : 0.28,
+          priority: 0.62,
+          RAP_2: 0.62,
+          phi: 0.62,
+          penaltyApplied: true
+        }, {
+          dataQualityScore: Number(dataQuality.score || 0) / 100
+        })
       }
       : primaryAction;
+    const alignedActions = partitionByUniversalCoreShadow(exposedPrimaryAction, secondaryActions, blockedActions);
+    const shadowValidated = chooseShadowValidatedPrimary(exposedPrimaryAction, alignedActions.secondaryActions, {
+      profitabilityBlockedForConfig
+    });
+    const finalPrimaryAction = shadowValidated.primaryAction || exposedPrimaryAction;
+    const finalSecondaryActions = alignedActions.secondaryActions.filter((item) => `${String(item.domain || "")}:${String(item.entityId || "")}` !== `${String(finalPrimaryAction?.domain || "")}:${String(finalPrimaryAction?.entityId || "")}`);
+    const universalCoreShadow = buildUniversalCoreShadow({
+      action: finalPrimaryAction?.action || "SUGGEST",
+      band: finalPrimaryAction?.band || "",
+      blocked: Boolean(alignedActions.blockedActions.length),
+      confidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : 0,
+      risk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : 0,
+      priority: Number(finalPrimaryAction?.priority || finalPrimaryAction?.RAP_2 || finalPrimaryAction?.phi || 0),
+      RAP_2: Number(finalPrimaryAction?.RAP_2 || 0),
+      phi: Number(finalPrimaryAction?.phi || 0),
+      penaltyApplied: profitabilityBlockedForConfig || alignedActions.blockedActions.some((item) => item.penaltyApplied)
+    }, {
+      dataQualityScore: Number(dataQuality.score || 0) / 100
+    });
     return {
       goldEnabled: true,
       capabilities,
       progressiveIntelligence: capabilities.progressiveIntelligence,
-      primaryAction: exposedPrimaryAction,
-      secondaryActions,
-      blockedActions,
+      primaryAction: finalPrimaryAction,
+      secondaryActions: finalSecondaryActions,
+      blockedActions: alignedActions.blockedActions,
       topSignals,
       anomalies,
       globalConfidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : 0,
       systemRisk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : 0,
+      universalCoreShadow,
+      universalCoreAlignment: {
+        ...alignedActions.alignment,
+        primaryPromoted: shadowValidated.promoted,
+        primaryReason: shadowValidated.reason
+      },
       lastUpdate: snapshot.generatedAt || nowIso(),
       decisionMatrixVersion: capabilities.decisionMatrixVersion,
       goldEngineVersion: snapshot.goldEngine?.engineVersion || capabilities.goldEngineVersion,
