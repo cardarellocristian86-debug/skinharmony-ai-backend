@@ -2,6 +2,7 @@
   const SCRIPT_ID = "skinharmony-gold-bridge-style";
   const PANEL_ID = "skinharmony-gold-priority-bridge";
   const ROUTES = new Set(["/", "/dashboard"]);
+  const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
 
   function injectStyle() {
     if (document.getElementById(SCRIPT_ID)) return;
@@ -101,6 +102,61 @@
           grid-template-columns: 1fr;
         }
       }
+      .admin-tools-panel {
+        margin: 18px 0 20px;
+        border-radius: 22px;
+        border: 1px solid rgba(121,159,184,0.18);
+        background: rgba(255,255,255,0.97);
+        box-shadow: 0 20px 50px rgba(18,56,77,0.08);
+        padding: 20px;
+      }
+      .admin-tools-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+      .admin-tools-title {
+        font-size: 20px;
+        font-weight: 800;
+        color: #163747;
+        margin: 0 0 6px;
+      }
+      .admin-tools-subtitle {
+        font-size: 13px;
+        line-height: 1.55;
+        color: #5b7f91;
+        margin: 0;
+      }
+      .admin-tools-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .admin-tools-button {
+        min-height: 44px;
+        padding: 0 16px;
+        border-radius: 14px;
+        border: 0;
+        background: linear-gradient(135deg, rgba(126,211,229,.94), rgba(47,171,200,.96));
+        color: #fff;
+        font-size: 13px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .admin-tools-button.secondary {
+        background: rgba(247,250,253,.98);
+        color: #163747;
+        border: 1px solid rgba(121,159,184,0.22);
+      }
+      .admin-tools-status {
+        margin-top: 12px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #5b7f91;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -116,6 +172,11 @@
     if (existing) existing.remove();
   }
 
+  function removeSettingsPanel() {
+    const existing = document.getElementById(SETTINGS_PANEL_ID);
+    if (existing) existing.remove();
+  }
+
   function shouldRender() {
     return ROUTES.has(window.location.pathname || "/");
   }
@@ -126,6 +187,20 @@
       throw new Error(String(response.status));
     }
     return response.json();
+  }
+
+  async function postJson(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.message || String(response.status));
+    }
+    return data;
   }
 
   function findAnchor() {
@@ -147,6 +222,24 @@
       }
     }
 
+    return root.firstElementChild;
+  }
+
+  function findSettingsAnchor() {
+    const root = document.getElementById("root");
+    if (!root) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = (node.textContent || "").trim();
+      if (text === "Dati centro") {
+        let current = node;
+        for (let i = 0; i < 5 && current; i += 1) {
+          if (current.tagName === "SECTION" || current.classList?.contains("card")) return current;
+          current = current.parentElement;
+        }
+      }
+    }
     return root.firstElementChild;
   }
 
@@ -229,14 +322,87 @@
     }
   }
 
+  function isSettingsRoute() {
+    return (window.location.pathname || "/") === "/settings";
+  }
+
+  function isSuperAdminSession() {
+    try {
+      const raw = window.localStorage.getItem("skinharmony-web-auth");
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      return String(parsed?.role || "").toLowerCase() === "superadmin";
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function buildSettingsPanel() {
+    const panel = document.createElement("section");
+    panel.id = SETTINGS_PANEL_ID;
+    panel.className = "admin-tools-panel";
+    panel.innerHTML = `
+      <div class="admin-tools-header">
+        <div>
+          <div class="admin-tools-title">Pulizia demo e test</div>
+          <div class="admin-tools-subtitle">Strumenti rapidi super admin per togliere tenant demo/test e ripulire il rumore operativo.</div>
+        </div>
+        <div class="gold-bridge-pill">super admin</div>
+      </div>
+      <div class="admin-tools-actions">
+        <button type="button" class="admin-tools-button" data-admin-action="cleanup-demo-centers">Elimina demo/test tenant</button>
+        <button type="button" class="admin-tools-button secondary" data-admin-action="cleanup-test-prefix">Pulisci test STRESS_</button>
+      </div>
+      <div class="admin-tools-status" data-admin-status>Pronto.</div>
+    `;
+    panel.addEventListener("click", async (event) => {
+      const action = event.target?.getAttribute?.("data-admin-action");
+      if (!action) return;
+      const status = panel.querySelector("[data-admin-status]");
+      status.textContent = "Esecuzione...";
+      try {
+        if (action === "cleanup-demo-centers") {
+          const result = await postJson("/api/admin/cleanup-demo-centers", {});
+          status.textContent = `Centri rimossi: ${(result.removedCenters || []).join(", ") || "nessuno"}.`;
+        }
+        if (action === "cleanup-test-prefix") {
+          const result = await postJson("/api/admin/cleanup-test-data", { prefix: "STRESS_" });
+          status.textContent = `Cleanup STRESS_ completato.`;
+          if (result?.deleted?.users || result?.deleted?.clients) {
+            status.textContent += ` Users ${result.deleted.users || 0}, clienti ${result.deleted.clients || 0}.`;
+          }
+        }
+      } catch (error) {
+        status.textContent = error.message || String(error);
+      }
+    });
+    return panel;
+  }
+
+  function renderSettingsTools() {
+    removeSettingsPanel();
+    if (!isSettingsRoute() || !isSuperAdminSession()) return;
+    injectStyle();
+    const anchor = findSettingsAnchor();
+    if (!anchor || document.getElementById(SETTINGS_PANEL_ID)) return;
+    const panel = buildSettingsPanel();
+    anchor.insertAdjacentElement("afterend", panel);
+  }
+
   function scheduleRender() {
     window.setTimeout(renderGoldBridge, 120);
     window.setTimeout(renderGoldBridge, 600);
     window.setTimeout(renderGoldBridge, 1400);
+    window.setTimeout(renderSettingsTools, 120);
+    window.setTimeout(renderSettingsTools, 600);
+    window.setTimeout(renderSettingsTools, 1400);
   }
 
   const observer = new MutationObserver(() => {
     if (shouldRender() && !document.getElementById(PANEL_ID)) {
+      scheduleRender();
+    }
+    if (isSettingsRoute() && !document.getElementById(SETTINGS_PANEL_ID)) {
       scheduleRender();
     }
   });
