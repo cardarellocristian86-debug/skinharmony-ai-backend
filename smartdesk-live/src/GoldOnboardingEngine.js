@@ -10,6 +10,7 @@ const ALLOWED_MIME_TYPES = new Set([
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ]);
+const ALLOWED_DECLARED_TYPES = new Set(["customers", "appointments", "payments"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -204,13 +205,27 @@ function detectFileTypeFromHeaders(headers = []) {
   const headerSet = new Set(headers);
   const hasPayment = ["importo", "totale", "pagato", "incasso", "amount"].some((key) => headerSet.has(key));
   const hasAppointment = ["data_appuntamento", "servizio", "trattamento", "operatore", "ora", "start_at"].some((key) => headerSet.has(key));
-  const hasCustomer = ["nome", "cliente", "nominativo", "telefono", "email", "cellulare"].some((key) => headerSet.has(key));
-  const count = [hasPayment, hasAppointment, hasCustomer].filter(Boolean).length;
-  if (count >= 2) return "mixed";
-  if (hasPayment) return "payments";
+  const hasCustomer = [
+    "first_name",
+    "last_name",
+    "telefono",
+    "email",
+    "cellulare",
+    "data_nascita",
+    "consenso_marketing",
+    "marketing",
+    "privacy_marketing"
+  ].some((key) => headerSet.has(key));
+  if (hasAppointment && hasPayment) return "mixed";
   if (hasAppointment) return "appointments";
+  if (hasPayment) return "payments";
   if (hasCustomer) return "customers";
   return "mixed";
+}
+
+function normalizeDeclaredType(value = "") {
+  const normalized = normalizeText(value);
+  return ALLOWED_DECLARED_TYPES.has(normalized) ? normalized : "";
 }
 
 function indexExistingClients(clients = []) {
@@ -315,14 +330,28 @@ class GoldOnboardingEngine {
       const fileHash = sha256(buffer);
       const rows = parseXlsx(buffer, name);
       if (!rows.length) throw new Error(`File Excel ${name}: nessuna riga leggibile.`);
-      return { name, format: "xlsx", fileHash, bytes: validation.estimatedBytes, rows };
+      return {
+        name,
+        format: "xlsx",
+        fileHash,
+        bytes: validation.estimatedBytes,
+        rows,
+        declaredType: normalizeDeclaredType(file.declaredType || file.typeHint || "")
+      };
     }
     const text = rawContent || (base64 ? Buffer.from(base64, "base64").toString("utf8") : "");
     const normalizedText = normalizeFileContentForHash(text);
     const rows = parseCsv(normalizedText);
     if (!rows.length) throw new Error(`File CSV ${name}: nessuna riga leggibile.`);
     const fileHash = sha256(Buffer.from(normalizedText, "utf8"));
-    return { name, format: "csv", fileHash, bytes: validation.estimatedBytes, rows };
+    return {
+      name,
+      format: "csv",
+      fileHash,
+      bytes: validation.estimatedBytes,
+      rows,
+      declaredType: normalizeDeclaredType(file.declaredType || file.typeHint || "")
+    };
   }
 
   detectFileType(file) {
@@ -404,14 +433,32 @@ class GoldOnboardingEngine {
     files.forEach((rawFile) => {
       const file = this.decodeFile(rawFile);
       const detectedType = this.detectFileType(file);
+      const declaredType = normalizeDeclaredType(rawFile.declaredType || file.declaredType || "");
+      if (!declaredType) {
+        throw new Error(`File ${file.name}: specifica il tipo file (customers, appointments o payments).`);
+      }
+      if (detectedType === "mixed") {
+        throw new Error(`File ${file.name}: header ambigui. Usa un file dedicato per ${declaredType}.`);
+      }
+      if (detectedType !== declaredType) {
+        throw new Error(`File ${file.name}: tipo dichiarato ${declaredType} ma header rilevati come ${detectedType}.`);
+      }
       fileHashes.push(file.fileHash);
-      fileSummaries.push({ name: file.name, format: file.format, fileHash: file.fileHash, detectedType, rows: file.rows.length, bytes: file.bytes });
+      fileSummaries.push({
+        name: file.name,
+        format: file.format,
+        fileHash: file.fileHash,
+        detectedType,
+        declaredType,
+        rows: file.rows.length,
+        bytes: file.bytes
+      });
       const headers = Object.keys(file.rows[0] || {}).filter((key) => !key.startsWith("__"));
       const mapping = buildMapping(headers);
 
       file.rows.forEach((row) => {
-        const type = this.classifyRow(row, detectedType);
-        const shouldCreateCustomer = type === "customers" || type === "appointments" || type === "payments" || detectedType === "mixed";
+        const type = declaredType;
+        const shouldCreateCustomer = type === "customers";
         if (shouldCreateCustomer) {
           const customer = this.normalizeCustomer(row, mapping);
           const duplicateKey = customer.email || customer.phone || normalizeText(customer.name);
@@ -432,7 +479,7 @@ class GoldOnboardingEngine {
           }
         }
 
-        if (type === "appointments" || detectedType === "mixed") {
+        if (type === "appointments") {
           const appointment = this.normalizeAppointment(row, mapping);
           if (!appointment.startAt || !appointment.clientName) {
             pushSnapshotRow(snapshots.import_appointments_snapshot, this.recordSnapshotItem("appointment", row, appointment, "INVALID", ["Data o cliente appuntamento mancante"]));
@@ -443,7 +490,7 @@ class GoldOnboardingEngine {
           }
         }
 
-        if (type === "payments" || detectedType === "mixed") {
+        if (type === "payments") {
           const payment = this.normalizePayment(row, mapping);
           if (payment.amountCents <= 0) {
             pushSnapshotRow(snapshots.import_payments_snapshot, this.recordSnapshotItem("payment", row, payment, "INVALID", ["Importo pagamento non valido"]));
@@ -581,6 +628,7 @@ class GoldOnboardingEngine {
     const created = { customers: [], appointments: [], payments: [] };
     const skippedDuplicates = { customers: 0, appointments: 0, payments: 0 };
     const skippedReview = [];
+    const hardValidationErrors = [];
     const clientByName = new Map();
     const existingClients = this.service.filterByCenter(this.service.clientsRepository.list(), session);
     const clientIndex = indexExistingClients(existingClients);
@@ -621,6 +669,17 @@ class GoldOnboardingEngine {
     (snapshots.import_appointments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
     appointmentRows.forEach((item) => {
       const appointment = item.normalized || {};
+      if (!appointment.serviceName || !appointment.staffName) {
+        hardValidationErrors.push({
+          type: "appointment",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: "Appuntamento senza servizio o operatore"
+        });
+      }
+    });
+    appointmentRows.forEach((item) => {
+      const appointment = item.normalized || {};
       const client = clientByName.get(normalizeText(appointment.clientName || ""));
       const duplicateAppointment = this.service.filterByCenter(this.service.appointmentsRepository.list(), session).find((existing) => (
         normalizeText(existing.clientName || existing.walkInName || "") === normalizeText(appointment.clientName || "") &&
@@ -639,6 +698,26 @@ class GoldOnboardingEngine {
       created.appointments.push(saved);
     });
 
+    const importedAppointments = created.appointments.concat(this.service.filterByCenter(this.service.appointmentsRepository.list(), session));
+    const latestVisitByClientId = new Map();
+    importedAppointments.forEach((appointment) => {
+      const clientId = String(appointment.clientId || "").trim();
+      const startAt = String(appointment.startAt || appointment.createdAt || "");
+      const status = String(appointment.status || "").toLowerCase();
+      const time = new Date(startAt).getTime();
+      if (!clientId || !Number.isFinite(time) || ["cancelled", "no_show"].includes(status)) return;
+      const current = latestVisitByClientId.get(clientId);
+      if (!current || time > current.time) {
+        latestVisitByClientId.set(clientId, { time, startAt });
+      }
+    });
+    latestVisitByClientId.forEach((visit, clientId) => {
+      this.service.clientsRepository.update(clientId, (current) => ({
+        ...current,
+        lastVisit: visit.startAt
+      }));
+    });
+
     const appointmentByClientAndDay = new Map();
     created.appointments.concat(this.service.filterByCenter(this.service.appointmentsRepository.list(), session)).forEach((appointment) => {
       const key = `${normalizeText(appointment.clientName || appointment.walkInName || "")}:${String(appointment.startAt || "").slice(0, 10)}`;
@@ -649,6 +728,21 @@ class GoldOnboardingEngine {
       ...(snapshots.import_payments_snapshot?.reviewRows || []).filter(shouldImportReview)
     ];
     (snapshots.import_payments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    paymentRows.forEach((item) => {
+      const payment = item.normalized || {};
+      if (!payment.walkInName || Number(payment.amountCents || 0) <= 0) {
+        hardValidationErrors.push({
+          type: "payment",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: !payment.walkInName ? "Pagamento senza cliente" : "Pagamento con importo non valido"
+        });
+      }
+    });
+    if (hardValidationErrors.length) {
+      const first = hardValidationErrors[0];
+      throw new Error(`Import bloccato: ${first.reason} (record ${first.id}${first.sourceRow ? `, riga ${first.sourceRow}` : ""}).`);
+    }
     paymentRows.forEach((item) => {
       const payment = item.normalized || {};
       const client = clientByName.get(normalizeText(payment.walkInName || ""));
