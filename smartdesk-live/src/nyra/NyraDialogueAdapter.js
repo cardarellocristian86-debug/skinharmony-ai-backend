@@ -33,7 +33,81 @@ function isBriefQuestion(message = "", intent = "") {
   return normalized.split(/\s+/).filter(Boolean).length <= 8 && !/(spiega|perche|riassumi|andamento|confronta)/.test(normalized);
 }
 
-function buildReply(z, opts = {}) {
+function hashString(value = "") {
+  let hash = 0;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) - hash) + text.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function chooseVariant(length, seed = "") {
+  if (!length || length <= 1) return 0;
+  return hashString(seed) % length;
+}
+
+function firstNonEmpty(values = [], fallback = "") {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return fallback;
+}
+
+function composeSentence(parts = []) {
+  return parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+\./g, ".")
+    .replace(/\s+,/g, ",")
+    .trim();
+}
+
+function pickActionLead(tone, variant, action, next) {
+  const direct = [
+    `Parti da ${action}.`,
+    `Muoviti su ${action}.`,
+    `La mossa adesso e ${action}.`
+  ];
+  const consultative = [
+    `Io partirei da ${action}.`,
+    `Se vuoi una mossa pulita, partirei da ${action}.`,
+    `Ti porterei su ${action}.`
+  ];
+  const soft = [
+    `Prima ${next}.`,
+    `Resterei prudente: ${next}.`,
+    `La mossa piu sicura e ${next}.`
+  ];
+  const bank = tone === "direct" ? direct : tone === "consultative" ? consultative : soft;
+  return bank[variant % bank.length];
+}
+
+function pickReasonLead(replyMode, variant, reason, detail, fallback) {
+  const content = firstNonEmpty([reason, detail], fallback);
+  const diagnosis = [
+    `Il punto che pesa davvero e questo: ${content}`,
+    `${content}`,
+    `La chiave da leggere e ${content}`
+  ];
+  const explanation = [
+    `In sintesi: ${content}.`,
+    `Il senso operativo e questo: ${content}.`,
+    `La lettura corta e ${content}.`
+  ];
+  const decision = [
+    `${content}.`,
+    `Motivo: ${content}.`,
+    `${content}.`
+  ];
+  const bank = replyMode === "diagnosis" ? diagnosis : replyMode === "explanation" ? explanation : decision;
+  return bank[variant % bank.length];
+}
+
+function nyraGenerateReply(z, opts = {}) {
   const tone = determineTone(z);
   const replyMode = determineReplyMode(z);
   const brief = isBriefQuestion(opts.message || "", z.intent);
@@ -44,30 +118,53 @@ function buildReply(z, opts = {}) {
   const detail = Array.isArray(z.secondarySignals) && z.secondarySignals[0] ? String(z.secondarySignals[0]) : "";
   const conflict = Number(z?.v7?.conflictIndex || 0);
   const conflictNote = conflict >= 0.45 ? " Il quadro è misto, quindi tengo la risposta stretta sui fatti già confermati." : "";
+  const variabilitySeed = [
+    z.intent,
+    primary,
+    action,
+    next,
+    tone,
+    replyMode,
+    opts.variationIndex ?? ""
+  ].join("|");
+  const variant = chooseVariant(3, variabilitySeed);
+  const fallbackReason = replyMode === "diagnosis"
+    ? "Questa è la parte che incide davvero sulla decisione."
+    : replyMode === "explanation"
+      ? action
+      : tone === "soft"
+        ? "Il quadro è utile ma va letto con cautela."
+        : "Il contesto è abbastanza leggibile per una scelta operativa.";
 
   if (brief) {
-    if (tone === "direct") {
-      return `${primary}. Parti da ${action}.${conflictNote}`;
-    }
-    if (tone === "consultative") {
-      return `${primary}. Se fai una sola cosa, parti da ${action}.${conflictNote}`;
-    }
-    return `${primary}. Prima ${next}.${conflictNote}`;
+    const briefAction = pickActionLead(tone, variant, action, next);
+    return composeSentence([
+      `${primary}.`,
+      briefAction
+    ]) + conflictNote;
   }
 
+  const actionLead = pickActionLead(tone, variant, action, next);
+  const reasonLead = pickReasonLead(replyMode, variant, reason, detail, fallbackReason);
+  const orderVariants = [
+    [`${primary}.`, actionLead, reasonLead],
+    [`${primary}.`, reasonLead, actionLead],
+    [actionLead, `${primary}.`, reasonLead]
+  ];
+  const ordered = orderVariants[variant % orderVariants.length];
+
   if (replyMode === "diagnosis") {
-    return `${primary}. Il punto da leggere è ${action}. ${reason || detail || "Questa è la parte che incide davvero sulla decisione."}${conflictNote}`;
+    return composeSentence(ordered) + conflictNote;
   }
   if (replyMode === "explanation") {
-    return `${primary}. In sintesi: ${reason || detail || action}. ${next}.${conflictNote}`;
+    return composeSentence([
+      `${primary}.`,
+      reasonLead,
+      variant === 2 ? `Poi ${next}.` : `${next}.`
+    ]) + conflictNote;
   }
-  if (tone === "direct") {
-    return `${primary}. Parti da ${action}. ${reason || detail || "Il segnale è abbastanza forte da muoversi ora."}${conflictNote}`;
-  }
-  if (tone === "consultative") {
-    return `${primary}. Ti guiderei da qui: ${action}. ${reason || detail || "Il contesto è abbastanza leggibile per una scelta operativa."}${conflictNote}`;
-  }
-  return `${primary}. Resterei prudente: ${next}. ${reason || detail || "Il quadro è utile ma va letto con cautela."}${conflictNote}`;
+
+  return composeSentence(ordered) + conflictNote;
 }
 
 function coherenceCheck(z, r) {
@@ -89,14 +186,22 @@ function coherenceCheck(z, r) {
   };
 }
 
+function selectWarnings(coreliaOutput = {}) {
+  const risks = Array.isArray(coreliaOutput.risks) ? coreliaOutput.risks.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  if (!risks.length) return [];
+  const critical = risks.filter((item) => /alto|critico|sotto soglia|sporchi|verificare/i.test(item));
+  const preferred = critical.length ? critical : risks;
+  return preferred.slice(0, 3);
+}
+
 class NyraDialogueAdapter {
   render(coreliaOutput, opts = {}) {
     const tone = determineTone(coreliaOutput);
-    const warnings = (Array.isArray(coreliaOutput.risks) ? coreliaOutput.risks : []).slice(0, 2);
+    const warnings = selectWarnings(coreliaOutput);
     const replyMode = determineReplyMode(coreliaOutput);
     const response = {
       identity: "nyra",
-      reply: buildReply(coreliaOutput, opts),
+      reply: nyraGenerateReply(coreliaOutput, opts),
       tone,
       replyMode,
       uiReadingBand: String(coreliaOutput.uiReadingBand || ""),
@@ -127,5 +232,6 @@ module.exports = {
   NyraDialogueAdapter,
   determineTone,
   determineReplyMode,
-  coherenceCheck
+  coherenceCheck,
+  nyraGenerateReply
 };
