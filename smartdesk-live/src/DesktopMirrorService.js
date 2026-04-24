@@ -2812,6 +2812,32 @@ class DesktopMirrorService {
         dashboard: {
           source: "gold_state",
           items: [],
+          primaryAction: state.decision?.primaryAction
+            ? {
+              ...state.decision.primaryAction,
+              label: state.decision.primaryAction.label || state.decision.explanationShort || "Priorità Gold",
+              suggestedAction: state.decision.primaryAction.label || state.decision.explanationShort || "gestisci priorità",
+              confidence: Number(state.components?.Conf || 0),
+              risk: Number(state.signals?.operationalRisk || 0)
+            }
+            : null,
+          secondaryActions: Array.isArray(state.decision?.secondaryActions)
+            ? state.decision.secondaryActions.map((item) => ({
+              ...item,
+              suggestedAction: item.label || "gestisci priorità secondaria",
+              confidence: Number(state.components?.Conf || 0),
+              risk: Number(state.signals?.operationalRisk || 0)
+            }))
+            : [],
+          blockedActions: Array.isArray(state.decision?.blockedActions)
+            ? state.decision.blockedActions.map((item) => ({
+              domain: "blocked",
+              entityId: String(item || ""),
+              label: String(item || ""),
+              action: "VERIFY",
+              suggestedAction: String(item || "")
+            }))
+            : [],
           summary: state.decision || null
         }
       },
@@ -4702,6 +4728,89 @@ class DesktopMirrorService {
       success: true,
       prefix,
       centerId,
+      deleted
+    };
+  }
+
+  cleanupDemoTestCenters(payload = {}, session = null) {
+    if (!this.isSuperAdminSession(session)) {
+      throw new Error("Cleanup demo/test riservato al super admin");
+    }
+    const keepCenterIds = new Set(
+      [DEFAULT_CENTER_ID]
+        .concat(Array.isArray(payload.keepCenterIds) ? payload.keepCenterIds : [])
+        .concat(payload.keepCenterId ? [payload.keepCenterId] : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    );
+    const keepUsernames = new Set(
+      [DEFAULT_ADMIN_USERNAME]
+        .concat(Array.isArray(payload.keepUsernames) ? payload.keepUsernames : [])
+        .concat(payload.keepUsername ? [payload.keepUsername] : [])
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const markerMatch = (text = "") => {
+      const normalized = normalizeText(text);
+      return (
+        normalized.startsWith("tenant") ||
+        normalized.includes("demo") ||
+        normalized.includes("test") ||
+        normalized.includes("stress") ||
+        normalized.includes("qa") ||
+        normalized.includes("sandbox")
+      );
+    };
+    const users = this.usersRepository.list();
+    const removableUsers = users.filter((user) => {
+      const role = String(user.role || "").toLowerCase();
+      const centerId = String(user.centerId || "").trim();
+      const username = String(user.username || "").trim().toLowerCase();
+      if (role === "superadmin") return false;
+      if (keepCenterIds.has(centerId) || keepUsernames.has(username)) return false;
+      return markerMatch(centerId) || markerMatch(username) || markerMatch(user.centerName || "") || markerMatch(user.businessName || "");
+    });
+    const centerIdsToDelete = Array.from(new Set(removableUsers.map((user) => String(user.centerId || "").trim()).filter(Boolean)));
+    const belongsToDeletedCenter = (item = {}) => centerIdsToDelete.includes(String(item.centerId || "").trim());
+    const repositories = {
+      users: this.usersRepository,
+      clients: this.clientsRepository,
+      appointments: this.appointmentsRepository,
+      services: this.servicesRepository,
+      staff: this.staffRepository,
+      shifts: this.shiftsRepository,
+      shiftTemplates: this.shiftTemplatesRepository,
+      resources: this.resourcesRepository,
+      inventory: this.inventoryRepository,
+      inventoryMovements: this.inventoryMovementsRepository,
+      payments: this.paymentsRepository,
+      cashClosures: this.cashClosuresRepository,
+      treatments: this.treatmentsRepository,
+      protocols: this.protocolsRepository,
+      aiMarketingActions: this.aiMarketingActionsRepository,
+      goldState: this.goldStateRepository,
+      whatsappMessages: this.whatsappMessagesRepository,
+      sales: this.salesRepository
+    };
+    const deleted = {};
+    Object.entries(repositories).forEach(([name, repository]) => {
+      deleted[name] = repository.deleteWhere((item) => belongsToDeletedCenter(item));
+    });
+    const settingsStore = this.settingsRepository.list();
+    let removedSettingsCenters = 0;
+    if (settingsStore && !Array.isArray(settingsStore) && typeof settingsStore === "object") {
+      centerIdsToDelete.forEach((centerId) => {
+        if (centerId !== "default" && settingsStore[centerId]) {
+          delete settingsStore[centerId];
+          removedSettingsCenters += 1;
+        }
+      });
+      this.settingsRepository.write(settingsStore);
+    }
+    return {
+      success: true,
+      removedCenters: centerIdsToDelete,
+      removedSettingsCenters,
       deleted
     };
   }
@@ -10729,7 +10838,84 @@ class DesktopMirrorService {
       .sort((a, b) => Number(b.riskAdjustedPriority2 ?? b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriority2 ?? a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.netExpectedUtility || 0) - Number(a.netExpectedUtility || 0) || Number(b.riskAdjustedPriorityTrend ?? b.riskAdjustedPriority ?? 0) - Number(a.riskAdjustedPriorityTrend ?? a.riskAdjustedPriority ?? 0) || Number(b.phi || 0) - Number(a.phi || 0))
       .slice(0, 12);
     const actionableItems = allItems.filter((item) => !["STOP", "VERIFY"].includes(String(item.action || "")) && Number(item.riskAdjustedPriority2 ?? 0) >= 0.25);
-    const primaryAction = actionableItems[0] || allItems.find((item) => String(item.action || "") === "VERIFY") || allItems[0] || null;
+    const fallbackItems = [];
+    const profitabilityReliable = dataQuality?.profitabilityReliable !== false;
+    const clientsMissingLastVisit = Number(dataQuality?.metrics?.clientsMissingLastVisit || 0);
+    const clientsTotal = Math.max(1, Number(dataQuality?.metrics?.clients || 0));
+    const marketingCandidates = Number(branches.marketing?.summary?.total || 0);
+    const agendaAttention = String(branches.agenda?.summary?.status || "") === "attenzione";
+    if (!profitabilityReliable) {
+      if (clientsMissingLastVisit >= Math.max(10, Math.floor(clientsTotal * 0.25))) {
+        fallbackItems.push(this.toGoldDecisionItem("marketing", "fallback-last-visit", computeGoldDecisionScore("fallback_last_visit", {
+          needScore: normalizeScore(clientsMissingLastVisit / clientsTotal),
+          valueScore: 0.62,
+          urgencyScore: 0.72,
+          coherenceScore: 0.78,
+          frictionScore: 0.16,
+          suggestedAction: "completa continuita clienti",
+          explanation: "Mancano ultime visite su una quota rilevante di clienti: va ricostruita la continuità prima delle letture economiche."
+        }), {
+          label: "Completa continuità clienti",
+          output: "ricostruisci ultime visite e richiami",
+          target: "clients",
+          suggestedAction: "verifica clienti storici e richiama i fuori routine",
+          explanationShort: "Priorità operativa: recupera continuità clienti",
+          explanationLong: "La redditività non è affidabile, ma puoi lavorare subito sulla continuità clienti ricostruendo ultime visite e richiami."
+        }));
+      } else if (marketingCandidates > 0) {
+        fallbackItems.push(this.toGoldDecisionItem("marketing", "fallback-recall", computeGoldDecisionScore("fallback_recall", {
+          needScore: normalizeScore(marketingCandidates / 5),
+          valueScore: 0.68,
+          urgencyScore: 0.7,
+          coherenceScore: 0.84,
+          frictionScore: 0.14,
+          suggestedAction: "richiama clienti inattivi",
+          explanation: "La redditività è ancora da verificare, ma il marketing Gold vede clienti già pronti a un richiamo morbido."
+        }), {
+          label: "Richiama clienti inattivi",
+          output: "attiva recall morbido",
+          target: "marketing",
+          suggestedAction: "apri marketing e approva i richiami più utili",
+          explanationShort: "Puoi lavorare subito sui richiami",
+          explanationLong: "Anche senza margini affidabili il centro può lavorare su continuità e riattivazione clienti."
+        }));
+      } else if (agendaAttention) {
+        fallbackItems.push(this.toGoldDecisionItem("agenda", "fallback-agenda", computeGoldDecisionScore("fallback_agenda", {
+          needScore: 0.62,
+          valueScore: 0.58,
+          urgencyScore: 0.7,
+          coherenceScore: 0.82,
+          frictionScore: 0.12,
+          suggestedAction: "riempi agenda",
+          explanation: "La redditività non è affidabile, ma l'agenda mostra attenzione operativa: prima riempi volume e continuità."
+        }), {
+          label: "Riempi agenda",
+          output: "copri slot e giornate deboli",
+          target: "agenda",
+          suggestedAction: "apri agenda e copri i buchi con recall mirati",
+          explanationShort: "Prima agenda e continuità, poi margini",
+          explanationLong: "Con margini ancora non affidabili, la leva più utile resta riempire agenda e stabilizzare il flusso clienti."
+        }));
+      } else {
+        fallbackItems.push(this.toGoldDecisionItem("dashboard", "fallback-costs", computeGoldDecisionScore("fallback_costs", {
+          needScore: normalizeScore(Number(dataQuality?.metrics?.servicesMissingCosts || 0) / Math.max(1, Number(dataQuality?.metrics?.services || 0))),
+          valueScore: 0.5,
+          urgencyScore: 0.55,
+          coherenceScore: 0.92,
+          frictionScore: 0.08,
+          suggestedAction: "verifica dati costi",
+          explanation: "La redditività è bloccata da costi mancanti: la prima azione è completare il catalogo economico."
+        }), {
+          label: "Verifica dati costi",
+          output: "completa costi servizi",
+          target: "profitability",
+          suggestedAction: "apri servizi e completa costi prodotti o tecnologie",
+          explanationShort: "Serve completare i costi per sbloccare Gold",
+          explanationLong: "Il sistema legge bene il centro ma non può promuovere decisioni economiche finché i costi servizio restano vuoti."
+        }));
+      }
+    }
+    const primaryAction = actionableItems[0] || fallbackItems[0] || allItems.find((item) => String(item.action || "") === "VERIFY") || allItems[0] || null;
     const secondaryActions = allItems.filter((item) => primaryAction && `${item.domain}:${item.entityId}` !== `${primaryAction.domain}:${primaryAction.entityId}` && !["STOP", "VERIFY"].includes(String(item.action || ""))).slice(0, 3);
     const blockedActions = allItems.filter((item) => ["STOP", "VERIFY"].includes(String(item.action || ""))).slice(0, 5);
     const v7 = this.computeDecisionCenterV7(allItems);
