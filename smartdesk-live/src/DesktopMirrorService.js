@@ -10268,7 +10268,7 @@ class DesktopMirrorService {
     });
     const servicesMissingCosts = Number(dataQuality.metrics?.servicesMissingCosts || 0);
     const operatorsMissingHourlyCost = Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0);
-    const profitabilityBlockedForConfig = dataQuality.profitabilityReliable === false && (servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0);
+    const profitabilityBlockedForConfig = servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0;
     const exposedPrimaryAction = profitabilityBlockedForConfig
       ? {
         ...(primaryAction || {}),
@@ -11468,7 +11468,12 @@ class DesktopMirrorService {
     const profitabilityBlockedForConfig = Number(dataQuality.metrics?.servicesMissingCosts || 0) > 0
       || Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0;
     const goldEnginePriorityItems = (goldEngine.dashboard?.items || []).slice(0, 5).map((item) => {
-      const isEconomicGapItem = String(item.entityId || "").includes("economic-revenue-gap") || String(item.domain || "") === "dashboard";
+      const itemDomain = String(item.domain || "").toLowerCase();
+      const itemEntityId = String(item.entityId || "").toLowerCase();
+      const isEconomicGapItem = itemDomain === "dashboard"
+        || itemDomain === "economic"
+        || itemEntityId.includes("economic-revenue-gap")
+        || itemEntityId.includes("revenue-gap");
       if (profitabilityBlockedForConfig && isEconomicGapItem) {
         return {
           id: `gold-engine-${item.domain}-${item.entityId}`,
@@ -11950,8 +11955,12 @@ class DesktopMirrorService {
       valid: false,
       reason: "state_unavailable"
     });
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
+    const servicesMissingCosts = Number(dataQuality.metrics?.servicesMissingCosts || 0);
+    const operatorsMissingHourlyCost = Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0);
+    const profitabilityBlockedForConfig = servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0;
     const snapshot = this.getBusinessSnapshot(options, session);
-    return snapshot.profitability || {
+    const profitability = snapshot.profitability || {
       goldEnabled: true,
       generatedAt: snapshot.generatedAt || nowIso(),
       summary: {},
@@ -11960,6 +11969,40 @@ class DesktopMirrorService {
       suggestions: [],
       sourceLayer: "business_snapshot"
     };
+    if (profitabilityBlockedForConfig && (!Array.isArray(profitability.suggestions) || profitability.suggestions.length === 0)) {
+      return {
+        ...profitability,
+        alerts: [{
+          level: "warning",
+          title: "Redditività da configurare: configurazione economica incompleta",
+          body: `La redditivita non e leggibile finche non completi ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`,
+          serviceId: "profitability-config-block"
+        }],
+        suggestions: [{
+          id: "profitability-config-block",
+          name: "Redditività da configurare",
+          executions: Number(profitability.summary?.executions || 0),
+          revenueCents: Number(profitability.summary?.revenueCents || 0),
+          costCents: Number(profitability.summary?.costCents || 0),
+          profitCents: Number(profitability.summary?.profitCents || 0),
+          laborCostCents: 0,
+          materialCostCents: 0,
+          technologyCostCents: 0,
+          marginPercent: 0,
+          averageRevenueCents: 0,
+          averageCostCents: 0,
+          confidence: "bassa",
+          sourceFlags: ["config_required"],
+          economicGapCents: 0,
+          clearConclusion: "lettura economica non ancora affidabile",
+          operatingAction: "completa configurazione costi",
+          nextAction: `Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori prima di usare questa lettura come guida economica.`,
+          status: "CONFIG_REQUIRED",
+          suggestion: "La redditivita resta prudente finche la configurazione economica non e completa."
+        }]
+      };
+    }
+    return profitability;
   }
 }
 
