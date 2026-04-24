@@ -537,6 +537,27 @@ function groupByAppointmentId(items = []) {
   return grouped;
 }
 
+function buildInferredOperatorServiceMap(appointments = [], staff = []) {
+  const map = new Map();
+  const staffIdByName = new Map((Array.isArray(staff) ? staff : []).map((operator) => [
+    normalizeText(operator.name || ""),
+    String(operator.id || "")
+  ]).filter((entry) => entry[0] && entry[1]));
+  (Array.isArray(appointments) ? appointments : []).forEach((appointment) => {
+    const status = String(appointment.status || "").toLowerCase();
+    if (["cancelled", "no_show"].includes(status)) return;
+    const explicitOperatorId = String(appointment.staffId || appointment.operatorId || "");
+    const operatorName = normalizeText(appointment.staffName || appointment.operatorName || appointment.operatore || "");
+    const operatorId = explicitOperatorId || staffIdByName.get(operatorName) || "";
+    const serviceId = String(appointment.serviceId || appointment.serviceName || "");
+    if (!operatorId || !serviceId) return;
+    const current = map.get(operatorId) || new Set();
+    current.add(serviceId);
+    map.set(operatorId, current);
+  });
+  return map;
+}
+
 function relevantClientAppointments(appointments, clientId, nowMs = Date.now()) {
   const sourceIsGrouped = appointments instanceof Map;
   const source = appointments instanceof Map
@@ -7183,6 +7204,7 @@ class DesktopMirrorService {
     const completedAppointments = appointments.filter((appointment) => String(appointment.status || "").toLowerCase() === "completed");
     const soldServiceIds = new Set(completedAppointments.map((appointment) => String(appointment.serviceId || "")).filter(Boolean));
     const soldServices = activeServices.filter((service) => soldServiceIds.has(String(service.id || "")));
+    const inferredOperatorServices = buildInferredOperatorServiceMap(completedAppointments, activeStaff);
     const staffIdsUsedByServices = new Set(activeServices.flatMap((service) => [
       ...(Array.isArray(service.staffIds) ? service.staffIds : []),
       ...(Array.isArray(service.operatorIds) ? service.operatorIds : []),
@@ -7240,7 +7262,8 @@ class DesktopMirrorService {
         ...(Array.isArray(operator.services) ? operator.services : []),
         ...(Array.isArray(operator.assignedServiceIds) ? operator.assignedServiceIds : [])
       ].filter(Boolean).length;
-      return direct ? directCount === 0 : !staffIdsUsedByServices.has(String(operator.id || ""));
+      const inferredCount = inferredOperatorServices.get(String(operator.id || ""))?.size || 0;
+      return direct ? directCount === 0 && inferredCount === 0 : !staffIdsUsedByServices.has(String(operator.id || "")) && inferredCount === 0;
     });
     const inventoryMissingCost = activeInventory.filter((item) => Number(item.costCents || item.unitCostCents || item.purchaseCostCents || 0) <= 0);
     const inventoryMissingStock = activeInventory.filter((item) => item.quantity === undefined && item.stockQuantity === undefined);
@@ -7425,6 +7448,7 @@ class DesktopMirrorService {
         operatorsMissingHourlyCost: operatorsMissingHourlyCost.length,
         operatorsMissingRole: operatorsMissingRole.length,
         operatorsMissingServices: operatorsMissingServices.length,
+        operatorsInferredServices: activeStaff.filter((operator) => (inferredOperatorServices.get(String(operator.id || ""))?.size || 0) > 0).length,
         inventory: activeInventory.length,
         inventoryMissingCost: inventoryMissingCost.length,
         inventoryMissingStock: inventoryMissingStock.length,
