@@ -1434,6 +1434,7 @@ class DesktopMirrorService {
 
     this.sessions = new Map();
     this.businessSnapshotCache = new Map();
+    this.goldStateReadCache = new Map();
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
@@ -3182,6 +3183,9 @@ class DesktopMirrorService {
     const s = state.components || {};
     const c = state.counters || {};
     const hasOperationalData = Number(c.clientsTotal || 0) + Number(c.paymentCount || 0) + Number(c.todayAppointments || 0) + Number(c.servicesTotal || 0) > 0;
+    const hasFinancialData = Number(c.paymentCount || 0) > 0 || Number(c.revenueTotal || 0) > 0;
+    const hasMarginData = Number(c.marginSamples || 0) > 0;
+    const hasQualityData = Number(c.clientsTotal || 0) > 0 || Number(c.servicesTotal || 0) > 0 || Number(c.inventoryTotal || 0) > 0;
     const cashPrimary = state.cashPrimarySnapshot || null;
     const cashAnomalyScore = cashPrimary
       ? this.goldClamp01(
@@ -3196,7 +3200,7 @@ class DesktopMirrorService {
         opportunity: 0,
         cashAnomaly: 0,
         marginAnomaly: 0,
-        dataReliability: Number(s.Conf ?? 1),
+        dataReliability: hasQualityData ? Number(s.Conf ?? 1) : 1,
         productivitySignal: 0
       };
     }
@@ -3204,15 +3208,24 @@ class DesktopMirrorService {
       operationalRisk: this.goldClamp01((Number(s.Sat || 0) * 0.35) + ((1 - Number(s.DQ || 0)) * 0.35) + cashAnomalyScore * 0.3),
       centerBelowThreshold: this.goldClamp01(((1 - Number(s.Cont || 0)) * 0.45) + ((1 - Number(s.Prod || 0)) * 0.25) + ((1 - Number(s.Conf || 0)) * 0.3)),
       opportunity: this.goldClamp01((Number(s.Conf || 0) * 0.4) + (Number(s.Cont || 0) * 0.25) + (Number(s.Ticket || 0) > 0 ? 0.2 : 0) + (Number(s.Sat || 0) < 0.7 ? 0.15 : 0)),
-      cashAnomaly: cashAnomalyScore,
-      marginAnomaly: this.goldClamp01((1 - Number(s.CostConf || 0)) * 0.55 + (Number(s.Margin || 0) < 0.35 ? 0.45 : 0)),
-      dataReliability: Number(s.Conf || 0),
+      cashAnomaly: hasFinancialData ? cashAnomalyScore : 0,
+      marginAnomaly: hasMarginData
+        ? this.goldClamp01((1 - Number(s.CostConf || 0)) * 0.55 + (Number(s.Margin || 0) < 0.35 ? 0.45 : 0))
+        : hasFinancialData
+          ? this.goldClamp01((1 - Number(s.CostConf || 0)) * 0.25)
+          : 0,
+      dataReliability: hasQualityData ? Number(s.Conf || 0) : 1,
       productivitySignal: Number(s.Prod || 0)
     };
   }
 
   buildGoldDecisionFromState(state = {}) {
     const signals = state.signals || this.buildGoldSignalsFromState(state);
+    const counters = state.counters || {};
+    const hasAnyRevenue = Number(counters.revenueTotal || 0) > 0 || Number(counters.paymentCount || 0) > 0;
+    const hasMarginData = Number(counters.marginSamples || 0) > 0;
+    const hasSetupGaps = Number(counters.clientsWithContact || 0) < Number(counters.clientsTotal || 0)
+      || Number(counters.servicesWithPrice || 0) < Number(counters.servicesTotal || 0);
     const entries = [
       ["cash", signals.cashAnomaly || 0, "Verifica pagamenti non collegati"],
       ["profitability", signals.marginAnomaly || 0, "Verifica marginalita e costi"],
@@ -3221,7 +3234,13 @@ class DesktopMirrorService {
       ["data_quality", 1 - (signals.dataReliability ?? state.components?.Conf ?? 1), "Completa qualita dati"]
     ].sort((a, b) => b[1] - a[1]);
     const [domain, score, label] = entries[0];
-    const action = score >= 0.7 ? "ACT_NOW" : score >= 0.45 ? "SUGGEST" : "MONITOR";
+    let action = score >= 0.7 ? "ACT_NOW" : score >= 0.45 ? "SUGGEST" : "MONITOR";
+    if (domain === "profitability" && !hasMarginData) {
+      action = hasAnyRevenue ? "SUGGEST" : "MONITOR";
+    }
+    if (domain === "data_quality" && hasSetupGaps && score >= 0.45) {
+      action = "SUGGEST";
+    }
     return {
       source: "gold_state",
       domain,
