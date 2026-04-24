@@ -446,6 +446,31 @@ function toDateOnly(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function toUtcDateOnlyFromParts(year, monthIndex, day) {
+  return new Date(Date.UTC(year, monthIndex, day)).toISOString().slice(0, 10);
+}
+
+function getWeekWindow(anchorDate) {
+  const anchor = new Date(`${toDateOnly(anchorDate)}T00:00:00`);
+  const diffToMonday = (anchor.getDay() + 6) % 7;
+  const start = new Date(anchor);
+  start.setDate(anchor.getDate() - diffToMonday);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return {
+    startDate: toUtcDateOnlyFromParts(start.getFullYear(), start.getMonth(), start.getDate()),
+    endDate: toUtcDateOnlyFromParts(end.getFullYear(), end.getMonth(), end.getDate())
+  };
+}
+
+function getMonthWindow(anchorDate) {
+  const anchor = new Date(`${toDateOnly(anchorDate)}T00:00:00`);
+  return {
+    startDate: toUtcDateOnlyFromParts(anchor.getFullYear(), anchor.getMonth(), 1),
+    endDate: toUtcDateOnlyFromParts(anchor.getFullYear(), anchor.getMonth() + 1, 0)
+  };
+}
+
 function toDateTime(date, time) {
   return `${toDateOnly(date)}T${String(time || "09:00").slice(0, 5)}:00`;
 }
@@ -2484,7 +2509,22 @@ class DesktopMirrorService {
     };
   }
 
+  shouldBypassGoldStateForWindow(options = {}) {
+    const startDate = String(options.startDate || "").trim();
+    const endDate = String(options.endDate || "").trim();
+    const period = String(options.period || "").trim().toLowerCase();
+    const anchorDate = toDateOnly(options.anchorDate || "");
+    const today = toDateOnly(nowIso());
+    if (startDate || endDate) return true;
+    if (period && period !== "day") return true;
+    if (period === "day" && anchorDate && anchorDate !== today) return true;
+    return false;
+  }
+
   buildDashboardStatsFromGoldState(options = {}, session = null) {
+    if (this.shouldBypassGoldStateForWindow(options)) {
+      return null;
+    }
     const validState = this.getValidGoldStateSnapshot("business", session);
     if (!validState.valid) {
       this.logGoldStateEndpoint("dashboard", session, { source: "raw_fallback", ...validState });
@@ -2546,6 +2586,9 @@ class DesktopMirrorService {
   }
 
   buildOperationalReportFromGoldState(options = {}, session = null) {
+    if (this.shouldBypassGoldStateForWindow(options)) {
+      return null;
+    }
     const validState = this.getValidGoldStateSnapshot("report", session);
     if (!validState.valid) {
       this.logGoldStateEndpoint("report_operational", session, { source: "raw_fallback", ...validState });
@@ -2602,6 +2645,9 @@ class DesktopMirrorService {
   }
 
   buildProfitabilityOverviewFromGoldState(options = {}, session = null) {
+    if (this.shouldBypassGoldStateForWindow(options)) {
+      return null;
+    }
     const validState = this.getValidGoldStateSnapshot("profitability", session);
     if (!validState.valid) {
       this.logGoldStateEndpoint("profitability_overview", session, { source: "raw_fallback", ...validState });
@@ -2671,6 +2717,9 @@ class DesktopMirrorService {
   }
 
   buildBusinessSnapshotFromGoldState(options = {}, session = null) {
+    if (this.shouldBypassGoldStateForWindow(options)) {
+      return null;
+    }
     const validState = this.getValidGoldStateSnapshot("business", session);
     if (!validState.valid) {
       this.logGoldStateEndpoint("business_snapshot", session, { source: "raw_fallback", ...validState });
@@ -7474,19 +7523,13 @@ class DesktopMirrorService {
       startDate = toDateOnly(startDate || anchorDate);
       endDate = toDateOnly(endDate || startDate);
     } else if (mode === "week") {
-      const anchor = new Date(`${anchorDate}T00:00:00`);
-      const diffToMonday = (anchor.getDay() + 6) % 7;
-      const start = new Date(anchor);
-      start.setDate(anchor.getDate() - diffToMonday);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 6);
-      startDate = toDateOnly(start.toISOString());
-      endDate = toDateOnly(end.toISOString());
+      const range = getWeekWindow(anchorDate);
+      startDate = range.startDate;
+      endDate = range.endDate;
     } else if (mode === "month") {
-      const anchor = new Date(`${anchorDate}T00:00:00`);
-      startDate = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, "0")}-01`;
-      const end = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
-      endDate = toDateOnly(end.toISOString());
+      const range = getMonthWindow(anchorDate);
+      startDate = range.startDate;
+      endDate = range.endDate;
     } else {
       startDate = anchorDate;
       endDate = anchorDate;
@@ -7778,18 +7821,13 @@ class DesktopMirrorService {
     let startDate = anchorDate;
     let endDate = anchorDate;
     if (mode === "week") {
-      const anchor = new Date(`${anchorDate}T00:00:00`);
-      const diffToMonday = (anchor.getDay() + 6) % 7;
-      const start = new Date(anchor);
-      start.setDate(anchor.getDate() - diffToMonday);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 6);
-      startDate = toDateOnly(start.toISOString());
-      endDate = toDateOnly(end.toISOString());
+      const range = getWeekWindow(anchorDate);
+      startDate = range.startDate;
+      endDate = range.endDate;
     } else if (mode === "month") {
-      const anchor = new Date(`${anchorDate}T00:00:00`);
-      startDate = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, "0")}-01`;
-      endDate = toDateOnly(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).toISOString());
+      const range = getMonthWindow(anchorDate);
+      startDate = range.startDate;
+      endDate = range.endDate;
     }
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
@@ -7844,7 +7882,7 @@ class DesktopMirrorService {
       })
       .slice(0, 12) : [];
     const revenueCents = periodPayments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0);
-    const paymentSummary = this.getPaymentsSummary({ period: mode, anchorDate }, session);
+    const paymentSummary = this.getPaymentsSummary({ period: mode, anchorDate, startDate, endDate }, session);
     const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     return {
       todayAppointments: todayAppointments.length,
