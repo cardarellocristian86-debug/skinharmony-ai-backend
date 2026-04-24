@@ -2966,6 +2966,9 @@ class DesktopMirrorService {
       saturationPercent: Math.round(Number(business.agendaSaturation || 0) * 100),
       continuityPercent: Math.round(Number(business.clientContinuity || 0) * 100)
     };
+    const stateHasOperationalEvidence = Number(business.revenueCents || 0) > 0
+      || Number(business.averageTicketCents || 0) > 0
+      || Number(business.unlinkedPayments || 0) > 0;
     const primaryItem = {
       id: `gold-state-${decision.domain}`,
       level,
@@ -3021,12 +3024,20 @@ class DesktopMirrorService {
           id: "center-health-main",
           level: centerHealth.level,
           area: "salute centro",
-          conclusion: `Centro ${centerHealth.statusLabel}`,
-          reason: centerHealth.reason,
-          details: `Fatturato ${euro(Number(business.revenueCents || 0))} · ticket medio ${euro(Number(business.averageTicketCents || 0))} · pagamenti non collegati ${Number(business.unlinkedPayments || 0)}`,
+          conclusion: profitabilityConfigBlocked && stateHasOperationalEvidence
+            ? "Lettura centro prudente: configurazione economica incompleta"
+            : `Centro ${centerHealth.statusLabel}`,
+          reason: profitabilityConfigBlocked && stateHasOperationalEvidence
+            ? "Il centro mostra volume reale, ma finché costi servizi e costi orari non sono completi la lettura complessiva va tenuta prudente."
+            : centerHealth.reason,
+          details: profitabilityConfigBlocked && stateHasOperationalEvidence
+            ? `Fatturato ${euro(Number(business.revenueCents || 0))} · ticket medio ${euro(Number(business.averageTicketCents || 0))} · costi servizio mancanti ${missingServiceCosts}/${servicesTotal} · pagamenti non collegati ${Number(business.unlinkedPayments || 0)}`
+            : `Fatturato ${euro(Number(business.revenueCents || 0))} · ticket medio ${euro(Number(business.averageTicketCents || 0))} · pagamenti non collegati ${Number(business.unlinkedPayments || 0)}`,
           impactCents: Number(business.revenueCents || 0),
           riskCents: 0,
-          action: centerHealth.status === "sotto_soglia" ? "verifica dati e operativita" : "mantieni controllo operativo",
+          action: profitabilityConfigBlocked && stateHasOperationalEvidence
+            ? "completa costi servizi e operatori"
+            : centerHealth.status === "sotto_soglia" ? "verifica dati e operativita" : "mantieni controllo operativo",
           button: "Apri dashboard",
           target: "dashboard"
         }]
@@ -10057,6 +10068,16 @@ class DesktopMirrorService {
     };
     return {
       ...marketing,
+      message: (marketingActions.actions || []).length
+        ? ""
+        : "Marketing prudente: nessun contatto promosso oggi con le regole attuali.",
+      summary: {
+        totalActions: marketingActions.counters?.totalActions || 0,
+        toApprove: marketingActions.counters?.toApprove || 0,
+        approved: marketingActions.counters?.approvedActions || 0,
+        excludedByFilter: marketingActions.debug?.excludedByFilter || 0,
+        status: (marketingActions.actions || []).length ? "azioni_pronte" : "nessun_contatto_promosso"
+      },
       progressiveIntelligence,
       activation: {
         recallEnabled: recallFeature.enabled,
@@ -11444,19 +11465,37 @@ class DesktopMirrorService {
     const inventory = snapshot.inventory || {};
     const dataQuality = snapshot.dataQuality || {};
     const goldEngine = snapshot.goldEngine || {};
-    const goldEnginePriorityItems = (goldEngine.dashboard?.items || []).slice(0, 5).map((item) => ({
-      id: `gold-engine-${item.domain}-${item.entityId}`,
-      level: item.band === "alta" ? "critical" : item.band === "media" ? "warning" : item.band === "bassa" ? "info" : "success",
-      area: item.domain,
-      conclusion: item.explanationShort || item.output || "Segnale Gold",
-      reason: item.explanationLong || item.suggestedAction || "Priorità calcolata da Corelia Decision Engine.",
-      details: `Necessità ${Math.round(Number(item.factors?.need || 0) * 100)} · Valore ${Math.round(Number(item.factors?.value || 0) * 100)} · Urgenza ${Math.round(Number(item.factors?.urgency || 0) * 100)} · Coerenza ${Math.round(Number(item.factors?.coherence || 0) * 100)} · Frizione ${Math.round(Number(item.factors?.friction || 0) * 100)}`,
-      impactCents: Number(item.amountCents || item.revenueCents || 0),
-      riskCents: 0,
-      action: item.suggestedAction || "gestisci priorità",
-      button: item.domain === "cash" ? "Apri cassa" : item.domain === "agenda" ? "Apri agenda" : item.domain === "profit" ? "Apri redditività" : item.domain === "marketing" ? "Apri marketing" : "Apri dettaglio",
-      target: item.target || (item.domain === "cash" ? "cashdesk" : item.domain === "profit" ? "profitability" : item.domain)
-    }));
+    const goldEnginePriorityItems = (goldEngine.dashboard?.items || []).slice(0, 5).map((item) => {
+      const isEconomicGapItem = String(item.entityId || "").includes("economic-revenue-gap") || String(item.domain || "") === "dashboard";
+      if (profitabilityBlockedForConfig && isEconomicGapItem) {
+        return {
+          id: `gold-engine-${item.domain}-${item.entityId}`,
+          level: "warning",
+          area: item.domain,
+          conclusion: "Configurazione economica incompleta",
+          reason: "Il centro ha segnali operativi reali, ma questa lettura non va usata come giudizio sul business finché costi servizi e costi orari non sono completi.",
+          details: `Completa ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari operatori.`,
+          impactCents: 0,
+          riskCents: 0,
+          action: "completa costi servizi e operatori",
+          button: "Apri servizi",
+          target: "services"
+        };
+      }
+      return {
+        id: `gold-engine-${item.domain}-${item.entityId}`,
+        level: item.band === "alta" ? "critical" : item.band === "media" ? "warning" : item.band === "bassa" ? "info" : "success",
+        area: item.domain,
+        conclusion: item.explanationShort || item.output || "Segnale Gold",
+        reason: item.explanationLong || item.suggestedAction || "Priorità calcolata da Corelia Decision Engine.",
+        details: `Necessità ${Math.round(Number(item.factors?.need || 0) * 100)} · Valore ${Math.round(Number(item.factors?.value || 0) * 100)} · Urgenza ${Math.round(Number(item.factors?.urgency || 0) * 100)} · Coerenza ${Math.round(Number(item.factors?.coherence || 0) * 100)} · Frizione ${Math.round(Number(item.factors?.friction || 0) * 100)}`,
+        impactCents: Number(item.amountCents || item.revenueCents || 0),
+        riskCents: 0,
+        action: item.suggestedAction || "gestisci priorità",
+        button: item.domain === "cash" ? "Apri cassa" : item.domain === "agenda" ? "Apri agenda" : item.domain === "profit" ? "Apri redditività" : item.domain === "marketing" ? "Apri marketing" : "Apri dettaglio",
+        target: item.target || (item.domain === "cash" ? "cashdesk" : item.domain === "profit" ? "profitability" : item.domain)
+      };
+    });
     const focusClient = snapshot.marketing?.focusClient || null;
     const marginAlert = profitability.suggestions?.find((item) => item.status !== "HEALTHY") || null;
     const bestService = profitability.suggestions?.slice().sort((a, b) => Number(b.marginPercent || 0) - Number(a.marginPercent || 0))[0] || null;
@@ -11471,6 +11510,10 @@ class DesktopMirrorService {
     const membershipWarning = topClient && focusClient && String(topClient.clientId || "") === String(focusClient.clientId || "")
       ? topClient
       : null;
+    const centerHealthNotRepresentative = profitabilityBlockedForConfig
+      && Number(centerHealth.monthlyRevenueCents || 0) <= 0
+      && Number(centerHealth.saturationPercent || 0) <= 0
+      && Number(centerHealth.continuityPercent || 0) <= 0;
     const sections = [
       {
         key: "center_health",
@@ -11480,22 +11523,36 @@ class DesktopMirrorService {
             id: "center-health-main",
             level: centerHealth.level,
             area: "salute centro",
-            conclusion: `Centro ${centerHealth.statusLabel}: ${centerHealth.status === "sotto_soglia" ? "attività insufficiente rispetto agli operatori" : centerHealth.status === "fragile" ? "volume operativo da rinforzare" : centerHealth.status === "stabile" ? "base operativa sotto controllo" : "centro forte nel periodo"}`,
-            reason: centerHealth.status === "sotto_soglia"
-              ? "Aumenta agenda e richiami prima di lavorare sui margini."
-              : centerHealth.status === "fragile"
-                ? "Rinforza continuità clienti e riempimento agenda."
-                : centerHealth.status === "stabile"
-                  ? "Mantieni il ritmo e controlla solo i punti deboli."
-                  : "Il centro regge: lavora su margini e crescita selettiva.",
-            details: `${centerHealth.reason} · fatturato/operatore ${euro(centerHealth.revenuePerOperatorCents)} al mese · saturazione ${centerHealth.saturationPercent}% · continuità ${centerHealth.continuityPercent}%`,
+            conclusion: centerHealthNotRepresentative
+              ? "Stato centro non ancora rappresentativo"
+              : profitabilityBlockedForConfig
+                ? "Volume presente, lettura centro ancora prudente"
+                : `Centro ${centerHealth.statusLabel}: ${centerHealth.status === "sotto_soglia" ? "attività insufficiente rispetto agli operatori" : centerHealth.status === "fragile" ? "volume operativo da rinforzare" : centerHealth.status === "stabile" ? "base operativa sotto controllo" : "centro forte nel periodo"}`,
+            reason: centerHealthNotRepresentative
+              ? "In questa fase non leggere questo blocco come giudizio sul centro: la lettura completa si sblocca quando configurazione economica e storico diventano più rappresentativi."
+              : profitabilityBlockedForConfig
+                ? "Il centro ha segnali di lavoro reali, ma finché i costi non sono completi la salute centro va letta con prudenza e non come verdetto."
+                : centerHealth.status === "sotto_soglia"
+                  ? "Aumenta agenda e richiami prima di lavorare sui margini."
+                  : centerHealth.status === "fragile"
+                    ? "Rinforza continuità clienti e riempimento agenda."
+                    : centerHealth.status === "stabile"
+                      ? "Mantieni il ritmo e controlla solo i punti deboli."
+                      : "Il centro regge: lavora su margini e crescita selettiva.",
+            details: centerHealthNotRepresentative
+              ? `Completa ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari operatori prima di usare questo blocco come lettura di stato.`
+              : profitabilityBlockedForConfig
+                ? `${centerHealth.reason} · costi servizio mancanti ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} · costi orari mancanti ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)}`
+                : `${centerHealth.reason} · fatturato/operatore ${euro(centerHealth.revenuePerOperatorCents)} al mese · saturazione ${centerHealth.saturationPercent}% · continuità ${centerHealth.continuityPercent}%`,
             impactCents: Number(centerHealth.monthlyRevenueCents || 0),
             riskCents: 0,
-            action: centerHealth.status === "sotto_soglia"
-              ? "aumenta volume agenda e richiami prima dei margini"
-              : centerHealth.status === "fragile"
-                ? "rinforza continuità clienti e saturazione"
-                : "mantieni controllo operativo",
+            action: centerHealthNotRepresentative || profitabilityBlockedForConfig
+              ? "completa configurazione prima di leggere lo stato centro"
+              : centerHealth.status === "sotto_soglia"
+                ? "aumenta volume agenda e richiami prima dei margini"
+                : centerHealth.status === "fragile"
+                  ? "rinforza continuità clienti e saturazione"
+                  : "mantieni controllo operativo",
             button: "Apri dashboard",
             target: "dashboard"
           }
@@ -11699,12 +11756,18 @@ class DesktopMirrorService {
             id: "action-marketing",
             level: marketing.suggestions?.length ? "critical" : "info",
             area: "marketing",
-            conclusion: `${marketing.suggestions?.length || 0} clienti da leggere con priorità`,
-            reason: "Parti dai clienti più urgenti e prepara messaggi mirati.",
-            details: "Gold ordina recall, rischio operativo e riferimenti economici reali già presenti prima di far partire il messaggio.",
+            conclusion: marketing.suggestions?.length
+              ? `${marketing.suggestions.length} clienti da leggere con priorità`
+              : "Marketing prudente: nessun contatto promosso oggi",
+            reason: marketing.suggestions?.length
+              ? "Parti dai clienti più urgenti e prepara messaggi mirati."
+              : "Con le regole attuali Gold non ha trovato recall abbastanza sicuri da promuovere oggi.",
+            details: marketing.suggestions?.length
+              ? "Gold ordina recall, rischio operativo e riferimenti economici reali già presenti prima di far partire il messaggio."
+              : "Questo non significa che il marketing non funzioni: oggi mancano contatti utili o segnali abbastanza solidi per spingere un’azione.",
             impactCents: 0,
             riskCents: 0,
-            action: "lavora la lista recall",
+            action: marketing.suggestions?.length ? "lavora la lista recall" : "rivedi contatti, consensi e storico",
             button: "Genera azioni",
             target: "autopilot"
           },
