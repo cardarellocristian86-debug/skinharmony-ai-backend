@@ -11465,6 +11465,8 @@ class DesktopMirrorService {
     const inventory = snapshot.inventory || {};
     const dataQuality = snapshot.dataQuality || {};
     const goldEngine = snapshot.goldEngine || {};
+    const profitabilityBlockedForConfig = Number(dataQuality.metrics?.servicesMissingCosts || 0) > 0
+      || Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0;
     const goldEnginePriorityItems = (goldEngine.dashboard?.items || []).slice(0, 5).map((item) => {
       const isEconomicGapItem = String(item.entityId || "").includes("economic-revenue-gap") || String(item.domain || "") === "dashboard";
       if (profitabilityBlockedForConfig && isEconomicGapItem) {
@@ -11505,8 +11507,6 @@ class DesktopMirrorService {
     const topOperator = snapshot.operations?.topOperator || null;
     const weakOperator = snapshot.operations?.weakOperator || null;
     const topClient = snapshot.operations?.topClient || null;
-    const profitabilityBlockedForConfig = Number(dataQuality.metrics?.servicesMissingCosts || 0) > 0
-      || Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0;
     const membershipWarning = topClient && focusClient && String(topClient.clientId || "") === String(focusClient.clientId || "")
       ? topClient
       : null;
