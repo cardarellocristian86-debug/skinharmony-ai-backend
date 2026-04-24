@@ -3,6 +3,10 @@
   const PANEL_ID = "skinharmony-gold-priority-bridge";
   const ROUTES = new Set(["/", "/dashboard"]);
   const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
+  let renderToken = 0;
+  let goldRenderTimers = [];
+  let settingsRenderTimers = [];
+  let observerStarted = false;
 
   function injectStyle() {
     if (document.getElementById(SCRIPT_ID)) return;
@@ -177,6 +181,11 @@
     if (existing) existing.remove();
   }
 
+  function clearTimers(list) {
+    list.forEach((id) => window.clearTimeout(id));
+    list.length = 0;
+  }
+
   function shouldRender() {
     return ROUTES.has(window.location.pathname || "/");
   }
@@ -307,13 +316,13 @@
     return panel;
   }
 
-  let renderToken = 0;
-
   async function renderGoldBridge() {
     renderToken += 1;
     const token = renderToken;
-    removePanel();
-    if (!shouldRender()) return;
+    if (!shouldRender()) {
+      removePanel();
+      return;
+    }
     injectStyle();
 
     try {
@@ -324,11 +333,16 @@
       if (token !== renderToken) return;
 
       const anchor = findAnchor();
-      if (!anchor || document.getElementById(PANEL_ID)) return;
+      if (!anchor) return;
       const panel = buildPanel(context, capabilities);
-      anchor.insertAdjacentElement("afterend", panel);
+      const existing = document.getElementById(PANEL_ID);
+      if (existing) {
+        existing.replaceWith(panel);
+      } else {
+        anchor.insertAdjacentElement("afterend", panel);
+      }
     } catch (_error) {
-      removePanel();
+      if (!shouldRender()) removePanel();
     }
   }
 
@@ -406,31 +420,41 @@
   }
 
   async function renderSettingsTools() {
-    removeSettingsPanel();
-    if (!isSettingsRoute() || !(await isSuperAdminSession())) return;
+    if (!isSettingsRoute()) {
+      removeSettingsPanel();
+      return;
+    }
+    if (!(await isSuperAdminSession())) {
+      removeSettingsPanel();
+      return;
+    }
     injectStyle();
     const anchor = findSettingsAnchor();
-    if (!anchor || document.getElementById(SETTINGS_PANEL_ID)) return;
+    if (!anchor) return;
     const panel = buildSettingsPanel();
-    anchor.insertAdjacentElement("afterend", panel);
+    const existing = document.getElementById(SETTINGS_PANEL_ID);
+    if (existing) {
+      existing.replaceWith(panel);
+    } else {
+      anchor.insertAdjacentElement("afterend", panel);
+    }
   }
 
   function scheduleRender() {
-    window.setTimeout(renderGoldBridge, 120);
-    window.setTimeout(renderGoldBridge, 600);
-    window.setTimeout(renderGoldBridge, 1400);
-    window.setTimeout(renderSettingsTools, 120);
-    window.setTimeout(renderSettingsTools, 600);
-    window.setTimeout(renderSettingsTools, 1400);
+    clearTimers(goldRenderTimers);
+    clearTimers(settingsRenderTimers);
+    goldRenderTimers = [
+      window.setTimeout(renderGoldBridge, 180),
+      window.setTimeout(renderGoldBridge, 900)
+    ];
+    settingsRenderTimers = [
+      window.setTimeout(renderSettingsTools, 180),
+      window.setTimeout(renderSettingsTools, 900)
+    ];
   }
 
   const observer = new MutationObserver(() => {
-    if (shouldRender() && !document.getElementById(PANEL_ID)) {
-      scheduleRender();
-    }
-    if (isSettingsRoute() && !document.getElementById(SETTINGS_PANEL_ID)) {
-      scheduleRender();
-    }
+    scheduleRender();
   });
 
   const originalPushState = history.pushState;
@@ -450,6 +474,17 @@
   window.addEventListener("popstate", scheduleRender);
   window.addEventListener("load", scheduleRender);
 
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  function startObserver() {
+    if (observerStarted) return;
+    const root = document.getElementById("root");
+    if (!root) {
+      window.setTimeout(startObserver, 120);
+      return;
+    }
+    observer.observe(root, { childList: true, subtree: true });
+    observerStarted = true;
+  }
+
+  startObserver();
   scheduleRender();
 })();
