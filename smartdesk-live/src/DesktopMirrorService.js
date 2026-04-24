@@ -20,7 +20,7 @@ const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
 
 const DEFAULT_CENTER_ID = "center_admin";
-const DEFAULT_CENTER_NAME = "SkinHarmony Smart Desk";
+const DEFAULT_CENTER_NAME = "Privilege Parrucchieri";
 const DEFAULT_ADMIN_USERNAME = "cristian";
 const DEFAULT_ADMIN_PASSWORD = "fabiana88!";
 const DEFAULT_TRIAL_DAYS = 7;

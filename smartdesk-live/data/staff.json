@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "id": "center_admin_staff_3",
+    "centerId": "center_admin",
+    "name": "Responsabile",
+    "colorTag": "#d7b3ff",
+    "role": "",
+    "shift": "",
+    "targetProgress": 0,
+    "active": 1,
+    "createdAt": "2026-04-07T21:05:40.466Z",
+    "centerName": "Privilege Parrucchieri"
+  },
+  {
+    "id": "center_admin_staff_2",
+    "centerId": "center_admin",
+    "name": "Operatore 2",
+    "colorTag": "#8fd9c8",
+    "role": "",
+    "shift": "",
+    "targetProgress": 0,
+    "active": 1,
+    "createdAt": "2026-04-07T21:05:40.466Z",
+    "centerName": "Privilege Parrucchieri"
+  },
+  {
+    "id": "center_admin_staff_1",
+    "centerId": "center_admin",
+    "name": "Operatore 1",
+    "colorTag": "#6db7ff",
+    "role": "",
+    "shift": "",
+    "targetProgress": 0,
+    "active": 1,
+    "createdAt": "2026-04-07T21:05:40.466Z",
+    "centerName": "Privilege Parrucchieri"
+  }
+]

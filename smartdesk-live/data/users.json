@@ -1,1 +1,17 @@
-[]
+[
+  {
+    "id": "809e1324-cbee-473b-8384-a094f3714ef7",
+    "username": "cristian",
+    "passwordHash": "scrypt:0f1823164b903302d10ce5fe83989768:1528774b88a96d0b6d5c6c25ae35db6f6da575c3613188ef750434793a65181f9747b4b010e9fb797bc0fbc9922686a0e344ee70a1dfe0ef76012a267787189c",
+    "role": "superadmin",
+    "active": true,
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "createdAt": "2026-04-07T21:05:40.463Z",
+    "planType": "active",
+    "accountStatus": "active",
+    "paymentStatus": "paid",
+    "activatedAt": "2026-04-12T13:55:21.805Z",
+    "updatedAt": "2026-04-24T11:12:46.369Z"
+  }
+]
