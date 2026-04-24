@@ -2904,6 +2904,7 @@ class DesktopMirrorService {
   }
 
   buildDecisionCenterFromGoldState(options = {}, session = null) {
+    if (this.shouldBypassGoldStateForWindow(options)) return null;
     const stateDecision = this.getGoldStateDecision(session);
     const state = stateDecision?.state || null;
     const decision = stateDecision?.decision || null;
@@ -8725,6 +8726,25 @@ class DesktopMirrorService {
           || Number(b.economicScore || 0) - Number(a.economicScore || 0);
       })
       .slice(0, 20);
+    const dataQualitySummary = this.getDataQuality(session, { summaryOnly: true });
+    const softMarketingEligible = Number(dataQualitySummary?.score || 0) >= 65
+      && Number(dataQualitySummary?.metrics?.clientsMissingLastVisit || 0) === 0
+      && Number(dataQualitySummary?.metrics?.appointments || 0) > 0
+      && Number(dataQualitySummary?.metrics?.payments || 0) > 0;
+    const softModeSuggestions = prioritySuggestions.length
+      ? []
+      : allSuggestions.filter((item) => {
+        if (item.antiInvasiveReason) return false;
+        if (item.recallStatus === "perso" || item.recallStatus === "storico") return false;
+        if (!softMarketingEligible) return false;
+        if (!["recupero_soft", "recupero_attivo", "mantenimento", "promemoria_naturale"].includes(String(item.timingClass || ""))) return false;
+        return Number(item.goldDecision?.score || 0) >= 0.4 || Number(item.finalScore || 0) >= 0.38;
+      })
+        .sort((a, b) => Number(b.goldDecision?.score || 0) - Number(a.goldDecision?.score || 0)
+          || Number(b.finalScore || 0) - Number(a.finalScore || 0)
+          || Number(b.economicScore || 0) - Number(a.economicScore || 0))
+        .slice(0, 12);
+    const activeSuggestions = prioritySuggestions.length ? prioritySuggestions : softModeSuggestions;
     const lostClients = allSuggestions.filter((item) => item.recallStatus === "perso")
       .sort((a, b) => b.overdueDays - a.overdueDays)
       .slice(0, 20);
@@ -8736,7 +8756,7 @@ class DesktopMirrorService {
       .sort((a, b) => Number(b.goldDecision?.score || 0) - Number(a.goldDecision?.score || 0)
         || Number(b.economicScore || 0) - Number(a.economicScore || 0))
       .slice(0, 20);
-    const oldTop10 = prioritySuggestions.slice(0, 10);
+    const oldTop10 = activeSuggestions.slice(0, 10);
     const newTop10 = newPrioritySuggestions.slice(0, 10);
     const oldTopIds = new Set(oldTop10.map((item) => item.clientId));
     const newTopIds = new Set(newTop10.map((item) => item.clientId));
@@ -8845,16 +8865,16 @@ class DesktopMirrorService {
     const recoveryValueCents = marketingActions
       .filter((item) => String(item.status || "") === "done")
       .reduce((sum, item) => sum + Number(item.referenceValueCents || item.estimatedValueCents || 0), 0);
-    const potentialRecoveryScore = prioritySuggestions.reduce((sum, item) => sum + Number(item.economicScore || 0), 0);
+    const potentialRecoveryScore = activeSuggestions.reduce((sum, item) => sum + Number(item.economicScore || 0), 0);
     const marketing = {
       goldEnabled: true,
       coreVersion: "gold_phi_marketing_v1",
       generatedAt: nowIso(),
-      suggestions: prioritySuggestions,
+      suggestions: activeSuggestions,
       lostClients,
       historicInactiveClients,
       counts: {
-        priority: prioritySuggestions.length,
+        priority: activeSuggestions.length,
         lost: lostClients.length,
         historic: historicInactiveClients.length,
         avoid: blockedClients.length,
@@ -8866,11 +8886,12 @@ class DesktopMirrorService {
         bookingRate: contactsMade ? Math.round((bookingsGenerated / contactsMade) * 100) : 0,
         revenueRecoveryCents: recoveryValueCents,
         potentialRecoveryScore: Number(potentialRecoveryScore.toFixed(2)),
-        recommendedToday: prioritySuggestions.length,
+        recommendedToday: activeSuggestions.length,
         avoidToday: blockedClients.length,
         waiting: allSuggestions.filter((item) => ["in_attesa", "risposto", "prenotato"].includes(item.relationState)).length
       },
-      engineTest
+      engineTest,
+      mode: prioritySuggestions.length ? "standard" : softModeSuggestions.length ? "soft" : "blocked"
     };
     return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.MARKETING_RECALL, {}, session, marketing, 30000);
   }
@@ -10953,7 +10974,17 @@ class DesktopMirrorService {
         }));
       }
     }
-    const primaryAction = actionableItems[0] || fallbackItems[0] || allItems.find((item) => String(item.action || "") === "VERIFY") || allItems[0] || null;
+    const topActionable = actionableItems[0] || null;
+    const preferFallbackPrimary = !profitabilityReliable
+      && fallbackItems.length > 0
+      && (
+        !topActionable
+        || String(topActionable.action || "") === "MONITOR"
+        || topActionable.canExecute === false
+      );
+    const primaryAction = preferFallbackPrimary
+      ? fallbackItems[0]
+      : topActionable || fallbackItems[0] || allItems.find((item) => String(item.action || "") === "VERIFY") || allItems[0] || null;
     const secondaryActions = allItems.filter((item) => primaryAction && `${item.domain}:${item.entityId}` !== `${primaryAction.domain}:${primaryAction.entityId}` && !["STOP", "VERIFY"].includes(String(item.action || ""))).slice(0, 3);
     const blockedActions = allItems.filter((item) => ["STOP", "VERIFY"].includes(String(item.action || ""))).slice(0, 5);
     const v7 = this.computeDecisionCenterV7(allItems);
