@@ -10009,7 +10009,7 @@ class DesktopMirrorService {
     })).filter(Boolean);
     const confidenceValues = topSignals.map((item) => Number(item.confidence || 0));
     const riskValues = topSignals.map((item) => Number(item.risk || 0));
-    const dataQuality = this.getDataQualitySummary({}, session);
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     const profitabilityOverview = this.buildProfitabilityOverviewFromGoldState({}, session) || {};
     const anomalies = this.rankGoldDecisionAnomalies({
       dataQuality,
