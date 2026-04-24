@@ -1810,6 +1810,13 @@ class DesktopMirrorService {
       snapshots: {},
       signals: {},
       decision: null,
+      decisionStability: {
+        acceptedKey: "",
+        candidateKey: "",
+        candidateCount: 0,
+        minPersistenceCycles: 2,
+        switchedAt: ""
+      },
       cashParallel: null,
       cashSelection: null,
       cashPrimarySnapshot: null,
@@ -2630,6 +2637,10 @@ class DesktopMirrorService {
         costCents,
         profitCents
       },
+      confidence: {
+        value: Number(profitability.profitabilityConfidence ?? Math.min(Number(profitability.economicConfidence || 0), Number(profitability.costConfidence || 0))),
+        label: profitability.confidenceLabel || "bassa"
+      },
       centerHealth: this.buildGoldStateCenterHealth(state),
       services: [aggregateService],
       products: [],
@@ -2651,7 +2662,8 @@ class DesktopMirrorService {
         eventSeq: validState.eventSeq,
         fallbackAvailable: true,
         economicConfidence: Number(profitability.economicConfidence || 0),
-        costConfidence: Number(profitability.costConfidence || 0)
+        costConfidence: Number(profitability.costConfidence || 0),
+        confidenceLabel: profitability.confidenceLabel || "bassa"
       }
     };
     this.logGoldStateEndpoint("profitability_overview", session, { source: "gold_state", ...validState });
@@ -3155,6 +3167,12 @@ class DesktopMirrorService {
         averageMargin: Number(s.Margin || 0),
         costConfidence: Number(s.CostConf || 0),
         economicConfidence: Number(s.Conf || 0),
+        profitabilityConfidence: Math.min(Number(s.CostConf || 0), Number(s.Conf || 0)),
+        confidenceLabel: Math.min(Number(s.CostConf || 0), Number(s.Conf || 0)) >= 0.8
+          ? "alta"
+          : Math.min(Number(s.CostConf || 0), Number(s.Conf || 0)) >= 0.55
+            ? "media"
+            : "bassa",
         coreSamples: Number(state.counters?.profitabilitySamples || 0),
         confidenceBreakdown: {
           real: Number(state.counters?.profitabilityReal || 0),
@@ -3232,8 +3250,13 @@ class DesktopMirrorService {
       ["operations", signals.operationalRisk || 0, "Controlla rischio operativo"],
       ["growth", signals.opportunity || 0, "Valuta opportunita operative"],
       ["data_quality", 1 - (signals.dataReliability ?? state.components?.Conf ?? 1), "Completa qualita dati"]
-    ].sort((a, b) => b[1] - a[1]);
-    const [domain, score, label] = entries[0];
+    ].map(([domain, rawScore, label]) => {
+      const actionabilityScore = this.getGoldDecisionActionability(domain, state, rawScore);
+      const confidenceWeight = 0.7 + this.goldClamp01(Number(state.components?.Conf || 0)) * 0.3;
+      const weightedScore = this.goldClamp01(Number(rawScore || 0) * actionabilityScore * confidenceWeight);
+      return [domain, Number(rawScore || 0), label, actionabilityScore, weightedScore];
+    }).sort((a, b) => b[4] - a[4] || b[1] - a[1]);
+    const [domain, score, label, actionabilityScore, weightedScore] = entries[0];
     let action = score >= 0.7 ? "ACT_NOW" : score >= 0.45 ? "SUGGEST" : "MONITOR";
     if (domain === "profitability" && !hasMarginData) {
       action = hasAnyRevenue ? "SUGGEST" : "MONITOR";
@@ -3245,16 +3268,132 @@ class DesktopMirrorService {
       source: "gold_state",
       domain,
       score: this.goldRound(score),
+      weightedScore: this.goldRound(weightedScore),
       action,
-      primaryAction: { domain, action, label },
-      secondaryActions: entries.slice(1, 3).map(([itemDomain, itemScore, itemLabel]) => ({
+      primaryAction: { domain, action, label, actionabilityScore: this.goldRound(actionabilityScore) },
+      secondaryActions: entries.slice(1, 3).map(([itemDomain, itemScore, itemLabel, itemActionability, itemWeighted]) => ({
         domain: itemDomain,
         score: this.goldRound(itemScore),
+        weightedScore: this.goldRound(itemWeighted),
+        actionabilityScore: this.goldRound(itemActionability),
         label: itemLabel
       })),
       blockedActions: Number(state.components?.Conf || 1) < 0.4 ? ["output_assertivi", "azioni_automatiche"] : [],
       explanationShort: score >= 0.7 ? `${label}: priorita alta.` : score >= 0.45 ? `${label}: suggerito.` : "Centro stabile: monitorare.",
       updatedAt: state.updatedAt || nowIso()
+    };
+  }
+
+  getGoldDecisionActionability(domain = "", state = {}, rawScore = 0) {
+    const counters = state.counters || {};
+    const profitabilityConfidence = Math.min(Number(state.components?.CostConf || 0), Number(state.components?.Conf || 0));
+    const hasMarginData = Number(counters.marginSamples || 0) > 0;
+    const baseByDomain = {
+      cash: 1,
+      growth: 0.95,
+      operations: 0.85,
+      data_quality: 0.72,
+      profitability: hasMarginData ? 0.72 + profitabilityConfidence * 0.18 : 0.52
+    };
+    const base = Number(baseByDomain[String(domain || "")] ?? 0.7);
+    const urgencyBoost = Number(rawScore || 0) >= 0.75 ? 0.05 : 0;
+    return this.goldClamp01(base + urgencyBoost);
+  }
+
+  getGoldDecisionKey(decision = null) {
+    if (!decision?.primaryAction?.domain && !decision?.domain) return "";
+    const domain = String(decision?.primaryAction?.domain || decision?.domain || "");
+    const action = String(decision?.primaryAction?.action || decision?.action || "");
+    return `${domain}:${action}`;
+  }
+
+  stabilizeGoldDecision(previousDecision = null, previousStability = null, rawDecision = null) {
+    const rawKey = this.getGoldDecisionKey(rawDecision);
+    const previousKey = this.getGoldDecisionKey(previousDecision);
+    const stability = {
+      acceptedKey: String(previousStability?.acceptedKey || previousKey || ""),
+      candidateKey: String(previousStability?.candidateKey || ""),
+      candidateCount: Number(previousStability?.candidateCount || 0),
+      minPersistenceCycles: Math.max(2, Number(previousStability?.minPersistenceCycles || 2)),
+      switchedAt: String(previousStability?.switchedAt || "")
+    };
+    if (!previousDecision || !previousKey || !rawKey) {
+      return {
+        decision: {
+          ...rawDecision,
+          temporalStability: {
+            stable: true,
+            candidateCount: 0,
+            requiredCycles: stability.minPersistenceCycles
+          }
+        },
+        stability: {
+          ...stability,
+          acceptedKey: rawKey,
+          candidateKey: "",
+          candidateCount: 0,
+          switchedAt: nowIso()
+        }
+      };
+    }
+    if (rawKey === previousKey) {
+      return {
+        decision: {
+          ...rawDecision,
+          temporalStability: {
+            stable: true,
+            candidateCount: 0,
+            requiredCycles: stability.minPersistenceCycles
+          }
+        },
+        stability: {
+          ...stability,
+          acceptedKey: rawKey,
+          candidateKey: "",
+          candidateCount: 0
+        }
+      };
+    }
+    const candidateKey = stability.candidateKey === rawKey ? rawKey : rawKey;
+    const candidateCount = stability.candidateKey === rawKey ? stability.candidateCount + 1 : 1;
+    const strongAdvantage = Number(rawDecision?.score || 0) - Number(previousDecision?.score || 0) >= 0.2;
+    const canSwitch = strongAdvantage || candidateCount >= stability.minPersistenceCycles;
+    if (canSwitch) {
+      return {
+        decision: {
+          ...rawDecision,
+          temporalStability: {
+            stable: true,
+            candidateCount,
+            requiredCycles: stability.minPersistenceCycles
+          }
+        },
+        stability: {
+          ...stability,
+          acceptedKey: rawKey,
+          candidateKey: "",
+          candidateCount: 0,
+          switchedAt: nowIso()
+        }
+      };
+    }
+    return {
+      decision: {
+        ...previousDecision,
+        deferredDecision: rawDecision,
+        explanationShort: `${previousDecision.explanationShort || "Priorita confermata."} Cambio in osservazione.`,
+        temporalStability: {
+          stable: false,
+          candidateKey: rawKey,
+          candidateCount,
+          requiredCycles: stability.minPersistenceCycles
+        }
+      },
+      stability: {
+        ...stability,
+        candidateKey,
+        candidateCount
+      }
     };
   }
 
@@ -4133,6 +4272,8 @@ class DesktopMirrorService {
 
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
+    const previousDecision = next.decision || null;
+    const previousStability = next.decisionStability || this.buildDefaultGoldState(state.centerId, state.centerName).decisionStability;
     next.snapshots = this.buildGoldSnapshotsFromState(next);
     const hasDirtyState = Boolean(
       (Array.isArray(next.dirty?.components) && next.dirty.components.length)
@@ -4156,7 +4297,9 @@ class DesktopMirrorService {
     next.cashPrimarySnapshot = cashSwitch.cashPrimarySnapshot;
     next.cashShadowSnapshot = cashSwitch.cashShadowSnapshot;
     next.signals = this.buildGoldSignalsFromState(next);
-    next.decision = this.buildGoldDecisionFromState(next);
+    const stabilized = this.stabilizeGoldDecision(previousDecision, previousStability, this.buildGoldDecisionFromState(next));
+    next.decision = stabilized.decision;
+    next.decisionStability = stabilized.stability;
     return next;
   }
 
@@ -8123,6 +8266,11 @@ class DesktopMirrorService {
       const daysSinceLastMarketingContact = Number.isFinite(lastMarketingTime)
         ? Math.max(0, Math.floor((now - lastMarketingTime) / 86400000))
         : null;
+      const marketingCooldownDays = relationState === "contattato" || relationState === "in_attesa"
+        ? 10
+        : relationState === "risposto" || relationState === "prenotato"
+          ? 21
+          : 7;
       const annualValueCents = Number(annualValuesByClientId.get(clientId) || 0);
       const valueScoreNormalized = normalizeScore(maxAnnualValue > 0 ? annualValueCents / maxAnnualValue : 0.6, totalSpentCents >= 50000 ? 1 : totalSpentCents > 15000 ? 0.6 : 0.3);
       const historyScore = relationState === "prenotato"
@@ -8137,7 +8285,10 @@ class DesktopMirrorService {
       const affinityScore = lastService?.name ? 1 : lastAppointment ? 0.7 : 0.4;
       const freshness = freshnessScoreFromDays(daysSinceLastMarketingContact);
       const timingFit = timingFitScore(timing.timingScore);
-      const responseProbability = normalizeScore((0.35 * historyScore) + (0.30 * affinityScore) + (0.20 * freshness) + (0.15 * timingFit));
+      const cooldownPenalty = daysSinceLastMarketingContact !== null && daysSinceLastMarketingContact < marketingCooldownDays
+        ? normalizeScore((marketingCooldownDays - daysSinceLastMarketingContact) / Math.max(marketingCooldownDays, 1))
+        : 0;
+      const responseProbability = normalizeScore((0.35 * historyScore) + (0.30 * affinityScore) + (0.20 * freshness) + (0.15 * timingFit) - (0.35 * cooldownPenalty));
       const responseClass = scoreClass(responseProbability, [
         { key: "bassa", label: "bassa probabilità risposta", max: 0.35 },
         { key: "media", label: "media probabilità risposta", max: 0.60 },
@@ -8159,7 +8310,7 @@ class DesktopMirrorService {
         { key: "priorita_alta", label: "Priorità alta", max: Infinity }
       ]);
       const lockedRelation = ["in_attesa", "risposto", "prenotato"].includes(relationState);
-      const tooRecent = daysSinceLastMarketingContact !== null && daysSinceLastMarketingContact < 3;
+      const tooRecent = daysSinceLastMarketingContact !== null && daysSinceLastMarketingContact < marketingCooldownDays;
       const veryLowResponse = responseProbability < 0.35 && valueScoreNormalized < 0.95;
       const lostOrHistoric = timing.timingClass === "perso" || timing.timingClass === "storico";
       const inRoutine = timing.timingClass === "in_routine";
@@ -8176,7 +8327,7 @@ class DesktopMirrorService {
         : lockedRelation
           ? "Cliente già in gestione: non inviare un nuovo messaggio."
           : tooRecent
-            ? "Contatto troppo recente: non disturbare ora."
+            ? `Contatto troppo recente: attendi almeno ${marketingCooldownDays} giorni.`
             : veryLowResponse
               ? "Probabilità risposta bassa: meglio non forzare il contatto."
               : inRoutine
@@ -8374,6 +8525,8 @@ class DesktopMirrorService {
         contactClassLabel: timing.contactClassLabel,
         daysOutOfRoutine: timing.deltaDays,
         daysSinceLastMarketingContact,
+        marketingCooldownDays,
+        cooldownActive: Boolean(tooRecent),
         relationState,
         shouldContact: shouldContactOld,
         shouldContactOld,
@@ -9856,6 +10009,14 @@ class DesktopMirrorService {
     })).filter(Boolean);
     const confidenceValues = topSignals.map((item) => Number(item.confidence || 0));
     const riskValues = topSignals.map((item) => Number(item.risk || 0));
+    const dataQuality = this.getDataQualitySummary({}, session);
+    const profitabilityOverview = this.buildProfitabilityOverviewFromGoldState({}, session) || {};
+    const anomalies = this.rankGoldDecisionAnomalies({
+      dataQuality,
+      profitabilityOverview,
+      primaryAction,
+      topSignals
+    });
     return {
       goldEnabled: true,
       capabilities,
@@ -9864,6 +10025,7 @@ class DesktopMirrorService {
       secondaryActions,
       blockedActions,
       topSignals,
+      anomalies,
       globalConfidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : 0,
       systemRisk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : 0,
       lastUpdate: snapshot.generatedAt || nowIso(),
@@ -9871,6 +10033,59 @@ class DesktopMirrorService {
       goldEngineVersion: snapshot.goldEngine?.engineVersion || capabilities.goldEngineVersion,
       sourceLayer: "gold_decision_context"
     };
+  }
+
+  rankGoldDecisionAnomalies(input = {}) {
+    const dataQuality = input.dataQuality || {};
+    const profitabilityOverview = input.profitabilityOverview || {};
+    const primaryAction = input.primaryAction || null;
+    const topSignals = Array.isArray(input.topSignals) ? input.topSignals : [];
+    const confidence = Number(primaryAction?.confidence || 0);
+    const items = [
+      {
+        key: "clients_missing_contact",
+        area: "crm",
+        title: "Clienti senza contatto",
+        actionLabel: "Completa telefono o email nelle schede cliente",
+        impactScore: normalizeScore((Number(dataQuality.metrics?.clientsMissingContact || 0) / Math.max(1, Number(dataQuality.metrics?.clients || 1))) * 1.2),
+        confidence
+      },
+      {
+        key: "services_missing_costs",
+        area: "profitability",
+        title: "Servizi senza costi configurati",
+        actionLabel: "Completa costi e collega prodotti o tecnologie",
+        impactScore: normalizeScore((Number(dataQuality.metrics?.servicesMissingCosts || 0) / Math.max(1, Number(dataQuality.metrics?.services || 1))) * 1.2),
+        confidence: Number(profitabilityOverview.confidence?.value || 0)
+      },
+      {
+        key: "unlinked_payments",
+        area: "cash",
+        title: "Pagamenti da collegare",
+        actionLabel: "Apri cassa e associa i pagamenti",
+        impactScore: normalizeScore(Number(dataQuality.metrics?.unlinkedPayments || 0) / 5),
+        confidence: 0.95
+      },
+      {
+        key: "profitability_low_confidence",
+        area: "profitability",
+        title: "Margine con confidenza bassa",
+        actionLabel: "Leggi la redditività solo dopo verifica costi",
+        impactScore: normalizeScore(1 - Number(profitabilityOverview.confidence?.value || 0)),
+        confidence: Number(profitabilityOverview.confidence?.value || 0)
+      }
+    ].filter((item) => item.impactScore > 0.05);
+
+    const primaryArea = String(primaryAction?.domain || "");
+    items.forEach((item) => {
+      if (primaryArea && item.area.includes(primaryArea)) item.impactScore = normalizeScore(item.impactScore + 0.15);
+      if (topSignals.some((signal) => String(signal.domain || "") === item.area || String(signal.target || "") === item.area)) {
+        item.impactScore = normalizeScore(item.impactScore + 0.1);
+      }
+      item.impactScore = Number(item.impactScore.toFixed(3));
+    });
+
+    return items.sort((a, b) => b.impactScore - a.impactScore).slice(0, 5);
   }
 
   toGoldDecisionItem(domain, entityId, goldDecision, meta = {}) {
