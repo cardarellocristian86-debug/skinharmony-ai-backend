@@ -181,8 +181,18 @@
     return ROUTES.has(window.location.pathname || "/");
   }
 
+  function buildAuthHeaders(base = {}) {
+    const token = window.localStorage.getItem("skinharmony-web-token");
+    return token
+      ? { ...base, Authorization: `Bearer ${token}` }
+      : base;
+  }
+
   async function fetchJson(url) {
-    const response = await fetch(url, { credentials: "include" });
+    const response = await fetch(url, {
+      credentials: "include",
+      headers: buildAuthHeaders({ Accept: "application/json" })
+    });
     if (!response.ok) {
       throw new Error(String(response.status));
     }
@@ -193,7 +203,7 @@
     const response = await fetch(url, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload || {})
     });
     const data = await response.json().catch(() => ({}));
@@ -326,12 +336,28 @@
     return (window.location.pathname || "/") === "/settings";
   }
 
-  function isSuperAdminSession() {
+  let sessionRoleCache = "";
+  let sessionRolePromise = null;
+
+  async function getSessionRole() {
+    if (sessionRoleCache) return sessionRoleCache;
+    if (!sessionRolePromise) {
+      sessionRolePromise = fetchJson("/api/auth/session")
+        .then((session) => {
+          sessionRoleCache = String(session?.role || "").toLowerCase();
+          return sessionRoleCache;
+        })
+        .catch(() => "")
+        .finally(() => {
+          sessionRolePromise = null;
+        });
+    }
+    return sessionRolePromise;
+  }
+
+  async function isSuperAdminSession() {
     try {
-      const raw = window.localStorage.getItem("skinharmony-web-auth");
-      if (!raw) return false;
-      const parsed = JSON.parse(raw);
-      return String(parsed?.role || "").toLowerCase() === "superadmin";
+      return (await getSessionRole()) === "superadmin";
     } catch (_error) {
       return false;
     }
@@ -379,9 +405,9 @@
     return panel;
   }
 
-  function renderSettingsTools() {
+  async function renderSettingsTools() {
     removeSettingsPanel();
-    if (!isSettingsRoute() || !isSuperAdminSession()) return;
+    if (!isSettingsRoute() || !(await isSuperAdminSession())) return;
     injectStyle();
     const anchor = findSettingsAnchor();
     if (!anchor || document.getElementById(SETTINGS_PANEL_ID)) return;
