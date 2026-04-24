@@ -82,6 +82,26 @@ function pickFirstMeaningful(values = [], banned = []) {
   return "";
 }
 
+function resolveShadowGovernorDecision(primaryAction = {}, decisionContext = {}) {
+  const primaryDecision = String(primaryAction?.universalCoreShadow?.governor?.decision || "").trim();
+  if (primaryDecision) return primaryDecision;
+  return String(decisionContext?.universalCoreShadow?.governor?.decision || "").trim();
+}
+
+function resolveShadowRuntime(primaryAction = {}, decisionContext = {}) {
+  const primaryRuntime = String(primaryAction?.universalCoreShadow?.runtime?.selected_runtime || "").trim();
+  if (primaryRuntime) return primaryRuntime;
+  return String(decisionContext?.universalCoreShadow?.runtime?.selected_runtime || "").trim();
+}
+
+function resolveShadowRisk(primaryAction = {}, decisionContext = {}) {
+  const primaryRisk = Number(primaryAction?.universalCoreShadow?.risk?.risk_score);
+  if (Number.isFinite(primaryRisk)) return clamp01(primaryRisk);
+  const rootRisk = Number(decisionContext?.universalCoreShadow?.risk?.risk_score);
+  if (Number.isFinite(rootRisk)) return clamp01(rootRisk);
+  return 0;
+}
+
 class CoreliaBridge {
   constructor(desktopMirror, options = {}) {
     this.desktopMirror = desktopMirror;
@@ -313,13 +333,15 @@ class CoreliaBridge {
   computeUrgency(state = {}) {
     const snapshot = state.snapshot || {};
     const decisionContext = state.decisionContext || {};
+    const shadowRisk = resolveShadowRisk(decisionContext.primaryAction || {}, decisionContext);
     const unlinkedPayments = Number(snapshot.dataQuality?.metrics?.unlinkedPayments || 0);
     const cashAgreementRisk = Number(state.goldState?.cashPrimarySnapshot?.ambiguityRatio || 0);
     const CashUrgency = round(Math.max(unlinkedPayments > 0 ? Math.min(1, unlinkedPayments / 4) : 0, cashAgreementRisk));
     const DecisionUrgency = round(Math.max(
       Number(decisionContext.systemRisk || 0),
       Number(decisionContext.primaryAction?.risk || 0),
-      Number(decisionContext.primaryAction?.riskAdjustedPriority || 0)
+      Number(decisionContext.primaryAction?.riskAdjustedPriority || 0),
+      shadowRisk
     ));
     const weakestUpcomingDay = snapshot.operations?.weakestUpcomingDay || null;
     const AgendaUrgency = round(
@@ -464,7 +486,9 @@ class CoreliaBridge {
     return [
       { label: "Primary action", value: primary.label || primary.domain || "", source: "decisionPrimarySnapshot" },
       { label: "System risk", value: round(state.decisionContext?.systemRisk || 0), source: "decisionSelection" },
-      { label: "Confidence globale", value: round(state.decisionContext?.globalConfidence || 0), source: "decisionSelection" }
+      { label: "Confidence globale", value: round(state.decisionContext?.globalConfidence || 0), source: "decisionSelection" },
+      { label: "Shadow governor", value: resolveShadowGovernorDecision(primary, state.decisionContext) || "", source: "decisionPrimarySnapshot" },
+      { label: "Shadow runtime", value: resolveShadowRuntime(primary, state.decisionContext) || "", source: "decisionPrimarySnapshot" }
     ];
   }
 
@@ -479,6 +503,12 @@ class CoreliaBridge {
     const snapshot = state.snapshot || {};
     const primaryActionCandidate = decisionContext.primaryAction || {};
     const centerHealth = snapshot.report?.centerHealth || {};
+    const servicesMissingCosts = Number(snapshot.dataQuality?.metrics?.servicesMissingCosts || 0);
+    const operatorsMissingHourlyCost = Number(snapshot.dataQuality?.metrics?.operatorsMissingHourlyCost || 0);
+    const profitabilityBlockedForConfig = servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0;
+    const shadowDecision = resolveShadowGovernorDecision(primaryActionCandidate, decisionContext);
+    const shadowRuntime = resolveShadowRuntime(primaryActionCandidate, decisionContext);
+    const shadowRisk = resolveShadowRisk(primaryActionCandidate, decisionContext);
 
     let primarySignal = "Centro sotto controllo";
     let secondarySignals = [];
@@ -510,24 +540,57 @@ class CoreliaBridge {
       sourceUsed = ["cashSelection", "cashPrimarySnapshot", "dataQualityPrimarySnapshot"];
     } else if (domain === "marketing") {
       const focusClient = snapshot.marketing?.focusClient || null;
-      primarySignal = focusClient ? `${focusClient.name} è il cliente da presidiare` : "Recall da monitorare";
+      const suggestionCount = Array.isArray(snapshot.marketing?.suggestions) ? snapshot.marketing.suggestions.length : 0;
+      const analyzedClients = Number(snapshot.marketing?.debug?.clientsAnalyzed || 0);
+      const avoidCount = Number(snapshot.marketing?.counts?.avoid || 0);
+      const hasPriorityQueue = Boolean(focusClient || suggestionCount > 0);
+      const insufficientHistory = analyzedClients === 0;
+
+      primarySignal = focusClient
+        ? `${focusClient.name} è il cliente da presidiare`
+        : insufficientHistory
+          ? "Storico insufficiente per recall operativo"
+          : suggestionCount === 0 && avoidCount > 0
+            ? "Nessun recall prioritario disponibile oggi"
+            : "Recall da monitorare";
       secondarySignals = uniqueStrings([
-        `Clienti prioritari ${(snapshot.marketing?.suggestions || []).length}`,
+        `Clienti prioritari ${suggestionCount}`,
         focusClient?.clearReason || ""
       ]);
       primaryAction = focusClient
         ? (focusClient.operatingDecision || "prepara un richiamo mirato")
-        : "rileggi la coda recall e seleziona i clienti ad alta priorità";
-      actionBand = focusClient && String(focusClient.priority || "") === "alta" ? "ACT_NOW" : "SUGGEST";
+        : insufficientHistory
+          ? "carica storico reale prima di attivare recall e marketing"
+          : suggestionCount === 0 && avoidCount > 0
+            ? "non forzare richiami: lavora agenda o acquisizione"
+            : "rileggi la coda recall e seleziona i clienti ad alta priorità";
+      actionBand = focusClient && String(focusClient.priority || "") === "alta"
+        ? "ACT_NOW"
+        : hasPriorityQueue
+          ? "SUGGEST"
+          : insufficientHistory
+            ? "VERIFY"
+            : "MONITOR";
       risks = uniqueStrings([
         focusClient ? "perdita continuità cliente se non contattato" : "",
         Number(snapshot.dataQuality?.score || 0) < 75 ? "dati contatto o storico incompleti" : ""
       ]);
       reasons = uniqueStrings([
-        focusClient?.clearReason || "Il marketing Gold ha già ordinato i clienti per urgenza reale",
+        focusClient?.clearReason
+          || (insufficientHistory
+            ? "Il centro non ha ancora storico sufficiente per generare recall attendibili"
+            : suggestionCount === 0 && avoidCount > 0
+              ? "Il marketing Gold non vede clienti da richiamare oggi: i profili analizzati sono da evitare o da lasciare in osservazione"
+              : "Il marketing Gold ha già ordinato i clienti per urgenza reale"),
         "Corelia usa storico visite, frequenza e consenso"
       ]);
-      recommendedNextStep = focusClient ? "apri marketing e prepara il messaggio da confermare" : "controlla marketing e valida la coda recall";
+      recommendedNextStep = focusClient
+        ? "apri marketing e prepara il messaggio da confermare"
+        : insufficientHistory
+          ? "completa clienti, visite e consensi prima di aspettarti recall affidabili"
+          : suggestionCount === 0 && avoidCount > 0
+            ? "apri agenda o marketing e lavora solo clienti davvero fuori routine"
+            : "controlla marketing e valida la coda recall";
       sourceUsed = ["marketingParallel", "reportParallel", "goldStateSummary"];
     } else if (domain === "agenda") {
       const weakDay = snapshot.operations?.weakestUpcomingDay || null;
@@ -551,23 +614,41 @@ class CoreliaBridge {
     } else if (domain === "profitability") {
       const alert = Array.isArray(snapshot.profitability?.alerts) ? snapshot.profitability.alerts[0] : null;
       const suggestion = Array.isArray(snapshot.profitability?.suggestions) ? snapshot.profitability.suggestions[0] : null;
-      primarySignal = alert?.title || suggestion?.name || "Redditività da monitorare";
-      secondarySignals = uniqueStrings([
-        suggestion?.clearConclusion || "",
-        `Alert ${(snapshot.profitability?.alerts || []).length}`
-      ]);
-      primaryAction = suggestion?.operatingAction || "controlla prezzo, durata e costi dei servizi critici";
-      actionBand = alert ? "VERIFY" : suggestion ? "SUGGEST" : "MONITOR";
-      risks = uniqueStrings([
-        alert ? "margine sotto soglia o dati costo da verificare" : "",
-        Number(snapshot.dataQuality?.score || 0) < 75 ? "lettura economica poco affidabile" : ""
-      ]);
-      reasons = uniqueStrings([
-        "La redditività va letta solo sui dati reali del gestionale",
-        suggestion?.clearConclusion || ""
-      ]);
-      recommendedNextStep = "apri redditività e verifica il servizio o la tecnologia più critica";
-      sourceUsed = ["profitabilitySnapshot", "reportParallel", "dataQualityPrimarySnapshot"];
+      if (profitabilityBlockedForConfig) {
+        primarySignal = "Redditività non ancora leggibile";
+        secondarySignals = uniqueStrings([
+          servicesMissingCosts > 0 ? `${servicesMissingCosts} costi servizio da completare` : "",
+          operatorsMissingHourlyCost > 0 ? `${operatorsMissingHourlyCost} costi orari operatori da completare` : ""
+        ]);
+        primaryAction = "completa configurazione costi prima di usare la redditività come guida";
+        actionBand = "VERIFY";
+        risks = uniqueStrings([
+          "lettura economica facilmente fraintendibile finché la configurazione costi resta incompleta"
+        ]);
+        reasons = uniqueStrings([
+          "Il centro può lavorare bene anche se la configurazione economica non è completa",
+          `Gold evita margini forti finché mancano ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`
+        ]);
+        recommendedNextStep = `apri servizi e operatori e completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori`;
+      } else {
+        primarySignal = alert?.title || suggestion?.name || "Redditività da monitorare";
+        secondarySignals = uniqueStrings([
+          suggestion?.clearConclusion || "",
+          `Alert ${(snapshot.profitability?.alerts || []).length}`
+        ]);
+        primaryAction = suggestion?.operatingAction || "controlla prezzo, durata e costi dei servizi critici";
+        actionBand = alert ? "VERIFY" : suggestion ? "SUGGEST" : "MONITOR";
+        risks = uniqueStrings([
+          alert ? "margine sotto soglia o dati costo da verificare" : "",
+          Number(snapshot.dataQuality?.score || 0) < 75 ? "lettura economica poco affidabile" : ""
+        ]);
+        reasons = uniqueStrings([
+          "La redditività va letta solo sui dati reali del gestionale",
+          suggestion?.clearConclusion || ""
+        ]);
+        recommendedNextStep = "apri redditività e verifica il servizio o la tecnologia più critica";
+      }
+      sourceUsed = ["profitabilitySnapshot", "reportParallel", "dataQualityPrimarySnapshot", shadowRuntime ? "decisionPrimaryShadow" : ""].filter(Boolean);
     } else if (domain === "operator") {
       const topOperator = snapshot.operations?.topOperator || null;
       const weakOperator = snapshot.operations?.weakOperator || null;
@@ -670,7 +751,9 @@ class CoreliaBridge {
         centerHealth.reason
       ]);
 
-      if (lowMaturity) {
+      if (profitabilityBlockedForConfig && (String(primaryActionCandidate.domain || "") === "profitability" || String(primaryActionCandidate.domain || "") === "economic")) {
+        primarySignal = "Volume presente, completa costi per sbloccare redditivita";
+      } else if (lowMaturity) {
         primarySignal = "Il centro è ancora in avvio prudenziale: i dati sono troppo pochi per una priorità forte";
       } else if (intent === "ask_center_status") {
         primarySignal = mainProblem
@@ -689,6 +772,7 @@ class CoreliaBridge {
       }
 
       secondarySignals = uniqueStrings([
+        profitabilityBlockedForConfig ? `Configurazione economica incompleta: ${servicesMissingCosts} costi servizio, ${operatorsMissingHourlyCost} costi orari` : "",
         lowMaturity ? progressiveMessage : "",
         bestOpportunity ? `Opportunità: ${bestOpportunity}` : "",
         operationalRisk ? `Rischio: ${operationalRisk}` : "",
@@ -697,34 +781,59 @@ class CoreliaBridge {
           .slice(0, 2)
           .map((item) => item.explanationShort || item.label || item.domain))
       ]);
-      primaryAction = lowMaturity
-        ? "completa agenda, cassa e anagrafica prima di aspettarti letture più profonde"
-        : firstAction || "verifica la priorità principale";
-      actionBand = lowMaturity
+      primaryAction = profitabilityBlockedForConfig && (String(primaryActionCandidate.domain || "") === "profitability" || String(primaryActionCandidate.domain || "") === "economic")
+        ? `completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori`
+        : lowMaturity
+          ? "completa agenda, cassa e anagrafica prima di aspettarti letture più profonde"
+          : firstAction || "verifica la priorità principale";
+      actionBand = profitabilityBlockedForConfig && (String(primaryActionCandidate.domain || "") === "profitability" || String(primaryActionCandidate.domain || "") === "economic")
         ? "VERIFY"
-        : severityToActionBand(primaryActionCandidate.action || state.goldState?.decision?.action || "MONITOR");
+        : lowMaturity
+          ? "VERIFY"
+          : severityToActionBand(primaryActionCandidate.action || state.goldState?.decision?.action || "MONITOR");
       risks = uniqueStrings([
+        profitabilityBlockedForConfig ? "la lettura economica resta prudente finché i costi non sono completi" : "",
         lowMaturity ? "dati insufficienti per priorità affidabili" : "",
         Number(decisionContext.systemRisk || 0) > 0.7 ? "rischio operativo alto" : "",
+        shadowDecision === "block" ? "governor shadow in blocco: non forzare l'azione" : "",
+        shadowDecision === "escalate" ? "governor shadow richiede escalation o conferma forte" : "",
+        ["retry", "fallback"].includes(shadowDecision) ? "governor shadow suggerisce prudenza operativa" : "",
+        shadowRisk > 0.7 ? "rischio shadow alto" : "",
         Number(snapshot.dataQuality?.score || 0) < 75 ? "dati da verificare" : "",
         fragileDataArea ? `area dati fragile: ${fragileDataArea}` : ""
       ]);
       reasons = uniqueStrings([
+        profitabilityBlockedForConfig ? `Il centro lavora già, ma Gold evita priorità economiche forti finché mancano ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.` : "",
         lowMaturity ? progressiveMessage : "",
         lowMaturity ? "Corelia qui deve restare prudente: descrive il centro ma non forza priorità artificiali" : "",
+        shadowDecision === "block" ? "Il governor shadow legge questa priorità come bloccata, quindi la risposta resta descrittiva e non esecutiva." : "",
+        shadowDecision === "escalate" ? "Il governor shadow chiede un passaggio umano più esplicito prima di trattare il segnale come azione forte." : "",
+        shadowDecision === "retry" ? "Il governor shadow preferisce un secondo passaggio o una verifica prima di confermare questa direzione." : "",
+        shadowDecision === "fallback" ? "Il governor shadow preferisce una strada più prudente rispetto alla prima formulazione." : "",
+        shadowRuntime ? `Runtime shadow selezionato: ${shadowRuntime}.` : "",
         mainProblem ? `Il segnale dominante oggi è ${mainProblem}` : "",
         bestOpportunity ? `L'opportunità più utile è ${bestOpportunity}` : "",
         centerHealth.reason || "",
         primaryActionCandidate.explanationShort || "",
         state.goldState?.decision?.explanationShort || ""
       ]);
-      recommendedNextStep = lowMaturity
-        ? "chiudi i dati base del centro e poi rileggi AI Gold"
-        : primaryActionCandidate.canExecute === false
-        ? "usa l'indicazione come guida e conferma l'azione dal modulo corretto"
-        : firstAction
-          ? `apri il modulo collegato e conferma: ${firstAction}`
-          : "apri il modulo suggerito e verifica il contesto prima di agire";
+      recommendedNextStep = profitabilityBlockedForConfig && (String(primaryActionCandidate.domain || "") === "profitability" || String(primaryActionCandidate.domain || "") === "economic")
+        ? `apri servizi e operatori e completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori`
+        : lowMaturity
+          ? "chiudi i dati base del centro e poi rileggi AI Gold"
+          : shadowDecision === "block"
+            ? "non eseguire ora: apri il modulo collegato e verifica prima il dato o la configurazione"
+            : shadowDecision === "escalate"
+              ? "usa l'indicazione come guida e fai una conferma operativa esplicita prima di agire"
+              : shadowDecision === "retry"
+                ? "ripeti la lettura nel modulo collegato e conferma solo dopo un secondo controllo"
+                : shadowDecision === "fallback"
+                  ? "apri il modulo collegato e usa il percorso più prudente disponibile"
+                  : primaryActionCandidate.canExecute === false
+                    ? "usa l'indicazione come guida e conferma l'azione dal modulo corretto"
+                    : firstAction
+                      ? `apri il modulo collegato e conferma: ${firstAction}`
+                      : "apri il modulo suggerito e verifica il contesto prima di agire";
       sourceUsed = ["decisionSelection", "decisionPrimarySnapshot", "goldStateSummary", "reportParallel"];
     }
 
