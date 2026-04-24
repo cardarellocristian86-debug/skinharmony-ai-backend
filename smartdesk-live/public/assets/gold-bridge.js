@@ -7,6 +7,7 @@
   let goldRenderTimers = [];
   let settingsRenderTimers = [];
   let observerStarted = false;
+  let mutationLockDepth = 0;
 
   function injectStyle() {
     if (document.getElementById(SCRIPT_ID)) return;
@@ -186,6 +187,17 @@
     list.length = 0;
   }
 
+  function runWithMutationLock(fn) {
+    mutationLockDepth += 1;
+    try {
+      return fn();
+    } finally {
+      window.setTimeout(() => {
+        mutationLockDepth = Math.max(0, mutationLockDepth - 1);
+      }, 0);
+    }
+  }
+
   function shouldRender() {
     return ROUTES.has(window.location.pathname || "/");
   }
@@ -320,7 +332,7 @@
     renderToken += 1;
     const token = renderToken;
     if (!shouldRender()) {
-      removePanel();
+      runWithMutationLock(() => removePanel());
       return;
     }
     injectStyle();
@@ -336,13 +348,17 @@
       if (!anchor) return;
       const panel = buildPanel(context, capabilities);
       const existing = document.getElementById(PANEL_ID);
-      if (existing) {
-        existing.replaceWith(panel);
-      } else {
-        anchor.insertAdjacentElement("afterend", panel);
-      }
+      runWithMutationLock(() => {
+        if (existing) {
+          existing.replaceWith(panel);
+        } else {
+          anchor.insertAdjacentElement("afterend", panel);
+        }
+      });
     } catch (_error) {
-      if (!shouldRender()) removePanel();
+      if (!shouldRender()) {
+        runWithMutationLock(() => removePanel());
+      }
     }
   }
 
@@ -421,11 +437,11 @@
 
   async function renderSettingsTools() {
     if (!isSettingsRoute()) {
-      removeSettingsPanel();
+      runWithMutationLock(() => removeSettingsPanel());
       return;
     }
     if (!(await isSuperAdminSession())) {
-      removeSettingsPanel();
+      runWithMutationLock(() => removeSettingsPanel());
       return;
     }
     injectStyle();
@@ -433,11 +449,13 @@
     if (!anchor) return;
     const panel = buildSettingsPanel();
     const existing = document.getElementById(SETTINGS_PANEL_ID);
-    if (existing) {
-      existing.replaceWith(panel);
-    } else {
-      anchor.insertAdjacentElement("afterend", panel);
-    }
+    runWithMutationLock(() => {
+      if (existing) {
+        existing.replaceWith(panel);
+      } else {
+        anchor.insertAdjacentElement("afterend", panel);
+      }
+    });
   }
 
   function scheduleRender() {
@@ -454,6 +472,7 @@
   }
 
   const observer = new MutationObserver(() => {
+    if (mutationLockDepth > 0) return;
     scheduleRender();
   });
 
