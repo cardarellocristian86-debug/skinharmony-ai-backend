@@ -44,6 +44,25 @@ function isCancelledAppointment(appointment = {}) {
   return ["cancelled", "canceled", "no_show"].includes(normalizeText(appointment.status || ""));
 }
 
+function buildInferredOperatorServiceMap(appointments = [], staff = []) {
+  const map = new Map();
+  const staffIdByName = new Map((Array.isArray(staff) ? staff : []).map((operator) => [
+    normalizeText(operator.name || ""),
+    String(operator.id || "")
+  ]).filter((entry) => entry[0] && entry[1]));
+  (Array.isArray(appointments) ? appointments : []).forEach((appointment) => {
+    const explicitOperatorId = String(appointment.staffId || appointment.operatorId || "");
+    const operatorName = normalizeText(appointment.staffName || appointment.operatorName || appointment.operatore || "");
+    const operatorId = explicitOperatorId || staffIdByName.get(operatorName) || "";
+    const serviceId = String(appointment.serviceId || appointment.serviceName || "");
+    if (!operatorId || !serviceId || isCancelledAppointment(appointment)) return;
+    const current = map.get(operatorId) || new Set();
+    current.add(serviceId);
+    map.set(operatorId, current);
+  });
+  return map;
+}
+
 function serviceHasCompleteCost(service = {}) {
   const hasProductCost = Array.isArray(service.productLinks) && service.productLinks.length > 0;
   const hasTechnologyCost = Array.isArray(service.technologyLinks) && service.technologyLinks.length > 0;
@@ -143,6 +162,7 @@ function buildLegacyPolicyBlocks(rawData = {}) {
     ...(Array.isArray(service.operatorIds) ? service.operatorIds : []),
     ...(Array.isArray(service.assignedStaffIds) ? service.assignedStaffIds : [])
   ]).map((id) => String(id || "")).filter(Boolean));
+  const inferredOperatorServices = buildInferredOperatorServiceMap(completedAppointments, staff);
   const operatorsMissingHourlyCost = staff.filter((operator) => Number(operator.hourlyCostCents || operator.hourlyCost || 0) <= 0);
   const operatorsMissingRole = staff.filter((operator) => !cleanText(operator.role || ""));
   const operatorsMissingServices = staff.filter((operator) => {
@@ -152,7 +172,8 @@ function buildLegacyPolicyBlocks(rawData = {}) {
       ...(Array.isArray(operator.services) ? operator.services : []),
       ...(Array.isArray(operator.assignedServiceIds) ? operator.assignedServiceIds : [])
     ].filter(Boolean).length;
-    return direct ? directCount === 0 : !staffIdsUsedByServices.has(String(operator.id || ""));
+    const inferredCount = inferredOperatorServices.get(String(operator.id || ""))?.size || 0;
+    return direct ? directCount === 0 && inferredCount === 0 : !staffIdsUsedByServices.has(String(operator.id || "")) && inferredCount === 0;
   });
   const inventoryMissingCost = inventory.filter((item) => Number(item.costCents || item.unitCostCents || item.purchaseCostCents || 0) <= 0);
   const inventoryMissingStock = inventory.filter((item) => item.quantity === undefined && item.stockQuantity === undefined);
