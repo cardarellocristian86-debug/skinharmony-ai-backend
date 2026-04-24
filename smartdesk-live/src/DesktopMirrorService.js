@@ -2680,14 +2680,20 @@ class DesktopMirrorService {
     const marginRatio = Number(profitability.averageMargin || 0);
     const costCents = Number(profitability.coreCostCents || 0) || Math.round(revenueCents * Math.max(0, 1 - marginRatio));
     const profitCents = Number(profitability.coreProfitCents || 0) || Math.max(0, revenueCents - costCents);
-    const status = profitability.status === "margine_da_verificare"
+    const confidenceValue = Number(profitability.profitabilityConfidence ?? Math.min(Number(profitability.economicConfidence || 0), Number(profitability.costConfidence || 0)));
+    const servicesTotal = Number(state.counters?.servicesTotal || 0);
+    const servicesWithCost = Number(state.counters?.servicesWithCost || 0);
+    const profitabilityConfigBlocked = confidenceValue < 0.55 || (servicesTotal > 0 && servicesWithCost < servicesTotal);
+    const status = profitabilityConfigBlocked
+      ? "CONFIG_REQUIRED"
+      : profitability.status === "margine_da_verificare"
       ? "LOW_MARGIN"
       : profitability.status === "margine_sotto_soglia"
         ? "LOW_MARGIN"
         : "HEALTHY";
     const aggregateService = {
       id: "gold-state-profitability",
-      name: "Margine aggregato centro",
+      name: profitabilityConfigBlocked ? "Redditività da configurare" : "Margine aggregato centro",
       executions: Number(state.counters?.marginSamples || state.counters?.paymentCount || 0),
       revenueCents,
       costCents,
@@ -2705,7 +2711,7 @@ class DesktopMirrorService {
         profitCents
       },
       confidence: {
-        value: Number(profitability.profitabilityConfidence ?? Math.min(Number(profitability.economicConfidence || 0), Number(profitability.costConfidence || 0))),
+        value: confidenceValue,
         label: profitability.confidenceLabel || "bassa"
       },
       centerHealth: this.buildGoldStateCenterHealth(state),
@@ -2716,8 +2722,10 @@ class DesktopMirrorService {
       alerts: status === "HEALTHY" ? [] : [{
         area: "servizi",
         level: "warning",
-        title: profitability.status === "margine_da_verificare" ? "Margine da verificare" : "Margine sotto soglia",
-        body: "Gold State segnala costo/confidenza non sufficienti per promuovere una lettura forte.",
+        title: status === "CONFIG_REQUIRED" ? "Redditività da configurare" : profitability.status === "margine_da_verificare" ? "Margine da verificare" : "Margine sotto soglia",
+        body: status === "CONFIG_REQUIRED"
+          ? "Volume e pagamenti sono presenti, ma i costi non sono abbastanza completi per una lettura economica affidabile."
+          : "Gold State segnala costo/confidenza non sufficienti per promuovere una lettura forte.",
         serviceId: aggregateService.id
       }],
       revenueCents,
@@ -2887,6 +2895,8 @@ class DesktopMirrorService {
               ...state.decision.primaryAction,
               label: state.decision.primaryAction.label || state.decision.explanationShort || "Priorità Gold",
               suggestedAction: state.decision.primaryAction.label || state.decision.explanationShort || "gestisci priorità",
+              explanationShort: state.decision.explanationShort || state.decision.primaryAction.label || "Priorita letta dal Gold State Layer.",
+              explanationLong: state.decision.explanationShort || state.decision.primaryAction.label || "Priorita letta dal Gold State Layer.",
               confidence: Number(state.components?.Conf || 0),
               risk: Number(state.signals?.operationalRisk || 0)
             }
@@ -2937,6 +2947,10 @@ class DesktopMirrorService {
     const business = snapshots.business || {};
     const profitability = snapshots.profitability || {};
     const report = snapshots.report || {};
+    const servicesTotal = Number(state.counters?.servicesTotal || 0);
+    const servicesWithCost = Number(state.counters?.servicesWithCost || 0);
+    const profitabilityConfigBlocked = servicesTotal > 0 && servicesWithCost < servicesTotal;
+    const missingServiceCosts = Math.max(0, servicesTotal - servicesWithCost);
     const cashPrimary = state.cashPrimarySnapshot || null;
     const cashSelection = state.cashSelection || null;
     const decisionScore = Number(decision.score || 0);
@@ -2957,13 +2971,19 @@ class DesktopMirrorService {
       level,
       area: decision.domain || "gold",
       conclusion: decision.primaryAction?.label || decision.explanationShort || "Priorita Gold",
-      reason: decision.explanationShort || "Priorita letta dal Gold State Layer.",
-      details: `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Cash ${cashSelection?.primarySource || "legacy"}`,
+      reason: profitabilityConfigBlocked
+        ? `${decision.explanationShort || "Priorita letta dal Gold State Layer."} Non e un giudizio negativo sul centro: manca configurazione economica su ${missingServiceCosts} servizi.`
+        : decision.explanationShort || "Priorita letta dal Gold State Layer.",
+      details: profitabilityConfigBlocked
+        ? `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Cassa ${cashSelection?.primarySource || "legacy"} · Costi servizio mancanti ${missingServiceCosts}/${servicesTotal}.`
+        : `Score ${Math.round(decisionScore * 100)} · Affidabilita ${Math.round(Number(signals.dataReliability ?? business.confidence ?? 0) * 100)} · Cash ${cashSelection?.primarySource || "legacy"}`,
       impactCents: decision.domain === "cash"
         ? Number(cashPrimary?.unlinkedCashCents || 0) + Number(cashPrimary?.ambiguousCashCents || 0) + Number(cashPrimary?.overdueCents || 0)
         : Number(business.revenueCents || profitability.revenueCents || report.revenueCents || 0),
       riskCents: decision.domain === "profitability" ? Number(profitability.revenueCents || 0) : 0,
-      action: decision.primaryAction?.label || "gestisci priorita",
+      action: profitabilityConfigBlocked
+        ? "completa costi servizi prima di leggere la redditivita"
+        : decision.primaryAction?.label || "gestisci priorita",
       button: decision.domain === "cash" ? "Apri cassa" : decision.domain === "profitability" ? "Apri redditività" : decision.domain === "operations" ? "Apri dashboard" : decision.domain === "growth" ? "Apri marketing" : "Apri dettaglio",
       target: decision.domain === "cash" ? "cashdesk" : decision.domain === "profitability" ? "profitability" : decision.domain === "operations" ? "dashboard" : decision.domain === "growth" ? "marketing" : "dashboard"
     };
@@ -3341,6 +3361,9 @@ class DesktopMirrorService {
     const hasMarginData = Number(counters.marginSamples || 0) > 0;
     const hasSetupGaps = Number(counters.clientsWithContact || 0) < Number(counters.clientsTotal || 0)
       || Number(counters.servicesWithPrice || 0) < Number(counters.servicesTotal || 0);
+    const servicesTotal = Number(counters.servicesTotal || 0);
+    const servicesWithCost = Number(counters.servicesWithCost || 0);
+    const profitabilityConfigBlocked = servicesTotal > 0 && servicesWithCost < servicesTotal;
     const entries = [
       ["cash", signals.cashAnomaly || 0, "Verifica pagamenti non collegati"],
       ["profitability", signals.marginAnomaly || 0, "Verifica marginalita e costi"],
@@ -3361,13 +3384,26 @@ class DesktopMirrorService {
     if (domain === "data_quality" && hasSetupGaps && score >= 0.45) {
       action = "SUGGEST";
     }
+    let feedbackLabel = label;
+    let explanationShort = score >= 0.7 ? `${label}: priorita alta.` : score >= 0.45 ? `${label}: suggerito.` : "Centro stabile: monitorare.";
+    if (profitabilityConfigBlocked && hasAnyRevenue) {
+      if (domain === "growth") {
+        feedbackLabel = "Volume presente, completa costi per sbloccare redditivita";
+        explanationShort = "Il centro lavora, ma Gold evita letture economiche forti finche i costi servizi restano incompleti.";
+      } else if (domain === "profitability") {
+        feedbackLabel = "Redditivita da configurare prima di leggerla";
+        explanationShort = "Pagamenti e volume ci sono, ma la redditivita non e ancora affidabile senza costi servizi completi.";
+      } else if (domain === "operations") {
+        explanationShort = "Operativita leggibile. Parte economica ancora prudente finche i costi servizi non sono completi.";
+      }
+    }
     return {
       source: "gold_state",
       domain,
       score: this.goldRound(score),
       weightedScore: this.goldRound(weightedScore),
       action,
-      primaryAction: { domain, action, label, actionabilityScore: this.goldRound(actionabilityScore) },
+      primaryAction: { domain, action, label: feedbackLabel, actionabilityScore: this.goldRound(actionabilityScore) },
       secondaryActions: entries.slice(1, 3).map(([itemDomain, itemScore, itemLabel, itemActionability, itemWeighted]) => ({
         domain: itemDomain,
         score: this.goldRound(itemScore),
@@ -3376,7 +3412,7 @@ class DesktopMirrorService {
         label: itemLabel
       })),
       blockedActions: Number(state.components?.Conf || 1) < 0.4 ? ["output_assertivi", "azioni_automatiche"] : [],
-      explanationShort: score >= 0.7 ? `${label}: priorita alta.` : score >= 0.45 ? `${label}: suggerito.` : "Centro stabile: monitorare.",
+      explanationShort,
       updatedAt: state.updatedAt || nowIso()
     };
   }
@@ -10209,11 +10245,27 @@ class DesktopMirrorService {
       primaryAction,
       topSignals
     });
+    const servicesMissingCosts = Number(dataQuality.metrics?.servicesMissingCosts || 0);
+    const operatorsMissingHourlyCost = Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0);
+    const profitabilityBlockedForConfig = dataQuality.profitabilityReliable === false && (servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0);
+    const exposedPrimaryAction = profitabilityBlockedForConfig
+      ? {
+        ...(primaryAction || {}),
+        domain: "profitability",
+        entityId: "profitability-config-block",
+        label: "Volume presente, completa costi per sbloccare redditivita",
+        action: "ACT_NOW",
+        suggestedAction: "apri servizi e operatori, poi completa costi e costo orario",
+        explanationShort: `Il centro lavora gia, ma la redditivita resta bloccata finche completi ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`,
+        explanationLong: `Non e un giudizio negativo sul centro. Volume, pagamenti e storico sono presenti, ma Gold evita letture economiche forti finche la configurazione economica non e completa. Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori per sbloccare redditivita e priorita economiche affidabili.`,
+        target: "profitability"
+      }
+      : primaryAction;
     return {
       goldEnabled: true,
       capabilities,
       progressiveIntelligence: capabilities.progressiveIntelligence,
-      primaryAction,
+      primaryAction: exposedPrimaryAction,
       secondaryActions,
       blockedActions,
       topSignals,
@@ -10923,6 +10975,8 @@ class DesktopMirrorService {
     const actionableItems = allItems.filter((item) => !["STOP", "VERIFY"].includes(String(item.action || "")) && Number(item.riskAdjustedPriority2 ?? 0) >= 0.25);
     const fallbackItems = [];
     const profitabilityReliable = dataQuality?.profitabilityReliable !== false;
+    const servicesMissingCosts = Number(dataQuality?.metrics?.servicesMissingCosts || 0);
+    const operatorsMissingHourlyCost = Number(dataQuality?.metrics?.operatorsMissingHourlyCost || 0);
     const clientsMissingLastVisit = Number(dataQuality?.metrics?.clientsMissingLastVisit || 0);
     const clientsTotal = Math.max(1, Number(dataQuality?.metrics?.clients || 0));
     const marketingCandidates = Number(branches.marketing?.summary?.total || 0);
@@ -10999,13 +11053,18 @@ class DesktopMirrorService {
       }
     }
     const topActionable = actionableItems[0] || null;
-    const preferFallbackPrimary = !profitabilityReliable
-      && fallbackItems.length > 0
-      && (
-        !topActionable
-        || String(topActionable.action || "") === "MONITOR"
-        || topActionable.canExecute === false
-      );
+    const hardEconomicConfigBlock = !profitabilityReliable && (servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0);
+    const preferFallbackPrimary = fallbackItems.length > 0 && (
+      hardEconomicConfigBlock
+      || (
+        !profitabilityReliable
+        && (
+          !topActionable
+          || String(topActionable.action || "") === "MONITOR"
+          || topActionable.canExecute === false
+        )
+      )
+    );
     const primaryAction = preferFallbackPrimary
       ? fallbackItems[0]
       : topActionable || fallbackItems[0] || allItems.find((item) => String(item.action || "") === "VERIFY") || allItems[0] || null;
@@ -11407,6 +11466,8 @@ class DesktopMirrorService {
     const topOperator = snapshot.operations?.topOperator || null;
     const weakOperator = snapshot.operations?.weakOperator || null;
     const topClient = snapshot.operations?.topClient || null;
+    const profitabilityBlockedForConfig = Number(dataQuality.metrics?.servicesMissingCosts || 0) > 0
+      || Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0;
     const membershipWarning = topClient && focusClient && String(topClient.clientId || "") === String(focusClient.clientId || "")
       ? topClient
       : null;
@@ -11500,15 +11561,19 @@ class DesktopMirrorService {
             level: marginAlert.status === "LOSS" ? "critical" : "warning",
             area: "servizi",
             conclusion: `${marginAlert.name}: ${marginAlert.clearConclusion}`,
-            reason: marginAlert.status === "LOSS" ? "Controlla subito prezzo, durata e consumo prodotto." : "Margine migliorabile: correggi prima di spingere il servizio.",
-            details: `Incasso medio ${euro(Number(marginAlert.averageRevenueCents || 0))} · costo medio ${euro(Number(marginAlert.averageCostCents || 0))} · margine ${marginAlert.marginPercent}%`,
+            reason: profitabilityBlockedForConfig
+              ? "Non leggere questo come giudizio sul centro: prima va completata la configurazione economica."
+              : marginAlert.status === "LOSS" ? "Controlla subito prezzo, durata e consumo prodotto." : "Margine migliorabile: correggi prima di spingere il servizio.",
+            details: profitabilityBlockedForConfig
+              ? `Volume presente, ma i costi non sono completi. Mancano ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari.`
+              : `Incasso medio ${euro(Number(marginAlert.averageRevenueCents || 0))} · costo medio ${euro(Number(marginAlert.averageCostCents || 0))} · margine ${marginAlert.marginPercent}%`,
             impactCents: Number(marginAlert.economicGapCents || 0),
             riskCents: Number(marginAlert.economicGapCents || 0),
-            action: marginAlert.operatingAction || "controlla costo servizio",
+            action: profitabilityBlockedForConfig ? "completa configurazione costi" : marginAlert.operatingAction || "controlla costo servizio",
             button: "Apri servizi",
             target: "services"
           } : null,
-          bestService ? {
+          bestService && !profitabilityBlockedForConfig ? {
             id: `best-service-${bestService.id}`,
             level: "success",
             area: "servizi",
@@ -11532,11 +11597,15 @@ class DesktopMirrorService {
             level: "success",
             area: "operatori",
             conclusion: `${topOperator.name}: operatore forte nel periodo`,
-            reason: "Usa il suo schema come riferimento operativo.",
-            details: `${topOperator.appointments} appuntamenti · ${topOperator.completed} completati · ${euro(Number(topOperator.revenueCents || 0))} generati.`,
+            reason: profitabilityBlockedForConfig
+              ? "Segnale utile ma secondario: prima chiarisci la configurazione economica."
+              : "Usa il suo schema come riferimento operativo.",
+            details: profitabilityBlockedForConfig
+              ? `${topOperator.appointments} appuntamenti · ${topOperator.completed} completati. Tienilo come riferimento dopo aver completato i costi.`
+              : `${topOperator.appointments} appuntamenti · ${topOperator.completed} completati · ${euro(Number(topOperator.revenueCents || 0))} generati.`,
             impactCents: Number(topOperator.revenueCents || 0),
             riskCents: 0,
-            action: "usa come benchmark operativo",
+            action: profitabilityBlockedForConfig ? "tieni come riferimento, non come priorita primaria" : "usa come benchmark operativo",
             button: "Apri operatore",
             target: "shifts",
             staffId: topOperator.staffId
@@ -11608,6 +11677,25 @@ class DesktopMirrorService {
         title: "Azioni immediate",
         items: [
           {
+            id: "action-profitability-config",
+            level: profitabilityBlockedForConfig ? "warning" : "info",
+            area: "redditività",
+            conclusion: profitabilityBlockedForConfig
+              ? "Redditività non ancora leggibile"
+              : "Redditività pronta per lettura operativa",
+            reason: profitabilityBlockedForConfig
+              ? "Il centro lavora, ma i margini sarebbero fraintendibili finché costi servizi e costi orari restano incompleti."
+              : "La lettura economica può essere usata come supporto operativo.",
+            details: profitabilityBlockedForConfig
+              ? `Completa ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari operatori.`
+              : "Configurazione economica sufficiente per letture Gold più forti.",
+            impactCents: 0,
+            riskCents: 0,
+            action: profitabilityBlockedForConfig ? "completa costi servizi e operatori" : "controlla margini e opportunita",
+            button: "Apri servizi",
+            target: "services"
+          },
+          {
             id: "action-marketing",
             level: marketing.suggestions?.length ? "critical" : "info",
             area: "marketing",
@@ -11626,7 +11714,9 @@ class DesktopMirrorService {
             area: "qualità dati",
             conclusion: `Qualità dati ${dataQuality.score}%`,
             reason: dataQuality.status === "basso" ? "Correggi i dati che bloccano letture affidabili." : "Mantieni puliti cassa, clienti e servizi.",
-            details: dataQuality.alerts?.[0] || "Dati sufficienti per lettura operativa.",
+            details: profitabilityBlockedForConfig
+              ? `${Number(dataQuality.metrics?.servicesMissingCosts || 0)} servizi senza costi configurati`
+              : dataQuality.alerts?.[0] || "Dati sufficienti per lettura operativa.",
             impactCents: 0,
             riskCents: 0,
             action: "correggi dati sporchi quando rallentano l'analisi",
@@ -11678,7 +11768,9 @@ class DesktopMirrorService {
     const services = Array.isArray(overview.services) ? overview.services : [];
     const suggestions = services.map((service) => {
       const status = String(service.status || "HEALTHY");
-      const suggestion = status === "LOSS"
+      const suggestion = status === "CONFIG_REQUIRED"
+        ? "Volume presente, ma la redditivita non e leggibile finche non completi costi servizio e costi orari."
+        : status === "LOSS"
         ? "Verifica prezzo, durata, costo operatore e consumo prodotti: il servizio rischia di lavorare in perdita."
         : status === "LOW_MARGIN"
           ? "Margine basso: controlla durata reale e prodotti usati prima di spingere il servizio."
@@ -11686,12 +11778,16 @@ class DesktopMirrorService {
       const executions = Number(service.executions || 0);
       const averageRevenueCents = Number(service.averageRevenueCents || 0);
       const averageCostCents = Number(service.averageCostCents || 0);
-      const nextAction = status === "LOSS"
+      const nextAction = status === "CONFIG_REQUIRED"
+        ? "Completa costi servizi e costo orario operatori prima di usare questa lettura come guida economica."
+        : status === "LOSS"
         ? "Controlla il dato nel modulo servizi: prezzo, durata reale e consumo prodotto."
         : status === "LOW_MARGIN"
           ? "Verifica costi inseriti e valuta se il servizio va spinto o corretto."
           : "Usalo come servizio benchmark per costruire offerte sostenibili.";
-      const clearConclusion = status === "LOSS"
+      const clearConclusion = status === "CONFIG_REQUIRED"
+        ? "lettura economica non ancora affidabile"
+        : status === "LOSS"
         ? "stai perdendo soldi"
         : status === "LOW_MARGIN"
           ? "margine migliorabile"
@@ -11699,7 +11795,9 @@ class DesktopMirrorService {
       const economicGapCents = status === "LOSS"
         ? Math.abs(Number(service.profitCents || 0))
         : 0;
-      const operatingAction = status === "LOSS"
+      const operatingAction = status === "CONFIG_REQUIRED"
+        ? "completa configurazione costi"
+        : status === "LOSS"
         ? "verifica prezzo, costo e durata nel servizio"
         : status === "LOW_MARGIN"
           ? "controlla costo prodotto e durata reale"
@@ -11731,7 +11829,11 @@ class DesktopMirrorService {
       .filter((item) => item.status !== "HEALTHY")
       .map((item) => ({
         level: item.status === "LOSS" ? "critical" : "warning",
-        title: item.status === "LOSS" ? `${item.name} in perdita` : `${item.name} con margine basso`,
+        title: item.status === "CONFIG_REQUIRED"
+          ? `${item.name}: configurazione economica incompleta`
+          : item.status === "LOSS"
+            ? `${item.name} in perdita`
+            : `${item.name} con margine basso`,
         body: item.suggestion,
         serviceId: item.id
       }));
