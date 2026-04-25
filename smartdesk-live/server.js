@@ -349,7 +349,12 @@ function readToken(req) {
 function requireAuth(req, res, next) {
   const session = service.getSession(readToken(req));
   if (!session) {
-    return res.status(401).send("Sessione non valida");
+    return res.status(401).json({
+      success: false,
+      code: "session_invalid",
+      message: "Sessione non valida o scaduta.",
+      nextAction: "Esegui di nuovo il login o aggiorna la pagina."
+    });
   }
   req.session = session;
   return next();
