@@ -70,6 +70,7 @@ const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
+const GOLD_LAZY_REFRESH_MS = Number(process.env.GOLD_LAZY_REFRESH_MS || 180000);
 
 const ANALYTICS_BLOCKS = {
   CLIENTS_QUALITY: "clientsQuality",
@@ -1732,6 +1733,7 @@ class DesktopMirrorService {
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
     this.appointmentsDayCache = new Map();
+    this.goldLazyRefreshTimers = new Map();
     this.progressiveIntelligenceLayer = new ProgressiveIntelligenceActivationLayer();
     this.fleetIntelligenceLayer = null;
     this.goldOnboardingEngine = null;
@@ -2040,6 +2042,40 @@ class DesktopMirrorService {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
     });
     this.goldStateReadCache.delete(normalizedCenterId);
+  }
+
+  scheduleGoldStateRefresh(mode = "lazy", reason = "unknown", session = null) {
+    if (this.getPlanLevel(session) !== "gold") return null;
+    const centerId = this.getCenterId(session);
+    const existing = this.goldLazyRefreshTimers.get(centerId);
+    if (existing?.timer) {
+      clearTimeout(existing.timer);
+      this.goldLazyRefreshTimers.delete(centerId);
+    }
+    const runRefresh = () => {
+      this.goldLazyRefreshTimers.delete(centerId);
+      try {
+        this.rebuildGoldStateForCurrentGoldTenant(session, { reason });
+      } catch (error) {
+        console.warn("[gold_state_lazy_refresh_error]", JSON.stringify({
+          centerId,
+          reason,
+          message: error instanceof Error ? error.message : String(error || "unknown_error")
+        }));
+      }
+    };
+    if (mode === "instant") {
+      runRefresh();
+      return { centerId, mode, reason, scheduled: false };
+    }
+    const timer = setTimeout(runRefresh, GOLD_LAZY_REFRESH_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    this.goldLazyRefreshTimers.set(centerId, {
+      timer,
+      reason,
+      scheduledAt: nowIso()
+    });
+    return { centerId, mode, reason, scheduled: true, delayMs: GOLD_LAZY_REFRESH_MS };
   }
 
   getGoldStateRecordId(centerId = "") {
@@ -5371,6 +5407,8 @@ class DesktopMirrorService {
     const next = { ...this.getSettings(session), ...payload, centerId, updatedAt: nowIso() };
     store[centerId] = next;
     this.settingsRepository.write(store);
+    this.invalidateBusinessSnapshot(centerId);
+    this.scheduleGoldStateRefresh("lazy", "settings_updated", session);
     return next;
   }
 
@@ -5380,6 +5418,8 @@ class DesktopMirrorService {
     const next = { ...defaultSettings, centerId, centerName: this.getCenterName(session), updatedAt: nowIso() };
     store[centerId] = next;
     this.settingsRepository.write(store);
+    this.invalidateBusinessSnapshot(centerId);
+    this.scheduleGoldStateRefresh("lazy", "settings_reset", session);
     return next;
   }
 
@@ -6418,19 +6458,19 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.servicesRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.servicesRepository));
-      this.applyGoldStateEvent("service_created", { after: entity }, session);
+      this.scheduleGoldStateRefresh("lazy", "service_created", session);
       return entity;
     }
     const before = this.findByIdInCenter(this.servicesRepository, payload.id, session);
     const updated = this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.applyGoldStateEvent("service_updated", { before, after: updated }, session);
+    this.scheduleGoldStateRefresh("lazy", "service_updated", session);
     return updated;
   }
 
   deleteService(id, session = null) {
     const before = this.findByIdInCenter(this.servicesRepository, id, session);
     const result = this.deleteInCenter(this.servicesRepository, id, session);
-    if (result?.success) this.applyGoldStateEvent("service_deleted", { before }, session);
+    if (result?.success) this.scheduleGoldStateRefresh("lazy", "service_deleted", session);
     return result;
   }
 
@@ -6464,19 +6504,19 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.staffRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
-      this.applyGoldStateEvent("staff_created", { after: entity }, session);
+      this.scheduleGoldStateRefresh("lazy", "staff_created", session);
       return entity;
     }
     const before = this.findByIdInCenter(this.staffRepository, payload.id, session);
     const updated = this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.applyGoldStateEvent("staff_updated", { before, after: updated }, session);
+    this.scheduleGoldStateRefresh("lazy", "staff_updated", session);
     return updated;
   }
 
   deleteStaff(id, session = null) {
     const before = this.findByIdInCenter(this.staffRepository, id, session);
     const result = this.deleteInCenter(this.staffRepository, id, session);
-    if (result?.success) this.applyGoldStateEvent("staff_deleted", { before }, session);
+    if (result?.success) this.scheduleGoldStateRefresh("lazy", "staff_deleted", session);
     return result;
   }
 
@@ -6677,19 +6717,19 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.inventoryRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
-      this.applyGoldStateEvent("inventory_created", { after: entity }, session);
+      this.scheduleGoldStateRefresh("lazy", "inventory_created", session);
       return entity;
     }
     const before = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
     const updated = this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.applyGoldStateEvent("inventory_updated", { before, after: updated }, session);
+    this.scheduleGoldStateRefresh("lazy", "inventory_updated", session);
     return updated;
   }
 
   deleteInventoryItem(id, session = null) {
     const before = this.findByIdInCenter(this.inventoryRepository, id, session);
     const result = this.deleteInCenter(this.inventoryRepository, id, session);
-    if (result?.success) this.applyGoldStateEvent("inventory_deleted", { before }, session);
+    if (result?.success) this.scheduleGoldStateRefresh("lazy", "inventory_deleted", session);
     return result;
   }
 
@@ -6725,6 +6765,7 @@ class DesktopMirrorService {
         updatedAt: nowIso()
       }), session);
     }
+    this.scheduleGoldStateRefresh("lazy", "inventory_movement_created", session);
     return movement;
   }
 
@@ -6756,6 +6797,7 @@ class DesktopMirrorService {
     };
     this.treatmentsRepository.create(treatment);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
+    this.scheduleGoldStateRefresh("instant", "treatment_created", session);
     return treatment;
   }
 
