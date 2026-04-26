@@ -9659,7 +9659,7 @@ class DesktopMirrorService {
   }
 
   buildGoldWhatsappMessage(client = {}, suggestion = {}, overrideMessage = "") {
-    const text = cleanText(overrideMessage || suggestion.message || "", "", 1200);
+    const text = cleanText(overrideMessage || "", "", 1200);
     if (text) return text;
     const firstName = cleanText(client.firstName || suggestion.name || client.name || "Cliente", "Cliente", 80).split(/\s+/)[0] || "Cliente";
     const service = cleanText(suggestion.lastServiceName || "il tuo percorso", "il tuo percorso", 120);
@@ -9668,18 +9668,32 @@ class DesktopMirrorService {
       "se vuoi, ti propongo uno slot comodo questa settimana",
       180
     );
+    const serviceText = normalizeText(service);
+    const serviceHook = serviceText.includes("cute") || serviceText.includes("o3") || serviceText.includes("cuoio")
+      ? "per rimettere in ordine cute e mantenimento"
+      : serviceText.includes("balayage") || serviceText.includes("schiar") || serviceText.includes("tonal")
+        ? "per mantenere luminosita e tono"
+        : serviceText.includes("colore") || serviceText.includes("ricresc")
+          ? "per tenere bene ricrescita e tono"
+          : serviceText.includes("keratina") || serviceText.includes("lisciante")
+            ? "per mantenere ordine e disciplina sulle lunghezze"
+            : serviceText.includes("piega")
+              ? "per mantenere piega e risultato"
+              : serviceText.includes("taglio")
+                ? "per tenere il taglio sempre pulito"
+                : `per mantenere bene ${service}`;
     const template = this.getGoldWhatsappTemplate(suggestion);
     if (template.key === "riattivazione_cliente_perso") {
-      return `Ciao ${firstName}, se vuoi riprendere ${service}, possiamo rivederlo insieme con calma. ${proposal}`;
+      return `Ciao ${firstName}, se vuoi riprendere ${serviceHook}, possiamo rivederlo insieme con calma. ${proposal}`;
     }
     if (template.key === "recupero_attivo") {
-      return `Ciao ${firstName}, il timing si sta allungando per ${service}. ${proposal}`;
+      return `Ciao ${firstName}, il timing si sta allungando ${serviceHook}. ${proposal}`;
     }
     if (template.key === "recupero_soft") {
-      return `Ciao ${firstName}, questo e un buon momento per mantenere ${service}. ${proposal}`;
+      return `Ciao ${firstName}, questo e un buon momento ${serviceHook}. ${proposal}`;
     }
     if (template.key === "mantenimento") {
-      return `Ciao ${firstName}, questo e un buon momento per mantenere bene ${service}. ${proposal}`;
+      return `Ciao ${firstName}, questo e un buon momento ${serviceHook}. ${proposal}`;
     }
     return `Ciao ${firstName}, ti ricordiamo il tuo appuntamento. Se hai bisogno di modifiche, rispondi pure a questo messaggio.`;
   }
