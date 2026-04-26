@@ -468,8 +468,9 @@ class AssistantService {
     const currentPlan = this.desktopMirror?.getPlanLevel
       ? this.desktopMirror.getPlanLevel(session)
       : String(session?.subscriptionPlan || "base").toLowerCase();
-    const goldCapabilities = currentPlan === "gold" ? this.getGoldCapabilitiesSafe(session) : null;
-    const goldDecisionContext = currentPlan === "gold" ? this.getGoldDecisionContextSafe(session) : null;
+    const coreDecisionEnabled = ["silver", "gold", "enterprise"].includes(String(currentPlan || "").toLowerCase());
+    const goldCapabilities = coreDecisionEnabled ? this.getGoldCapabilitiesSafe(session) : null;
+    const goldDecisionContext = coreDecisionEnabled ? this.getGoldDecisionContextSafe(session) : null;
 
     return {
       centerId: String(session?.centerId || ""),
@@ -648,15 +649,36 @@ class AssistantService {
     const plan = String(context.subscriptionPlan || "base").toLowerCase();
     if (plan !== "gold") {
       if (plan === "silver") {
+        const silverContext = context.goldDecisionContext || {};
+        const primary = silverContext.primaryAction || null;
+        const secondary = Array.isArray(silverContext.secondaryActions) ? silverContext.secondaryActions : [];
+        if (primary || secondary.length) {
+          return [
+            "Nel piano Silver uso il core in lettura operativa, ma non attivo AI Gold decisionale.",
+            "",
+            "Lettura core adesso:",
+            primary
+              ? `- ${primary.label || primary.domain}: ${primary.suggestedAction || primary.explanationShort || "azione da valutare"}`
+              : "- Nessuna priorità operativa disponibile.",
+            "",
+            "Controlli successivi:",
+            ...(secondary.length
+              ? secondary.slice(0, 3).map((item, index) => `${index + 1}. ${item.label || item.domain}: ${item.suggestedAction || item.explanationShort || "monitorare"}`)
+              : ["1. Apri Report, Cassa e Agenda per leggere i moduli core."]),
+            "",
+            "Limite Silver:",
+            "Il sistema ti orienta, ma non genera priorità AI Gold, recall automatici o decisioni premium."
+          ].join("\n");
+        }
         return [
-          "Nel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI.",
+          "Nel piano Silver posso guidarti nei moduli, leggere il centro con il core e aiutarti sui report.",
           "",
           "Cosa fare ora:",
           "1. Apri Report per leggere andamento e numeri del periodo.",
           "2. Apri Cassa per controllare incassi e pagamenti.",
           "3. Apri Clienti o Agenda per correggere dati e appuntamenti.",
           "",
-          "Le priorità automatiche e gli alert decisionali sono disponibili nel piano Gold."
+          "Le priorità AI premium, i recall suggeriti e le letture decisionali restano nel piano Gold."
         ].join("\n");
       }
       return [
@@ -749,11 +771,118 @@ class AssistantService {
     ].join("\n");
   }
 
+  buildSmartDeskGoldGuideAnswer(message, context) {
+    const normalized = normalizeText(message);
+    const centerName = context.centerName || "questo centro";
+    const planName = String(context.subscriptionPlan || "gold").toUpperCase();
+
+    if (!normalized || /(come funziona|cosa fai|cosa puoi fare|help|aiuto|manuale|guida|smart desk gold|gold)/.test(normalized)) {
+      return [
+        `Smart Desk ${planName} in ${centerName} va usato come guida operativa, non come chatbot libero.`,
+        "Ti aiuta in tre modi:",
+        "1. Ti spiega come usare moduli e flussi del gestionale.",
+        "2. Ti apre la schermata corretta quando sai già cosa devi fare.",
+        "3. Ti dice cosa controllare quando un dato o un risultato non torna.",
+        "Dentro i limiti del gestionale non esegue azioni autonome: guida, prepara e ti porta nel modulo giusto."
+      ].join("\n");
+    }
+
+    if (/(agenda|appuntamenti|slot|giornata)/.test(normalized)) {
+      return [
+        "Agenda è il centro operativo della giornata.",
+        "Da lì puoi inserire appuntamenti, spostare orari, confermare arrivo, segnare no-show, aprire checkout e cassa.",
+        "Se non sai dove intervenire, parti dagli slot liberi e dagli appuntamenti da confermare.",
+        "Se vuoi posso aprire direttamente l’agenda."
+      ].join("\n");
+    }
+
+    if (/(clienti|crm|scheda cliente|duplicati|contatti)/.test(normalized)) {
+      return [
+        "Clienti serve per tenere anagrafica, storico, note e contatti in ordine.",
+        "Se un cliente non riceve recall o lo storico sembra spezzato, controlla prima duplicati, telefono ed email.",
+        "La regola è semplice: prima anagrafica pulita, poi marketing e letture Gold affidabili.",
+        "Se vuoi posso aprire i clienti o cercare una scheda precisa."
+      ].join("\n");
+    }
+
+    if (/(marketing|recall|whatsapp|richiamare|clienti inattivi)/.test(normalized)) {
+      return [
+        "Marketing Gold non invia da solo.",
+        "Ti prepara clienti da contattare, priorità, motivo e messaggio suggerito da confermare.",
+        "Se un’azione non parte, controlla prima contatti cliente, consenso marketing e stato Decision Matrix.",
+        "Se vuoi posso aprire marketing o guidarti sul significato di Da richiamare, A rischio, Perso e Storico."
+      ].join("\n");
+    }
+
+    if (/(redditivita|redditività|margini|costi|profitto)/.test(normalized)) {
+      return [
+        "Redditività legge il lavoro del centro solo quando i costi sono completi.",
+        "Se il margine non torna, non correggere l’AI: controlla costi servizio, costo orario operatore, prodotti e tecnologie collegate.",
+        "La regola è: prima volume e continuità del centro, poi ottimizzazione dei margini.",
+        "Se vuoi posso aprire la redditività o dirti cosa controllare prima."
+      ].join("\n");
+    }
+
+    if (/(cassa|pagamenti|incassi|checkout)/.test(normalized)) {
+      return [
+        "Cassa serve a chiudere bene la giornata, non solo a vedere incassi.",
+        "Controlla pagamenti non collegati, appuntamenti aperti e metodo di pagamento prima dei report.",
+        "Se qualcosa non torna nei numeri, quasi sempre il primo controllo è qui.",
+        "Se vuoi posso aprire la cassa."
+      ].join("\n");
+    }
+
+    if (/(protocolli|trattamenti|scheda tecnica|analisi protocollo)/.test(normalized)) {
+      return [
+        "Protocolli e trattamenti servono a registrare bene il lavoro e guidare l’operatore.",
+        "L’analisi protocollo prepara una bozza strutturata, ma l’operatore conferma sempre.",
+        "Se manca un protocollo coerente, il sistema deve fermarsi e chiedere dati o libreria corretta.",
+        "Se vuoi posso aprire protocolli o trattamenti."
+      ].join("\n");
+    }
+
+    if (/(servizi|operatori|staff|risorse|tecnologie)/.test(normalized)) {
+      return [
+        "Servizi raccoglie listino, team operativo, postazioni e tecnologie del centro.",
+        "Qui sistemi costi, durata, operatori e collegamenti che poi servono a agenda, redditività e report.",
+        "Se una lettura Gold non è affidabile, spesso il problema parte da qui.",
+        "Se vuoi posso aprire Servizi."
+      ].join("\n");
+    }
+
+    if (/(turni|presenze|timbrature|orari staff)/.test(normalized)) {
+      return [
+        "Turni ti aiuta a pianificare, gestire la giornata e chiudere con report.",
+        "Prima definisci schemi o turni base, poi controlli presenze e saldo giornata.",
+        "Se il team sembra sotto pressione o sbilanciato, parti da qui.",
+        "Se vuoi posso aprire Turni."
+      ].join("\n");
+    }
+
+    if (/(magazzino|stock|inventario|sottoscorta)/.test(normalized)) {
+      return [
+        "Magazzino è controllo operativo del centro: articoli, giacenze, movimenti e sottoscorta.",
+        "Se vedi costi o consumi poco credibili, controlla prima anagrafica articoli e movimenti.",
+        "Non serve usarlo come elenco freddo: serve per capire cosa sostiene davvero il lavoro.",
+        "Se vuoi posso aprire il magazzino."
+      ].join("\n");
+    }
+
+    return [
+      "Posso funzionare come guida utente interattiva di Smart Desk Gold.",
+      "Spiegami cosa non ti è chiaro e ti dico:",
+      "- dove intervenire",
+      "- quale modulo aprire",
+      "- cosa controllare prima",
+      "- qual è il limite operativo del gestionale"
+    ].join("\n");
+  }
+
   buildLocalDecision(message, context, session) {
     const normalized = normalizeText(message);
 
     if (!normalized) {
-      return buildAnswer("Scrivimi una richiesta breve: posso spiegarti un flusso, aprire una schermata o aiutarti con un cliente.");
+      return buildAnswer("Scrivimi una richiesta breve: posso spiegarti come funziona Smart Desk Gold, aprire una schermata o guidarti in un flusso del gestionale.");
     }
 
     if (/(disattiva|attiva|modifica impostazioni|cambia permessi|elimina.*operatore|elimina.*cliente|cancella.*cliente|cancella dati)/.test(normalized)) {
@@ -942,12 +1071,12 @@ class AssistantService {
 
     if (/(aiuto|help|cosa puoi fare|suggerisci|consiglio)/.test(normalized)) {
       if (context.dashboard.todayAppointments === 0) {
-        return buildAnswer("Agenda vuota oggi. Ti conviene lavorare su recall o clienti inattivi. Posso aprire agenda, clienti, report, turni, magazzino o guidarti su un nuovo cliente.");
+        return buildAnswer("Agenda vuota oggi. Posso spiegarti come lavorare con recall, clienti inattivi, agenda e cassa, oppure aprire direttamente il modulo giusto.");
       }
-      return buildAnswer("Posso spiegarti come usare il gestionale, aprire schermate, cercare clienti e preparare clienti, appuntamenti o turni con conferma finale.");
+      return buildAnswer("Posso funzionare come manuale utente interattivo: spiego i flussi, apro schermate, cerco clienti e preparo azioni nei limiti del gestionale.");
     }
 
-    return buildAnswer("Posso spiegarti un flusso, aprire agenda, clienti, turni, report, magazzino e redditività, oppure preparare cliente, appuntamento o turno con conferma.");
+    return buildAnswer("Posso spiegarti come usare Smart Desk Gold, aprire agenda, clienti, turni, report, magazzino e redditività, oppure guidarti nel modulo corretto.");
   }
 
   sanitizeResponse(candidate, context, fallback) {
@@ -1025,11 +1154,12 @@ class AssistantService {
     }
 
     const instructions = [
-      "Sei SkinHarmony AI Assistant, assistente operativo reale del gestionale.",
+      "Sei SkinHarmony AI Assistant, guida utente interattiva di Smart Desk Gold.",
       "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
+      "Il tuo compito principale è spiegare come funziona il gestionale, aprire la schermata corretta e guidare l’utente entro i limiti reali del prodotto.",
       "Riconosci il centro e il piano solo dal contesto di sessione. Non chiedere all'utente chi e se il contesto lo contiene.",
       "Usa esclusivamente dati del centro presenti nel contesto JSON. Non parlare di altri centri e non inventare dati mancanti.",
-      "Non promettere azioni non eseguibili.",
+      "Non promettere azioni non eseguibili e non comportarti come consulente strategico generico.",
       `Puoi usare solo queste azioni: ${ACTIONS.join(", ")}.`,
       "Le azioni sensibili non si eseguono: usa blocked_action e guida l’utente.",
       "Se la richiesta è una domanda, usa mode=answer.",
@@ -1040,13 +1170,14 @@ class AssistantService {
       "Puoi creare appuntamenti senza clientId solo se payload.walkInName e presente come cliente occasionale.",
       "Non creare appuntamenti senza clientId o walkInName, date e time.",
       "Non creare turni senza staffId, date, startTime ed endTime.",
-      "Se mancano dati obbligatori, non aprire schermate: spiega esattamente cosa manca e proponi un esempio di comando completo.",
+      "Se mancano dati obbligatori, spiega esattamente cosa manca, dove si sistema nel gestionale e proponi un esempio di comando completo.",
       "Se il contesto contiene goldDecisionContext o goldCapabilities, trattali come fonte ufficiale per priorità, blocchi, rischio, confidence, WhatsApp e azioni consentite.",
       "Non duplicare logiche Gold: leggi primaryAction, secondaryActions, blockedActions, canExecute, risk, confidence, EV, NEU e trend se presenti.",
       "Se una decisione Gold ha canExecute=false o compare nei blockedActions, non proporre azione diretta: guida solo alla verifica.",
       "Se goldCapabilities.limits.whatsappEnabled=true puoi proporre invio WhatsApp controllato; altrimenti proponi fallback manuale/copia.",
       "Devi essere forward-compatible: se trovi campi Gold nuovi, usali nella spiegazione; se mancano, ignora senza inventare.",
-      "Non inventare dati che non sono nel contesto."
+      "Non inventare dati che non sono nel contesto.",
+      "Quando l’utente chiede come funziona un modulo, rispondi come un manuale operativo e proponi di aprire la pagina corretta."
     ].join("\n");
 
     try {
@@ -1233,22 +1364,33 @@ class AssistantService {
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!this.shouldUseOpenAI()) {
-      return this.buildAiGoldCoreliaResponse(payload, session, context);
+      return {
+        goldEnabled: true,
+        provider: this.getFallbackProviderName(),
+        answer: this.buildSmartDeskGoldGuideAnswer(question, {
+          centerName: snapshot?.centerName || snapshot?.center_health?.centerName || "",
+          subscriptionPlan: goldCapabilities?.plan || "gold",
+          userRole: session?.role || "owner",
+          settings: this.getSettingsSafe(session)
+        }),
+        actions: []
+      };
     }
 
     const instructions = [
-      "Sei AI Gold di SkinHarmony Smart Desk con Corelia come motore decisionale.",
-      "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
+      "Sei AI Gold di SkinHarmony Smart Desk.",
+      "Non sei un chatbot generico e non sei un consulente libero: sei una guida utente interattiva del prodotto.",
       "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
+      "Spiega come funziona il modulo giusto, dove intervenire e quale schermata aprire.",
       "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
-      "Suggerisci azioni concrete che l'operatore deve confermare.",
+      "Puoi suggerire azioni concrete solo come passaggi guidati del gestionale che l'operatore deve confermare.",
       "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
       "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
       "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
       "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
       "Evita claim medici, terapeutici o promesse di risultato.",
       "Rispondi in italiano, tono premium, chiaro, pratico.",
-      "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."
+      "Struttura la risposta come mini manuale operativo: Cosa significa, Dove si gestisce, Cosa fare ora, Limiti."
     ].join("\n");
 
     try {
@@ -1396,3 +1538,6 @@ class AssistantService {
 module.exports = {
   AssistantService
 };
+    if (/(come funziona|manuale|guida|smart desk gold|gold|non so|non capisco|spiegami)/.test(normalized)) {
+      return buildAnswer(this.buildSmartDeskGoldGuideAnswer(message, context));
+    }
