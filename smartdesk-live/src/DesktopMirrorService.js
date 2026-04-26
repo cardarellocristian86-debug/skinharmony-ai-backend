@@ -9663,11 +9663,6 @@ class DesktopMirrorService {
     if (text) return text;
     const firstName = cleanText(client.firstName || suggestion.name || client.name || "Cliente", "Cliente", 80).split(/\s+/)[0] || "Cliente";
     const service = cleanText(suggestion.lastServiceName || "il tuo percorso", "il tuo percorso", 120);
-    const proposal = cleanText(
-      suggestion.recommendedAction || "se vuoi, ti propongo uno slot comodo questa settimana",
-      "se vuoi, ti propongo uno slot comodo questa settimana",
-      180
-    );
     const serviceText = normalizeText(service);
     const serviceHook = serviceText.includes("cute") || serviceText.includes("o3") || serviceText.includes("cuoio")
       ? "per rimettere in ordine cute e mantenimento"
@@ -9683,6 +9678,15 @@ class DesktopMirrorService {
                 ? "per tenere il taglio sempre pulito"
                 : `per mantenere bene ${service}`;
     const template = this.getGoldWhatsappTemplate(suggestion);
+    const proposal = template.key === "recupero_attivo"
+      ? "Se vuoi, ti propongo uno slot nei prossimi giorni."
+      : template.key === "recupero_soft"
+        ? "Se vuoi, ti tengo uno spazio comodo questa settimana."
+        : template.key === "mantenimento"
+          ? "Se vuoi, guardiamo insieme uno slot comodo."
+          : template.key === "riattivazione_cliente_perso"
+            ? "Se vuoi, possiamo ripartire con uno slot semplice."
+            : "Se vuoi, ti propongo uno slot comodo questa settimana.";
     if (template.key === "riattivazione_cliente_perso") {
       return `Ciao ${firstName}, se vuoi riprendere ${serviceHook}, possiamo rivederlo insieme con calma. ${proposal}`;
     }
