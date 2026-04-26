@@ -5018,6 +5018,7 @@ class DesktopMirrorService {
   getTrialPublicConfig() {
     return {
       trialDays: DEFAULT_TRIAL_DAYS,
+      subscriptionPlan: "silver",
       emailVerificationEnabled: isTrialEmailVerificationConfigured(),
       verificationWindowMinutes: DEFAULT_TRIAL_VERIFICATION_MINUTES,
       payment: getTrialPaymentConfig()
@@ -5560,6 +5561,11 @@ class DesktopMirrorService {
     const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
     const trialStartsAt = planType === "trial" ? String(payload.trialStartsAt || now) : "";
     const trialEndsAt = planType === "trial" ? String(payload.trialEndsAt || addDaysIso(trialStartsAt, trialDays)) : "";
+    const defaultSubscriptionPlan = String(payload.role || "") === "superadmin"
+      ? "gold"
+      : planType === "trial"
+        ? "silver"
+        : "base";
     const user = {
       id: makeId("user"),
       username,
@@ -5573,7 +5579,7 @@ class DesktopMirrorService {
       contactPhone: String(payload.contactPhone || payload.phone || ""),
       businessModel: String(payload.businessModel || "esthetic"),
       planType,
-      subscriptionPlan: String(payload.subscriptionPlan || (String(payload.role || "") === "superadmin" ? "gold" : "base")),
+      subscriptionPlan: String(payload.subscriptionPlan || defaultSubscriptionPlan),
       trialDays,
       trialStartsAt,
       trialEndsAt,
@@ -5639,6 +5645,7 @@ class DesktopMirrorService {
       contactPhone,
       businessModel,
       planType: "trial",
+      subscriptionPlan: "silver",
       trialDays,
       trialStartsAt: verificationRequestedAt,
       accountStatus: verificationEnabled ? "pending_verification" : "trial",
