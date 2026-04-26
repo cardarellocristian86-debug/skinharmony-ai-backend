@@ -1144,8 +1144,12 @@ class AssistantService {
     const context = this.buildContext(payload, session);
     const localDecision = this.buildLocalDecision(message, context, session);
     const normalizedMessage = normalizeText(message);
+    const guideIntent = /(come funziona|manuale|guida|smart desk gold|non so|non capisco|spiegami)/.test(normalizedMessage);
     if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
       return { ...localDecision, provider: this.getAiProviderMode() === "corelia_only" ? "corelia" : "rules" };
+    }
+    if (guideIntent) {
+      return { ...localDecision, provider: "smartdesk_guide" };
     }
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
