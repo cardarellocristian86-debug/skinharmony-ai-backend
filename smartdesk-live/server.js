@@ -1311,6 +1311,14 @@ app.get("/api/fleet/oracle", requireSuperAdminFleet, (req, res) => {
 });
 
 app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
+  if (String(req.session?.role || "").toLowerCase() !== "superadmin") {
+    return res.status(403).json({
+      success: false,
+      code: "superadmin_only",
+      message: "La chat AI Gold è riservata al superadmin.",
+      nextAction: "Usa le priorità, il marketing e i moduli operativi già preparati dal sistema."
+    });
+  }
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: AI temporaneamente limitata, agenda e cassa restano operative"));
   }
@@ -1339,6 +1347,14 @@ app.post("/api/corelia/dialog", requirePlan("gold"), (req, res) => {
 
 app.post("/api/ai-gold/command", requirePlan("gold"), async (req, res) => {
   try {
+    if (String(req.session?.role || "").toLowerCase() !== "superadmin") {
+      return res.status(403).json({
+        success: false,
+        code: "superadmin_only",
+        message: "I comandi AI Gold sono riservati al superadmin.",
+        nextAction: "Apri i moduli suggeriti dal sistema e conferma le azioni operative manualmente."
+      });
+    }
     if (!service.hasGoldIntelligence(req.session)) {
       res.status(403).send("Comandi operativi disponibili solo con AI Gold.");
       return;
