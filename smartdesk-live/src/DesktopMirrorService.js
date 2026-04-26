@@ -70,7 +70,6 @@ const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
-const GOLD_LAZY_REFRESH_MS = Number(process.env.GOLD_LAZY_REFRESH_MS || 180000);
 
 const ANALYTICS_BLOCKS = {
   CLIENTS_QUALITY: "clientsQuality",
@@ -93,7 +92,8 @@ const ANALYTICS_BLOCKS = {
   INVENTORY_OVERVIEW: "inventoryOverview",
   OPERATOR_SIGNALS: "operatorSignals",
   SHIFT_SIGNALS: "shiftSignals",
-  DASHBOARD_STATS: "dashboardStats"
+  DASHBOARD_STATS: "dashboardStats",
+  SILVER_CORE_SNAPSHOT: "silverCoreSnapshot"
 };
 
 const UPDATE_MODES = {
@@ -398,40 +398,6 @@ const defaultSettings = {
   whatsappTemplatesReady: false,
   whatsappWebhookReady: false
 };
-
-function normalizeSettingsPlan(plan) {
-  const normalized = String(plan || "").toLowerCase();
-  if (normalized === "base" || normalized === "silver" || normalized === "gold" || normalized === "enterprise") {
-    return normalized;
-  }
-  return "gold";
-}
-
-function constrainSettingsByPlan(input = {}, plan = "gold") {
-  const next = { ...input };
-  const currentPlan = normalizeSettingsPlan(plan);
-
-  if (currentPlan === "base") {
-    next.enableTreatments = false;
-    next.shiftsTemplatesEnabled = false;
-    next.shiftsClockEnabled = false;
-    next.shiftsReportsEnabled = false;
-    next.shiftsFlexEnabled = false;
-    next.inventoryMovementsEnabled = false;
-    next.inventoryAlertsEnabled = false;
-    next.inventoryReportsEnabled = false;
-    next.profitabilityEnabled = false;
-    next.profitabilityOperatorCostEnabled = false;
-    next.profitabilityTechnologyAnalysisEnabled = false;
-    next.aiActionsEnabled = false;
-  }
-
-  if (currentPlan === "silver") {
-    next.aiActionsEnabled = false;
-  }
-
-  return next;
-}
 
 const DEFAULT_STAFF = [
   { id: "staff_1", name: "Operatore 1", colorTag: "#6db7ff", role: "Operatore", active: 1 },
@@ -1767,7 +1733,6 @@ class DesktopMirrorService {
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
     this.appointmentsDayCache = new Map();
-    this.goldLazyRefreshTimers = new Map();
     this.progressiveIntelligenceLayer = new ProgressiveIntelligenceActivationLayer();
     this.fleetIntelligenceLayer = null;
     this.goldOnboardingEngine = null;
@@ -1972,7 +1937,8 @@ class DesktopMirrorService {
         ANALYTICS_BLOCKS.RECALL_PRIORITY,
         ANALYTICS_BLOCKS.MARKETING_RECALL,
         ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
-        ANALYTICS_BLOCKS.CENTER_HEALTH
+        ANALYTICS_BLOCKS.CENTER_HEALTH,
+        ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
       ];
     }
     if (repository === this.appointmentsRepository) {
@@ -1987,7 +1953,8 @@ class DesktopMirrorService {
         ANALYTICS_BLOCKS.CENTER_HEALTH,
         ANALYTICS_BLOCKS.PROFITABILITY,
         ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
-        ANALYTICS_BLOCKS.PAYMENT_ISSUES
+        ANALYTICS_BLOCKS.PAYMENT_ISSUES,
+        ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
       ];
     }
     if (repository === this.paymentsRepository) {
@@ -1999,7 +1966,8 @@ class DesktopMirrorService {
         ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
         ANALYTICS_BLOCKS.CENTER_HEALTH,
         ANALYTICS_BLOCKS.PROFITABILITY,
-        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY
+        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
+        ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
       ];
     }
     if (repository === this.servicesRepository) {
@@ -2011,7 +1979,8 @@ class DesktopMirrorService {
         ANALYTICS_BLOCKS.PROFITABILITY,
         ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
         ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
-        ANALYTICS_BLOCKS.MARKETING_RECALL
+        ANALYTICS_BLOCKS.MARKETING_RECALL,
+        ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
       ];
     }
     if (repository === this.staffRepository) {
@@ -2022,7 +1991,8 @@ class DesktopMirrorService {
         ANALYTICS_BLOCKS.OPERATOR_SIGNALS,
         ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
         ANALYTICS_BLOCKS.CENTER_HEALTH,
-        ANALYTICS_BLOCKS.PROFITABILITY
+        ANALYTICS_BLOCKS.PROFITABILITY,
+        ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
       ];
     }
     if (repository === this.shiftsRepository || repository === this.shiftTemplatesRepository) {
@@ -2036,7 +2006,8 @@ class DesktopMirrorService {
         ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
         ANALYTICS_BLOCKS.INVENTORY_OVERVIEW,
         ANALYTICS_BLOCKS.PROFITABILITY,
-        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY
+        ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
+        ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
       ];
     }
     return [
@@ -2045,7 +2016,8 @@ class DesktopMirrorService {
       ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
       ANALYTICS_BLOCKS.PROFITABILITY,
       ANALYTICS_BLOCKS.MARKETING_RECALL,
-      ANALYTICS_BLOCKS.GOLD_STATE
+      ANALYTICS_BLOCKS.GOLD_STATE,
+      ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
     ];
   }
 
@@ -2061,7 +2033,8 @@ class DesktopMirrorService {
       ANALYTICS_BLOCKS.GOLD_STATE,
       ANALYTICS_BLOCKS.CENTER_HEALTH,
       ANALYTICS_BLOCKS.INVENTORY_OVERVIEW,
-      ANALYTICS_BLOCKS.OPERATOR_SIGNALS
+      ANALYTICS_BLOCKS.OPERATOR_SIGNALS,
+      ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT
     ];
     if (!centerId) {
       this.businessSnapshotCache.clear();
@@ -2076,40 +2049,6 @@ class DesktopMirrorService {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
     });
     this.goldStateReadCache.delete(normalizedCenterId);
-  }
-
-  scheduleGoldStateRefresh(mode = "lazy", reason = "unknown", session = null) {
-    if (this.getPlanLevel(session) !== "gold") return null;
-    const centerId = this.getCenterId(session);
-    const existing = this.goldLazyRefreshTimers.get(centerId);
-    if (existing?.timer) {
-      clearTimeout(existing.timer);
-      this.goldLazyRefreshTimers.delete(centerId);
-    }
-    const runRefresh = () => {
-      this.goldLazyRefreshTimers.delete(centerId);
-      try {
-        this.rebuildGoldStateForCurrentGoldTenant(session, { reason });
-      } catch (error) {
-        console.warn("[gold_state_lazy_refresh_error]", JSON.stringify({
-          centerId,
-          reason,
-          message: error instanceof Error ? error.message : String(error || "unknown_error")
-        }));
-      }
-    };
-    if (mode === "instant") {
-      runRefresh();
-      return { centerId, mode, reason, scheduled: false };
-    }
-    const timer = setTimeout(runRefresh, GOLD_LAZY_REFRESH_MS);
-    if (typeof timer.unref === "function") timer.unref();
-    this.goldLazyRefreshTimers.set(centerId, {
-      timer,
-      reason,
-      scheduledAt: nowIso()
-    });
-    return { centerId, mode, reason, scheduled: true, delayMs: GOLD_LAZY_REFRESH_MS };
   }
 
   getGoldStateRecordId(centerId = "") {
@@ -5052,7 +4991,6 @@ class DesktopMirrorService {
   getTrialPublicConfig() {
     return {
       trialDays: DEFAULT_TRIAL_DAYS,
-      subscriptionPlan: "silver",
       emailVerificationEnabled: isTrialEmailVerificationConfigured(),
       verificationWindowMinutes: DEFAULT_TRIAL_VERIFICATION_MINUTES,
       payment: getTrialPaymentConfig()
@@ -5433,37 +5371,24 @@ class DesktopMirrorService {
   getSettings(session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    return constrainSettingsByPlan(
-      { ...defaultSettings, ...(store[centerId] || {}), centerId },
-      session?.subscriptionPlan
-    );
+    return { ...defaultSettings, ...(store[centerId] || {}), centerId };
   }
 
   saveSettings(payload = {}, session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    const next = constrainSettingsByPlan(
-      { ...this.getSettings(session), ...payload, centerId, updatedAt: nowIso() },
-      session?.subscriptionPlan
-    );
+    const next = { ...this.getSettings(session), ...payload, centerId, updatedAt: nowIso() };
     store[centerId] = next;
     this.settingsRepository.write(store);
-    this.invalidateBusinessSnapshot(centerId);
-    this.scheduleGoldStateRefresh("lazy", "settings_updated", session);
     return next;
   }
 
   resetSettings(session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    const next = constrainSettingsByPlan(
-      { ...defaultSettings, centerId, centerName: this.getCenterName(session), updatedAt: nowIso() },
-      session?.subscriptionPlan
-    );
+    const next = { ...defaultSettings, centerId, centerName: this.getCenterName(session), updatedAt: nowIso() };
     store[centerId] = next;
     this.settingsRepository.write(store);
-    this.invalidateBusinessSnapshot(centerId);
-    this.scheduleGoldStateRefresh("lazy", "settings_reset", session);
     return next;
   }
 
@@ -5604,11 +5529,6 @@ class DesktopMirrorService {
     const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
     const trialStartsAt = planType === "trial" ? String(payload.trialStartsAt || now) : "";
     const trialEndsAt = planType === "trial" ? String(payload.trialEndsAt || addDaysIso(trialStartsAt, trialDays)) : "";
-    const defaultSubscriptionPlan = String(payload.role || "") === "superadmin"
-      ? "gold"
-      : planType === "trial"
-        ? "silver"
-        : "base";
     const user = {
       id: makeId("user"),
       username,
@@ -5622,7 +5542,7 @@ class DesktopMirrorService {
       contactPhone: String(payload.contactPhone || payload.phone || ""),
       businessModel: String(payload.businessModel || "esthetic"),
       planType,
-      subscriptionPlan: String(payload.subscriptionPlan || defaultSubscriptionPlan),
+      subscriptionPlan: String(payload.subscriptionPlan || (String(payload.role || "") === "superadmin" ? "gold" : "base")),
       trialDays,
       trialStartsAt,
       trialEndsAt,
@@ -5688,7 +5608,6 @@ class DesktopMirrorService {
       contactPhone,
       businessModel,
       planType: "trial",
-      subscriptionPlan: "silver",
       trialDays,
       trialStartsAt: verificationRequestedAt,
       accountStatus: verificationEnabled ? "pending_verification" : "trial",
@@ -6237,34 +6156,10 @@ class DesktopMirrorService {
 
   getClientConsultation(clientId, session = null) {
     const detail = this.getClientDetail(clientId, session);
-    const plan = normalizeSettingsPlan(session?.subscriptionPlan);
-    const mode = plan === "base"
-      ? "manual"
-      : plan === "silver"
-        ? "protocol_guided"
-        : "gold_operational";
-    const summary = plan === "base"
-      ? ["Piano Base: scheda cliente e protocollo restano manuali."]
-      : plan === "silver"
-        ? ["Piano Silver: consulenza protocolli guidata con perimetro operativo limitato."]
-        : ["Piano Gold: lettura cliente orientata alla prossima mossa operativa, senza esecuzione automatica."];
-    const nextActions = plan === "base"
-      ? ["Leggi storico cliente, note e consensi prima di proporre il prossimo servizio."]
-      : plan === "silver"
-        ? ["Usa la consulenza guidata per nota, protocollo e continuità cliente."]
-        : ["Conferma la priorità proposta e prepara il prossimo step operativo se serve."];
     return {
       client: detail.client,
       history: detail.appointments.slice(0, 10),
-      recommendations: [],
-      mode,
-      quotaLabel: plan === "silver" ? "7 analisi AI" : plan === "base" ? "Manuale" : "300 analisi AI",
-      summary,
-      nextActions,
-      missingData: [],
-      drafts: {},
-      protocolBrief: "",
-      technologyBrief: ""
+      recommendations: []
     };
   }
 
@@ -6532,19 +6427,19 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.servicesRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.servicesRepository));
-      this.scheduleGoldStateRefresh("lazy", "service_created", session);
+      this.applyGoldStateEvent("service_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.servicesRepository, payload.id, session);
     const updated = this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.scheduleGoldStateRefresh("lazy", "service_updated", session);
+    this.applyGoldStateEvent("service_updated", { before, after: updated }, session);
     return updated;
   }
 
   deleteService(id, session = null) {
     const before = this.findByIdInCenter(this.servicesRepository, id, session);
     const result = this.deleteInCenter(this.servicesRepository, id, session);
-    if (result?.success) this.scheduleGoldStateRefresh("lazy", "service_deleted", session);
+    if (result?.success) this.applyGoldStateEvent("service_deleted", { before }, session);
     return result;
   }
 
@@ -6578,19 +6473,19 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.staffRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
-      this.scheduleGoldStateRefresh("lazy", "staff_created", session);
+      this.applyGoldStateEvent("staff_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.staffRepository, payload.id, session);
     const updated = this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.scheduleGoldStateRefresh("lazy", "staff_updated", session);
+    this.applyGoldStateEvent("staff_updated", { before, after: updated }, session);
     return updated;
   }
 
   deleteStaff(id, session = null) {
     const before = this.findByIdInCenter(this.staffRepository, id, session);
     const result = this.deleteInCenter(this.staffRepository, id, session);
-    if (result?.success) this.scheduleGoldStateRefresh("lazy", "staff_deleted", session);
+    if (result?.success) this.applyGoldStateEvent("staff_deleted", { before }, session);
     return result;
   }
 
@@ -6791,19 +6686,19 @@ class DesktopMirrorService {
     if (!payload.id) {
       this.inventoryRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
-      this.scheduleGoldStateRefresh("lazy", "inventory_created", session);
+      this.applyGoldStateEvent("inventory_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
     const updated = this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.scheduleGoldStateRefresh("lazy", "inventory_updated", session);
+    this.applyGoldStateEvent("inventory_updated", { before, after: updated }, session);
     return updated;
   }
 
   deleteInventoryItem(id, session = null) {
     const before = this.findByIdInCenter(this.inventoryRepository, id, session);
     const result = this.deleteInCenter(this.inventoryRepository, id, session);
-    if (result?.success) this.scheduleGoldStateRefresh("lazy", "inventory_deleted", session);
+    if (result?.success) this.applyGoldStateEvent("inventory_deleted", { before }, session);
     return result;
   }
 
@@ -6839,7 +6734,6 @@ class DesktopMirrorService {
         updatedAt: nowIso()
       }), session);
     }
-    this.scheduleGoldStateRefresh("lazy", "inventory_movement_created", session);
     return movement;
   }
 
@@ -6871,7 +6765,6 @@ class DesktopMirrorService {
     };
     this.treatmentsRepository.create(treatment);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
-    this.scheduleGoldStateRefresh("instant", "treatment_created", session);
     return treatment;
   }
 
@@ -10454,13 +10347,15 @@ class DesktopMirrorService {
   getGoldCapabilities(session = null) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
-    const goldEnabled = plan === "gold";
+    const goldEnabled = plan === "gold" || plan === "enterprise";
+    const silverCoreEnabled = plan === "silver" || goldEnabled;
     const settings = this.getSettings(session);
     const whatsappEnabled = goldEnabled && String(settings.whatsappGoldMode || "") === "active";
-    const progressiveIntelligence = goldEnabled ? this.getProgressiveIntelligenceStatus(session) : null;
+    const progressiveIntelligence = silverCoreEnabled ? this.getProgressiveIntelligenceStatus(session) : null;
     const hasFeature = (key) => Boolean(progressiveIntelligence?.enabledFeatures?.some((item) => item.key === key));
     return {
       goldEnabled,
+      silverCoreEnabled,
       currentPlan: plan,
       version: "corelia_enterprise_v1",
       goldEngineVersion: "corelia_phi_multi_domain_v1",
@@ -10470,7 +10365,9 @@ class DesktopMirrorService {
       progressiveIntelligence,
       features: {
         hasDecisionMatrix: goldEnabled,
-        hasRiskModel: goldEnabled,
+        hasRiskModel: silverCoreEnabled,
+        hasCoreSignals: silverCoreEnabled,
+        hasCoreReadOnlyPriorities: silverCoreEnabled,
         hasEconomicEngine: goldEnabled && hasFeature("margin_analysis"),
         hasSimulation: goldEnabled && hasFeature("forecast_scenarios"),
         hasLearning: goldEnabled && progressiveIntelligence?.activationLevel >= 3,
@@ -10495,6 +10392,12 @@ class DesktopMirrorService {
           requiresGold: true,
           requiresOperatorConfirmation: true
         },
+        silverCore: {
+          enabled: silverCoreEnabled && !goldEnabled,
+          readOnly: true,
+          canSuggestOperationalPriorities: silverCoreEnabled,
+          canExecuteActions: false
+        },
         whatsapp: {
           requiresConsent: true,
           requiresValidPhone: true,
@@ -10507,6 +10410,176 @@ class DesktopMirrorService {
         }
       }
     };
+  }
+
+  buildSilverCoreDecisionContext(session = null, capabilities = null) {
+    const cached = this.getCachedAnalyticsBlock(ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT, {}, session);
+    if (cached) {
+      return {
+        ...cached,
+        meta: {
+          ...(cached.meta || {}),
+          sourceLayer: "silver_core_snapshot"
+        }
+      };
+    }
+    const dashboard = this.getDashboardStats({}, session) || {};
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true }) || {};
+    const centerHealth = this.getCenterHealth({}, session) || {};
+    const progressiveIntelligence = capabilities?.progressiveIntelligence || this.getProgressiveIntelligenceStatus(session);
+    const inactiveClientsCount = Number(dashboard.inactiveClientsCount || 0);
+    const todayAppointments = Number(dashboard.todayAppointments || 0);
+    const unlinkedPayments = Number(dataQuality.metrics?.unlinkedPayments || 0);
+    const appointmentsMissingPayment = Number(dataQuality.metrics?.appointmentsMissingPayment || 0);
+    const servicesMissingCosts = Number(dataQuality.metrics?.servicesMissingCosts || 0);
+    const clientsMissingContact = Number(dataQuality.metrics?.clientsMissingContact || 0);
+    const duplicateGroups = Number(dataQuality.metrics?.duplicateGroups || 0);
+
+    const makeAction = (payload = {}) => ({
+      domain: String(payload.domain || ""),
+      entityId: String(payload.entityId || ""),
+      label: String(payload.label || ""),
+      action: "SUGGEST",
+      suggestedAction: String(payload.suggestedAction || ""),
+      output: String(payload.output || payload.explanationShort || ""),
+      explanationShort: String(payload.explanationShort || payload.output || ""),
+      explanationLong: String(payload.explanationLong || ""),
+      priority: Number(payload.priority || 0),
+      RAP_2: Number(payload.priority || 0),
+      phi: Number(payload.priority || 0),
+      confidence: Number(payload.confidence || 0),
+      risk: Number(payload.risk || 0),
+      band: "media",
+      tone: "operational_readonly",
+      canExecute: false,
+      execution: {
+        allowed: false,
+        reasons: ["Piano Silver: lettura core solo in consultazione"],
+        action: "SUGGEST",
+        confidence: Number(payload.confidence || 0),
+        risk: Number(payload.risk || 0),
+        friction: 0,
+        requiresOperatorConfirmation: true,
+        source: "silver_core_capability_layer"
+      }
+    });
+
+    const candidates = [];
+    if (todayAppointments <= 2) {
+      candidates.push(makeAction({
+        domain: "agenda",
+        entityId: "silver-agenda-load",
+        label: "Agenda sotto ritmo",
+        suggestedAction: "apri agenda e riempi prima gli slot scoperti",
+        explanationShort: "Il core vede pochi appuntamenti oggi. Prima aumenta volume e saturazione agenda.",
+        explanationLong: "Silver legge il dato operativo e ti segnala che l agenda di oggi e sotto ritmo. La priorita e riempire gli slot, non leggere i margini.",
+        priority: 0.74,
+        confidence: 0.76,
+        risk: 0.28
+      }));
+    }
+    if (inactiveClientsCount > 0) {
+      candidates.push(makeAction({
+        domain: "clients",
+        entityId: "silver-inactive-clients",
+        label: "Clienti da recuperare",
+        suggestedAction: "apri clienti o marketing manuale e richiama prima gli inattivi",
+        explanationShort: `Il core vede ${inactiveClientsCount} clienti inattivi da recuperare.`,
+        explanationLong: "Silver non genera recall AI Gold, ma puo dirti dove guardare prima per riportare traffico nel centro.",
+        priority: 0.68,
+        confidence: 0.72,
+        risk: 0.24
+      }));
+    }
+    if (unlinkedPayments > 0 || appointmentsMissingPayment > 0) {
+      candidates.push(makeAction({
+        domain: "cash",
+        entityId: "silver-cash-verify",
+        label: "Cassa da verificare",
+        suggestedAction: "apri cassa e collega prima pagamenti e appuntamenti",
+        explanationShort: `Il core rileva ${unlinkedPayments} pagamenti da collegare e ${appointmentsMissingPayment} appuntamenti senza pagamento collegato.`,
+        explanationLong: "Prima di leggere i report, riallinea la cassa. E un alert tecnico di core, non una decisione AI Gold.",
+        priority: 0.8,
+        confidence: 0.84,
+        risk: 0.35
+      }));
+    }
+    if (servicesMissingCosts > 0) {
+      candidates.push(makeAction({
+        domain: "data_quality",
+        entityId: "silver-service-costs-missing",
+        label: "Costi servizi incompleti",
+        suggestedAction: "completa i costi dei servizi per leggere meglio redditivita e report",
+        explanationShort: `Il core rileva ${servicesMissingCosts} servizi senza costi configurati.`,
+        explanationLong: "In Silver il core puo segnalarti che la lettura economica e meno affidabile finche i costi non sono completi.",
+        priority: 0.62,
+        confidence: 0.78,
+        risk: 0.22
+      }));
+    }
+    if (clientsMissingContact > 0 || duplicateGroups > 0) {
+      candidates.push(makeAction({
+        domain: "data_quality",
+        entityId: "silver-client-data-quality",
+        label: "Dati clienti da pulire",
+        suggestedAction: "apri clienti e completa contatti o unisci duplicati",
+        explanationShort: `Il core rileva ${clientsMissingContact} clienti senza contatti completi e ${duplicateGroups} gruppi duplicati.`,
+        explanationLong: "Il centro puo lavorare comunque, ma clienti e recall manuali diventano meno affidabili con dati sporchi.",
+        priority: 0.58,
+        confidence: 0.73,
+        risk: 0.18
+      }));
+    }
+    if (!candidates.length) {
+      candidates.push(makeAction({
+        domain: "operations",
+        entityId: "silver-monitor",
+        label: "Centro da monitorare",
+        suggestedAction: "continua il lavoro operativo e usa report, agenda e cassa come riferimento",
+        explanationShort: centerHealth.reason || "Il core non vede urgenze operative immediate nei dati disponibili.",
+        explanationLong: "In Silver il core resta una lettura tecnica del centro: segnala rischio e ordine operativo, ma non genera automazioni o priorita Gold.",
+        priority: 0.42,
+        confidence: 0.65,
+        risk: Number(centerHealth.score || 0) >= 70 ? 0.18 : 0.3
+      }));
+    }
+
+    candidates.sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0));
+    const primaryAction = candidates[0] || null;
+    const secondaryActions = candidates.slice(1, 4);
+    const anomalies = Array.isArray(dataQuality.alerts)
+      ? dataQuality.alerts.slice(0, 5).map((message, index) => ({
+        id: `silver-anomaly-${index + 1}`,
+        type: "core_signal",
+        impactScore: 0.4,
+        title: String(message || ""),
+        reason: "segnalato dal core operativo Silver"
+      }))
+      : [];
+
+    const context = {
+      goldEnabled: false,
+      silverCoreEnabled: true,
+      currentPlan: "silver",
+      source: "silver_core_runtime",
+      primaryAction,
+      secondaryActions,
+      blockedActions: [],
+      topSignals: candidates.slice(0, 5),
+      globalConfidence: Number(primaryAction?.confidence || 0.65),
+      systemRisk: Math.max(Number(primaryAction?.risk || 0), Number(centerHealth.score || 0) >= 70 ? 0.35 : 0.2),
+      lastUpdate: nowIso(),
+      anomalies,
+      centerHealth,
+      dataQuality,
+      progressiveIntelligence,
+      meta: {
+        sourceLayer: "silver_core_snapshot",
+        generatedAt: nowIso(),
+        cacheTtlMs: SNAPSHOT_CACHE_TTL_MS
+      }
+    };
+    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.SILVER_CORE_SNAPSHOT, {}, session, context, SNAPSHOT_CACHE_TTL_MS);
   }
 
   canExecuteAction(decision = {}, context = {}) {
@@ -10601,6 +10674,12 @@ class DesktopMirrorService {
   getGoldDecisionContext(options = {}, session = null) {
     this.assertCanOperate(session);
     const capabilities = this.getGoldCapabilities(session);
+    if (capabilities.currentPlan === "silver" && capabilities.silverCoreEnabled) {
+      return {
+        ...this.buildSilverCoreDecisionContext(session, capabilities),
+        capabilities
+      };
+    }
     if (!capabilities.goldEnabled) {
       return {
         goldEnabled: false,
@@ -11577,6 +11656,13 @@ class DesktopMirrorService {
         message: "Business Snapshot disponibile solo come fonte decisionale del piano Gold."
       };
     }
+    if (options.forceRefresh) {
+      try {
+        this.rebuildGoldStateForCurrentGoldTenant(session, { reason: "api_force_refresh" });
+      } catch (error) {
+        console.warn("[gold_state_force_refresh_error]", error?.message || error);
+      }
+    }
     const stateSnapshot = this.buildBusinessSnapshotFromGoldState(options, session);
     if (stateSnapshot) return stateSnapshot;
 
@@ -11855,6 +11941,13 @@ class DesktopMirrorService {
         message: "Dashboard decisionale disponibile solo con piano Gold.",
         sections: []
       };
+    }
+    if (this.getPlanLevel(session) === "gold" && options.forceRefresh) {
+      try {
+        this.rebuildGoldStateForCurrentGoldTenant(session, { reason: "api_force_refresh" });
+      } catch (error) {
+        console.warn("[gold_state_force_refresh_error]", error?.message || error);
+      }
     }
     if (this.getPlanLevel(session) === "gold") {
       try {

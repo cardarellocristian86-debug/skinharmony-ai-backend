@@ -1122,7 +1122,12 @@ app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
   }), () => service.getBusinessSnapshot({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
-    forceRefresh: !isSafeModeActive() && req.query.forceRefresh === "1"
+    forceRefresh: !isSafeModeActive() && (
+      req.query.forceRefresh === "1"
+      || req.query.forceRefresh === "true"
+      || req.query.force === "1"
+      || req.query.force === "true"
+    )
   }, req.session));
 });
 
@@ -1134,7 +1139,13 @@ app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
     sourceLayer: "corelia_fallback"
   }), () => service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
-    endDate: req.query.endDate || ""
+    endDate: req.query.endDate || "",
+    forceRefresh: !isSafeModeActive() && (
+      req.query.forceRefresh === "1"
+      || req.query.forceRefresh === "true"
+      || req.query.force === "1"
+      || req.query.force === "true"
+    )
   }, req.session));
 });
 
