@@ -8878,6 +8878,28 @@ class DesktopMirrorService {
           ? `Richiamo legato a ${lastService.name}.`
           : "Richiamo di mantenimento per continuità cliente.";
       const signal = serviceSignal(lastService?.name || "", displayName);
+      const slotHook = timing.timingClass === "recupero_attivo"
+        ? "Se vuoi, ti propongo uno slot nei prossimi giorni."
+        : timing.timingClass === "recupero_soft"
+          ? "Se vuoi, ti tengo uno spazio comodo questa settimana."
+          : timing.timingClass === "mantenimento"
+            ? "Se vuoi, guardiamo insieme uno slot comodo."
+            : timing.timingClass === "promemoria_naturale"
+              ? "Se vuoi, ti riservo uno spazio leggero senza cambiare la tua routine."
+              : "Se vuoi, possiamo capire insieme il momento giusto per rivederci.";
+      const serviceHook = signal.area === "cute"
+        ? "per rimettere in ordine cute e mantenimento"
+        : signal.area === "balayage"
+          ? "per mantenere luminosita e tono"
+          : signal.area === "colore"
+            ? "per tenere bene ricrescita e tono"
+            : signal.area === "keratina"
+              ? "per mantenere ordine e disciplina sulle lunghezze"
+              : signal.area === "piega"
+                ? "per mantenere piega e risultato"
+                : signal.area === "taglio"
+                  ? "per tenere il taglio sempre pulito"
+                  : "per mantenere bene il risultato";
       const urgencyReason = !hasMarketingConsent
         ? "Prima serve consenso marketing registrato."
         : segment === "storico"
@@ -8892,19 +8914,19 @@ class DesktopMirrorService {
       const recommendedAction = antiInvasiveReason
         ? antiInvasiveReason
         : !hasMarketingConsent
-        ? "Apri scheda cliente e registra consenso prima di inviare comunicazioni."
+        ? "Apri la scheda cliente e registra il consenso prima di preparare un messaggio."
         : timing.timingClass === "recupero_soft"
-            ? "Invia un messaggio attento e proponi uno slot semplice."
+            ? "Invia un messaggio breve, naturale e proponi uno slot leggero."
           : timing.timingClass === "recupero_attivo"
-              ? "Contatto diretto ma non commerciale: riprendere il percorso prima che si perda."
+              ? "Contatto diretto ma non aggressivo: fai ripartire il percorso prima che si raffreddi."
             : timing.timingClass === "mantenimento"
-              ? "Messaggio consulenziale di mantenimento."
+              ? "Messaggio consulenziale di mantenimento, senza pressione."
             : timing.timingClass === "promemoria_naturale"
-              ? "Promemoria leggero, senza pressione."
+              ? "Promemoria leggero, con invito semplice a rientrare."
             : segment === "perso"
-              ? "Recupero non prioritario: usa una campagna separata, non la lista del giorno."
+              ? "Recupero separato: usa una riattivazione dedicata, non la lista del giorno."
             : segment === "storico"
-              ? "Non trattarlo come recall urgente: mantienilo nello storico inattivi."
+              ? "Non trattarlo come recall urgente: tienilo nello storico inattivi."
             : "Nessuna azione ora.";
       const clearReason = segment === "perso"
         ? "cliente perso"
@@ -8937,11 +8959,11 @@ class DesktopMirrorService {
         ? `sono passati ${daysSinceLastVisit} giorni dall'ultimo appuntamento`
         : `siamo nel momento giusto per mantenere il risultato`;
       const messageByClass = {
-        promemoria_naturale: `${greeting}, ${timingText}. Se vuoi, ti riservo uno slot per mantenere bene il risultato del tuo ultimo servizio.`,
-        mantenimento: `${greeting}, ti consiglio un controllo per mantenere bene il lavoro fatto con ${lastService?.name || "il tuo ultimo servizio"}. Vuoi che guardiamo insieme uno slot comodo?`,
-        recupero_soft: `${greeting}, ${timingText}. Meglio intervenire ora per non perdere il risultato: ti propongo ${signal.proposal}.`,
-        recupero_attivo: `${greeting}, il timing è già avanzato. Può essere utile rivederci per capire come mantenere o riprendere il percorso. Vuoi che ti proponga uno slot?`,
-        perso: `${greeting}, se vuoi riprendere da dove avevamo lasciato, possiamo capire insieme cosa fare ora.`
+        promemoria_naturale: `${greeting}, ${timingText} ${serviceHook}. ${slotHook}`,
+        mantenimento: `${greeting}, questo e un buon momento ${serviceHook}. ${slotHook}`,
+        recupero_soft: `${greeting}, ${timingText}. Ti propongo ${signal.proposal} ${serviceHook}. ${slotHook}`,
+        recupero_attivo: `${greeting}, il timing si sta allungando e conviene riprendere ora ${serviceHook}. ${slotHook}`,
+        perso: `${greeting}, se vuoi riprendere il percorso ${serviceHook}, possiamo rivederlo insieme con calma. ${slotHook}`
       };
       const fT = normalizeScore(Math.min(timing.timingScore, 2) / 2);
       const fV = normalizeScore(valueScoreNormalized);
@@ -9040,7 +9062,7 @@ class DesktopMirrorService {
             : `Riferimento economico: prezzo ultimo servizio ${euro(referenceValueCents)}.`,
         message: hasMarketingConsent
           ? shouldContactOld
-            ? messageByClass[timing.timingClass] || `${greeting}, ti propongo un controllo leggero sul tuo percorso. Vuoi che guardiamo uno slot comodo?`
+            ? messageByClass[timing.timingClass] || `${greeting}, e un buon momento ${serviceHook}. ${slotHook}`
             : antiInvasiveReason || "Nessun messaggio da inviare ora."
           : `Prima di inviare messaggi marketing a ${firstName}, verifica e registra il consenso marketing nella scheda cliente.`
       };
@@ -9641,19 +9663,23 @@ class DesktopMirrorService {
     if (text) return text;
     const firstName = cleanText(client.firstName || suggestion.name || client.name || "Cliente", "Cliente", 80).split(/\s+/)[0] || "Cliente";
     const service = cleanText(suggestion.lastServiceName || "il tuo percorso", "il tuo percorso", 120);
-    const proposal = cleanText(suggestion.recommendedAction || "ti propongo uno slot comodo questa settimana", "ti propongo uno slot comodo questa settimana", 180);
+    const proposal = cleanText(
+      suggestion.recommendedAction || "se vuoi, ti propongo uno slot comodo questa settimana",
+      "se vuoi, ti propongo uno slot comodo questa settimana",
+      180
+    );
     const template = this.getGoldWhatsappTemplate(suggestion);
     if (template.key === "riattivazione_cliente_perso") {
-      return `Ciao ${firstName}, se vuoi riprendere da dove avevamo lasciato, possiamo capire insieme cosa fare ora. ${proposal}`;
+      return `Ciao ${firstName}, se vuoi riprendere ${service}, possiamo rivederlo insieme con calma. ${proposal}`;
     }
     if (template.key === "recupero_attivo") {
-      return `Ciao ${firstName}, il timing è già avanzato per ${service}. Vuoi che ti proponga uno slot per riprendere il percorso?`;
+      return `Ciao ${firstName}, il timing si sta allungando per ${service}. ${proposal}`;
     }
     if (template.key === "recupero_soft") {
-      return `Ciao ${firstName}, siamo nel momento giusto per mantenere ${service}. Vuoi che ti proponga uno slot questa settimana?`;
+      return `Ciao ${firstName}, questo e un buon momento per mantenere ${service}. ${proposal}`;
     }
     if (template.key === "mantenimento") {
-      return `Ciao ${firstName}, ti consiglio un controllo per mantenere bene ${service}. Vuoi che guardiamo insieme uno slot comodo?`;
+      return `Ciao ${firstName}, questo e un buon momento per mantenere bene ${service}. ${proposal}`;
     }
     return `Ciao ${firstName}, ti ricordiamo il tuo appuntamento. Se hai bisogno di modifiche, rispondi pure a questo messaggio.`;
   }
