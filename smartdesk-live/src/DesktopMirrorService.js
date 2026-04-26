@@ -6237,10 +6237,34 @@ class DesktopMirrorService {
 
   getClientConsultation(clientId, session = null) {
     const detail = this.getClientDetail(clientId, session);
+    const plan = normalizeSettingsPlan(session?.subscriptionPlan);
+    const mode = plan === "base"
+      ? "manual"
+      : plan === "silver"
+        ? "protocol_guided"
+        : "gold_operational";
+    const summary = plan === "base"
+      ? ["Piano Base: scheda cliente e protocollo restano manuali."]
+      : plan === "silver"
+        ? ["Piano Silver: consulenza protocolli guidata con perimetro operativo limitato."]
+        : ["Piano Gold: lettura cliente orientata alla prossima mossa operativa, senza esecuzione automatica."];
+    const nextActions = plan === "base"
+      ? ["Leggi storico cliente, note e consensi prima di proporre il prossimo servizio."]
+      : plan === "silver"
+        ? ["Usa la consulenza guidata per nota, protocollo e continuità cliente."]
+        : ["Conferma la priorità proposta e prepara il prossimo step operativo se serve."];
     return {
       client: detail.client,
       history: detail.appointments.slice(0, 10),
-      recommendations: []
+      recommendations: [],
+      mode,
+      quotaLabel: plan === "silver" ? "7 analisi AI" : plan === "base" ? "Manuale" : "300 analisi AI",
+      summary,
+      nextActions,
+      missingData: [],
+      drafts: {},
+      protocolBrief: "",
+      technologyBrief: ""
     };
   }
 
