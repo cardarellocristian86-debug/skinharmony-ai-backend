@@ -399,6 +399,40 @@ const defaultSettings = {
   whatsappWebhookReady: false
 };
 
+function normalizeSettingsPlan(plan) {
+  const normalized = String(plan || "").toLowerCase();
+  if (normalized === "base" || normalized === "silver" || normalized === "gold" || normalized === "enterprise") {
+    return normalized;
+  }
+  return "gold";
+}
+
+function constrainSettingsByPlan(input = {}, plan = "gold") {
+  const next = { ...input };
+  const currentPlan = normalizeSettingsPlan(plan);
+
+  if (currentPlan === "base") {
+    next.enableTreatments = false;
+    next.shiftsTemplatesEnabled = false;
+    next.shiftsClockEnabled = false;
+    next.shiftsReportsEnabled = false;
+    next.shiftsFlexEnabled = false;
+    next.inventoryMovementsEnabled = false;
+    next.inventoryAlertsEnabled = false;
+    next.inventoryReportsEnabled = false;
+    next.profitabilityEnabled = false;
+    next.profitabilityOperatorCostEnabled = false;
+    next.profitabilityTechnologyAnalysisEnabled = false;
+    next.aiActionsEnabled = false;
+  }
+
+  if (currentPlan === "silver") {
+    next.aiActionsEnabled = false;
+  }
+
+  return next;
+}
+
 const DEFAULT_STAFF = [
   { id: "staff_1", name: "Operatore 1", colorTag: "#6db7ff", role: "Operatore", active: 1 },
   { id: "staff_2", name: "Operatore 2", colorTag: "#8fd9c8", role: "Operatore", active: 1 },
@@ -5399,13 +5433,19 @@ class DesktopMirrorService {
   getSettings(session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    return { ...defaultSettings, ...(store[centerId] || {}), centerId };
+    return constrainSettingsByPlan(
+      { ...defaultSettings, ...(store[centerId] || {}), centerId },
+      session?.subscriptionPlan
+    );
   }
 
   saveSettings(payload = {}, session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    const next = { ...this.getSettings(session), ...payload, centerId, updatedAt: nowIso() };
+    const next = constrainSettingsByPlan(
+      { ...this.getSettings(session), ...payload, centerId, updatedAt: nowIso() },
+      session?.subscriptionPlan
+    );
     store[centerId] = next;
     this.settingsRepository.write(store);
     this.invalidateBusinessSnapshot(centerId);
@@ -5416,7 +5456,10 @@ class DesktopMirrorService {
   resetSettings(session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    const next = { ...defaultSettings, centerId, centerName: this.getCenterName(session), updatedAt: nowIso() };
+    const next = constrainSettingsByPlan(
+      { ...defaultSettings, centerId, centerName: this.getCenterName(session), updatedAt: nowIso() },
+      session?.subscriptionPlan
+    );
     store[centerId] = next;
     this.settingsRepository.write(store);
     this.invalidateBusinessSnapshot(centerId);
