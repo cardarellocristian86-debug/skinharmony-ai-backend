@@ -25,6 +25,9 @@ const nyraWorldThesisLearningMassivePath = "universal-core/runtime/nyra-learning
 const nyraRenderAutopilotRuntimePath = "universal-core/runtime/nyra-learning/nyra_render_autopilot_latest.json";
 const nyraRenderAutopilotReportPath = "reports/universal-core/nyra-learning/nyra_render_autopilot_latest.json";
 const nyraFinanceProfilePath = "personal-control-center/data/nyra-finance-profile.json";
+const NYRA_WORLD_PAPER_TRAINING_FEE_RATE = 0.0005;
+const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
+const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
 
@@ -3452,9 +3455,11 @@ function worldPaperThesisExpectedMovePct(row, thesis = null) {
 function worldPaperHasFeeEdge(row, thesis = null, feeRate = 0.002, slippageRate = 0.005, multiplier = 1.4) {
   const expectedMovePct = worldPaperThesisExpectedMovePct(row, thesis);
   const requiredMovePct = estimateWorldPaperRoundTripCostPct(feeRate, slippageRate) * multiplier;
+  const hardBlockPct = NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT;
   return {
-    ok: expectedMovePct >= requiredMovePct,
+    ok: expectedMovePct >= hardBlockPct,
     expected_move_pct: Number(expectedMovePct.toFixed(4)),
+    hard_block_pct: Number(hardBlockPct.toFixed(4)),
     required_move_pct: Number(requiredMovePct.toFixed(4)),
     round_trip_cost_pct: Number(estimateWorldPaperRoundTripCostPct(feeRate, slippageRate).toFixed(4))
   };
@@ -4074,8 +4079,8 @@ function executeWorldPaperStep(body = {}) {
   }
   const now = new Date().toISOString();
   const profile = loadNyraFinanceProfileConfig();
-  const feeRate = 0.002;
-  const slippageRate = 0.005;
+  const feeRate = NYRA_WORLD_PAPER_TRAINING_FEE_RATE;
+  const slippageRate = NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE;
   const portfolio = updatePaperPositionMarks(readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio()), ranked);
   ensureWorldPaperBenchmark(portfolio, scan);
   const treasury = buildUnifiedFinanceTreasury(portfolio);
@@ -4349,7 +4354,7 @@ function executeWorldPaperStep(body = {}) {
       symbol: row.symbol || "NONE",
       gear: riskBudget.gear,
       profile: riskBudget.profile,
-      reason: `skip: expected move ${row.fee_edge.expected_move_pct}% non supera costo richiesto ${row.fee_edge.required_move_pct}%. Meglio non regalare fee.`,
+      reason: `training skip: expected move ${row.fee_edge.expected_move_pct}% sotto blocco minimo ${row.fee_edge.hard_block_pct}%. Il costo training e basso (${row.fee_edge.round_trip_cost_pct}% round-trip), quindi non blocco per paura fee.`,
       price: row.last_price || 0
     });
     writeJson(nyraWorldPaperPortfolioPath, portfolio);
