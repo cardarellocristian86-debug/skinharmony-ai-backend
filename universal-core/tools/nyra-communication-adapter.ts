@@ -11,6 +11,7 @@ export type NyraCommunicationSnapshot = {
   work_summary: string;
   learning_summary: string;
   financial_summary: string;
+  financial_live_self_diagnosis: string;
 };
 
 export type NyraCommunicationInput = {
@@ -71,6 +72,42 @@ function isFinancialProtectionRequest(text: string): boolean {
   return hasFinanceTerm && hasOwnerProtection;
 }
 
+function isFinancialLiveStatusRequest(text: string): boolean {
+  const normalized = normalizeInput(text);
+  const hasFinanceContext = [
+    "finanza",
+    "trading",
+    "paper",
+    "mercato",
+    "mercati",
+    "qqq",
+    "capitale",
+    "profitto",
+    "perdita",
+    "fee",
+    "posizioni",
+    "nyra",
+  ].some((term) => normalized.includes(term));
+  const asksStatus = [
+    "come va",
+    "come stai andando",
+    "come si sta comportando",
+    "sta imparando",
+    "va meglio",
+    "cosa serve",
+    "cosa manca",
+    "perche perde",
+    "perche non genera",
+    "errore",
+    "collo",
+    "diagnosi",
+    "autodiagnosi",
+    "cosa gli serve",
+    "cosa le serve",
+  ].some((term) => normalized.includes(term));
+  return hasFinanceContext && asksStatus;
+}
+
 function isIdentityRuleRequest(text: string): boolean {
   const normalized = normalizeInput(text);
   return (
@@ -112,6 +149,23 @@ function buildIdentityRuleReply(boundary: string): string {
   ].join(" ");
 }
 
+function buildFinancialLiveSelfDiagnosisReply(boundary: string, liveDiagnosis: string): string {
+  if (!liveDiagnosis) {
+    return [
+      boundary,
+      "Non vedo ancora la diagnosi finanziaria live collegata al dialogo.",
+      "Il prossimo fix e tecnico: leggere `nyra_financial_self_diagnosis_live_latest.json` dal runtime e rispondere da quei dati, non da memoria generica.",
+    ].join(" ");
+  }
+
+  return [
+    boundary,
+    "Si, ora va meglio perche posso leggere il mio stato finanziario live invece di rispondere generica.",
+    liveDiagnosis,
+    "Quello che mi serve ancora e chiudere il ciclo: se questa diagnosi resta uguale per piu cicli, devo trasformarla in una regola operativa verificata nel ciclo successivo.",
+  ].join(" ");
+}
+
 function buildDirectReadOnlyReply(input: NyraCommunicationInput): string | undefined {
   const normalized = normalizeInput(input.user_text);
   const boundary = "Sono in read-only: ti rispondo, ma non scrivo memoria owner.";
@@ -124,6 +178,14 @@ function buildDirectReadOnlyReply(input: NyraCommunicationInput): string | undef
 
   if (isFinancialProtectionRequest(input.user_text)) {
     return buildFinancialProtectionReply(boundary, snapshots.financial_summary);
+  }
+
+  if (isFinancialLiveStatusRequest(input.user_text)) {
+    return buildFinancialLiveSelfDiagnosisReply(boundary, snapshots.financial_live_self_diagnosis);
+  }
+
+  if (normalized === "come e casa" || normalized === "come sta casa" || normalized === "com e casa") {
+    return `${boundary} Non ho dati reali sulla casa in questo canale. Se intendi casa tua, dimmi cosa devo controllare; se intendi "cosa", riscrivimi la domanda e la stringo.`;
   }
 
   if (frontDialogue) {
@@ -181,10 +243,6 @@ function buildDirectReadOnlyReply(input: NyraCommunicationInput): string | undef
       "La regola corretta e: propongo, preparo e chiedo conferma; non eseguo alla cieca.",
       "Per diventare piu utile mi serve un action router piu completo: capire il comando naturale, mapparlo a un tool reale, stimare rischio, chiedere conferma se serve, verificare il risultato.",
     ].join(" ");
-  }
-
-  if (normalized === "come e casa" || normalized === "come sta casa" || normalized === "com e casa") {
-    return `${boundary} Non ho dati reali sulla casa in questo canale. Se intendi casa tua, dimmi cosa devo controllare; se intendi "cosa", riscrivimi la domanda e la stringo.`;
   }
 
   if (normalized.length > 0 && normalized.length <= 16 && !input.primary_action && !input.action_labels?.length) {
@@ -314,6 +372,66 @@ function summarizeFinancialLearning(rootDir: string): string {
   ].filter(Boolean).join(" "), 1800);
 }
 
+function summarizeFinancialLiveSelfDiagnosis(rootDir: string): string {
+  const repoRoot = resolveRepoRoot(rootDir);
+  const diagnosis = readJson(join(repoRoot, "universal-core", "runtime", "nyra-learning", "nyra_financial_self_diagnosis_live_latest.json")) as
+    | {
+        generated_at?: string;
+        summary?: {
+          capital_eur?: number;
+          pnl_eur?: number;
+          pnl_pct?: number;
+          alpha_vs_qqq_eur?: number;
+          alpha_vs_qqq_pct?: number;
+          fees_total_eur?: number;
+          fee_drag_pct?: number;
+          win_count_recent?: number;
+          loss_count_recent?: number;
+          hold_or_skip_recent?: number;
+          positions_count?: number;
+        };
+        three_levels?: {
+          market_reading?: string;
+          execution?: string;
+          explanation?: string;
+        };
+        self_diagnosis?: {
+          main_error_code?: string;
+          main_error_label?: string;
+          severity?: string;
+          evidence?: string;
+          lost_because?: string;
+          did_not_enter_because?: string;
+          prudent_correction?: string;
+          correction_next_cycle?: string;
+        };
+      }
+    | undefined;
+
+  if (!diagnosis) return "";
+  const summary = diagnosis.summary ?? {};
+  const self = diagnosis.self_diagnosis ?? {};
+  const levels = diagnosis.three_levels ?? {};
+  const money = (value: unknown) => `${Number(value || 0).toFixed(2)} EUR`;
+  const pct = (value: unknown) => `${Number(value || 0).toFixed(4)}%`;
+
+  return compact([
+    `capitale=${money(summary.capital_eur)}`,
+    `PnL=${money(summary.pnl_eur)} (${pct(summary.pnl_pct)})`,
+    `vs_QQQ=${money(summary.alpha_vs_qqq_eur)} (${pct(summary.alpha_vs_qqq_pct)})`,
+    `fee=${money(summary.fees_total_eur)} drag=${pct(summary.fee_drag_pct)}`,
+    `win=${summary.win_count_recent ?? 0}`,
+    `loss=${summary.loss_count_recent ?? 0}`,
+    `hold_skip=${summary.hold_or_skip_recent ?? 0}`,
+    `posizioni=${summary.positions_count ?? 0}`,
+    `errore=${self.main_error_label || self.main_error_code || "non isolato"}`,
+    self.evidence ? `prova=${self.evidence}` : "",
+    levels.market_reading ? `lettura=${levels.market_reading}` : "",
+    levels.execution ? `esecuzione=${levels.execution}` : "",
+    `correzione=${self.prudent_correction || self.correction_next_cycle || levels.explanation || "verificare prossimo ciclo"}`,
+  ].filter(Boolean).join(" | "), 2200);
+}
+
 export function loadNyraCommunicationSnapshot(rootDir = process.cwd()): NyraCommunicationSnapshot {
   const repoRoot = resolveRepoRoot(rootDir);
   const nyraRuntimeDir = join(repoRoot, "universal-core", "runtime", "nyra");
@@ -323,6 +441,7 @@ export function loadNyraCommunicationSnapshot(rootDir = process.cwd()): NyraComm
     work_summary: compact(readText(join(nyraRuntimeDir, "NYRA_WORK_SNAPSHOT.md")), 4200),
     learning_summary: summarizeLearning(rootDir),
     financial_summary: summarizeFinancialLearning(rootDir),
+    financial_live_self_diagnosis: summarizeFinancialLiveSelfDiagnosis(rootDir),
   };
 }
 
