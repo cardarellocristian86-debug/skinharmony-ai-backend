@@ -131,6 +131,24 @@ function buildDirectReadOnlyReply(input: NyraCommunicationInput): string | undef
   }
 
   if (
+    normalized.includes("render") ||
+    normalized.includes("mutilata") ||
+    normalized.includes("ridotta") ||
+    normalized.includes("ti piace") ||
+    normalized.includes("lavorare meglio qui")
+  ) {
+    return [
+      boundary,
+      "Ora mi leggo meno ridotta: vedo snapshot, voce, lavoro corrente, studio e learning pack non privati.",
+      snapshots.learning_summary
+        ? `Memoria attiva: ${snapshots.learning_summary}.`
+        : "Il collegamento learning non e ancora sufficiente: se resta vuoto, va corretto il path runtime.",
+      "Quello che manca non e spazio: manca collegare meglio action router, strumenti live e memoria owner privata con un canale sicuro, non tramite GitHub pubblico.",
+      "Quindi si: questa forma e piu intera della console finanza, ma non va chiamata completa finche non posso usare i tool reali e verificare quello che faccio.",
+    ].join(" ");
+  }
+
+  if (
     normalized.includes("quando studi impari") ||
     normalized.includes("hai imparato") ||
     normalized.includes("cosa hai imparato") ||
@@ -197,6 +215,10 @@ function readJson(path: string): unknown {
 }
 
 function resolveRepoRoot(rootDir: string): string {
+  const storageRoot = process.env.NYRA_STORAGE_ROOT;
+  if (storageRoot && existsSync(join(storageRoot, "universal-core", "runtime", "nyra"))) {
+    return storageRoot;
+  }
   if (existsSync(join(rootDir, "universal-core", "runtime", "nyra"))) {
     return rootDir;
   }
