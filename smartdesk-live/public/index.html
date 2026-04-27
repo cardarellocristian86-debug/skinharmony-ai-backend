@@ -26,6 +26,15 @@
           return button;
         }
 
+        function removeInternalUiNotes() {
+          document.querySelectorAll("[data-import-gold-settings='1']").forEach((node) => node.remove());
+          document.querySelectorAll(".settings-note, .item-subtitle, .empty-inline").forEach((node) => {
+            const text = (node.textContent || "").trim().toLowerCase();
+            if (!text) return;
+            if (text.includes("import gold resta in impostazioni")) node.remove();
+          });
+        }
+
         function hideImportGoldTopbar() {
           document.querySelectorAll("button").forEach((button) => {
             if ((button.textContent || "").trim().toLowerCase() !== "import gold") return;
@@ -36,29 +45,25 @@
 
         function ensureImportGoldInSettings() {
           if (window.location.pathname !== "/settings") return;
-          if (document.querySelector("[data-import-gold-settings='1']")) return;
+          if (document.querySelector("[data-import-gold-cta='1']")) return;
 
-          const targetCard =
-            document.querySelector(".settings-grid")?.closest(".sh-card") ||
+          const target =
+            document.querySelector(".settings-grid") ||
             document.querySelector(".content-area .sh-card") ||
             document.querySelector("main .sh-card");
-          if (!targetCard) return;
+          if (!target) return;
 
           const wrapper = document.createElement("div");
-          wrapper.className = "dashboard-action-row mt-16";
-          wrapper.dataset.importGoldSettings = "1";
+          wrapper.className = "dashboard-action-row";
+          wrapper.dataset.importGoldCta = "1";
 
-          const note = document.createElement("div");
-          note.className = "settings-note";
-          note.textContent = "Import Gold resta in Impostazioni: non occupa spazio nella barra principale.";
-
-          const button = createSecondaryButton("Import Gold", () => {
+          const button = createSecondaryButton("Importa file Gold", () => {
             window.location.href = "/gold-onboarding";
           });
+          button.classList.add("primary-btn");
 
           wrapper.appendChild(button);
-          wrapper.appendChild(note);
-          targetCard.prepend(wrapper);
+          target.prepend(wrapper);
         }
 
         function hideAiGoldChatUi() {
@@ -87,6 +92,7 @@
         }
 
         function applySmartDeskUiFixes() {
+          removeInternalUiNotes();
           hideImportGoldTopbar();
           ensureImportGoldInSettings();
           if (window.location.pathname === "/ai-gold") hideAiGoldChatUi();
