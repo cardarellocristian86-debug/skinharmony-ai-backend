@@ -5364,7 +5364,7 @@ const server = app.listen(port, host, () => {
   console.log(`SkinHarmony Control Desk attivo su http://${host}:${port}`);
   restoreNyraWorldPaperAutoState();
   applyNyraWorldPaperAutoEnvDefaults();
-  const runPaperOnBoot = nyraWorldPaperAutoState.enabled && String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "true").toLowerCase() !== "false";
+  const runPaperOnBoot = nyraWorldPaperAutoState.enabled && ["1", "true", "yes", "on"].includes(String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "").trim().toLowerCase());
   scheduleNyraWorldPaperAutoLoop(runPaperOnBoot);
   scheduleNyraFinanceLiveLoop(true);
 });

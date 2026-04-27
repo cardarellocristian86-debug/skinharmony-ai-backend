@@ -20,11 +20,11 @@ services:
       - key: NYRA_WORLD_PAPER_AUTOSTART
         value: "true"
       - key: NYRA_WORLD_PAPER_RUN_ON_BOOT
-        value: "true"
+        value: "false"
       - key: NYRA_WORLD_PAPER_INTERVAL_MINUTES
         value: "60"
       - key: NYRA_DISABLE_BASIC_AUTH
-        value: "false"
+        value: "true"
       - key: NYRA_BASIC_USER
         sync: false
       - key: NYRA_BASIC_PASSWORD
