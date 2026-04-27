@@ -44,8 +44,23 @@
           });
         }
 
-        hideAiGoldChatUi();
-        new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
+        fetch("/api/auth/session", {
+          headers: {
+            Authorization: window.localStorage.getItem("skinharmony-web-token")
+              ? "Bearer " + window.localStorage.getItem("skinharmony-web-token")
+              : ""
+          }
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((session) => {
+            if (session && String(session.role || "").toLowerCase() === "superadmin") return;
+            hideAiGoldChatUi();
+            new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
+          })
+          .catch(() => {
+            hideAiGoldChatUi();
+            new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
+          });
       })();
     </script>
   </head>
