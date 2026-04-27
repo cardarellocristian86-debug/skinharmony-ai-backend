@@ -4457,6 +4457,7 @@ function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan
       : null,
     reason: row.reason
   }));
+  const selectedThesis = result?.selected?.multiverse_thesis || null;
   const report = {
     version: "nyra_render_autopilot_v1",
     generated_at: new Date().toISOString(),
@@ -4488,7 +4489,18 @@ function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan
           learning_aware: Boolean(result.autoChoice?.learningAware || result.learning),
           learning_state: result.learning?.learning_state || null,
           rotation_primary: rebalanced?.rotationPlan?.primaryClass || null,
-          rotation_closed_count: Array.isArray(rebalanced?.closed) ? rebalanced.closed.length : 0
+          rotation_closed_count: Array.isArray(rebalanced?.closed) ? rebalanced.closed.length : 0,
+          thesis_debug: selectedThesis
+            ? {
+                engine: selectedThesis.engine,
+                action: selectedThesis.thesis_action,
+                valid: selectedThesis.thesis_valid,
+                expected_value_score: selectedThesis.expected_value_score,
+                confidence: selectedThesis.confidence,
+                reason: selectedThesis.reason,
+                chess_variant_tree: selectedThesis.chess_variant_tree || null
+              }
+            : null
         }
       : null,
     portfolio: {
