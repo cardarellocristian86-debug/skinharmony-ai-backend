@@ -3,6 +3,9 @@
   const PANEL_ID = "skinharmony-gold-priority-bridge";
   const ROUTES = new Set(["/", "/dashboard"]);
   const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
+  const ENTERPRISE_SETTINGS_PANEL_ID = "skinharmony-enterprise-settings-bridge";
+  const ENTERPRISE_REPORTS_PANEL_ID = "skinharmony-enterprise-reports-bridge";
+  const ENTERPRISE_SURFACE_PANEL_ID = "skinharmony-enterprise-surface-bridge";
   let renderToken = 0;
   let goldRenderTimers = [];
   let settingsRenderTimers = [];
@@ -162,6 +165,122 @@
         line-height: 1.5;
         color: #5b7f91;
       }
+      .enterprise-bridge-panel {
+        margin: 18px 0 20px;
+        border-radius: 24px;
+        border: 1px solid rgba(79,182,214,0.18);
+        background:
+          radial-gradient(circle at top right, rgba(105,211,240,0.16), transparent 32%),
+          linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(244,249,253,0.96) 100%);
+        box-shadow: 0 20px 50px rgba(18,56,77,0.08);
+        padding: 22px;
+      }
+      .enterprise-bridge-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+      .enterprise-bridge-title {
+        font-size: 20px;
+        font-weight: 800;
+        color: #163747;
+        margin: 0 0 6px;
+      }
+      .enterprise-bridge-subtitle {
+        font-size: 13px;
+        line-height: 1.6;
+        color: #5b7f91;
+        margin: 0;
+      }
+      .enterprise-bridge-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        padding: 0 14px;
+        border-radius: 999px;
+        background: rgba(79,182,214,0.14);
+        color: #1f86aa;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .enterprise-bridge-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .enterprise-bridge-card {
+        border-radius: 18px;
+        border: 1px solid rgba(121,159,184,0.16);
+        background: rgba(255,255,255,0.82);
+        padding: 16px;
+      }
+      .enterprise-bridge-card-title {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6b8391;
+        margin-bottom: 8px;
+      }
+      .enterprise-bridge-card-value {
+        font-size: 16px;
+        line-height: 1.45;
+        font-weight: 700;
+        color: #163747;
+      }
+      .enterprise-bridge-card-copy {
+        font-size: 13px;
+        line-height: 1.55;
+        color: #5b7f91;
+      }
+      .enterprise-bridge-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 16px;
+      }
+      .enterprise-bridge-link {
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(79,182,214,0.18);
+        background: rgba(255,255,255,0.92);
+        color: #1f86aa;
+        font-size: 13px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .enterprise-bridge-link.active {
+        border-color: rgba(42,158,196,0.42);
+        background: linear-gradient(180deg, rgba(255,255,255,1) 0%, rgba(233,247,252,1) 100%);
+        box-shadow: 0 12px 24px rgba(31,134,170,0.08);
+      }
+      .dashboard-period-toggle .sh-button.active-btn,
+      .dashboard-period-toggle button.active-btn,
+      .dashboard-period-toggle .secondary-btn.active-btn {
+        border-color: rgba(42,158,196,0.48) !important;
+        background: linear-gradient(180deg, rgba(255,255,255,1) 0%, rgba(233,247,252,1) 100%) !important;
+        color: #1f86aa !important;
+        box-shadow: 0 12px 24px rgba(31,134,170,0.10) !important;
+        outline: 2px solid rgba(79,182,214,0.18) !important;
+      }
+      .dashboard-period-toggle .sh-button:not(.active-btn),
+      .dashboard-period-toggle button:not(.active-btn) {
+        opacity: 0.92;
+      }
+      @media (max-width: 900px) {
+        .enterprise-bridge-grid {
+          grid-template-columns: 1fr;
+        }
+        .enterprise-bridge-header {
+          flex-direction: column;
+        }
+      }
     `;
     document.head.appendChild(style);
   }
@@ -180,6 +299,13 @@
   function removeSettingsPanel() {
     const existing = document.getElementById(SETTINGS_PANEL_ID);
     if (existing) existing.remove();
+  }
+
+  function removeEnterprisePanels() {
+    [ENTERPRISE_SETTINGS_PANEL_ID, ENTERPRISE_REPORTS_PANEL_ID, ENTERPRISE_SURFACE_PANEL_ID].forEach((id) => {
+      const existing = document.getElementById(id);
+      if (existing) existing.remove();
+    });
   }
 
   function clearTimers(list) {
@@ -267,6 +393,24 @@
         let current = node;
         for (let i = 0; i < 5 && current; i += 1) {
           if (current.tagName === "SECTION" || current.classList?.contains("card")) return current;
+          current = current.parentElement;
+        }
+      }
+    }
+    return root.firstElementChild;
+  }
+
+  function findAnchorByText(targetText) {
+    const root = document.getElementById("root");
+    if (!root) return null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = (node.textContent || "").trim();
+      if (text === targetText) {
+        let current = node;
+        for (let i = 0; i < 6 && current; i += 1) {
+          if (current.tagName === "SECTION" || current.classList?.contains("card") || current.classList?.contains("sh-card")) return current;
           current = current.parentElement;
         }
       }
@@ -366,6 +510,14 @@
     return (window.location.pathname || "/") === "/settings";
   }
 
+  function isReportsRoute() {
+    return (window.location.pathname || "/") === "/reports";
+  }
+
+  function isSurfaceRoute() {
+    return ["/services", "/shifts", "/protocols"].includes(window.location.pathname || "/");
+  }
+
   let sessionRoleCache = "";
   let sessionRolePromise = null;
 
@@ -435,6 +587,174 @@
     return panel;
   }
 
+  function buildEnterpriseSettingsPanel(session, settings) {
+    const role = String(session?.role || "owner").toLowerCase();
+    const confirmationMode = role === "superadmin" ? "high_control" : "required_for_sensitive_actions";
+    const activeModules = [
+      settings?.enableMarketing !== false,
+      settings?.enableTreatments !== false,
+      settings?.enableCashdesk !== false,
+      settings?.enableProtocolsHub !== false,
+      settings?.shiftsBaseEnabled !== false,
+      settings?.profitabilityEnabled !== false,
+      settings?.operatorReportsEnabled !== false
+    ].filter(Boolean).length;
+    const panel = document.createElement("section");
+    panel.id = ENTERPRISE_SETTINGS_PANEL_ID;
+    panel.className = "enterprise-bridge-panel";
+    panel.innerHTML = `
+      <div class="enterprise-bridge-header">
+        <div>
+          <div class="enterprise-bridge-title">Assetto enterprise attivo</div>
+          <div class="enterprise-bridge-subtitle">La shell deve spiegare cosa e attivo, cosa richiede conferma e quale prossima mossa ha senso adesso.</div>
+        </div>
+        <div class="enterprise-bridge-pill">${activeModules} moduli attivi</div>
+      </div>
+      <div class="enterprise-bridge-grid">
+        <div class="enterprise-bridge-card">
+          <div class="enterprise-bridge-card-title">Sessione</div>
+          <div class="enterprise-bridge-card-value">${role || "owner"}</div>
+          <div class="enterprise-bridge-card-copy">Le azioni sensibili restano confermabili: ${confirmationMode}.</div>
+        </div>
+        <div class="enterprise-bridge-card">
+          <div class="enterprise-bridge-card-title">Gating</div>
+          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "redditivita leggibile" : "redditivita bloccata"}</div>
+          <div class="enterprise-bridge-card-copy">Quando un modulo non e attivo la UI deve aprire una guida premium, non lasciare un vuoto o un errore secco.</div>
+        </div>
+        <div class="enterprise-bridge-card">
+          <div class="enterprise-bridge-card-title">Prossima mossa</div>
+          <div class="enterprise-bridge-card-value">Controlla moduli, sessione e coerenza copy</div>
+          <div class="enterprise-bridge-card-copy">Se il centro non puo agire, la vista deve dire dove andare: piano, impostazioni o ruolo corretto.</div>
+        </div>
+      </div>
+    `;
+    return panel;
+  }
+
+  function detectActivePeriod() {
+    const activeButton =
+      document.querySelector(".dashboard-period-toggle .active-btn") ||
+      document.querySelector(".dashboard-period-toggle [aria-pressed='true']");
+    const raw = (activeButton?.textContent || "").trim().toLowerCase();
+    if (raw.includes("settim")) return "settimana";
+    if (raw.includes("mese")) return "mese";
+    return "giorno";
+  }
+
+  function buildEnterpriseReportsPanel() {
+    const activePeriod = detectActivePeriod();
+    const panel = document.createElement("section");
+    panel.id = ENTERPRISE_REPORTS_PANEL_ID;
+    panel.className = "enterprise-bridge-panel";
+    panel.innerHTML = `
+      <div class="enterprise-bridge-header">
+        <div>
+          <div class="enterprise-bridge-title">Lettura report piu netta</div>
+          <div class="enterprise-bridge-subtitle">Lo stato selezionato deve restare visibile anche con zero dati: giorno, settimana e mese non possono sembrare uguali.</div>
+        </div>
+        <div class="enterprise-bridge-pill">vista ${activePeriod}</div>
+      </div>
+      <div class="enterprise-bridge-grid">
+        <div class="enterprise-bridge-card">
+          <div class="enterprise-bridge-card-title">Periodo attivo</div>
+          <div class="enterprise-bridge-card-value">${activePeriod}</div>
+          <div class="enterprise-bridge-card-copy">La selezione attiva va letta subito sopra numeri e liste.</div>
+        </div>
+        <div class="enterprise-bridge-card">
+          <div class="enterprise-bridge-card-title">Se i dati sono zero</div>
+          <div class="enterprise-bridge-card-value">non e silenzio</div>
+          <div class="enterprise-bridge-card-copy">La UI deve spiegare se manca attivita, chiusura o semplicemente volume nel periodo scelto.</div>
+        </div>
+        <div class="enterprise-bridge-card">
+          <div class="enterprise-bridge-card-title">Azione utile</div>
+          <div class="enterprise-bridge-card-value">cambia vista o verifica chiusure</div>
+          <div class="enterprise-bridge-card-copy">Se il giorno e vuoto prova settimana o mese; se tutto e vuoto controlla agenda, cassa e associazioni servizio-operatore.</div>
+        </div>
+      </div>
+    `;
+    return panel;
+  }
+
+  function buildEnterpriseSurfacePanel(route) {
+    const config = {
+      "/services": {
+        title: "Servizi segmentati meglio",
+        subtitle: "Listino, operatori e risorse vanno letti come superfici diverse dello stesso sistema.",
+        actions: [
+          { label: "Listino", href: "/services", active: true },
+          { label: "Turni", href: "/shifts" },
+          { label: "Protocolli", href: "/protocols" }
+        ],
+        cards: [
+          ["Listino", "Tieni prezzo, durata e categoria coerenti."],
+          ["Operatori", "Se manca staff la shell deve dirlo in modo utile."],
+          ["Risorse", "Tecnologie e postazioni vanno lette come vincoli operativi."]
+        ]
+      },
+      "/shifts": {
+        title: "Turni leggibili a blocchi",
+        subtitle: "Calendario, presenze e template devono essere separati meglio nelle schermate lunghe.",
+        actions: [
+          { label: "Turni", href: "/shifts", active: true },
+          { label: "Servizi", href: "/services" },
+          { label: "Protocolli", href: "/protocols" }
+        ],
+        cards: [
+          ["Calendario", "Prima chi leggo oggi e dove ho buchi."],
+          ["Presenze", "Poi conferme e controllo operativo."],
+          ["Template", "Infine gli schemi replicabili del centro."]
+        ]
+      },
+      "/protocols": {
+        title: "Protocolli meno piatti",
+        subtitle: "Libreria, scheda cliente e bozza AI devono sembrare tre piani distinti, non una pagina unica lunga.",
+        actions: [
+          { label: "Protocolli", href: "/protocols", active: true },
+          { label: "Servizi", href: "/services" },
+          { label: "Turni", href: "/shifts" }
+        ],
+        cards: [
+          ["Libreria", "Prima cosa esiste gia e cosa manca."],
+          ["Cliente", "Poi storico, sensibilita e area."],
+          ["Bozza AI", "Solo dopo suggerimento e conferma operatore."]
+        ]
+      }
+    }[route];
+    if (!config) return null;
+    const panel = document.createElement("section");
+    panel.id = ENTERPRISE_SURFACE_PANEL_ID;
+    panel.className = "enterprise-bridge-panel";
+    panel.innerHTML = `
+      <div class="enterprise-bridge-header">
+        <div>
+          <div class="enterprise-bridge-title">${config.title}</div>
+          <div class="enterprise-bridge-subtitle">${config.subtitle}</div>
+        </div>
+        <div class="enterprise-bridge-pill">enterprise ui</div>
+      </div>
+      <div class="enterprise-bridge-grid">
+        ${config.cards.map(([title, copy]) => `
+          <div class="enterprise-bridge-card">
+            <div class="enterprise-bridge-card-title">${title}</div>
+            <div class="enterprise-bridge-card-copy">${copy}</div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="enterprise-bridge-actions">
+        ${config.actions.map((item) => `
+          <button type="button" class="enterprise-bridge-link ${item.active ? "active" : ""}" data-enterprise-nav="${item.href}">${item.label}</button>
+        `).join("")}
+      </div>
+    `;
+    panel.addEventListener("click", (event) => {
+      const href = event.target?.getAttribute?.("data-enterprise-nav");
+      if (!href) return;
+      history.pushState({}, "", href);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    return panel;
+  }
+
   async function renderSettingsTools() {
     if (!isSettingsRoute()) {
       runWithMutationLock(() => removeSettingsPanel());
@@ -458,6 +778,64 @@
     });
   }
 
+  async function renderEnterprisePanels() {
+    if (!isSettingsRoute() && !isReportsRoute() && !isSurfaceRoute()) {
+      runWithMutationLock(removeEnterprisePanels);
+      return;
+    }
+    injectStyle();
+    if (isSettingsRoute()) {
+      try {
+        const [session, settings] = await Promise.all([
+          fetchJson("/api/auth/session"),
+          fetchJson("/api/settings")
+        ]);
+        const anchor = findSettingsAnchor();
+        if (anchor) {
+          const panel = buildEnterpriseSettingsPanel(session, settings);
+          const existing = document.getElementById(ENTERPRISE_SETTINGS_PANEL_ID);
+          runWithMutationLock(() => {
+            if (existing) existing.replaceWith(panel);
+            else anchor.insertAdjacentElement("afterend", panel);
+          });
+        }
+      } catch (_error) {}
+    } else {
+      const existing = document.getElementById(ENTERPRISE_SETTINGS_PANEL_ID);
+      if (existing) runWithMutationLock(() => existing.remove());
+    }
+    if (isReportsRoute()) {
+      const anchor = findAnchorByText("Report operativi");
+      if (anchor) {
+        const panel = buildEnterpriseReportsPanel();
+        const existing = document.getElementById(ENTERPRISE_REPORTS_PANEL_ID);
+        runWithMutationLock(() => {
+          if (existing) existing.replaceWith(panel);
+          else anchor.insertAdjacentElement("afterend", panel);
+        });
+      }
+    } else {
+      const existing = document.getElementById(ENTERPRISE_REPORTS_PANEL_ID);
+      if (existing) runWithMutationLock(() => existing.remove());
+    }
+    if (isSurfaceRoute()) {
+      const route = window.location.pathname || "/";
+      const targetText = route === "/services" ? "Servizi e risorse" : route === "/shifts" ? "Turni" : "Protocolli";
+      const anchor = findAnchorByText(targetText);
+      const panel = buildEnterpriseSurfacePanel(route);
+      if (anchor && panel) {
+        const existing = document.getElementById(ENTERPRISE_SURFACE_PANEL_ID);
+        runWithMutationLock(() => {
+          if (existing) existing.replaceWith(panel);
+          else anchor.insertAdjacentElement("afterend", panel);
+        });
+      }
+    } else {
+      const existing = document.getElementById(ENTERPRISE_SURFACE_PANEL_ID);
+      if (existing) runWithMutationLock(() => existing.remove());
+    }
+  }
+
   function scheduleRender() {
     clearTimers(goldRenderTimers);
     clearTimers(settingsRenderTimers);
@@ -466,6 +844,8 @@
       window.setTimeout(renderGoldBridge, 900)
     ];
     settingsRenderTimers = [
+      window.setTimeout(renderEnterprisePanels, 180),
+      window.setTimeout(renderEnterprisePanels, 520),
       window.setTimeout(renderSettingsTools, 180),
       window.setTimeout(renderSettingsTools, 900)
     ];
