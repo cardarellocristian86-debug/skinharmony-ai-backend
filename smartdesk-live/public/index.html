@@ -53,7 +53,9 @@
         })
           .then((res) => (res.ok ? res.json() : null))
           .then((session) => {
-            if (session && String(session.role || "").toLowerCase() === "superadmin") return;
+            const isSuperadmin = session && String(session.role || "").toLowerCase() === "superadmin";
+            const isSupportMode = !!(session && session.supportMode);
+            if (isSuperadmin && !isSupportMode) return;
             hideAiGoldChatUi();
             new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
           })
