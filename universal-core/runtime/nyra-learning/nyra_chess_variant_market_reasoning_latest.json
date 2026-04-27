@@ -1,0 +1,38 @@
+{
+  "version": "nyra_chess_variant_market_reasoning_v1",
+  "generated_at": "2026-04-27T18:50:00.000Z",
+  "scope": "world_market_paper_and_live_reasoning",
+  "principle": "Il mercato va letto come gli scacchi: ogni mossa apre varianti, ogni variante ha risposte avverse, payoff, rischio e piano di uscita.",
+  "chess_reference": {
+    "opening_moves_approx": 20,
+    "average_branching_factor": "30-35",
+    "growth_rule": "varianti circa branching_factor^depth",
+    "shannon_estimate": "circa 10^120 partite possibili"
+  },
+  "market_translation": {
+    "move": "entry_or_hold_decision",
+    "reply": "market_response",
+    "tree": [
+      "trend_continuation",
+      "hidden_potential_breakout",
+      "false_breakout",
+      "mean_reversion",
+      "liquidity_trap",
+      "adverse_squeeze",
+      "continued_drawdown",
+      "rotation_opportunity"
+    ],
+    "decision_formula": "expected_value = probability * payoff - adverse_probability * risk - costs",
+    "rule": "Non scegliere l'asset. Scegli la variante con miglior rapporto probabilita, payoff, rischio, costi e uscita."
+  },
+  "runtime_rules": [
+    "Prima di entrare, generare almeno 5-7 rami scenario.",
+    "Entrare solo se almeno 2 rami sono favorevoli e la coda peggiore e accettabile.",
+    "Se una sola linea e positiva ma i rami avversi dominano, guardare o evitare.",
+    "Se l'asset e in perdita ma la tesi resta valida e il rischio coda non peggiora, tenere con pazienza controllata.",
+    "Se il falso breakout o lo squeeze diventano dominanti, ridurre o uscire.",
+    "Ogni posizione deve avere invalidazione, take profit e prossimo checkpoint."
+  ],
+  "promotion_status": "stable_runtime_reasoning_layer",
+  "writes_owner_memory": false
+}

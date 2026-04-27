@@ -3802,6 +3802,9 @@ function buildWorldMultiverseThesis(row, riskBudget = {}, history = null, learne
   const holdLossPatience = clampNumber(policy.hold_loss_patience ?? 56, 45, 72);
   const commodityCatalystBoost = clampNumber(policy.commodity_catalyst_boost ?? 0, 0, 14);
   const quietCompounderBoost = clampNumber(policy.quiet_compounder_boost ?? 0, 0, 10);
+  const chessVariantWeight = clampNumber(policy.chess_variant_weight ?? 0.18, 0.08, 0.32);
+  const maxTailRiskEv = clampNumber(policy.max_tail_risk_ev ?? -44, -70, -24);
+  const minVariantBreadth = Math.max(2, Math.min(4, Number(policy.min_variant_breadth || 2)));
   const edge = Number(row?.edge_score || 0);
   const risk = Number(row?.risk_score || 0);
   const newsScore = Number(row?.news_score || 0);
@@ -3881,25 +3884,60 @@ function buildWorldMultiverseThesis(row, riskBudget = {}, history = null, learne
       probability: Math.max(0.04, Math.min(0.78, 0.18 + risk / 240 + Math.max(0, -return20d) / 180 - gear / 90)),
       payoff_score: Math.max(0, Math.min(100, 18 + Math.max(0, returnYtd) * 0.1)),
       risk_score: Math.max(0, Math.min(100, 54 + adverseRisk * 0.38))
+    },
+    {
+      id: "false_breakout",
+      probability: Math.max(0.04, Math.min(0.72, 0.16 + Math.max(0, return20d) / 130 + risk / 280 - knowledge / 520)),
+      payoff_score: Math.max(0, Math.min(100, 16 + edge * 0.18 + Math.max(0, newsSupport) * 0.2)),
+      risk_score: Math.max(0, Math.min(100, 48 + adverseRisk * 0.42 + Math.max(0, return20d) * 0.22))
+    },
+    {
+      id: "rotation_opportunity",
+      probability: Math.max(0.04, Math.min(0.7, 0.14 + knowledge / 420 + Math.max(0, newsCatalyst) / 160 + gear / 120 - risk / 360)),
+      payoff_score: Math.max(0, Math.min(100, 28 + knowledge * 0.22 + newsCatalyst * 0.55 + learnedSetupBoost * 0.8)),
+      risk_score: Math.max(0, Math.min(100, 36 + risk * 0.24 + maxDrawdown * 0.08))
     }
   ].map((scenario) => ({
     ...scenario,
     ev_score: Number((scenario.probability * scenario.payoff_score - (1 - scenario.probability) * scenario.risk_score).toFixed(4))
   }));
-  const expectedValueScore = Number((scenarios.reduce((sum, scenario) => sum + scenario.ev_score, 0) / scenarios.length + hiddenPotential * 0.08 - adverseRisk * 0.05).toFixed(4));
+  const positiveScenarios = scenarios.filter((scenario) => scenario.ev_score > 4).length;
+  const negativeScenarios = scenarios.filter((scenario) => scenario.ev_score < -12).length;
+  const worstScenario = scenarios.reduce((worst, scenario) => (scenario.ev_score < worst.ev_score ? scenario : worst), scenarios[0]);
+  const bestScenario = scenarios.reduce((best, scenario) => (scenario.ev_score > best.ev_score ? scenario : best), scenarios[0]);
+  const branchBreadthScore = Math.max(-18, Math.min(18, (positiveScenarios - negativeScenarios) * 5));
+  const tailRiskPenalty = Math.max(0, maxTailRiskEv - Number(worstScenario?.ev_score || 0)) * 0.28;
+  const chessVariantScore = Number((branchBreadthScore + Number(bestScenario?.ev_score || 0) * 0.08 + Number(worstScenario?.ev_score || 0) * 0.14 - tailRiskPenalty).toFixed(4));
+  const expectedValueScore = Number((
+    scenarios.reduce((sum, scenario) => sum + scenario.ev_score, 0) / scenarios.length +
+    hiddenPotential * 0.08 -
+    adverseRisk * 0.05 +
+    chessVariantScore * chessVariantWeight
+  ).toFixed(4));
   const confidence = Math.max(0, Math.min(100, 44 + knowledge * 0.18 + edge * 0.16 + gear * 3 - risk * 0.1));
   const patienceScore = Math.max(0, Math.min(100, 38 + expectedValueScore * 0.5 + confidence * 0.24 - adverseRisk * 0.18));
-  const positiveScenarios = scenarios.filter((scenario) => scenario.ev_score > 4).length;
-  const thesisValid = expectedValueScore >= minEvEnter && confidence >= minConfidenceEnter && adverseRisk < 74 && positiveScenarios >= 2;
+  const variantTreeHealthy = positiveScenarios >= minVariantBreadth && Number(worstScenario?.ev_score || 0) >= maxTailRiskEv;
+  const thesisValid = expectedValueScore >= minEvEnter && confidence >= minConfidenceEnter && adverseRisk < 74 && variantTreeHealthy;
   const thesisAction = thesisValid && (return20d < 0 || patienceScore >= holdLossPatience)
     ? "hold_thesis"
     : thesisValid
       ? "enter"
-      : adverseRisk >= 75
+      : adverseRisk >= 75 || Number(worstScenario?.ev_score || 0) < maxTailRiskEv - 8
         ? "avoid"
         : "watch";
+  const exitPlan = thesisAction === "enter" || thesisAction === "hold_thesis"
+    ? {
+        invalidation: `esci se ${worstScenario?.id || "tail_risk"} diventa dominante o se rischio supera ${Math.min(78, Math.max(62, Math.round(adverseRisk + 12)))}.`,
+        take_profit: `scala se lo scenario ${bestScenario?.id || "best_case"} si realizza ma EV marginale scende sotto ${Math.max(4, Math.round(minEvEnter * 0.7))}.`,
+        review: "rivaluta al prossimo ciclo: nessun hold cieco se cambiano probabilita, payoff o rischio coda."
+      }
+    : {
+        invalidation: "nessuna entrata: aspetta nuova variante con EV netto e rischio coda accettabile.",
+        take_profit: "non applicabile senza posizione.",
+        review: "rivaluta solo dopo nuovo scan o nuova informazione."
+      };
   return {
-    engine: "world_multiverse_thesis_v1",
+    engine: "world_multiverse_thesis_v2_chess_variant",
     product: row?.symbol || "",
     learning_policy_applied: learningApplied,
     learning_policy_cycle: policy.cycle || null,
@@ -3918,7 +3956,10 @@ function buildWorldMultiverseThesis(row, riskBudget = {}, history = null, learne
       min_confidence_enter: Number(minConfidenceEnter.toFixed(4)),
       hold_loss_patience: Number(holdLossPatience.toFixed(4)),
       commodity_catalyst_boost: Number(commodityCatalystBoost.toFixed(4)),
-      quiet_compounder_boost: Number(quietCompounderBoost.toFixed(4))
+      quiet_compounder_boost: Number(quietCompounderBoost.toFixed(4)),
+      chess_variant_weight: Number(chessVariantWeight.toFixed(4)),
+      max_tail_risk_ev: Number(maxTailRiskEv.toFixed(4)),
+      min_variant_breadth: minVariantBreadth
     },
     learned_setups: {
       commodity_catalyst: commodityCatalystSetup,
@@ -3929,12 +3970,24 @@ function buildWorldMultiverseThesis(row, riskBudget = {}, history = null, learne
     confidence: Number(confidence.toFixed(4)),
     adverse_risk: Number(adverseRisk.toFixed(4)),
     patience_score: Number(patienceScore.toFixed(4)),
+    chess_variant_tree: {
+      principle: "come negli scacchi: non muovere per la prima posizione visibile; valuta albero di varianti, risposte avverse e piano di uscita.",
+      branching_factor: scenarios.length,
+      positive_branches: positiveScenarios,
+      negative_branches: negativeScenarios,
+      best_branch: bestScenario?.id || "",
+      worst_branch: worstScenario?.id || "",
+      worst_ev_score: Number((worstScenario?.ev_score || 0).toFixed(4)),
+      variant_tree_healthy: variantTreeHealthy,
+      variant_score: chessVariantScore,
+      exit_plan: exitPlan
+    },
     thesis_valid: thesisValid,
     thesis_action: thesisAction,
     scenarios,
     reason: thesisValid
-      ? "tesi probabilistica valida: potenziale nascosto supera rischio contrario, serve pazienza controllata"
-      : "tesi non sufficiente: il potenziale non compensa ancora rischio, drawdown o bassa conoscenza asset"
+      ? "tesi probabilistica valida: albero varianti abbastanza sano, potenziale supera rischio contrario e uscita gia definita"
+      : "tesi non sufficiente: come negli scacchi, una linea promettente non basta se le risposte avverse o il rischio coda dominano"
   };
 }
 
