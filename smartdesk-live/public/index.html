@@ -44,25 +44,8 @@
           });
         }
 
-        fetch("/api/auth/session", {
-          headers: {
-            Authorization: window.localStorage.getItem("skinharmony-web-token")
-              ? "Bearer " + window.localStorage.getItem("skinharmony-web-token")
-              : ""
-          }
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((session) => {
-            const isSuperadmin = session && String(session.role || "").toLowerCase() === "superadmin";
-            const isSupportMode = !!(session && session.supportMode);
-            if (isSuperadmin && !isSupportMode) return;
-            hideAiGoldChatUi();
-            new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
-          })
-          .catch(() => {
-            hideAiGoldChatUi();
-            new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
-          });
+        hideAiGoldChatUi();
+        new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
       })();
     </script>
   </head>
