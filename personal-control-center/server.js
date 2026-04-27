@@ -59,8 +59,13 @@ app.use((req, res, next) => {
     next();
     return;
   }
-  const expectedUser = process.env.NYRA_BASIC_USER || "";
-  const expectedPassword = process.env.NYRA_BASIC_PASSWORD || "";
+  const authDisabled = ["1", "true", "yes", "on"].includes(String(process.env.NYRA_DISABLE_BASIC_AUTH || "").trim().toLowerCase());
+  if (authDisabled) {
+    next();
+    return;
+  }
+  const expectedUser = String(process.env.NYRA_BASIC_USER || "").trim();
+  const expectedPassword = String(process.env.NYRA_BASIC_PASSWORD || "").trim();
   if (!expectedUser || !expectedPassword) {
     next();
     return;
