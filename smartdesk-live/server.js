@@ -1385,6 +1385,14 @@ app.get("/api/ai-gold/marketing/autopilot/learning", requirePlan("gold"), (req, 
   res.json(service.getAiMarketingAutopilotLearning(req.session));
 });
 
+app.post("/api/ai-gold/marketing/autopilot/learning/reset", requirePlan("gold"), (req, res) => {
+  try {
+    res.json(service.resetAiMarketingAutopilotLearning(req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile azzerare l'apprendimento");
+  }
+});
+
 app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));

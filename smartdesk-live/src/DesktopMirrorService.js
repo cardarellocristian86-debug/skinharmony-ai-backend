@@ -9453,7 +9453,8 @@ class DesktopMirrorService {
         toneStats: {},
         lastActionAt: "",
         lastGeneratedAt: "",
-        lastEvent: null
+        lastEvent: null,
+        recentEvents: []
       }
     };
   }
@@ -9538,7 +9539,10 @@ class DesktopMirrorService {
         },
         segmentStats: { ...((current.marketingAutopilot || {}).segmentStats || {}) },
         priorityStats: { ...((current.marketingAutopilot || {}).priorityStats || {}) },
-        toneStats: { ...((current.marketingAutopilot || {}).toneStats || {}) }
+        toneStats: { ...((current.marketingAutopilot || {}).toneStats || {}) },
+        recentEvents: Array.isArray((current.marketingAutopilot || {}).recentEvents)
+          ? [...((current.marketingAutopilot || {}).recentEvents || [])]
+          : []
       }
     });
     return this.saveAiGoldLearningRecord({
@@ -9551,6 +9555,14 @@ class DesktopMirrorService {
     const segmentKey = this.getAiMarketingLearningBucketKey(action.segment, "generico");
     const priorityKey = this.getAiMarketingLearningBucketKey(action.priority, "media");
     const toneLabel = this.getAiMarketingLearningToneLabel(action);
+    const event = {
+      type: "generated",
+      clientId: String(action.clientId || ""),
+      clientName: String(action.clientName || "Cliente"),
+      segment: String(action.segment || ""),
+      priority: String(action.priority || ""),
+      at: nowIso()
+    };
     this.updateAiMarketingLearningRecord((record) => {
       const learning = record.marketingAutopilot;
       learning.segmentStats = this.ensureAiMarketingLearningBucket(learning.segmentStats, segmentKey, action.segment || "Generico");
@@ -9561,14 +9573,8 @@ class DesktopMirrorService {
       learning.priorityStats[priorityKey].generated += 1;
       learning.toneStats[toneLabel].generated += 1;
       learning.lastGeneratedAt = nowIso();
-      learning.lastEvent = {
-        type: "generated",
-        clientId: String(action.clientId || ""),
-        clientName: String(action.clientName || "Cliente"),
-        segment: String(action.segment || ""),
-        priority: String(action.priority || ""),
-        at: nowIso()
-      };
+      learning.lastEvent = event;
+      learning.recentEvents = [event, ...(learning.recentEvents || [])].slice(0, 20);
       return record;
     }, session);
   }
@@ -9579,6 +9585,14 @@ class DesktopMirrorService {
     const segmentKey = this.getAiMarketingLearningBucketKey(action.segment, "generico");
     const priorityKey = this.getAiMarketingLearningBucketKey(action.priority, "media");
     const toneLabel = this.getAiMarketingLearningToneLabel(action);
+    const event = {
+      type: normalizedStatus,
+      clientId: String(action.clientId || ""),
+      clientName: String(action.clientName || "Cliente"),
+      segment: String(action.segment || ""),
+      priority: String(action.priority || ""),
+      at: nowIso()
+    };
     this.updateAiMarketingLearningRecord((record) => {
       const learning = record.marketingAutopilot;
       learning.segmentStats = this.ensureAiMarketingLearningBucket(learning.segmentStats, segmentKey, action.segment || "Generico");
@@ -9589,14 +9603,8 @@ class DesktopMirrorService {
       learning.priorityStats[priorityKey][normalizedStatus] += 1;
       learning.toneStats[toneLabel][normalizedStatus] += 1;
       learning.lastActionAt = nowIso();
-      learning.lastEvent = {
-        type: normalizedStatus,
-        clientId: String(action.clientId || ""),
-        clientName: String(action.clientName || "Cliente"),
-        segment: String(action.segment || ""),
-        priority: String(action.priority || ""),
-        at: nowIso()
-      };
+      learning.lastEvent = event;
+      learning.recentEvents = [event, ...(learning.recentEvents || [])].slice(0, 20);
       return record;
     }, session);
   }
@@ -9673,8 +9681,19 @@ class DesktopMirrorService {
       preferredToneLabel: bestTone?.bucket?.label || "",
       lastActionAt: String(learning.lastActionAt || ""),
       lastGeneratedAt: String(learning.lastGeneratedAt || ""),
-      lastEvent: learning.lastEvent || null
+      lastEvent: learning.lastEvent || null,
+      recentEvents: Array.isArray(learning.recentEvents) ? learning.recentEvents.slice(0, 10) : []
     };
+  }
+
+  resetAiMarketingAutopilotLearning(session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      throw new Error("Learning disponibile solo con piano Gold");
+    }
+    const reset = this.buildDefaultAiGoldLearningRecord(this.getCenterId(session), this.getCenterName(session));
+    this.saveAiGoldLearningRecord(reset);
+    return this.getAiMarketingAutopilotLearning(session);
   }
 
   generateAiMarketingAutopilotActions(session = null) {
