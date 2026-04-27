@@ -5,104 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SkinHarmony Web</title>
     <script src="/assets/gold-bridge.js" defer></script>
-    <script type="module" crossorigin src="/assets/index-BbQPjomt.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/react-vendor-DnVCu7eN.js">
-    <link rel="modulepreload" crossorigin href="/assets/router-7jOu5GCn.js">
-    <link rel="modulepreload" crossorigin href="/assets/state-BLuW6sBf.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-C-iknRNC.css">
     <style>
       .global-ai-assistant {
         display: none !important;
       }
     </style>
-    <script>
-      (function () {
-        function createSecondaryButton(label, onClick) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "sh-button secondary-btn";
-          button.textContent = label;
-          button.addEventListener("click", onClick);
-          return button;
-        }
-
-        function removeInternalUiNotes() {
-          document.querySelectorAll("[data-import-gold-settings='1']").forEach((node) => node.remove());
-          document.querySelectorAll(".settings-note, .item-subtitle, .empty-inline").forEach((node) => {
-            const text = (node.textContent || "").trim().toLowerCase();
-            if (!text) return;
-            if (text.includes("import gold resta in impostazioni")) node.remove();
-          });
-        }
-
-        function hideImportGoldTopbar() {
-          document.querySelectorAll("button").forEach((button) => {
-            if ((button.textContent || "").trim().toLowerCase() !== "import gold") return;
-            button.style.display = "none";
-            button.dataset.importGoldMoved = "1";
-          });
-        }
-
-        function ensureImportGoldInSettings() {
-          if (window.location.pathname !== "/settings") return;
-          if (document.querySelector("[data-import-gold-cta='1']")) return;
-
-          const title =
-            Array.from(document.querySelectorAll(".section-title, h1, h2")).find((node) =>
-              (node.textContent || "").trim().toLowerCase() === "impostazioni"
-            ) || null;
-          const target = title?.parentElement || document.querySelector(".content-area") || document.querySelector("main");
-          if (!target || !title) return;
-
-          const wrapper = document.createElement("div");
-          wrapper.className = "dashboard-action-row mt-16";
-          wrapper.dataset.importGoldCta = "1";
-
-          const button = createSecondaryButton("Importa file Gold", () => {
-            window.location.href = "/gold-onboarding";
-          });
-          button.classList.add("primary-btn");
-
-          wrapper.appendChild(button);
-          title.insertAdjacentElement("afterend", wrapper);
-        }
-
-        function hideAiGoldChatUi() {
-          const selectors = [
-            ".ai-gold-question-box",
-            ".ai-gold-answer"
-          ];
-
-          selectors.forEach((selector) => {
-            document.querySelectorAll(selector).forEach((node) => {
-              const block = node.closest(".card, section, article, .stack, .two-col, .list-item") || node.parentElement;
-              if (!block || block.dataset?.aiGoldChatHidden === "1") return;
-              block.style.display = "none";
-              block.dataset.aiGoldChatHidden = "1";
-            });
-          });
-
-          document.querySelectorAll(".ai-gold-card-head").forEach((head) => {
-            const text = (head.textContent || "").trim().toLowerCase();
-            if (!text.includes("analisi ai")) return;
-            const block = head.closest(".card, section, article, .stack, .two-col, .list-item") || head.parentElement;
-            if (!block || block.dataset?.aiGoldChatHidden === "1") return;
-            block.style.display = "none";
-            block.dataset.aiGoldChatHidden = "1";
-          });
-        }
-
-        function applySmartDeskUiFixes() {
-          removeInternalUiNotes();
-          hideImportGoldTopbar();
-          ensureImportGoldInSettings();
-          if (window.location.pathname === "/ai-gold") hideAiGoldChatUi();
-        }
-
-        applySmartDeskUiFixes();
-        new MutationObserver(applySmartDeskUiFixes).observe(document.documentElement, { childList: true, subtree: true });
-      })();
-    </script>
+    <script type="module" crossorigin src="/assets/index-CaeRfW_u.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/react-vendor-DnVCu7eN.js">
+    <link rel="modulepreload" crossorigin href="/assets/router-7jOu5GCn.js">
+    <link rel="modulepreload" crossorigin href="/assets/state-BLuW6sBf.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-C-iknRNC.css">
   </head>
   <body>
     <div id="root"></div>
