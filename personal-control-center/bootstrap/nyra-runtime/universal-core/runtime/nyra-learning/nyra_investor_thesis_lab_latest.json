@@ -1,0 +1,89 @@
+{
+  "runner": "nyra_investor_thesis_lab",
+  "generated_at": "2026-04-27T13:51:34.478Z",
+  "bottleneck": {
+    "problem": "Le mail investitori precedenti facevano capire troppo Smart Desk e troppo poco Universal Core / Nyra come vero asset da finanziare.",
+    "why_old_version_fails": "Se Smart Desk pesa troppo, il progetto sembra un verticale beauty con AI accessoria invece di un operating intelligence layer con piu superfici applicative. Se il tono resta troppo difensivo, non comunica abbastanza upside e non attacca il problema della differenziazione.",
+    "what_must_be_clear": [
+      "Universal Core e l'asset architetturale",
+      "Nyra e l'agente costruito sopra quel core",
+      "Smart Desk e la prima shell applicativa, non il confine del progetto",
+      "La finanza e un banco di prova ad alta pressione, ancora in taratura ma utile proprio per questo",
+      "Il marketing e un uso reale di monetizzazione e outreach",
+      "L'infrastruttura oggi e piccola ma reale, gia separata tra shell prodotto e core/runtime"
+    ]
+  },
+  "candidates": [
+    {
+      "id": "core_first_operating_layer",
+      "label": "Core First Operating Layer",
+      "summary": "Universal Core prima, Nyra seconda, Smart Desk shell, finanza come stress test e marketing come uso reale.",
+      "score": 85.06704,
+      "core_state": "protection",
+      "core_risk": 47.019999999999996,
+      "selected": true,
+      "opening_style": "core_first"
+    },
+    {
+      "id": "traction_first_with_core",
+      "label": "Traction First With Core",
+      "summary": "Apre dalle prove forti e poi risale al core.",
+      "score": 75.51344,
+      "core_state": "protection",
+      "core_risk": 46.94,
+      "selected": false,
+      "opening_style": "traction_first"
+    },
+    {
+      "id": "architecture_proud_but_exposed",
+      "label": "Architecture Proud But Exposed",
+      "summary": "Mostra troppo impianto e rischia plagio / over-explanation.",
+      "score": 62.51232,
+      "core_state": "protection",
+      "core_risk": 56.54,
+      "selected": false,
+      "opening_style": "core_first"
+    },
+    {
+      "id": "smartdesk_led_story",
+      "label": "Smart Desk Led Story",
+      "summary": "Parte da Smart Desk e poi allarga al core.",
+      "score": 55.11664,
+      "core_state": "protection",
+      "core_risk": 53.9,
+      "selected": false,
+      "opening_style": "product_first"
+    }
+  ],
+  "winner": {
+    "id": "core_first_operating_layer",
+    "label": "Core First Operating Layer",
+    "score": 85.06704,
+    "opening_style": "core_first",
+    "lines": {
+      "thesis": "We are building a reusable operating intelligence layer, not a single vertical software tool.",
+      "universal_core": "Universal Core is the decision and orchestration architecture: it reads signals, priorities, risk and action above real software systems.",
+      "nyra": "Nyra is the operative agent built on top of Universal Core and already used across live product, finance testing and marketing execution. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.",
+      "smartdesk": "Smart Desk is the first live applied shell of the system, currently verticalized for beauty and hair, but it is not the limit of the architecture; the same base is also being used across Flow and Control Desk.",
+      "infrastructure": "The infrastructure is still compact, but already real and operational. Universal Core was designed to work efficiently without requiring heavy infrastructure, so real use cases can be validated before pushing on scale. Today it is already in use across Smart Desk, Flow, Control Desk and the finance branch, while the core itself is used daily in real operations. Funding is not meant to build this base from zero, but to scale it, harden it and extend it faster across more applications.",
+      "finance": "The finance branch is our highest-pressure testing environment for decision quality, timing and risk discipline. It is still in real testing and tuning, not presented as a finished product.",
+      "marketing": "We are also using Nyra in the marketing branch for asset ranking, monetization prioritization and outreach execution.",
+      "why_now": "Model access is commoditizing; workflow-native decision architecture is not.",
+      "ask": "We are looking for investors who can understand both the live vertical proof and the reusable core underneath it."
+    }
+  },
+  "recommended_rules": [
+    "aprire dal core e non dalla shell verticale",
+    "definire Universal Core e Nyra in una frase ciascuno",
+    "usare Smart Desk come prova viva, non come tesi aziendale",
+    "mostrare il finanziario come stress test in taratura, non come prodotto finito",
+    "esplicitare che Nyra e usata anche nel ramo marketing",
+    "mostrare il potenziale multi-application senza rivelare la ricetta interna",
+    "non raccontare solo protezione e controllo: attaccare il tema della scala, della riusabilita e dell'upside",
+    "spiegare che l'infrastruttura esiste gia in forma compatta e che il funding serve a scalarla, non a inventarla"
+  ],
+  "strategic_posture": {
+    "principle": "La difesa non basta piu: la continuita si preserva attaccando il mercato con una tesi piu alta e piu differenziata.",
+    "explanation": "Per investitori non basta dire che il sistema protegge o controlla il rischio. Bisogna mostrare che Universal Core + Nyra possono generare piu prodotti, piu shell e piu valore economico di un singolo verticale."
+  }
+}

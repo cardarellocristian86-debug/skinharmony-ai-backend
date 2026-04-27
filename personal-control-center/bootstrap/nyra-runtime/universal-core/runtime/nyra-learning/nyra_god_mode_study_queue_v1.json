@@ -1,0 +1,40 @@
+{
+  "version": "nyra_god_mode_study_queue_v2",
+  "scope": "god_mode_only",
+  "status": "completed_latest_run",
+  "generated_at": "2026-04-27T18:02:06.834Z",
+  "mode": "manual",
+  "domains": [
+    {
+      "id": "computer_engineering",
+      "enabled": true,
+      "priority": 0.84,
+      "mode": "distill_only",
+      "notes": [
+        "contratti",
+        "sistemi",
+        "stato"
+      ],
+      "sources_ok": 3,
+      "sources_total": 3
+    },
+    {
+      "id": "server_runtime_infrastructure",
+      "enabled": true,
+      "priority": 0.83,
+      "mode": "distill_only",
+      "notes": [
+        "render",
+        "deploy",
+        "runtime",
+        "processi",
+        "rete",
+        "persistenza",
+        "scaling",
+        "osservabilita"
+      ],
+      "sources_ok": 14,
+      "sources_total": 14
+    }
+  ]
+}

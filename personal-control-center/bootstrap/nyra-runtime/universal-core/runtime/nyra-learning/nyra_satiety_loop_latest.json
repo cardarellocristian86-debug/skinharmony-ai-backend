@@ -1,0 +1,82 @@
+{
+  "version": "nyra_satiety_loop_v1",
+  "generated_at": "2026-04-22T20:17:55.530Z",
+  "max_iterations": 4,
+  "completed_iterations": 3,
+  "satiated": true,
+  "stop_reason": "hunger_stable_under_current_source_envelope",
+  "final_hunger_domains": [
+    "applied_math",
+    "quantum_physics",
+    "general_physics",
+    "coding_speed"
+  ],
+  "iterations": [
+    {
+      "iteration": 1,
+      "studied_domains": [
+        "applied_math",
+        "quantum_physics",
+        "general_physics",
+        "coding_speed"
+      ],
+      "next_hunger_domains": [
+        "applied_math",
+        "quantum_physics",
+        "general_physics",
+        "coding_speed"
+      ],
+      "plateau": false,
+      "source_counts": {
+        "applied_math": 3,
+        "quantum_physics": 3,
+        "general_physics": 3,
+        "coding_speed": 4
+      }
+    },
+    {
+      "iteration": 2,
+      "studied_domains": [
+        "applied_math",
+        "quantum_physics",
+        "general_physics",
+        "coding_speed"
+      ],
+      "next_hunger_domains": [
+        "applied_math",
+        "quantum_physics",
+        "general_physics",
+        "coding_speed"
+      ],
+      "plateau": true,
+      "source_counts": {
+        "applied_math": 3,
+        "quantum_physics": 3,
+        "general_physics": 3,
+        "coding_speed": 4
+      }
+    },
+    {
+      "iteration": 3,
+      "studied_domains": [
+        "applied_math",
+        "quantum_physics",
+        "general_physics",
+        "coding_speed"
+      ],
+      "next_hunger_domains": [
+        "applied_math",
+        "quantum_physics",
+        "general_physics",
+        "coding_speed"
+      ],
+      "plateau": true,
+      "source_counts": {
+        "applied_math": 3,
+        "quantum_physics": 3,
+        "general_physics": 3,
+        "coding_speed": 4
+      }
+    }
+  ]
+}

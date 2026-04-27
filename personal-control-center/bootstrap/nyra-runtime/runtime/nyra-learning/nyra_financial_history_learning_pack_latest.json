@@ -1,0 +1,1027 @@
+{
+  "pack_version": "nyra_financial_learning_pack_v1",
+  "generated_at": "2026-04-26T18:01:50.402Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 10,
+  "domains": [
+    {
+      "id": "market_structure",
+      "label": "Market Structure",
+      "summary": "come funzionano mercati, ordini, scambi, liquidita e prezzo",
+      "concept_count": 7
+    },
+    {
+      "id": "equities",
+      "label": "Equities",
+      "summary": "azioni, capitalizzazione, trend, settori e rischio societario",
+      "concept_count": 0
+    },
+    {
+      "id": "bonds",
+      "label": "Bonds",
+      "summary": "tassi, duration, credito, curva e sensibilita macro",
+      "concept_count": 7
+    },
+    {
+      "id": "etfs",
+      "label": "ETFs",
+      "summary": "panieri, replica, esposizione, liquidita e tracking",
+      "concept_count": 0
+    },
+    {
+      "id": "options",
+      "label": "Options",
+      "summary": "premio, delta, gamma, theta, volatilita implicita e copertura",
+      "concept_count": 0
+    },
+    {
+      "id": "forex",
+      "label": "Forex",
+      "summary": "coppie valutarie, differenziali tassi, flussi e shock macro",
+      "concept_count": 0
+    },
+    {
+      "id": "crypto",
+      "label": "Crypto",
+      "summary": "microstructure, volatilita, sentiment, liquidazioni e regime risk-on/off",
+      "concept_count": 0
+    },
+    {
+      "id": "macro",
+      "label": "Macro",
+      "summary": "inflazione, tassi, crescita, banche centrali, rischio sistemico",
+      "concept_count": 12
+    },
+    {
+      "id": "risk_management",
+      "label": "Risk Management",
+      "summary": "drawdown, sizing, stop, take profit, scenario avverso",
+      "concept_count": 6
+    },
+    {
+      "id": "short_selling",
+      "label": "Short Selling",
+      "summary": "short, borrow, margin, squeeze, copertura ribassista e rischio asimmetrico",
+      "concept_count": 0
+    },
+    {
+      "id": "technical_analysis",
+      "label": "Technical Analysis",
+      "summary": "trend, momentum, volumi, volatilita, conferme e falsi segnali",
+      "concept_count": 0
+    },
+    {
+      "id": "execution",
+      "label": "Execution",
+      "summary": "slippage, spread, fill quality, pazienza, aggressivita e costo reale di uscita/ingresso",
+      "concept_count": 0
+    },
+    {
+      "id": "portfolio",
+      "label": "Portfolio",
+      "summary": "allocazione, correlazione, concentrazione, hedging e selezione del numero giusto di posizioni",
+      "concept_count": 7
+    },
+    {
+      "id": "behavioral",
+      "label": "Behavioral",
+      "summary": "fomo, overtrading, revenge trading, conferma del bias e disciplina decisionale",
+      "concept_count": 10
+    },
+    {
+      "id": "regime_detection",
+      "label": "Regime Detection",
+      "summary": "compressione, trend, mean reversion, risk-on/off e cambio di regime",
+      "concept_count": 7
+    },
+    {
+      "id": "derivatives",
+      "label": "Derivatives",
+      "summary": "funding, basis, leverage, liquidazioni, futures e stress da positioning forzato",
+      "concept_count": 6
+    },
+    {
+      "id": "commodities",
+      "label": "Commodities",
+      "summary": "petrolio, gas, oro, supply shock, geopolitica e rischio logistico sulle materie prime",
+      "concept_count": 0
+    },
+    {
+      "id": "event_driven",
+      "label": "Event Driven",
+      "summary": "earnings, banche centrali, guerra, headline risk, calendario e shock discreti",
+      "concept_count": 0
+    },
+    {
+      "id": "exit_management",
+      "label": "Exit Management",
+      "summary": "take profit, trailing stop, invalidazione, time stop e chiusura di basket o singole posizioni",
+      "concept_count": 0
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "panic",
+      "weight": 3,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "behavioral",
+        "contagion",
+        "crisis",
+        "depression",
+        "discipline",
+        "institutional_response",
+        "leverage_cycle",
+        "liquidity_run"
+      ]
+    },
+    {
+      "concept": "behavioral",
+      "weight": 2,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "confidence",
+        "contagion",
+        "discipline",
+        "euphoria",
+        "fear",
+        "leverage_cycle",
+        "panic"
+      ]
+    },
+    {
+      "concept": "contagion",
+      "weight": 2,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "confidence",
+        "euphoria",
+        "fear",
+        "liquidity_run",
+        "panic",
+        "risk_management"
+      ]
+    },
+    {
+      "concept": "credibility",
+      "weight": 2,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "duration",
+        "gold_convertibility",
+        "great_inflation",
+        "macro",
+        "rates",
+        "reconstruction",
+        "sovereign_debt"
+      ]
+    },
+    {
+      "concept": "macro",
+      "weight": 2,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "credibility",
+        "exchange_rates",
+        "fiat",
+        "gold_convertibility",
+        "gold_standard",
+        "great_inflation"
+      ]
+    },
+    {
+      "concept": "rates",
+      "weight": 2,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "gold_convertibility",
+        "great_inflation",
+        "macro",
+        "reconstruction",
+        "sovereign_debt"
+      ]
+    },
+    {
+      "concept": "stability",
+      "weight": 2,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "crisis",
+        "depression",
+        "development",
+        "global_capital",
+        "institutional_response",
+        "panic"
+      ]
+    },
+    {
+      "concept": "allocation",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "cooperation",
+        "development",
+        "global_capital",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "bank_run",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "confidence",
+        "contagion",
+        "euphoria",
+        "fear"
+      ]
+    },
+    {
+      "concept": "bonds",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "credibility",
+        "duration",
+        "rates",
+        "reconstruction",
+        "sovereign_debt",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "bretton_woods",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "central_bank",
+        "exchange_rates",
+        "fiat",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "central_bank",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "exchange_rates",
+        "fiat",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "confidence",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "contagion",
+        "euphoria",
+        "fear"
+      ]
+    },
+    {
+      "concept": "cooperation",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "development",
+        "global_capital",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "credit",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "debt",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "crisis",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "depression",
+        "institutional_response",
+        "panic",
+        "regime_detection",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "debt",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "depression",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "institutional_response",
+        "panic",
+        "regime_detection",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "derivatives",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "forwards",
+        "futures",
+        "leverage",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "development",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "global_capital",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "discipline",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "leverage_cycle",
+        "panic",
+        "squeeze"
+      ]
+    },
+    {
+      "concept": "duration",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "rates",
+        "reconstruction",
+        "sovereign_debt",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "euphoria",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "confidence",
+        "contagion",
+        "fear"
+      ]
+    },
+    {
+      "concept": "exchange",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "liquidity",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "exchange_rates",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "fiat",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "fear",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "confidence",
+        "contagion",
+        "euphoria"
+      ]
+    },
+    {
+      "concept": "fiat",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "exchange_rates",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "forwards",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "futures",
+        "leverage",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "futures",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "leverage",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "global_capital",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "development",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "gold_convertibility",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "credibility",
+        "great_inflation",
+        "macro",
+        "rates",
+        "volcker"
+      ]
+    },
+    {
+      "concept": "gold_standard",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "exchange_rates",
+        "fiat",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "great_inflation",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "credibility",
+        "gold_convertibility",
+        "macro",
+        "rates",
+        "volcker"
+      ]
+    },
+    {
+      "concept": "institutional_response",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "depression",
+        "panic",
+        "regime_detection",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "leverage",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "futures",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "leverage_cycle",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "discipline",
+        "panic",
+        "squeeze"
+      ]
+    },
+    {
+      "concept": "liquidity",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "liquidity_run",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "panic",
+        "risk_management",
+        "systemic_risk",
+        "trust_break"
+      ]
+    },
+    {
+      "concept": "market_structure",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "liquidity",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "monetary_regime",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "exchange_rates",
+        "fiat",
+        "gold_standard",
+        "macro"
+      ]
+    },
+    {
+      "concept": "money",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "trust"
+      ]
+    },
+    {
+      "concept": "portfolio",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "development",
+        "global_capital",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "reconstruction",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "rates",
+        "sovereign_debt",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "regime_detection",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "depression",
+        "institutional_response",
+        "panic",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "regime_shift",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "depression",
+        "institutional_response",
+        "panic",
+        "regime_detection",
+        "stability"
+      ]
+    },
+    {
+      "concept": "regulation",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "futures",
+        "leverage",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "reserves",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "development",
+        "global_capital",
+        "portfolio",
+        "stability"
+      ]
+    },
+    {
+      "concept": "risk_management",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "liquidity_run",
+        "panic",
+        "systemic_risk",
+        "trust_break"
+      ]
+    },
+    {
+      "concept": "sovereign_debt",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "rates",
+        "reconstruction",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "squeeze",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "discipline",
+        "leverage_cycle",
+        "panic"
+      ]
+    },
+    {
+      "concept": "standardization",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "futures",
+        "leverage",
+        "regulation"
+      ]
+    },
+    {
+      "concept": "systemic_risk",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "liquidity_run",
+        "panic",
+        "risk_management",
+        "trust_break"
+      ]
+    },
+    {
+      "concept": "trust",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "money"
+      ]
+    },
+    {
+      "concept": "trust_break",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "liquidity_run",
+        "panic",
+        "risk_management",
+        "systemic_risk"
+      ]
+    },
+    {
+      "concept": "volcker",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "credibility",
+        "gold_convertibility",
+        "great_inflation",
+        "macro",
+        "rates"
+      ]
+    },
+    {
+      "concept": "war_finance",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "rates",
+        "reconstruction",
+        "sovereign_debt"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "collega disciplina personale e struttura sistemica della leva"
+    },
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "collega panico e contagio ai mercati di oggi"
+    },
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "non leggere la leva come solo meccanica: c e sempre una psicologia sotto"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "riconosci quando la leva amplifica un pattern comportamentale storico"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "spiega perche il comportamento collettivo conta nella storia della finanza"
+    },
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "spiega perche squeeze e panico non sono eccezioni ma forme ricorrenti"
+    },
+    {
+      "id": "financial-scenario:bonds:3",
+      "domain": "bonds",
+      "prompt": "collega ricostruzione, tassi e credibilita dello Stato"
+    },
+    {
+      "id": "financial-scenario:bonds:1",
+      "domain": "bonds",
+      "prompt": "spiega perche il debito sovrano conta nella nascita della finanza moderna"
+    },
+    {
+      "id": "financial-scenario:bonds:2",
+      "domain": "bonds",
+      "prompt": "tratta i bond come infrastruttura politica e monetaria oltre che come rendimento"
+    },
+    {
+      "id": "financial-scenario:derivatives:2",
+      "domain": "derivatives",
+      "prompt": "collega leva, hedge e regolazione nella storia dei derivati"
+    },
+    {
+      "id": "financial-scenario:derivatives:1",
+      "domain": "derivatives",
+      "prompt": "spiega come nascono i derivati moderni da forward e futures standardizzati"
+    },
+    {
+      "id": "financial-scenario:derivatives:3",
+      "domain": "derivatives",
+      "prompt": "tratta i derivati come infrastruttura e non solo come scommessa"
+    },
+    {
+      "id": "financial-scenario:macro:3",
+      "domain": "macro",
+      "prompt": "collega ritardo della banca centrale a peggioramento del costo finale"
+    },
+    {
+      "id": "financial-scenario:macro:2",
+      "domain": "macro",
+      "prompt": "riconosci quando l inflazione persistente conta piu del momentum locale"
+    },
+    {
+      "id": "financial-scenario:macro:1",
+      "domain": "macro",
+      "prompt": "riconosci quando un cambio di regime monetario conta piu del pattern locale"
+    },
+    {
+      "id": "financial-scenario:macro:2",
+      "domain": "macro",
+      "prompt": "spiega la traiettoria gold standard Bretton Woods fiat e cambi flessibili"
+    },
+    {
+      "id": "financial-scenario:macro:1",
+      "domain": "macro",
+      "prompt": "spiega perche la fine dell oro e la Great Inflation cambiano il regime finanziario"
+    },
+    {
+      "id": "financial-scenario:macro:3",
+      "domain": "macro",
+      "prompt": "tratta i mercati come prodotti del regime monetario e non solo del sentiment"
+    },
+    {
+      "id": "financial-scenario:market_structure:3",
+      "domain": "market_structure",
+      "prompt": "leggi il mercato come infrastruttura storica di scambio e non solo come grafico"
+    },
+    {
+      "id": "financial-scenario:market_structure:2",
+      "domain": "market_structure",
+      "prompt": "separa la funzione storica della finanza dal rumore speculativo recente"
+    },
+    {
+      "id": "financial-scenario:market_structure:1",
+      "domain": "market_structure",
+      "prompt": "spiega come la finanza nasce da moneta credito debito e fiducia prima del trading moderno"
+    },
+    {
+      "id": "financial-scenario:portfolio:2",
+      "domain": "portfolio",
+      "prompt": "collega portafoglio, flussi di capitale e stabilita internazionale"
+    },
+    {
+      "id": "financial-scenario:portfolio:1",
+      "domain": "portfolio",
+      "prompt": "spiega come la finanza si allarga da mercati nazionali a architettura globale"
+    },
+    {
+      "id": "financial-scenario:portfolio:3",
+      "domain": "portfolio",
+      "prompt": "tratta sviluppo e stabilita come parti della storia della finanza moderna"
+    },
+    {
+      "id": "financial-scenario:regime_detection:3",
+      "domain": "regime_detection",
+      "prompt": "collega crisi e risposta istituzionale"
+    },
+    {
+      "id": "financial-scenario:regime_detection:2",
+      "domain": "regime_detection",
+      "prompt": "riconosci quando il mercato entra in rottura di regime e la vecchia disciplina non basta"
+    },
+    {
+      "id": "financial-scenario:regime_detection:1",
+      "domain": "regime_detection",
+      "prompt": "spiega come una crisi storica forza la nascita di nuove regole e istituzioni finanziarie"
+    },
+    {
+      "id": "financial-scenario:risk_management:1",
+      "domain": "risk_management",
+      "prompt": "riconosci quando il problema non e solo prezzo ma corsa alla liquidita e contagio"
+    },
+    {
+      "id": "financial-scenario:risk_management:2",
+      "domain": "risk_management",
+      "prompt": "spiega perche una crisi bancaria storica conta per leggere il rischio oggi"
+    },
+    {
+      "id": "financial-scenario:risk_management:3",
+      "domain": "risk_management",
+      "prompt": "tratta drawdown e liquidita come possibili sintomi di panic sistemico"
+    }
+  ],
+  "risk_rules": [
+    "cambio regime monetario batte lettura tecnica locale",
+    "disciplina comportamentale e struttura della leva vanno lette insieme",
+    "inflazione persistente e perdita di credibilita monetaria vanno trattate come rottura di regime",
+    "la credibilita dell emittente conta prima del rendimento apparente",
+    "la finanza globale amplifica shock locali se il sistema di riserve e fiducia e fragile",
+    "la leva dei derivati va letta come struttura di rischio, non solo come acceleratore di rendimento",
+    "non leggere i bond solo come asset difensivo senza storia di politica monetaria e fiscale",
+    "non leggere il portafoglio senza quadro di cooperazione e squilibri globali",
+    "non ridurre la finanza alla sola speculazione di breve",
+    "non usare dati di breve per negare un cambio di quadro monetario piu grande",
+    "quando fiducia e liquidita si rompono il rischio sistemico batte il pattern locale",
+    "quando il quadro si rompe la memoria storica dei panics vale piu del pattern elegante",
+    "quando la fiducia si rompe la velocita del mercato aumenta il danno ma non cambia la logica umana di base",
+    "regolazione e standardizzazione nascono proprio perche il contratto derivato puo diventare sistemico",
+    "se il costo del ritardo monetario cresce non basta una lettura tecnica locale per restare aggressivi",
+    "senza fiducia e liquidita la struttura di mercato si rompe anche se il prezzo continua a muoversi",
+    "strumenti nuovi non cancellano paure e euforie antiche",
+    "un ciclo di leva e panico non va trattato come eccezione irripetibile",
+    "un panic bancario insegna che la velocita della corsa conta quanto il livello finale del prezzo",
+    "una crisi storica e un cambio istituzionale non vanno trattati come rumore passeggero"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 11774,
+    "semantic_bytes": 17652,
+    "semantic_ratio": 1.499236,
+    "brotli_raw_bytes": 3324,
+    "brotli_semantic_bytes": 3341,
+    "brotli_ratio": 1.005114,
+    "loss_model": "semantic_distillation"
+  }
+}

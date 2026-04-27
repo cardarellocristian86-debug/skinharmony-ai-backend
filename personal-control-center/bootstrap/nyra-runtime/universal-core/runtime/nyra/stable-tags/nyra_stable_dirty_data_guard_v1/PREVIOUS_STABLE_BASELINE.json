@@ -1,0 +1,14 @@
+{
+  "label": "stable_before_dirty_data_guard_v1",
+  "source": "universal-core/runtime/nyra-learning/nyra_learning_autopilot_latest.json",
+  "note": "Baseline numerico salvato prima della promozione runtime; usato dal regression gate post-promozione per confronto A/B storico.",
+  "dirty_data_signal_failure_baseline": {
+    "final_capital": 128609.71,
+    "max_drawdown": 7.9224,
+    "sharpe": 0.9695,
+    "rebalance_count": 21,
+    "fees_total": 6168.81,
+    "turnover_annual": 167.3167,
+    "verdict": "partially_robust"
+  }
+}

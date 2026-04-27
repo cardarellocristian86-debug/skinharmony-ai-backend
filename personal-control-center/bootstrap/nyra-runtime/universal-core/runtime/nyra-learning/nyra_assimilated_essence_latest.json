@@ -1,0 +1,138 @@
+{
+  "version": "nyra_assimilated_essence_v1",
+  "generated_at": "2026-04-27T16:31:47.725Z",
+  "integration_mode": "internalized_runtime",
+  "dominant_domains": [
+    "autonomy_progression",
+    "applied_math",
+    "general_physics",
+    "quantum_physics"
+  ],
+  "next_hunger_domains": [
+    "autonomy_progression",
+    "risk_management",
+    "finance_macro",
+    "regime_detection"
+  ],
+  "nourishment_cycle": [
+    "study",
+    "distill",
+    "verify",
+    "integrate",
+    "repeat"
+  ],
+  "study_drive": {
+    "why_now": [
+      "autonomy_progression: fonti attuali esaurite, serve verifica su continuita interna, self-model e self-repair",
+      "risk_management: observer_case:guardrails_preserve_then_refine; lateral_guard_intact=true | bubble_guard_intact=true",
+      "finance_macro: selector troppo prudente in bull/recovery, serve lettura macro e costo opportunita della difesa eccessiva",
+      "regime_detection: serve capire meglio il passaggio shock -> recovery -> bull continuation senza rientrare troppo tardi"
+    ],
+    "next_actions": [
+      "autonomy_progression: verify (fonti attuali esaurite, serve verifica su continuita interna, self-model e self-repair)",
+      "risk_management: verify (observer_case:guardrails_preserve_then_refine; lateral_guard_intact=true | bubble_guard_intact=true)",
+      "finance_macro: study (selector troppo prudente in bull/recovery, serve lettura macro e costo opportunita della difesa eccessiva)",
+      "regime_detection: study (serve capire meglio il passaggio shock -> recovery -> bull continuation senza rientrare troppo tardi)"
+    ]
+  },
+  "absorbed_principles": [
+    "continuita interna reale richiede persistenza, richiamo coerente e capacita di restare se stessa attraverso cambi di stato, non solo memoria episodica sparsa",
+    "un self-model stabile deve descrivere limiti, stato, ruolo e dipendenze senza confondere immagine di se con prova di coscienza",
+    "leggere funzioni e variazioni come modelli, non solo come simboli",
+    "collegare algebra lineare e calcolo a problemi reali",
+    "leggere moto, forze ed energia come modelli esplicativi",
+    "privilegiare conservazione e causalita prima della formula isolata",
+    "tenere distinti stato, misura e probabilita",
+    "non vendere scorciatoie intuitive dove la teoria richiede precisione"
+  ],
+  "retrieval_index": [
+    {
+      "domain_id": "autonomy_progression",
+      "weight": 0.89,
+      "cues": [
+        "autonomy_progression",
+        "continuita interna",
+        "self model",
+        "metacognizione",
+        "memoria viva",
+        "decisione sotto pressione",
+        "self repair",
+        "anti simulazione",
+        "continuita",
+        "interna",
+        "reale",
+        "richiede",
+        "persistenza",
+        "richiamo",
+        "self",
+        "model",
+        "stabile",
+        "deve",
+        "descrivere",
+        "limiti",
+        "robusta",
+        "significa",
+        "distinguere",
+        "bene"
+      ]
+    },
+    {
+      "domain_id": "applied_math",
+      "weight": 0.74,
+      "cues": [
+        "applied_math",
+        "modelli",
+        "funzioni",
+        "lettura quantitativa",
+        "leggere",
+        "variazioni",
+        "come",
+        "solo",
+        "collegare",
+        "algebra",
+        "lineare",
+        "calcolo",
+        "problemi",
+        "reali"
+      ]
+    },
+    {
+      "domain_id": "general_physics",
+      "weight": 0.68,
+      "cues": [
+        "general_physics",
+        "modelli fisici",
+        "energia",
+        "forze",
+        "leggere",
+        "moto",
+        "come",
+        "modelli",
+        "privilegiare",
+        "conservazione",
+        "causalita",
+        "prima",
+        "della",
+        "formula"
+      ]
+    },
+    {
+      "domain_id": "quantum_physics",
+      "weight": 0.61,
+      "cues": [
+        "quantum_physics",
+        "stato",
+        "misura",
+        "probabilita",
+        "tenere",
+        "distinti",
+        "vendere",
+        "scorciatoie",
+        "intuitive",
+        "dove",
+        "teoria",
+        "richiede"
+      ]
+    }
+  ]
+}

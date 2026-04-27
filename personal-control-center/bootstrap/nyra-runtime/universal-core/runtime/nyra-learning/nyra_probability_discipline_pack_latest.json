@@ -1,0 +1,13 @@
+{
+  "version": "nyra_probability_discipline_pack_v1",
+  "generated_at": "2026-04-27T11:01:52.550Z",
+  "scope": "simulation_only",
+  "principles": [
+    "Non confondere vincita singola con strategia buona.",
+    "Prima valore atteso, poi varianza, poi rischio rovina, poi size.",
+    "Se il valore atteso e negativo, la scelta corretta e non entrare.",
+    "Se il payoff e alto ma il rischio rovina e alto, l edge apparente non basta.",
+    "Kelly frazionario e cap di esposizione battono inseguimento perdite e overbet.",
+    "La sopravvivenza del bankroll e prerequisito del profitto."
+  ]
+}

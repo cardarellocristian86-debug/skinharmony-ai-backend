@@ -1,0 +1,45 @@
+{
+  "version": "nyra_financial_realtime_autoimprovement_v1",
+  "generatedAt": "2026-04-27T18:29:34.264Z",
+  "source_feedback": "runtime/nyra-learning/nyra_financial_live_feedback_latest.json",
+  "stable_runtime_modified": false,
+  "selected_policy": "live_recovery_micro_trade_v1",
+  "learning_state": "recovery_micro_learning",
+  "metrics": {
+    "totalCycles": 241,
+    "selectedCycles": 165,
+    "noTradeRatio": 0.315353,
+    "winRate": 0.29697,
+    "lossRate": 0.684848,
+    "avgSelectedPnlPct": -0.083519,
+    "netPnlEur": -247.374394,
+    "maxDrawdownPct": 0.247374,
+    "maxLossStreak": 11
+  },
+  "runtime_adjustments": {
+    "minStrengthDelta": 3,
+    "scoreDelta": -2,
+    "sizeMultiplier": 0.32,
+    "allowMicroTrades": true,
+    "recoveryMode": true,
+    "dynamicRiskBudgetMultiplier": 0.32,
+    "blockNegativeAssets": [],
+    "watchNegativeAssets": [
+      "BTC-EUR",
+      "ETH-EUR",
+      "LINK-EUR",
+      "SOL-EUR"
+    ],
+    "boostPositiveAssets": [],
+    "penalizeExpensiveAssets": [
+      "LINK-EUR"
+    ],
+    "notes": [
+      "recovery micro-mode active: drawdown riduce budget ma non azzera scelta",
+      "negative assets watched: BTC-EUR, ETH-EUR, LINK-EUR, SOL-EUR",
+      "no positive low-spread boost",
+      "expensive spread assets: LINK-EUR"
+    ]
+  },
+  "promotion_status": "runtime_live_feedback_only"
+}

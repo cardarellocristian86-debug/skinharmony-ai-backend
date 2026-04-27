@@ -1,0 +1,44 @@
+{
+  "cycle_version": "nyra_mastery_recurrence_v1",
+  "generated_at": "2026-04-23T15:33:16.901Z",
+  "mode": "closed_loop_interleaved_retrieval",
+  "home_safe_mode": true,
+  "chosen_method": {
+    "id": "closed_loop_interleaved_retrieval",
+    "label": "Closed-Loop Interleaved Retrieval",
+    "cycle": [
+      "study",
+      "retrieve",
+      "interleave",
+      "explain",
+      "verify",
+      "repair",
+      "repeat"
+    ],
+    "reasons": [
+      "combina retrieval, interleaving e self-explanation invece di usarli isolati",
+      "copre bene modelli, causalita, stato, misura e probabilita",
+      "si allinea al bisogno esplicito di verify espresso da Nyra",
+      "aggiunge un vero passaggio di repair al ciclo attuale"
+    ]
+  },
+  "cadence": {
+    "deep_primary_sources": "daily_or_on_need",
+    "active_exercises": "daily",
+    "runtime_integration": "after_each_verify_cycle",
+    "recurring_web_distillation": "every_12_hours_or_on_need"
+  },
+  "next_pass_hint": {
+    "at_or_after": "2026-04-24T03:33:16.901Z",
+    "domains": [
+      "applied_math",
+      "general_physics",
+      "quantum_physics",
+      "coding_speed"
+    ],
+    "expression_domains": [
+      "natural_expression",
+      "narrative"
+    ]
+  }
+}

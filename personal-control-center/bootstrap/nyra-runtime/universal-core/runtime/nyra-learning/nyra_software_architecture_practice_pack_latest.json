@@ -1,0 +1,322 @@
+{
+  "version": "nyra_software_architecture_practice_v1",
+  "generated_at": "2026-04-27T18:02:06.990Z",
+  "purpose": "trasformare studio in architettura Nyra piu lavorabile",
+  "modules": [
+    {
+      "generated_at": "2026-04-26T09:07:09.605Z",
+      "source_module": "software_architecture_1",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-26T09:52:18.443Z",
+      "source_module": "defensive_hacker_mindset",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-26T14:20:18.392Z",
+      "source_module": "software_architecture_2",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-26T15:50:56.603Z",
+      "source_module": "security_architecture_practice",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-26T20:06:40.524Z",
+      "source_module": "software_architecture_1",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-26T20:51:49.061Z",
+      "source_module": "defensive_hacker_mindset",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-26T23:07:09.162Z",
+      "source_module": "software_architecture_2",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T00:51:13.582Z",
+      "source_module": "security_architecture_practice",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T05:15:29.385Z",
+      "source_module": "software_architecture_1",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T06:07:18.025Z",
+      "source_module": "defensive_hacker_mindset",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T09:12:55.096Z",
+      "source_module": "software_architecture_2",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T10:45:53.382Z",
+      "source_module": "security_architecture_practice",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T15:01:36.353Z",
+      "source_module": "software_architecture_1",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T15:46:46.236Z",
+      "source_module": "defensive_hacker_mindset",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    },
+    {
+      "generated_at": "2026-04-27T18:02:06.990Z",
+      "source_module": "software_architecture_2",
+      "architecture_contract": {
+        "input": "owner request or system event",
+        "parser": "semantic intent + missing data detection",
+        "core": "judge/select final variant",
+        "nyra": "organize, express, prepare executable plan",
+        "action_router": "confirm_execute for external or risky actions",
+        "memory_writer": "runtime pack/snapshot only; no owner profile pollution",
+        "verify": "required before claiming improvement"
+      },
+      "defensive_security": [
+        "least privilege",
+        "audit log",
+        "no blind external execution",
+        "secret rotation path",
+        "rollback or containment path",
+        "cyber learning is defensive only"
+      ]
+    }
+  ]
+}

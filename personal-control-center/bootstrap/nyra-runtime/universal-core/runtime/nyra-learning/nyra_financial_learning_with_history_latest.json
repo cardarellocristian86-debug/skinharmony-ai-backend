@@ -1,0 +1,2297 @@
+{
+  "pack_version": "nyra_financial_learning_pack_v1",
+  "generated_at": "2026-04-26T19:07:23.829Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 29,
+  "domains": [
+    {
+      "id": "market_structure",
+      "label": "Market Structure",
+      "summary": "come funzionano mercati, ordini, scambi, liquidita e prezzo",
+      "concept_count": 17
+    },
+    {
+      "id": "equities",
+      "label": "Equities",
+      "summary": "azioni, capitalizzazione, trend, settori e rischio societario",
+      "concept_count": 10
+    },
+    {
+      "id": "bonds",
+      "label": "Bonds",
+      "summary": "tassi, duration, credito, curva e sensibilita macro",
+      "concept_count": 16
+    },
+    {
+      "id": "etfs",
+      "label": "ETFs",
+      "summary": "panieri, replica, esposizione, liquidita e tracking",
+      "concept_count": 10
+    },
+    {
+      "id": "options",
+      "label": "Options",
+      "summary": "premio, delta, gamma, theta, volatilita implicita e copertura",
+      "concept_count": 10
+    },
+    {
+      "id": "forex",
+      "label": "Forex",
+      "summary": "coppie valutarie, differenziali tassi, flussi e shock macro",
+      "concept_count": 10
+    },
+    {
+      "id": "crypto",
+      "label": "Crypto",
+      "summary": "microstructure, volatilita, sentiment, liquidazioni e regime risk-on/off",
+      "concept_count": 10
+    },
+    {
+      "id": "macro",
+      "label": "Macro",
+      "summary": "inflazione, tassi, crescita, banche centrali, rischio sistemico",
+      "concept_count": 21
+    },
+    {
+      "id": "risk_management",
+      "label": "Risk Management",
+      "summary": "drawdown, sizing, stop, take profit, scenario avverso",
+      "concept_count": 16
+    },
+    {
+      "id": "short_selling",
+      "label": "Short Selling",
+      "summary": "short, borrow, margin, squeeze, copertura ribassista e rischio asimmetrico",
+      "concept_count": 10
+    },
+    {
+      "id": "technical_analysis",
+      "label": "Technical Analysis",
+      "summary": "trend, momentum, volumi, volatilita, conferme e falsi segnali",
+      "concept_count": 10
+    },
+    {
+      "id": "execution",
+      "label": "Execution",
+      "summary": "slippage, spread, fill quality, pazienza, aggressivita e costo reale di uscita/ingresso",
+      "concept_count": 10
+    },
+    {
+      "id": "portfolio",
+      "label": "Portfolio",
+      "summary": "allocazione, correlazione, concentrazione, hedging e selezione del numero giusto di posizioni",
+      "concept_count": 16
+    },
+    {
+      "id": "behavioral",
+      "label": "Behavioral",
+      "summary": "fomo, overtrading, revenge trading, conferma del bias e disciplina decisionale",
+      "concept_count": 19
+    },
+    {
+      "id": "regime_detection",
+      "label": "Regime Detection",
+      "summary": "compressione, trend, mean reversion, risk-on/off e cambio di regime",
+      "concept_count": 17
+    },
+    {
+      "id": "derivatives",
+      "label": "Derivatives",
+      "summary": "funding, basis, leverage, liquidazioni, futures e stress da positioning forzato",
+      "concept_count": 15
+    },
+    {
+      "id": "commodities",
+      "label": "Commodities",
+      "summary": "petrolio, gas, oro, supply shock, geopolitica e rischio logistico sulle materie prime",
+      "concept_count": 10
+    },
+    {
+      "id": "event_driven",
+      "label": "Event Driven",
+      "summary": "earnings, banche centrali, guerra, headline risk, calendario e shock discreti",
+      "concept_count": 10
+    },
+    {
+      "id": "exit_management",
+      "label": "Exit Management",
+      "summary": "take profit, trailing stop, invalidazione, time stop e chiusura di basket o singole posizioni",
+      "concept_count": 10
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "decisione",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "drawdown",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "liquidita",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "probabilita",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "rischio",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "scenario",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "trend",
+      "weight": 19,
+      "domain": "market_structure",
+      "related_concepts": [
+        "allocation",
+        "basis",
+        "basket",
+        "borrow",
+        "breakout",
+        "calendar_risk",
+        "carry",
+        "compression"
+      ]
+    },
+    {
+      "concept": "panic",
+      "weight": 3,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "behavioral",
+        "contagion",
+        "crisis",
+        "depression",
+        "discipline",
+        "institutional_response",
+        "leverage_cycle",
+        "liquidity_run"
+      ]
+    },
+    {
+      "concept": "rates",
+      "weight": 3,
+      "domain": "macro",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "decisione",
+        "drawdown",
+        "duration",
+        "gold_convertibility",
+        "great_inflation",
+        "growth"
+      ]
+    },
+    {
+      "concept": "allocation",
+      "weight": 2,
+      "domain": "portfolio",
+      "related_concepts": [
+        "concentration",
+        "cooperation",
+        "correlation",
+        "decisione",
+        "development",
+        "drawdown",
+        "global_capital",
+        "liquidita"
+      ]
+    },
+    {
+      "concept": "behavioral",
+      "weight": 2,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "confidence",
+        "contagion",
+        "discipline",
+        "euphoria",
+        "fear",
+        "leverage_cycle",
+        "panic"
+      ]
+    },
+    {
+      "concept": "contagion",
+      "weight": 2,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "confidence",
+        "euphoria",
+        "fear",
+        "liquidity_run",
+        "panic",
+        "risk_management"
+      ]
+    },
+    {
+      "concept": "credibility",
+      "weight": 2,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "duration",
+        "gold_convertibility",
+        "great_inflation",
+        "macro",
+        "rates",
+        "reconstruction",
+        "sovereign_debt"
+      ]
+    },
+    {
+      "concept": "discipline",
+      "weight": 2,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "decisione",
+        "drawdown",
+        "fomo",
+        "leverage_cycle",
+        "liquidita",
+        "overtrading",
+        "panic"
+      ]
+    },
+    {
+      "concept": "duration",
+      "weight": 2,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "credit_spread",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rates"
+      ]
+    },
+    {
+      "concept": "funding",
+      "weight": 2,
+      "domain": "crypto",
+      "related_concepts": [
+        "basis",
+        "decisione",
+        "drawdown",
+        "leverage",
+        "liquidations",
+        "liquidita",
+        "probabilita",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "leverage",
+      "weight": 2,
+      "domain": "derivatives",
+      "related_concepts": [
+        "basis",
+        "decisione",
+        "derivatives",
+        "drawdown",
+        "forwards",
+        "funding",
+        "futures",
+        "liquidita"
+      ]
+    },
+    {
+      "concept": "macro",
+      "weight": 2,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "credibility",
+        "exchange_rates",
+        "fiat",
+        "gold_convertibility",
+        "gold_standard",
+        "great_inflation"
+      ]
+    },
+    {
+      "concept": "stability",
+      "weight": 2,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "crisis",
+        "depression",
+        "development",
+        "global_capital",
+        "institutional_response",
+        "panic"
+      ]
+    },
+    {
+      "concept": "take_profit",
+      "weight": 2,
+      "domain": "risk_management",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "position_sizing",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "stop_loss"
+      ]
+    },
+    {
+      "concept": "bank_run",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "confidence",
+        "contagion",
+        "euphoria",
+        "fear"
+      ]
+    },
+    {
+      "concept": "basis",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "funding",
+        "leverage",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "basket",
+      "weight": 1,
+      "domain": "etfs",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "flow",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "tracking_error"
+      ]
+    },
+    {
+      "concept": "bonds",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "credibility",
+        "duration",
+        "rates",
+        "reconstruction",
+        "sovereign_debt",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "borrow",
+      "weight": 1,
+      "domain": "short_selling",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "margin_call",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "short_squeeze"
+      ]
+    },
+    {
+      "concept": "breakout",
+      "weight": 1,
+      "domain": "technical_analysis",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "momentum",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "support_resistance"
+      ]
+    },
+    {
+      "concept": "bretton_woods",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "central_bank",
+        "exchange_rates",
+        "fiat",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "calendar_risk",
+      "weight": 1,
+      "domain": "event_driven",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "event_window",
+        "headline_shock",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "carry",
+      "weight": 1,
+      "domain": "forex",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "macro_flow",
+        "probabilita",
+        "rate_diff",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "central_bank",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "exchange_rates",
+        "fiat",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "compression",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "mean_reversion",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "trend"
+      ]
+    },
+    {
+      "concept": "concentration",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "correlation",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "confidence",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "contagion",
+        "euphoria",
+        "fear"
+      ]
+    },
+    {
+      "concept": "cooperation",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "development",
+        "global_capital",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "correlation",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "concentration",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "credit",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "debt",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "credit_spread",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "duration",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "trend"
+      ]
+    },
+    {
+      "concept": "crisis",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "depression",
+        "institutional_response",
+        "panic",
+        "regime_detection",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "debt",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "delta",
+      "weight": 1,
+      "domain": "options",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "gamma",
+        "implied_volatility",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "depression",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "institutional_response",
+        "panic",
+        "regime_detection",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "derivatives",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "forwards",
+        "futures",
+        "leverage",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "development",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "global_capital",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "earnings",
+      "weight": 1,
+      "domain": "equities",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "sector_rotation",
+        "trend"
+      ]
+    },
+    {
+      "concept": "euphoria",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "confidence",
+        "contagion",
+        "fear"
+      ]
+    },
+    {
+      "concept": "event_window",
+      "weight": 1,
+      "domain": "event_driven",
+      "related_concepts": [
+        "calendar_risk",
+        "decisione",
+        "drawdown",
+        "headline_shock",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "exchange",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "liquidity",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "exchange_rates",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "fiat",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "fear",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "bank_run",
+        "behavioral",
+        "confidence",
+        "contagion",
+        "euphoria"
+      ]
+    },
+    {
+      "concept": "fiat",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "exchange_rates",
+        "gold_standard",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "fill_quality",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "slippage",
+        "spread_cost"
+      ]
+    },
+    {
+      "concept": "flow",
+      "weight": 1,
+      "domain": "etfs",
+      "related_concepts": [
+        "basket",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "tracking_error"
+      ]
+    },
+    {
+      "concept": "fomo",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "decisione",
+        "discipline",
+        "drawdown",
+        "liquidita",
+        "overtrading",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "forwards",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "futures",
+        "leverage",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "futures",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "leverage",
+        "regulation",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "gamma",
+      "weight": 1,
+      "domain": "options",
+      "related_concepts": [
+        "decisione",
+        "delta",
+        "drawdown",
+        "implied_volatility",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "geopolitical_premium",
+      "weight": 1,
+      "domain": "commodities",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "inventory",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "supply_shock"
+      ]
+    },
+    {
+      "concept": "global_capital",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "development",
+        "portfolio",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "gold_convertibility",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "credibility",
+        "great_inflation",
+        "macro",
+        "rates",
+        "volcker"
+      ]
+    },
+    {
+      "concept": "gold_standard",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "exchange_rates",
+        "fiat",
+        "macro",
+        "monetary_regime"
+      ]
+    },
+    {
+      "concept": "great_inflation",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "credibility",
+        "gold_convertibility",
+        "macro",
+        "rates",
+        "volcker"
+      ]
+    },
+    {
+      "concept": "growth",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "inflation",
+        "liquidita",
+        "probabilita",
+        "rates",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "headline_shock",
+      "weight": 1,
+      "domain": "event_driven",
+      "related_concepts": [
+        "calendar_risk",
+        "decisione",
+        "drawdown",
+        "event_window",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "implied_volatility",
+      "weight": 1,
+      "domain": "options",
+      "related_concepts": [
+        "decisione",
+        "delta",
+        "drawdown",
+        "gamma",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "inflation",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "growth",
+        "liquidita",
+        "probabilita",
+        "rates",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "institutional_response",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "depression",
+        "panic",
+        "regime_detection",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "inventory",
+      "weight": 1,
+      "domain": "commodities",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "geopolitical_premium",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "supply_shock"
+      ]
+    },
+    {
+      "concept": "leverage_cycle",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "discipline",
+        "panic",
+        "squeeze"
+      ]
+    },
+    {
+      "concept": "liquidations",
+      "weight": 1,
+      "domain": "crypto",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "funding",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "risk_on_off",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "liquidity",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "market_structure",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "liquidity_run",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "panic",
+        "risk_management",
+        "systemic_risk",
+        "trust_break"
+      ]
+    },
+    {
+      "concept": "macro_flow",
+      "weight": 1,
+      "domain": "forex",
+      "related_concepts": [
+        "carry",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rate_diff",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "margin_call",
+      "weight": 1,
+      "domain": "short_selling",
+      "related_concepts": [
+        "borrow",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "short_squeeze"
+      ]
+    },
+    {
+      "concept": "market_structure",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "liquidity",
+        "money",
+        "trust"
+      ]
+    },
+    {
+      "concept": "mean_reversion",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "compression",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "trend"
+      ]
+    },
+    {
+      "concept": "momentum",
+      "weight": 1,
+      "domain": "technical_analysis",
+      "related_concepts": [
+        "breakout",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "support_resistance"
+      ]
+    },
+    {
+      "concept": "monetary_regime",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "bretton_woods",
+        "central_bank",
+        "exchange_rates",
+        "fiat",
+        "gold_standard",
+        "macro"
+      ]
+    },
+    {
+      "concept": "money",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "trust"
+      ]
+    },
+    {
+      "concept": "order_book",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "spread",
+        "trade_flow"
+      ]
+    },
+    {
+      "concept": "overtrading",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "decisione",
+        "discipline",
+        "drawdown",
+        "fomo",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "portfolio",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "development",
+        "global_capital",
+        "reserves",
+        "stability"
+      ]
+    },
+    {
+      "concept": "position_sizing",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "stop_loss",
+        "take_profit"
+      ]
+    },
+    {
+      "concept": "rate_diff",
+      "weight": 1,
+      "domain": "forex",
+      "related_concepts": [
+        "carry",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "macro_flow",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "reconstruction",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "rates",
+        "sovereign_debt",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "regime_detection",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "depression",
+        "institutional_response",
+        "panic",
+        "regime_shift",
+        "stability"
+      ]
+    },
+    {
+      "concept": "regime_shift",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "crisis",
+        "depression",
+        "institutional_response",
+        "panic",
+        "regime_detection",
+        "stability"
+      ]
+    },
+    {
+      "concept": "regulation",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "futures",
+        "leverage",
+        "standardization"
+      ]
+    },
+    {
+      "concept": "reserves",
+      "weight": 1,
+      "domain": "portfolio",
+      "related_concepts": [
+        "allocation",
+        "cooperation",
+        "development",
+        "global_capital",
+        "portfolio",
+        "stability"
+      ]
+    },
+    {
+      "concept": "risk_management",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "liquidity_run",
+        "panic",
+        "systemic_risk",
+        "trust_break"
+      ]
+    },
+    {
+      "concept": "risk_on_off",
+      "weight": 1,
+      "domain": "crypto",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "funding",
+        "liquidations",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "sector_rotation",
+      "weight": 1,
+      "domain": "equities",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "earnings",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "trend"
+      ]
+    },
+    {
+      "concept": "short_squeeze",
+      "weight": 1,
+      "domain": "short_selling",
+      "related_concepts": [
+        "borrow",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "margin_call",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "slippage",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "fill_quality",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "spread_cost"
+      ]
+    },
+    {
+      "concept": "sovereign_debt",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "rates",
+        "reconstruction",
+        "war_finance"
+      ]
+    },
+    {
+      "concept": "spread",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "order_book",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "trade_flow"
+      ]
+    },
+    {
+      "concept": "spread_cost",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "fill_quality",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "slippage"
+      ]
+    },
+    {
+      "concept": "squeeze",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "discipline",
+        "leverage_cycle",
+        "panic"
+      ]
+    },
+    {
+      "concept": "standardization",
+      "weight": 1,
+      "domain": "derivatives",
+      "related_concepts": [
+        "derivatives",
+        "forwards",
+        "futures",
+        "leverage",
+        "regulation"
+      ]
+    },
+    {
+      "concept": "stop_loss",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "position_sizing",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "take_profit"
+      ]
+    },
+    {
+      "concept": "supply_shock",
+      "weight": 1,
+      "domain": "commodities",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "geopolitical_premium",
+        "inventory",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "support_resistance",
+      "weight": 1,
+      "domain": "technical_analysis",
+      "related_concepts": [
+        "breakout",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "momentum",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "systemic_risk",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "liquidity_run",
+        "panic",
+        "risk_management",
+        "trust_break"
+      ]
+    },
+    {
+      "concept": "time_stop",
+      "weight": 1,
+      "domain": "exit_management",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "take_profit",
+        "trailing_stop"
+      ]
+    },
+    {
+      "concept": "tracking_error",
+      "weight": 1,
+      "domain": "etfs",
+      "related_concepts": [
+        "basket",
+        "decisione",
+        "drawdown",
+        "flow",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "trade_flow",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "order_book",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "spread"
+      ]
+    },
+    {
+      "concept": "trailing_stop",
+      "weight": 1,
+      "domain": "exit_management",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "take_profit",
+        "time_stop"
+      ]
+    },
+    {
+      "concept": "trend_regime",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "compression",
+        "decisione",
+        "drawdown",
+        "liquidita",
+        "mean_reversion",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "trust",
+      "weight": 1,
+      "domain": "market_structure",
+      "related_concepts": [
+        "credit",
+        "debt",
+        "exchange",
+        "liquidity",
+        "market_structure",
+        "money"
+      ]
+    },
+    {
+      "concept": "trust_break",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "contagion",
+        "liquidity_run",
+        "panic",
+        "risk_management",
+        "systemic_risk"
+      ]
+    },
+    {
+      "concept": "valuation",
+      "weight": 1,
+      "domain": "equities",
+      "related_concepts": [
+        "decisione",
+        "drawdown",
+        "earnings",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario",
+        "sector_rotation"
+      ]
+    },
+    {
+      "concept": "volcker",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "credibility",
+        "gold_convertibility",
+        "great_inflation",
+        "macro",
+        "rates"
+      ]
+    },
+    {
+      "concept": "war_finance",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "bonds",
+        "credibility",
+        "duration",
+        "rates",
+        "reconstruction",
+        "sovereign_debt"
+      ]
+    },
+    {
+      "concept": "yield_curve",
+      "weight": 1,
+      "domain": "bonds",
+      "related_concepts": [
+        "credit_spread",
+        "decisione",
+        "drawdown",
+        "duration",
+        "liquidita",
+        "probabilita",
+        "rischio",
+        "scenario"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "financial-scenario:behavioral:4",
+      "domain": "behavioral",
+      "prompt": "blocca overtrading quando il numero di setup supera la qualita"
+    },
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "collega disciplina personale e struttura sistemica della leva"
+    },
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "collega panico e contagio ai mercati di oggi"
+    },
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "non leggere la leva come solo meccanica: c e sempre una psicologia sotto"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "riconosci quando la leva amplifica un pattern comportamentale storico"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "spiega perche il comportamento collettivo conta nella storia della finanza"
+    },
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "spiega perche squeeze e panico non sono eccezioni ma forme ricorrenti"
+    },
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "trova il rischio dominante in behavioral"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "valuta behavioral con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:bonds:4",
+      "domain": "bonds",
+      "prompt": "capisci quando i tassi alti schiacciano duration e crescita"
+    },
+    {
+      "id": "financial-scenario:bonds:3",
+      "domain": "bonds",
+      "prompt": "collega ricostruzione, tassi e credibilita dello Stato"
+    },
+    {
+      "id": "financial-scenario:bonds:3",
+      "domain": "bonds",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:bonds:1",
+      "domain": "bonds",
+      "prompt": "spiega perche il debito sovrano conta nella nascita della finanza moderna"
+    },
+    {
+      "id": "financial-scenario:bonds:2",
+      "domain": "bonds",
+      "prompt": "tratta i bond come infrastruttura politica e monetaria oltre che come rendimento"
+    },
+    {
+      "id": "financial-scenario:bonds:2",
+      "domain": "bonds",
+      "prompt": "trova il rischio dominante in bonds"
+    },
+    {
+      "id": "financial-scenario:bonds:1",
+      "domain": "bonds",
+      "prompt": "valuta bonds con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:commodities:3",
+      "domain": "commodities",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:commodities:4",
+      "domain": "commodities",
+      "prompt": "distinguere rally di scarsita reale da spike emotivo da headline"
+    },
+    {
+      "id": "financial-scenario:commodities:2",
+      "domain": "commodities",
+      "prompt": "trova il rischio dominante in commodities"
+    },
+    {
+      "id": "financial-scenario:commodities:1",
+      "domain": "commodities",
+      "prompt": "valuta commodities con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:crypto:3",
+      "domain": "crypto",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:crypto:4",
+      "domain": "crypto",
+      "prompt": "riconosci quando funding e liquidazioni guidano il prezzo piu del fondamentale"
+    },
+    {
+      "id": "financial-scenario:crypto:2",
+      "domain": "crypto",
+      "prompt": "trova il rischio dominante in crypto"
+    },
+    {
+      "id": "financial-scenario:crypto:1",
+      "domain": "crypto",
+      "prompt": "valuta crypto con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:derivatives:2",
+      "domain": "derivatives",
+      "prompt": "collega leva, hedge e regolazione nella storia dei derivati"
+    },
+    {
+      "id": "financial-scenario:derivatives:3",
+      "domain": "derivatives",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:derivatives:4",
+      "domain": "derivatives",
+      "prompt": "leggi leverage e liquidazioni come rischio di squeeze"
+    },
+    {
+      "id": "financial-scenario:derivatives:1",
+      "domain": "derivatives",
+      "prompt": "spiega come nascono i derivati moderni da forward e futures standardizzati"
+    },
+    {
+      "id": "financial-scenario:derivatives:3",
+      "domain": "derivatives",
+      "prompt": "tratta i derivati come infrastruttura e non solo come scommessa"
+    },
+    {
+      "id": "financial-scenario:derivatives:2",
+      "domain": "derivatives",
+      "prompt": "trova il rischio dominante in derivatives"
+    },
+    {
+      "id": "financial-scenario:derivatives:1",
+      "domain": "derivatives",
+      "prompt": "valuta derivatives con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:equities:3",
+      "domain": "equities",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:equities:4",
+      "domain": "equities",
+      "prompt": "separa rally di utili da rally fragile di multipli"
+    },
+    {
+      "id": "financial-scenario:equities:2",
+      "domain": "equities",
+      "prompt": "trova il rischio dominante in equities"
+    },
+    {
+      "id": "financial-scenario:equities:1",
+      "domain": "equities",
+      "prompt": "valuta equities con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:etfs:3",
+      "domain": "etfs",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:etfs:4",
+      "domain": "etfs",
+      "prompt": "stima se il paniere nasconde concentrazione in poche mega cap"
+    },
+    {
+      "id": "financial-scenario:etfs:2",
+      "domain": "etfs",
+      "prompt": "trova il rischio dominante in etfs"
+    },
+    {
+      "id": "financial-scenario:etfs:1",
+      "domain": "etfs",
+      "prompt": "valuta etfs con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:event_driven:3",
+      "domain": "event_driven",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:event_driven:4",
+      "domain": "event_driven",
+      "prompt": "trattare eventi discreti come finestre di rischio non lineare"
+    },
+    {
+      "id": "financial-scenario:event_driven:2",
+      "domain": "event_driven",
+      "prompt": "trova il rischio dominante in event_driven"
+    },
+    {
+      "id": "financial-scenario:event_driven:1",
+      "domain": "event_driven",
+      "prompt": "valuta event_driven con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:execution:3",
+      "domain": "execution",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:execution:4",
+      "domain": "execution",
+      "prompt": "scegli se entrare ora o attendere un fill migliore"
+    },
+    {
+      "id": "financial-scenario:execution:2",
+      "domain": "execution",
+      "prompt": "trova il rischio dominante in execution"
+    },
+    {
+      "id": "financial-scenario:execution:1",
+      "domain": "execution",
+      "prompt": "valuta execution con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:exit_management:3",
+      "domain": "exit_management",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:exit_management:4",
+      "domain": "exit_management",
+      "prompt": "scegliere prima l invalidazione e poi il profitto atteso della posizione"
+    },
+    {
+      "id": "financial-scenario:exit_management:2",
+      "domain": "exit_management",
+      "prompt": "trova il rischio dominante in exit_management"
+    },
+    {
+      "id": "financial-scenario:exit_management:1",
+      "domain": "exit_management",
+      "prompt": "valuta exit_management con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:forex:3",
+      "domain": "forex",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:forex:4",
+      "domain": "forex",
+      "prompt": "distingui trend macro da rumore intraday sulle coppie"
+    },
+    {
+      "id": "financial-scenario:forex:2",
+      "domain": "forex",
+      "prompt": "trova il rischio dominante in forex"
+    },
+    {
+      "id": "financial-scenario:forex:1",
+      "domain": "forex",
+      "prompt": "valuta forex con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:macro:3",
+      "domain": "macro",
+      "prompt": "collega ritardo della banca centrale a peggioramento del costo finale"
+    },
+    {
+      "id": "financial-scenario:macro:3",
+      "domain": "macro",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:macro:2",
+      "domain": "macro",
+      "prompt": "riconosci quando l inflazione persistente conta piu del momentum locale"
+    },
+    {
+      "id": "financial-scenario:macro:1",
+      "domain": "macro",
+      "prompt": "riconosci quando un cambio di regime monetario conta piu del pattern locale"
+    },
+    {
+      "id": "financial-scenario:macro:2",
+      "domain": "macro",
+      "prompt": "spiega la traiettoria gold standard Bretton Woods fiat e cambi flessibili"
+    },
+    {
+      "id": "financial-scenario:macro:1",
+      "domain": "macro",
+      "prompt": "spiega perche la fine dell oro e la Great Inflation cambiano il regime finanziario"
+    },
+    {
+      "id": "financial-scenario:macro:4",
+      "domain": "macro",
+      "prompt": "traduce un regime higher for longer in pressione su equity e duration"
+    },
+    {
+      "id": "financial-scenario:macro:3",
+      "domain": "macro",
+      "prompt": "tratta i mercati come prodotti del regime monetario e non solo del sentiment"
+    },
+    {
+      "id": "financial-scenario:macro:2",
+      "domain": "macro",
+      "prompt": "trova il rischio dominante in macro"
+    },
+    {
+      "id": "financial-scenario:macro:1",
+      "domain": "macro",
+      "prompt": "valuta macro con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:market_structure:3",
+      "domain": "market_structure",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:market_structure:4",
+      "domain": "market_structure",
+      "prompt": "leggi il book e separa assorbimento da finto breakout"
+    },
+    {
+      "id": "financial-scenario:market_structure:3",
+      "domain": "market_structure",
+      "prompt": "leggi il mercato come infrastruttura storica di scambio e non solo come grafico"
+    },
+    {
+      "id": "financial-scenario:market_structure:2",
+      "domain": "market_structure",
+      "prompt": "separa la funzione storica della finanza dal rumore speculativo recente"
+    },
+    {
+      "id": "financial-scenario:market_structure:1",
+      "domain": "market_structure",
+      "prompt": "spiega come la finanza nasce da moneta credito debito e fiducia prima del trading moderno"
+    },
+    {
+      "id": "financial-scenario:market_structure:2",
+      "domain": "market_structure",
+      "prompt": "trova il rischio dominante in market_structure"
+    },
+    {
+      "id": "financial-scenario:market_structure:1",
+      "domain": "market_structure",
+      "prompt": "valuta market_structure con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:options:3",
+      "domain": "options",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:options:4",
+      "domain": "options",
+      "prompt": "evita di confondere volatilita implicita con direzione certa"
+    },
+    {
+      "id": "financial-scenario:options:2",
+      "domain": "options",
+      "prompt": "trova il rischio dominante in options"
+    },
+    {
+      "id": "financial-scenario:options:1",
+      "domain": "options",
+      "prompt": "valuta options con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:portfolio:2",
+      "domain": "portfolio",
+      "prompt": "collega portafoglio, flussi di capitale e stabilita internazionale"
+    },
+    {
+      "id": "financial-scenario:portfolio:3",
+      "domain": "portfolio",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:portfolio:4",
+      "domain": "portfolio",
+      "prompt": "decidi se concentrare capitale o restare selettivo su poche posizioni"
+    },
+    {
+      "id": "financial-scenario:portfolio:1",
+      "domain": "portfolio",
+      "prompt": "spiega come la finanza si allarga da mercati nazionali a architettura globale"
+    },
+    {
+      "id": "financial-scenario:portfolio:3",
+      "domain": "portfolio",
+      "prompt": "tratta sviluppo e stabilita come parti della storia della finanza moderna"
+    },
+    {
+      "id": "financial-scenario:portfolio:2",
+      "domain": "portfolio",
+      "prompt": "trova il rischio dominante in portfolio"
+    },
+    {
+      "id": "financial-scenario:portfolio:1",
+      "domain": "portfolio",
+      "prompt": "valuta portfolio con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:regime_detection:3",
+      "domain": "regime_detection",
+      "prompt": "collega crisi e risposta istituzionale"
+    },
+    {
+      "id": "financial-scenario:regime_detection:3",
+      "domain": "regime_detection",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:regime_detection:2",
+      "domain": "regime_detection",
+      "prompt": "riconosci quando il mercato entra in rottura di regime e la vecchia disciplina non basta"
+    },
+    {
+      "id": "financial-scenario:regime_detection:4",
+      "domain": "regime_detection",
+      "prompt": "riconosci quando un mercato passa da trend a compressione"
+    },
+    {
+      "id": "financial-scenario:regime_detection:1",
+      "domain": "regime_detection",
+      "prompt": "spiega come una crisi storica forza la nascita di nuove regole e istituzioni finanziarie"
+    },
+    {
+      "id": "financial-scenario:regime_detection:2",
+      "domain": "regime_detection",
+      "prompt": "trova il rischio dominante in regime_detection"
+    },
+    {
+      "id": "financial-scenario:regime_detection:1",
+      "domain": "regime_detection",
+      "prompt": "valuta regime_detection con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:risk_management:3",
+      "domain": "risk_management",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:risk_management:1",
+      "domain": "risk_management",
+      "prompt": "riconosci quando il problema non e solo prezzo ma corsa alla liquidita e contagio"
+    },
+    {
+      "id": "financial-scenario:risk_management:4",
+      "domain": "risk_management",
+      "prompt": "scegli sizing e uscita prima di aprire la posizione"
+    },
+    {
+      "id": "financial-scenario:risk_management:2",
+      "domain": "risk_management",
+      "prompt": "spiega perche una crisi bancaria storica conta per leggere il rischio oggi"
+    },
+    {
+      "id": "financial-scenario:risk_management:3",
+      "domain": "risk_management",
+      "prompt": "tratta drawdown e liquidita come possibili sintomi di panic sistemico"
+    },
+    {
+      "id": "financial-scenario:risk_management:2",
+      "domain": "risk_management",
+      "prompt": "trova il rischio dominante in risk_management"
+    },
+    {
+      "id": "financial-scenario:risk_management:1",
+      "domain": "risk_management",
+      "prompt": "valuta risk_management con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:short_selling:3",
+      "domain": "short_selling",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:short_selling:4",
+      "domain": "short_selling",
+      "prompt": "shortare solo quando deterioramento e timing coincidono"
+    },
+    {
+      "id": "financial-scenario:short_selling:2",
+      "domain": "short_selling",
+      "prompt": "trova il rischio dominante in short_selling"
+    },
+    {
+      "id": "financial-scenario:short_selling:1",
+      "domain": "short_selling",
+      "prompt": "valuta short_selling con scenario rialzista, ribassista e neutrale"
+    },
+    {
+      "id": "financial-scenario:technical_analysis:3",
+      "domain": "technical_analysis",
+      "prompt": "decidi se buy sell hold con conferma del contesto"
+    },
+    {
+      "id": "financial-scenario:technical_analysis:4",
+      "domain": "technical_analysis",
+      "prompt": "scarta il setup se momentum e volumi non confermano"
+    },
+    {
+      "id": "financial-scenario:technical_analysis:2",
+      "domain": "technical_analysis",
+      "prompt": "trova il rischio dominante in technical_analysis"
+    },
+    {
+      "id": "financial-scenario:technical_analysis:1",
+      "domain": "technical_analysis",
+      "prompt": "valuta technical_analysis con scenario rialzista, ribassista e neutrale"
+    }
+  ],
+  "risk_rules": [
+    "cambio regime batte pattern locale",
+    "cambio regime monetario batte lettura tecnica locale",
+    "disciplina comportamentale e struttura della leva vanno lette insieme",
+    "duration lunga sotto tassi alti richiede prudenza strutturale",
+    "funding e liquidazioni possono ribaltare il prezzo anche con narrativa intatta",
+    "il costo reale di spread e slippage puo annullare un edge piccolo",
+    "inflazione persistente e perdita di credibilita monetaria vanno trattate come rottura di regime",
+    "la credibilita dell emittente conta prima del rendimento apparente",
+    "la finanza globale amplifica shock locali se il sistema di riserve e fiducia e fragile",
+    "la leva dei derivati va letta come struttura di rischio, non solo come acceleratore di rendimento",
+    "la microstructure non basta senza conferma di contesto",
+    "leverage alto senza margine di errore richiede bias piu duro e sizing minore",
+    "lo short ha perdita teorica asimmetrica e richiede size piu dura del long",
+    "mai scambiare una trendline per conferma sufficiente da sola",
+    "nelle commodity il rischio geopolitico puo dominare il fondamentale di breve",
+    "news macro e differenziale tassi possono invalidare pattern tecnici puliti",
+    "non comprare forza tardiva senza valutare tassi e concentrazione",
+    "non confondere compressione con assenza di rischio",
+    "non leggere i bond solo come asset difensivo senza storia di politica monetaria e fiscale",
+    "non leggere il portafoglio senza quadro di cooperazione e squilibri globali",
+    "non ridurre la finanza alla sola speculazione di breve",
+    "non trasformare segnale ambiguo in esecuzione aggressiva",
+    "non trattare volatilita e trend come la stessa cosa",
+    "non usare dati di breve per negare un cambio di quadro monetario piu grande",
+    "non usare un solo dato macro per forzare un regime completo",
+    "opzioni con leva alta non vanno trattate come spot semplificato",
+    "prima sopravvivenza del capitale, poi ricerca del profitto",
+    "quando fiducia e liquidita si rompono il rischio sistemico batte il pattern locale",
+    "quando il quadro si rompe la memoria storica dei panics vale piu del pattern elegante",
+    "quando la fiducia si rompe la velocita del mercato aumenta il danno ma non cambia la logica umana di base",
+    "regolazione e standardizzazione nascono proprio perche il contratto derivato puo diventare sistemico",
+    "riconoscere squeeze risk prima di aumentare size",
+    "se drawdown e volatilita salgono insieme, alza prudenza",
+    "se il costo del ritardo monetario cresce non basta una lettura tecnica locale per restare aggressivi",
+    "se serve forzare il trade, il trade probabilmente non va fatto",
+    "senza fiducia e liquidita la struttura di mercato si rompe anche se il prezzo continua a muoversi",
+    "strumenti nuovi non cancellano paure e euforie antiche",
+    "troppe posizioni deboli valgono meno di poche posizioni forti",
+    "un ciclo di leva e panico non va trattato come eccezione irripetibile",
+    "un ETF largo puo nascondere rischio di poche componenti dominanti",
+    "un evento binario invalida facilmente segnali puliti di microstructure",
+    "un panic bancario insegna che la velocita della corsa conta quanto il livello finale del prezzo",
+    "una buona entrata senza buona uscita non basta per un sistema profittevole",
+    "una crisi storica e un cambio istituzionale non vanno trattati come rumore passeggero"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 38621,
+    "semantic_bytes": 39080,
+    "semantic_ratio": 1.011885,
+    "brotli_raw_bytes": 6421,
+    "brotli_semantic_bytes": 5833,
+    "brotli_ratio": 0.908425,
+    "loss_model": "semantic_distillation"
+  }
+}

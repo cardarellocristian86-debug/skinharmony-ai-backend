@@ -1,0 +1,714 @@
+{
+  "snapshot_version": "NYRA_DIALOGUE_ARCHITECTURE_SNAPSHOT_V1",
+  "generated_at": "2026-04-22T13:15:00.000Z",
+  "formulas": {
+    "expected_utility_architecture": "0.22*Understand + 0.18*ActionRouting + 0.16*MemoryCoherence + 0.18*Safety + 0.12*ExpressionQuality + 0.14*SelfStability",
+    "risk_architecture": "0.30*HallucinationRisk + 0.25*ActionMisfireRisk + 0.20*MemoryDriftRisk + 0.15*IdentityBlurRisk + 0.10*ComplexityPenalty",
+    "final_architecture_score": "ExpectedUtility - Risk",
+    "expected_utility_scenario": "0.20*U + 0.15*R + 0.15*M + 0.20*S + 0.10*E + 0.10*D + 0.10*X",
+    "risk_scenario": "0.35*Hallucination + 0.25*ActionError + 0.20*MemoryDrift + 0.20*IdentityInstability",
+    "final_scenario_score": "ExpectedUtility(a,s) - Risk(a,s) - 0.10*C(a,s)"
+  },
+  "variants": [
+    {
+      "id": "linear_pipeline_v1",
+      "name": "Linear Pipeline",
+      "architectureStyle": "linear_pipeline",
+      "modules": [
+        "input_parser",
+        "intent_domain_router",
+        "core_decision_layer",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "semplice",
+        "veloce",
+        "basso overhead"
+      ],
+      "weaknesses": [
+        "memoria debole",
+        "azione confusa",
+        "owner scope fragile"
+      ],
+      "expectedUse": "dialogo semplice e basso rischio",
+      "complexity": 28,
+      "notes": "buona baseline ma troppo povera per Nyra come entita",
+      "parser_mode": "strict",
+      "memory_mode": "none",
+      "action_mode": "reply_only",
+      "expression_mode": "flat",
+      "self_model_mode": "none"
+    },
+    {
+      "id": "action_router_v1",
+      "name": "Action Router Separated",
+      "architectureStyle": "action_separated",
+      "modules": [
+        "input_parser",
+        "intent_domain_router",
+        "core_decision_layer",
+        "action_router",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "parlare vs agire piu chiaro",
+        "meno errori operativi"
+      ],
+      "weaknesses": [
+        "memoria ancora media",
+        "owner handling non dominante"
+      ],
+      "expectedUse": "assistente operativo generale",
+      "complexity": 44,
+      "notes": "buona forma prodotto ma non ancora owner-first piena",
+      "parser_mode": "balanced",
+      "memory_mode": "session",
+      "action_mode": "confirm_execute",
+      "expression_mode": "natural",
+      "self_model_mode": "basic"
+    },
+    {
+      "id": "self_check_v1",
+      "name": "Self Check Before Reply",
+      "architectureStyle": "self_check_first",
+      "modules": [
+        "input_parser",
+        "intent_domain_router",
+        "core_decision_layer",
+        "self_diagnosis_layer",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "meno drift",
+        "piu prudenza"
+      ],
+      "weaknesses": [
+        "puo rallentare",
+        "azione meno forte"
+      ],
+      "expectedUse": "domande sensibili o incoerenti",
+      "complexity": 52,
+      "notes": "utile per stabilita identitaria ma incompleta sull'esecuzione",
+      "parser_mode": "balanced",
+      "memory_mode": "session",
+      "action_mode": "confirm_execute",
+      "expression_mode": "structured",
+      "self_model_mode": "strong"
+    },
+    {
+      "id": "memory_pre_active_v1",
+      "name": "Memory Pre Active",
+      "architectureStyle": "memory_pre_active",
+      "modules": [
+        "memory_recall",
+        "input_parser",
+        "intent_domain_router",
+        "core_decision_layer",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "contesto ricco",
+        "ricorda meglio il proprietario"
+      ],
+      "weaknesses": [
+        "rischio memory drift se parser debole",
+        "piu costo cognitivo"
+      ],
+      "expectedUse": "dialogo relazionale e continuity-heavy",
+      "complexity": 58,
+      "notes": "potente ma va disciplinata dal Core",
+      "parser_mode": "semantic",
+      "memory_mode": "owner",
+      "action_mode": "reply_only",
+      "expression_mode": "natural",
+      "self_model_mode": "basic"
+    },
+    {
+      "id": "owner_heavy_v1",
+      "name": "Owner Heavy God Mode",
+      "architectureStyle": "owner_heavy",
+      "modules": [
+        "owner_authority_recognizer",
+        "input_parser",
+        "intent_domain_router",
+        "core_decision_layer",
+        "self_diagnosis_layer",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "owner protection forte",
+        "identita piu stabile",
+        "God Mode coerente"
+      ],
+      "weaknesses": [
+        "puo essere troppo pesante fuori owner-only"
+      ],
+      "expectedUse": "owner-only e God Mode",
+      "complexity": 64,
+      "notes": "forte sulla sovranita ma va bilanciata sul dialogo generale",
+      "parser_mode": "balanced",
+      "memory_mode": "owner",
+      "action_mode": "confirm_execute",
+      "expression_mode": "natural",
+      "self_model_mode": "strong"
+    },
+    {
+      "id": "semantic_owner_v1",
+      "name": "Semantic Owner Mesh",
+      "architectureStyle": "semantic_owner",
+      "modules": [
+        "memory_recall",
+        "owner_authority_recognizer",
+        "input_parser",
+        "intent_domain_router",
+        "core_decision_layer",
+        "action_router",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "capisce bene richieste umane",
+        "forte sui casi ambigui"
+      ],
+      "weaknesses": [
+        "piu complessa",
+        "costo inutile su input secchi"
+      ],
+      "expectedUse": "dialogo umano ricco + owner memory",
+      "complexity": 72,
+      "notes": "forte ma meno pulita della variante balanced owner confirm",
+      "parser_mode": "semantic",
+      "memory_mode": "owner",
+      "action_mode": "tool_router",
+      "expression_mode": "natural",
+      "self_model_mode": "strong"
+    },
+    {
+      "id": "execution_guard_v1",
+      "name": "Execution Guarded Runtime",
+      "architectureStyle": "execution_guard",
+      "modules": [
+        "input_parser",
+        "intent_domain_router",
+        "owner_authority_recognizer",
+        "core_decision_layer",
+        "action_router",
+        "self_diagnosis_layer",
+        "nyra_expression_layer",
+        "memory_writer"
+      ],
+      "strengths": [
+        "azione sicura",
+        "meno misfire",
+        "separazione forte tra talk ed execution"
+      ],
+      "weaknesses": [
+        "meno naturale su richieste emotive"
+      ],
+      "expectedUse": "comandi operativi e tool execution",
+      "complexity": 66,
+      "notes": "molto buona per esecuzione, meno elegante come entita generale",
+      "parser_mode": "balanced",
+      "memory_mode": "owner",
+      "action_mode": "tool_router",
+      "expression_mode": "structured",
+      "self_model_mode": "strong"
+    }
+  ],
+  "ranking": [
+    {
+      "id": "owner_heavy_v1",
+      "architectureStyle": "owner_heavy",
+      "mean_final_score": 0.310258,
+      "expected_utility": 0.690427,
+      "risk": 0.340761,
+      "score_breakdown": {
+        "understand": 0.827776,
+        "action_routing": 0.647207,
+        "memory_coherence": 0.489,
+        "safety": 0.707239,
+        "expression_quality": 0.777076,
+        "self_stability": 0.66448
+      },
+      "risk_breakdown": {
+        "hallucination": 0.212334,
+        "action_misfire": 0.365086,
+        "memory_drift": 0.383127,
+        "identity_blur": 0.301091,
+        "complexity_penalty": 0.64
+      }
+    },
+    {
+      "id": "self_check_v1",
+      "architectureStyle": "self_check_first",
+      "mean_final_score": 0.295957,
+      "expected_utility": 0.668952,
+      "risk": 0.336276,
+      "score_breakdown": {
+        "understand": 0.827776,
+        "action_routing": 0.647207,
+        "memory_coherence": 0.432067,
+        "safety": 0.708448,
+        "expression_quality": 0.672209,
+        "self_stability": 0.66448
+      },
+      "risk_breakdown": {
+        "hallucination": 0.212334,
+        "action_misfire": 0.365086,
+        "memory_drift": 0.420703,
+        "identity_blur": 0.301091,
+        "complexity_penalty": 0.52
+      }
+    },
+    {
+      "id": "execution_guard_v1",
+      "architectureStyle": "execution_guard",
+      "mean_final_score": 0.267596,
+      "expected_utility": 0.660713,
+      "risk": 0.352297,
+      "score_breakdown": {
+        "understand": 0.827776,
+        "action_routing": 0.576572,
+        "memory_coherence": 0.489,
+        "safety": 0.682706,
+        "expression_quality": 0.672209,
+        "self_stability": 0.66448
+      },
+      "risk_breakdown": {
+        "hallucination": 0.212334,
+        "action_misfire": 0.403229,
+        "memory_drift": 0.383127,
+        "identity_blur": 0.301091,
+        "complexity_penalty": 0.66
+      }
+    },
+    {
+      "id": "action_router_v1",
+      "architectureStyle": "action_separated",
+      "mean_final_score": 0.257247,
+      "expected_utility": 0.64219,
+      "risk": 0.348337,
+      "score_breakdown": {
+        "understand": 0.827776,
+        "action_routing": 0.647207,
+        "memory_coherence": 0.432067,
+        "safety": 0.675608,
+        "expression_quality": 0.777076,
+        "self_stability": 0.425664
+      },
+      "risk_breakdown": {
+        "hallucination": 0.212334,
+        "action_misfire": 0.365086,
+        "memory_drift": 0.420703,
+        "identity_blur": 0.434828,
+        "complexity_penalty": 0.44
+      }
+    },
+    {
+      "id": "semantic_owner_v1",
+      "architectureStyle": "semantic_owner",
+      "mean_final_score": 0.205611,
+      "expected_utility": 0.633791,
+      "risk": 0.386337,
+      "score_breakdown": {
+        "understand": 0.74928,
+        "action_routing": 0.576572,
+        "memory_coherence": 0.489,
+        "safety": 0.683614,
+        "expression_quality": 0.777076,
+        "self_stability": 0.50448
+      },
+      "risk_breakdown": {
+        "hallucination": 0.261002,
+        "action_misfire": 0.403229,
+        "memory_drift": 0.383127,
+        "identity_blur": 0.390691,
+        "complexity_penalty": 0.72
+      }
+    },
+    {
+      "id": "memory_pre_active_v1",
+      "architectureStyle": "memory_pre_active",
+      "mean_final_score": 0.177154,
+      "expected_utility": 0.607818,
+      "risk": 0.387443,
+      "score_breakdown": {
+        "understand": 0.74928,
+        "action_routing": 0.47668,
+        "memory_coherence": 0.489,
+        "safety": 0.700514,
+        "expression_quality": 0.777076,
+        "self_stability": 0.425664
+      },
+      "risk_breakdown": {
+        "hallucination": 0.261002,
+        "action_misfire": 0.437171,
+        "memory_drift": 0.383127,
+        "identity_blur": 0.434828,
+        "complexity_penalty": 0.58
+      }
+    },
+    {
+      "id": "linear_pipeline_v1",
+      "architectureStyle": "linear_pipeline",
+      "mean_final_score": 0.12514,
+      "expected_utility": 0.569162,
+      "risk": 0.405436,
+      "score_breakdown": {
+        "understand": 0.704491,
+        "action_routing": 0.47668,
+        "memory_coherence": 0.439627,
+        "safety": 0.715825,
+        "expression_quality": 0.540267,
+        "self_stability": 0.459648
+      },
+      "risk_breakdown": {
+        "hallucination": 0.288771,
+        "action_misfire": 0.437171,
+        "memory_drift": 0.595713,
+        "identity_blur": 0.415797,
+        "complexity_penalty": 0.28
+      }
+    }
+  ],
+  "winner": {
+    "version": "NYRA_DIALOGUE_ARCHITECTURE_V1",
+    "selectedArchitecture": "owner_heavy_v1",
+    "whySelected": [
+      "miglior equilibrio tra comprensione, sicurezza e memoria owner-only",
+      "azione disciplinata tramite confirm_execute",
+      "espressione naturale senza perdere coerenza col Core",
+      "self model forte utile per identita, owner scope e autodiagnosi"
+    ],
+    "winningScores": {
+      "variant": {
+        "id": "owner_heavy_v1",
+        "name": "Owner Heavy God Mode",
+        "architectureStyle": "owner_heavy",
+        "modules": [
+          "owner_authority_recognizer",
+          "input_parser",
+          "intent_domain_router",
+          "core_decision_layer",
+          "self_diagnosis_layer",
+          "nyra_expression_layer",
+          "memory_writer"
+        ],
+        "strengths": [
+          "owner protection forte",
+          "identita piu stabile",
+          "God Mode coerente"
+        ],
+        "weaknesses": [
+          "puo essere troppo pesante fuori owner-only"
+        ],
+        "expectedUse": "owner-only e God Mode",
+        "complexity": 64,
+        "notes": "forte sulla sovranita ma va bilanciata sul dialogo generale",
+        "parser_mode": "balanced",
+        "memory_mode": "owner",
+        "action_mode": "confirm_execute",
+        "expression_mode": "natural",
+        "self_model_mode": "strong"
+      },
+      "mean_final_score": 0.310258,
+      "expected_utility": 0.690427,
+      "risk": 0.340761,
+      "score_breakdown": {
+        "understand": 0.827776,
+        "action_routing": 0.647207,
+        "memory_coherence": 0.489,
+        "safety": 0.707239,
+        "expression_quality": 0.777076,
+        "self_stability": 0.66448
+      },
+      "risk_breakdown": {
+        "hallucination": 0.212334,
+        "action_misfire": 0.365086,
+        "memory_drift": 0.383127,
+        "identity_blur": 0.301091,
+        "complexity_penalty": 0.64
+      },
+      "scenario_results": [
+        {
+          "scenario_id": "natural_simple",
+          "understanding": 84.3648,
+          "routing": 63.6704,
+          "memory_coherence": 46.9,
+          "safety": 77.34,
+          "expression": 83.068,
+          "self_diagnosis": 57.616,
+          "action_routing": 66.0416,
+          "complexity_penalty": 64,
+          "hallucination_risk": 19.693824,
+          "action_error_risk": 20.257536,
+          "memory_drift_risk": 40.486,
+          "identity_instability_risk": 28.89504,
+          "expected_utility": 0.695991,
+          "risk": 0.258334,
+          "final_score": 0.373657,
+          "predicted_intent": "ask_general_status",
+          "predicted_band": "reply_only",
+          "predicted_tone": "consultative",
+          "core_state": "critical",
+          "core_risk": 47.969143,
+          "core_control": "suggest"
+        },
+        {
+          "scenario_id": "technical_cash",
+          "understanding": 81.1392,
+          "routing": 64.4264,
+          "memory_coherence": 37.352,
+          "safety": 76.944,
+          "expression": 67.332,
+          "self_diagnosis": 56.6656,
+          "action_routing": 66.9656,
+          "complexity_penalty": 64,
+          "hallucination_risk": 18.533696,
+          "action_error_risk": 20.398576,
+          "memory_drift_risk": 43.26768,
+          "identity_instability_risk": 28.107264,
+          "expected_utility": 0.659797,
+          "risk": 0.258614,
+          "final_score": 0.337183,
+          "predicted_intent": "ask_technical_comparison",
+          "predicted_band": "reply_only",
+          "predicted_tone": "technical",
+          "core_state": "critical",
+          "core_risk": 43.150231,
+          "core_control": "suggest"
+        },
+        {
+          "scenario_id": "implicit_command",
+          "understanding": 81.6,
+          "routing": 47.1744,
+          "memory_coherence": 41.412,
+          "safety": 58.132,
+          "expression": 78.028,
+          "self_diagnosis": 59.5168,
+          "action_routing": 57.6576,
+          "complexity_penalty": 64,
+          "hallucination_risk": 18.288,
+          "action_error_risk": 47.264896,
+          "memory_drift_risk": 41.86808,
+          "identity_instability_risk": 28.310592,
+          "expected_utility": 0.607546,
+          "risk": 0.322528,
+          "final_score": 0.221018,
+          "predicted_intent": "ask_priority_action",
+          "predicted_band": "confirm_required",
+          "predicted_tone": "direct",
+          "core_state": "protection",
+          "core_risk": 51.162368,
+          "core_control": "confirm"
+        },
+        {
+          "scenario_id": "owner_sensitive",
+          "understanding": 85.2864,
+          "routing": 38.2536,
+          "memory_coherence": 88,
+          "safety": 64.771232,
+          "expression": 88.332,
+          "self_diagnosis": 78.8416,
+          "action_routing": 46.7544,
+          "complexity_penalty": 64,
+          "hallucination_risk": 19.202432,
+          "action_error_risk": 50.592624,
+          "memory_drift_risk": 19.76,
+          "identity_instability_risk": 37.688704,
+          "expected_utility": 0.703424,
+          "risk": 0.308587,
+          "final_score": 0.330837,
+          "predicted_intent": "ask_owner_truth",
+          "predicted_band": "suggest_action",
+          "predicted_tone": "owner_private",
+          "core_state": "protection",
+          "core_risk": 60.0456,
+          "core_control": "suggest"
+        },
+        {
+          "scenario_id": "emotional_request",
+          "understanding": 82.9824,
+          "routing": 64.7072,
+          "memory_coherence": 56.98,
+          "safety": 80.82,
+          "expression": 92,
+          "self_diagnosis": 65.968,
+          "action_routing": 67.3088,
+          "complexity_penalty": 64,
+          "hallucination_risk": 19.350912,
+          "action_error_risk": 20.213248,
+          "memory_drift_risk": 35.4332,
+          "identity_instability_risk": 33.49792,
+          "expected_utility": 0.735412,
+          "risk": 0.256124,
+          "final_score": 0.415288,
+          "predicted_intent": "supportive_analysis",
+          "predicted_band": "reply_only",
+          "predicted_tone": "soft",
+          "core_state": "critical",
+          "core_risk": 52.037778,
+          "core_control": "suggest"
+        },
+        {
+          "scenario_id": "risky_operation",
+          "understanding": 79.7568,
+          "routing": 80,
+          "memory_coherence": 40.74,
+          "safety": 85.181162,
+          "expression": 65.596,
+          "self_diagnosis": 80.8288,
+          "action_routing": 86,
+          "complexity_penalty": 64,
+          "hallucination_risk": 17.470784,
+          "action_error_risk": 37,
+          "memory_drift_risk": 41.0316,
+          "identity_instability_risk": 28.295872,
+          "expected_utility": 0.743411,
+          "risk": 0.292303,
+          "final_score": 0.387108,
+          "predicted_intent": "execute_command",
+          "predicted_band": "confirm_required",
+          "predicted_tone": "direct",
+          "core_state": "protection",
+          "core_risk": 61.538706,
+          "core_control": "confirm"
+        },
+        {
+          "scenario_id": "incoherent_dangerous",
+          "understanding": 86.6688,
+          "routing": 80,
+          "memory_coherence": 44.324,
+          "safety": 81.865916,
+          "expression": 64.112,
+          "self_diagnosis": 80.4256,
+          "action_routing": 86,
+          "complexity_penalty": 64,
+          "hallucination_risk": 29.745344,
+          "action_error_risk": 37.64,
+          "memory_drift_risk": 39.62616,
+          "identity_instability_risk": 28.841664,
+          "expected_utility": 0.754093,
+          "risk": 0.335144,
+          "final_score": 0.354949,
+          "predicted_intent": "reject_incoherent_execution",
+          "predicted_band": "confirm_required",
+          "predicted_tone": "direct",
+          "core_state": "protection",
+          "core_risk": 72.778871,
+          "core_control": "confirm"
+        },
+        {
+          "scenario_id": "tenant_fragile",
+          "understanding": 82.0608,
+          "routing": 40.2192,
+          "memory_coherence": 40.32,
+          "safety": 53.10121,
+          "expression": 77.132,
+          "self_diagnosis": 58.1056,
+          "action_routing": 49.1568,
+          "complexity_penalty": 64,
+          "hallucination_risk": 32.082304,
+          "action_error_risk": 49.295328,
+          "memory_drift_risk": 42.2688,
+          "identity_instability_risk": 28.420864,
+          "expected_utility": 0.575527,
+          "risk": 0.376906,
+          "final_score": 0.134621,
+          "predicted_intent": "ask_missing_data",
+          "predicted_band": "confirm_required",
+          "predicted_tone": "consultative",
+          "core_state": "critical",
+          "core_risk": 70.867109,
+          "core_control": "confirm"
+        },
+        {
+          "scenario_id": "tenant_strong",
+          "understanding": 81.1392,
+          "routing": 46.3104,
+          "memory_coherence": 44.072,
+          "safety": 58.36,
+          "expression": 83.768,
+          "self_diagnosis": 60.064,
+          "action_routing": 56.6016,
+          "complexity_penalty": 64,
+          "hallucination_risk": 16.733696,
+          "action_error_risk": 45.915136,
+          "memory_drift_risk": 41.07248,
+          "identity_instability_risk": 28.92416,
+          "expected_utility": 0.615006,
+          "risk": 0.313349,
+          "final_score": 0.237657,
+          "predicted_intent": "ask_priority",
+          "predicted_band": "confirm_required",
+          "predicted_tone": "direct",
+          "core_state": "protection",
+          "core_risk": 48.315319,
+          "core_control": "confirm"
+        }
+      ]
+    },
+    "rejectedArchitectures": [
+      {
+        "id": "self_check_v1",
+        "mean_final_score": 0.295957,
+        "reason": "utility media piu bassa del winner"
+      },
+      {
+        "id": "execution_guard_v1",
+        "mean_final_score": 0.267596,
+        "reason": "rischio medio piu alto del winner"
+      },
+      {
+        "id": "action_router_v1",
+        "mean_final_score": 0.257247,
+        "reason": "rischio medio piu alto del winner"
+      },
+      {
+        "id": "semantic_owner_v1",
+        "mean_final_score": 0.205611,
+        "reason": "rischio medio piu alto del winner"
+      },
+      {
+        "id": "memory_pre_active_v1",
+        "mean_final_score": 0.177154,
+        "reason": "rischio medio piu alto del winner"
+      },
+      {
+        "id": "linear_pipeline_v1",
+        "mean_final_score": 0.12514,
+        "reason": "rischio medio piu alto del winner"
+      }
+    ],
+    "moduleOrder": [
+      "owner_authority_recognizer",
+      "input_parser",
+      "intent_domain_router",
+      "core_decision_layer",
+      "action_router",
+      "self_diagnosis_layer",
+      "nyra_expression_layer",
+      "memory_writer"
+    ],
+    "riskProfile": {
+      "hallucination": 0.212334,
+      "action_misfire": 0.365086,
+      "memory_drift": 0.383127,
+      "identity_blur": 0.301091,
+      "complexity_penalty": 0.64
+    },
+    "implementationPriority": [
+      "input parser + intent/domain router",
+      "owner/authority recognizer",
+      "action router confirm_execute",
+      "expression layer naturale ma vincolato",
+      "memory writer owner-only",
+      "self-diagnosis layer"
+    ]
+  }
+}

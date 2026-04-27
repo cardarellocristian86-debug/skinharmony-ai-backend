@@ -1,0 +1,37 @@
+{
+  "version": "nyra_real_user_learning_autopilot_pack_v1",
+  "generated_at": "2026-04-26T20:08:36.974Z",
+  "selected_policies": [
+    "user_combined_candidate",
+    "user_combined_candidate",
+    "user_combined_candidate",
+    "user_combined_candidate",
+    "user_combined_candidate"
+  ],
+  "final_output": {
+    "baseline_verdict": "confusing_for_users",
+    "final_verdict": "ready_for_users",
+    "trust_delta": 10,
+    "clarity_delta": 10,
+    "stability_delta": 0,
+    "follow_rate_delta": 100,
+    "panic_delta": 0,
+    "capital_delta": 2478.75,
+    "final": {
+      "trust_score": 10,
+      "clarity_score": 10,
+      "stability_score": 10,
+      "user_follow_rate": 100,
+      "panic_events": 0,
+      "capital_final": 102478.75,
+      "verdict": "ready_for_users"
+    },
+    "promoted_to_stable": false
+  },
+  "promotion_status": "not_promoted_to_runtime",
+  "boundaries": [
+    "sandbox only",
+    "stable unchanged",
+    "requires regression gate before promotion"
+  ]
+}

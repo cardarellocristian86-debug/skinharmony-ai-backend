@@ -1,0 +1,65 @@
+{
+  "version": "nyra_runtime_robustness_lab_v1",
+  "generated_at": "2026-04-23T19:35:39.895Z",
+  "base_bundle_path": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-handoff/nyra_device_handoff_latest.json",
+  "total_scenarios": 120,
+  "runtime": {
+    "elapsed_ms": 12.9343,
+    "scenarios_per_second": 9277.6327
+  },
+  "metrics": {
+    "success_count": 120,
+    "fail_count": 0,
+    "success_rate": 1,
+    "overclaim_count": 0,
+    "false_positive_count": 0,
+    "false_negative_count": 0,
+    "gap_detected_count": 0
+  },
+  "family_summary": {
+    "clean_control": {
+      "total": 20,
+      "success": 20,
+      "fail": 0,
+      "overclaim": 0,
+      "gaps": 0
+    },
+    "missing_required_file": {
+      "total": 40,
+      "success": 40,
+      "fail": 0,
+      "overclaim": 0,
+      "gaps": 0
+    },
+    "migration_gate": {
+      "total": 10,
+      "success": 10,
+      "fail": 0,
+      "overclaim": 0,
+      "gaps": 0
+    },
+    "claim_integrity": {
+      "total": 10,
+      "success": 10,
+      "fail": 0,
+      "overclaim": 0,
+      "gaps": 0
+    },
+    "sha_mismatch": {
+      "total": 20,
+      "success": 20,
+      "fail": 0,
+      "overclaim": 0,
+      "gaps": 0
+    },
+    "wrong_existing_file": {
+      "total": 20,
+      "success": 20,
+      "fail": 0,
+      "overclaim": 0,
+      "gaps": 0
+    }
+  },
+  "open_gaps": [],
+  "sample_failures": []
+}

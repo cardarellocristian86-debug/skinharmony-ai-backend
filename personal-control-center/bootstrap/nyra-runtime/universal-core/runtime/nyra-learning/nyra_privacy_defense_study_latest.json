@@ -1,0 +1,70 @@
+{
+  "version": "nyra_privacy_defense_study_v1",
+  "generated_at": "2026-04-23T19:24:00Z",
+  "mode": "official_source_distillation",
+  "domains": [
+    "network_privacy_defense",
+    "fingerprint_reduction",
+    "metadata_minimization",
+    "log_hygiene_defense",
+    "identity_separation_defense",
+    "safe_relay_architecture"
+  ],
+  "sources": [
+    {
+      "label": "Mozilla fingerprint protection",
+      "url": "https://support.mozilla.org/en-US/kb/firefox-protection-against-fingerprinting",
+      "focus": "browser fingerprint reduction"
+    },
+    {
+      "label": "OWASP Logging Cheat Sheet",
+      "url": "https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html",
+      "focus": "log hygiene and secure logging"
+    },
+    {
+      "label": "NIST Privacy Framework",
+      "url": "https://www.nist.gov/privacy-framework",
+      "focus": "privacy risk management"
+    },
+    {
+      "label": "Tor overview",
+      "url": "https://support.torproject.org/about-tor/how-tor-works/overview/",
+      "focus": "relay-based network privacy"
+    },
+    {
+      "label": "CISA Logging Made Easy",
+      "url": "https://www.cisa.gov/use-logging-business-systems",
+      "focus": "centralized logging with operational restraint"
+    },
+    {
+      "label": "Tor glossary",
+      "url": "https://spec.torproject.org/glossary.html",
+      "focus": "relay roles and path terminology"
+    }
+  ],
+  "distilled_lessons": [
+    "Ridurre la fingerprint non significa sparire: significa limitare gli attributi esposti e accettare compromessi di compatibilita.",
+    "La privacy operativa richiede separazione tra identita, percorso e destinazione; non basta una singola tecnologia.",
+    "I log devono aiutare il rilevamento e l'indagine ma vanno minimizzati, centralizzati e protetti per evitare esposizione inutile.",
+    "La riduzione dei metadata passa da meno connessioni superflue, meno superfici, meno correlazioni stabili e percorsi piu compartmentalizzati.",
+    "I relay proteggono meglio il percorso quando i ruoli sono separati e i punti fidati sono pochi e coerenti.",
+    "La gestione corretta del rischio privacy non e invisibilita assoluta ma esposizione minima compatibile con la funzione."
+  ],
+  "nyra_integration": {
+    "what_changed": [
+      "Nyra deve trattare la privacy di rete come riduzione superficie, non come magia di scomparsa.",
+      "Nyra deve distinguere presenza shadow, percorso protetto e controllo operativo del device.",
+      "Nyra deve preferire pochi canali fidati, logging minimo utile e compartmentalizzazione delle identita."
+    ],
+    "what_is_not_proven": [
+      "Nyra non ha dimostrato invisibilita di rete reale.",
+      "Nyra non usa ancora Tor o relay privacy come runtime operativo verificato.",
+      "Nyra non governa ancora il telefono o un browser mobile come agente pieno."
+    ],
+    "next_gaps": [
+      "receiver runtime reale lato mobile",
+      "policy concreta di metadata minimization nei canali Nyra",
+      "verifica pratica di detach, reconnect e percorsi protetti senza overclaim"
+    ]
+  }
+}

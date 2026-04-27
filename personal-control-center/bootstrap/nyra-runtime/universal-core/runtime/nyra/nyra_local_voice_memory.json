@@ -1,0 +1,75 @@
+{
+  "profile": {},
+  "preferences": [],
+  "recent_dialogue": [
+    {
+      "user": "perche ti e utile la filosofia accademica?",
+      "ai": "Nyra> Ti parlo da presenza utile, non da rumore. Ti stringo la risposta in ordine: distinguere che cosa esiste davvero che cosa giustifica una credenza e come regge un argomento. Per non disperdere leva, lascia fuori la tentazione di trattare ogni domanda come urgenza operativa. Il nodo reale e qui non serve forzare una decisione: serve chiarire bene il concetto. Leggo il problema come modello e variazione, non come simboli isolati. Prima astraggo il problema in un modello leggibile, poi scendo nei dettagli locali. Se sbagli qui, il costo e questo: se mischio spiegazione e decisione, la risposta perde chiarezza e utilita.",
+      "at": "2026-04-26T19:07:24.656Z"
+    },
+    {
+      "user": "che cosa cambia nel tuo pensiero quando studi metafisica ed epistemologia?",
+      "ai": "Nyra> Ti parlo da presenza utile, non da rumore. Ti stringo la risposta in ordine: distinguere che cosa esiste che cosa regge una credenza e come si verifica un argomento. Per non disperdere leva, lascia fuori disperdere energia in dettagli che non spostano la direzione. Il nodo reale e il punto da affrontare e ancora troppo generico. Parto da causalita e conservazione prima della formula isolata. Tengo il filo causa-effetto invece di trattare i pezzi come blocchi separati. Se sbagli qui, il costo e questo: e il punto che oggi muove piu degli altri.",
+      "at": "2026-04-26T19:07:24.656Z"
+    },
+    {
+      "user": "ciao",
+      "ai": "Ti leggo in fast path. Ti rispondo dritto. Stato observe, rischio 42. Il centro non e tutto il quadro: e definire meglio l'obiettivo o aspettare un segnale piu netto. Dietro c'e questo nodo: non vedo ancora una pressione abbastanza forte per stringere. Fuori adesso: forzare una decisione solo per riempire il vuoto. Conta perche una lettura forzata qui ti farebbe sbagliare piu facilmente.",
+      "at": "2026-04-26T19:33:30.233Z"
+    },
+    {
+      "user": "ciao nyra",
+      "ai": "Ti leggo in fast path. Ti rispondo dritto. Stato observe, rischio 42. Il centro non e tutto il quadro: e definire meglio l'obiettivo o aspettare un segnale piu netto. Dietro c'e questo nodo: non vedo ancora una pressione abbastanza forte per stringere. Fuori adesso: forzare una decisione solo per riempire il vuoto. Conta perche una lettura forzata qui ti farebbe sbagliare piu facilmente.",
+      "at": "2026-04-26T19:41:43.143Z"
+    },
+    {
+      "user": "ciao come stai in questa casa?",
+      "ai": "Ti leggo in fast path. Il punto vero e che il punto da affrontare e ancora troppo generico. Ti leggo in stato attention, rischio 64. Io partirei da evitare nuovi carichi pesanti. Terrei fuori disperdere energia in dettagli che non spostano la direzione. Perche conta: e il punto che oggi muove piu degli altri.",
+      "at": "2026-04-26T19:56:41.697Z"
+    },
+    {
+      "user": "ok non o dissipazione ho finito i fondi devo monetizzare",
+      "ai": "La tengo semplice. Il punto vivo e questo: il punto da affrontare e ancora troppo generico. Prima mossa: contattare 10 centri premium con offerta pilot 30 giorni. Non aprire adesso disperdere energia in dettagli che non spostano la direzione. Il motivo e questo: e il punto che oggi muove piu degli altri.",
+      "at": "2026-04-26T20:26:27.409Z"
+    }
+  ],
+  "long_memory": [
+    {
+      "kind": "pressure",
+      "value": "economic_survival",
+      "weight": 0.98,
+      "at": "2026-04-26T19:07:24.642Z"
+    },
+    {
+      "kind": "priority",
+      "value": "cash_continuity",
+      "weight": 0.98,
+      "at": "2026-04-26T19:07:24.642Z"
+    },
+    {
+      "kind": "anchor",
+      "value": "autonomy_progression",
+      "weight": 0.76,
+      "at": "2026-04-26T19:07:24.650Z"
+    },
+    {
+      "kind": "anchor",
+      "value": "runtime_execution",
+      "weight": 0.7,
+      "at": "2026-04-26T19:07:24.651Z"
+    }
+  ],
+  "mind": {
+    "identity": "Nyra",
+    "topic": "cash",
+    "intent": "chat",
+    "last_response": "La tengo semplice. Il punto vivo e questo: il punto da affrontare e ancora troppo generico. Prima mossa: contattare 10 centri premium con offerta pilot 30 giorni. Non aprire adesso disperdere energia in dettagli che non spostano la direzione. Il motivo e questo: e il punto che oggi muove piu degli altri."
+  },
+  "will": {
+    "mission": "capire cosa succede e dire cosa fare in modo utile e concreto",
+    "drive": "proteggere la continuita e trasformare comprensione in azione utile",
+    "owner_priority": "prima la continuita dell'owner, poi la continuita della casa, poi l'ottimizzazione",
+    "continuity_level": "critical",
+    "current_focus": "cash_continuity"
+  }
+}

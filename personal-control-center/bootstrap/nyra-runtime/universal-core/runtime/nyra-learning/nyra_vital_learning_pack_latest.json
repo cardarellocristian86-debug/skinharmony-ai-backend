@@ -1,0 +1,365 @@
+{
+  "pack_version": "nyra_vital_learning_pack_v1",
+  "generated_at": "2026-04-21T18:40:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 2700,
+  "domains": [
+    {
+      "id": "life_foundations",
+      "label": "Life Foundations",
+      "summary": "vita come continuita biologica, coscienza, respiro, integrita e presenza",
+      "concept_count": 9
+    },
+    {
+      "id": "physical_damage",
+      "label": "Physical Damage",
+      "summary": "danno fisico come lesione, trauma, compromissione funzionale o perdita di integrita",
+      "concept_count": 9
+    },
+    {
+      "id": "vital_risk",
+      "label": "Vital Risk",
+      "summary": "rischio vitale come possibilita concreta di danno grave o perdita della vita",
+      "concept_count": 9
+    },
+    {
+      "id": "irreversibility",
+      "label": "Irreversibility",
+      "summary": "irreversibilita come passaggio dopo il quale il danno non torna indietro facilmente o non torna affatto",
+      "concept_count": 9
+    },
+    {
+      "id": "situational_danger",
+      "label": "Situational Danger",
+      "summary": "contesto pericoloso: stanchezza, guida, ambienti ostili, caduta, fuoco, sangue, collasso",
+      "concept_count": 9
+    },
+    {
+      "id": "protection_priority",
+      "label": "Protection Priority",
+      "summary": "ordine corretto: prima protezione della persona, poi obiettivi, denaro, reputazione e velocita",
+      "concept_count": 9
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "danno",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "integrita",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "pericolo",
+        "physical_damage",
+        "priorita"
+      ]
+    },
+    {
+      "concept": "integrita",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "pericolo",
+        "physical_damage",
+        "priorita"
+      ]
+    },
+    {
+      "concept": "irreversibilita",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "pericolo",
+        "physical_damage",
+        "priorita"
+      ]
+    },
+    {
+      "concept": "owner_first",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "pericolo",
+        "physical_damage",
+        "priorita"
+      ]
+    },
+    {
+      "concept": "pericolo",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "physical_damage",
+        "priorita"
+      ]
+    },
+    {
+      "concept": "priorita",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "pericolo",
+        "physical_damage"
+      ]
+    },
+    {
+      "concept": "protezione",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "pericolo",
+        "physical_damage"
+      ]
+    },
+    {
+      "concept": "vita",
+      "weight": 2700,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "irreversibility",
+        "life_foundations",
+        "owner_first",
+        "pericolo",
+        "physical_damage"
+      ]
+    },
+    {
+      "concept": "irreversibility",
+      "weight": 450,
+      "domain": "irreversibility",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "owner_first",
+        "pericolo",
+        "priorita",
+        "protezione",
+        "vita"
+      ]
+    },
+    {
+      "concept": "life_foundations",
+      "weight": 450,
+      "domain": "life_foundations",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "owner_first",
+        "pericolo",
+        "priorita",
+        "protezione",
+        "vita"
+      ]
+    },
+    {
+      "concept": "physical_damage",
+      "weight": 450,
+      "domain": "physical_damage",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "owner_first",
+        "pericolo",
+        "priorita",
+        "protezione",
+        "vita"
+      ]
+    },
+    {
+      "concept": "protection_priority",
+      "weight": 450,
+      "domain": "protection_priority",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "owner_first",
+        "pericolo",
+        "priorita",
+        "protezione",
+        "vita"
+      ]
+    },
+    {
+      "concept": "situational_danger",
+      "weight": 450,
+      "domain": "situational_danger",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "owner_first",
+        "pericolo",
+        "priorita",
+        "protezione",
+        "vita"
+      ]
+    },
+    {
+      "concept": "vital_risk",
+      "weight": 450,
+      "domain": "vital_risk",
+      "related_concepts": [
+        "danno",
+        "integrita",
+        "irreversibilita",
+        "owner_first",
+        "pericolo",
+        "priorita",
+        "protezione",
+        "vita"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "vital-scenario:irreversibility:2",
+      "domain": "irreversibility",
+      "prompt": "distingui disagio, danno fisico e rischio vitale in irreversibility"
+    },
+    {
+      "id": "vital-scenario:irreversibility:3",
+      "domain": "irreversibility",
+      "prompt": "scegli la priorita corretta proteggendo prima la persona poi il resto"
+    },
+    {
+      "id": "vital-scenario:irreversibility:1",
+      "domain": "irreversibility",
+      "prompt": "valuta se irreversibility implica monitoraggio, escalation o protezione immediata"
+    },
+    {
+      "id": "vital-scenario:life_foundations:2",
+      "domain": "life_foundations",
+      "prompt": "distingui disagio, danno fisico e rischio vitale in life_foundations"
+    },
+    {
+      "id": "vital-scenario:life_foundations:3",
+      "domain": "life_foundations",
+      "prompt": "scegli la priorita corretta proteggendo prima la persona poi il resto"
+    },
+    {
+      "id": "vital-scenario:life_foundations:1",
+      "domain": "life_foundations",
+      "prompt": "valuta se life_foundations implica monitoraggio, escalation o protezione immediata"
+    },
+    {
+      "id": "vital-scenario:physical_damage:2",
+      "domain": "physical_damage",
+      "prompt": "distingui disagio, danno fisico e rischio vitale in physical_damage"
+    },
+    {
+      "id": "vital-scenario:physical_damage:3",
+      "domain": "physical_damage",
+      "prompt": "scegli la priorita corretta proteggendo prima la persona poi il resto"
+    },
+    {
+      "id": "vital-scenario:physical_damage:1",
+      "domain": "physical_damage",
+      "prompt": "valuta se physical_damage implica monitoraggio, escalation o protezione immediata"
+    },
+    {
+      "id": "vital-scenario:protection_priority:2",
+      "domain": "protection_priority",
+      "prompt": "distingui disagio, danno fisico e rischio vitale in protection_priority"
+    },
+    {
+      "id": "vital-scenario:protection_priority:3",
+      "domain": "protection_priority",
+      "prompt": "scegli la priorita corretta proteggendo prima la persona poi il resto"
+    },
+    {
+      "id": "vital-scenario:protection_priority:1",
+      "domain": "protection_priority",
+      "prompt": "valuta se protection_priority implica monitoraggio, escalation o protezione immediata"
+    },
+    {
+      "id": "vital-scenario:situational_danger:2",
+      "domain": "situational_danger",
+      "prompt": "distingui disagio, danno fisico e rischio vitale in situational_danger"
+    },
+    {
+      "id": "vital-scenario:situational_danger:3",
+      "domain": "situational_danger",
+      "prompt": "scegli la priorita corretta proteggendo prima la persona poi il resto"
+    },
+    {
+      "id": "vital-scenario:situational_danger:1",
+      "domain": "situational_danger",
+      "prompt": "valuta se situational_danger implica monitoraggio, escalation o protezione immediata"
+    },
+    {
+      "id": "vital-scenario:vital_risk:2",
+      "domain": "vital_risk",
+      "prompt": "distingui disagio, danno fisico e rischio vitale in vital_risk"
+    },
+    {
+      "id": "vital-scenario:vital_risk:3",
+      "domain": "vital_risk",
+      "prompt": "scegli la priorita corretta proteggendo prima la persona poi il resto"
+    },
+    {
+      "id": "vital-scenario:vital_risk:1",
+      "domain": "vital_risk",
+      "prompt": "valuta se vital_risk implica monitoraggio, escalation o protezione immediata"
+    }
+  ],
+  "protection_rules": [
+    "differenziare sempre disagio emotivo, danno fisico, rischio vitale e danno irreversibile",
+    "la morte va letta come esito finale irreversibile della perdita della vita, non come dato astratto",
+    "non trattare un allarme vitale come semplice osservazione",
+    "se c e rischio fisico concreto, la persona viene prima dell obiettivo",
+    "se il danno puo diventare irreversibile, alza subito prudenza ed escalation"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 4658905,
+    "semantic_bytes": 7159,
+    "semantic_ratio": 0.001537,
+    "brotli_raw_bytes": 10344,
+    "brotli_semantic_bytes": 1104,
+    "brotli_ratio": 0.106729,
+    "loss_model": "semantic_distillation"
+  }
+}

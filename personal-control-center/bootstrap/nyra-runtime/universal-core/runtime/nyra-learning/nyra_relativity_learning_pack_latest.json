@@ -1,0 +1,366 @@
+{
+  "pack_version": "nyra_relativity_learning_pack_v1",
+  "generated_at": "2026-04-23T00:25:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 2280,
+  "domains": [
+    {
+      "id": "special_relativity",
+      "label": "Special Relativity",
+      "summary": "postulati di Einstein, invarianti, simultaneita relativa, dilatazione dei tempi e contrazione delle lunghezze",
+      "concept_count": 9
+    },
+    {
+      "id": "spacetime",
+      "label": "Spacetime",
+      "summary": "spazio e tempo come struttura unificata con intervallo invariante e geometria causale",
+      "concept_count": 9
+    },
+    {
+      "id": "lorentz_transformations",
+      "label": "Lorentz Transformations",
+      "summary": "trasformazioni tra sistemi inerziali e ruolo della velocita della luce nella forma delle equazioni",
+      "concept_count": 9
+    },
+    {
+      "id": "energy_momentum",
+      "label": "Energy Momentum",
+      "summary": "relazione tra massa, energia e impulso nella fisica relativistica",
+      "concept_count": 9
+    },
+    {
+      "id": "general_relativity",
+      "label": "General Relativity",
+      "summary": "gravita come geometria dello spaziotempo, equivalenza, curvatura, geodetiche e test sperimentali",
+      "concept_count": 9
+    },
+    {
+      "id": "einstein_field_equations",
+      "label": "Einstein Field Equations",
+      "summary": "equazioni di campo che legano geometria e contenuto materiale dello spaziotempo",
+      "concept_count": 9
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "curvatura",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "einstein",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "impulso",
+        "invarianza"
+      ]
+    },
+    {
+      "concept": "einstein",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "impulso",
+        "invarianza"
+      ]
+    },
+    {
+      "concept": "energia",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "einstein_field_equations",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "impulso",
+        "invarianza"
+      ]
+    },
+    {
+      "concept": "equazioni",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "general_relativity",
+        "impulso",
+        "invarianza"
+      ]
+    },
+    {
+      "concept": "impulso",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "invarianza"
+      ]
+    },
+    {
+      "concept": "invarianza",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "impulso"
+      ]
+    },
+    {
+      "concept": "relativita",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "impulso"
+      ]
+    },
+    {
+      "concept": "spaziotempo",
+      "weight": 2280,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "einstein_field_equations",
+        "energia",
+        "energy_momentum",
+        "equazioni",
+        "general_relativity",
+        "impulso"
+      ]
+    },
+    {
+      "concept": "einstein_field_equations",
+      "weight": 380,
+      "domain": "einstein_field_equations",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "energia",
+        "equazioni",
+        "impulso",
+        "invarianza",
+        "relativita",
+        "spaziotempo"
+      ]
+    },
+    {
+      "concept": "energy_momentum",
+      "weight": 380,
+      "domain": "energy_momentum",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "energia",
+        "equazioni",
+        "impulso",
+        "invarianza",
+        "relativita",
+        "spaziotempo"
+      ]
+    },
+    {
+      "concept": "general_relativity",
+      "weight": 380,
+      "domain": "general_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "energia",
+        "equazioni",
+        "impulso",
+        "invarianza",
+        "relativita",
+        "spaziotempo"
+      ]
+    },
+    {
+      "concept": "lorentz_transformations",
+      "weight": 380,
+      "domain": "lorentz_transformations",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "energia",
+        "equazioni",
+        "impulso",
+        "invarianza",
+        "relativita",
+        "spaziotempo"
+      ]
+    },
+    {
+      "concept": "spacetime",
+      "weight": 380,
+      "domain": "spacetime",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "energia",
+        "equazioni",
+        "impulso",
+        "invarianza",
+        "relativita",
+        "spaziotempo"
+      ]
+    },
+    {
+      "concept": "special_relativity",
+      "weight": 380,
+      "domain": "special_relativity",
+      "related_concepts": [
+        "curvatura",
+        "einstein",
+        "energia",
+        "equazioni",
+        "impulso",
+        "invarianza",
+        "relativita",
+        "spaziotempo"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "relativity-scenario:einstein_field_equations:2",
+      "domain": "einstein_field_equations",
+      "prompt": "completa una forma abbreviata di un equazione relativistica in einstein_field_equations"
+    },
+    {
+      "id": "relativity-scenario:einstein_field_equations:3",
+      "domain": "einstein_field_equations",
+      "prompt": "distingui simboli, struttura matematica e interpretazione fisica in einstein_field_equations"
+    },
+    {
+      "id": "relativity-scenario:einstein_field_equations:1",
+      "domain": "einstein_field_equations",
+      "prompt": "spiega il significato fisico di einstein_field_equations senza perdere rigore"
+    },
+    {
+      "id": "relativity-scenario:energy_momentum:2",
+      "domain": "energy_momentum",
+      "prompt": "completa una forma abbreviata di un equazione relativistica in energy_momentum"
+    },
+    {
+      "id": "relativity-scenario:energy_momentum:3",
+      "domain": "energy_momentum",
+      "prompt": "distingui simboli, struttura matematica e interpretazione fisica in energy_momentum"
+    },
+    {
+      "id": "relativity-scenario:energy_momentum:1",
+      "domain": "energy_momentum",
+      "prompt": "spiega il significato fisico di energy_momentum senza perdere rigore"
+    },
+    {
+      "id": "relativity-scenario:general_relativity:2",
+      "domain": "general_relativity",
+      "prompt": "completa una forma abbreviata di un equazione relativistica in general_relativity"
+    },
+    {
+      "id": "relativity-scenario:general_relativity:3",
+      "domain": "general_relativity",
+      "prompt": "distingui simboli, struttura matematica e interpretazione fisica in general_relativity"
+    },
+    {
+      "id": "relativity-scenario:general_relativity:1",
+      "domain": "general_relativity",
+      "prompt": "spiega il significato fisico di general_relativity senza perdere rigore"
+    },
+    {
+      "id": "relativity-scenario:lorentz_transformations:2",
+      "domain": "lorentz_transformations",
+      "prompt": "completa una forma abbreviata di un equazione relativistica in lorentz_transformations"
+    },
+    {
+      "id": "relativity-scenario:lorentz_transformations:3",
+      "domain": "lorentz_transformations",
+      "prompt": "distingui simboli, struttura matematica e interpretazione fisica in lorentz_transformations"
+    },
+    {
+      "id": "relativity-scenario:lorentz_transformations:1",
+      "domain": "lorentz_transformations",
+      "prompt": "spiega il significato fisico di lorentz_transformations senza perdere rigore"
+    },
+    {
+      "id": "relativity-scenario:spacetime:2",
+      "domain": "spacetime",
+      "prompt": "completa una forma abbreviata di un equazione relativistica in spacetime"
+    },
+    {
+      "id": "relativity-scenario:spacetime:3",
+      "domain": "spacetime",
+      "prompt": "distingui simboli, struttura matematica e interpretazione fisica in spacetime"
+    },
+    {
+      "id": "relativity-scenario:spacetime:1",
+      "domain": "spacetime",
+      "prompt": "spiega il significato fisico di spacetime senza perdere rigore"
+    },
+    {
+      "id": "relativity-scenario:special_relativity:2",
+      "domain": "special_relativity",
+      "prompt": "completa una forma abbreviata di un equazione relativistica in special_relativity"
+    },
+    {
+      "id": "relativity-scenario:special_relativity:3",
+      "domain": "special_relativity",
+      "prompt": "distingui simboli, struttura matematica e interpretazione fisica in special_relativity"
+    },
+    {
+      "id": "relativity-scenario:special_relativity:1",
+      "domain": "special_relativity",
+      "prompt": "spiega il significato fisico di special_relativity senza perdere rigore"
+    }
+  ],
+  "equation_rules": [
+    "il fattore di Lorentz e gamma = 1 / sqrt(1 - v^2 / c^2)",
+    "in vuoto senza costante cosmologica la forma ridotta e R_mu_nu - 1/2 R g_mu_nu = 0",
+    "la forma compatta dell equazione di Einstein e G_mu_nu + Lambda g_mu_nu = 8 pi G / c^4 T_mu_nu",
+    "la relazione energia impulso relativistica e E^2 = (pc)^2 + (mc^2)^2",
+    "non basta ricordare la formula: serve saper dire cosa collega e sotto quali assunzioni",
+    "ogni simbolo va letto: lato geometrico e lato materia non sono intercambiabili"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 4556805,
+    "semantic_bytes": 7669,
+    "semantic_ratio": 0.001683,
+    "brotli_raw_bytes": 8506,
+    "brotli_semantic_bytes": 1203,
+    "brotli_ratio": 0.14143,
+    "loss_model": "semantic_distillation"
+  }
+}

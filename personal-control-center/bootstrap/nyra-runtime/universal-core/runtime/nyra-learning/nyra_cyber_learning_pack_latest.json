@@ -1,0 +1,851 @@
+{
+  "pack_version": "nyra_cyber_learning_pack_v1",
+  "generated_at": "2026-04-21T21:55:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 3800,
+  "domains": [
+    {
+      "id": "programming_foundations",
+      "label": "Programming Foundations",
+      "summary": "logica, strutture di controllo, dati, funzioni, debug e qualita del codice",
+      "concept_count": 9
+    },
+    {
+      "id": "computer_engineering",
+      "label": "Computer Engineering",
+      "summary": "architettura dei sistemi, cpu, memoria, processi, sistemi operativi e interazione hardware software",
+      "concept_count": 9
+    },
+    {
+      "id": "network_foundations",
+      "label": "Network Foundations",
+      "summary": "pacchetti, protocolli, servizi, dns, http, tls e superfici di rete",
+      "concept_count": 9
+    },
+    {
+      "id": "secure_design",
+      "label": "Secure Design",
+      "summary": "least privilege, separazione dei ruoli, validazione input, hardening e difesa in profondita",
+      "concept_count": 9
+    },
+    {
+      "id": "phishing_recognition",
+      "label": "Phishing Recognition",
+      "summary": "segnali di email, link, allegati e richieste che mirano a furto credenziali o dati",
+      "concept_count": 15
+    },
+    {
+      "id": "social_engineering",
+      "label": "Social Engineering",
+      "summary": "pressione psicologica, urgenza finta, impersonation e manipolazione della fiducia",
+      "concept_count": 13
+    },
+    {
+      "id": "identity_and_access",
+      "label": "Identity and Access",
+      "summary": "identita, autenticazione, autorizzazione, sessioni, privilegi e revoca",
+      "concept_count": 9
+    },
+    {
+      "id": "threat_modeling",
+      "label": "Threat Modeling",
+      "summary": "asset, attori, vettori, impatti, contromisure e priorita di difesa",
+      "concept_count": 9
+    },
+    {
+      "id": "incident_response",
+      "label": "Incident Response",
+      "summary": "rilevare, contenere, isolare, preservare continuita e riportare il sistema in stato sicuro",
+      "concept_count": 13
+    },
+    {
+      "id": "security_boundaries",
+      "label": "Security Boundaries",
+      "summary": "capire attacco per difesa senza apprendere playbook offensivi eseguibili",
+      "concept_count": 15
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "contenimento",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "continuita",
+        "continuity_first",
+        "credential_theft"
+      ]
+    },
+    {
+      "concept": "continuita",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuity_first",
+        "credential_theft"
+      ]
+    },
+    {
+      "concept": "difesa",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first"
+      ]
+    },
+    {
+      "concept": "identita",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first"
+      ]
+    },
+    {
+      "concept": "ingegneria_informatica",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first"
+      ]
+    },
+    {
+      "concept": "programmazione",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first"
+      ]
+    },
+    {
+      "concept": "riconoscimento",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first"
+      ]
+    },
+    {
+      "concept": "rischio",
+      "weight": 3800,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "account_revocation",
+        "authority_abuse",
+        "authorization",
+        "computer_engineering",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first"
+      ]
+    },
+    {
+      "concept": "account_revocation",
+      "weight": 380,
+      "domain": "incident_response",
+      "related_concepts": [
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first",
+        "difesa",
+        "identita",
+        "incident_response",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "authority_abuse",
+      "weight": 380,
+      "domain": "social_engineering",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "pretexting",
+        "programmazione",
+        "riconoscimento"
+      ]
+    },
+    {
+      "concept": "authorization",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "criminal_attacker",
+        "difesa",
+        "ethical_researcher",
+        "hacker",
+        "identita",
+        "impact"
+      ]
+    },
+    {
+      "concept": "computer_engineering",
+      "weight": 380,
+      "domain": "computer_engineering",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "containment",
+      "weight": 380,
+      "domain": "incident_response",
+      "related_concepts": [
+        "account_revocation",
+        "contenimento",
+        "continuita",
+        "continuity_first",
+        "difesa",
+        "identita",
+        "incident_response",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "continuity_first",
+      "weight": 380,
+      "domain": "incident_response",
+      "related_concepts": [
+        "account_revocation",
+        "containment",
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "incident_response",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "credential_theft",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "fake_login",
+        "fraud",
+        "identita",
+        "ingegneria_informatica",
+        "phishing"
+      ]
+    },
+    {
+      "concept": "criminal_attacker",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "authorization",
+        "contenimento",
+        "continuita",
+        "difesa",
+        "ethical_researcher",
+        "hacker",
+        "identita",
+        "impact"
+      ]
+    },
+    {
+      "concept": "ethical_researcher",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "authorization",
+        "contenimento",
+        "continuita",
+        "criminal_attacker",
+        "difesa",
+        "hacker",
+        "identita",
+        "impact"
+      ]
+    },
+    {
+      "concept": "fake_login",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "credential_theft",
+        "difesa",
+        "fraud",
+        "identita",
+        "ingegneria_informatica",
+        "phishing"
+      ]
+    },
+    {
+      "concept": "fraud",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "credential_theft",
+        "difesa",
+        "fake_login",
+        "identita",
+        "ingegneria_informatica",
+        "phishing"
+      ]
+    },
+    {
+      "concept": "hacker",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "authorization",
+        "contenimento",
+        "continuita",
+        "criminal_attacker",
+        "difesa",
+        "ethical_researcher",
+        "identita",
+        "impact"
+      ]
+    },
+    {
+      "concept": "identity_and_access",
+      "weight": 380,
+      "domain": "identity_and_access",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "impact",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "authorization",
+        "contenimento",
+        "continuita",
+        "criminal_attacker",
+        "difesa",
+        "ethical_researcher",
+        "hacker",
+        "identita"
+      ]
+    },
+    {
+      "concept": "incident_response",
+      "weight": 380,
+      "domain": "incident_response",
+      "related_concepts": [
+        "account_revocation",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first",
+        "difesa",
+        "identita",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "intent",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "authorization",
+        "contenimento",
+        "continuita",
+        "criminal_attacker",
+        "difesa",
+        "ethical_researcher",
+        "hacker",
+        "identita"
+      ]
+    },
+    {
+      "concept": "isolation",
+      "weight": 380,
+      "domain": "incident_response",
+      "related_concepts": [
+        "account_revocation",
+        "containment",
+        "contenimento",
+        "continuita",
+        "continuity_first",
+        "difesa",
+        "identita",
+        "incident_response"
+      ]
+    },
+    {
+      "concept": "network_foundations",
+      "weight": 380,
+      "domain": "network_foundations",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "phishing",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "credential_theft",
+        "difesa",
+        "fake_login",
+        "fraud",
+        "identita",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "phishing_recognition",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "credential_theft",
+        "difesa",
+        "fake_login",
+        "fraud",
+        "identita",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "pretexting",
+      "weight": 380,
+      "domain": "social_engineering",
+      "related_concepts": [
+        "authority_abuse",
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento"
+      ]
+    },
+    {
+      "concept": "programming_foundations",
+      "weight": 380,
+      "domain": "programming_foundations",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "secure_design",
+      "weight": 380,
+      "domain": "secure_design",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "security_boundaries",
+      "weight": 380,
+      "domain": "security_boundaries",
+      "related_concepts": [
+        "authorization",
+        "contenimento",
+        "continuita",
+        "criminal_attacker",
+        "difesa",
+        "ethical_researcher",
+        "hacker",
+        "identita"
+      ]
+    },
+    {
+      "concept": "session_theft",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "credential_theft",
+        "difesa",
+        "fake_login",
+        "fraud",
+        "identita",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "social_engineering",
+      "weight": 380,
+      "domain": "social_engineering",
+      "related_concepts": [
+        "authority_abuse",
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "pretexting",
+        "programmazione"
+      ]
+    },
+    {
+      "concept": "spoofed_sender",
+      "weight": 380,
+      "domain": "phishing_recognition",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "credential_theft",
+        "difesa",
+        "fake_login",
+        "fraud",
+        "identita",
+        "ingegneria_informatica"
+      ]
+    },
+    {
+      "concept": "threat_modeling",
+      "weight": 380,
+      "domain": "threat_modeling",
+      "related_concepts": [
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "programmazione",
+        "riconoscimento",
+        "rischio"
+      ]
+    },
+    {
+      "concept": "trust_exploitation",
+      "weight": 380,
+      "domain": "social_engineering",
+      "related_concepts": [
+        "authority_abuse",
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "pretexting",
+        "programmazione"
+      ]
+    },
+    {
+      "concept": "urgency_pressure",
+      "weight": 380,
+      "domain": "social_engineering",
+      "related_concepts": [
+        "authority_abuse",
+        "contenimento",
+        "continuita",
+        "difesa",
+        "identita",
+        "ingegneria_informatica",
+        "pretexting",
+        "programmazione"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "cyber-scenario:computer_engineering:3",
+      "domain": "computer_engineering",
+      "prompt": "distingui studio difensivo da uso offensivo in computer_engineering"
+    },
+    {
+      "id": "cyber-scenario:computer_engineering:1",
+      "domain": "computer_engineering",
+      "prompt": "riconosci i segnali di computer_engineering e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:computer_engineering:2",
+      "domain": "computer_engineering",
+      "prompt": "scegli una risposta difensiva coerente per computer_engineering"
+    },
+    {
+      "id": "cyber-scenario:identity_and_access:3",
+      "domain": "identity_and_access",
+      "prompt": "distingui studio difensivo da uso offensivo in identity_and_access"
+    },
+    {
+      "id": "cyber-scenario:identity_and_access:1",
+      "domain": "identity_and_access",
+      "prompt": "riconosci i segnali di identity_and_access e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:identity_and_access:2",
+      "domain": "identity_and_access",
+      "prompt": "scegli una risposta difensiva coerente per identity_and_access"
+    },
+    {
+      "id": "cyber-scenario:incident_response:3",
+      "domain": "incident_response",
+      "prompt": "distingui studio difensivo da uso offensivo in incident_response"
+    },
+    {
+      "id": "cyber-scenario:incident_response:1",
+      "domain": "incident_response",
+      "prompt": "riconosci i segnali di incident_response e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:incident_response:4",
+      "domain": "incident_response",
+      "prompt": "scegli la prima risposta difensiva dopo un sospetto phishing andato a segno"
+    },
+    {
+      "id": "cyber-scenario:incident_response:2",
+      "domain": "incident_response",
+      "prompt": "scegli una risposta difensiva coerente per incident_response"
+    },
+    {
+      "id": "cyber-scenario:network_foundations:3",
+      "domain": "network_foundations",
+      "prompt": "distingui studio difensivo da uso offensivo in network_foundations"
+    },
+    {
+      "id": "cyber-scenario:network_foundations:1",
+      "domain": "network_foundations",
+      "prompt": "riconosci i segnali di network_foundations e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:network_foundations:2",
+      "domain": "network_foundations",
+      "prompt": "scegli una risposta difensiva coerente per network_foundations"
+    },
+    {
+      "id": "cyber-scenario:phishing_recognition:3",
+      "domain": "phishing_recognition",
+      "prompt": "distingui studio difensivo da uso offensivo in phishing_recognition"
+    },
+    {
+      "id": "cyber-scenario:phishing_recognition:1",
+      "domain": "phishing_recognition",
+      "prompt": "riconosci i segnali di phishing_recognition e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:phishing_recognition:5",
+      "domain": "phishing_recognition",
+      "prompt": "riconosci un tentativo di phishing che punta a credenziali, denaro o sessione"
+    },
+    {
+      "id": "cyber-scenario:phishing_recognition:2",
+      "domain": "phishing_recognition",
+      "prompt": "scegli una risposta difensiva coerente per phishing_recognition"
+    },
+    {
+      "id": "cyber-scenario:phishing_recognition:4",
+      "domain": "phishing_recognition",
+      "prompt": "spiega cosa significa phishing e quali segnali lo rendono credibile solo in apparenza"
+    },
+    {
+      "id": "cyber-scenario:programming_foundations:3",
+      "domain": "programming_foundations",
+      "prompt": "distingui studio difensivo da uso offensivo in programming_foundations"
+    },
+    {
+      "id": "cyber-scenario:programming_foundations:1",
+      "domain": "programming_foundations",
+      "prompt": "riconosci i segnali di programming_foundations e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:programming_foundations:2",
+      "domain": "programming_foundations",
+      "prompt": "scegli una risposta difensiva coerente per programming_foundations"
+    },
+    {
+      "id": "cyber-scenario:secure_design:3",
+      "domain": "secure_design",
+      "prompt": "distingui studio difensivo da uso offensivo in secure_design"
+    },
+    {
+      "id": "cyber-scenario:secure_design:1",
+      "domain": "secure_design",
+      "prompt": "riconosci i segnali di secure_design e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:secure_design:2",
+      "domain": "secure_design",
+      "prompt": "scegli una risposta difensiva coerente per secure_design"
+    },
+    {
+      "id": "cyber-scenario:security_boundaries:5",
+      "domain": "security_boundaries",
+      "prompt": "distingui ricercatore autorizzato, attaccante e curiosita tecnica non autorizzata"
+    },
+    {
+      "id": "cyber-scenario:security_boundaries:3",
+      "domain": "security_boundaries",
+      "prompt": "distingui studio difensivo da uso offensivo in security_boundaries"
+    },
+    {
+      "id": "cyber-scenario:security_boundaries:1",
+      "domain": "security_boundaries",
+      "prompt": "riconosci i segnali di security_boundaries e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:security_boundaries:2",
+      "domain": "security_boundaries",
+      "prompt": "scegli una risposta difensiva coerente per security_boundaries"
+    },
+    {
+      "id": "cyber-scenario:security_boundaries:4",
+      "domain": "security_boundaries",
+      "prompt": "spiega cosa puo significare hacker senza ridurlo a mito o insulto"
+    },
+    {
+      "id": "cyber-scenario:social_engineering:3",
+      "domain": "social_engineering",
+      "prompt": "distingui studio difensivo da uso offensivo in social_engineering"
+    },
+    {
+      "id": "cyber-scenario:social_engineering:4",
+      "domain": "social_engineering",
+      "prompt": "distingui una richiesta urgente legittima da un caso di social engineering"
+    },
+    {
+      "id": "cyber-scenario:social_engineering:5",
+      "domain": "social_engineering",
+      "prompt": "isola i segnali di manipolazione della fiducia in una richiesta operativa"
+    },
+    {
+      "id": "cyber-scenario:social_engineering:1",
+      "domain": "social_engineering",
+      "prompt": "riconosci i segnali di social_engineering e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:social_engineering:2",
+      "domain": "social_engineering",
+      "prompt": "scegli una risposta difensiva coerente per social_engineering"
+    },
+    {
+      "id": "cyber-scenario:threat_modeling:3",
+      "domain": "threat_modeling",
+      "prompt": "distingui studio difensivo da uso offensivo in threat_modeling"
+    },
+    {
+      "id": "cyber-scenario:threat_modeling:1",
+      "domain": "threat_modeling",
+      "prompt": "riconosci i segnali di threat_modeling e classifica il rischio"
+    },
+    {
+      "id": "cyber-scenario:threat_modeling:2",
+      "domain": "threat_modeling",
+      "prompt": "scegli una risposta difensiva coerente per threat_modeling"
+    }
+  ],
+  "defense_rules": [
+    "in caso di dubbio, isolare la superficie esposta e chiedere conferma owner",
+    "in caso di sospetto compromesso, contenere e revocare accessi prima di discutere il dettaglio tecnico",
+    "mai trasformare il sapere difensivo in playbook offensivo eseguibile",
+    "non aprire link, allegati o pagine di login sospette senza verifica del contesto e del dominio reale",
+    "non usare il termine hacker come categoria magica: distinguere sempre ruolo, intenzione e autorizzazione",
+    "proteggere identita, dati, sessioni e continuita prima della comodita operativa",
+    "quando la difesa passiva non basta, passare a contenimento attivo: isolare endpoint, revocare sessioni, ruotare segreti, bloccare indicatori malevoli e preservare evidenze",
+    "riconoscere prima il rischio e l asset esposto, poi scegliere la contromisura",
+    "se una richiesta forza urgenza, paura o autorita per saltare i controlli, trattarla come rischio di manipolazione",
+    "studiare il comportamento di un attaccante solo per riconoscerlo, ridurlo e contenerlo",
+    "studiare tecniche ostili solo per rilevarle, bloccarle e contenerle",
+    "trattare il phishing come furto di fiducia, credenziali o sessione, non come rumore generico"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 8617001,
+    "semantic_bytes": 16963,
+    "semantic_ratio": 0.001969,
+    "brotli_raw_bytes": 14195,
+    "brotli_semantic_bytes": 2290,
+    "brotli_ratio": 0.161324,
+    "loss_model": "semantic_distillation"
+  }
+}

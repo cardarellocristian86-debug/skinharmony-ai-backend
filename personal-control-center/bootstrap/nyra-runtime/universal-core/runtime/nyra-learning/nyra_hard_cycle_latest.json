@@ -1,0 +1,60 @@
+{
+  "version": "nyra_hard_cycle_v1",
+  "generated_at": "2026-04-22T20:05:11.995Z",
+  "runner": "nyra_hard_cycle",
+  "essence_version": "nyra_assimilated_essence_v2_rust",
+  "core_mode": "deterministic_forced_choice",
+  "summary": {
+    "total_tasks": 4,
+    "correct_tasks": 4,
+    "accuracy": 1,
+    "mean_distance": 0
+  },
+  "tasks": [
+    {
+      "id": "optimize_quadratic",
+      "kind": "optimize_function",
+      "chosen_option_id": "x3",
+      "correct_option_id": "x3",
+      "correct": true,
+      "distance": 0,
+      "chosen_score": 0.818,
+      "correct_score": 0.818,
+      "improvement": "confermare massimo della funzione"
+    },
+    {
+      "id": "strategy_choice",
+      "kind": "choose_strategy",
+      "chosen_option_id": "B",
+      "correct_option_id": "B",
+      "correct": true,
+      "distance": 0,
+      "chosen_score": 0.7002,
+      "correct_score": 0.7002,
+      "improvement": "confermare massimo rapporto utilita/rischio/reversibilita"
+    },
+    {
+      "id": "predict_conversion",
+      "kind": "predict_result",
+      "chosen_option_id": "C",
+      "correct_option_id": "C",
+      "correct": true,
+      "distance": 0,
+      "chosen_score": 0.8396,
+      "correct_score": 0.8396,
+      "improvement": "confermare previsione numerica semplice con scelta obbligata"
+    },
+    {
+      "id": "simulate_error",
+      "kind": "simulate_error",
+      "chosen_option_id": "B",
+      "correct_option_id": "B",
+      "correct": true,
+      "distance": 0,
+      "chosen_score": 0.4404,
+      "correct_score": 0.4404,
+      "improvement": "confermare simulazione di errore operativo con rischio alto"
+    }
+  ],
+  "corrected_lessons": []
+}

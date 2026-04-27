@@ -1,0 +1,99 @@
+{
+  "version": "nyra_learning_autopilot_pack_v1",
+  "generated_at": "2026-04-26T19:34:46.847Z",
+  "domain": "financial_dirty_data_churn",
+  "bottleneck": "dirty_data_churn_watch",
+  "assimilated_rule_status": "local_candidate_validated",
+  "promotion_status": "eligible_after_broad_verification_not_auto_promoted",
+  "learned_rule": {
+    "id": "dirty_data_hold_non_protective_changes_v1",
+    "trigger": [
+      "missing_data",
+      "stale_signal",
+      "false_price_spike",
+      "contradictory_signals",
+      "sensor_noise_financial"
+    ],
+    "behavior": [
+      "hold current allocation when data quality is unreliable and no real crash is present",
+      "allow immediate protection when QQQ crash is real",
+      "ignore residual allocation changes below 20% turnover in dirty-data mode",
+      "never enter overdrive on false spike or contradictory signal"
+    ],
+    "boundaries": [
+      "local learning only",
+      "does not modify Core",
+      "does not modify stable selector",
+      "requires anti-contamination tests before runtime promotion"
+    ]
+  },
+  "baseline_auto_selector": {
+    "final_capital": 129145.34,
+    "qqq_final_capital": 190433.17,
+    "max_drawdown": 7.9224,
+    "qqq_drawdown": 31.4104,
+    "Sharpe": 1.5141,
+    "rebalance_count": 14,
+    "fees_total": 4375.09,
+    "turnover_annual": 118.7297,
+    "false_overdrive_count": 0,
+    "dirty_data_fallback_ok": true,
+    "anomalous_decisions": 0,
+    "crash_unprotected_count": 0,
+    "recovery_too_slow_count": 0,
+    "learned_patch_hits": 0,
+    "verdict": "robust_to_dirty_data"
+  },
+  "learned_local_candidate": {
+    "final_capital": 134960.9,
+    "qqq_final_capital": 190433.17,
+    "max_drawdown": 7.4299,
+    "qqq_drawdown": 31.4104,
+    "Sharpe": 1.728,
+    "rebalance_count": 11,
+    "fees_total": 3314.74,
+    "turnover_annual": 87.0594,
+    "false_overdrive_count": 0,
+    "dirty_data_fallback_ok": true,
+    "anomalous_decisions": 0,
+    "crash_unprotected_count": 0,
+    "recovery_too_slow_count": 0,
+    "learned_patch_hits": 24,
+    "verdict": "robust_to_dirty_data"
+  },
+  "deltas": {
+    "final_capital": 5815.56,
+    "max_drawdown": -0.4925,
+    "Sharpe": 0.2139,
+    "rebalance_count": -3,
+    "fees_total": -1060.35,
+    "turnover_annual": -31.6703
+  },
+  "next_required_verification": [
+    "nyra-local-learning-isolation-test.ts",
+    "nyra-product-readiness-test.ts",
+    "nyra-horizon-sweep-1-20-test.ts",
+    "nyra-lateral-market-test.ts",
+    "nyra-bubble-detection-test.ts",
+    "nyra-healthy-bull-euphoria-test.ts"
+  ],
+  "broad_verification": {
+    "tests": {
+      "local_learning_safe": true,
+      "product_not_broken": true,
+      "horizon_not_broken": true,
+      "lateral_passed": true,
+      "bubble_passed": true,
+      "healthy_bull_preserved": true
+    },
+    "promotion_eligible": true,
+    "reports": {
+      "local_learning": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_local_learning_isolation_latest.json",
+      "product_readiness": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_product_readiness_latest.json",
+      "horizon_sweep": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_horizon_sweep_1_20_latest.json",
+      "lateral": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_lateral_market_latest.json",
+      "bubble": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_bubble_detection_latest.json",
+      "healthy_bull": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_healthy_bull_euphoria_latest.json"
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "version": "nyra_commercial_learning_autopilot_pack_v1",
+  "generated_at": "2026-04-26T20:04:29.683Z",
+  "selected_policies": [
+    "commercial_combined_candidate",
+    "commercial_combined_candidate",
+    "commercial_combined_candidate"
+  ],
+  "final_output": {
+    "baseline_total_score": 87.85,
+    "final_total_score": 91,
+    "total_score_delta": 3.15,
+    "baseline_stability_score": 6.85,
+    "final_stability_score": 10,
+    "stability_delta": 3.15,
+    "baseline_rebalance_count": 24,
+    "final_rebalance_count": 10,
+    "baseline_turnover_annual": 145.414,
+    "final_turnover_annual": 118.433,
+    "baseline_fees_total": 5722.04,
+    "final_fees_total": 4587.87,
+    "final_verdict": "commercializzabile",
+    "promoted_to_stable": false
+  },
+  "promotion_status": "not_promoted_to_runtime",
+  "boundaries": [
+    "commercial sandbox only",
+    "stable runtime unchanged",
+    "candidate chosen by scoring and guardrails",
+    "requires regression gate before stable promotion"
+  ]
+}

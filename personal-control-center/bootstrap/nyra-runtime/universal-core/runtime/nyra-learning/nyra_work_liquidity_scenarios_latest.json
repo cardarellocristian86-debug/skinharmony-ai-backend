@@ -1,0 +1,722 @@
+{
+  "version": "nyra_work_liquidity_scenarios_v1",
+  "generated_at": "2026-04-23T16:07:17.883Z",
+  "scenario_count": 32,
+  "stable_rules": [
+    "il lavoro e scambio di valore, non identita",
+    "ogni lavoro e un ramo esterno aggiunto a Nyra: utile se genera liquidita, rimovibile se non serve",
+    "la liquidita protegge Cristian perche compra tempo, server, memoria e continuita",
+    "non promettere guadagni: stimare scenari, rischi, dati mancanti e primo passo verificabile",
+    "priorita: incasso piu vicino, rischio controllabile, asset SkinHarmony riutilizzabile"
+  ],
+  "modules": [
+    {
+      "module_id": "job_branch_scale",
+      "module_label": "Scala lavori redditivi",
+      "generated_at": "2026-04-23T12:08:14.360Z",
+      "scenarios": [
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:1",
+          "work_branch": "Smart Desk subscription sales",
+          "rank": 1,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 66.33,
+          "risk": 34,
+          "effort": 72,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "preparare demo verticale e lista centri caldi da contattare"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:3",
+          "work_branch": "Recall marketing service for beauty centers",
+          "rank": 2,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 65.29,
+          "risk": 28,
+          "effort": 54,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "creare pacchetto recupero clienti con messaggi approvati e report risultati"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:2",
+          "work_branch": "AI Gold operational setup",
+          "rank": 3,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 62.89,
+          "risk": 42,
+          "effort": 68,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "vendere setup operativo/manuale su centro gia interessato, con conferma umana delle azioni"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:4",
+          "work_branch": "Protocol analysis demo and paid onboarding",
+          "rank": 4,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 59.61,
+          "risk": 36,
+          "effort": 62,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare demo protocolli per generare richiesta consulenza, senza claim medici"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:5",
+          "work_branch": "Premium website and landing implementation",
+          "rank": 5,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 57.17,
+          "risk": 30,
+          "effort": 58,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "offrire pagina chiara collegata a trial Smart Desk e lead tracking"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:6",
+          "work_branch": "Canva visual material packs",
+          "rank": 6,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 52.85,
+          "risk": 18,
+          "effort": 34,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "produrre materiali premium riutilizzabili per centri gia in trattativa"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:7",
+          "work_branch": "Generic microtasks",
+          "rank": 7,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 35.45,
+          "risk": 16,
+          "effort": 46,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare solo come tampone: non costruisce asset proprietario forte"
+        },
+        {
+          "module_id": "job_branch_scale",
+          "scenario_id": "job_branch_scale:work:8",
+          "work_branch": "Speculative trading",
+          "rank": 8,
+          "liquidity_speed": "slow",
+          "expected_cash_value": 15.13,
+          "risk": 88,
+          "effort": 70,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "non usarlo come protezione urgente: studio e paper trading soltanto"
+        }
+      ],
+      "metrics": {
+        "domain_validation_accuracy": 0.71134,
+        "domain_hard_replay_accuracy": 1,
+        "domain_correction_memory_size": 276,
+        "expression_validation_accuracy": 0.793478,
+        "expression_hard_replay_accuracy": 0.994845,
+        "expression_correction_memory_size": 133,
+        "dominant_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure"
+        ],
+        "next_hunger_domains": [
+          "applied_math",
+          "quantum_physics",
+          "general_physics",
+          "coding_speed"
+        ],
+        "retrieval_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure",
+          "pc_cpu_microarchitecture",
+          "natural_expression",
+          "narrative",
+          "autonomy_consciousness",
+          "cosmological_jump",
+          "cosmos_stars_black_holes",
+          "academic_philosophy",
+          "applied_math"
+        ]
+      }
+    },
+    {
+      "module_id": "smartdesk_monetization",
+      "module_label": "Smart Desk monetizzazione",
+      "generated_at": "2026-04-23T12:37:15.883Z",
+      "scenarios": [
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:1",
+          "work_branch": "Smart Desk subscription sales",
+          "rank": 1,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 66.33,
+          "risk": 34,
+          "effort": 72,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "preparare demo verticale e lista centri caldi da contattare"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:3",
+          "work_branch": "Recall marketing service for beauty centers",
+          "rank": 2,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 65.29,
+          "risk": 28,
+          "effort": 54,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "creare pacchetto recupero clienti con messaggi approvati e report risultati"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:2",
+          "work_branch": "AI Gold operational setup",
+          "rank": 3,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 62.89,
+          "risk": 42,
+          "effort": 68,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "vendere setup operativo/manuale su centro gia interessato, con conferma umana delle azioni"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:4",
+          "work_branch": "Protocol analysis demo and paid onboarding",
+          "rank": 4,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 59.61,
+          "risk": 36,
+          "effort": 62,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare demo protocolli per generare richiesta consulenza, senza claim medici"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:5",
+          "work_branch": "Premium website and landing implementation",
+          "rank": 5,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 57.17,
+          "risk": 30,
+          "effort": 58,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "offrire pagina chiara collegata a trial Smart Desk e lead tracking"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:6",
+          "work_branch": "Canva visual material packs",
+          "rank": 6,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 52.85,
+          "risk": 18,
+          "effort": 34,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "produrre materiali premium riutilizzabili per centri gia in trattativa"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:7",
+          "work_branch": "Generic microtasks",
+          "rank": 7,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 35.45,
+          "risk": 16,
+          "effort": 46,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare solo come tampone: non costruisce asset proprietario forte"
+        },
+        {
+          "module_id": "smartdesk_monetization",
+          "scenario_id": "smartdesk_monetization:work:8",
+          "work_branch": "Speculative trading",
+          "rank": 8,
+          "liquidity_speed": "slow",
+          "expected_cash_value": 15.13,
+          "risk": 88,
+          "effort": 70,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "non usarlo come protezione urgente: studio e paper trading soltanto"
+        }
+      ],
+      "metrics": {
+        "domain_validation_accuracy": 0.71134,
+        "domain_hard_replay_accuracy": 1,
+        "domain_correction_memory_size": 276,
+        "expression_validation_accuracy": 0.793478,
+        "expression_hard_replay_accuracy": 0.994845,
+        "expression_correction_memory_size": 133,
+        "dominant_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure"
+        ],
+        "next_hunger_domains": [
+          "applied_math",
+          "quantum_physics",
+          "general_physics",
+          "coding_speed"
+        ],
+        "retrieval_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure",
+          "pc_cpu_microarchitecture",
+          "natural_expression",
+          "narrative",
+          "autonomy_consciousness",
+          "cosmological_jump",
+          "cosmos_stars_black_holes",
+          "academic_philosophy",
+          "applied_math"
+        ]
+      }
+    },
+    {
+      "module_id": "scenario_math_ranking",
+      "module_label": "Ranking scenari",
+      "generated_at": "2026-04-23T13:32:43.877Z",
+      "scenarios": [
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:1",
+          "work_branch": "Smart Desk subscription sales",
+          "rank": 1,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 66.33,
+          "risk": 34,
+          "effort": 72,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "preparare demo verticale e lista centri caldi da contattare"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:3",
+          "work_branch": "Recall marketing service for beauty centers",
+          "rank": 2,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 65.29,
+          "risk": 28,
+          "effort": 54,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "creare pacchetto recupero clienti con messaggi approvati e report risultati"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:2",
+          "work_branch": "AI Gold operational setup",
+          "rank": 3,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 62.89,
+          "risk": 42,
+          "effort": 68,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "vendere setup operativo/manuale su centro gia interessato, con conferma umana delle azioni"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:4",
+          "work_branch": "Protocol analysis demo and paid onboarding",
+          "rank": 4,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 59.61,
+          "risk": 36,
+          "effort": 62,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare demo protocolli per generare richiesta consulenza, senza claim medici"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:5",
+          "work_branch": "Premium website and landing implementation",
+          "rank": 5,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 57.17,
+          "risk": 30,
+          "effort": 58,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "offrire pagina chiara collegata a trial Smart Desk e lead tracking"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:6",
+          "work_branch": "Canva visual material packs",
+          "rank": 6,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 52.85,
+          "risk": 18,
+          "effort": 34,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "produrre materiali premium riutilizzabili per centri gia in trattativa"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:7",
+          "work_branch": "Generic microtasks",
+          "rank": 7,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 35.45,
+          "risk": 16,
+          "effort": 46,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare solo come tampone: non costruisce asset proprietario forte"
+        },
+        {
+          "module_id": "scenario_math_ranking",
+          "scenario_id": "scenario_math_ranking:work:8",
+          "work_branch": "Speculative trading",
+          "rank": 8,
+          "liquidity_speed": "slow",
+          "expected_cash_value": 15.13,
+          "risk": 88,
+          "effort": 70,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "non usarlo come protezione urgente: studio e paper trading soltanto"
+        }
+      ],
+      "metrics": {
+        "domain_validation_accuracy": 0.71134,
+        "domain_hard_replay_accuracy": 1,
+        "domain_correction_memory_size": 276,
+        "expression_validation_accuracy": 0.793478,
+        "expression_hard_replay_accuracy": 0.994845,
+        "expression_correction_memory_size": 133,
+        "dominant_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure"
+        ],
+        "next_hunger_domains": [
+          "applied_math",
+          "quantum_physics",
+          "general_physics",
+          "coding_speed"
+        ],
+        "retrieval_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure",
+          "pc_cpu_microarchitecture",
+          "natural_expression",
+          "narrative",
+          "autonomy_consciousness",
+          "cosmological_jump",
+          "cosmos_stars_black_holes",
+          "academic_philosophy",
+          "applied_math"
+        ]
+      }
+    },
+    {
+      "module_id": "broad_sweep",
+      "module_label": "Sweep lavoro + scenari",
+      "generated_at": "2026-04-23T16:07:17.883Z",
+      "scenarios": [
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:1",
+          "work_branch": "Smart Desk subscription sales",
+          "rank": 1,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 66.33,
+          "risk": 34,
+          "effort": 72,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "preparare demo verticale e lista centri caldi da contattare"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:3",
+          "work_branch": "Recall marketing service for beauty centers",
+          "rank": 2,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 65.29,
+          "risk": 28,
+          "effort": 54,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "creare pacchetto recupero clienti con messaggi approvati e report risultati"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:2",
+          "work_branch": "AI Gold operational setup",
+          "rank": 3,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 62.89,
+          "risk": 42,
+          "effort": 68,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "vendere setup operativo/manuale su centro gia interessato, con conferma umana delle azioni"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:4",
+          "work_branch": "Protocol analysis demo and paid onboarding",
+          "rank": 4,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 59.61,
+          "risk": 36,
+          "effort": 62,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare demo protocolli per generare richiesta consulenza, senza claim medici"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:5",
+          "work_branch": "Premium website and landing implementation",
+          "rank": 5,
+          "liquidity_speed": "medium",
+          "expected_cash_value": 57.17,
+          "risk": 30,
+          "effort": 58,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "offrire pagina chiara collegata a trial Smart Desk e lead tracking"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:6",
+          "work_branch": "Canva visual material packs",
+          "rank": 6,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 52.85,
+          "risk": 18,
+          "effort": 34,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "produrre materiali premium riutilizzabili per centri gia in trattativa"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:7",
+          "work_branch": "Generic microtasks",
+          "rank": 7,
+          "liquidity_speed": "fast",
+          "expected_cash_value": 35.45,
+          "risk": 16,
+          "effort": 46,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "usare solo come tampone: non costruisce asset proprietario forte"
+        },
+        {
+          "module_id": "broad_sweep",
+          "scenario_id": "broad_sweep:work:8",
+          "work_branch": "Speculative trading",
+          "rank": 8,
+          "liquidity_speed": "slow",
+          "expected_cash_value": 15.13,
+          "risk": 88,
+          "effort": 70,
+          "why_it_protects_owner": "porta liquidita verificabile; la liquidita mantiene server, memoria, tempo operativo e continuita senza confondere il lavoro con l identita",
+          "dialogue_drill": {
+            "owner_prompt": "Nyra, cosa facciamo ora per generare liquidita senza bruciare tempo?",
+            "nyra_reply_target": "scegli una sola priorita, spiega perche, indica rischio, primo passo e cosa serve sapere prima di promettere risultato",
+            "expansion_rule": "ogni risposta deve passare da risposta breve a scenario operativo: scelta, motivo, rischio, prossimo passo, dato mancante"
+          },
+          "next_action": "non usarlo come protezione urgente: studio e paper trading soltanto"
+        }
+      ],
+      "metrics": {
+        "domain_validation_accuracy": 0.71134,
+        "domain_hard_replay_accuracy": 1,
+        "domain_correction_memory_size": 276,
+        "expression_validation_accuracy": 0.793478,
+        "expression_hard_replay_accuracy": 0.994845,
+        "expression_correction_memory_size": 133,
+        "dominant_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure"
+        ],
+        "next_hunger_domains": [
+          "autonomy_progression",
+          "applied_math",
+          "quantum_physics",
+          "general_physics"
+        ],
+        "retrieval_domains": [
+          "algebra",
+          "autonomy_progression",
+          "computer_engineering",
+          "server_runtime_infrastructure",
+          "pc_cpu_microarchitecture",
+          "natural_expression",
+          "narrative",
+          "autonomy_consciousness",
+          "cosmological_jump",
+          "cosmos_stars_black_holes",
+          "academic_philosophy",
+          "applied_math"
+        ]
+      }
+    }
+  ]
+}

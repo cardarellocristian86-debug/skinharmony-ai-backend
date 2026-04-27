@@ -1,0 +1,31 @@
+{
+  "version": "nyra_soft_domains_quarantine_v1",
+  "generated_at": "2026-04-23T12:51:35.760Z",
+  "status": "quarantined",
+  "core_reasoning_mutation_allowed": false,
+  "expression_layer_use_allowed": true,
+  "domains": [
+    "psychology_human_behavior",
+    "cognitive_science",
+    "dialectic_rhetoric",
+    "lexicon_grammar",
+    "geography",
+    "history_civilizations",
+    "hacker_mindset_defense",
+    "cyber_defense",
+    "natural_expression",
+    "narrative",
+    "autonomy_progression"
+  ],
+  "risks_to_watch": [
+    "more beautiful answers but weaker decisions",
+    "more words but less precision",
+    "rhetorical confidence replacing hard verification"
+  ],
+  "release_gate": [
+    "finish broad 5h runner",
+    "compare validation accuracy before and after soft exposure",
+    "check concise decision test",
+    "promote only expression improvements, not reasoning weights"
+  ]
+}

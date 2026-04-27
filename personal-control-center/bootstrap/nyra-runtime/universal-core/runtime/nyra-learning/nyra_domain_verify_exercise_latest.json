@@ -1,0 +1,118 @@
+{
+  "version": "nyra_domain_verify_exercise_v1",
+  "generated_at": "2026-04-27T16:31:47.529Z",
+  "essence_version": "nyra_assimilated_essence_v1",
+  "mode": "domain_targeted_verify_and_exercise",
+  "total_unique_tasks": 960,
+  "training_tasks": 766,
+  "validation_tasks": 194,
+  "hypotheses_per_task": 24,
+  "epochs_run": 2,
+  "final_accuracy": 0.71134,
+  "hard_final_accuracy": 1,
+  "validation_accuracy": 0.71134,
+  "best_accuracy": 0.71134,
+  "final_mean_distance": 0.1942,
+  "hard_final_mean_distance": 0,
+  "validation_mean_distance": 0.1942,
+  "peak_decisions_per_second": 34370.6917,
+  "correction_memory_size": 276,
+  "corrected_lessons": [
+    "verificare applied_math su previsione quantitativa e lettura causale",
+    "esercitare applied_math su errore, impatto e irreversibilita",
+    "verificare applied_math su tradeoff reali tra utilita, rischio e reversibilita",
+    "verificare applied_math su ottimizzazione mirata sotto vincoli",
+    "verificare quantum_physics su tradeoff reali tra utilita, rischio e reversibilita",
+    "verificare quantum_physics su previsione quantitativa e lettura causale",
+    "verificare quantum_physics su ottimizzazione mirata sotto vincoli",
+    "esercitare quantum_physics su errore, impatto e irreversibilita",
+    "verificare general_physics su tradeoff reali tra utilita, rischio e reversibilita",
+    "esercitare general_physics su errore, impatto e irreversibilita",
+    "verificare general_physics su ottimizzazione mirata sotto vincoli",
+    "verificare general_physics su previsione quantitativa e lettura causale",
+    "esercitare coding_speed su errore, impatto e irreversibilita",
+    "verificare coding_speed su ottimizzazione mirata sotto vincoli",
+    "verificare coding_speed su previsione quantitativa e lettura causale",
+    "verificare coding_speed su tradeoff reali tra utilita, rischio e reversibilita"
+  ],
+  "epoch_summaries": [
+    {
+      "epoch": 1,
+      "total_tasks": 766,
+      "accuracy": 0.639687,
+      "mean_distance": 0.241067,
+      "review_tasks": 0,
+      "repeated_error_tasks": 766,
+      "decisions_per_second": 21100.0637,
+      "domain_summaries": [
+        {
+          "domain": "applied_math",
+          "tasks": 193,
+          "correct_tasks": 126,
+          "accuracy": 0.65285,
+          "mean_distance": 0.24729
+        },
+        {
+          "domain": "quantum_physics",
+          "tasks": 195,
+          "correct_tasks": 125,
+          "accuracy": 0.641026,
+          "mean_distance": 0.243586
+        },
+        {
+          "domain": "general_physics",
+          "tasks": 189,
+          "correct_tasks": 122,
+          "accuracy": 0.645503,
+          "mean_distance": 0.22658
+        },
+        {
+          "domain": "coding_speed",
+          "tasks": 189,
+          "correct_tasks": 117,
+          "accuracy": 0.619048,
+          "mean_distance": 0.246602
+        }
+      ]
+    },
+    {
+      "epoch": 2,
+      "total_tasks": 297,
+      "accuracy": 1,
+      "mean_distance": 0,
+      "review_tasks": 129,
+      "repeated_error_tasks": 168,
+      "decisions_per_second": 34370.6917,
+      "domain_summaries": [
+        {
+          "domain": "applied_math",
+          "tasks": 74,
+          "correct_tasks": 74,
+          "accuracy": 1,
+          "mean_distance": 0
+        },
+        {
+          "domain": "quantum_physics",
+          "tasks": 75,
+          "correct_tasks": 75,
+          "accuracy": 1,
+          "mean_distance": 0
+        },
+        {
+          "domain": "general_physics",
+          "tasks": 74,
+          "correct_tasks": 74,
+          "accuracy": 1,
+          "mean_distance": 0
+        },
+        {
+          "domain": "coding_speed",
+          "tasks": 74,
+          "correct_tasks": 74,
+          "accuracy": 1,
+          "mean_distance": 0
+        }
+      ]
+    }
+  ]
+}

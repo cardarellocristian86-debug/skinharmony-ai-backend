@@ -41,6 +41,7 @@ function nyraPersistentPath(relativePath) {
   return (
     normalized.startsWith("personal-control-center/data/nyra-") ||
     normalized.startsWith("runtime/nyra-learning/nyra_") ||
+    normalized.startsWith("universal-core/runtime/nyra/") ||
     normalized.startsWith("universal-core/runtime/nyra-learning/nyra_") ||
     normalized.startsWith("universal-core/data/world-market") ||
     normalized.startsWith("reports/universal-core/")
@@ -90,9 +91,30 @@ function readJson(relativePath, fallback = null) {
 }
 
 function readText(relativePath, fallback = "") {
-  const filePath = path.join(rootDir, relativePath);
+  const filePath = resolveStoragePath(relativePath);
   if (!fs.existsSync(filePath)) return fallback;
   return fs.readFileSync(filePath, "utf8");
+}
+
+function seedNyraRuntimeFromBootstrap() {
+  if (!nyraStorageRoot) return;
+  const bootstrapRoot = path.join(__dirname, "bootstrap", "nyra-runtime");
+  if (!fs.existsSync(bootstrapRoot)) return;
+  const copyMissing = (sourceDir, targetDir) => {
+    if (!fs.existsSync(sourceDir)) return;
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+      const sourcePath = path.join(sourceDir, entry.name);
+      const targetPath = path.join(targetDir, entry.name);
+      if (entry.isDirectory()) {
+        copyMissing(sourcePath, targetPath);
+        continue;
+      }
+      if (fs.existsSync(targetPath)) continue;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  };
+  copyMissing(bootstrapRoot, nyraStorageRoot);
 }
 
 function runNodeJson(args, options = {}) {
@@ -5363,6 +5385,7 @@ app.post("/api/tasks", (req, res) => {
 
 const server = app.listen(port, host, () => {
   console.log(`SkinHarmony Control Desk attivo su http://${host}:${port}`);
+  seedNyraRuntimeFromBootstrap();
   restoreNyraWorldPaperAutoState();
   applyNyraWorldPaperAutoEnvDefaults();
   const runPaperOnBoot = nyraWorldPaperAutoState.enabled && ["1", "true", "yes", "on"].includes(String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "").trim().toLowerCase());

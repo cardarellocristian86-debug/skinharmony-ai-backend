@@ -1,0 +1,185 @@
+{
+  "generated_at": "2026-04-27T12:38:06.635Z",
+  "runner": "nyra_smartdesk_strategic_vertical_branch",
+  "branch": "smartdesk_strategic_vertical_targets",
+  "thesis": "Smart Desk non va raccontato come tesi aziendale generale ma come prima superficie applicativa di un core piu grande.",
+  "rule": "Per Smart Desk cercare player e partner verticali strategici; per Universal Core / Nyra cercare investitori core-first.",
+  "smartdesk_positioning": "prima shell verticale beauty/wellness di un operating intelligence layer riutilizzabile",
+  "targets": [
+    {
+      "name": "Fresha",
+      "category": "marketplace",
+      "region": "global",
+      "language": "en",
+      "source_url": "https://www.fresha.com/",
+      "angle": "marketplace + growth operating layer",
+      "fit_score": 0.84,
+      "access_probability": 0.42,
+      "partnership_probability": 0.13,
+      "why_fit": "player globale con forte esposizione beauty/wellness e sensibilita su monetizzazione, retention e workflow.",
+      "email": {
+        "subject": "Strategic fit: Smart Desk as the first applied surface of a broader operating intelligence layer",
+        "body": "Hello Fresha,\n\nI am reaching out because Smart Desk should not be read as a narrow salon tool. It is the first applied surface of a broader operating intelligence layer built through Universal Core + Nyra.\n\nThe beauty vertical is simply where we are proving the first live shell. The larger asset is the reusable layer underneath: operational reading, prioritisation and guided action that can sit above real business systems.\n\nGiven Fresha's position in beauty and wellness, I believe there may be strategic overlap worth exploring.",
+        "ask": "Would you be open to a short exploratory call?"
+      }
+    },
+    {
+      "name": "Treatwell",
+      "category": "marketplace",
+      "region": "europe",
+      "language": "en",
+      "source_url": "https://www.treatwell.com/",
+      "angle": "marketplace + operating intelligence layer",
+      "fit_score": 0.82,
+      "access_probability": 0.38,
+      "partnership_probability": 0.12,
+      "why_fit": "player verticale forte sul beauty booking; Smart Desk puo essere raccontato come operating layer sopra workflow reali di centro.",
+      "email": {
+        "subject": "Strategic conversation: Smart Desk as an operating layer beyond vertical salon software",
+        "body": "Hello Treatwell,\n\nSmart Desk is not the company thesis by itself. It is the first applied surface of a broader operating intelligence layer we are building through Universal Core + Nyra.\n\nToday it is applied to salon and beauty workflows, but the logic is larger than one vertical shell: it is about turning operational data, priority reading and next-action guidance into a reusable layer that can sit above real systems.\n\nI believe there may be strategic value in a conversation with a strong beauty/wellness operator that understands both workflow friction and monetisation pressure.",
+        "ask": "If relevant, I would value a short strategic conversation."
+      }
+    },
+    {
+      "name": "Phorest",
+      "category": "salon_software",
+      "region": "europe",
+      "language": "en",
+      "source_url": "https://www.phorest.com/about/",
+      "angle": "salon software + decision layer",
+      "fit_score": 0.8,
+      "access_probability": 0.41,
+      "partnership_probability": 0.11,
+      "why_fit": "software verticale puro; Smart Desk puo essere letto come premium operating layer rather than simple competing front-end.",
+      "email": {
+        "subject": "Smart Desk is not just a vertical tool: it is a reusable operating layer",
+        "body": "Hello Phorest,\n\nI am reaching out with a strategic angle rather than a simple product pitch. Smart Desk is currently applied to salon and beauty workflows, but it is only the first visible shell of a broader operating intelligence layer built through Universal Core + Nyra.\n\nThe value is not another dashboard. The value is a reusable layer for reading data, setting priorities and guiding action across real workflows.\n\nThat may create a more interesting conversation than a standard vertical software comparison.",
+        "ask": "If worth exploring, I would value a short first call."
+      }
+    },
+    {
+      "name": "Zenoti",
+      "category": "wellness_platform",
+      "region": "global",
+      "language": "en",
+      "source_url": "https://www.zenoti.com/",
+      "angle": "wellness OS + operating intelligence",
+      "fit_score": 0.78,
+      "access_probability": 0.34,
+      "partnership_probability": 0.09,
+      "why_fit": "player di scala con linguaggio gia vicino a workflow + AI; utile per confronto strategico alto livello.",
+      "email": {
+        "subject": "Operating intelligence layer for beauty and wellness workflows",
+        "body": "Hello Zenoti,\n\nI am reaching out because I believe there may be strategic relevance in the layer we are building through Universal Core + Nyra.\n\nSmart Desk is the first applied surface in beauty and wellness, but the deeper asset is a reusable operating intelligence layer: a system built to read data, surface priorities and guide action above real workflows.\n\nGiven Zenoti's focus on software and AI inside beauty and wellness operations, this may be relevant as a strategic conversation.",
+        "ask": "If useful, I can share a concise note and set up a short introduction."
+      }
+    },
+    {
+      "name": "Booksy",
+      "category": "marketplace",
+      "region": "global",
+      "language": "en",
+      "source_url": "https://booksy.com/",
+      "angle": "booking platform + operating layer",
+      "fit_score": 0.76,
+      "access_probability": 0.39,
+      "partnership_probability": 0.1,
+      "why_fit": "fit buono su booking/business workflows e monetizzazione lato merchant.",
+      "email": {
+        "subject": "Beyond booking: an operating layer for beauty business workflows",
+        "body": "Hello Booksy,\n\nI am reaching out because Smart Desk should not be read only as a beauty vertical product. It is the first applied shell of a broader operating intelligence layer built through Universal Core + Nyra.\n\nThe larger thesis is a reusable layer that can read workflow data, identify operational priorities and guide action inside real business systems.\n\nThat may create strategic overlap beyond the usual booking-software framing.",
+        "ask": "Would you be open to a short strategic introduction?"
+      }
+    },
+    {
+      "name": "Vagaro",
+      "category": "wellness_platform",
+      "region": "global",
+      "language": "en",
+      "source_url": "https://www.vagaro.com/",
+      "angle": "business management + AI layer",
+      "fit_score": 0.74,
+      "access_probability": 0.36,
+      "partnership_probability": 0.09,
+      "why_fit": "piattaforma ampia con possibile sensibilita a layer operativo differenziante.",
+      "email": {
+        "subject": "A strategic operating layer for salons and wellness businesses",
+        "body": "Hello Vagaro,\n\nI am reaching out with a strategic software angle. Smart Desk is the first visible product shell of a broader layer we are building through Universal Core + Nyra.\n\nThe underlying asset is an operating intelligence layer: reading workflow data, structuring priorities and guiding next action across real business environments.\n\nI believe this may be a more relevant framing than reading Smart Desk as a standalone vertical tool.",
+        "ask": "If relevant, I would value a short conversation."
+      }
+    },
+    {
+      "name": "Planity",
+      "category": "marketplace",
+      "region": "europe",
+      "language": "en",
+      "source_url": "https://www.planity.com/",
+      "angle": "European booking + operating layer",
+      "fit_score": 0.73,
+      "access_probability": 0.34,
+      "partnership_probability": 0.08,
+      "why_fit": "fit europeo beauty booking / salon operations.",
+      "email": {
+        "subject": "Strategic overlap between vertical beauty software and operating intelligence",
+        "body": "Hello Planity,\n\nI am reaching out because Smart Desk is not the full thesis by itself. It is the first applied surface of a broader operating intelligence layer we are building.\n\nThe underlying layer is designed to sit above real workflows and turn business data into priorities and guided action. The beauty vertical is simply where we are validating the first shell.",
+        "ask": "If useful, I can share a concise note and open a short conversation."
+      }
+    },
+    {
+      "name": "Boulevard",
+      "category": "salon_software",
+      "region": "global",
+      "language": "en",
+      "source_url": "https://www.joinblvd.com/",
+      "angle": "premium client experience + operating intelligence",
+      "fit_score": 0.72,
+      "access_probability": 0.33,
+      "partnership_probability": 0.08,
+      "why_fit": "player premium e software-first; possibile dialogo su layer operativo e decisionale.",
+      "email": {
+        "subject": "Smart Desk as a premium operating shell above a broader intelligence core",
+        "body": "Hello Boulevard,\n\nI am reaching out because the larger thesis behind Smart Desk is not another vertical interface. Smart Desk is the first applied shell of a broader intelligence and orchestration core built through Universal Core + Nyra.\n\nThat core is designed to sit above real workflows, read business signals, set priorities and support action in a more operational way than passive software layers.",
+        "ask": "If this angle is relevant, I would value a short first exchange."
+      }
+    },
+    {
+      "name": "Mangomint",
+      "category": "salon_software",
+      "region": "global",
+      "language": "en",
+      "source_url": "https://www.mangomint.com/",
+      "angle": "modern salon software + premium ops layer",
+      "fit_score": 0.7,
+      "access_probability": 0.35,
+      "partnership_probability": 0.08,
+      "why_fit": "software moderno verticale con possibile interesse per layer premium di decision support.",
+      "email": {
+        "subject": "From salon software shell to reusable operating intelligence",
+        "body": "Hello Mangomint,\n\nI am reaching out with a strategic framing. Smart Desk is not meant to be read only as a salon vertical tool. It is the first applied shell of a broader operating intelligence layer built through Universal Core + Nyra.\n\nThe long-term asset is the reusable layer below the shell: workflow reading, prioritisation and guided action.",
+        "ask": "If this is worth exploring, I would value a short introduction."
+      }
+    },
+    {
+      "name": "Salonkee",
+      "category": "marketplace",
+      "region": "europe",
+      "language": "en",
+      "source_url": "https://salonkee.lu/",
+      "angle": "salon marketplace + operator layer",
+      "fit_score": 0.68,
+      "access_probability": 0.37,
+      "partnership_probability": 0.08,
+      "why_fit": "player verticale europeo con taglio vicino al merchant workflow.",
+      "email": {
+        "subject": "A reusable intelligence layer beneath the beauty software shell",
+        "body": "Hello Salonkee,\n\nI am reaching out because the deeper asset we are building is not a beauty-only dashboard. Smart Desk is the first visible shell of a larger operating intelligence layer built through Universal Core + Nyra.\n\nThat may be strategically relevant for companies that already understand the friction of real salon and beauty workflows.",
+        "ask": "If relevant, I would value a short conversation."
+      }
+    }
+  ],
+  "notes": [
+    "questi target vanno trattati come strategic players / potential partners / eventuali acquirenti, non come stessa corsia dei fondi core-first",
+    "nella prima mail non mostrare blueprint architetturale interno",
+    "parlare di Smart Desk come shell applicativa e del core solo ad alto livello"
+  ]
+}

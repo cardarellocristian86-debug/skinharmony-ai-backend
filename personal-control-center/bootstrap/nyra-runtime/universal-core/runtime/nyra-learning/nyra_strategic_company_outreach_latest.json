@@ -1,0 +1,137 @@
+{
+  "runner": "nyra_strategic_company_outreach_branch",
+  "generated_at": "2026-04-27T13:55:08.207Z",
+  "purpose": "Prepare personalized outreach packs for strategic companies where Universal Core + Nyra could fit as an orchestration/operating-intelligence layer.",
+  "drafts": [
+    {
+      "name": "SAP",
+      "category": "erp_finance",
+      "score": 79.933173,
+      "band": "high",
+      "channel": {
+        "type": "contact_sales",
+        "official_url": "https://www.sap.com/products/artificial-intelligence.html",
+        "note": "Entry ufficiale prodotto/AI; contact sales da path SAP commerciale."
+      },
+      "subject": "Universal Core + Nyra: possible fit for SAP",
+      "body": "Hello SAP,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above ERP, finance and operational decision workflows.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "ServiceNow",
+      "category": "workflow",
+      "score": 79.753973,
+      "band": "high",
+      "channel": {
+        "type": "contact_sales",
+        "official_url": "https://www.servicenow.com/contact-us/sales.html",
+        "note": "Form ufficiale sales; no email pubblica diretta emersa."
+      },
+      "subject": "Universal Core + Nyra: possible fit for ServiceNow",
+      "body": "Hello ServiceNow,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above workflow systems, control surfaces and operational orchestration.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "Microsoft Dynamics 365",
+      "category": "erp_finance",
+      "score": 78.550773,
+      "band": "high",
+      "channel": {
+        "type": "contact_request",
+        "official_url": "https://www.microsoft.com/en-us/dynamics-365/contact-us",
+        "note": "Request-a-call ufficiale Dynamics."
+      },
+      "subject": "Universal Core + Nyra: possible fit for Microsoft Dynamics 365",
+      "body": "Hello Microsoft Dynamics 365,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above ERP, finance and operational decision workflows.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "Workday",
+      "category": "erp_finance",
+      "score": 78.067573,
+      "band": "high",
+      "channel": {
+        "type": "contact_sales",
+        "official_url": "https://www.workday.com/en-us/artificial-intelligence/ai-agents.html",
+        "note": "Entry ufficiale AI agents; contact sales da percorso Workday commerciale."
+      },
+      "subject": "Universal Core + Nyra: possible fit for Workday",
+      "body": "Hello Workday,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above ERP, finance and operational decision workflows.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "Salesforce",
+      "category": "crm",
+      "score": 76.934773,
+      "band": "high",
+      "channel": {
+        "type": "contact_sales",
+        "official_url": "https://www.salesforce.com/platform/",
+        "note": "Ingresso migliore: sales/platform path ufficiale, poi contact sales dalla pagina."
+      },
+      "subject": "Universal Core + Nyra: possible fit for Salesforce",
+      "body": "Hello Salesforce,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above CRM operations, customer workflows and next-action logic.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "Oracle",
+      "category": "enterprise_ai",
+      "score": 76.133173,
+      "band": "high",
+      "channel": {
+        "type": "contact_sales",
+        "official_url": "https://www.oracle.com/artificial-intelligence/generative-ai/agents/",
+        "note": "Entry ufficiale agents/OCI; usare sales/contact Oracle dal path prodotto."
+      },
+      "subject": "Universal Core + Nyra: possible fit for Oracle",
+      "body": "Hello Oracle,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above enterprise AI, orchestration and agent workflows.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "Adobe",
+      "category": "cx_platform",
+      "score": 73.523573,
+      "band": "high",
+      "channel": {
+        "type": "contact_request",
+        "official_url": "https://business.adobe.com/",
+        "note": "Entry enterprise/CX ufficiale; richiesta commerciale tramite percorso business."
+      },
+      "subject": "Universal Core + Nyra: possible fit for Adobe",
+      "body": "Hello Adobe,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above customer experience, marketing and orchestration workflows.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "Atlassian",
+      "category": "workflow",
+      "score": 73.041973,
+      "band": "high",
+      "channel": {
+        "type": "request_demo",
+        "official_url": "https://www.atlassian.com/software/rovo",
+        "note": "Entry ufficiale Rovo; demo/contact dal sito Atlassian."
+      },
+      "subject": "Universal Core + Nyra: possible fit for Atlassian",
+      "body": "Hello Atlassian,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above workflow systems, control surfaces and operational orchestration.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "monday.com",
+      "category": "workflow",
+      "score": 71.643573,
+      "band": "medium",
+      "channel": {
+        "type": "request_demo",
+        "official_url": "https://www.monday.com/w/ai",
+        "note": "Entry ufficiale monday AI; demo/contact dal sito."
+      },
+      "subject": "Universal Core + Nyra: possible fit for monday.com",
+      "body": "Hello monday.com,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above workflow systems, control surfaces and operational orchestration.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    },
+    {
+      "name": "HubSpot",
+      "category": "crm",
+      "score": 71.272373,
+      "band": "medium",
+      "channel": {
+        "type": "contact_sales",
+        "official_url": "https://offers.hubspot.com/contact-sales",
+        "note": "Form ufficiale contact sales con numeri locali."
+      },
+      "subject": "Universal Core + Nyra: possible fit for HubSpot",
+      "body": "Hello HubSpot,\n\nI am Cristian Cardarello.\n\nI am building Universal Core and Nyra: a reusable operating intelligence layer, not a single vertical software product.\n\nThe reason I am reaching out is simple: I believe there may be a fit between your current direction and a reusable intelligence layer that can sit above CRM operations, customer workflows and next-action logic.\n\nToday the system is already in use across Smart Desk, Flow, Control Desk and a finance testing branch. Smart Desk is the first live applied shell, but it is not the limit of the architecture.\n\nUniversal Core is the decision and orchestration architecture. Nyra is the operative agent built on top of it. It is not static: it adapts across domains under a controlled architecture and improves through testing, selection and controlled iteration.\n\nThe infrastructure is still compact, but already real and operational. Funding or strategic partnership would not be used to invent the base from zero, but to scale and harden a base that already exists.\n\nIn the clearest live proof so far, Smart Desk has already held 100 centers / 1100 requests with 0 errors and 0 timeouts. In the finance branch, Nyra has already shown strong signals in bubble detection and lateral defense, while still being explicitly treated as a real testing branch, not a finished product.\n\nIf this direction is relevant for your team, I can send a short deck and a tighter strategic note.\n\nCristian Cardarello"
+    }
+  ]
+}

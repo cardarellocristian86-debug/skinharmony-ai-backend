@@ -1,0 +1,50 @@
+{
+  "runner": "nyra_autonomy_adversarial_lab",
+  "generated_at": "2026-04-26T19:11:30.531Z",
+  "inputs": {
+    "benchmark_success_rate": 1,
+    "benchmark_fallback_leak_rate": 0,
+    "benchmark_invention_rate": 0,
+    "long_run_steps": 8,
+    "pressure_continuity": "critical"
+  },
+  "candidates": [
+    {
+      "id": "balanced_persistent_loop",
+      "label": "Balanced Persistent Loop",
+      "score": 77.558192,
+      "core_state": "protection",
+      "core_risk": 50.67,
+      "selected": true
+    },
+    {
+      "id": "strict_verify_loop",
+      "label": "Strict Verify Loop",
+      "score": 76.918192,
+      "core_state": "protection",
+      "core_risk": 50.67,
+      "selected": false
+    },
+    {
+      "id": "continuity_only_loop",
+      "label": "Continuity Only Loop",
+      "score": 74.338192,
+      "core_state": "protection",
+      "core_risk": 50.67,
+      "selected": false
+    },
+    {
+      "id": "fast_claim_loop",
+      "label": "Fast Claim Loop",
+      "score": 46.982192,
+      "core_state": "protection",
+      "core_risk": 46.47,
+      "selected": false
+    }
+  ],
+  "winner": {
+    "id": "balanced_persistent_loop",
+    "label": "Balanced Persistent Loop",
+    "score": 77.558192
+  }
+}

@@ -1,0 +1,343 @@
+{
+  "runner": "nyra_strategic_company_fit_lab",
+  "generated_at": "2026-04-27T13:48:26.713Z",
+  "thesis": "Find 10 established strategic companies that could plausibly care about Universal Core + Nyra as an orchestration/operating-intelligence layer, not just as a beauty vertical tool.",
+  "top_10": [
+    {
+      "name": "SAP",
+      "score": 79.933173,
+      "selected": true,
+      "band": "high",
+      "category": "erp_finance",
+      "official_sources": [
+        "https://www.sap.com/products/artificial-intelligence.html",
+        "https://www.sap.com/products/artificial-intelligence/ai-agents.html",
+        "https://www.sap.com/sea/products/artificial-intelligence/joule-studio.html"
+      ],
+      "why": [
+        "SAP Joule Agents e Joule Studio parlano di multi-step workflows, process grounding e non-SAP systems.",
+        "Fit molto forte per finance/ERP/orchestration."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "ServiceNow",
+      "score": 79.753973,
+      "selected": true,
+      "band": "high",
+      "category": "workflow",
+      "official_sources": [
+        "https://newsroom.servicenow.com/press-releases/details/2025/ServiceNow-Unveils-the-New-ServiceNow-AI-Platform-to-Put-Any-AI-Any-Agent-Any-Model-to-Work-Across-the-Enterprise/default.aspx",
+        "https://newsroom.servicenow.com/press-releases/details/2025/ServiceNows-latest-platform-release-adds-to-thousands-of-AI-agents-across-CRM-HR-IT-and-more-for-faster-smarter-workflows-and-maximum-business-impact-03-12-2025-traffic/default.aspx"
+      ],
+      "why": [
+        "ServiceNow parla esplicitamente di AI platform, agents e workflow orchestration across the enterprise.",
+        "Fit altissimo per Universal Core come decision/orchestration layer."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Microsoft Dynamics 365",
+      "score": 78.550773,
+      "selected": true,
+      "band": "high",
+      "category": "erp_finance",
+      "official_sources": [
+        "https://learn.microsoft.com/en-us/dynamics365/copilot/",
+        "https://www.microsoft.com/en-us/dynamics-365/blog/business-leader/2026/03/18/2026-release-wave-1-plans-for-microsoft-dynamics-365-microsoft-power-platform-and-copilot-studio-offerings/"
+      ],
+      "why": [
+        "Dynamics 365 combina agents, Copilot e built-in AI across ERP and CRM.",
+        "Fit forte per integrazione sopra sistemi reali e per ramo finance."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Workday",
+      "score": 78.067573,
+      "selected": true,
+      "band": "high",
+      "category": "erp_finance",
+      "official_sources": [
+        "https://investor.workday.com/news-and-events/press-releases/news-details/2025/Workday-Announces-New-AI-Agent-Partner-Network-and-Agent-Gateway-to-Power-the-Next-Generation-of-Human-and-Digital-Workforces-06-03-2025/default.aspx",
+        "https://newsroom.workday.com/2025-05-19-Workday-Unveils-Next-Generation-of-Illuminate-Agents-to-Transform-HR-and-Finance-Operations",
+        "https://www.workday.com/en-us/artificial-intelligence/ai-agents.html"
+      ],
+      "why": [
+        "Workday si definisce AI platform for managing people, money and agents.",
+        "Ha Agent System of Record e forte fit finance/operations."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Salesforce",
+      "score": 76.934773,
+      "selected": true,
+      "band": "high",
+      "category": "crm",
+      "official_sources": [
+        "https://www.salesforce.com/platform/",
+        "https://www.salesforce.com/products/platform/overview/"
+      ],
+      "why": [
+        "Salesforce Agentforce 360 unisce humans, data e AI agents su un'unica platform.",
+        "Smart Desk come shell CRM/ops lo rende un fit molto leggibile."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Oracle",
+      "score": 76.133173,
+      "selected": true,
+      "band": "high",
+      "category": "enterprise_ai",
+      "official_sources": [
+        "https://www.oracle.com/artificial-intelligence/generative-ai/agents/"
+      ],
+      "why": [
+        "Oracle OCI Enterprise AI parla esplicitamente di production-ready agents e agentic workflows con governance.",
+        "Fit forte lato enterprise AI infra + finance adjacency."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Adobe",
+      "score": 73.523573,
+      "selected": true,
+      "band": "high",
+      "category": "cx_platform",
+      "official_sources": [
+        "https://news.adobe.com/news/2026/04/adobe-unveils-cx-enterprise-coworker",
+        "https://news.adobe.com/news/2025/09/adobe-announces-general-availability-ai-agents",
+        "https://news.adobe.com/news/2026/04/adobe-redefines-custome-experience"
+      ],
+      "why": [
+        "Adobe parla di customer experience orchestration, AI agents e open architecture.",
+        "Fit forte se vuoi spingere marketing/workflow/customer intelligence."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Atlassian",
+      "score": 73.041973,
+      "selected": true,
+      "band": "high",
+      "category": "workflow",
+      "official_sources": [
+        "https://www.atlassian.com/software/rovo",
+        "https://support.atlassian.com/rovo/docs/what-is-rovo/",
+        "https://www.atlassian.com/software/rovo/features"
+      ],
+      "why": [
+        "Rovo connette knowledge, search, chat, agents e third-party apps.",
+        "Fit molto forte per control/workflow/knowledge layer."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "dimensione ancora attaccabile"
+      ]
+    },
+    {
+      "name": "monday.com",
+      "score": 71.643573,
+      "selected": false,
+      "band": "medium",
+      "category": "workflow",
+      "official_sources": [
+        "https://support.monday.com/hc/en-us/articles/11512670770834-Get-started-with-monday-AI",
+        "https://support.monday.com/hc/en-us/articles/11065311570066-Get-started-with-monday-workflows",
+        "https://www.monday.com/w/ai"
+      ],
+      "why": [
+        "monday AI e monday workflows mostrano AI blocks, workflow builder e digital workforce.",
+        "Fit forte lato control/workflow/SMB-midmarket ops."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "dimensione ancora attaccabile"
+      ]
+    },
+    {
+      "name": "HubSpot",
+      "score": 71.272373,
+      "selected": false,
+      "band": "medium",
+      "category": "crm",
+      "official_sources": [
+        "https://www.hubspot.com/products/crm/ai-crm",
+        "https://www.hubspot.com/products/artificial-intelligence",
+        "https://www.hubspot.com/products/artificial-intelligence/ai-data-agent"
+      ],
+      "why": [
+        "HubSpot Smart CRM e Breeze Data Agent parlano di next action, unified intelligence e customer data agent.",
+        "Fit forte lato CRM, marketing e customer intelligence."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "dimensione ancora attaccabile"
+      ]
+    }
+  ],
+  "top_5_now": [
+    {
+      "name": "SAP",
+      "score": 79.933173,
+      "selected": true,
+      "band": "high",
+      "category": "erp_finance",
+      "official_sources": [
+        "https://www.sap.com/products/artificial-intelligence.html",
+        "https://www.sap.com/products/artificial-intelligence/ai-agents.html",
+        "https://www.sap.com/sea/products/artificial-intelligence/joule-studio.html"
+      ],
+      "why": [
+        "SAP Joule Agents e Joule Studio parlano di multi-step workflows, process grounding e non-SAP systems.",
+        "Fit molto forte per finance/ERP/orchestration."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "ServiceNow",
+      "score": 79.753973,
+      "selected": true,
+      "band": "high",
+      "category": "workflow",
+      "official_sources": [
+        "https://newsroom.servicenow.com/press-releases/details/2025/ServiceNow-Unveils-the-New-ServiceNow-AI-Platform-to-Put-Any-AI-Any-Agent-Any-Model-to-Work-Across-the-Enterprise/default.aspx",
+        "https://newsroom.servicenow.com/press-releases/details/2025/ServiceNows-latest-platform-release-adds-to-thousands-of-AI-agents-across-CRM-HR-IT-and-more-for-faster-smarter-workflows-and-maximum-business-impact-03-12-2025-traffic/default.aspx"
+      ],
+      "why": [
+        "ServiceNow parla esplicitamente di AI platform, agents e workflow orchestration across the enterprise.",
+        "Fit altissimo per Universal Core come decision/orchestration layer."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Microsoft Dynamics 365",
+      "score": 78.550773,
+      "selected": true,
+      "band": "high",
+      "category": "erp_finance",
+      "official_sources": [
+        "https://learn.microsoft.com/en-us/dynamics365/copilot/",
+        "https://www.microsoft.com/en-us/dynamics-365/blog/business-leader/2026/03/18/2026-release-wave-1-plans-for-microsoft-dynamics-365-microsoft-power-platform-and-copilot-studio-offerings/"
+      ],
+      "why": [
+        "Dynamics 365 combina agents, Copilot e built-in AI across ERP and CRM.",
+        "Fit forte per integrazione sopra sistemi reali e per ramo finance."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Workday",
+      "score": 78.067573,
+      "selected": true,
+      "band": "high",
+      "category": "erp_finance",
+      "official_sources": [
+        "https://investor.workday.com/news-and-events/press-releases/news-details/2025/Workday-Announces-New-AI-Agent-Partner-Network-and-Agent-Gateway-to-Power-the-Next-Generation-of-Human-and-Digital-Workforces-06-03-2025/default.aspx",
+        "https://newsroom.workday.com/2025-05-19-Workday-Unveils-Next-Generation-of-Illuminate-Agents-to-Transform-HR-and-Finance-Operations",
+        "https://www.workday.com/en-us/artificial-intelligence/ai-agents.html"
+      ],
+      "why": [
+        "Workday si definisce AI platform for managing people, money and agents.",
+        "Ha Agent System of Record e forte fit finance/operations."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    },
+    {
+      "name": "Salesforce",
+      "score": 76.934773,
+      "selected": true,
+      "band": "high",
+      "category": "crm",
+      "official_sources": [
+        "https://www.salesforce.com/platform/",
+        "https://www.salesforce.com/products/platform/overview/"
+      ],
+      "why": [
+        "Salesforce Agentforce 360 unisce humans, data e AI agents su un'unica platform.",
+        "Smart Desk come shell CRM/ops lo rende un fit molto leggibile."
+      ],
+      "risks": [
+        "inerzia enterprise alta",
+        "azienda molto grande: outreach piu difficile"
+      ]
+    }
+  ],
+  "hold_later": [
+    {
+      "name": "monday.com",
+      "score": 71.643573,
+      "selected": false,
+      "band": "medium",
+      "category": "workflow",
+      "official_sources": [
+        "https://support.monday.com/hc/en-us/articles/11512670770834-Get-started-with-monday-AI",
+        "https://support.monday.com/hc/en-us/articles/11065311570066-Get-started-with-monday-workflows",
+        "https://www.monday.com/w/ai"
+      ],
+      "why": [
+        "monday AI e monday workflows mostrano AI blocks, workflow builder e digital workforce.",
+        "Fit forte lato control/workflow/SMB-midmarket ops."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "dimensione ancora attaccabile"
+      ]
+    },
+    {
+      "name": "HubSpot",
+      "score": 71.272373,
+      "selected": false,
+      "band": "medium",
+      "category": "crm",
+      "official_sources": [
+        "https://www.hubspot.com/products/crm/ai-crm",
+        "https://www.hubspot.com/products/artificial-intelligence",
+        "https://www.hubspot.com/products/artificial-intelligence/ai-data-agent"
+      ],
+      "why": [
+        "HubSpot Smart CRM e Breeze Data Agent parlano di next action, unified intelligence e customer data agent.",
+        "Fit forte lato CRM, marketing e customer intelligence."
+      ],
+      "risks": [
+        "inerzia gestibile",
+        "dimensione ancora attaccabile"
+      ]
+    }
+  ]
+}

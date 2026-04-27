@@ -1,0 +1,254 @@
+{
+  "generated_at": "2026-04-26T20:18:12.757Z",
+  "runner": "nyra_product_readiness_test",
+  "status": "completed",
+  "stable_tag": "nyra_auto_selector_fee_efficiency_v2_stable",
+  "methodology": "5-year sellability scenario with bull, shock, recovery, long lateral, false breakout and final bull. Fee 0.2%, slippage 0.5%, decision T execution T+1.",
+  "setup": {
+    "initial_capital": 100000,
+    "months": 60,
+    "fee": 0.002,
+    "slippage": 0.005,
+    "assets": [
+      "QQQ",
+      "GLD",
+      "TLT",
+      "CASH"
+    ]
+  },
+  "metrics": {
+    "qqq": {
+      "final_capital": 361585.41,
+      "return_pct": 261.5854,
+      "CAGR": 29.313,
+      "max_drawdown": 31.4572,
+      "Sharpe": 1.7906,
+      "Sortino": 2.7449,
+      "recovery_time": 14,
+      "rebalance_count": 0,
+      "fees": 0,
+      "fee_pct_initial": 0,
+      "annual_turnover_pct": 0,
+      "time_in_cash_pct": 0,
+      "avg_risk_pct": 100
+    },
+    "nyra": {
+      "final_capital": 157810.99,
+      "return_pct": 57.811,
+      "CAGR": 9.5538,
+      "max_drawdown": 3.398,
+      "Sharpe": 2.0899,
+      "Sortino": 5.7786,
+      "recovery_time": 17,
+      "rebalance_count": 26,
+      "fees": 7221.92,
+      "fee_pct_initial": 7.2219,
+      "annual_turnover_pct": 182.8679,
+      "time_in_cash_pct": 30.6227,
+      "avg_risk_pct": 69.3773
+    }
+  },
+  "customer_checks": {
+    "consistency": {
+      "score": 4.4,
+      "profile_switches": 1
+    },
+    "explainability": {
+      "score": 10,
+      "decisions_with_reason": 59,
+      "total_decisions": 59
+    },
+    "trust": {
+      "score": 10,
+      "strange_moves": 0
+    },
+    "protection": {
+      "avoids_large_losses": true,
+      "drawdown_avoided_points": 28.0592
+    },
+    "recovery": {
+      "reenters_after_loss": true,
+      "recovery_behavior": {
+        "avg_risk_pct": 70.0711,
+        "avg_cash_pct": 29.9289,
+        "profile_mix": {
+          "capital_protection": 12
+        }
+      }
+    }
+  },
+  "phase_behavior": {
+    "bull": {
+      "avg_risk_pct": 70.0833,
+      "avg_cash_pct": 29.9167,
+      "profile_mix": {
+        "capital_protection": 12
+      }
+    },
+    "shock": {
+      "avg_risk_pct": 68.6667,
+      "avg_cash_pct": 31.3333,
+      "profile_mix": {
+        "capital_protection": 6
+      }
+    },
+    "recovery": {
+      "avg_risk_pct": 70.0711,
+      "avg_cash_pct": 29.9289,
+      "profile_mix": {
+        "capital_protection": 12
+      }
+    },
+    "lateral": {
+      "avg_risk_pct": 67.2046,
+      "avg_cash_pct": 32.7954,
+      "profile_mix": {
+        "capital_protection": 18
+      }
+    },
+    "final_bull": {
+      "avg_risk_pct": 78.1004,
+      "avg_cash_pct": 21.8996,
+      "profile_mix": {
+        "capital_protection": 3,
+        "hard_growth": 8
+      }
+    }
+  },
+  "scoring": {
+    "scores": {
+      "rendimento": 2,
+      "drawdown": 10,
+      "stabilita": 4.4,
+      "chiarezza": 10,
+      "fiducia": 10,
+      "costi": 6
+    },
+    "total_score": 42.4,
+    "max_score": 60
+  },
+  "final_output": {
+    "final_capital": 157810.99,
+    "qqq_final_capital": 361585.41,
+    "drawdown": 3.398,
+    "qqq_drawdown": 31.4572,
+    "recovery_time": 17,
+    "rebalance_count": 26,
+    "fees": 7221.92,
+    "consistency_score": 4.4,
+    "clarity_score": 10,
+    "trust_score": 10,
+    "total_score": 42.4,
+    "verdict": "vendibile con warning"
+  },
+  "decision_log_sample": [
+    {
+      "month": "2020-01",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 93,
+      "cash": 7,
+      "reason": "Auto: bull sano e confermato, usa la marcia 4. Salto diretto: dalla 1 passa subito in alto appena il mercato e leggibile. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.  Client mode: hold minimo 3-6 mesi, soglie rebalance piu alte e overdrive solo con edge forte.           [capital_protection] Rischio presente ma non dominante. Monitora il contesto e evita aumenti di rischio non necessari.",
+      "turnover": 186
+    },
+    {
+      "month": "2020-02",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 110
+    },
+    {
+      "month": "2020-03",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 0
+    },
+    {
+      "month": "2020-04",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 8
+    },
+    {
+      "month": "2020-05",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 0
+    },
+    {
+      "month": "2020-06",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 0
+    },
+    {
+      "month": "2020-07",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 8
+    },
+    {
+      "month": "2020-08",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 0
+    },
+    {
+      "month": "2020-09",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 8
+    },
+    {
+      "month": "2020-10",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 0
+    },
+    {
+      "month": "2020-11",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 0
+    },
+    {
+      "month": "2020-12",
+      "phase": "bull_late_cycle",
+      "profile": "capital_protection",
+      "risk": 68,
+      "cash": 32,
+      "reason": "Auto: runway chiara e trend forte, passa direttamente alla marcia 4. Client mode: blocca upgrade non essenziale, serve piu conferma prima di muovere capitale cliente.    Nyra selector autowrite: release misurata attiva su recovery/bull, con edge threshold e re-entry piu liberi.            [capital_protection] Rischio sistemico in accelerazione. Riduci esposizione rapidamente e proteggi capitale.",
+      "turnover": 8
+    }
+  ]
+}

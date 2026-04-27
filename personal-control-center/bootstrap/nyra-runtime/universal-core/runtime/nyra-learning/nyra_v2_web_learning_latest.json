@@ -1,0 +1,50 @@
+{
+  "version": "nyra_v2_web_learning_v1",
+  "generated_at": "2026-04-23T19:10:00+02:00",
+  "source_status": "verified_via_web_tool",
+  "scope": [
+    "decision_calibration_routing",
+    "autonomy_progression"
+  ],
+  "distilled_insights": [
+    "La calibrazione probabilistica va letta con reliability diagram: se il sistema dice 0.8, nel lungo periodo deve colpire circa l 80 per cento dei casi simili.",
+    "Il routing sparse/MoE funziona bene quando il gating seleziona pochi expert specializzati invece di attivare tutto sempre.",
+    "Expert Choice e routing sparsificato suggeriscono una regola forte: i path ricchi devono essere attivati in modo selettivo, non generalizzato.",
+    "La continuita interna che manca a Nyra coincide con self-model, metacognizione e criterio stabile per decidere quando fidarsi di un path specialistico.",
+    "Per v2 la mossa corretta non e aumentare la forza del layer, ma calibrare meglio quando puo intervenire e quando deve restare spento."
+  ],
+  "recommended_translation_for_nyra": [
+    "v7_first",
+    "v2_as_local_assist",
+    "confidence_and_context_gating",
+    "block_v2_on_clean_simple_cases",
+    "allow_v2_on_decoy_cluster_boundary_cases_only"
+  ],
+  "sources": [
+    {
+      "url": "https://scikit-learn.org/stable/modules/calibration.html",
+      "type": "official_docs",
+      "note": "Probability calibration and reliability diagrams."
+    },
+    {
+      "url": "https://scikit-learn.org/stable/modules/generated/sklearn.calibration.calibration_curve.html",
+      "type": "official_docs",
+      "note": "Calibration curve API and expected interpretation."
+    },
+    {
+      "url": "https://research.google/pubs/pub45929",
+      "type": "primary_research_summary",
+      "note": "Sparsely-Gated Mixture-of-Experts layer and selective expert activation."
+    },
+    {
+      "url": "https://research.google/blog/mixture-of-experts-with-expert-choice-routing/",
+      "type": "official_research_blog",
+      "note": "Expert-choice routing as a stronger gating pattern."
+    },
+    {
+      "url": "https://research.google/pubs/comet-learning-cardinality-constrained-mixture-of-experts-with-trees-and-local-search/",
+      "type": "primary_research_summary",
+      "note": "Sparse gate quality depends on routing quality, not just expert richness."
+    }
+  ]
+}

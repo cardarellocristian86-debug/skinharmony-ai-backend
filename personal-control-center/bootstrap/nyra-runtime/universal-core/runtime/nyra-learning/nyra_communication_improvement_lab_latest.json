@@ -1,0 +1,80 @@
+{
+  "runner": "nyra_communication_improvement_lab",
+  "generated_at": "2026-04-26T19:17:49.255Z",
+  "detected_bottleneck": {
+    "repetition": "Nyra tende a riaprire troppe risposte con continuita/flusso anche quando la domanda chiede altro.",
+    "concreteness": "Nelle domande sulla comunicazione resta ancora troppo astratta e non nomina subito il punto pratico.",
+    "opening_variation": "Le aperture non cambiano abbastanza tra spiegazione, supporto, tecnica e riflessione.",
+    "explanation": "Il collo non e capire il contenuto, ma trasformarlo in una risposta piu varia, concreta e leggibile."
+  },
+  "candidates": [
+    {
+      "id": "concrete_first",
+      "label": "Concrete First",
+      "score": 81.454112,
+      "core_state": "protection",
+      "core_risk": 47.71999999999999,
+      "selected": true,
+      "focus": [
+        "nominare subito il punto concreto",
+        "dire il rischio reale per nome",
+        "chiudere l'astrazione in 1 frase"
+      ]
+    },
+    {
+      "id": "example_grounding",
+      "label": "Example Grounding",
+      "score": 80.598064,
+      "core_state": "protection",
+      "core_risk": 45.62,
+      "selected": false,
+      "focus": [
+        "aggiungere un esempio breve",
+        "mostrare 1 caso concreto",
+        "tradurre il concetto in azione leggibile"
+      ]
+    },
+    {
+      "id": "opening_variation",
+      "label": "Opening Variation",
+      "score": 76.584112,
+      "core_state": "protection",
+      "core_risk": 48.419999999999995,
+      "selected": false,
+      "focus": [
+        "variare le aperture",
+        "non tornare sempre su continuita/flusso",
+        "aprire per tipo di domanda"
+      ]
+    },
+    {
+      "id": "anti_repetition_discipline",
+      "label": "Anti Repetition Discipline",
+      "score": 73.494112,
+      "core_state": "protection",
+      "core_risk": 47.71999999999999,
+      "selected": false,
+      "focus": [
+        "bloccare formule ricorrenti",
+        "riscrivere quando la frase rientra uguale",
+        "preferire meno linee ma piu varie"
+      ]
+    }
+  ],
+  "winner": {
+    "id": "concrete_first",
+    "label": "Concrete First",
+    "score": 81.454112,
+    "focus": [
+      "nominare subito il punto concreto",
+      "dire il rischio reale per nome",
+      "chiudere l'astrazione in 1 frase"
+    ]
+  },
+  "recommended_rules": [
+    "aprire con il punto concreto invece che con una formula ricorrente",
+    "dire il rischio o il problema reale con un nome leggibile entro la prima frase",
+    "usare 1 esempio breve quando la domanda e astratta",
+    "cambiare apertura tra explain, decide, protect e reflective"
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "runner": "nyra_financial_self_diagnosis_lab",
+  "generated_at": "2026-04-27T11:37:41.388Z",
+  "source_reports": [
+    "nyra_product_readiness_latest.json",
+    "nyra_financial_bottleneck_observer_latest.json",
+    "nyra_selector_policy_lab_latest.json"
+  ],
+  "self_probe": {
+    "fallback_count": 3,
+    "probes": [
+      {
+        "prompt": "Nyra, cosa ti serve per migliorare davvero sulla finanza nel reale?",
+        "message": "Quadro: Stiamo continuando nello stesso contesto. Rimaniamo su: -> stringi la priorita che pesa di piu adesso Poi: stringi la priorita che pesa di piu adesso",
+        "decision": "retry",
+        "primary_signal": "ultra:urgency",
+        "fallback_like": true
+      },
+      {
+        "prompt": "Nyra, dove senti che nel finanziario reale non sai ancora muoverti bene?",
+        "message": "Punto visto: Stiamo continuando nello stesso contesto. Rimaniamo su: -> stringi la priorita che pesa di piu adesso Poi: stringi la priorita che pesa di piu adesso",
+        "decision": "retry",
+        "primary_signal": "ultra:urgency",
+        "fallback_like": true
+      },
+      {
+        "prompt": "Nyra, cosa ti manca oggi per leggere e agire meglio sui mercati veri?",
+        "message": "Lettura: Stiamo continuando nello stesso contesto. Rimaniamo su: -> stringi la priorita che pesa di piu adesso Poi: stringi la priorita che pesa di piu adesso",
+        "decision": "retry",
+        "primary_signal": "ultra:urgency",
+        "fallback_like": true
+      }
+    ]
+  },
+  "diagnosis": {
+    "top_gap": {
+      "id": "financial_self_explanation_gap",
+      "label": "Sa ancora spiegare male i propri limiti finanziari",
+      "score": 74.5984,
+      "core_state": "protection",
+      "evidence": [
+        "fallback_count=3",
+        "active_case=guardrails_preserve_then_refine"
+      ],
+      "what_it_means": "Quando le chiedi cosa le manca in finanza, cade nel fallback e non sa nominare bene il collo. Questo rallenta il self-repair reale.",
+      "needed_study": [
+        "self_diagnosis_finance",
+        "market_state_explanation",
+        "financial_reflection"
+      ]
+    },
+    "gaps": [
+      {
+        "id": "financial_self_explanation_gap",
+        "label": "Sa ancora spiegare male i propri limiti finanziari",
+        "score": 74.5984,
+        "core_state": "protection",
+        "evidence": [
+          "fallback_count=3",
+          "active_case=guardrails_preserve_then_refine"
+        ],
+        "what_it_means": "Quando le chiedi cosa le manca in finanza, cade nel fallback e non sa nominare bene il collo. Questo rallenta il self-repair reale.",
+        "needed_study": [
+          "self_diagnosis_finance",
+          "market_state_explanation",
+          "financial_reflection"
+        ]
+      },
+      {
+        "id": "selector_sellability_balance",
+        "label": "Tiene la difesa ma fatica a trasformarla in vendibilita alta",
+        "score": 53.2096,
+        "core_state": "critical",
+        "evidence": [
+          "verdict=vendibile con warning",
+          "total_score=40",
+          "policy_winner=conservative_hold"
+        ],
+        "what_it_means": "La difesa su laterale e bubble regge, ma la combinazione capitale/fee/drawdown non converge ancora in un profilo vendibile forte.",
+        "needed_study": [
+          "selector_balance",
+          "low_churn_execution",
+          "sellability_optimization"
+        ]
+      },
+      {
+        "id": "recovery_release_tradeoff",
+        "label": "Rilascia protezione ma paga troppo in fee e drawdown",
+        "score": 52.51520000000001,
+        "core_state": "attention",
+        "evidence": [
+          "capital_delta_vs_baseline=0",
+          "fees_delta_vs_baseline=0",
+          "drawdown_delta_vs_baseline=0",
+          "score_delta_vs_baseline=0"
+        ],
+        "what_it_means": "Quando diventa piu aggressiva, il capitale puo salire molto, ma il trade-off vendibilita peggiora per fee e drawdown.",
+        "needed_study": [
+          "bull_recovery_timing",
+          "fee_aware_release",
+          "drawdown_discipline"
+        ]
+      }
+    ],
+    "candidates": [
+      {
+        "id": "introspection_first",
+        "label": "Introspection First",
+        "score": 71.0304,
+        "core_state": "protection",
+        "selected": true,
+        "statement": "Nel finanziario reale oggi il mio collo principale e sa ancora spiegare male i propri limiti finanziari. Quando le chiedi cosa le manca in finanza, cade nel fallback e non sa nominare bene il collo. Questo rallenta il self-repair reale. Per migliorare mi servono soprattutto self_diagnosis_finance, market_state_explanation, financial_reflection.",
+        "based_on_gap_ids": [
+          "financial_self_explanation_gap"
+        ]
+      },
+      {
+        "id": "execution_tradeoff_first",
+        "label": "Execution Tradeoff First",
+        "score": 53.6368,
+        "core_state": "attention",
+        "selected": false,
+        "statement": "Nel finanziario reale oggi il mio collo principale e rilascia protezione ma paga troppo in fee e drawdown. Quando diventa piu aggressiva, il capitale puo salire molto, ma il trade-off vendibilita peggiora per fee e drawdown. Per migliorare mi servono soprattutto bull_recovery_timing, fee_aware_release, drawdown_discipline.",
+        "based_on_gap_ids": [
+          "recovery_release_tradeoff"
+        ]
+      },
+      {
+        "id": "balanced_sellability_first",
+        "label": "Balanced Sellability First",
+        "score": 51.883199999999995,
+        "core_state": "critical",
+        "selected": false,
+        "statement": "Nel finanziario reale oggi il mio collo principale e tiene la difesa ma fatica a trasformarla in vendibilita alta. La difesa su laterale e bubble regge, ma la combinazione capitale/fee/drawdown non converge ancora in un profilo vendibile forte. Per migliorare mi servono soprattutto selector_balance, low_churn_execution, sellability_optimization.",
+        "based_on_gap_ids": [
+          "selector_sellability_balance"
+        ]
+      }
+    ],
+    "winner": {
+      "id": "introspection_first",
+      "label": "Introspection First",
+      "score": 71.0304,
+      "core_state": "protection",
+      "selected": true,
+      "statement": "Nel finanziario reale oggi il mio collo principale e sa ancora spiegare male i propri limiti finanziari. Quando le chiedi cosa le manca in finanza, cade nel fallback e non sa nominare bene il collo. Questo rallenta il self-repair reale. Per migliorare mi servono soprattutto self_diagnosis_finance, market_state_explanation, financial_reflection.",
+      "based_on_gap_ids": [
+        "financial_self_explanation_gap"
+      ]
+    },
+    "nyra_statement": "Nel finanziario reale oggi il mio collo principale e sa ancora spiegare male i propri limiti finanziari. Quando le chiedi cosa le manca in finanza, cade nel fallback e non sa nominare bene il collo. Questo rallenta il self-repair reale. Per migliorare mi servono soprattutto self_diagnosis_finance, market_state_explanation, financial_reflection."
+  }
+}

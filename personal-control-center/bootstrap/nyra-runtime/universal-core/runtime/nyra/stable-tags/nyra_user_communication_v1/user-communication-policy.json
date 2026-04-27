@@ -1,0 +1,16 @@
+{
+  "version": "nyra_user_communication_v1",
+  "status": "stable_promoted",
+  "promoted_rule": "user_combined_candidate",
+  "source_learning_pack": "universal-core/runtime/nyra-learning/nyra_real_user_learning_autopilot_latest.json",
+  "promotion_gate_report": "reports/universal-core/learning/nyra_user_candidate_regression_gate_latest.json",
+  "scope": "real-user communication behavior, calm explanation, low churn, panic guard",
+  "boundaries": [
+    "does not change Core",
+    "does not change financial selector math",
+    "does not change risk governor",
+    "does not execute actions automatically",
+    "operator/user final confirmation remains required"
+  ],
+  "stable_default_policy": "user_combined_candidate"
+}

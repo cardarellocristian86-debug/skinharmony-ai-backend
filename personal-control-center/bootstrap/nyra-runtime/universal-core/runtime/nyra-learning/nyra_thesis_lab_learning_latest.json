@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-04-27T16:40:13.273Z",
+  "source_test": "nyra-thesis-lab-gate-test",
+  "promoted_to_stable": false,
+  "candidate_policy": {
+    "id": "baseline_current_gate",
+    "minDelta": 0.18,
+    "minHoldMonths": 6,
+    "costMultiplier": 4,
+    "requiredPassCount": 2,
+    "qqqParticipationFloor": 0.72,
+    "cashDefenseFloor": 0.45,
+    "allowRecoveryOverride": false
+  },
+  "candidate_result": {
+    "strategy": "thesis_lab_gate",
+    "final_capital": 1686269.88,
+    "return_pct": 1586.2699,
+    "CAGR": 15.1719,
+    "max_drawdown": 12.033,
+    "Sharpe": 2.5753,
+    "Sortino": 5.3921,
+    "recovery_months": 54,
+    "rebalance_count": 10,
+    "fees_total": 19866.32,
+    "fee_pct_initial": 19.8663,
+    "turnover_annual": 41.4817,
+    "time_in_cash_pct": 40.8949,
+    "thesis_accepted": 10,
+    "thesis_rejected": 229,
+    "urgent_protection": 5
+  },
+  "baseline_thesis_result": {
+    "strategy": "thesis_lab_gate",
+    "final_capital": 1686269.88,
+    "return_pct": 1586.2699,
+    "CAGR": 15.1719,
+    "max_drawdown": 12.033,
+    "Sharpe": 2.5753,
+    "Sortino": 5.3921,
+    "recovery_months": 54,
+    "rebalance_count": 10,
+    "fees_total": 19866.32,
+    "fee_pct_initial": 19.8663,
+    "turnover_annual": 41.4817,
+    "time_in_cash_pct": 40.8949,
+    "thesis_accepted": 10,
+    "thesis_rejected": 229,
+    "urgent_protection": 5
+  },
+  "checks": {
+    "capital_delta_vs_current_thesis_pct": 0,
+    "capital_delta_vs_auto_pct": 388.9389,
+    "fees_reduced_vs_auto_pct": 26.6124,
+    "fees_not_worse_than_current_thesis_5pct": true,
+    "rebalance_not_worse_than_current_thesis_plus_4": true,
+    "drawdown_not_worse_than_auto_3pts": true,
+    "still_better_drawdown_than_qqq": true,
+    "learned_beats_current_thesis_capital": false,
+    "learned_beats_qqq_capital": false
+  },
+  "promotion_eligible": false
+}

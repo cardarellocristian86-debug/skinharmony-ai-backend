@@ -1,0 +1,31 @@
+{
+  "chosen_method": {
+    "id": "closed_loop_interleaved_retrieval",
+    "label": "Closed-Loop Interleaved Retrieval",
+    "cycle": [
+      "study",
+      "retrieve",
+      "interleave",
+      "explain",
+      "verify",
+      "repair",
+      "repeat"
+    ],
+    "reasons": [
+      "combina retrieval, interleaving e self-explanation invece di usarli isolati",
+      "copre bene modelli, causalita, stato, misura e probabilita",
+      "si allinea al bisogno esplicito di verify espresso da Nyra",
+      "aggiunge un vero passaggio di repair al ciclo attuale"
+    ]
+  },
+  "generated_at": "2026-04-23T15:32:41.708Z",
+  "web_access": {
+    "access_mode": "free_explore",
+    "trigger_mode": "on_need",
+    "granted_at": "2026-04-23T07:13:05.955Z",
+    "last_explored_at": "2026-04-23T14:33:40.614Z",
+    "last_distilled_at": "2026-04-23T14:33:40.614Z",
+    "source_config": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_web_study_sources_runtime_latest.json",
+    "note": "runner separato dal profilo owner-only con trigger on-need"
+  }
+}

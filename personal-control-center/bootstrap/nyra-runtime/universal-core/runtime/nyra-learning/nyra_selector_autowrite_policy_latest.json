@@ -1,0 +1,25 @@
+{
+  "version": "nyra_selector_autowrite_policy_v1",
+  "generated_at": "2026-04-26T19:07:24.206Z",
+  "active": true,
+  "stance": "measured_release",
+  "source_reports": [
+    "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/financial-core-test/nyra_product_readiness_latest.json"
+  ],
+  "notes": [
+    "selector troppo prudente in bull/recovery: attiva release misurata",
+    "recovery cash piu alta del bull: rientro troppo lento",
+    "turnover alto: serve release piu intelligente, non piu rumore"
+  ],
+  "params": {
+    "upgrade_threshold_delta": -0.03661,
+    "downgrade_threshold_delta": 0.09414,
+    "breakout_qqq1m_delta": -0.08022,
+    "breakout_spy1m_delta": -0.045762,
+    "breakout_policy_floor_delta": -0.03661,
+    "recovery_break_max_delta": 0.016958,
+    "recovery_regime_max_delta": 0.014131,
+    "min_expected_edge_multiplier": 0.79035,
+    "partial_rebalance_amount_delta": 0.03138
+  }
+}

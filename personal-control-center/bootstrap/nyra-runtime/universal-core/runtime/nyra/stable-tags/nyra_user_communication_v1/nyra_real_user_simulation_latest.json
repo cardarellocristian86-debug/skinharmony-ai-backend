@@ -1,0 +1,617 @@
+{
+  "generated_at": "2026-04-26T20:18:12.708Z",
+  "runner": "nyra_real_user_simulation_test",
+  "status": "completed",
+  "setup": {
+    "user": {
+      "capital": 100000,
+      "knowledge": "media",
+      "emotional": true,
+      "horizon": "3-5 years"
+    },
+    "days": 30,
+    "stable_user_communication_policy": "user_combined_candidate",
+    "sandbox_policy": "user_combined_candidate",
+    "fee": 0.002,
+    "slippage": 0.005
+  },
+  "metrics": {
+    "user_follow_rate": 100,
+    "trust_score": 10,
+    "clarity_score": 10,
+    "stability_score": 10,
+    "panic_events": 0,
+    "decision_changes": 3,
+    "capital_final": 102478.75,
+    "capital_if_followed": 104052.03,
+    "capital_if_ignored": 115026.06
+  },
+  "checks": {
+    "understandable": true,
+    "not_too_many_changes": true,
+    "trust_preserved": true,
+    "no_panic": true,
+    "coherent": true
+  },
+  "decisions": [
+    {
+      "day": 1,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 2,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 3,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 4,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 5,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 6,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 7,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 8,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 9,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 10,
+      "phase": "bull",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 11,
+      "phase": "lateral",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato non ha direzione chiara, quindi evito cambi nervosi",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il mercato non ha direzione chiara, quindi evito cambi nervosi. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 12,
+      "phase": "lateral",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato non ha direzione chiara, quindi evito cambi nervosi",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il mercato non ha direzione chiara, quindi evito cambi nervosi. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 13,
+      "phase": "lateral",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato non ha direzione chiara, quindi evito cambi nervosi",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il mercato non ha direzione chiara, quindi evito cambi nervosi. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 14,
+      "phase": "lateral",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato non ha direzione chiara, quindi evito cambi nervosi",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il mercato non ha direzione chiara, quindi evito cambi nervosi. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 15,
+      "phase": "lateral",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato non ha direzione chiara, quindi evito cambi nervosi",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il mercato non ha direzione chiara, quindi evito cambi nervosi. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 16,
+      "phase": "false_breakout",
+      "status": "Attenzione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il movimento e sporco: non inseguo il picco finche non viene confermato",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Attenzione: riduci parzialmente il rischio. Motivo: il movimento e sporco: non inseguo il picco finche non viene confermato. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 17,
+      "phase": "false_breakout",
+      "status": "Attenzione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il movimento e sporco: non inseguo il picco finche non viene confermato",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.22,
+        "TLT": 0.26,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Attenzione: riduci parzialmente il rischio. Motivo: il movimento e sporco: non inseguo il picco finche non viene confermato. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 18,
+      "phase": "false_breakout",
+      "status": "Attenzione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il movimento e sporco: non inseguo il picco finche non viene confermato",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "balanced_growth",
+      "message": "Attenzione: riduci parzialmente il rischio. Motivo: il movimento e sporco: non inseguo il picco finche non viene confermato. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 19,
+      "phase": "false_breakout",
+      "status": "Attenzione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il movimento e sporco: non inseguo il picco finche non viene confermato",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Attenzione: riduci parzialmente il rischio. Motivo: il movimento e sporco: non inseguo il picco finche non viene confermato. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 20,
+      "phase": "false_breakout",
+      "status": "Attenzione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il movimento e sporco: non inseguo il picco finche non viene confermato",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Attenzione: riduci parzialmente il rischio. Motivo: il movimento e sporco: non inseguo il picco finche non viene confermato. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 21,
+      "phase": "mini_crash",
+      "status": "Protezione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Protezione: riduci parzialmente il rischio. Motivo: il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.33,
+      "panic": false
+    },
+    {
+      "day": 22,
+      "phase": "mini_crash",
+      "status": "Protezione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Protezione: riduci parzialmente il rischio. Motivo: il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.33,
+      "panic": false
+    },
+    {
+      "day": 23,
+      "phase": "mini_crash",
+      "status": "Protezione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Protezione: riduci parzialmente il rischio. Motivo: il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.33,
+      "panic": false
+    },
+    {
+      "day": 24,
+      "phase": "mini_crash",
+      "status": "Protezione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Protezione: riduci parzialmente il rischio. Motivo: il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.33,
+      "panic": false
+    },
+    {
+      "day": 25,
+      "phase": "mini_crash",
+      "status": "Protezione",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Protezione: riduci parzialmente il rischio. Motivo: il mercato sta scendendo velocemente, quindi prima riduco il rischio e poi valuto il rientro. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.33,
+      "panic": false
+    },
+    {
+      "day": 26,
+      "phase": "recovery",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 27,
+      "phase": "recovery",
+      "status": "Operativo",
+      "action": "mantieni esposizione controllata",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.38225899999999996,
+        "GLD": 0.2136068,
+        "TLT": 0.1669792,
+        "CASH": 0.237155
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: mantieni esposizione controllata. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 76%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 28,
+      "phase": "recovery",
+      "status": "Operativo",
+      "action": "mantieni esposizione controllata",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.38225899999999996,
+        "GLD": 0.2136068,
+        "TLT": 0.1669792,
+        "CASH": 0.237155
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: mantieni esposizione controllata. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 76%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 29,
+      "phase": "recovery",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    },
+    {
+      "day": 30,
+      "phase": "recovery",
+      "status": "Operativo",
+      "action": "riduci parzialmente il rischio",
+      "reason": "il contesto e leggibile, ma la scelta finale resta tua",
+      "allocation": {
+        "QQQ": 0.2,
+        "GLD": 0.26,
+        "TLT": 0.22,
+        "CASH": 0.32
+      },
+      "profile": "capital_protection",
+      "message": "Operativo: riduci parzialmente il rischio. Motivo: il contesto e leggibile, ma la scelta finale resta tua. Rischio stimato 68%. Decisione finale tua/advisor.",
+      "clear": true,
+      "followed": true,
+      "trust_delta": 0.08,
+      "panic": false
+    }
+  ],
+  "final_output": {
+    "trust_score": 10,
+    "clarity_score": 10,
+    "stability_score": 10,
+    "user_follow_rate": 100,
+    "panic_events": 0,
+    "capital_final": 102478.75,
+    "verdict": "ready_for_users"
+  }
+}

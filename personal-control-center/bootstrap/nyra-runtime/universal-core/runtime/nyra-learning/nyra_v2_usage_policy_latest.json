@@ -1,0 +1,38 @@
+{
+  "version": "nyra_v2_usage_policy_v1",
+  "generated_at": "SystemTime { tv_sec: 1776971051, tv_nsec: 199350000 }",
+  "source_runner": "nyra_v2_50b_stress",
+  "thresholds": {
+    "ambiguity_min": 0.7,
+    "cluster_support_min": 0.76,
+    "conflict_min": 0.58,
+    "decoy_pressure_min": 0.74,
+    "quality_floor": 0.34,
+    "hard_block_on_clean_simple": true
+  },
+  "use_v2_when": [
+    "ambiguita sopra soglia e pressione decoy alta",
+    "cluster support sopra soglia con segnali multipli coerenti",
+    "conflitto medio-alto ma qualita non sotto floor",
+    "come assist locale sopra v7, non come override globale"
+  ],
+  "avoid_v2_when": [
+    "caso pulito e lineare con qualita alta e decoy bassa",
+    "rumore instabile senza cluster support",
+    "qualita sotto floor: prima filtra il rumore, poi valuta v2",
+    "non usare v2 per riscrivere tutto il ranking"
+  ],
+  "rationale": [
+    "Il benchmark massivo mostra che v2 crea valore soprattutto su decoy e cluster coerenti.",
+    "Nei casi semplici il costo cognitivo del layer ricco diventa rumore e peggiora il ranking.",
+    "La policy corretta e v7-first con gating stretto, non quantum_v2 come path generale.",
+    "La calibrazione deve usare soglie osservate e reliability reasoning, non entusiasmo architetturale."
+  ],
+  "web_learning_sources": [
+    "https://scikit-learn.org/stable/modules/calibration.html",
+    "https://scikit-learn.org/stable/modules/generated/sklearn.calibration.calibration_curve.html",
+    "https://research.google/pubs/pub45929",
+    "https://research.google/blog/mixture-of-experts-with-expert-choice-routing/",
+    "https://research.google/pubs/comet-learning-cardinality-constrained-mixture-of-experts-with-trees-and-local-search/"
+  ]
+}

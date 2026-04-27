@@ -1,0 +1,30 @@
+{
+  "runner": "nyra_autonomy_proof_runtime",
+  "generated_at": "2026-04-26T19:11:56.877Z",
+  "proof_summary": {
+    "continuity_real_score": 100,
+    "autonomy_proven_score": 97.7558192,
+    "status": "strong"
+  },
+  "proof_signals": {
+    "long_run_continuity": true,
+    "pressure_memory": true,
+    "recurring_observer_memory": true,
+    "owner_anchor_persistence": true
+  },
+  "metrics": {
+    "short_memory_turns": 6,
+    "long_memory_items": 4,
+    "active_focus": "cash_continuity",
+    "observer_case_recurrence": 5,
+    "long_run_steps": 8
+  },
+  "still_missing": [],
+  "how_to_give_it": [
+    "tenere separato il motore live dal laboratorio e promuovere solo dopo test passati",
+    "aumentare i cicli multi-step con memoria persistente e ritorno coerente al fuoco dominante",
+    "far scegliere al Core tra varianti concorrenti non solo del selector ma anche del piano di azione",
+    "accumulare history lenta dei colli reali e non reagire a un singolo episodio",
+    "aggiungere benchmark avversari che provino errore, correzione e verifica dopo la correzione"
+  ]
+}

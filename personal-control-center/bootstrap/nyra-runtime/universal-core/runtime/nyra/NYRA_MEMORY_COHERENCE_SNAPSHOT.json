@@ -1,0 +1,57 @@
+{
+  "version": "nyra_memory_coherence_v1",
+  "generated_at": "2026-04-27T16:29:54.018Z",
+  "selected_updates": [
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.618,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.764,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.618,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.618,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.618,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.617,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.618,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_owner_truth",
+      "alpha": 0.618,
+      "reason": "alta rilevanza recente"
+    },
+    {
+      "key": "ask_general_status",
+      "alpha": 0.55,
+      "reason": "alta rilevanza recente"
+    }
+  ],
+  "stable_focus": [
+    "ask_owner_truth",
+    "ask_general_status",
+    "unknown"
+  ],
+  "drift_risk": 0
+}

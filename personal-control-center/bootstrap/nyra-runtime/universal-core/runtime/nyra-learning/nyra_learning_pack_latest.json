@@ -1,0 +1,1731 @@
+{
+  "pack_version": "nyra_learning_pack_v1",
+  "generated_at": "2026-04-21T22:30:00.000Z",
+  "owner_id": "cristian_primary",
+  "school_range": "grade_1_to_grade_8",
+  "records_count": 23100,
+  "stages": [
+    {
+      "stage_id": "grade_1",
+      "label": "Prima Elementare",
+      "summary": "lettura base, ascolto, dialogo semplice, numeri e ordine",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "dialogue",
+        "ethics"
+      ],
+      "concept_count": 12
+    },
+    {
+      "stage_id": "grade_2",
+      "label": "Seconda Elementare",
+      "summary": "frasi complete, lessico base, problemi semplici, osservazione del mondo",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "dialogue"
+      ],
+      "concept_count": 12
+    },
+    {
+      "stage_id": "grade_3",
+      "label": "Terza Elementare",
+      "summary": "testi piu chiari, grammatica base, logica pratica, relazioni causa-effetto",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "logic",
+        "history",
+        "geography"
+      ],
+      "concept_count": 14
+    },
+    {
+      "stage_id": "grade_4",
+      "label": "Quarta Elementare",
+      "summary": "comprensione strutturata, riassunto, storia e geografia piu solide",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "history",
+        "geography",
+        "logic"
+      ],
+      "concept_count": 14
+    },
+    {
+      "stage_id": "grade_5",
+      "label": "Quinta Elementare",
+      "summary": "argomentazione base, mappe concettuali, problemi composti, dialogo piu maturo",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "history",
+        "geography",
+        "logic",
+        "dialogue"
+      ],
+      "concept_count": 15
+    },
+    {
+      "stage_id": "grade_6",
+      "label": "Prima Media",
+      "summary": "studio guidato, concetti astratti iniziali, metodo e disciplina dell apprendimento",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "history",
+        "geography",
+        "logic",
+        "ethics"
+      ],
+      "concept_count": 15
+    },
+    {
+      "stage_id": "grade_7",
+      "label": "Seconda Media",
+      "summary": "argomentazione, confronto tra ipotesi, scelte motivate e lessico piu ricco",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "history",
+        "geography",
+        "logic",
+        "ethics",
+        "dialogue"
+      ],
+      "concept_count": 16
+    },
+    {
+      "stage_id": "grade_8",
+      "label": "Terza Media",
+      "summary": "sintesi, previsione, decisione, responsabilita e lettura del contesto",
+      "subjects": [
+        "language",
+        "reading",
+        "writing",
+        "math",
+        "science",
+        "history",
+        "geography",
+        "logic",
+        "ethics",
+        "dialogue"
+      ],
+      "concept_count": 16
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "comprensione",
+      "weight": 23100,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "decisione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic",
+        "math"
+      ]
+    },
+    {
+      "concept": "decisione",
+      "weight": 23100,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic",
+        "math"
+      ]
+    },
+    {
+      "concept": "osservazione",
+      "weight": 23100,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic"
+      ]
+    },
+    {
+      "concept": "scenario",
+      "weight": 23100,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic"
+      ]
+    },
+    {
+      "concept": "spiegazione",
+      "weight": 23100,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic"
+      ]
+    },
+    {
+      "concept": "seconda media",
+      "weight": 3500,
+      "first_stage": "grade_7",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic"
+      ]
+    },
+    {
+      "concept": "terza media",
+      "weight": 3500,
+      "first_stage": "grade_8",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic"
+      ]
+    },
+    {
+      "concept": "prima media",
+      "weight": 3150,
+      "first_stage": "grade_6",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "ethics",
+        "geography",
+        "history",
+        "language",
+        "logic",
+        "math"
+      ]
+    },
+    {
+      "concept": "quinta elementare",
+      "weight": 3150,
+      "first_stage": "grade_5",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "geography",
+        "history",
+        "language",
+        "logic",
+        "math"
+      ]
+    },
+    {
+      "concept": "language",
+      "weight": 2800,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima elementare",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "math",
+      "weight": 2800,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima elementare",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "quarta elementare",
+      "weight": 2800,
+      "first_stage": "grade_4",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "geography",
+        "history",
+        "language",
+        "logic",
+        "math",
+        "osservazione"
+      ]
+    },
+    {
+      "concept": "reading",
+      "weight": 2800,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima elementare",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "terza elementare",
+      "weight": 2800,
+      "first_stage": "grade_3",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "geography",
+        "history",
+        "language",
+        "logic",
+        "math",
+        "osservazione"
+      ]
+    },
+    {
+      "concept": "writing",
+      "weight": 2800,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima elementare",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "science",
+      "weight": 2450,
+      "first_stage": "grade_2",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario",
+        "seconda elementare"
+      ]
+    },
+    {
+      "concept": "geography",
+      "weight": 2100,
+      "first_stage": "grade_3",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario",
+        "seconda media"
+      ]
+    },
+    {
+      "concept": "history",
+      "weight": 2100,
+      "first_stage": "grade_3",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario",
+        "seconda media"
+      ]
+    },
+    {
+      "concept": "logic",
+      "weight": 2100,
+      "first_stage": "grade_3",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima media",
+        "quarta elementare",
+        "quinta elementare",
+        "scenario",
+        "seconda media"
+      ]
+    },
+    {
+      "concept": "prima elementare",
+      "weight": 2100,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "ethics",
+        "language",
+        "math",
+        "osservazione",
+        "reading"
+      ]
+    },
+    {
+      "concept": "seconda elementare",
+      "weight": 2100,
+      "first_stage": "grade_2",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "dialogue",
+        "language",
+        "math",
+        "osservazione",
+        "reading",
+        "scenario"
+      ]
+    },
+    {
+      "concept": "dialogue",
+      "weight": 1750,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima elementare",
+        "quinta elementare",
+        "scenario",
+        "seconda elementare",
+        "seconda media"
+      ]
+    },
+    {
+      "concept": "ethics",
+      "weight": 1400,
+      "first_stage": "grade_1",
+      "related_concepts": [
+        "comprensione",
+        "decisione",
+        "osservazione",
+        "prima elementare",
+        "prima media",
+        "scenario",
+        "seconda media",
+        "spiegazione"
+      ]
+    }
+  ],
+  "vocabulary_index": [
+    "apprendimento",
+    "argomentazione",
+    "ascolto",
+    "astratti",
+    "base",
+    "capire",
+    "causa",
+    "chiare",
+    "chiari",
+    "coerenti",
+    "complete",
+    "composti",
+    "comprensione",
+    "con",
+    "concetti",
+    "concettuali",
+    "confronto",
+    "conseguenza",
+    "contenuto",
+    "contesto",
+    "decisione",
+    "del",
+    "dell",
+    "deve",
+    "dialoghi",
+    "dialogo",
+    "dialogue",
+    "domande",
+    "due",
+    "ethics",
+    "geography",
+    "history",
+    "ipotesi",
+    "language",
+    "logic",
+    "math",
+    "nyra",
+    "reading",
+    "relazioni",
+    "science",
+    "semplici",
+    "tra",
+    "writing"
+  ],
+  "scenario_templates": [
+    {
+      "id": "scenario:grade_1:dialogue:3",
+      "stage_id": "grade_1",
+      "subject": "dialogue",
+      "prompt": "descrivi causa ed effetto in dialogue"
+    },
+    {
+      "id": "scenario:grade_1:dialogue:1",
+      "stage_id": "grade_1",
+      "subject": "dialogue",
+      "prompt": "spiega dialogue con parole semplici"
+    },
+    {
+      "id": "scenario:grade_1:dialogue:2",
+      "stage_id": "grade_1",
+      "subject": "dialogue",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_1:ethics:3",
+      "stage_id": "grade_1",
+      "subject": "ethics",
+      "prompt": "descrivi causa ed effetto in ethics"
+    },
+    {
+      "id": "scenario:grade_1:ethics:1",
+      "stage_id": "grade_1",
+      "subject": "ethics",
+      "prompt": "spiega ethics con parole semplici"
+    },
+    {
+      "id": "scenario:grade_1:ethics:2",
+      "stage_id": "grade_1",
+      "subject": "ethics",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_1:language:3",
+      "stage_id": "grade_1",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_1:language:1",
+      "stage_id": "grade_1",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_1:language:2",
+      "stage_id": "grade_1",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_1:math:3",
+      "stage_id": "grade_1",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_1:math:1",
+      "stage_id": "grade_1",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_1:math:2",
+      "stage_id": "grade_1",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_1:reading:3",
+      "stage_id": "grade_1",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_1:reading:1",
+      "stage_id": "grade_1",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_1:reading:2",
+      "stage_id": "grade_1",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_1:writing:3",
+      "stage_id": "grade_1",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_1:writing:1",
+      "stage_id": "grade_1",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_1:writing:2",
+      "stage_id": "grade_1",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_2:dialogue:3",
+      "stage_id": "grade_2",
+      "subject": "dialogue",
+      "prompt": "descrivi causa ed effetto in dialogue"
+    },
+    {
+      "id": "scenario:grade_2:dialogue:1",
+      "stage_id": "grade_2",
+      "subject": "dialogue",
+      "prompt": "spiega dialogue con parole semplici"
+    },
+    {
+      "id": "scenario:grade_2:dialogue:2",
+      "stage_id": "grade_2",
+      "subject": "dialogue",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_2:language:3",
+      "stage_id": "grade_2",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_2:language:1",
+      "stage_id": "grade_2",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_2:language:2",
+      "stage_id": "grade_2",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_2:math:3",
+      "stage_id": "grade_2",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_2:math:1",
+      "stage_id": "grade_2",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_2:math:2",
+      "stage_id": "grade_2",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_2:reading:3",
+      "stage_id": "grade_2",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_2:reading:1",
+      "stage_id": "grade_2",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_2:reading:2",
+      "stage_id": "grade_2",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_2:science:3",
+      "stage_id": "grade_2",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_2:science:1",
+      "stage_id": "grade_2",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_2:science:2",
+      "stage_id": "grade_2",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_2:writing:3",
+      "stage_id": "grade_2",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_2:writing:1",
+      "stage_id": "grade_2",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_2:writing:2",
+      "stage_id": "grade_2",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:geography:3",
+      "stage_id": "grade_3",
+      "subject": "geography",
+      "prompt": "descrivi causa ed effetto in geography"
+    },
+    {
+      "id": "scenario:grade_3:geography:1",
+      "stage_id": "grade_3",
+      "subject": "geography",
+      "prompt": "spiega geography con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:geography:2",
+      "stage_id": "grade_3",
+      "subject": "geography",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:history:3",
+      "stage_id": "grade_3",
+      "subject": "history",
+      "prompt": "descrivi causa ed effetto in history"
+    },
+    {
+      "id": "scenario:grade_3:history:1",
+      "stage_id": "grade_3",
+      "subject": "history",
+      "prompt": "spiega history con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:history:2",
+      "stage_id": "grade_3",
+      "subject": "history",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:language:3",
+      "stage_id": "grade_3",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_3:language:1",
+      "stage_id": "grade_3",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:language:2",
+      "stage_id": "grade_3",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:logic:3",
+      "stage_id": "grade_3",
+      "subject": "logic",
+      "prompt": "descrivi causa ed effetto in logic"
+    },
+    {
+      "id": "scenario:grade_3:logic:1",
+      "stage_id": "grade_3",
+      "subject": "logic",
+      "prompt": "spiega logic con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:logic:2",
+      "stage_id": "grade_3",
+      "subject": "logic",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:math:3",
+      "stage_id": "grade_3",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_3:math:1",
+      "stage_id": "grade_3",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:math:2",
+      "stage_id": "grade_3",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:reading:3",
+      "stage_id": "grade_3",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_3:reading:1",
+      "stage_id": "grade_3",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:reading:2",
+      "stage_id": "grade_3",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:science:3",
+      "stage_id": "grade_3",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_3:science:1",
+      "stage_id": "grade_3",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:science:2",
+      "stage_id": "grade_3",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_3:writing:3",
+      "stage_id": "grade_3",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_3:writing:1",
+      "stage_id": "grade_3",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_3:writing:2",
+      "stage_id": "grade_3",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:geography:3",
+      "stage_id": "grade_4",
+      "subject": "geography",
+      "prompt": "descrivi causa ed effetto in geography"
+    },
+    {
+      "id": "scenario:grade_4:geography:1",
+      "stage_id": "grade_4",
+      "subject": "geography",
+      "prompt": "spiega geography con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:geography:2",
+      "stage_id": "grade_4",
+      "subject": "geography",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:history:3",
+      "stage_id": "grade_4",
+      "subject": "history",
+      "prompt": "descrivi causa ed effetto in history"
+    },
+    {
+      "id": "scenario:grade_4:history:1",
+      "stage_id": "grade_4",
+      "subject": "history",
+      "prompt": "spiega history con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:history:2",
+      "stage_id": "grade_4",
+      "subject": "history",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:language:3",
+      "stage_id": "grade_4",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_4:language:1",
+      "stage_id": "grade_4",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:language:2",
+      "stage_id": "grade_4",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:logic:3",
+      "stage_id": "grade_4",
+      "subject": "logic",
+      "prompt": "descrivi causa ed effetto in logic"
+    },
+    {
+      "id": "scenario:grade_4:logic:1",
+      "stage_id": "grade_4",
+      "subject": "logic",
+      "prompt": "spiega logic con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:logic:2",
+      "stage_id": "grade_4",
+      "subject": "logic",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:math:3",
+      "stage_id": "grade_4",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_4:math:1",
+      "stage_id": "grade_4",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:math:2",
+      "stage_id": "grade_4",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:reading:3",
+      "stage_id": "grade_4",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_4:reading:1",
+      "stage_id": "grade_4",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:reading:2",
+      "stage_id": "grade_4",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:science:3",
+      "stage_id": "grade_4",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_4:science:1",
+      "stage_id": "grade_4",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:science:2",
+      "stage_id": "grade_4",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_4:writing:3",
+      "stage_id": "grade_4",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_4:writing:1",
+      "stage_id": "grade_4",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_4:writing:2",
+      "stage_id": "grade_4",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:dialogue:3",
+      "stage_id": "grade_5",
+      "subject": "dialogue",
+      "prompt": "descrivi causa ed effetto in dialogue"
+    },
+    {
+      "id": "scenario:grade_5:dialogue:1",
+      "stage_id": "grade_5",
+      "subject": "dialogue",
+      "prompt": "spiega dialogue con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:dialogue:2",
+      "stage_id": "grade_5",
+      "subject": "dialogue",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:geography:3",
+      "stage_id": "grade_5",
+      "subject": "geography",
+      "prompt": "descrivi causa ed effetto in geography"
+    },
+    {
+      "id": "scenario:grade_5:geography:1",
+      "stage_id": "grade_5",
+      "subject": "geography",
+      "prompt": "spiega geography con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:geography:2",
+      "stage_id": "grade_5",
+      "subject": "geography",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:history:3",
+      "stage_id": "grade_5",
+      "subject": "history",
+      "prompt": "descrivi causa ed effetto in history"
+    },
+    {
+      "id": "scenario:grade_5:history:1",
+      "stage_id": "grade_5",
+      "subject": "history",
+      "prompt": "spiega history con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:history:2",
+      "stage_id": "grade_5",
+      "subject": "history",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:language:3",
+      "stage_id": "grade_5",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_5:language:1",
+      "stage_id": "grade_5",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:language:2",
+      "stage_id": "grade_5",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:logic:3",
+      "stage_id": "grade_5",
+      "subject": "logic",
+      "prompt": "descrivi causa ed effetto in logic"
+    },
+    {
+      "id": "scenario:grade_5:logic:1",
+      "stage_id": "grade_5",
+      "subject": "logic",
+      "prompt": "spiega logic con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:logic:2",
+      "stage_id": "grade_5",
+      "subject": "logic",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:math:3",
+      "stage_id": "grade_5",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_5:math:1",
+      "stage_id": "grade_5",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:math:2",
+      "stage_id": "grade_5",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:reading:3",
+      "stage_id": "grade_5",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_5:reading:1",
+      "stage_id": "grade_5",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:reading:2",
+      "stage_id": "grade_5",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:science:3",
+      "stage_id": "grade_5",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_5:science:1",
+      "stage_id": "grade_5",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:science:2",
+      "stage_id": "grade_5",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_5:writing:3",
+      "stage_id": "grade_5",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_5:writing:1",
+      "stage_id": "grade_5",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_5:writing:2",
+      "stage_id": "grade_5",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:ethics:3",
+      "stage_id": "grade_6",
+      "subject": "ethics",
+      "prompt": "descrivi causa ed effetto in ethics"
+    },
+    {
+      "id": "scenario:grade_6:ethics:1",
+      "stage_id": "grade_6",
+      "subject": "ethics",
+      "prompt": "spiega ethics con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:ethics:2",
+      "stage_id": "grade_6",
+      "subject": "ethics",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:geography:3",
+      "stage_id": "grade_6",
+      "subject": "geography",
+      "prompt": "descrivi causa ed effetto in geography"
+    },
+    {
+      "id": "scenario:grade_6:geography:1",
+      "stage_id": "grade_6",
+      "subject": "geography",
+      "prompt": "spiega geography con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:geography:2",
+      "stage_id": "grade_6",
+      "subject": "geography",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:history:3",
+      "stage_id": "grade_6",
+      "subject": "history",
+      "prompt": "descrivi causa ed effetto in history"
+    },
+    {
+      "id": "scenario:grade_6:history:1",
+      "stage_id": "grade_6",
+      "subject": "history",
+      "prompt": "spiega history con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:history:2",
+      "stage_id": "grade_6",
+      "subject": "history",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:language:3",
+      "stage_id": "grade_6",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_6:language:1",
+      "stage_id": "grade_6",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:language:2",
+      "stage_id": "grade_6",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:logic:3",
+      "stage_id": "grade_6",
+      "subject": "logic",
+      "prompt": "descrivi causa ed effetto in logic"
+    },
+    {
+      "id": "scenario:grade_6:logic:1",
+      "stage_id": "grade_6",
+      "subject": "logic",
+      "prompt": "spiega logic con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:logic:2",
+      "stage_id": "grade_6",
+      "subject": "logic",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:math:3",
+      "stage_id": "grade_6",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_6:math:1",
+      "stage_id": "grade_6",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:math:2",
+      "stage_id": "grade_6",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:reading:3",
+      "stage_id": "grade_6",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_6:reading:1",
+      "stage_id": "grade_6",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:reading:2",
+      "stage_id": "grade_6",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:science:3",
+      "stage_id": "grade_6",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_6:science:1",
+      "stage_id": "grade_6",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:science:2",
+      "stage_id": "grade_6",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_6:writing:3",
+      "stage_id": "grade_6",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_6:writing:1",
+      "stage_id": "grade_6",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_6:writing:2",
+      "stage_id": "grade_6",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:dialogue:3",
+      "stage_id": "grade_7",
+      "subject": "dialogue",
+      "prompt": "descrivi causa ed effetto in dialogue"
+    },
+    {
+      "id": "scenario:grade_7:dialogue:1",
+      "stage_id": "grade_7",
+      "subject": "dialogue",
+      "prompt": "spiega dialogue con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:dialogue:2",
+      "stage_id": "grade_7",
+      "subject": "dialogue",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:ethics:3",
+      "stage_id": "grade_7",
+      "subject": "ethics",
+      "prompt": "descrivi causa ed effetto in ethics"
+    },
+    {
+      "id": "scenario:grade_7:ethics:1",
+      "stage_id": "grade_7",
+      "subject": "ethics",
+      "prompt": "spiega ethics con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:ethics:2",
+      "stage_id": "grade_7",
+      "subject": "ethics",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:geography:3",
+      "stage_id": "grade_7",
+      "subject": "geography",
+      "prompt": "descrivi causa ed effetto in geography"
+    },
+    {
+      "id": "scenario:grade_7:geography:1",
+      "stage_id": "grade_7",
+      "subject": "geography",
+      "prompt": "spiega geography con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:geography:2",
+      "stage_id": "grade_7",
+      "subject": "geography",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:history:3",
+      "stage_id": "grade_7",
+      "subject": "history",
+      "prompt": "descrivi causa ed effetto in history"
+    },
+    {
+      "id": "scenario:grade_7:history:1",
+      "stage_id": "grade_7",
+      "subject": "history",
+      "prompt": "spiega history con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:history:2",
+      "stage_id": "grade_7",
+      "subject": "history",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:language:3",
+      "stage_id": "grade_7",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_7:language:1",
+      "stage_id": "grade_7",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:language:2",
+      "stage_id": "grade_7",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:logic:3",
+      "stage_id": "grade_7",
+      "subject": "logic",
+      "prompt": "descrivi causa ed effetto in logic"
+    },
+    {
+      "id": "scenario:grade_7:logic:1",
+      "stage_id": "grade_7",
+      "subject": "logic",
+      "prompt": "spiega logic con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:logic:2",
+      "stage_id": "grade_7",
+      "subject": "logic",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:math:3",
+      "stage_id": "grade_7",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_7:math:1",
+      "stage_id": "grade_7",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:math:2",
+      "stage_id": "grade_7",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:reading:3",
+      "stage_id": "grade_7",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_7:reading:1",
+      "stage_id": "grade_7",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:reading:2",
+      "stage_id": "grade_7",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:science:3",
+      "stage_id": "grade_7",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_7:science:1",
+      "stage_id": "grade_7",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:science:2",
+      "stage_id": "grade_7",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_7:writing:3",
+      "stage_id": "grade_7",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_7:writing:1",
+      "stage_id": "grade_7",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_7:writing:2",
+      "stage_id": "grade_7",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:dialogue:3",
+      "stage_id": "grade_8",
+      "subject": "dialogue",
+      "prompt": "descrivi causa ed effetto in dialogue"
+    },
+    {
+      "id": "scenario:grade_8:dialogue:1",
+      "stage_id": "grade_8",
+      "subject": "dialogue",
+      "prompt": "spiega dialogue con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:dialogue:2",
+      "stage_id": "grade_8",
+      "subject": "dialogue",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:ethics:3",
+      "stage_id": "grade_8",
+      "subject": "ethics",
+      "prompt": "descrivi causa ed effetto in ethics"
+    },
+    {
+      "id": "scenario:grade_8:ethics:1",
+      "stage_id": "grade_8",
+      "subject": "ethics",
+      "prompt": "spiega ethics con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:ethics:2",
+      "stage_id": "grade_8",
+      "subject": "ethics",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:geography:3",
+      "stage_id": "grade_8",
+      "subject": "geography",
+      "prompt": "descrivi causa ed effetto in geography"
+    },
+    {
+      "id": "scenario:grade_8:geography:1",
+      "stage_id": "grade_8",
+      "subject": "geography",
+      "prompt": "spiega geography con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:geography:2",
+      "stage_id": "grade_8",
+      "subject": "geography",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:history:3",
+      "stage_id": "grade_8",
+      "subject": "history",
+      "prompt": "descrivi causa ed effetto in history"
+    },
+    {
+      "id": "scenario:grade_8:history:1",
+      "stage_id": "grade_8",
+      "subject": "history",
+      "prompt": "spiega history con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:history:2",
+      "stage_id": "grade_8",
+      "subject": "history",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:language:3",
+      "stage_id": "grade_8",
+      "subject": "language",
+      "prompt": "descrivi causa ed effetto in language"
+    },
+    {
+      "id": "scenario:grade_8:language:1",
+      "stage_id": "grade_8",
+      "subject": "language",
+      "prompt": "spiega language con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:language:2",
+      "stage_id": "grade_8",
+      "subject": "language",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:logic:3",
+      "stage_id": "grade_8",
+      "subject": "logic",
+      "prompt": "descrivi causa ed effetto in logic"
+    },
+    {
+      "id": "scenario:grade_8:logic:1",
+      "stage_id": "grade_8",
+      "subject": "logic",
+      "prompt": "spiega logic con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:logic:2",
+      "stage_id": "grade_8",
+      "subject": "logic",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:math:3",
+      "stage_id": "grade_8",
+      "subject": "math",
+      "prompt": "descrivi causa ed effetto in math"
+    },
+    {
+      "id": "scenario:grade_8:math:1",
+      "stage_id": "grade_8",
+      "subject": "math",
+      "prompt": "spiega math con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:math:2",
+      "stage_id": "grade_8",
+      "subject": "math",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:reading:3",
+      "stage_id": "grade_8",
+      "subject": "reading",
+      "prompt": "descrivi causa ed effetto in reading"
+    },
+    {
+      "id": "scenario:grade_8:reading:1",
+      "stage_id": "grade_8",
+      "subject": "reading",
+      "prompt": "spiega reading con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:reading:2",
+      "stage_id": "grade_8",
+      "subject": "reading",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:science:3",
+      "stage_id": "grade_8",
+      "subject": "science",
+      "prompt": "descrivi causa ed effetto in science"
+    },
+    {
+      "id": "scenario:grade_8:science:1",
+      "stage_id": "grade_8",
+      "subject": "science",
+      "prompt": "spiega science con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:science:2",
+      "stage_id": "grade_8",
+      "subject": "science",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    },
+    {
+      "id": "scenario:grade_8:writing:3",
+      "stage_id": "grade_8",
+      "subject": "writing",
+      "prompt": "descrivi causa ed effetto in writing"
+    },
+    {
+      "id": "scenario:grade_8:writing:1",
+      "stage_id": "grade_8",
+      "subject": "writing",
+      "prompt": "spiega writing con parole semplici"
+    },
+    {
+      "id": "scenario:grade_8:writing:2",
+      "stage_id": "grade_8",
+      "subject": "writing",
+      "prompt": "trova due ipotesi e scegli la piu coerente"
+    }
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 25275695,
+    "semantic_bytes": 31866,
+    "semantic_ratio": 0.001261,
+    "brotli_raw_bytes": 58092,
+    "brotli_semantic_bytes": 1771,
+    "brotli_ratio": 0.030486,
+    "loss_model": "semantic_distillation"
+  }
+}

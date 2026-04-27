@@ -1,0 +1,219 @@
+{
+  "version": "nyra_semantic_substrate_v1",
+  "generated_at": "2026-04-26T19:07:22.975Z",
+  "source": {
+    "advanced_pack_version": "nyra_advanced_memory_pack_v1",
+    "essence_version": "nyra_assimilated_essence_v1"
+  },
+  "missing_capabilities_vs_generalist_model": [
+    {
+      "id": "compressed_pretraining_substrate",
+      "label": "substrato compresso multi-dominio",
+      "why_missing": "Nyra studia per pack e branch; non parte con una compressione trasversale gia formata",
+      "architecture_need": "costruire un substrato semantico unico che trasformi studio in operatori riusabili"
+    },
+    {
+      "id": "native_generalization",
+      "label": "generalizzazione nativa",
+      "why_missing": "Nyra trasferisce ancora poco tra dominio studiato e risposta finale",
+      "architecture_need": "aggiungere famiglie di astrazione e regole di transfer route"
+    },
+    {
+      "id": "uncertainty_calibration",
+      "label": "calibrazione interna dell incertezza",
+      "why_missing": "tende ancora a ripetere verify senza cambiare modello quando ristagna",
+      "architecture_need": "misurare delta reale su output owner-only e cambiare strategia automaticamente"
+    }
+  ],
+  "memory_architecture": {
+    "hot": {
+      "role": "dialogo vivo, stato locale, priorita attive",
+      "target_budget_mb": 256
+    },
+    "warm": {
+      "role": "substrato semantico, retrieval e abstraction families",
+      "target_budget_mb": 2048
+    },
+    "cold": {
+      "role": "corpus, fonti, shard storici e memoria lunga compressa",
+      "target_budget_gb": 10
+    }
+  },
+  "runtime_disciplines": [
+    {
+      "id": "evidence_before_claim",
+      "rule": "non trasformare continuita verbale o stile coerente in prova di autonomia reale",
+      "source_domains": [
+        "autonomy_progression"
+      ]
+    },
+    {
+      "id": "repair_requires_verify",
+      "rule": "ogni auto-correzione deve chiudersi con verify-after-fix",
+      "source_domains": [
+        "autonomy_progression"
+      ]
+    },
+    {
+      "id": "model_before_symbol",
+      "rule": "trattare funzioni e formule come modelli esplicativi, non come simboli isolati",
+      "source_domains": [
+        "applied_math"
+      ]
+    },
+    {
+      "id": "causality_before_formula",
+      "rule": "partire da causalita e conservazione prima della formula singola",
+      "source_domains": [
+        "general_physics"
+      ]
+    },
+    {
+      "id": "state_measure_probability_split",
+      "rule": "tenere distinti stato, misura e probabilita nei problemi ad alta astrazione",
+      "source_domains": [
+        "quantum_physics"
+      ]
+    }
+  ],
+  "abstraction_families": [
+    {
+      "id": "evidence_control_family",
+      "label": "Evidence vs Style",
+      "source_domains": [
+        "autonomy_progression"
+      ],
+      "operators": [
+        "separate_claim_from_proof",
+        "detect_simulation_without_control",
+        "verify_after_fix"
+      ]
+    },
+    {
+      "id": "modeling_family",
+      "label": "Model Before Formula",
+      "source_domains": [
+        "applied_math",
+        "general_physics"
+      ],
+      "operators": [
+        "abstract_problem_to_model",
+        "read_variation",
+        "map_cause_to_effect"
+      ]
+    },
+    {
+      "id": "uncertainty_family",
+      "label": "State / Measure / Probability",
+      "source_domains": [
+        "quantum_physics"
+      ],
+      "operators": [
+        "separate_state_measure_probability",
+        "avoid_fake_certainty",
+        "preserve_observational_limits"
+      ]
+    }
+  ],
+  "transfer_routes": [
+    {
+      "from_domain": "autonomy_progression",
+      "to_runtime": "owner_truth",
+      "operator": "separate_claim_from_proof"
+    },
+    {
+      "from_domain": "autonomy_progression",
+      "to_runtime": "self_repair",
+      "operator": "verify_after_fix"
+    },
+    {
+      "from_domain": "applied_math",
+      "to_runtime": "technical_explain",
+      "operator": "abstract_problem_to_model"
+    },
+    {
+      "from_domain": "general_physics",
+      "to_runtime": "technical_explain",
+      "operator": "map_cause_to_effect"
+    },
+    {
+      "from_domain": "quantum_physics",
+      "to_runtime": "technical_explain",
+      "operator": "separate_state_measure_probability"
+    }
+  ],
+  "retrieval_priorities": [
+    {
+      "domain_id": "autonomy_progression",
+      "weight": 0.89,
+      "cues": [
+        "autonomy_progression",
+        "continuita interna",
+        "self model",
+        "metacognizione",
+        "memoria viva",
+        "decisione sotto pressione",
+        "self repair",
+        "anti simulazione",
+        "continuita",
+        "interna",
+        "reale",
+        "richiede"
+      ]
+    },
+    {
+      "domain_id": "applied_math",
+      "weight": 0.74,
+      "cues": [
+        "applied_math",
+        "modelli",
+        "funzioni",
+        "lettura quantitativa",
+        "leggere",
+        "variazioni",
+        "come",
+        "solo",
+        "collegare",
+        "algebra",
+        "lineare",
+        "calcolo"
+      ]
+    },
+    {
+      "domain_id": "general_physics",
+      "weight": 0.68,
+      "cues": [
+        "general_physics",
+        "modelli fisici",
+        "energia",
+        "forze",
+        "leggere",
+        "moto",
+        "come",
+        "modelli",
+        "privilegiare",
+        "conservazione",
+        "causalita",
+        "prima"
+      ]
+    },
+    {
+      "domain_id": "quantum_physics",
+      "weight": 0.61,
+      "cues": [
+        "quantum_physics",
+        "stato",
+        "misura",
+        "probabilita",
+        "tenere",
+        "distinti",
+        "vendere",
+        "scorciatoie",
+        "intuitive",
+        "dove",
+        "teoria",
+        "richiede"
+      ]
+    }
+  ]
+}

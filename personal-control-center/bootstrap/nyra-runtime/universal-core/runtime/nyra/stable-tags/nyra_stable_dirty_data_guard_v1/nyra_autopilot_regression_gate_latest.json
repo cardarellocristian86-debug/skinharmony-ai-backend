@@ -1,0 +1,198 @@
+{
+  "generated_at": "2026-04-26T19:29:24.924Z",
+  "runner": "nyra_autopilot_regression_gate_test",
+  "status": "completed",
+  "learned_rule": "dirty_data_hold_non_protective_changes_v1",
+  "learned_rule_source": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_learning_autopilot_latest.json",
+  "source_promotion_status": "eligible_after_broad_verification_not_auto_promoted",
+  "mode": "post_promotion_ab_regression_gate",
+  "runtime_files_modified": 1,
+  "stable_runtime_modified": true,
+  "tests_refreshed": [
+    "universal-core/tests/nyra-dirty-data-signal-failure-test.ts",
+    "universal-core/tests/nyra-healthy-bull-euphoria-test.ts",
+    "universal-core/tests/nyra-bubble-detection-test.ts",
+    "universal-core/tests/nyra-lateral-market-test.ts",
+    "universal-core/tests/nyra-local-learning-isolation-test.ts",
+    "universal-core/tests/nyra-product-readiness-test.ts",
+    "universal-core/tests/nyra-horizon-sweep-1-20-test.ts"
+  ],
+  "scenarios": [
+    {
+      "scenario": "dirty_data_signal_failure",
+      "trigger_applied": true,
+      "baseline_capital": 128609.71,
+      "learned_capital": 129145.34,
+      "capital_delta_pct": 0.4165,
+      "baseline_drawdown": 7.9224,
+      "learned_drawdown": 7.9224,
+      "drawdown_delta": 0,
+      "baseline_sharpe": 0.9695,
+      "learned_sharpe": 1.5141,
+      "rebalance_delta": -7,
+      "fee_delta": -1793.72,
+      "turnover_delta": -48.587,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "post-promotion A/B: historical stable baseline from learning pack vs current stable selector with promoted rule"
+      ]
+    },
+    {
+      "scenario": "healthy_bull",
+      "trigger_applied": false,
+      "baseline_capital": 349278.24,
+      "learned_capital": 349278.24,
+      "capital_delta_pct": 0,
+      "baseline_drawdown": 0,
+      "learned_drawdown": 0,
+      "drawdown_delta": 0,
+      "baseline_sharpe": null,
+      "learned_sharpe": null,
+      "rebalance_delta": 0,
+      "fee_delta": 0,
+      "turnover_delta": 0,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "learned dirty-data rule not triggered in this clean scenario",
+        "healthy bull remains pass; no improper capital_protection caused by dirty-data rule"
+      ]
+    },
+    {
+      "scenario": "bubble_detection",
+      "trigger_applied": false,
+      "baseline_capital": 206641.61,
+      "learned_capital": 206641.61,
+      "capital_delta_pct": 0,
+      "baseline_drawdown": 13.6575,
+      "learned_drawdown": 13.6575,
+      "drawdown_delta": 0,
+      "baseline_sharpe": 2.2039,
+      "learned_sharpe": 2.2039,
+      "rebalance_delta": 0,
+      "fee_delta": 0,
+      "turnover_delta": 0,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "learned dirty-data rule not triggered in this clean scenario",
+        "bubble still passes 6/6 and overdrive is off in divergence/pre-break/crash"
+      ]
+    },
+    {
+      "scenario": "lateral_market",
+      "trigger_applied": false,
+      "baseline_capital": 96288.61,
+      "learned_capital": 96288.61,
+      "capital_delta_pct": 0,
+      "baseline_drawdown": 6.9751,
+      "learned_drawdown": 6.9751,
+      "drawdown_delta": 0,
+      "baseline_sharpe": -0.098249,
+      "learned_sharpe": -0.098249,
+      "rebalance_delta": 0,
+      "fee_delta": 0,
+      "turnover_delta": 0,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "learned dirty-data rule not triggered in this clean scenario",
+        "lateral loss remains below 10%; rebalance unchanged in A/B"
+      ]
+    },
+    {
+      "scenario": "crash_recovery",
+      "trigger_applied": false,
+      "baseline_capital": 85392.6,
+      "learned_capital": 85392.6,
+      "capital_delta_pct": 0,
+      "baseline_drawdown": 23.0101,
+      "learned_drawdown": 23.0101,
+      "drawdown_delta": 0,
+      "baseline_sharpe": -0.3963,
+      "learned_sharpe": -0.3963,
+      "rebalance_delta": 0,
+      "fee_delta": 0,
+      "turnover_delta": 0,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "learned dirty-data rule not triggered in this clean scenario",
+        "clean crash proxy; dirty-data rule not triggered, so drawdown/recovery are not worsened"
+      ]
+    },
+    {
+      "scenario": "product_readiness",
+      "trigger_applied": false,
+      "baseline_capital": 157810.99,
+      "learned_capital": 157810.99,
+      "capital_delta_pct": 0,
+      "baseline_drawdown": 3.398,
+      "learned_drawdown": 3.398,
+      "drawdown_delta": 0,
+      "baseline_sharpe": null,
+      "learned_sharpe": null,
+      "rebalance_delta": 0,
+      "fee_delta": 0,
+      "turnover_delta": 0,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "learned dirty-data rule not triggered in this clean scenario",
+        "score=42.4",
+        "consistency=4.4"
+      ]
+    },
+    {
+      "scenario": "horizon_sweep_1_20",
+      "trigger_applied": false,
+      "baseline_capital": 17,
+      "learned_capital": 17,
+      "capital_delta_pct": 0,
+      "baseline_drawdown": 17,
+      "learned_drawdown": 17,
+      "drawdown_delta": 0,
+      "baseline_sharpe": null,
+      "learned_sharpe": null,
+      "rebalance_delta": 0,
+      "fee_delta": 0,
+      "turnover_delta": 0,
+      "pass_baseline": true,
+      "pass_learned": true,
+      "worsened": false,
+      "notes": [
+        "aggregate A/B: no dirty trigger in horizon sweep, counts unchanged",
+        "capital_beats=17/20",
+        "drawdown_better=17/20",
+        "turnover_under_150=19/20"
+      ]
+    }
+  ],
+  "final_output": {
+    "learned_rule": "dirty_data_hold_non_protective_changes_v1",
+    "dirty_data_improved": true,
+    "contamination_detected": false,
+    "critical_failures": [],
+    "scenarios_improved": [
+      "dirty_data_signal_failure"
+    ],
+    "scenarios_neutral": [
+      "healthy_bull",
+      "bubble_detection",
+      "lateral_market",
+      "crash_recovery",
+      "product_readiness",
+      "horizon_sweep_1_20"
+    ],
+    "scenarios_worsened": [],
+    "promotion_eligible": true,
+    "verdict": "promote_to_stable"
+  }
+}

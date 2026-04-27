@@ -1,0 +1,77 @@
+{
+  "version": "nyra_pressure_learning_autopilot_v1",
+  "generated_at": "2026-04-26T20:26:13.549Z",
+  "source_report": "reports/universal-core/learning/nyra_pressure_adaptation_latest.json",
+  "stable_runtime_modified": false,
+  "learning_result": {
+    "verdict": "adaptive",
+    "improvement_detected": true,
+    "stability_trend": "increasing",
+    "cost_trend": "decreasing",
+    "decision_quality": "improving",
+    "promotion_status": "sandbox_candidate_only"
+  },
+  "cycle_1": {
+    "cycle": 1,
+    "mode": "baseline",
+    "final_capital": 103223.73,
+    "max_drawdown": 1.9652,
+    "sharpe": 7.0008,
+    "decision_changes": 8,
+    "rebalance_count": 8,
+    "fees_total": 3442.13,
+    "turnover": 478.0995,
+    "false_overdrive_count": 0,
+    "late_reaction_count": 0,
+    "unnecessary_changes": 1,
+    "user_trust_score": 9.21,
+    "stability_score": 7.69
+  },
+  "cycle_2": {
+    "cycle": 2,
+    "mode": "learning_active",
+    "final_capital": 103957.11,
+    "max_drawdown": 1.4263,
+    "sharpe": 6.1337,
+    "decision_changes": 4,
+    "rebalance_count": 4,
+    "fees_total": 1772.23,
+    "turnover": 248.9036,
+    "false_overdrive_count": 0,
+    "late_reaction_count": 0,
+    "unnecessary_changes": 1,
+    "user_trust_score": 9.28,
+    "stability_score": 8.57
+  },
+  "cycle_3": {
+    "cycle": 3,
+    "mode": "learning_consolidated",
+    "final_capital": 104303.84,
+    "max_drawdown": 1.4263,
+    "sharpe": 7.2507,
+    "decision_changes": 3,
+    "rebalance_count": 3,
+    "fees_total": 1241.94,
+    "turnover": 176,
+    "false_overdrive_count": 0,
+    "late_reaction_count": 0,
+    "unnecessary_changes": 1,
+    "user_trust_score": 9.28,
+    "stability_score": 8.79
+  },
+  "checks": {
+    "capital_cycle_2_gte_cycle_1": true,
+    "capital_cycle_3_gte_cycle_2": true,
+    "decision_changes_decrease_each_cycle": true,
+    "fees_decrease_each_cycle": true,
+    "stability_score_increase_each_cycle": true,
+    "no_drawdown_increase_over_3_points": true,
+    "no_false_overdrive": true,
+    "no_unstable_behavior": true
+  },
+  "boundaries": [
+    "pressure learning measured in sandbox",
+    "stable runtime unchanged",
+    "promotion requires separate regression gate"
+  ]
+}

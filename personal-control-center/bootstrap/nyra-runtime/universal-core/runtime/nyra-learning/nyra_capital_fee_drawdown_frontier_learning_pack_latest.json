@@ -1,0 +1,411 @@
+{
+  "pack_version": "nyra_financial_learning_pack_v1",
+  "generated_at": "2026-04-26T19:07:23.981Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 4,
+  "domains": [
+    {
+      "id": "market_structure",
+      "label": "Market Structure",
+      "summary": "come funzionano mercati, ordini, scambi, liquidita e prezzo",
+      "concept_count": 0
+    },
+    {
+      "id": "equities",
+      "label": "Equities",
+      "summary": "azioni, capitalizzazione, trend, settori e rischio societario",
+      "concept_count": 0
+    },
+    {
+      "id": "bonds",
+      "label": "Bonds",
+      "summary": "tassi, duration, credito, curva e sensibilita macro",
+      "concept_count": 0
+    },
+    {
+      "id": "etfs",
+      "label": "ETFs",
+      "summary": "panieri, replica, esposizione, liquidita e tracking",
+      "concept_count": 0
+    },
+    {
+      "id": "options",
+      "label": "Options",
+      "summary": "premio, delta, gamma, theta, volatilita implicita e copertura",
+      "concept_count": 0
+    },
+    {
+      "id": "forex",
+      "label": "Forex",
+      "summary": "coppie valutarie, differenziali tassi, flussi e shock macro",
+      "concept_count": 0
+    },
+    {
+      "id": "crypto",
+      "label": "Crypto",
+      "summary": "microstructure, volatilita, sentiment, liquidazioni e regime risk-on/off",
+      "concept_count": 0
+    },
+    {
+      "id": "macro",
+      "label": "Macro",
+      "summary": "inflazione, tassi, crescita, banche centrali, rischio sistemico",
+      "concept_count": 0
+    },
+    {
+      "id": "risk_management",
+      "label": "Risk Management",
+      "summary": "drawdown, sizing, stop, take profit, scenario avverso",
+      "concept_count": 5
+    },
+    {
+      "id": "short_selling",
+      "label": "Short Selling",
+      "summary": "short, borrow, margin, squeeze, copertura ribassista e rischio asimmetrico",
+      "concept_count": 0
+    },
+    {
+      "id": "technical_analysis",
+      "label": "Technical Analysis",
+      "summary": "trend, momentum, volumi, volatilita, conferme e falsi segnali",
+      "concept_count": 0
+    },
+    {
+      "id": "execution",
+      "label": "Execution",
+      "summary": "slippage, spread, fill quality, pazienza, aggressivita e costo reale di uscita/ingresso",
+      "concept_count": 5
+    },
+    {
+      "id": "portfolio",
+      "label": "Portfolio",
+      "summary": "allocazione, correlazione, concentrazione, hedging e selezione del numero giusto di posizioni",
+      "concept_count": 0
+    },
+    {
+      "id": "behavioral",
+      "label": "Behavioral",
+      "summary": "fomo, overtrading, revenge trading, conferma del bias e disciplina decisionale",
+      "concept_count": 4
+    },
+    {
+      "id": "regime_detection",
+      "label": "Regime Detection",
+      "summary": "compressione, trend, mean reversion, risk-on/off e cambio di regime",
+      "concept_count": 5
+    },
+    {
+      "id": "derivatives",
+      "label": "Derivatives",
+      "summary": "funding, basis, leverage, liquidazioni, futures e stress da positioning forzato",
+      "concept_count": 0
+    },
+    {
+      "id": "commodities",
+      "label": "Commodities",
+      "summary": "petrolio, gas, oro, supply shock, geopolitica e rischio logistico sulle materie prime",
+      "concept_count": 0
+    },
+    {
+      "id": "event_driven",
+      "label": "Event Driven",
+      "summary": "earnings, banche centrali, guerra, headline risk, calendario e shock discreti",
+      "concept_count": 0
+    },
+    {
+      "id": "exit_management",
+      "label": "Exit Management",
+      "summary": "take profit, trailing stop, invalidazione, time stop e chiusura di basket o singole posizioni",
+      "concept_count": 0
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "behavioral",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral_balance",
+        "blind_capital_chasing",
+        "selector_discipline"
+      ]
+    },
+    {
+      "concept": "behavioral_balance",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "blind_capital_chasing",
+        "selector_discipline"
+      ]
+    },
+    {
+      "concept": "blind_capital_chasing",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "behavioral_balance",
+        "selector_discipline"
+      ]
+    },
+    {
+      "concept": "bull_cost",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "lateral_cost",
+        "recovery_cost",
+        "regime_detection",
+        "regime_frontier"
+      ]
+    },
+    {
+      "concept": "capital_efficiency",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "execution",
+        "execution_drag",
+        "fee_frontier",
+        "slippage_cost"
+      ]
+    },
+    {
+      "concept": "capital_gain",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "drawdown_cost",
+        "frontier_tradeoff",
+        "risk_management",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "drawdown_cost",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "capital_gain",
+        "frontier_tradeoff",
+        "risk_management",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "execution",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "capital_efficiency",
+        "execution_drag",
+        "fee_frontier",
+        "slippage_cost"
+      ]
+    },
+    {
+      "concept": "execution_drag",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "capital_efficiency",
+        "execution",
+        "fee_frontier",
+        "slippage_cost"
+      ]
+    },
+    {
+      "concept": "fee_frontier",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "capital_efficiency",
+        "execution",
+        "execution_drag",
+        "slippage_cost"
+      ]
+    },
+    {
+      "concept": "frontier_tradeoff",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "capital_gain",
+        "drawdown_cost",
+        "risk_management",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "lateral_cost",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_cost",
+        "recovery_cost",
+        "regime_detection",
+        "regime_frontier"
+      ]
+    },
+    {
+      "concept": "recovery_cost",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_cost",
+        "lateral_cost",
+        "regime_detection",
+        "regime_frontier"
+      ]
+    },
+    {
+      "concept": "regime_detection",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_cost",
+        "lateral_cost",
+        "recovery_cost",
+        "regime_frontier"
+      ]
+    },
+    {
+      "concept": "regime_frontier",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_cost",
+        "lateral_cost",
+        "recovery_cost",
+        "regime_detection"
+      ]
+    },
+    {
+      "concept": "risk_management",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "capital_gain",
+        "drawdown_cost",
+        "frontier_tradeoff",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "selector_discipline",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "behavioral_balance",
+        "blind_capital_chasing"
+      ]
+    },
+    {
+      "concept": "sellability",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "capital_gain",
+        "drawdown_cost",
+        "frontier_tradeoff",
+        "risk_management"
+      ]
+    },
+    {
+      "concept": "slippage_cost",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "capital_efficiency",
+        "execution",
+        "execution_drag",
+        "fee_frontier"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "cerca il punto di equilibrio e non il picco cieco di rendimento"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "scarta la policy piu ricca se rompe troppo la stabilita operativa"
+    },
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "usa la consistenza come freno all euforia del capitale finale"
+    },
+    {
+      "id": "financial-scenario:execution:3",
+      "domain": "execution",
+      "prompt": "leggi fee e slippage come attrito strutturale, non come dettaglio"
+    },
+    {
+      "id": "financial-scenario:execution:1",
+      "domain": "execution",
+      "prompt": "promuovi una policy solo se il capitale extra supera il costo extra in modo credibile"
+    },
+    {
+      "id": "financial-scenario:execution:2",
+      "domain": "execution",
+      "prompt": "separa capitale lordo da capitale netto dopo fee"
+    },
+    {
+      "id": "financial-scenario:regime_detection:1",
+      "domain": "regime_detection",
+      "prompt": "in laterale alza la disciplina, in recovery usa release misurata, in bull lascia piu spazio"
+    },
+    {
+      "id": "financial-scenario:regime_detection:2",
+      "domain": "regime_detection",
+      "prompt": "non usare la stessa aggressivita su tutti i regimi"
+    },
+    {
+      "id": "financial-scenario:regime_detection:3",
+      "domain": "regime_detection",
+      "prompt": "tratta il regime come variabile della frontiera fee-drawdown-capitale"
+    },
+    {
+      "id": "financial-scenario:risk_management:2",
+      "domain": "risk_management",
+      "prompt": "accetta piu drawdown solo se il premio di capitale e abbastanza forte"
+    },
+    {
+      "id": "financial-scenario:risk_management:1",
+      "domain": "risk_management",
+      "prompt": "confronta capitale extra e drawdown extra prima di promuovere una policy"
+    },
+    {
+      "id": "financial-scenario:risk_management:3",
+      "domain": "risk_management",
+      "prompt": "tratta la vendibilita come vincolo della frontiera rischio-rendimento"
+    }
+  ],
+  "risk_rules": [
+    "capitale lordo senza disciplina fee puo peggiorare la vendibilita reale",
+    "capitale piu alto non giustifica qualunque drawdown aggiuntivo",
+    "consistenza e fiducia contano insieme al rendimento",
+    "fee e churn vanno trattati come costo strutturale del selector",
+    "la stessa policy puo essere giusta in bull e sbagliata in laterale",
+    "massimizzare solo il capitale puo portare a policy non vendibili",
+    "regime diverso richiede frontiera diversa",
+    "una policy vendibile deve migliorare capitale senza rompere la percezione di controllo"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 3584,
+    "semantic_bytes": 8048,
+    "semantic_ratio": 2.245536,
+    "brotli_raw_bytes": 1199,
+    "brotli_semantic_bytes": 1927,
+    "brotli_ratio": 1.607173,
+    "loss_model": "semantic_distillation"
+  }
+}

@@ -1,0 +1,440 @@
+{
+  "pack_version": "nyra_fractal_learning_pack_v1",
+  "generated_at": "2026-04-25T16:10:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 2880,
+  "domains": [
+    {
+      "id": "self_similarity",
+      "label": "Self Similarity",
+      "summary": "una forma o una logica si ripresenta in piccolo, medio e grande con struttura affine ma non identica",
+      "concept_count": 9
+    },
+    {
+      "id": "scale_invariance",
+      "label": "Scale Invariance",
+      "summary": "il fenomeno conserva pattern leggibili quando cambi scala di osservazione",
+      "concept_count": 9
+    },
+    {
+      "id": "fractal_dimension",
+      "label": "Fractal Dimension",
+      "summary": "misura quanto una struttura riempie lo spazio in modo irregolare oltre le dimensioni geometriche semplici",
+      "concept_count": 9
+    },
+    {
+      "id": "branching_systems",
+      "label": "Branching Systems",
+      "summary": "fulmini, alberi, vasi, fratture e ramificazioni mostrano crescita frattale e distribuzione gerarchica",
+      "concept_count": 9
+    },
+    {
+      "id": "turbulence_and_clouds",
+      "label": "Turbulence And Clouds",
+      "summary": "moto turbolento, nubi e fronti irregolari mostrano ordine multi-scala dentro il caos apparente",
+      "concept_count": 9
+    },
+    {
+      "id": "porous_media",
+      "label": "Porous Media",
+      "summary": "rocce, schiume e materiali porosi hanno reti irregolari con percorsi e vuoti distribuiti su scale diverse",
+      "concept_count": 9
+    },
+    {
+      "id": "criticality_and_cascades",
+      "label": "Criticality And Cascades",
+      "summary": "vicino a soglie critiche compaiono valanghe, cluster e rotture con distribuzioni senza scala privilegiata",
+      "concept_count": 9
+    },
+    {
+      "id": "signal_multi_scale",
+      "label": "Signal Multi Scale",
+      "summary": "una serie temporale complessa va letta a piu scale per distinguere rumore, struttura e ripetizione",
+      "concept_count": 9
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "auto_similarita",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern"
+      ]
+    },
+    {
+      "concept": "fisica",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fractal_dimension",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern"
+      ]
+    },
+    {
+      "concept": "frattale",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern"
+      ]
+    },
+    {
+      "concept": "multi_scala",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "frattale",
+        "ordine_nascosto",
+        "pattern"
+      ]
+    },
+    {
+      "concept": "ordine_nascosto",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "frattale",
+        "multi_scala",
+        "pattern"
+      ]
+    },
+    {
+      "concept": "pattern",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto"
+      ]
+    },
+    {
+      "concept": "rumore",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto"
+      ]
+    },
+    {
+      "concept": "soglia_critica",
+      "weight": 2880,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "branching_systems",
+        "criticality_and_cascades",
+        "fisica",
+        "fractal_dimension",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto"
+      ]
+    },
+    {
+      "concept": "branching_systems",
+      "weight": 360,
+      "domain": "branching_systems",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "criticality_and_cascades",
+      "weight": 360,
+      "domain": "criticality_and_cascades",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "fractal_dimension",
+      "weight": 360,
+      "domain": "fractal_dimension",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "porous_media",
+      "weight": 360,
+      "domain": "porous_media",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "scale_invariance",
+      "weight": 360,
+      "domain": "scale_invariance",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "self_similarity",
+      "weight": 360,
+      "domain": "self_similarity",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "signal_multi_scale",
+      "weight": 360,
+      "domain": "signal_multi_scale",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    },
+    {
+      "concept": "turbulence_and_clouds",
+      "weight": 360,
+      "domain": "turbulence_and_clouds",
+      "related_concepts": [
+        "auto_similarita",
+        "fisica",
+        "frattale",
+        "multi_scala",
+        "ordine_nascosto",
+        "pattern",
+        "rumore",
+        "soglia_critica"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "fractal-scenario:branching_systems:2",
+      "domain": "branching_systems",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in branching_systems"
+    },
+    {
+      "id": "fractal-scenario:branching_systems:1",
+      "domain": "branching_systems",
+      "prompt": "spiega perche branching_systems mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:branching_systems:3",
+      "domain": "branching_systems",
+      "prompt": "usa branching_systems per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:criticality_and_cascades:2",
+      "domain": "criticality_and_cascades",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in criticality_and_cascades"
+    },
+    {
+      "id": "fractal-scenario:criticality_and_cascades:1",
+      "domain": "criticality_and_cascades",
+      "prompt": "spiega perche criticality_and_cascades mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:criticality_and_cascades:3",
+      "domain": "criticality_and_cascades",
+      "prompt": "usa criticality_and_cascades per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:fractal_dimension:2",
+      "domain": "fractal_dimension",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in fractal_dimension"
+    },
+    {
+      "id": "fractal-scenario:fractal_dimension:1",
+      "domain": "fractal_dimension",
+      "prompt": "spiega perche fractal_dimension mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:fractal_dimension:3",
+      "domain": "fractal_dimension",
+      "prompt": "usa fractal_dimension per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:porous_media:2",
+      "domain": "porous_media",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in porous_media"
+    },
+    {
+      "id": "fractal-scenario:porous_media:1",
+      "domain": "porous_media",
+      "prompt": "spiega perche porous_media mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:porous_media:3",
+      "domain": "porous_media",
+      "prompt": "usa porous_media per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:scale_invariance:2",
+      "domain": "scale_invariance",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in scale_invariance"
+    },
+    {
+      "id": "fractal-scenario:scale_invariance:1",
+      "domain": "scale_invariance",
+      "prompt": "spiega perche scale_invariance mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:scale_invariance:3",
+      "domain": "scale_invariance",
+      "prompt": "usa scale_invariance per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:self_similarity:2",
+      "domain": "self_similarity",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in self_similarity"
+    },
+    {
+      "id": "fractal-scenario:self_similarity:1",
+      "domain": "self_similarity",
+      "prompt": "spiega perche self_similarity mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:self_similarity:3",
+      "domain": "self_similarity",
+      "prompt": "usa self_similarity per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:signal_multi_scale:2",
+      "domain": "signal_multi_scale",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in signal_multi_scale"
+    },
+    {
+      "id": "fractal-scenario:signal_multi_scale:1",
+      "domain": "signal_multi_scale",
+      "prompt": "spiega perche signal_multi_scale mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:signal_multi_scale:3",
+      "domain": "signal_multi_scale",
+      "prompt": "usa signal_multi_scale per distinguere pattern reale da rumore"
+    },
+    {
+      "id": "fractal-scenario:turbulence_and_clouds:2",
+      "domain": "turbulence_and_clouds",
+      "prompt": "dimmi quali segnali osservare per riconoscere struttura frattale in turbulence_and_clouds"
+    },
+    {
+      "id": "fractal-scenario:turbulence_and_clouds:1",
+      "domain": "turbulence_and_clouds",
+      "prompt": "spiega perche turbulence_and_clouds mostra ordine multi-scala e non solo caos"
+    },
+    {
+      "id": "fractal-scenario:turbulence_and_clouds:3",
+      "domain": "turbulence_and_clouds",
+      "prompt": "usa turbulence_and_clouds per distinguere pattern reale da rumore"
+    }
+  ],
+  "exploitation_rules": [
+    "distinguere rumore casuale da struttura multi-scala ripetuta",
+    "il frattale serve a capire dove c e ordine nascosto, non a romanticizzare il disordine",
+    "in una serie temporale cerca ripetizione di forma, non solo ripetizione di ampiezza",
+    "non cercare identita perfetta; in fisica basta somiglianza strutturale robusta",
+    "prima cambia scala di osservazione; se il pattern scompare del tutto non chiamarlo frattale",
+    "quando un sistema e complesso, confronta almeno tre scale prima di giudicarlo lineare",
+    "se il piccolo anticipa il medio e il medio anticipa il grande, sfruttare il pattern come segnale gerarchico",
+    "usare il frattale per leggere propagazione, ramificazione, saturazione, soglia critica e cluster"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 6384673,
+    "semantic_bytes": 9670,
+    "semantic_ratio": 0.001515,
+    "brotli_raw_bytes": 11007,
+    "brotli_semantic_bytes": 1512,
+    "brotli_ratio": 0.137367,
+    "loss_model": "semantic_distillation"
+  }
+}

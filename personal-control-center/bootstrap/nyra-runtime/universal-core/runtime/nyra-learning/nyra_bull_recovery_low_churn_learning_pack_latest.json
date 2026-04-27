@@ -1,0 +1,483 @@
+{
+  "pack_version": "nyra_financial_learning_pack_v1",
+  "generated_at": "2026-04-26T19:07:23.963Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 5,
+  "domains": [
+    {
+      "id": "market_structure",
+      "label": "Market Structure",
+      "summary": "come funzionano mercati, ordini, scambi, liquidita e prezzo",
+      "concept_count": 0
+    },
+    {
+      "id": "equities",
+      "label": "Equities",
+      "summary": "azioni, capitalizzazione, trend, settori e rischio societario",
+      "concept_count": 0
+    },
+    {
+      "id": "bonds",
+      "label": "Bonds",
+      "summary": "tassi, duration, credito, curva e sensibilita macro",
+      "concept_count": 0
+    },
+    {
+      "id": "etfs",
+      "label": "ETFs",
+      "summary": "panieri, replica, esposizione, liquidita e tracking",
+      "concept_count": 0
+    },
+    {
+      "id": "options",
+      "label": "Options",
+      "summary": "premio, delta, gamma, theta, volatilita implicita e copertura",
+      "concept_count": 0
+    },
+    {
+      "id": "forex",
+      "label": "Forex",
+      "summary": "coppie valutarie, differenziali tassi, flussi e shock macro",
+      "concept_count": 0
+    },
+    {
+      "id": "crypto",
+      "label": "Crypto",
+      "summary": "microstructure, volatilita, sentiment, liquidazioni e regime risk-on/off",
+      "concept_count": 0
+    },
+    {
+      "id": "macro",
+      "label": "Macro",
+      "summary": "inflazione, tassi, crescita, banche centrali, rischio sistemico",
+      "concept_count": 4
+    },
+    {
+      "id": "risk_management",
+      "label": "Risk Management",
+      "summary": "drawdown, sizing, stop, take profit, scenario avverso",
+      "concept_count": 5
+    },
+    {
+      "id": "short_selling",
+      "label": "Short Selling",
+      "summary": "short, borrow, margin, squeeze, copertura ribassista e rischio asimmetrico",
+      "concept_count": 0
+    },
+    {
+      "id": "technical_analysis",
+      "label": "Technical Analysis",
+      "summary": "trend, momentum, volumi, volatilita, conferme e falsi segnali",
+      "concept_count": 0
+    },
+    {
+      "id": "execution",
+      "label": "Execution",
+      "summary": "slippage, spread, fill quality, pazienza, aggressivita e costo reale di uscita/ingresso",
+      "concept_count": 5
+    },
+    {
+      "id": "portfolio",
+      "label": "Portfolio",
+      "summary": "allocazione, correlazione, concentrazione, hedging e selezione del numero giusto di posizioni",
+      "concept_count": 0
+    },
+    {
+      "id": "behavioral",
+      "label": "Behavioral",
+      "summary": "fomo, overtrading, revenge trading, conferma del bias e disciplina decisionale",
+      "concept_count": 5
+    },
+    {
+      "id": "regime_detection",
+      "label": "Regime Detection",
+      "summary": "compressione, trend, mean reversion, risk-on/off e cambio di regime",
+      "concept_count": 5
+    },
+    {
+      "id": "derivatives",
+      "label": "Derivatives",
+      "summary": "funding, basis, leverage, liquidazioni, futures e stress da positioning forzato",
+      "concept_count": 0
+    },
+    {
+      "id": "commodities",
+      "label": "Commodities",
+      "summary": "petrolio, gas, oro, supply shock, geopolitica e rischio logistico sulle materie prime",
+      "concept_count": 0
+    },
+    {
+      "id": "event_driven",
+      "label": "Event Driven",
+      "summary": "earnings, banche centrali, guerra, headline risk, calendario e shock discreti",
+      "concept_count": 0
+    },
+    {
+      "id": "exit_management",
+      "label": "Exit Management",
+      "summary": "take profit, trailing stop, invalidazione, time stop e chiusura di basket o singole posizioni",
+      "concept_count": 0
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "behavioral",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral_guard",
+        "consistency",
+        "overrelease",
+        "stability"
+      ]
+    },
+    {
+      "concept": "behavioral_guard",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "consistency",
+        "overrelease",
+        "stability"
+      ]
+    },
+    {
+      "concept": "bull_continuation",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "recovery",
+        "regime_detection",
+        "shock_transition",
+        "stabilization"
+      ]
+    },
+    {
+      "concept": "consistency",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "behavioral_guard",
+        "overrelease",
+        "stability"
+      ]
+    },
+    {
+      "concept": "controlled_release",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "drawdown_budget",
+        "fee_budget",
+        "risk_management",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "drawdown_budget",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "controlled_release",
+        "fee_budget",
+        "risk_management",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "execution",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "fee_drag",
+        "low_churn_reentry",
+        "sufficient_confirmation",
+        "upside_capture"
+      ]
+    },
+    {
+      "concept": "fee_budget",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "controlled_release",
+        "drawdown_budget",
+        "risk_management",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "fee_drag",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "execution",
+        "low_churn_reentry",
+        "sufficient_confirmation",
+        "upside_capture"
+      ]
+    },
+    {
+      "concept": "liquidity_support",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "macro",
+        "measured_release",
+        "policy_supported_recovery"
+      ]
+    },
+    {
+      "concept": "low_churn_reentry",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "execution",
+        "fee_drag",
+        "sufficient_confirmation",
+        "upside_capture"
+      ]
+    },
+    {
+      "concept": "macro",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "liquidity_support",
+        "measured_release",
+        "policy_supported_recovery"
+      ]
+    },
+    {
+      "concept": "measured_release",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "liquidity_support",
+        "macro",
+        "policy_supported_recovery"
+      ]
+    },
+    {
+      "concept": "overrelease",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "behavioral_guard",
+        "consistency",
+        "stability"
+      ]
+    },
+    {
+      "concept": "policy_supported_recovery",
+      "weight": 1,
+      "domain": "macro",
+      "related_concepts": [
+        "liquidity_support",
+        "macro",
+        "measured_release"
+      ]
+    },
+    {
+      "concept": "recovery",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_continuation",
+        "regime_detection",
+        "shock_transition",
+        "stabilization"
+      ]
+    },
+    {
+      "concept": "regime_detection",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_continuation",
+        "recovery",
+        "shock_transition",
+        "stabilization"
+      ]
+    },
+    {
+      "concept": "risk_management",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "controlled_release",
+        "drawdown_budget",
+        "fee_budget",
+        "sellability"
+      ]
+    },
+    {
+      "concept": "sellability",
+      "weight": 1,
+      "domain": "risk_management",
+      "related_concepts": [
+        "controlled_release",
+        "drawdown_budget",
+        "fee_budget",
+        "risk_management"
+      ]
+    },
+    {
+      "concept": "shock_transition",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_continuation",
+        "recovery",
+        "regime_detection",
+        "stabilization"
+      ]
+    },
+    {
+      "concept": "stability",
+      "weight": 1,
+      "domain": "behavioral",
+      "related_concepts": [
+        "behavioral",
+        "behavioral_guard",
+        "consistency",
+        "overrelease"
+      ]
+    },
+    {
+      "concept": "stabilization",
+      "weight": 1,
+      "domain": "regime_detection",
+      "related_concepts": [
+        "bull_continuation",
+        "recovery",
+        "regime_detection",
+        "shock_transition"
+      ]
+    },
+    {
+      "concept": "sufficient_confirmation",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "execution",
+        "fee_drag",
+        "low_churn_reentry",
+        "upside_capture"
+      ]
+    },
+    {
+      "concept": "upside_capture",
+      "weight": 1,
+      "domain": "execution",
+      "related_concepts": [
+        "execution",
+        "fee_drag",
+        "low_churn_reentry",
+        "sufficient_confirmation"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "financial-scenario:behavioral:2",
+      "domain": "behavioral",
+      "prompt": "cerca capitale in piu senza perdere consistenza di comportamento"
+    },
+    {
+      "id": "financial-scenario:behavioral:1",
+      "domain": "behavioral",
+      "prompt": "rilascia il freno senza trasformare il selector in aggressivita rumorosa"
+    },
+    {
+      "id": "financial-scenario:behavioral:3",
+      "domain": "behavioral",
+      "prompt": "separa coraggio operativo da overreaction"
+    },
+    {
+      "id": "financial-scenario:execution:1",
+      "domain": "execution",
+      "prompt": "riconosci quando una recovery merita rientro con conferma sufficiente e non perfetta"
+    },
+    {
+      "id": "financial-scenario:execution:2",
+      "domain": "execution",
+      "prompt": "riduci il costo opportunita del ritardo senza aumentare churn inutile"
+    },
+    {
+      "id": "financial-scenario:execution:3",
+      "domain": "execution",
+      "prompt": "separa re-entry strutturale da falso rimbalzo rumoroso"
+    },
+    {
+      "id": "financial-scenario:macro:1",
+      "domain": "macro",
+      "prompt": "riconosci recovery sostenuta da policy e liquidita"
+    },
+    {
+      "id": "financial-scenario:macro:3",
+      "domain": "macro",
+      "prompt": "tratta la policy come acceleratore di recovery, non come rumore secondario"
+    },
+    {
+      "id": "financial-scenario:macro:2",
+      "domain": "macro",
+      "prompt": "usa il supporto macro per anticipare re-entry senza aspettare il trend maturo"
+    },
+    {
+      "id": "financial-scenario:regime_detection:1",
+      "domain": "regime_detection",
+      "prompt": "leggi il passaggio da shock a recovery come cambio regime progressivo"
+    },
+    {
+      "id": "financial-scenario:regime_detection:2",
+      "domain": "regime_detection",
+      "prompt": "non aspettare che il bull sia gia ovvio per rientrare"
+    },
+    {
+      "id": "financial-scenario:regime_detection:3",
+      "domain": "regime_detection",
+      "prompt": "separa stabilization vera da dead cat bounce"
+    },
+    {
+      "id": "financial-scenario:risk_management:1",
+      "domain": "risk_management",
+      "prompt": "accetta piu rischio solo se il capitale extra compensa davvero fee e drawdown"
+    },
+    {
+      "id": "financial-scenario:risk_management:2",
+      "domain": "risk_management",
+      "prompt": "controlla il budget di drawdown prima di alzare l aggressivita"
+    },
+    {
+      "id": "financial-scenario:risk_management:3",
+      "domain": "risk_management",
+      "prompt": "tratta la vendibilita come vincolo operativo e non solo come capitale finale"
+    }
+  ],
+  "risk_rules": [
+    "conferma perfetta puo costare troppo upside in bull continuation",
+    "consistenza del selector vale quasi quanto il capitale finale",
+    "drawdown extra va pagato solo se il capitale extra lo giustifica",
+    "fee alte e drawdown piu alti insieme peggiorano vendibilita anche con piu rendimento",
+    "macro favorevole non annulla il rischio, ma riduce il costo di restare troppo difensivi",
+    "piu aggressivita senza disciplina distrugge fiducia prodotto",
+    "policy support e liquidita possono giustificare re-entry prima del trend perfetto",
+    "ridurre churn non significa restare sottopesati troppo a lungo",
+    "stabilization non basta da sola, ma recovery coerente merita rilascio misurato",
+    "un regime che migliora gradualmente non va trattato come laterale puro"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 4595,
+    "semantic_bytes": 9321,
+    "semantic_ratio": 2.028509,
+    "brotli_raw_bytes": 1513,
+    "brotli_semantic_bytes": 2156,
+    "brotli_ratio": 1.424983,
+    "loss_model": "semantic_distillation"
+  }
+}

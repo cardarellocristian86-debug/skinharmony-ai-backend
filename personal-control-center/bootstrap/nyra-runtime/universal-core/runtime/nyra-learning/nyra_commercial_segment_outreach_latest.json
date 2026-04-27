@@ -1,0 +1,149 @@
+{
+  "runner": "nyra_commercial_segment_outreach_branch",
+  "generated_at": "2026-04-27T16:09:23.010Z",
+  "owner_priority": "critical_cash_now",
+  "rule": "Prima demo e cassa vicina, poi canale e moltiplicazione commerciale.",
+  "message_thesis": {
+    "smart_desk": "Smart Desk e la shell operativa piu leggibile oggi.",
+    "universal_core": "Universal Core e la base decisionale e di orchestrazione che rende riusabile il sistema.",
+    "nyra": "Nyra lavora sopra il Core e supporta ranking, priorita, marketing e compressione della prossima mossa.",
+    "commercial_positioning": "Non vendiamo un gestionale freddo: proponiamo un ecosistema operativo premium che aiuta il centro a lavorare meglio."
+  },
+  "notes": [
+    "nessun prezzo inserito: manca ancora un listino commerciale confermato per questi invii",
+    "tono premium, chiaro e credibile; nessun claim medico o terapeutico",
+    "ogni lead commerciale va salvato quando arriva il contatto reale",
+    "prima mail breve e leggibile; follow-up ancora piu corto"
+  ],
+  "segments": [
+    {
+      "id": "hair_salon_it",
+      "audience": "parrucchieri / saloni hair",
+      "language": "it",
+      "priority_band": "now",
+      "priority_score": 100,
+      "goal": "chiudere demo e primi pilot veloci",
+      "why_now": "leva piu rapida per cassa vicina e prova commerciale leggibile",
+      "offer_frame": "Smart Desk come shell operativa premium, con Nyra come supporto marketing e continuita",
+      "proof_to_use": [
+        "100 centri / 1100 richieste / 0 errori / 0 timeout",
+        "Smart Desk come shell live gia usata"
+      ],
+      "fit_signals": [
+        {
+          "label": "agenda piena ma disordinata",
+          "weight": 0.92
+        },
+        {
+          "label": "clienti che non tornano con continuita",
+          "weight": 0.9
+        },
+        {
+          "label": "titolare che sente dispersione operativa",
+          "weight": 0.88
+        }
+      ],
+      "disqualifiers": [
+        "chi cerca solo listino prezzo senza interesse per controllo operativo",
+        "chi non ha nessuna urgenza su organizzazione o ritorno clienti"
+      ],
+      "next_step": "demo breve centrata sul collo reale del salone",
+      "email": {
+        "subject": {
+          "primary": "Una proposta concreta per far lavorare meglio il tuo salone",
+          "alternative": "Piu controllo su agenda, clienti e continuita del salone"
+        },
+        "opening_line": "Ti scrivo per capire se ha senso mostrarti una soluzione concreta, non teorica.",
+        "body": "Ciao,\n\nsto aprendo un gruppo ristretto di contatti per Smart Desk, una shell operativa costruita per dare al salone piu controllo su agenda, clienti, priorita giornaliere e continuita.\n\nNon ti scrivo per raccontarti tecnologia o AI in astratto. Ti scrivo per capire se oggi il tuo collo e su organizzazione, clienti che non tornano, poca lettura delle priorita o dispersione commerciale.\n\nSmart Desk oggi e gia la prova piu leggibile del sistema: nel test live principale ha retto 100 centri / 1100 richieste con 0 errori e 0 timeout. Sopra questa base stiamo gia usando Nyra anche per marketing e follow-up, sempre con logica operativa e non da chatbot generico.\n\nSe ha senso, ti faccio vedere una demo breve centrata solo sul tuo contesto reale.",
+        "ask": "Ti va di fissare 15 minuti questa settimana?",
+        "short_follow_up": "Ti riallineo in modo semplice: se oggi nel salone senti dispersione su agenda, clienti o continuita, posso farti vedere rapidamente se la logica Smart Desk ti aiuterebbe davvero oppure no."
+      }
+    },
+    {
+      "id": "beauty_centers_it",
+      "audience": "centri estetici",
+      "language": "it",
+      "priority_band": "now",
+      "priority_score": 97,
+      "goal": "aprire demo premium e conversione su continuita clienti",
+      "why_now": "fit naturale tra operativita, percorsi cliente e continuita commerciale",
+      "offer_frame": "Smart Desk come centro operativo intelligente con appoggio Nyra su priorita e marketing",
+      "proof_to_use": [
+        "100 centri / 1100 richieste / 0 errori / 0 timeout",
+        "Nyra gia usata nel ramo marketing per ranking e priorita"
+      ],
+      "fit_signals": [
+        {
+          "label": "bassa continuita clienti",
+          "weight": 0.93
+        },
+        {
+          "label": "agenda non letta in ottica di priorita",
+          "weight": 0.89
+        },
+        {
+          "label": "marketing recall confuso o assente",
+          "weight": 0.91
+        }
+      ],
+      "disqualifiers": [
+        "chi vuole solo un cambio software cosmetico senza cambiare operativita",
+        "chi non ha alcun problema su ritorno clienti o ordine operativo"
+      ],
+      "next_step": "demo breve tarata su agenda, ritorno clienti e comunicazione commerciale",
+      "email": {
+        "subject": {
+          "primary": "Per il tuo centro: piu controllo operativo, piu continuita, meno dispersione",
+          "alternative": "Una proposta concreta per far lavorare meglio il tuo centro estetico"
+        },
+        "opening_line": "Ti scrivo con una proposta pratica, non con una mail generica.",
+        "body": "Ciao,\n\nsto aprendo un gruppo ristretto di contatti per Smart Desk, una shell operativa pensata per dare a un centro piu ordine, piu controllo e piu continuita sui clienti.\n\nIl punto non e farti vedere un gestionale da guardare. Il punto e aiutarti a leggere meglio agenda, clienti, priorita e azioni che spostano davvero il lavoro del centro.\n\nOggi Smart Desk e gia la prova piu leggibile del sistema: nel test live principale ha retto 100 centri / 1100 richieste con 0 errori e 0 timeout. Sopra questa base stiamo usando anche Nyra come supporto operativo per ranking priorita, marketing e prossime mosse.\n\nSe per te oggi il collo e su agenda, ritorno clienti, ordine operativo o comunicazione commerciale, ha senso mostrarti una demo breve centrata su quel collo e non una presentazione astratta.",
+        "ask": "Se ti va, rispondi con il punto che oggi pesa di piu e ti preparo il taglio giusto.",
+        "short_follow_up": "Ti riscrivo solo per chiudere il punto: se oggi il centro perde ordine su agenda, ritorno clienti o continuita commerciale, posso farti vedere in poco tempo se Smart Desk ha senso sul tuo caso reale."
+      }
+    },
+    {
+      "id": "distributors_it",
+      "audience": "distributori italiani",
+      "language": "it",
+      "priority_band": "parallel",
+      "priority_score": 85,
+      "goal": "capire fit di partnership, canale e possibile leva commerciale multipla",
+      "why_now": "moltiplica reach e credibilita senza dipendere solo dall'outbound diretto ai centri",
+      "offer_frame": "ecosistema premium: software operativo, metodo e posizionamento in un'unica logica di canale",
+      "proof_to_use": [
+        "Smart Desk live come shell dimostrabile",
+        "Universal Core + Nyra come base riusabile sotto l'ecosistema"
+      ],
+      "fit_signals": [
+        {
+          "label": "distributore con taglio premium o consulenziale",
+          "weight": 0.92
+        },
+        {
+          "label": "rete che lavora su fidelizzazione e organizzazione centro",
+          "weight": 0.87
+        },
+        {
+          "label": "interesse a proposta ecosistema, non solo prodotto",
+          "weight": 0.95
+        }
+      ],
+      "disqualifiers": [
+        "chi lavora solo a rotazione listino senza logica di progetto",
+        "chi non ha interesse per software/metodo/continuity insieme"
+      ],
+      "next_step": "inviare one-pager e allineare fit commerciale iniziale",
+      "email": {
+        "subject": {
+          "primary": "Collaborazione commerciale su ecosistema premium per centri beauty",
+          "alternative": "Valutiamo una partnership commerciale seria per centri e saloni premium"
+        },
+        "opening_line": "Ti scrivo per capire se nel vostro canale ha senso aprire una conversazione commerciale seria, non generica.",
+        "body": "Buongiorno,\n\nsto costruendo un ecosistema commerciale e operativo composto da Smart Desk, Skin Pro e O3 System.\n\nIl punto non e aggiungere un prodotto in piu a catalogo, ma dare a centri e saloni una proposta piu forte: gestione operativa, metodo, continuita commerciale e posizionamento premium in un'unica logica.\n\nSmart Desk e la shell software piu leggibile oggi: nel test live principale ha gia retto 100 centri / 1100 richieste con 0 errori e 0 timeout. Sotto questa superficie c'e una base piu ampia, Universal Core + Nyra, che stiamo gia usando anche su marketing e stress test finanziari.\n\nPer noi una distribuzione ha senso solo se il partner riesce a leggere il progetto come ecosistema e non come semplice listino beauty.\n\nSe vedete spazio per una proposta premium con logica di canale, posso inviare un one-pager pulito e allineare subito criteri di fit, target e primi passi commerciali.",
+        "ask": "Se c'e interesse, possiamo sentirci per un primo confronto rapido?",
+        "short_follow_up": "Ti riallineo su un punto solo: per noi avrebbe senso aprire un confronto solo se vedete spazio per una proposta premium di ecosistema, non per un inserimento marginale a listino. Se utile, vi mando un one-pager molto sintetico."
+      }
+    }
+  ]
+}

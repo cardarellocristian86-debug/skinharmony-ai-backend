@@ -1,0 +1,169 @@
+{
+  "version": "nyra_advanced_study_v1",
+  "generated_at": "2026-04-27T18:02:06.831Z",
+  "mode": "manual",
+  "selected_domains": [
+    "computer_engineering",
+    "server_runtime_infrastructure"
+  ],
+  "rationale": [
+    "Serve per trasformare Nyra da shell a runtime robusto.",
+    "Serve per capire dove Nyra andrebbe su Render, come funziona un servizio, quali sono i limiti reali e dove sta il potenziale."
+  ],
+  "report_path": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_advanced_study_latest.json",
+  "queue_path": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_god_mode_study_queue_v1.json",
+  "domains": [
+    {
+      "id": "computer_engineering",
+      "priority": 0.84,
+      "urls": [
+        "https://cs50.harvard.edu/x/2024/",
+        "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",
+        "https://www.typescriptlang.org/docs/"
+      ],
+      "fetched": [
+        {
+          "url": "https://cs50.harvard.edu/x/2024/",
+          "chars": 4346,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",
+          "chars": 17554,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://www.typescriptlang.org/docs/",
+          "chars": 3626,
+          "ok": true,
+          "note": "fetched"
+        }
+      ],
+      "focus": [
+        "contratti",
+        "sistemi",
+        "stato"
+      ],
+      "distilled_note": "computer_engineering: 3/3 fonti lette, corpus distillato 25526 caratteri."
+    },
+    {
+      "id": "server_runtime_infrastructure",
+      "priority": 0.83,
+      "urls": [
+        "https://render.com/docs",
+        "https://render.com/docs/web-services",
+        "https://render.com/docs/deploys/",
+        "https://render.com/docs/environment-variables",
+        "https://render.com/docs/configure-environment-variables",
+        "https://render.com/docs/disks",
+        "https://render.com/autoscaling",
+        "https://nodejs.org/api/http.html",
+        "https://nodejs.org/api/process.html",
+        "https://docs.docker.com/engine/storage/volumes/",
+        "https://docs.docker.com/network/",
+        "https://nginx.org/en/docs/http/ngx_http_proxy_module.html",
+        "https://www.postgresql.org/docs/current/tutorial-arch.html",
+        "https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/"
+      ],
+      "fetched": [
+        {
+          "url": "https://render.com/docs",
+          "chars": 4916,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://render.com/docs/web-services",
+          "chars": 11684,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://render.com/docs/deploys/",
+          "chars": 18438,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://render.com/docs/environment-variables",
+          "chars": 8080,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://render.com/docs/configure-environment-variables",
+          "chars": 12511,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://render.com/docs/disks",
+          "chars": 10938,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://render.com/autoscaling",
+          "chars": 9039,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://nodejs.org/api/http.html",
+          "chars": 24000,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://nodejs.org/api/process.html",
+          "chars": 24000,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://docs.docker.com/engine/storage/volumes/",
+          "chars": 24000,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://docs.docker.com/network/",
+          "chars": 24000,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://nginx.org/en/docs/http/ngx_http_proxy_module.html",
+          "chars": 24000,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://www.postgresql.org/docs/current/tutorial-arch.html",
+          "chars": 2886,
+          "ok": true,
+          "note": "fetched"
+        },
+        {
+          "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/",
+          "chars": 24000,
+          "ok": true,
+          "note": "fetched"
+        }
+      ],
+      "focus": [
+        "render",
+        "deploy",
+        "runtime",
+        "processi",
+        "rete",
+        "persistenza",
+        "scaling",
+        "osservabilita"
+      ],
+      "distilled_note": "server_runtime_infrastructure: 14/14 fonti lette, corpus distillato 222492 caratteri."
+    }
+  ]
+}

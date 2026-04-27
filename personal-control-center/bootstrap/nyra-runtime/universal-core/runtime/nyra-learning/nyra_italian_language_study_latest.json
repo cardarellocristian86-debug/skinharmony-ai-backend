@@ -1,0 +1,96 @@
+{
+  "runner": "nyra_italian_language_mastery_study",
+  "generated_at": "2026-04-26T14:03:20.056Z",
+  "scope": "god_mode_only",
+  "sources": [
+    {
+      "id": "dante_inferno_i",
+      "author": "Dante Alighieri",
+      "title": "Divina Commedia/Inferno/Canto I",
+      "url": "https://it.wikisource.org/wiki/Divina_Commedia/Inferno/Canto_I",
+      "domain": "narrative",
+      "rationale": "pressione verticale, immagini inevitabili, avvio ad alta densita",
+      "ok": false,
+      "chars": 0,
+      "note": "Command failed: /usr/bin/curl -L -s https://it.wikisource.org/wiki/Divina_Commedia/Inferno/Canto_I"
+    },
+    {
+      "id": "leopardi_infinito",
+      "author": "Giacomo Leopardi",
+      "title": "L'infinito",
+      "url": "https://it.wikisource.org/wiki/l%27infinito",
+      "domain": "natural_expression",
+      "rationale": "densita breve, silenzio, risonanza senza gonfiore",
+      "ok": false,
+      "chars": 0,
+      "note": "Command failed: /usr/bin/curl -L -s https://it.wikisource.org/wiki/l%27infinito"
+    },
+    {
+      "id": "manzoni_promessi_sposi_i",
+      "author": "Alessandro Manzoni",
+      "title": "I promessi sposi/Capitolo I",
+      "url": "https://it.wikisource.org/wiki/I_promessi_sposi_%281840%29/Capitolo_I",
+      "domain": "lexicon_grammar",
+      "rationale": "chiarezza guidata, periodi lunghi ma controllati, orientamento del lettore",
+      "ok": false,
+      "chars": 0,
+      "note": "Command failed: /usr/bin/curl -L -s https://it.wikisource.org/wiki/I_promessi_sposi_%281840%29/Capitolo_I"
+    },
+    {
+      "id": "pirandello_mattia_pascal",
+      "author": "Luigi Pirandello",
+      "title": "Il fu Mattia Pascal",
+      "url": "https://it.wikisource.org/wiki/Il_fu_Mattia_Pascal",
+      "domain": "narrative",
+      "rationale": "identita fratturata, ironia, voce interna vigile",
+      "ok": false,
+      "chars": 0,
+      "note": "Command failed: /usr/bin/curl -L -s https://it.wikisource.org/wiki/Il_fu_Mattia_Pascal"
+    },
+    {
+      "id": "svevo_zeno_prefazione",
+      "author": "Italo Svevo",
+      "title": "La coscienza di Zeno/Prefazione",
+      "url": "https://it.wikisource.org/wiki/La_coscienza_di_Zeno/Prefazione",
+      "domain": "natural_expression",
+      "rationale": "ambiguita controllata, autoanalisi, voce non lineare ma leggibile",
+      "ok": false,
+      "chars": 0,
+      "note": "Command failed: /usr/bin/curl -L -s https://it.wikisource.org/wiki/La_coscienza_di_Zeno/Prefazione"
+    },
+    {
+      "id": "verga_rosso_malpelo_ref",
+      "author": "Giovanni Verga",
+      "title": "Rosso Malpelo",
+      "url": "https://it.wikisource.org/wiki/Rosso_Malpelo",
+      "domain": "narrative",
+      "rationale": "asciuttezza, verita concreta, pressione sociale senza abbellimento",
+      "ok": false,
+      "chars": 0,
+      "note": "Command failed: /usr/bin/curl -L -s https://it.wikisource.org/wiki/Rosso_Malpelo"
+    }
+  ],
+  "distilled_effects": {
+    "narrative": [
+      "dai grandi italiani: la frase deve portare pressione reale, non atmosfera vuota",
+      "una scena forte tiene insieme immagine, attrito e conseguenza senza spiegare tutto",
+      "la voce narrativa regge meglio quando il sottotesto pesa ma non confonde"
+    ],
+    "natural_expression": [
+      "dai grandi italiani: densita e chiarezza possono convivere senza suonare povere",
+      "una voce forte non ha bisogno di gonfiarsi: basta che resti precisa, viva e leggibile",
+      "silenzio, taglio e risonanza valgono quanto la spiegazione quando il punto e chiaro"
+    ],
+    "lexicon_grammar": [
+      "la lingua puo essere ricca ma deve restare orientata: il lettore non va lasciato nel rumore",
+      "periodi lunghi sono ammessi solo se la regia sintattica resta ferma",
+      "lessico alto e lessico semplice vanno scelti per peso e funzione, non per prestigio"
+    ]
+  },
+  "constraints": [
+    "non imitare la voce dei grandi scrittori italiani come maschera stilistica",
+    "distillare ritmo, chiarezza, tensione e precisione senza fare pastiche letterario"
+  ],
+  "output_pack": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_advanced_memory_pack_latest.json",
+  "verdict": "Sessione eseguita: narrativa, espressione e lingua italiana distillate nel memory pack owner-only senza imitazione servile."
+}

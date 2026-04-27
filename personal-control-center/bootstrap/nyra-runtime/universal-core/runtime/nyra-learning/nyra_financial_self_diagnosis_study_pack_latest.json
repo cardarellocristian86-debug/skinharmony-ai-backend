@@ -1,0 +1,34 @@
+{
+  "pack_version": "nyra_financial_self_diagnosis_study_pack_v1",
+  "generated_at": "2026-04-27T11:40:26.623Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 3,
+  "domains": [
+    {
+      "id": "self_diagnosis_finance",
+      "summary": "saper nominare il proprio collo finanziario senza cadere nel fallback"
+    },
+    {
+      "id": "market_state_explanation",
+      "summary": "spiegare lo stato di mercato in modo corto, utile e non nebbioso"
+    },
+    {
+      "id": "financial_reflection",
+      "summary": "distinguere lettura mercato, trade-off esecuzione e limite proprio"
+    }
+  ],
+  "source_reports": [
+    "nyra_financial_self_diagnosis_latest.json"
+  ],
+  "response_rules": [
+    "non cadere in priorita generiche",
+    "nominare il collo in modo esplicito",
+    "separare lettura, esecuzione e spiegazione",
+    "aprire con lo stato del mercato",
+    "dire il punto fragile con un nome leggibile",
+    "chiudere con la disciplina operativa, non con il fumo",
+    "non fondere tutto in una frase unica",
+    "separare mercato, esecuzione e limite del modello",
+    "dire cosa serve studiare per chiudere il gap"
+  ]
+}

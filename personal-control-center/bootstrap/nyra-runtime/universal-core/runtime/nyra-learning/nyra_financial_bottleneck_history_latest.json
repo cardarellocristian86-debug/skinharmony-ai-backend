@@ -1,0 +1,61 @@
+{
+  "version": "nyra_financial_bottleneck_history_v1",
+  "updated_at": "2026-04-26T19:07:23.074Z",
+  "entries": [
+    {
+      "observed_at": "2026-04-26T18:55:51.995Z",
+      "active_case_id": "guardrails_preserve_then_refine",
+      "active_case_score": 62.9656,
+      "capital_delta_vs_baseline": 0,
+      "fees_delta_vs_baseline": 0,
+      "drawdown_delta_vs_baseline": 0,
+      "score_delta_vs_baseline": 0,
+      "lateral_guard_intact": true,
+      "bubble_guard_intact": true
+    },
+    {
+      "observed_at": "2026-04-26T18:56:01.803Z",
+      "active_case_id": "guardrails_preserve_then_refine",
+      "active_case_score": 62.9656,
+      "capital_delta_vs_baseline": 0,
+      "fees_delta_vs_baseline": 0,
+      "drawdown_delta_vs_baseline": 0,
+      "score_delta_vs_baseline": 0,
+      "lateral_guard_intact": true,
+      "bubble_guard_intact": true
+    },
+    {
+      "observed_at": "2026-04-26T18:56:16.003Z",
+      "active_case_id": "guardrails_preserve_then_refine",
+      "active_case_score": 62.9656,
+      "capital_delta_vs_baseline": 0,
+      "fees_delta_vs_baseline": 0,
+      "drawdown_delta_vs_baseline": 0,
+      "score_delta_vs_baseline": 0,
+      "lateral_guard_intact": true,
+      "bubble_guard_intact": true
+    },
+    {
+      "observed_at": "2026-04-26T19:07:12.535Z",
+      "active_case_id": "guardrails_preserve_then_refine",
+      "active_case_score": 62.9656,
+      "capital_delta_vs_baseline": 0,
+      "fees_delta_vs_baseline": 0,
+      "drawdown_delta_vs_baseline": 0,
+      "score_delta_vs_baseline": 0,
+      "lateral_guard_intact": true,
+      "bubble_guard_intact": true
+    },
+    {
+      "observed_at": "2026-04-26T19:07:23.074Z",
+      "active_case_id": "guardrails_preserve_then_refine",
+      "active_case_score": 62.9656,
+      "capital_delta_vs_baseline": 0,
+      "fees_delta_vs_baseline": 0,
+      "drawdown_delta_vs_baseline": 0,
+      "score_delta_vs_baseline": 0,
+      "lateral_guard_intact": true,
+      "bubble_guard_intact": true
+    }
+  ]
+}

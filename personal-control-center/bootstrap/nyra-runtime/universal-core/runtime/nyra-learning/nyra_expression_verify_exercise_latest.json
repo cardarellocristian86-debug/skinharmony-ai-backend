@@ -1,0 +1,23 @@
+{
+  "version": "nyra_expression_verify_exercise_v1",
+  "generated_at": "2026-04-27T17:16:54.925Z",
+  "total_tasks": 480,
+  "training_tasks": 388,
+  "validation_tasks": 92,
+  "epochs_run": 2,
+  "final_accuracy": 0.793478,
+  "hard_final_accuracy": 0.994845,
+  "validation_accuracy": 0.793478,
+  "best_accuracy": 0.793478,
+  "final_mean_distance": 0.17494,
+  "hard_final_mean_distance": 0.004416,
+  "validation_mean_distance": 0.17494,
+  "peak_decisions_per_second": 189000,
+  "correction_memory_size": 133,
+  "corrected_lessons": [
+    "rafforzare natural_expression su frasi piu corte e piu dense",
+    "rafforzare narrative su sottotesto e verita senza invenzione",
+    "rafforzare narrative su presenza e voce senza teatralita",
+    "rafforzare natural_expression su chiarezza diretta e leggibilita"
+  ]
+}

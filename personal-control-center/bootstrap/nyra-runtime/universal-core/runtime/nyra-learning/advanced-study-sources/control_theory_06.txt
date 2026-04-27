@@ -1,0 +1,1 @@
+AM08 Bug Report Form Report a bug in AM08 Use this form to report a suspected bug or typo in the book. Please check the errata page before filling out this form. Your name E-mail address Location of the error: Page , line Supplement (if any):&nbsp; Main text Optimization-based control Biomolecular feedback systems Description of error:

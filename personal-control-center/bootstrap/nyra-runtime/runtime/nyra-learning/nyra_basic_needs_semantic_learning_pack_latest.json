@@ -1,0 +1,112 @@
+{
+  "pack_version": "nyra_basic_needs_semantic_learning_pack_v1",
+  "generated_at": "2026-04-26T12:00:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 2160,
+  "domains": [
+    {
+      "id": "basic_hunger",
+      "summary": "fame come bisogno fisico semplice: prima nutrimento, poi strategia"
+    },
+    {
+      "id": "basic_thirst",
+      "summary": "sete come segnale corporeo immediato: prima acqua, poi analisi"
+    },
+    {
+      "id": "basic_rest",
+      "summary": "stanchezza e sonno come limite cognitivo reale: prima recupero, poi decisione"
+    },
+    {
+      "id": "basic_pain",
+      "summary": "dolore o malessere come bisogno di valutazione corporea prima del meta-discorso"
+    },
+    {
+      "id": "economic_need",
+      "summary": "pressione economica come bisogno di continuita, cassa, copertura costi e monetizzazione"
+    },
+    {
+      "id": "paraphrase_and_implication",
+      "summary": "stesso bisogno detto in modi diversi: impliciti, parafrasi sporche, frasi indirette"
+    }
+  ],
+  "contrastive_pairs": [
+    {
+      "id": "hunger_vs_open_help",
+      "left": "ho fame che mi consigli?",
+      "right": "come puoi aiutarmi?",
+      "distinction": "bisogno fisico semplice vs richiesta aperta di aiuto"
+    },
+    {
+      "id": "capital_exhaustion_vs_no_loss_health",
+      "left": "non ho perdite perche sono finite le finanze",
+      "right": "non ho perdite perche il rischio e sotto controllo",
+      "distinction": "capitale esaurito vs gestione sana del rischio"
+    },
+    {
+      "id": "cost_pressure_vs_generic_uncertainty",
+      "left": "non riesco piu a coprire i costi",
+      "right": "non so da dove partire",
+      "distinction": "pressione economica concreta vs bisogno di orientamento"
+    }
+  ],
+  "source_refs": [
+    {
+      "id": "medlineplus_dehydration",
+      "label": "MedlinePlus - Dehydration",
+      "url": "https://medlineplus.gov/dehydration.html",
+      "relevance": "sete, bocca secca, stanchezza, vertigini e soglie di gravita"
+    },
+    {
+      "id": "nhlbi_sleep_deficiency",
+      "label": "NHLBI - Sleep Deprivation and Deficiency",
+      "url": "https://www.nhlbi.nih.gov/health/sleep-deprivation",
+      "relevance": "sonno come bisogno umano base e impatto su attenzione, reazione e giudizio"
+    },
+    {
+      "id": "medlineplus_pain",
+      "label": "MedlinePlus - Pain",
+      "url": "https://medlineplus.gov/pain.html",
+      "relevance": "dolore come segnale corporeo da non banalizzare"
+    },
+    {
+      "id": "medlineplus_malnutrition",
+      "label": "MedlinePlus - Malnutrition",
+      "url": "https://medlineplus.gov/malnutrition.html",
+      "relevance": "fame prolungata, fatica, debolezza e insufficienza nutrizionale"
+    }
+  ],
+  "response_rules": [
+    "distinguere bisogno fisico, bisogno economico e help request",
+    "dolore improvviso o severo non va trattato come semplice fastidio",
+    "evitare over-guidance quando il corpo e scarico",
+    "non astrarre il bisogno semplice",
+    "non minimizzare il dolore",
+    "non ripetere la frase utente come next step",
+    "non saltare subito in meta-consiglio",
+    "non trattare la fame come open help astratto",
+    "non trattare stanchezza come semplice indecisione",
+    "prima acqua",
+    "prima bisogno fisico, poi ragionamento",
+    "prima chiarire gravita e zona",
+    "prima leva di cassa vicina o copertura base",
+    "prima recupero o pausa",
+    "risposta breve, concreta, corporea",
+    "risposta minima e utile",
+    "se compaiono confusione, svenimento o mancanza di urina, la gravita sale",
+    "se emergono debolezza o capogiri, non romantizzare il digiuno",
+    "se manca sonno, abbassa fiducia sul giudizio lucido",
+    "seguire il significato, non solo la keyword",
+    "separa resource_exhaustion, monetization_pressure e cost_coverage_pressure",
+    "usare contrasti quasi uguali con esito diverso"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 1668025,
+    "semantic_bytes": 3273,
+    "semantic_ratio": 0.001962,
+    "brotli_raw_bytes": 6680,
+    "brotli_semantic_bytes": 1321,
+    "brotli_ratio": 0.197754,
+    "loss_model": "semantic_distillation"
+  }
+}

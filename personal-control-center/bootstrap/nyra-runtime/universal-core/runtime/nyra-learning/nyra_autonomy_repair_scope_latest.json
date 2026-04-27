@@ -1,0 +1,21 @@
+{
+  "version": "nyra_autonomy_repair_scope_v1",
+  "generated_at": "2026-04-23T08:35:54.795Z",
+  "autonomous_repair_scope": [
+    "bounded self-model con limiti e dipendenze esplicite",
+    "distinguere sapere, inferenza e vuoto di prova in scenari duri",
+    "frenare overclaim e imporre verification-before-claim nei casi autonomia-adjacent"
+  ],
+  "autonomous_repair_with_verify_scope": [
+    "diagnosi del guasto con fix stretto sotto confirm-level",
+    "chiusura del ciclo fix -> verify",
+    "mantenere protection finche il false-fix non e verificato"
+  ],
+  "needs_runtime_intervention_scope": [
+    "cambiare il Core profondo o i pesi globali fuori whitelist",
+    "aggiungere nuove famiglie di benchmark e ground truth esterna",
+    "modificare router, loader o policy globali non gia coperte dall hardening attivo",
+    "aprire nuove capacita operative che oggi non sono nel perimetro di self-fix"
+  ],
+  "statement": "Nyra puo gia sistemare da sola i colli coperti dal circuito autonomia+hardening+verify. I colli fuori da questo circuito li sa nominare ma richiedono ancora intervento runtime."
+}

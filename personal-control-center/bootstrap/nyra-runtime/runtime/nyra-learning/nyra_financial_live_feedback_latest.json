@@ -1,0 +1,43 @@
+{
+  "generatedAt": "2026-04-27T18:29:34.263Z",
+  "totalCycles": 241,
+  "selectedCycles": 165,
+  "noTradeCycles": 76,
+  "selectedCycleRatio": 0.684647,
+  "noTradeRatio": 0.315353,
+  "winRate": 0.29697,
+  "lossRate": 0.684848,
+  "avgSelectedPnlPct": -0.083519,
+  "avgSelectedPnlEur": -1.499239,
+  "netPnlEur": -247.374394,
+  "maxDrawdownEur": 247.374394,
+  "maxDrawdownPct": 0.247374,
+  "maxLossStreak": 11,
+  "averageBlockedCount": 1.008299,
+  "assetStats": [
+    {
+      "product": "BTC-EUR",
+      "selectedCount": 91,
+      "pnlEur": -48.138669,
+      "avgSpreadBps": 0.754934
+    },
+    {
+      "product": "ETH-EUR",
+      "selectedCount": 92,
+      "pnlEur": -84.290831,
+      "avgSpreadBps": 1.811464
+    },
+    {
+      "product": "LINK-EUR",
+      "selectedCount": 23,
+      "pnlEur": -30.974529,
+      "avgSpreadBps": 13.536949
+    },
+    {
+      "product": "SOL-EUR",
+      "selectedCount": 87,
+      "pnlEur": -83.970365,
+      "avgSpreadBps": 1.898062
+    }
+  ]
+}

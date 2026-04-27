@@ -1,0 +1,48 @@
+{
+  "tag": "nyra_stable_dirty_data_guard_v1",
+  "created_at": "2026-04-26T19:28:35.549Z",
+  "status": "stable_promoted",
+  "promoted_rule": "dirty_data_hold_non_protective_changes_v1",
+  "source_learning_pack": "universal-core/runtime/nyra-learning/nyra_learning_autopilot_latest.json",
+  "stable_file": "universal-core/tools/nyra-auto-profile-selector.ts",
+  "stable_snapshot_files": [
+    "nyra-auto-profile-selector.ts",
+    "nyra-autopilot-regression-gate-test.ts",
+    "nyra_autopilot_regression_gate_latest.json",
+    "PREVIOUS_STABLE_BASELINE.json"
+  ],
+  "sha256": {
+    "universal-core/tools/nyra-auto-profile-selector.ts": "dea02b7317b97562bba56466051f2896404084af1b35a00960179986cf3421bf",
+    "universal-core/tests/nyra-autopilot-regression-gate-test.ts": "a0ff38cc40a8d9b9a56604ce3571a452ebae57908fdee61d613bb9495926e021",
+    "reports/universal-core/learning/nyra_autopilot_regression_gate_latest.json": "c395bf6a7e36e3179e2cef0166b7703e74e47511cc67796e61cbdac513bb5d2b"
+  },
+  "promotion_gate": {
+    "report": "reports/universal-core/learning/nyra_autopilot_regression_gate_latest.json",
+    "verdict": "promote_to_stable",
+    "promotion_eligible": true,
+    "contamination_detected": false,
+    "critical_failures": [],
+    "dirty_data_delta": {
+      "capital_delta_pct": 0.4165,
+      "drawdown_delta": 0,
+      "rebalance_delta": -7,
+      "fee_delta": -1793.72,
+      "turnover_delta": -48.587
+    },
+    "neutral_scenarios": [
+      "healthy_bull",
+      "bubble_detection",
+      "lateral_market",
+      "crash_recovery",
+      "product_readiness",
+      "horizon_sweep_1_20"
+    ]
+  },
+  "runtime_boundaries": [
+    "Core unchanged",
+    "Risk policy unchanged",
+    "Governor base unchanged",
+    "Advisory overlay unchanged",
+    "Rule active only when dirtyDataContext is provided or data-quality fields indicate unreliable data"
+  ]
+}

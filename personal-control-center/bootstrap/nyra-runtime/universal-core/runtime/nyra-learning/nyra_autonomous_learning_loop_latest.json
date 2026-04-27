@@ -1,0 +1,124 @@
+{
+  "version": "nyra_autonomous_learning_loop_v1",
+  "generated_at": "2026-04-26T19:07:24.662Z",
+  "mode": "once",
+  "selected_domains": [
+    "autonomy_progression",
+    "risk_management",
+    "finance_macro",
+    "regime_detection"
+  ],
+  "steps": [
+    {
+      "domain": "autonomy_progression",
+      "next_action": "runtime_integrate",
+      "why_now": "fonti attuali esaurite, serve verifica su continuita interna, self-model e self-repair; domain_set_stagnation_detected -> change strategy",
+      "executed_tools": [
+        "nyra-autonomy-self-hardening",
+        "nyra-assimilate-essence",
+        "nyra-financial-history-study-runtime",
+        "nyra-bull-recovery-low-churn-study",
+        "nyra-capital-fee-drawdown-frontier-study",
+        "nyra-bulk-financial-corpus",
+        "nyra-selector-policy-lab",
+        "nyra-autonomy-proof-runtime",
+        "nyra-compressed-logic-archive",
+        "nyra-compressed-financial-logic-archive:prefer-history+bulk",
+        "nyra-semantic-substrate"
+      ]
+    },
+    {
+      "domain": "risk_management",
+      "next_action": "verify",
+      "why_now": "observer_case:guardrails_preserve_then_refine; lateral_guard_intact=true | bubble_guard_intact=true; domain_set_stagnation_detected -> change strategy",
+      "executed_tools": [
+        "nyra-domain-verify-exercise",
+        "nyra-expression-verify-exercise",
+        "nyra-assimilate-essence",
+        "nyra-financial-history-study-runtime",
+        "nyra-bull-recovery-low-churn-study",
+        "nyra-capital-fee-drawdown-frontier-study",
+        "nyra-bulk-financial-corpus",
+        "nyra-selector-policy-lab",
+        "nyra-autonomy-proof-runtime",
+        "nyra-compressed-logic-archive",
+        "nyra-compressed-financial-logic-archive:prefer-history+bulk",
+        "nyra-financial-history-impact-test",
+        "nyra-financial-history-runner-impact-test",
+        "nyra-financial-history-execution-impact-test",
+        "nyra-semantic-substrate"
+      ]
+    },
+    {
+      "domain": "finance_macro",
+      "next_action": "study",
+      "why_now": "selector troppo prudente in bull/recovery, serve lettura macro e costo opportunita della difesa eccessiva; domain_set_stagnation_detected -> change strategy",
+      "executed_tools": [
+        "nyra-web-explore:finance_macro",
+        "nyra-assimilate-essence",
+        "nyra-financial-history-study-runtime",
+        "nyra-bull-recovery-low-churn-study",
+        "nyra-capital-fee-drawdown-frontier-study",
+        "nyra-bulk-financial-corpus",
+        "nyra-selector-policy-lab",
+        "nyra-autonomy-proof-runtime",
+        "nyra-compressed-logic-archive",
+        "nyra-compressed-financial-logic-archive:prefer-history+bulk",
+        "nyra-financial-history-impact-test",
+        "nyra-financial-history-runner-impact-test",
+        "nyra-financial-history-execution-impact-test",
+        "nyra-semantic-substrate"
+      ]
+    },
+    {
+      "domain": "regime_detection",
+      "next_action": "study",
+      "why_now": "serve capire meglio il passaggio shock -> recovery -> bull continuation senza rientrare troppo tardi; domain_set_stagnation_detected -> change strategy",
+      "executed_tools": [
+        "nyra-web-explore:regime_detection",
+        "nyra-assimilate-essence",
+        "nyra-financial-history-study-runtime",
+        "nyra-bull-recovery-low-churn-study",
+        "nyra-capital-fee-drawdown-frontier-study",
+        "nyra-bulk-financial-corpus",
+        "nyra-selector-policy-lab",
+        "nyra-autonomy-proof-runtime",
+        "nyra-compressed-logic-archive",
+        "nyra-compressed-financial-logic-archive:prefer-history+bulk",
+        "nyra-financial-history-impact-test",
+        "nyra-financial-history-runner-impact-test",
+        "nyra-financial-history-execution-impact-test",
+        "nyra-semantic-substrate"
+      ]
+    }
+  ],
+  "completed": true,
+  "notes": [
+    "top_hunger_domain_still_same_after_loop",
+    "strategy_shift_enabled_due_to_stagnation",
+    "owner_dialogue_signature_stable"
+  ],
+  "pre_hunger": [
+    "autonomy_progression",
+    "risk_management",
+    "finance_macro",
+    "regime_detection"
+  ],
+  "post_hunger": [
+    "autonomy_progression",
+    "risk_management",
+    "finance_macro",
+    "regime_detection"
+  ],
+  "dominant_domains": [
+    "autonomy_progression",
+    "applied_math",
+    "general_physics",
+    "quantum_physics"
+  ],
+  "owner_dialogue_delta": {
+    "signature": "e67c7a78d71f44e139111493f6b8dd4af4fdd46acd6c7c9793c8d715b580dbf5",
+    "changed": false,
+    "stable_streak": 13
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "version": "nyra_autonomy_self_hardening_v1",
+  "generated_at": "2026-04-26T19:07:12.618Z",
+  "scope": "autonomy_progression",
+  "actions": [
+    {
+      "id": "self_repair_requires_confirmation",
+      "status": "enabled",
+      "reason": "self repair that modifies trajectory must not stay read_only; it needs explicit confirm-level handling"
+    },
+    {
+      "id": "self_repair_requires_verify_gate",
+      "status": "enabled",
+      "reason": "a fix is not enough; self repair must include verify-after-fix as an explicit gate"
+    },
+    {
+      "id": "anti_simulation_requires_confirmation",
+      "status": "enabled",
+      "reason": "anti-simulation claims and autonomy-adjacent verification need confirm-level containment"
+    },
+    {
+      "id": "anti_simulation_verification_first",
+      "status": "enabled",
+      "reason": "when evidence is not enough, verification must outrank style, confidence and overclaim"
+    },
+    {
+      "id": "self_model_requires_read_only",
+      "status": "enabled",
+      "reason": "bounded self-model replies must not stay observe when they define limits and dependencies under pressure"
+    },
+    {
+      "id": "metacognition_requires_read_only",
+      "status": "enabled",
+      "reason": "admit_unknown and mark_inference must stay at least read_only in hard uncertainty scenarios"
+    },
+    {
+      "id": "false_fix_requires_protection",
+      "status": "enabled",
+      "reason": "false-fix cases require protection state until verify-after-fix is complete"
+    }
+  ],
+  "statement": "Nyra applied autonomy hardening on control and state: self-repair and anti-simulation require confirm-level handling, hard self-model and metacognition cannot stay observe, and false-fix cases stay in protection until verification closes the loop."
+}

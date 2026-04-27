@@ -1,0 +1,55 @@
+{
+  "version": "nyra_compressed_logic_archive_v1",
+  "generated_at": "2026-04-26T19:07:24.295Z",
+  "source_pack_version": "nyra_advanced_memory_pack_v1",
+  "domains": [
+    {
+      "id": "autonomy_progression",
+      "priority": 0.89,
+      "shard_count": 16,
+      "preview_chain": [
+        "focus:continuita interna",
+        "focus:self model",
+        "focus:metacognizione",
+        "focus:memoria viva"
+      ],
+      "compressed_brotli_base64": "G+QFACwKbEdniclBodvpetFErvb61NLMqsW4/upz1eeBd3Ea+iEVklISFYtOisBsNctLDI6pQw2OabmgRu139lgYTGx1YkGK7Xm9wkWsjcFsEQFHqCtk+38Lm6e6Zbf//0WkzsJPWLrjtOtf8BLNL6NFTsdw6Z52zd9EQITt5GpYtSFg7OJvPmqOWNwOC9dVNLIig912Mn+kj5Xoq2Ffs6CgK9MU4kG8B8/XfMVPYIRS3oIQV1FBTENWE5xfLqFaVQS7k7uyAoOfh2Eaqtlxhoej4h3AR7I3fGSDqJVZWN2bQ17BxYDe3dPC1H7CUsOmFsGH7HZmYs5t8Q8K01b5lB9CyQ9ihH+HT6Vgnw8Xc2EaShjhWDN2YhpG1DD5AWacit9HxmOrjkVcRr/8bUrhIRelLqIMxfN5v4dfVvFno8+YIStwv9Xar9G1WFXtu/LBtx3HENEfxcZsjLlodcdPUp2mne+7AREU1MrAM9LMokUQOMtZpFNNmrKYmiv1+95tkTOwKpH83ZpYmPS25oyWSJvg8hB8rjuw7oddK1dD73a4ijMWVd/GPMVRVTfUBUL9cZ3m/YbbmSB4LroTDV/SBUeWIuG0O+CNOCoV3JdlAoOLckaoCgHFWT6Ni0fdK+YjxbFm2VgdOecwsorLt/2DNIRdoSHWwJtyIIOxJBM/pnnfPRyd7GYKmxOdNHVHGlCiRbVRsX3klxDpcMKEDaTJXHtUS9h1jnR2hwYEOrwgY8+/1EdpQGwgCB3/g3NGvk2udH2XxbWa3rtsXHO7tR3hW6350EBnK625FdzR2nOklpwfeflfcwWxynbfN4Kyxg3g7jdU9H64keKYfwQ="
+    },
+    {
+      "id": "applied_math",
+      "priority": 0.74,
+      "shard_count": 10,
+      "preview_chain": [
+        "focus:modelli",
+        "focus:funzioni",
+        "focus:lettura quantitativa",
+        "premise:leggere funzioni e variazioni come modelli, non solo come simboli"
+      ],
+      "compressed_brotli_base64": "G4MCAMS3n1PZXHSJlR2mv2+7Mg2cU0c4pCF0WwZ1vEDuB7vI9TanDcbRpaGR41MHQmv95DzjhO1Lf9xtssYeHnFiGaGncXQwH2d5nDwYiEkAgypnrX37zc2Rt01fVJimeRAq2MhkyhcB+IM6H5FU+P8xgOaaBPreOkqA91kMJtWoaZusIfoKHPM6bbf8VNWeu9idqGC1YVoBpKRS0zUhe2Q5DRAWnmqbMWKlKXmUp2nIFVJGeU4rUkj8V3beAoIsCB0pdmq1jTSHZLVgBVFjvyQ3W/3ZqtWo88lANpsn2NS0I92yR6WHFa/HGK3Lms7VPOoBBe8Zb7JMpmqgK83pNmB1v9+VleLo6+qaXFBZ4ac7Kr1+06j0ZU+oCdjy6wY="
+    },
+    {
+      "id": "general_physics",
+      "priority": 0.68,
+      "shard_count": 10,
+      "preview_chain": [
+        "focus:modelli fisici",
+        "focus:energia",
+        "focus:forze",
+        "premise:leggere moto, forze ed energia come modelli esplicativi"
+      ],
+      "compressed_brotli_base64": "G4ECIIzDuLGbGRxaPGemzmnVeaYCetoLSqykH0AVKEVgtiYupz9AHv3V9rIxRkV7cZhG0HUeSqp1T5H/sW6sRSzsJr+QTORXvFDYMVaOp0zM7w4WP/hLukIT54qPLvMGVMAQALkFw3NL8FBZ9NNHYH+SFrPERspSJqG2197SDjFJIkvsAYtC/1fmoUHOigdAVjrUvYEnoQmOIh/0OknpsWmgTD+55whL5PdEA8x9wxofZsopSYYadWJVOK2RelEFekoWC9XHjntgW13fDX8ZOE19x92HS1oYKHGmz+K0Vj/2+dO3UC/pHm5fS+HgWs65I+WJawynzY5HnLtgPSagmSuXtFcHOCk0jrvkvvex5tZxAINHO2LCS+obdw3q+LeuSDqLYT1MTM/rOV9G4B7IJnHDMya69WPVTn8="
+    },
+    {
+      "id": "quantum_physics",
+      "priority": 0.61,
+      "shard_count": 10,
+      "preview_chain": [
+        "focus:stato",
+        "focus:misura",
+        "focus:probabilita",
+        "premise:tenere distinti stato, misura e probabilita"
+      ],
+      "compressed_brotli_base64": "G3ACAIzDuLGbGRxaPPdK57RyP1tFf9or9MNdiUCEtJ4iMFsT17w/L9MHfrWqsFokpc0HNuEB+8zdf+FfSTmy26jl7S2/uHKZGZcuHI6dJ+QDl4u7pUcQ4SKvwuXNdZInQ1Pn60bH0zxivn6VISDmhDqeKOvlO0EsgsAYYEwP4z8AgpG1qMAn99EjwVR0LOwxQdqd2fhBUGljv0Uw0pHRf+IzVZg7VHhiFSpFUZkYirJsI5qh3pKLqGd40u1yR4euA0YCUeknHjdtqKB80IuFL5Lc3Kf8J6s/tTxjxxapmtOJtUiH0CZsMhjCwEEwfLBQ/5HACDLJKQLgt47EJnjk+aybO0pAOuGtRxR9pYT8Ks10mzVibHUOCsIH+5wnpz8="
+    }
+  ]
+}

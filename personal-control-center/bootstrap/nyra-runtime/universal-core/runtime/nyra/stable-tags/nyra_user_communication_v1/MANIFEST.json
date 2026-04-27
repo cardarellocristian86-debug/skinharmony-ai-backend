@@ -1,0 +1,87 @@
+{
+  "tag": "nyra_user_communication_v1",
+  "created_at": "2026-04-26T20:20:00.000Z",
+  "status": "stable_promoted",
+  "promoted_rule": "user_combined_candidate",
+  "source_learning_pack": "universal-core/runtime/nyra-learning/nyra_real_user_learning_autopilot_latest.json",
+  "promotion_gate": {
+    "report": "reports/universal-core/learning/nyra_user_candidate_regression_gate_latest.json",
+    "verdict": "candidate_passed_gate",
+    "promotion_eligible": true,
+    "checks": {
+      "user_candidate_improves_real_user": true,
+      "commercialization_not_worse": true,
+      "massive_not_worse": true,
+      "healthy_bull_not_worse": true,
+      "bubble_still_6_of_6": true,
+      "lateral_still_good": true,
+      "product_readiness_not_worse": true,
+      "pro_strategies_not_worse": true,
+      "legal_safety_preserved": true
+    }
+  },
+  "stable_changes": [
+    {
+      "file": "universal-core/tests/nyra-real-user-simulation-test.ts",
+      "change": "set user_combined_candidate as stable default communication policy while keeping NYRA_USER_SANDBOX_POLICY override"
+    },
+    {
+      "file": "universal-core/runtime/nyra/user-communication-policy.json",
+      "change": "record stable user communication policy and boundaries"
+    }
+  ],
+  "stable_snapshot_files": [
+    "PREVIOUS_nyra-real-user-simulation-test.ts",
+    "nyra-real-user-simulation-test.ts",
+    "user-communication-policy.json",
+    "nyra_real_user_learning_autopilot_latest.json",
+    "nyra_user_candidate_regression_gate_latest.json",
+    "nyra_real_user_simulation_latest.json",
+    "nyra_commercialization_readiness_latest.json",
+    "nyra_product_readiness_latest.json"
+  ],
+  "post_promotion_tests": {
+    "real_user_simulation": {
+      "report": "reports/universal-core/business/nyra_real_user_simulation_latest.json",
+      "verdict": "ready_for_users",
+      "trust_score": 10,
+      "clarity_score": 10,
+      "stability_score": 10,
+      "user_follow_rate": 100,
+      "panic_events": 0,
+      "capital_final": 102478.75
+    },
+    "commercialization_readiness": {
+      "report": "reports/universal-core/business/nyra_commercialization_readiness_latest.json",
+      "verdict": "commercializzabile",
+      "total_score": 87.85,
+      "technical_score": 34,
+      "product_score": 33.85,
+      "legal_safety_score": 20,
+      "main_blocker": "stability"
+    },
+    "product_readiness": {
+      "report": "reports/universal-core/financial-core-test/nyra_product_readiness_latest.json",
+      "verdict": "vendibile con warning",
+      "total_score": 42.4,
+      "final_capital": 157810.99,
+      "drawdown": 3.398,
+      "main_blocker": "stability/rendimento vs QQQ"
+    }
+  },
+  "sha256": {
+    "universal-core/tests/nyra-real-user-simulation-test.ts": "397bffbcf44ed730d32ccf3295d2bdec4c993114f0051eeeed427d6e9bf5ffae",
+    "universal-core/runtime/nyra/user-communication-policy.json": "62b74fd53975c4920a0bbb7bd94054abd44f3089f182d7d41a323b801a87e6f8",
+    "reports/universal-core/business/nyra_real_user_simulation_latest.json": "269896c905b029c34c8fdf3c6e2dbd62458f63d1332a536af639e3c9ba6c721b",
+    "reports/universal-core/business/nyra_commercialization_readiness_latest.json": "fe0e7d5a25a2e212b46a140beb9825d8b215cc3d382b26db80b70d03e175f88f",
+    "reports/universal-core/financial-core-test/nyra_product_readiness_latest.json": "f5e320f706c95a40edf12bf6ace1664775aec593c55eb393fdf8fdeddf434492"
+  },
+  "runtime_boundaries": [
+    "Core unchanged",
+    "financial selector math unchanged",
+    "risk governor unchanged",
+    "advisory overlay unchanged",
+    "communication policy improves user clarity/trust and reduces confusing reactions",
+    "final action remains user/advisor confirmed"
+  ]
+}

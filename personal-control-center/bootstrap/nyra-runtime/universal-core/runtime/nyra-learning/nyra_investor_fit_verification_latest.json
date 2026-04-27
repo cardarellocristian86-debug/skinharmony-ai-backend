@@ -1,0 +1,272 @@
+{
+  "runner": "nyra_investor_fit_verification_lab",
+  "generated_at": "2026-04-27T13:43:25.127Z",
+  "purpose": "Verify whether the current investor targets are truly aligned with Universal Core + Nyra and select a cleaner first wave.",
+  "methodology": {
+    "branch_input": "Uses the current investor outreach branch probabilities as the starting layer.",
+    "verification_rule": "Keeps only targets with explicit official evidence of interest in AI, software, workflows, infrastructure, enterprise or fintech relevant to this thesis.",
+    "selection_rule": "Universal Core scores the verified field; keep now only the targets with the strongest thesis-fit plus realistic cold-access potential."
+  },
+  "shortlisted_wave_1": [
+    {
+      "name": "United Ventures",
+      "selected": true,
+      "score": 71.175821,
+      "fit_band": "high",
+      "region": "italy",
+      "official_sources": [
+        "https://unitedventures.com/",
+        "https://unitedventures.com/2025/02/11/our-investment-in-akamas-autonomous-optimization-for-modern-applications/",
+        "https://unitedventures.com/2025/07/24/backing-identifai-to-restore-trust-in-digital-content/",
+        "https://unitedventures.com/portfolio/cyberwave/",
+        "https://unitedventures.com/contact/"
+      ],
+      "why_selected": [
+        "United Ventures dichiara focus su people and technology e startup innovative tech.",
+        "Ha investito in Akamas su optimization di cost/performance/reliability.",
+        "Ha investito in IdentifAI su trust/detection nell'era AI."
+      ],
+      "why_not_top": [],
+      "outreach_probabilities": {
+        "read_probability": 0.7388,
+        "reply_probability": 0.195384,
+        "meeting_probability": 0.082061
+      }
+    },
+    {
+      "name": "Speedinvest",
+      "selected": true,
+      "score": 70.973897,
+      "fit_band": "high",
+      "region": "europe",
+      "official_sources": [
+        "https://www.speedinvest.com/",
+        "https://www.speedinvest.com/saas",
+        "https://speedinvest.com/fintech/"
+      ],
+      "why_selected": [
+        "Speedinvest dichiara team AI & Infra e agent platforms.",
+        "Dichiara interesse per core layers, orchestration e AI-native applications.",
+        "Ha verticale fintech dedicata con network strategico."
+      ],
+      "why_not_top": [],
+      "outreach_probabilities": {
+        "read_probability": 0.6864,
+        "reply_probability": 0.179152,
+        "meeting_probability": 0.075244
+      }
+    },
+    {
+      "name": "Lightspeed",
+      "selected": true,
+      "score": 69.441985,
+      "fit_band": "high",
+      "region": "global",
+      "official_sources": [
+        "https://lsvp.com/about/",
+        "https://lsvp.com/stories/announcing-our-investment-in-temporal-agents-make-mistakes-your-workflows-cant/",
+        "https://lsvp.com/stories/observo-ai-the-ai-native-observability-data-pipeline/",
+        "https://lsvp.com/company/stacks-ai/"
+      ],
+      "why_selected": [
+        "Lightspeed dichiara heritage forte su enterprise e AI.",
+        "Ha investito in Temporal con tesi esplicita su agents e workflows.",
+        "Ha investito in Observo AI su AI-native observability pipeline."
+      ],
+      "why_not_top": [
+        "rischio maggiore di essere troppo grande o troppo tardo per una prima apertura cold"
+      ],
+      "outreach_probabilities": {
+        "read_probability": 0.705,
+        "reply_probability": 0.1835,
+        "meeting_probability": 0.07707
+      }
+    }
+  ],
+  "discarded_or_secondary": [
+    {
+      "name": "Balderton Capital",
+      "selected": false,
+      "score": 67.457021,
+      "fit_band": "medium",
+      "region": "europe",
+      "official_sources": [
+        "https://www.balderton.com/sector/enterprise/",
+        "https://www.balderton.com/news/attio-raises-52m-to-scale-the-first-ai-native-crm-for-go-to-market-builders/",
+        "https://www.balderton.com/news/light-raises-30m-series-a-to-replace-legacy-finance-systems-with-ai-native-platform/",
+        "https://www.balderton.com/news/dash0-raises-110m-series-b-at-1b-valuation-to-build-the-ai-nervous-system-for-production/",
+        "https://www.balderton.com/news/escape-raises-18m-series-a-to-fight-ai-powered-cyberattacks-with-ai-agents/"
+      ],
+      "why_selected": [
+        "Balderton enterprise track molto leggibile.",
+        "Ha backed Attio, AI-native CRM.",
+        "Ha backed Light, AI-native finance platform."
+      ],
+      "why_not_top": [
+        "rischio maggiore di essere troppo grande o troppo tardo per una prima apertura cold"
+      ],
+      "outreach_probabilities": {
+        "read_probability": 0.6848,
+        "reply_probability": 0.177264,
+        "meeting_probability": 0.074451
+      }
+    },
+    {
+      "name": "468 Capital",
+      "selected": false,
+      "score": 63.811017,
+      "fit_band": "medium",
+      "region": "global",
+      "official_sources": [
+        "https://468cap.com/about/",
+        "https://468cap.com/vectorshift-raises-3m-to-build-ai-workflows/"
+      ],
+      "why_selected": [
+        "468 dichiara investment themes su AI & automation, infrastructure and enterprise software.",
+        "Ha backed VectorShift su AI workflows."
+      ],
+      "why_not_top": [],
+      "outreach_probabilities": {
+        "read_probability": 0.6932,
+        "reply_probability": 0.180776,
+        "meeting_probability": 0.075926
+      }
+    },
+    {
+      "name": "Octopus Ventures",
+      "selected": false,
+      "score": 63.695561,
+      "fit_band": "medium",
+      "region": "europe",
+      "official_sources": [
+        "https://octopusventures.com/",
+        "https://octopusventures.com/b2b-software-investments/"
+      ],
+      "why_selected": [
+        "Octopus dichiara focus B2B software su digitisation and automation.",
+        "Ha processo pitch aperto e team dedicato B2B software."
+      ],
+      "why_not_top": [],
+      "outreach_probabilities": {
+        "read_probability": 0.6968,
+        "reply_probability": 0.181824,
+        "meeting_probability": 0.076366
+      }
+    },
+    {
+      "name": "Seedcamp",
+      "selected": false,
+      "score": 61.830621,
+      "fit_band": "medium",
+      "region": "europe",
+      "official_sources": [
+        "https://seedcamp.com/our-team/",
+        "https://seedcamp.com/associate-select/"
+      ],
+      "why_selected": [
+        "Seedcamp si presenta come foundational early-stage venture firm.",
+        "Materiali recenti mostrano forte fluency interna su AI tools e founder-facing research."
+      ],
+      "why_not_top": [],
+      "outreach_probabilities": {
+        "read_probability": 0.732,
+        "reply_probability": 0.19776,
+        "meeting_probability": 0.083059
+      }
+    },
+    {
+      "name": "General Catalyst",
+      "selected": false,
+      "score": 60.332065,
+      "fit_band": "medium",
+      "region": "usa",
+      "official_sources": [
+        "https://www.generalcatalyst.com/team/hemant-taneja",
+        "https://www.generalcatalyst.com/team/marc-bhargava",
+        "https://www.generalcatalyst.com/team/cecilia-zhao"
+      ],
+      "why_selected": [
+        "General Catalyst espone AI, Enterprise e Fintech a livello di team e thesis.",
+        "Marc Bhargava cita esplicitamente AI meets fintech.",
+        "Cecilia Zhao cita AI and fintech investments."
+      ],
+      "why_not_top": [
+        "fit troppo broad rispetto a un outreach cold iniziale",
+        "rischio maggiore di essere troppo grande o troppo tardo per una prima apertura cold",
+        "accesso cold meno leggibile rispetto ai target top"
+      ],
+      "outreach_probabilities": {
+        "read_probability": 0.6508,
+        "reply_probability": 0.162744,
+        "meeting_probability": 0.068352
+      }
+    },
+    {
+      "name": "Accel",
+      "selected": false,
+      "score": 59.949705,
+      "fit_band": "medium",
+      "region": "usa",
+      "official_sources": [
+        "https://www.accel.com/people"
+      ],
+      "why_selected": [
+        "Accel mostra persone con focus AI, Cloud/SaaS, Enterprise e Fintech."
+      ],
+      "why_not_top": [
+        "fit troppo broad rispetto a un outreach cold iniziale",
+        "rischio maggiore di essere troppo grande o troppo tardo per una prima apertura cold",
+        "accesso cold meno leggibile rispetto ai target top"
+      ],
+      "outreach_probabilities": {
+        "read_probability": 0.6614,
+        "reply_probability": 0.167252,
+        "meeting_probability": 0.070246
+      }
+    },
+    {
+      "name": "Index Ventures",
+      "selected": false,
+      "score": 55.971485,
+      "fit_band": "low",
+      "region": "global",
+      "official_sources": [
+        "https://www.indexventures.com/"
+      ],
+      "why_selected": [
+        "Index mostra portfolio trasversale con Anthropic, Fireworks AI, Robinhood, Datadog.",
+        "Fit alto per ambizione category-defining, ma sito pubblico e molto broad e meno specifico sul thesis match."
+      ],
+      "why_not_top": [
+        "fit troppo broad rispetto a un outreach cold iniziale",
+        "rischio maggiore di essere troppo grande o troppo tardo per una prima apertura cold",
+        "accesso cold meno leggibile rispetto ai target top"
+      ],
+      "outreach_probabilities": {
+        "read_probability": 0.6756,
+        "reply_probability": 0.172808,
+        "meeting_probability": 0.072579
+      }
+    }
+  ],
+  "summary": {
+    "keep_now": [
+      "United Ventures",
+      "Speedinvest",
+      "Lightspeed"
+    ],
+    "keep_but_second_wave": [
+      "Balderton Capital",
+      "468 Capital",
+      "Octopus Ventures",
+      "Seedcamp",
+      "General Catalyst",
+      "Accel"
+    ],
+    "why": [
+      "Keep wave 1 tight around AI/core/workflow investors with real official fit evidence.",
+      "Do not waste early shots on funds that are too broad, too late-stage, or not explicit enough on this thesis.",
+      "Use larger or more generic brands as wave 2 once narrative and response data are stronger."
+    ]
+  }
+}

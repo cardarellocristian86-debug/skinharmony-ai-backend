@@ -1,0 +1,78 @@
+{
+  "version": "nyra_world_paper_auto_learning_v1",
+  "generated_at": "2026-04-27T16:48:04.265Z",
+  "source": "personal-control-center/data/nyra-world-paper-portfolio.json",
+  "learning_state": "elastic_profit_learning",
+  "metrics": {
+    "capital_eur": 999749.25,
+    "pnl_eur": -250.75,
+    "pnl_pct": -0.0251,
+    "positions_count": 1,
+    "losing_positions": 1,
+    "repeated_hold_count": 0,
+    "recent_trade_count": 1,
+    "fees_total_eur": 72,
+    "fee_drag_pct": 0.0072,
+    "alpha_vs_qqq_pct": -0.0251,
+    "fee_bleed_guard": false,
+    "fee_bleed_hard_guard": false,
+    "gear": 1,
+    "hard_learning_mode": false,
+    "elastic_learning": true,
+    "deep_protection_signal": false,
+    "diversification": {
+      "classes": [
+        {
+          "class": "single_stock",
+          "count": 1,
+          "value_eur": 35749.25,
+          "pnl_eur": -250.75,
+          "losing": 1
+        }
+      ],
+      "regions": [
+        {
+          "region": "US",
+          "count": 1,
+          "value_eur": 35749.25,
+          "pnl_eur": -250.75
+        }
+      ],
+      "class_count": 1,
+      "dominant_class": "single_stock",
+      "all_positions_losing": true
+    }
+  },
+  "policy": {
+    "pause_new_entries": false,
+    "elastic_choice_enabled": true,
+    "paper_capital_is_training_capital": true,
+    "paper_area_is_test_lab": true,
+    "paper_capital_replenishable": true,
+    "fee_bleed_guard_active": false,
+    "fee_bleed_hard_guard_active": false,
+    "benchmark_recovery_required": false,
+    "diversification_required": true,
+    "diversification_rule": "Non concentrare la palestra su una sola famiglia: se una classe e gia piena o perdente, il prossimo probe deve cercare una classe diversa con edge/rischio puliti.",
+    "conviction_rule": "Se la tesi probabilistica e valida, Nyra deve darle tempo: niente chiusure nervose e niente micro-probe che regalano fee. Se la tesi non supera i costi, osserva.",
+    "anti_robinhood_rule": "Se Nyra perde contro QQQ e aumenta i trade, non sta imparando: sta trasferendo capitale alle fee. In quel caso stop nuove entrate deboli, hold ragionato e solo tesi ad alta convinzione.",
+    "training_directive": "Area test: il capitale e virtuale e ricaricabile. Nyra puo provare e sbagliare, ma deve cercare profitto con tesi, pazienza e size coerente; ogni fee pagata senza edge e un errore da correggere.",
+    "objective": "learn_to_generate_paper_profit",
+    "penalize_symbols": [
+      {
+        "symbol": "AVGO",
+        "loss_eur": 250.75
+      }
+    ],
+    "penalize_classes": [
+      {
+        "class": "single_stock",
+        "loss_eur": 250.75
+      }
+    ],
+    "max_new_position_multiplier": 0.35,
+    "min_edge_for_new_entry": 62,
+    "max_risk_for_new_entry": 55,
+    "reason": "Tutte le posizioni paper sono negative ma il drawdown e ancora da palestra: Nyra puo cercare profitto con ingressi piccoli, selettivi e non concentrati. Se finisce capitale paper si ricarica, ma non deve ripetere lo stesso errore."
+  }
+}

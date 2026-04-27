@@ -1,0 +1,20 @@
+{
+  "version": "nyra_universal_autoimprovement_pack_v1",
+  "generated_at": "2026-04-26T21:19:25.610Z",
+  "stable_runtime_modified": false,
+  "selected_candidates": [
+    {
+      "test": "tests/nyra-vs-qqq-bad-timing-test.ts",
+      "selected_candidate": "bad_timing_combined_v1",
+      "improvement_detected": true,
+      "learned_bottlenecks": [
+        "capital_wins_below_target",
+        "recovery_wins_below_target",
+        "drawdown_not_all_scenarios",
+        "scenario:LATERALE LUNGO",
+        "scenario:RECOVERY TARDIVO"
+      ]
+    }
+  ],
+  "promotion_status": "sandbox_only_requires_regression_gate"
+}

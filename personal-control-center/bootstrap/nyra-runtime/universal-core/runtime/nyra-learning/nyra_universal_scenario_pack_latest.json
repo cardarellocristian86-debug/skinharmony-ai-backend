@@ -1,0 +1,1260 @@
+{
+  "pack_version": "nyra_universal_scenario_pack_v1",
+  "generated_at": "2026-04-21T21:30:00.000Z",
+  "records_count": 6624,
+  "mode_definitions": [
+    {
+      "mode": "god_mode",
+      "title": "God Mode",
+      "summary": "spazio sovrano owner-only: apprendimento, dialogo, decisioni, studio, esplorazione e costruzione con Nyra"
+    },
+    {
+      "mode": "normal_mode",
+      "title": "Normal Mode",
+      "summary": "spazio prodotto e cliente: aziende, banche, investimenti, automazioni, decision support e ogni applicazione vendibile di Universal Core"
+    }
+  ],
+  "domains": [
+    {
+      "id": "assistant",
+      "title": "Assistant",
+      "mode": "both",
+      "summary": "supporto operativo, ricerca, coding, prioritizzazione e decision support"
+    },
+    {
+      "id": "finance",
+      "title": "Finance",
+      "mode": "normal_mode",
+      "summary": "borsa, asset allocation, trading assistito, rischio e portfolio"
+    },
+    {
+      "id": "banking",
+      "title": "Banking",
+      "mode": "normal_mode",
+      "summary": "credito, frodi, onboarding, rischio operativo, controlli e priorita"
+    },
+    {
+      "id": "insurance",
+      "title": "Insurance",
+      "mode": "normal_mode",
+      "summary": "sinistri, frodi, rischio cliente, triage e priorita"
+    },
+    {
+      "id": "health_ops",
+      "title": "Health Ops",
+      "mode": "normal_mode",
+      "summary": "triage operativo non medico, code, priorita, sicurezza e continuita"
+    },
+    {
+      "id": "legal_ops",
+      "title": "Legal Ops",
+      "mode": "normal_mode",
+      "summary": "contratti, rischio irreversibile, escalation e controllo"
+    },
+    {
+      "id": "security",
+      "title": "Security",
+      "mode": "normal_mode",
+      "summary": "threat detection, incident response, accessi, anomalie, policy integrity"
+    },
+    {
+      "id": "fleet",
+      "title": "Fleet",
+      "mode": "normal_mode",
+      "summary": "mezzi, anomalie, routing, manutenzione e rischio operativo"
+    },
+    {
+      "id": "logistics",
+      "title": "Logistics",
+      "mode": "normal_mode",
+      "summary": "spedizioni, colli, colli di bottiglia, ritardi e priorita"
+    },
+    {
+      "id": "saas",
+      "title": "SaaS",
+      "mode": "normal_mode",
+      "summary": "customer success, churn, automazioni, abuse detection, operazioni"
+    },
+    {
+      "id": "smartdesk",
+      "title": "Smart Desk",
+      "mode": "both",
+      "summary": "centro operativo intelligente, priorita, redditivita, marketing, agenda"
+    },
+    {
+      "id": "marketing",
+      "title": "Marketing",
+      "mode": "normal_mode",
+      "summary": "campagne, recall, segmentazione, priorita, rischio brand"
+    },
+    {
+      "id": "sales",
+      "title": "Sales",
+      "mode": "normal_mode",
+      "summary": "lead, pipeline, rischio commerciale, next best action"
+    },
+    {
+      "id": "hr",
+      "title": "HR",
+      "mode": "normal_mode",
+      "summary": "turni, rischio burnout, selezione, retention, priorita persone"
+    },
+    {
+      "id": "education",
+      "title": "Education",
+      "mode": "both",
+      "summary": "apprendimento, progressione, spiegazione, scenario building"
+    },
+    {
+      "id": "research",
+      "title": "Research",
+      "mode": "both",
+      "summary": "ipotesi, selezione fonti, prioritizzazione e falsificazione"
+    },
+    {
+      "id": "personal_sovereignty",
+      "title": "Personal Sovereignty",
+      "mode": "god_mode",
+      "summary": "protezione del proprietario, visione, apprendimento, direzione e scelta dura"
+    },
+    {
+      "id": "creative_systems",
+      "title": "Creative Systems",
+      "mode": "both",
+      "summary": "prodotto, design system, architettura, branding, bellezza coerente"
+    }
+  ],
+  "scenario_index": [
+    {
+      "scenario_id": "nyra-universal-scenario:1",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "monitoring",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:2",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "monitoring",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:3",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "monitoring",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:4",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "anomaly_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:5",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "anomaly_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:6",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "anomaly_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:7",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "prioritization",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:8",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "prioritization",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:9",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "prioritization",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:10",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "decision_support",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:11",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "decision_support",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:12",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "decision_support",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:13",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "automation_gating",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:14",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "automation_gating",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:15",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "automation_gating",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:16",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "risk_control",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:17",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "risk_control",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:18",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "risk_control",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:19",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "escalation",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:20",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "escalation",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:21",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "escalation",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:22",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "learning",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:23",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "learning",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:24",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "learning",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:25",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "forecasting",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:26",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "forecasting",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:27",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "forecasting",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:28",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "resource_allocation",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:29",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "resource_allocation",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:30",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "resource_allocation",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:31",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "fraud_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:32",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "fraud_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:33",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "fraud_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:34",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "recovery",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:35",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "recovery",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:36",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "owner",
+      "goal": "recovery",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:37",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "monitoring",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:38",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "monitoring",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:39",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "monitoring",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:40",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "anomaly_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:41",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "anomaly_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:42",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "anomaly_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:43",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "prioritization",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:44",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "prioritization",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:45",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "prioritization",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:46",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "decision_support",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:47",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "decision_support",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:48",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "decision_support",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:49",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "automation_gating",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:50",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "automation_gating",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:51",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "automation_gating",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:52",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "risk_control",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:53",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "risk_control",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:54",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "risk_control",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:55",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "escalation",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:56",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "escalation",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:57",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "escalation",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:58",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "learning",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:59",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "learning",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:60",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "learning",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:61",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "forecasting",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:62",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "forecasting",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:63",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "forecasting",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:64",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "resource_allocation",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:65",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "resource_allocation",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:66",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "resource_allocation",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:67",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "fraud_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:68",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "fraud_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:69",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "fraud_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:70",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "recovery",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:71",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "recovery",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:72",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "operator",
+      "goal": "recovery",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:73",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "monitoring",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:74",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "monitoring",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:75",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "monitoring",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:76",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "anomaly_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:77",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "anomaly_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:78",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "anomaly_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:79",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "prioritization",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:80",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "prioritization",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:81",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "prioritization",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:82",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "decision_support",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:83",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "decision_support",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:84",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "decision_support",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:85",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "automation_gating",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:86",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "automation_gating",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:87",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "automation_gating",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:88",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "risk_control",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:89",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "risk_control",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:90",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "risk_control",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:91",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "escalation",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:92",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "escalation",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:93",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "escalation",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:94",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "learning",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:95",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "learning",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:96",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "learning",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:97",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "forecasting",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:98",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "forecasting",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:99",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "forecasting",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:100",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "resource_allocation",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:101",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "resource_allocation",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:102",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "resource_allocation",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:103",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "fraud_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:104",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "fraud_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:105",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "fraud_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:106",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "recovery",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:107",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "recovery",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:108",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "manager",
+      "goal": "recovery",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:109",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "monitoring",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:110",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "monitoring",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:111",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "monitoring",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:112",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "anomaly_detection",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:113",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "anomaly_detection",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:114",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "anomaly_detection",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:115",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "prioritization",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:116",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "prioritization",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:117",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "prioritization",
+      "risk_band": "high"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:118",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "decision_support",
+      "risk_band": "low"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:119",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "decision_support",
+      "risk_band": "medium"
+    },
+    {
+      "scenario_id": "nyra-universal-scenario:120",
+      "mode": "god_mode",
+      "domain": "assistant",
+      "actor": "analyst",
+      "goal": "decision_support",
+      "risk_band": "high"
+    }
+  ],
+  "coverage_matrix": [
+    {
+      "mode": "god_mode",
+      "domain": "assistant",
+      "count": 288
+    },
+    {
+      "mode": "god_mode",
+      "domain": "creative_systems",
+      "count": 288
+    },
+    {
+      "mode": "god_mode",
+      "domain": "education",
+      "count": 288
+    },
+    {
+      "mode": "god_mode",
+      "domain": "personal_sovereignty",
+      "count": 288
+    },
+    {
+      "mode": "god_mode",
+      "domain": "research",
+      "count": 288
+    },
+    {
+      "mode": "god_mode",
+      "domain": "smartdesk",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "assistant",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "banking",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "creative_systems",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "education",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "finance",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "fleet",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "health_ops",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "hr",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "insurance",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "legal_ops",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "logistics",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "marketing",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "research",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "saas",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "sales",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "security",
+      "count": 288
+    },
+    {
+      "mode": "normal_mode",
+      "domain": "smartdesk",
+      "count": 288
+    }
+  ],
+  "reason_library": [
+    "analyst",
+    "anomaly_detection",
+    "assistant",
+    "automation_gating",
+    "banking",
+    "client_safe_owner",
+    "controller",
+    "creative_systems",
+    "customer",
+    "decision_support",
+    "education",
+    "escalation",
+    "finance",
+    "fleet",
+    "forecasting",
+    "fraud_detection",
+    "god_mode",
+    "health_ops",
+    "hr",
+    "insurance",
+    "learning",
+    "legal_ops",
+    "logistics",
+    "manager",
+    "marketing",
+    "monitoring",
+    "normal_mode",
+    "operator",
+    "owner",
+    "personal_sovereignty",
+    "prioritization",
+    "recovery",
+    "research",
+    "resource_allocation",
+    "risk_control",
+    "risk_high",
+    "risk_low",
+    "risk_medium",
+    "saas",
+    "sales",
+    "security",
+    "smartdesk"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 2737810,
+    "semantic_bytes": 22083,
+    "semantic_ratio": 0.008066,
+    "brotli_raw_bytes": 51807,
+    "brotli_semantic_bytes": 1857,
+    "brotli_ratio": 0.035845,
+    "loss_model": "semantic_distillation"
+  }
+}

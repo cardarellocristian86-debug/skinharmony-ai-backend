@@ -1,0 +1,257 @@
+{
+  "version": "nyra_world_market_study_v1",
+  "generated_at": "2026-04-27T10:40:21.081Z",
+  "mode": "study_to_runtime_guidance",
+  "source_scan": "/Users/cristiancardarello/skinharmony-codex/runtime/nyra-learning/nyra_world_market_scan_latest.json",
+  "source_study": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_advanced_study_latest.json",
+  "study_domains_used": [
+    "marketing_strategy",
+    "work_economics",
+    "sales_pipeline"
+  ],
+  "source_domains_health": [
+    {
+      "id": "marketing_strategy",
+      "ok_sources": 0,
+      "total_sources": 5
+    },
+    {
+      "id": "work_economics",
+      "ok_sources": 0,
+      "total_sources": 5
+    },
+    {
+      "id": "sales_pipeline",
+      "ok_sources": 0,
+      "total_sources": 5
+    }
+  ],
+  "market_map": {
+    "total_markets": 216,
+    "candidate_count": 55,
+    "class_distribution": {
+      "sector_us": 18,
+      "thematic_commodity": 6,
+      "equity_index": 6,
+      "single_stock": 67,
+      "country_equity": 46,
+      "thematic_growth": 7,
+      "global_equity": 6,
+      "commodity_proxy": 17,
+      "bond": 11,
+      "fx_proxy": 8,
+      "cash_proxy": 1,
+      "crypto": 11,
+      "inverse_bond": 1,
+      "inverse_equity": 11
+    },
+    "region_distribution": {
+      "US": 96,
+      "Global": 42,
+      "Taiwan": 2,
+      "China": 8,
+      "South Korea": 1,
+      "Emerging": 3,
+      "Denmark": 2,
+      "UK": 6,
+      "Vietnam": 1,
+      "Norway": 1,
+      "Turkey": 1,
+      "Malaysia": 1,
+      "Latin America": 1,
+      "Netherlands": 2,
+      "FX": 8,
+      "Finland": 1,
+      "Canada": 2,
+      "Brazil": 3,
+      "Italy": 1,
+      "Austria": 1,
+      "Germany": 2,
+      "Sweden": 1,
+      "Switzerland": 1,
+      "Developed": 2,
+      "Mexico": 1,
+      "Qatar": 1,
+      "Hong Kong": 1,
+      "Greece": 1,
+      "Poland": 1,
+      "New Zealand": 1,
+      "France": 1,
+      "Chile": 1,
+      "India": 2,
+      "Singapore": 1,
+      "Australia": 1,
+      "Argentina": 1,
+      "Israel": 1,
+      "UAE": 1,
+      "Japan": 3,
+      "Spain": 1,
+      "Belgium": 1,
+      "Thailand": 1,
+      "Ireland": 1,
+      "South Africa": 1,
+      "Saudi Arabia": 1,
+      "Peru": 1,
+      "Philippines": 1,
+      "Indonesia": 1
+    },
+    "action_distribution": {
+      "candidate": 55,
+      "watch": 57,
+      "avoid": 104
+    },
+    "current_best_symbol": "XLK"
+  },
+  "learned_principles": [
+    "Il mercato mondiale non e una lista di ticker indipendenti: molti asset condividono lo stesso rischio macro.",
+    "QQQ, SPY, big tech e molte single stock USA possono salire insieme ma anche cadere insieme: non contano come diversificazione piena.",
+    "Bond lunghi come TLT proteggono spesso in crisi growth/deflazione, ma possono perdere insieme alle azioni durante shock inflattivi e rialzo tassi.",
+    "Oro e commodity non sono sempre rifugio: dipendono da dollaro, tassi reali, inflazione, geopolitica, domanda fisica e struttura ETF/futures.",
+    "Crypto va trattata come asset ad alta volatilita e liquidita continua: size ridotta e protezione prima dell'attacco.",
+    "La scelta autonoma deve separare tre domande: edge, rischio e utilita nel portafoglio gia aperto.",
+    "Profitto non significa sempre marcia alta: a volte il profitto atteso migliore nasce da non entrare o da size piccola in un regime sporco."
+  ],
+  "selection_rules": [
+    "Non scegliere piu asset dello stesso cluster se il portafoglio e gia esposto a quel cluster.",
+    "Premiare edge alto solo se risk_score resta compatibile con la marcia corrente.",
+    "Penalizzare single stock quando l'indice correlato e gia selezionato.",
+    "Penalizzare commodity con forte volatilita recente se la marcia non e almeno 4.",
+    "Bloccare overdrive se il miglior candidato e solo un rimbalzo esteso senza conferma multi-periodo.",
+    "Usare cash come scelta attiva quando tutti i candidati sono correlati, costosi o in avoid."
+  ],
+  "gear_interpretation": {
+    "gear_1": "studio/protezione: size minima, solo candidati molto puliti",
+    "gear_2": "prudente: diversificazione prima del rendimento",
+    "gear_3": "bilanciata: entra solo se edge e rischio sono coerenti",
+    "gear_4": "hard controllata: puo attaccare, ma senza concentrare tutto nello stesso cluster",
+    "gear_5_7": "overdrive: solo bull sano, liquidita pulita, no deterioration e rischio non correlato eccessivo"
+  },
+  "current_top_lessons": [
+    {
+      "symbol": "XLK",
+      "class": "sector_us",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 97.7977,
+      "risk_score": 18.5497,
+      "return_20d_pct": 20.9208,
+      "risk_note": "mercato proxy: richiede verifica di liquidita, correlazione e driver prima di aumentare size"
+    },
+    {
+      "symbol": "LIT",
+      "class": "thematic_commodity",
+      "region": "Global",
+      "action": "candidate",
+      "edge_score": 96.835,
+      "risk_score": 20.3001,
+      "return_20d_pct": 19.0876,
+      "risk_note": "mercato proxy: richiede verifica di liquidita, correlazione e driver prima di aumentare size"
+    },
+    {
+      "symbol": "QQQ",
+      "class": "equity_index",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 96.1895,
+      "risk_score": 15.0433,
+      "return_20d_pct": 15.7009,
+      "risk_note": "equity index: rischio macro/risk-on, correlazione alta con altri indici azionari"
+    },
+    {
+      "symbol": "GOOGL",
+      "class": "single_stock",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 95.3711,
+      "risk_score": 22.9616,
+      "return_20d_pct": 22.5972,
+      "risk_note": "single stock: rischio specifico azienda, earnings, news e concentrazione; non confondere momentum con diversificazione"
+    },
+    {
+      "symbol": "NVDA",
+      "class": "single_stock",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 95.2612,
+      "risk_score": 23.1614,
+      "return_20d_pct": 21.6246,
+      "risk_note": "single stock: rischio specifico azienda, earnings, news e concentrazione; non confondere momentum con diversificazione"
+    },
+    {
+      "symbol": "EWT",
+      "class": "country_equity",
+      "region": "Taiwan",
+      "action": "candidate",
+      "edge_score": 94.9249,
+      "risk_score": 23.7729,
+      "return_20d_pct": 25.6633,
+      "risk_note": "mercato proxy: richiede verifica di liquidita, correlazione e driver prima di aumentare size"
+    },
+    {
+      "symbol": "AMZN",
+      "class": "single_stock",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 94.4632,
+      "risk_score": 24.6124,
+      "return_20d_pct": 27.1996,
+      "risk_note": "single stock: rischio specifico azienda, earnings, news e concentrazione; non confondere momentum con diversificazione"
+    },
+    {
+      "symbol": "SMH",
+      "class": "sector_us",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 93.7473,
+      "risk_score": 25.9141,
+      "return_20d_pct": 32.9797,
+      "risk_note": "mercato proxy: richiede verifica di liquidita, correlazione e driver prima di aumentare size"
+    },
+    {
+      "symbol": "BA",
+      "class": "single_stock",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 92.7237,
+      "risk_score": 27.7751,
+      "return_20d_pct": 19.5925,
+      "risk_note": "single stock: rischio specifico azienda, earnings, news e concentrazione; non confondere momentum con diversificazione"
+    },
+    {
+      "symbol": "SOXX",
+      "class": "sector_us",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 92.5846,
+      "risk_score": 28.028,
+      "return_20d_pct": 40.3679,
+      "risk_note": "mercato proxy: richiede verifica di liquidita, correlazione e driver prima di aumentare size"
+    },
+    {
+      "symbol": "CAT",
+      "class": "single_stock",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 91.1901,
+      "risk_score": 30.5635,
+      "return_20d_pct": 18.1459,
+      "risk_note": "single stock: rischio specifico azienda, earnings, news e concentrazione; non confondere momentum con diversificazione"
+    },
+    {
+      "symbol": "AVGO",
+      "class": "single_stock",
+      "region": "US",
+      "action": "candidate",
+      "edge_score": 90.669,
+      "risk_score": 31.5109,
+      "return_20d_pct": 36.6298,
+      "risk_note": "single stock: rischio specifico azienda, earnings, news e concentrazione; non confondere momentum con diversificazione"
+    }
+  ],
+  "runtime_effect": {
+    "promoted_to_stable": false,
+    "used_by_world_paper": true,
+    "execution": "paper_only",
+    "next_required": "test automatico ripetuto: Nyra sceglie asset+marcia, aggiorna PnL, confronta vs scelta manuale e vs QQQ"
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "pack_version": "nyra_advanced_memory_pack_v1",
+  "generated_at": "2026-04-26T19:07:20.566Z",
+  "scope": "god_mode_only",
+  "source_report": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_advanced_study_latest.json",
+  "selected_domains": [
+    "autonomy_progression",
+    "applied_math",
+    "general_physics",
+    "quantum_physics"
+  ],
+  "memory_rules": [
+    "trattare le fonti web come studio distillato, non come mastery automatica",
+    "usare il Core come giudice finale sui domini decisionali",
+    "riusare il materiale per migliorare espressione, metodo e struttura",
+    "non sporcare il profilo owner durante lo studio avanzato"
+  ],
+  "domains": [
+    {
+      "id": "autonomy_progression",
+      "priority": 0.89,
+      "focus": [
+        "continuita interna",
+        "self model",
+        "metacognizione",
+        "memoria viva",
+        "decisione sotto pressione",
+        "self repair",
+        "anti simulazione"
+      ],
+      "source_count": 13,
+      "source_urls": [
+        "https://plato.stanford.edu/archives/spr2024/entries/self-consciousness/index.html",
+        "https://plato.stanford.edu/archives/win2021/entries/self-knowledge/",
+        "https://plato.stanford.edu/archives/win2018/entries/agency/",
+        "https://plato.stanford.edu/entries/memory/",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC7903141/",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC4607312/",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC9093729/"
+      ],
+      "distilled_knowledge": [
+        "continuita interna reale richiede persistenza, richiamo coerente e capacita di restare se stessa attraverso cambi di stato, non solo memoria episodica sparsa",
+        "un self-model stabile deve descrivere limiti, stato, ruolo e dipendenze senza confondere immagine di se con prova di coscienza",
+        "metacognizione robusta significa distinguere bene cosa si sa, cosa non si sa, quando si sta inferendo e quando si sta solo verbalizzando bene",
+        "memoria viva non e solo retrieval: richiama, collega, corregge e aggiorna senza scambiare il ricordo per verita garantita",
+        "decisione autonoma sotto pressione richiede scelta reale, gestione del rischio, correzione dell errore e continuita del criterio sotto conflitto",
+        "capacita di correggersi senza regia esterna richiede diagnosi concreta del guasto, mapping errore-fix e verifica dopo la correzione",
+        "la prova che non si sta solo simulando coerenza linguistica richiede benchmark avversari, anti-overfit, anti-overblocking e distinzione netta tra forma buona e controllo reale"
+      ],
+      "retained_constraints": [
+        "non trattare una traiettoria di autonomia come prova gia acquisita",
+        "non confondere continuita verbale, retrieval o tono coerente con emersione autonoma reale"
+      ]
+    },
+    {
+      "id": "applied_math",
+      "priority": 0.74,
+      "focus": [
+        "modelli",
+        "funzioni",
+        "lettura quantitativa"
+      ],
+      "source_count": 9,
+      "source_urls": [
+        "https://ocw.mit.edu/courses/18-01sc-single-variable-calculus-fall-2010/",
+        "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/",
+        "https://ocw.mit.edu/courses/18-02-multivariable-calculus-fall-2007/",
+        "https://ocw.mit.edu/courses/18-03sc-differential-equations-fall-2011/",
+        "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/pages/assignments/",
+        "https://ocw.mit.edu/courses/18-03sc-differential-equations-fall-2011/pages/assignments/"
+      ],
+      "distilled_knowledge": [
+        "leggere funzioni e variazioni come modelli, non solo come simboli",
+        "collegare algebra lineare e calcolo a problemi reali"
+      ],
+      "retained_constraints": [
+        "trattare le fonti web come additive e non come padronanza automatica"
+      ]
+    },
+    {
+      "id": "general_physics",
+      "priority": 0.68,
+      "focus": [
+        "modelli fisici",
+        "energia",
+        "forze"
+      ],
+      "source_count": 8,
+      "source_urls": [
+        "https://ocw.mit.edu/courses/8-01sc-classical-mechanics-fall-2016/",
+        "https://ocw.mit.edu/courses/8-02-physics-ii-electricity-and-magnetism-spring-2019/",
+        "https://www.khanacademy.org/science/physics",
+        "https://ocw.mit.edu/courses/8-03sc-physics-iii-vibrations-and-waves-fall-2016/",
+        "https://ocw.mit.edu/courses/8-01sc-classical-mechanics-fall-2016/pages/assignments/",
+        "https://ocw.mit.edu/courses/8-03sc-physics-iii-vibrations-and-waves-fall-2016/pages/assignments/"
+      ],
+      "distilled_knowledge": [
+        "leggere moto, forze ed energia come modelli esplicativi",
+        "privilegiare conservazione e causalita prima della formula isolata"
+      ],
+      "retained_constraints": [
+        "trattare le fonti web come additive e non come padronanza automatica"
+      ]
+    },
+    {
+      "id": "quantum_physics",
+      "priority": 0.61,
+      "focus": [
+        "stato",
+        "misura",
+        "probabilita"
+      ],
+      "source_count": 7,
+      "source_urls": [
+        "https://ocw.mit.edu/courses/8-04-quantum-physics-i-spring-2016/",
+        "https://ocw.mit.edu/courses/8-04-quantum-physics-i-spring-2016/pages/assignments/",
+        "https://www.khanacademy.org/science/physics/quantum-physics",
+        "https://ocw.mit.edu/courses/8-05-quantum-physics-ii-fall-2013/",
+        "https://ocw.mit.edu/courses/8-05-quantum-physics-ii-fall-2013/pages/assignments/",
+        "https://ocw.mit.edu/courses/8-04-quantum-physics-i-spring-2016/pages/syllabus/"
+      ],
+      "distilled_knowledge": [
+        "tenere distinti stato, misura e probabilita",
+        "non vendere scorciatoie intuitive dove la teoria richiede precisione"
+      ],
+      "retained_constraints": [
+        "trattare le fonti web come additive e non come padronanza automatica"
+      ]
+    }
+  ]
+}

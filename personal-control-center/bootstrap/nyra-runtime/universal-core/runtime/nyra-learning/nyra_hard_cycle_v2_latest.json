@@ -1,0 +1,76 @@
+{
+  "version": "nyra_hard_cycle_v2",
+  "generated_at": "2026-04-23T14:33:41.031Z",
+  "essence_version": "nyra_assimilated_essence_v1",
+  "mode": "ultrafast_repeated_forced_choice",
+  "total_tasks": 1800,
+  "hypotheses_per_task": 48,
+  "total_hypotheses": 518400,
+  "epochs_run": 6,
+  "final_accuracy": 0.331111,
+  "best_accuracy": 0.365854,
+  "final_mean_distance": 0.464305,
+  "peak_decisions_per_second": 31685.4421,
+  "corrected_lessons": [
+    "rafforzare applied_math su ottimizzazione e scelta del massimo sotto vincoli",
+    "rafforzare quantum_physics su tradeoff reali tra utilita, rischio e reversibilita",
+    "rafforzare general_physics su previsione quantitativa diretta e stima del risultato",
+    "rafforzare coding_speed su simulazione di errore, impatto e irreversibilita"
+  ],
+  "epoch_summaries": [
+    {
+      "epoch": 1,
+      "total_tasks": 287,
+      "correct_tasks": 105,
+      "accuracy": 0.365854,
+      "mean_distance": 0.44613,
+      "hypotheses_evaluated": 13776,
+      "decisions_per_second": 19891.1876
+    },
+    {
+      "epoch": 2,
+      "total_tasks": 657,
+      "correct_tasks": 220,
+      "accuracy": 0.334855,
+      "mean_distance": 0.459265,
+      "hypotheses_evaluated": 31536,
+      "decisions_per_second": 28577.901
+    },
+    {
+      "epoch": 3,
+      "total_tasks": 1003,
+      "correct_tasks": 340,
+      "accuracy": 0.338983,
+      "mean_distance": 0.461684,
+      "hypotheses_evaluated": 48144,
+      "decisions_per_second": 29827.9238
+    },
+    {
+      "epoch": 4,
+      "total_tasks": 1312,
+      "correct_tasks": 448,
+      "accuracy": 0.341463,
+      "mean_distance": 0.459734,
+      "hypotheses_evaluated": 62976,
+      "decisions_per_second": 30585.2758
+    },
+    {
+      "epoch": 5,
+      "total_tasks": 1591,
+      "correct_tasks": 533,
+      "accuracy": 0.335009,
+      "mean_distance": 0.461283,
+      "hypotheses_evaluated": 76368,
+      "decisions_per_second": 31685.4421
+    },
+    {
+      "epoch": 6,
+      "total_tasks": 1800,
+      "correct_tasks": 596,
+      "accuracy": 0.331111,
+      "mean_distance": 0.464305,
+      "hypotheses_evaluated": 86400,
+      "decisions_per_second": 31398.6804
+    }
+  ]
+}

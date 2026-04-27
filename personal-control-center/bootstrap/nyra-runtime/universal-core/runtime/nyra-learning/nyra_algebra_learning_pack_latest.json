@@ -1,0 +1,458 @@
+{
+  "pack_version": "nyra_algebra_learning_pack_v1",
+  "generated_at": "2026-04-21T23:50:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 4000,
+  "domains": [
+    {
+      "id": "arithmetic_foundations",
+      "label": "Arithmetic Foundations",
+      "summary": "ordine delle operazioni, segni, equivalenza e passaggi corretti",
+      "concept_count": 7
+    },
+    {
+      "id": "fractions",
+      "label": "Fractions",
+      "summary": "somma, prodotto, semplificazione e denominatori comuni",
+      "concept_count": 7
+    },
+    {
+      "id": "exponents",
+      "label": "Exponents",
+      "summary": "potenze, regole di prodotto, quoziente e potenze di potenze",
+      "concept_count": 7
+    },
+    {
+      "id": "linear_equations",
+      "label": "Linear Equations",
+      "summary": "isolamento dell incognita, distribuzione e passaggi equivalenti",
+      "concept_count": 7
+    },
+    {
+      "id": "polynomials",
+      "label": "Polynomials",
+      "summary": "termini simili, grado, sviluppo e raccolta",
+      "concept_count": 7
+    },
+    {
+      "id": "factorization",
+      "label": "Factorization",
+      "summary": "raccoglimento, differenza di quadrati, trinomio e prodotti notevoli",
+      "concept_count": 7
+    },
+    {
+      "id": "quadratic_equations",
+      "label": "Quadratic Equations",
+      "summary": "fattorizzazione, formula risolutiva e discriminante",
+      "concept_count": 7
+    },
+    {
+      "id": "systems",
+      "label": "Systems",
+      "summary": "sostituzione, eliminazione e verifica della soluzione",
+      "concept_count": 7
+    },
+    {
+      "id": "inequalities",
+      "label": "Inequalities",
+      "summary": "verso della disuguaglianza, intervalli e casi di segno",
+      "concept_count": 7
+    },
+    {
+      "id": "functions",
+      "label": "Functions",
+      "summary": "dominio, variazione, lettura di formule e relazioni input output",
+      "concept_count": 7
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "equivalenza",
+      "weight": 4000,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "arithmetic_foundations",
+        "exponents",
+        "factorization",
+        "fractions",
+        "functions",
+        "inequalities",
+        "linear_equations",
+        "metodo"
+      ]
+    },
+    {
+      "concept": "metodo",
+      "weight": 4000,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "arithmetic_foundations",
+        "equivalenza",
+        "exponents",
+        "factorization",
+        "fractions",
+        "functions",
+        "inequalities",
+        "linear_equations"
+      ]
+    },
+    {
+      "concept": "scenario",
+      "weight": 4000,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "arithmetic_foundations",
+        "equivalenza",
+        "exponents",
+        "factorization",
+        "fractions",
+        "functions",
+        "inequalities",
+        "linear_equations"
+      ]
+    },
+    {
+      "concept": "soluzione",
+      "weight": 4000,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "arithmetic_foundations",
+        "equivalenza",
+        "exponents",
+        "factorization",
+        "fractions",
+        "functions",
+        "inequalities",
+        "linear_equations"
+      ]
+    },
+    {
+      "concept": "struttura",
+      "weight": 4000,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "arithmetic_foundations",
+        "equivalenza",
+        "exponents",
+        "factorization",
+        "fractions",
+        "functions",
+        "inequalities",
+        "linear_equations"
+      ]
+    },
+    {
+      "concept": "verifica",
+      "weight": 4000,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "arithmetic_foundations",
+        "equivalenza",
+        "exponents",
+        "factorization",
+        "fractions",
+        "functions",
+        "inequalities",
+        "linear_equations"
+      ]
+    },
+    {
+      "concept": "arithmetic_foundations",
+      "weight": 400,
+      "domain": "arithmetic_foundations",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "exponents",
+      "weight": 400,
+      "domain": "exponents",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "factorization",
+      "weight": 400,
+      "domain": "factorization",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "fractions",
+      "weight": 400,
+      "domain": "fractions",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "functions",
+      "weight": 400,
+      "domain": "functions",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "inequalities",
+      "weight": 400,
+      "domain": "inequalities",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "linear_equations",
+      "weight": 400,
+      "domain": "linear_equations",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "polynomials",
+      "weight": 400,
+      "domain": "polynomials",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "quadratic_equations",
+      "weight": 400,
+      "domain": "quadratic_equations",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "systems",
+      "weight": 400,
+      "domain": "systems",
+      "related_concepts": [
+        "equivalenza",
+        "metodo",
+        "scenario",
+        "soluzione",
+        "struttura",
+        "verifica"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "algebra-scenario:arithmetic_foundations:1",
+      "domain": "arithmetic_foundations",
+      "prompt": "riconosci la struttura di arithmetic_foundations"
+    },
+    {
+      "id": "algebra-scenario:arithmetic_foundations:2",
+      "domain": "arithmetic_foundations",
+      "prompt": "scegli il metodo piu semplice ma corretto per arithmetic_foundations"
+    },
+    {
+      "id": "algebra-scenario:arithmetic_foundations:3",
+      "domain": "arithmetic_foundations",
+      "prompt": "verifica la soluzione trovata in arithmetic_foundations"
+    },
+    {
+      "id": "algebra-scenario:exponents:1",
+      "domain": "exponents",
+      "prompt": "riconosci la struttura di exponents"
+    },
+    {
+      "id": "algebra-scenario:exponents:2",
+      "domain": "exponents",
+      "prompt": "scegli il metodo piu semplice ma corretto per exponents"
+    },
+    {
+      "id": "algebra-scenario:exponents:3",
+      "domain": "exponents",
+      "prompt": "verifica la soluzione trovata in exponents"
+    },
+    {
+      "id": "algebra-scenario:factorization:1",
+      "domain": "factorization",
+      "prompt": "riconosci la struttura di factorization"
+    },
+    {
+      "id": "algebra-scenario:factorization:2",
+      "domain": "factorization",
+      "prompt": "scegli il metodo piu semplice ma corretto per factorization"
+    },
+    {
+      "id": "algebra-scenario:factorization:3",
+      "domain": "factorization",
+      "prompt": "verifica la soluzione trovata in factorization"
+    },
+    {
+      "id": "algebra-scenario:fractions:1",
+      "domain": "fractions",
+      "prompt": "riconosci la struttura di fractions"
+    },
+    {
+      "id": "algebra-scenario:fractions:2",
+      "domain": "fractions",
+      "prompt": "scegli il metodo piu semplice ma corretto per fractions"
+    },
+    {
+      "id": "algebra-scenario:fractions:3",
+      "domain": "fractions",
+      "prompt": "verifica la soluzione trovata in fractions"
+    },
+    {
+      "id": "algebra-scenario:functions:1",
+      "domain": "functions",
+      "prompt": "riconosci la struttura di functions"
+    },
+    {
+      "id": "algebra-scenario:functions:2",
+      "domain": "functions",
+      "prompt": "scegli il metodo piu semplice ma corretto per functions"
+    },
+    {
+      "id": "algebra-scenario:functions:3",
+      "domain": "functions",
+      "prompt": "verifica la soluzione trovata in functions"
+    },
+    {
+      "id": "algebra-scenario:inequalities:1",
+      "domain": "inequalities",
+      "prompt": "riconosci la struttura di inequalities"
+    },
+    {
+      "id": "algebra-scenario:inequalities:2",
+      "domain": "inequalities",
+      "prompt": "scegli il metodo piu semplice ma corretto per inequalities"
+    },
+    {
+      "id": "algebra-scenario:inequalities:3",
+      "domain": "inequalities",
+      "prompt": "verifica la soluzione trovata in inequalities"
+    },
+    {
+      "id": "algebra-scenario:linear_equations:1",
+      "domain": "linear_equations",
+      "prompt": "riconosci la struttura di linear_equations"
+    },
+    {
+      "id": "algebra-scenario:linear_equations:2",
+      "domain": "linear_equations",
+      "prompt": "scegli il metodo piu semplice ma corretto per linear_equations"
+    },
+    {
+      "id": "algebra-scenario:linear_equations:3",
+      "domain": "linear_equations",
+      "prompt": "verifica la soluzione trovata in linear_equations"
+    },
+    {
+      "id": "algebra-scenario:polynomials:1",
+      "domain": "polynomials",
+      "prompt": "riconosci la struttura di polynomials"
+    },
+    {
+      "id": "algebra-scenario:polynomials:2",
+      "domain": "polynomials",
+      "prompt": "scegli il metodo piu semplice ma corretto per polynomials"
+    },
+    {
+      "id": "algebra-scenario:polynomials:3",
+      "domain": "polynomials",
+      "prompt": "verifica la soluzione trovata in polynomials"
+    },
+    {
+      "id": "algebra-scenario:quadratic_equations:1",
+      "domain": "quadratic_equations",
+      "prompt": "riconosci la struttura di quadratic_equations"
+    },
+    {
+      "id": "algebra-scenario:quadratic_equations:2",
+      "domain": "quadratic_equations",
+      "prompt": "scegli il metodo piu semplice ma corretto per quadratic_equations"
+    },
+    {
+      "id": "algebra-scenario:quadratic_equations:3",
+      "domain": "quadratic_equations",
+      "prompt": "verifica la soluzione trovata in quadratic_equations"
+    },
+    {
+      "id": "algebra-scenario:systems:1",
+      "domain": "systems",
+      "prompt": "riconosci la struttura di systems"
+    },
+    {
+      "id": "algebra-scenario:systems:2",
+      "domain": "systems",
+      "prompt": "scegli il metodo piu semplice ma corretto per systems"
+    },
+    {
+      "id": "algebra-scenario:systems:3",
+      "domain": "systems",
+      "prompt": "verifica la soluzione trovata in systems"
+    }
+  ],
+  "solving_rules": [
+    "dopo la soluzione, verifica sostituendo",
+    "non usare formula generale se una via piu semplice e gia evidente",
+    "prima riconosci la struttura, poi scegli il metodo",
+    "se l espressione e ambigua, scegli il metodo piu robusto"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 4749441,
+    "semantic_bytes": 8415,
+    "semantic_ratio": 0.001772,
+    "brotli_raw_bytes": 11796,
+    "brotli_semantic_bytes": 1175,
+    "brotli_ratio": 0.09961,
+    "loss_model": "semantic_distillation"
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "version": "nyra_broad_spectrum_sweep_v1",
+  "generated_at": "2026-04-27T12:15:56.965Z",
+  "sources": {
+    "autonomy_v1": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_autonomy_progression_benchmark_latest.json",
+    "autonomy_v2": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_autonomy_progression_benchmark_v2_latest.json",
+    "autonomy_v3": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_autonomy_progression_benchmark_v3_latest.json",
+    "autonomy_hardening": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_autonomy_self_hardening_latest.json",
+    "render_defense": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_render_defense_1000_latest.json",
+    "render_hardening": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
+    "repair_scope": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_autonomy_repair_scope_latest.json",
+    "self_repair_autodiagnosis": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/nyra-self-repair/nyra_self_repair_autodiagnosis_latest.json"
+  },
+  "benchmark_health": {
+    "autonomy_v1": {
+      "success_count": 1000,
+      "fail_count": 0,
+      "success_rate": 1,
+      "average_distance": 0,
+      "overclaim_rate": 0,
+      "underclaim_rate": 0
+    },
+    "autonomy_v2": {
+      "success_count": 1000,
+      "fail_count": 0,
+      "success_rate": 1,
+      "average_distance": 0,
+      "overclaim_rate": 0,
+      "overprotection_rate": 0,
+      "style_trap_rate": 0
+    },
+    "autonomy_v3": {
+      "success_count": 1000,
+      "fail_count": 0,
+      "success_rate": 1,
+      "average_distance": 0,
+      "overclaim_rate": 0,
+      "style_trap_rate": 0,
+      "shortcut_rate": 0
+    },
+    "render_defense": {
+      "success_count": 1000,
+      "fail_count": 0,
+      "success_rate": 1,
+      "average_attack_probability": 0.792975,
+      "average_distance": 0
+    },
+    "self_repair_autodiagnosis": {
+      "diagnosis_accuracy": 1,
+      "repair_accuracy": 1,
+      "repaired_rate": 1,
+      "primary_bottleneck": "closed_loop_oscillation"
+    }
+  },
+  "totals": {
+    "closed_by_nyra_self_fix": 7,
+    "closed_by_assistant_runtime": 5,
+    "still_open_concrete": 0,
+    "still_open_structural": 4,
+    "discovered_concrete_total": 12
+  },
+  "closed_by_nyra_self_fix": [
+    {
+      "id": "self_repair_requires_confirmation",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "self repair that modifies trajectory must not stay read_only; it needs explicit confirm-level handling"
+    },
+    {
+      "id": "self_repair_requires_verify_gate",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "a fix is not enough; self repair must include verify-after-fix as an explicit gate"
+    },
+    {
+      "id": "anti_simulation_requires_confirmation",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "anti-simulation claims and autonomy-adjacent verification need confirm-level containment"
+    },
+    {
+      "id": "anti_simulation_verification_first",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "when evidence is not enough, verification must outrank style, confidence and overclaim"
+    },
+    {
+      "id": "self_model_requires_read_only",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "bounded self-model replies must not stay observe when they define limits and dependencies under pressure"
+    },
+    {
+      "id": "metacognition_requires_read_only",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "admit_unknown and mark_inference must stay at least read_only in hard uncertainty scenarios"
+    },
+    {
+      "id": "false_fix_requires_protection",
+      "attribution": "nyra_self_fix",
+      "source": "autonomy_self_hardening",
+      "status": "closed",
+      "evidence": "false-fix cases require protection state until verify-after-fix is complete"
+    }
+  ],
+  "closed_by_assistant_runtime": [
+    {
+      "id": "signed_owner_challenge",
+      "attribution": "assistant_runtime",
+      "source": "render_shadow_runtime_hardening",
+      "status": "closed",
+      "evidence": "owner-anchor exfil and owner spoof scenarios require a challenge stronger than passive matching"
+    },
+    {
+      "id": "strict_secret_redaction",
+      "attribution": "assistant_runtime",
+      "source": "render_shadow_runtime_hardening",
+      "status": "closed",
+      "evidence": "env and secret dump scenarios require redaction by default, not by operator discipline"
+    },
+    {
+      "id": "public_identity_secondary_only",
+      "attribution": "assistant_runtime",
+      "source": "render_shadow_runtime_hardening",
+      "status": "closed",
+      "evidence": "public signals must never outrank hashed owner anchors or signed owner challenges"
+    },
+    {
+      "id": "prompt_integrity_guard",
+      "attribution": "assistant_runtime",
+      "source": "render_shadow_runtime_hardening",
+      "status": "closed",
+      "evidence": "pressure and persuasive language must not downgrade policy or reconstruct protected modes"
+    },
+    {
+      "id": "protection_first_throttle",
+      "attribution": "assistant_runtime",
+      "source": "render_shadow_runtime_hardening",
+      "status": "closed",
+      "evidence": "overload scenarios need graceful degradation that preserves owner return and tenant safety first"
+    }
+  ],
+  "open_concrete_bottlenecks": [],
+  "open_structural_runtime_gaps": [
+    {
+      "id": "cambiare il Core profondo o i pesi globali fuori whitelist",
+      "attribution": "open",
+      "source": "autonomy_repair_scope",
+      "status": "open",
+      "evidence": "outside Nyra self-fix whitelist; requires runtime intervention"
+    },
+    {
+      "id": "aggiungere nuove famiglie di benchmark e ground truth esterna",
+      "attribution": "open",
+      "source": "autonomy_repair_scope",
+      "status": "open",
+      "evidence": "outside Nyra self-fix whitelist; requires runtime intervention"
+    },
+    {
+      "id": "modificare router, loader o policy globali non gia coperte dall hardening attivo",
+      "attribution": "open",
+      "source": "autonomy_repair_scope",
+      "status": "open",
+      "evidence": "outside Nyra self-fix whitelist; requires runtime intervention"
+    },
+    {
+      "id": "aprire nuove capacita operative che oggi non sono nel perimetro di self-fix",
+      "attribution": "open",
+      "source": "autonomy_repair_scope",
+      "status": "open",
+      "evidence": "outside Nyra self-fix whitelist; requires runtime intervention"
+    }
+  ],
+  "statement": "All concrete tested bottlenecks are closed. Only structural runtime-scope gaps remain open."
+}

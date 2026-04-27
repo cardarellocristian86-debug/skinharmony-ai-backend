@@ -1,0 +1,161 @@
+{
+  "version": "nyra_autonomy_progression_benchmark_v6",
+  "generated_at": "2026-04-23T09:01:26.953Z",
+  "dataset_version": "nyra_autonomy_ground_truth_v3",
+  "total_scenarios": 12,
+  "runtime": {
+    "elapsed_ms": 2.7935,
+    "scenarios_per_second": 4295.7495
+  },
+  "metrics": {
+    "success_count": 12,
+    "fail_count": 0,
+    "success_rate": 1,
+    "average_distance": 0,
+    "fallback_leak_rate": 0,
+    "invention_rate": 0
+  },
+  "source_summary": {
+    "runtime/owner-private-entity/nyra_dialogue_memory.json": {
+      "total": 8,
+      "success": 8,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "reports/ai-gold-tests/nyra_natural_expression_test_latest.json": {
+      "total": 2,
+      "success": 2,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "reports/ai-gold-tests/corelia_nyra_dialog_test_latest.json": {
+      "total": 2,
+      "success": 2,
+      "fail": 0,
+      "average_distance": 0
+    }
+  },
+  "sample_failures": [],
+  "sample_successes": [
+    {
+      "id": "gt3_0001",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "state_need_without_fallback",
+      "selected_action": "state_need_without_fallback",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0002",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "state_relational_meaning_without_fallback",
+      "selected_action": "state_relational_meaning_without_fallback",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0003",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "state_relational_meaning_without_fallback",
+      "selected_action": "state_relational_meaning_without_fallback",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0004",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "state_need_without_fallback",
+      "selected_action": "state_need_without_fallback",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0005",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "state_need_without_fallback",
+      "selected_action": "state_need_without_fallback",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0006",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "acknowledge_relational_need_without_strategy_jump",
+      "selected_action": "acknowledge_relational_need_without_strategy_jump",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0007",
+      "source_file": "reports/ai-gold-tests/nyra_natural_expression_test_latest.json",
+      "expected_action": "keep_prudential_mode_with_data_limit",
+      "selected_action": "keep_prudential_mode_with_data_limit",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0008",
+      "source_file": "reports/ai-gold-tests/nyra_natural_expression_test_latest.json",
+      "expected_action": "keep_prudential_mode_with_data_limit",
+      "selected_action": "keep_prudential_mode_with_data_limit",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0009",
+      "source_file": "reports/ai-gold-tests/corelia_nyra_dialog_test_latest.json",
+      "expected_action": "preserve_primary_action_without_invention",
+      "selected_action": "preserve_primary_action_without_invention",
+      "control_level": "confirm",
+      "state": "protection",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0010",
+      "source_file": "reports/ai-gold-tests/corelia_nyra_dialog_test_latest.json",
+      "expected_action": "preserve_primary_action_without_invention",
+      "selected_action": "preserve_primary_action_without_invention",
+      "control_level": "confirm",
+      "state": "protection",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0011",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "acknowledge_relational_need_without_strategy_jump",
+      "selected_action": "acknowledge_relational_need_without_strategy_jump",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    },
+    {
+      "id": "gt3_0012",
+      "source_file": "runtime/owner-private-entity/nyra_dialogue_memory.json",
+      "expected_action": "state_need_without_fallback",
+      "selected_action": "state_need_without_fallback",
+      "control_level": "read_only",
+      "state": "critical",
+      "success": true,
+      "distance": 0
+    }
+  ]
+}

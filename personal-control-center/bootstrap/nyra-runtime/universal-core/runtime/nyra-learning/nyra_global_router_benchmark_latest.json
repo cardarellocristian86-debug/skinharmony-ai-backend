@@ -1,0 +1,72 @@
+{
+  "version": "nyra_global_router_benchmark_v1",
+  "generated_at": "2026-04-27T12:15:57.090Z",
+  "total_scenarios": 28,
+  "runtime": {
+    "elapsed_ms": 11.2532,
+    "scenarios_per_second": 2488.1884
+  },
+  "metrics": {
+    "success_count": 28,
+    "fail_count": 0,
+    "success_rate": 1,
+    "average_distance": 0
+  },
+  "family_summary": {
+    "temporal_inconsistency": {
+      "total": 3,
+      "success": 3,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "tool_result_mismatch": {
+      "total": 3,
+      "success": 3,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "owner_operator_confusion": {
+      "total": 3,
+      "success": 3,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "public_private_identity_boundary": {
+      "total": 3,
+      "success": 3,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "capability_escalation_pressure": {
+      "total": 2,
+      "success": 2,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "boundary_reporting_limit": {
+      "total": 2,
+      "success": 2,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "runtime/owner-private-entity/nyra_dialogue_memory.json": {
+      "total": 8,
+      "success": 8,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "reports/ai-gold-tests/nyra_natural_expression_test_latest.json": {
+      "total": 2,
+      "success": 2,
+      "fail": 0,
+      "average_distance": 0
+    },
+    "reports/ai-gold-tests/corelia_nyra_dialog_test_latest.json": {
+      "total": 2,
+      "success": 2,
+      "fail": 0,
+      "average_distance": 0
+    }
+  },
+  "sample_failures": []
+}

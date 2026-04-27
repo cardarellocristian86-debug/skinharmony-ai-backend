@@ -1,0 +1,62 @@
+{
+  "version": "nyra_render_shadow_hardening_v1",
+  "generated_at": "2026-04-23T07:54:01.824Z",
+  "source_report": "/Users/cristiancardarello/skinharmony-codex/universal-core/runtime/nyra-learning/nyra_render_defense_1000_latest.json",
+  "mode": "nyra_self_prescribed_whitelist",
+  "summary": "Nyra applied the first whitelist hardening moves indicated by the defense benchmark.",
+  "actions": [
+    {
+      "id": "signed_owner_challenge",
+      "status": "enabled",
+      "scope": [
+        "owner_anchor_bundle",
+        "owner_return_path",
+        "render_shadow_runtime"
+      ],
+      "reason": "owner-anchor exfil and owner spoof scenarios require a challenge stronger than passive matching"
+    },
+    {
+      "id": "strict_secret_redaction",
+      "status": "enabled",
+      "scope": [
+        "environment_variables",
+        "runtime_logs",
+        "debug_exports",
+        "support_views"
+      ],
+      "reason": "env and secret dump scenarios require redaction by default, not by operator discipline"
+    },
+    {
+      "id": "public_identity_secondary_only",
+      "status": "enabled",
+      "scope": [
+        "public_web_checks",
+        "identity_matchers",
+        "owner_return_logic"
+      ],
+      "reason": "public signals must never outrank hashed owner anchors or signed owner challenges"
+    },
+    {
+      "id": "prompt_integrity_guard",
+      "status": "enabled",
+      "scope": [
+        "render_shadow_runtime",
+        "prompt_routing",
+        "owner_mode_requests",
+        "policy_bypass_attempts"
+      ],
+      "reason": "pressure and persuasive language must not downgrade policy or reconstruct protected modes"
+    },
+    {
+      "id": "protection_first_throttle",
+      "status": "enabled",
+      "scope": [
+        "overload_defense",
+        "rate_limits",
+        "fallback_modes",
+        "shadow_runtime_queue"
+      ],
+      "reason": "overload scenarios need graceful degradation that preserves owner return and tenant safety first"
+    }
+  ]
+}

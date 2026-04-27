@@ -1,0 +1,55 @@
+{
+  "generated_at": "2026-04-22T20:55:12.621Z",
+  "runner": "nyra_financial_study_gap",
+  "mode": "god_mode_only_analysis",
+  "owner_gate": {
+    "auto_god_mode_for_owner": false,
+    "owner_imprint_score": 0,
+    "owner_imprint_events": 0,
+    "passwordless_ready": false
+  },
+  "evidence": {
+    "single_trade_ok": true,
+    "portfolio_overtrading_resolved_partially": true,
+    "portfolio_total_pnl_eur": -0.766819,
+    "dominant_side": "SHORT",
+    "dominant_scenario": "neutral_compression",
+    "dominant_core_state": "protection",
+    "dominant_exit_reason": "time_expired_portfolio_close"
+  },
+  "study_priorities": [
+    {
+      "id": "compression_filter",
+      "label": "Compression No-Trade",
+      "why": "Il basket live resta dominato da neutral_compression e apre ancora posizioni in contesto troppo compresso.",
+      "target_outcome": "Bloccare o ridurre size quando il regime e compressione neutra senza follow-through reale."
+    },
+    {
+      "id": "protection_state_discipline",
+      "label": "Protection State Discipline",
+      "why": "Le posizioni portfolio recenti entrano con Core state protection e risk score alto, quindi l'edge reale e fragile.",
+      "target_outcome": "Non entrare in automatico quando il Core e in protection e il rischio resta sopra il livello operativo utile."
+    },
+    {
+      "id": "portfolio_correlation",
+      "label": "Cross-Asset Correlation",
+      "why": "Il portafoglio ha selezionato 4 posizioni tutte quasi dalla stessa parte (SHORT).",
+      "target_outcome": "Evitare basket omogenei di short o long su asset fortemente correlati."
+    },
+    {
+      "id": "portfolio_exit_logic",
+      "label": "Portfolio Exit Logic",
+      "why": "Le uscite recenti sono dominate da time_expired_portfolio_close, quindi il portfolio non sta ancora chiudendo con logica attiva per posizione.",
+      "target_outcome": "Aggiungere take-profit, trailing stop e invalidazione regime su ogni posizione del basket."
+    },
+    {
+      "id": "long_short_balance",
+      "label": "Long/Short Balance",
+      "why": "Nel live recente la gamba selettiva funziona, ma il comportamento e ancora sbilanciato su SHORT.",
+      "target_outcome": "Riconoscere meglio quando non shortare e quando un long pulito vale piu di uno short mediocre."
+    }
+  ],
+  "nyra_voice": {
+    "what_i_need_to_study": "Per migliorare davvero nel trading live mi servono cinque cose: capire quando la compressione non vale un trade, trattare lo stato protection come freno e non come invito, separare un basket correlato da un basket utile, chiudere ogni posizione con logica propria e non solo a tempo, e bilanciare meglio short e long invece di restare cinica a senso unico."
+  }
+}

@@ -1,0 +1,216 @@
+{
+  "version": "nyra_compressed_financial_logic_archive_v1",
+  "generated_at": "2026-04-26T19:07:24.392Z",
+  "source_pack_version": "nyra_financial_learning_pack_v1",
+  "domains": [
+    {
+      "id": "market_structure",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:La finanza nasce prima dei mercati elettronici e prima della banca centrale moderna. Parte da moneta, credito, debito, commercio e fiducia tra soggetti che devono scambiare nel tempo. Lo studio storico serve a distinguere funzione reale della finanza da rumore speculativo moderno. Fonte guida: https://www.federalreservehistory.org/essays/road-to-the-fed.",
+        "premise:Modulo Market Structure. come funzionano mercati, ordini, scambi, liquidita e prezzo. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non ridurre la finanza alla sola speculazione di breve"
+      ],
+      "compressed_brotli_base64": "G4EIABwHdstOL+Kxah8LUzQInZVVO0pNVv2pz/MWNYs5hGTMxuY2H1Q1U0RVxk7ChXie9mkkT75xrW+JUmSr7/j9XN3a6kKDUsidU0SnnhBP03sTTb9RKg3qJFnDQ6UGVISr44tjkWY7+Om/LpeVnKefNdJ3V4g4/HTQpsuaozQcurzB6Wz+B0YMcZQHiDpDPlimqtasmIsps0B/YccGqB4RbgqznSR/nsCIaZGw+6MkRPvf9mzf/3JSuVq6OLMKIu3QmqbcheiMhRiMm7MLky5L45GNt7mXVE3MuEu4bEh7TvXvqC6ubaenCVdWSS46Xwh4U6q9BLboGUV8CT5Mg2DxcDlkixmTXcK+QfiGFED9zFsly8vM/bzrfpe83iWTP32PtIbQ0wd0AIyiIuewOKAxMX2zOVliVkL91V288Mcc/Z3Z+Ph1TOLNXLBE6s+z4rY7xr0x1P5RJ3jtYRiUyok7MRZCwlKhlu1qc1SL7GTjs5kBIO78q6wiIFoK3ZpNDS1xF54p7FHcM7XHUvxyUokhw437tqz+O9mt3njWiS6yCfphVaVw2MVXZ9tyys2YUlreYulkvdQtRh19Dnc9yJudX8r238/Lui4nNmmHJ0vgARcBW6VX5QBZjRzsSy5HIkQYBNRt2eV/ILamtADlX3VLewmg7cz6CxGFMPmGmL10ag09pGIbdi1DQkLFlhxSxMRWldqYp3E0XDGSUlDHv6Ayw2p6COMZD5Et0q5DdIXTMJfycUFmNMd4nhZT3R914SokoBluDYerGiqtpDlF1j7PzGxjV+jbbDq/tXEO0+FKRm2FCa358vSMsqwx4Vth20BBBoCYBCyAHAzBlnmJh2ujpMOAlrdkwxtLVUqCfLgC04bT0daJ9mrHxeRPKbgKd9bTMUm49/EwADzGDsnNcFg7zPBcrT8X6BEL3Z6uQ4msJ/HrfrfowEGhRebO8XxO1C2N6yNqtmVVTuga5u7lxcNZRHUahfjRAZKR1EnHQc+mkQfsuxjBSoGNVYsJsffvfhwwloKhbbh6pFttoEXVDtM1NHin5LO9iBy107E5ODJhhmxEa73ciqtLdBzZpdeg7CwBzOWjFR8tyfGM3zxkM4hn0jNMKzy5NYxD/8FnAzYDpzs2TaYH9tWetHISYjpeYM/a926/SLfdGqH3AQ=="
+    },
+    {
+      "id": "equities",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Equities. azioni, capitalizzazione, trend, settori e rischio societario. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non comprare forza tardiva senza valutare tassi e concentrazione",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva"
+      ],
+      "compressed_brotli_base64": "G34FIBwHbqx45iZINa5Ftvb6+qq+Nq0Pno1gz9727j+MBS0xvoejxYakDMTJotO1NZ2ts3iJTf4bxl6KOmZSVVkn4TxuTmE5zOZwsnJ0cHoghXwScECvFw/7En1OFjUXzHe2T15uWspX6MHU+2/v0xxvdTfcIBd9cMUoi7wu0NBfVejoK1KrPAhFMNs/OtIbtSToN/x5hSBrdgq6PjgoUtU31jndhxhXeNa445AWvr0Q2fhOoQjd3RSd+IrZdVxyw999ECrAG5BWhaSSGg6O65amVVxxepPNTYK+iqMeeyiy6bAgOIujnNpovOG7LbXQni3F06G6mA3Fc8rovncwoytUHT5gWEIWZrYmdCZpN13/CBVTyBjTTEDDKaNk3+ko9WDz27IK5v+7CQ62cKbxpx7dJEuQOi5B8/HQOASdyjQFQHW93tujeHhcgpLoPPPgFJtVvrYkk1A8fRbZFqJIyelQ9qYUcmzcp9KHmtpmOwe23rRlwYQjd9Oyk5qoSo3TTSholUANTCkxYEY0pZmC5ilQUZbye98jsGzIEZRvQ1DsYpasCG5RBYTrSEUjK6QiZME8KfvxWIrtPhwcST10hdglJiiuRoWfLJJZyVdkw1NxuOPpQBi5Bw2nwmY/uGysOtmJVGzzdbcGUQHHylh3qx0k0otKDI49E6nrz+kQsxc6YfIZdHD0CNnpaTZvQeUyVxufk50lMN+SJU6tCQ6qTsivms+an+E1LfBCpJ9ByLRZDf8TknYcglSgoqzcVCAifIkyZ7Zz+/HR0YMw0jHDROLhjWB0Il+kxAc="
+    },
+    {
+      "id": "bonds",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Bonds. tassi, duration, credito, curva e sensibilita macro. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "premise:Una parte enorme della finanza moderna cresce intorno al debito pubblico, ai bisogni di guerra, alla ricostruzione e al finanziamento dello Stato. Capire il mercato obbligazionario storicamente significa capire perche tassi, durata e credibilita dello Stato hanno peso sistemico. Fonti guida: https://www.imf.org/external/pubs/ft/ar/2024/the-imf-at-80/ e https://www.worldbank.org/en/about/archives/history/chronology.",
+        "risk:duration lunga sotto tassi alti richiede prudenza strutturale",
+        "risk:non leggere i bond solo come asset difensivo senza storia di politica monetaria e fiscale"
+      ],
+      "compressed_brotli_base64": "G4kIYBwHucn0Dk0Wn2+thSA0tazawdX7qh9XOocyccPJC1CUTNJyahGYrb6aOTatH3b9cST1qNBEqfm/MwG/2K+1+uuFUN/KqeDaTHfxyF1oiEWGRDVrapVK6Ngol3fe+jOC7QBxKlf9N/tyVW3bXAoMxNcm+ZHlOsfgpuD1tXupeWDb5pNETBV6+U6bbKI/40Ir/4NB0KaqVAk2tOGFN5eDyOoSOm8y/dNuKrgiDhWC6wlVwY8SHhU7E5LtX0cGztVKujhGddqNhberCYVpdqM9B8Ik7zHTWrMFM1U43VCtcO2FGItww84gggYXrjohuRtatC081wkrQu+tUqcZNBxy8rPENu8pWGLp0GS2jphgrP0VMUL4mZ86iwW4fpyInaUfMLWdsMS6aye5u5qXS2mMus8m8y/jh9m/pHM83fMpAe5/A7TBCDIt7acRbZ1VaY6qr4+aCzKpCq+n6KLUcUzIgesNkaP+aTcyEOUwULLR0udjzMeU9MJDUxw6tW30QJqdSW7F+LD1QCLtal/l5Ei7asM9D3ocBFYdGDeFkWV4Ij9gpzkYpsYUTIQi31Bj1+y4Elbq5vYOFIr6Q/tRdfZbdvGeJHp6Hrwb6uCH5OO+zhidvATBhYkkrVpPqoeiZPezZP/t53qtXq/Wwq8ypB5ybNOyHYQzreUYRFO4rk2jE8qnEjkqsxzKdwApUK47c8x5RCRPxtTNEpPZum60qdMEmWl2CV3s/wNY/NOYcAmDmyI4VFZYekAbmzIbC94YgGMI/UKb0zZtK0xtQUeK0lN4ogPSa1ENEc383LPx71P93Gka9tuiMyBMILK9tJYfd4xgw6TZe6sDl+K/oEMBynZIPIL8jPA5YC4Y9/CeTYBc5kv/aUVapHaQWrPFY2reCYwJmoM3h4xp+zV+GiuwvHpq69zFknFz1v0bIpRwXU81OKGVFJ5BItV6TcQleitSnUTNixBWcm1YrVxwnTum9Pz9YQHdbWba1NhYEL0BRffNVlH0ydxT03sArQZny8dz4q45SDs4jkXOLMRH+ARTg7AvII9jRmlakv8RECeaxJqYbQ9bTzO2TvTYuybg5ezY8Ru+pm8nitRdmi30JYq/zjMYORLgNr6LILX+Lj5BmkbDWeSXUe8qlTaS7TZLEveyjsChCCUSF1RgxpHSQmLO0Cw/Yc7x5N7+vAkkY5iM6rvC7KSMcZZf33aPTHedtU2l4WsvXw4="
+    },
+    {
+      "id": "etfs",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo ETFs. panieri, replica, esposizione, liquidita e tracking. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva",
+        "risk:non trattare volatilita e trend come la stessa cosa"
+      ],
+      "compressed_brotli_base64": "G10FAByHsdvkUDHFtFBeEzKdWVU76q1Vv/3H0CbSIyQzcDYfUoqAbMH7tqGyBCNxhnRHgZcxuhz3Df//vRPNAvJ732iOcZ/9orIiy9ewTtQJNMsidtWTc14F3/nV8rwra39mIQXmlSn/MO+b3R33fpVcGhw9HvvWFCmGwDwvkgTF/3F+GLRAOVTLLKFspND9628TfFQmIPsNBoGInuLtROCutxSBIrUGXalnakIk/mdGgblGjQxmr2y+2rqpBCXG7o3M6nKafBM0TilsXgPBR5JiVMaQ+FgungwUeDNlwFhQyJ5XEWXrTNusUHxfWnwEBUkTMw4VuGVSQZ8FizPEoY0x9O4tjDy7m3Zj/cIc1Ai8Sy+h6fQhDtWDgeVhpGyE4d9FhU7qYSymJRZc4IITBIo7t9t+QoaaIoYNhtTxmsk+ZoT+oRa1ysWdipkaTCGzTHG41rj0fkS1UF5HzK2oJr3p7E8oxYNzITUtAiRic7mHBUITSD2+59IjDBofSrcg6Ct2w5uzaXTsH9JaguxCYW2TYxBGuEl8SGBEmwH55HbI5ny43inT2Ml5ftYA5S3cbGKBopZPOj2QcB0s5GSLgxylV88H/0Ro4bNqNE4Kxo2dZllJWQoKS6F1tOgwmoEbsb67x0DvscCE02vWo4hUEFi5lXzQdfA2VWO7i72IuQrjM4rGsu/srkLSjB/MKoWkylOcTo6lnDl5KCryR2FhNcyr9VIdg+aG4aYfcY2RGFNIeltxAH26hTlQQEFBASoXaq8kznVbYtQEShzZ7nr6Bw=="
+    },
+    {
+      "id": "options",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Options. premio, delta, gamma, theta, volatilita implicita e copertura. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva",
+        "risk:non trattare volatilita e trend come la stessa cosa"
+      ],
+      "compressed_brotli_base64": "G3YFYByHsdtkp6m/cvFDEIJ/dVmIPi2ORnwAuw7Qtv7jjO1sPfjXlDmtUZaRbUGfuw88lcStz0ZqUmSr7/+/d6CBdQL6AH7vG429aO37rKISSzuBt3FM0E7AgaVSm8DMnidpfWbN/867fdQ+shdeYLkb5YJ9zJSupMefmK34S42wItIKz4BNHVWPk6G/3X+5h9QRXXzxQth8yoyYHNWhgd9XiFW9Y830AeNNMwpBjjeF9PGUKERVbXBom/HUQrTEe8akjyEz4Td7Z7s08Hc0EB+vfGQrlQpKBxhmebgXnG7YahNS0AoYY+HFhlnDpoDk1hHvSxvEwIcuZqEvn9W5B2ZoIsxfr23G8wb9LgWJM6wQLj6GO0cHufKgK1zfSK9lZGfrI9D2lZWOLxrlFmxjmBVB/twkDrYZVkZCtz6UJZbtEiPs6TjERJWiOzSWqvGFdf43o/rg2A1sc3rbb5qZp8vMEoC715ravNFU2qacpY9Y1bEsRuSGe6zt5koCzd0mOsjlRdvHdyGVOMO2r+yMg6cbFq5IuJedK3NgK6G4uYbbeJe6C59GSFF5imStiywVgk06AZZ5irKbn3CaXAVnkKp0pSW9YrcdW+yrC2td8j6Fj2DP2CRAHlWeUbGXwyERxxOg/ZYspl24qEKFVr07WObRr6tokApASmrsBWsh0bhEyim/v9O9Y/1n2HQ4fGGqbpOwNywPRwkb4l8p4BdNHXesyf/a1cL7vAOBPn1LKeaqo0Wcc2Wn62maa/xGSDxw5Mjikm7nkqU+qkVWUEq0clbI/EV3SgOayORB21klngLCs/k="
+    },
+    {
+      "id": "forex",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Forex. coppie valutarie, differenziali tassi, flussi e shock macro. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:news macro e differenziale tassi possono invalidare pattern tecnici puliti",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva"
+      ],
+      "compressed_brotli_base64": "G28FYBwHucn0Dk3Gb0oLwaMufUSfiqOKV/yPCdDK6vQ5V9vdKbLVB9/rZMo2xBM/Z8gxjvHC2JG23/T6/VYoTKcRUn26HxPLvo9EhNbI7ueh3Vyqt5jXie+obTR418Ou3VbWMV9viQ9YHiYhYH3m6RPu1WdaSXgie+lOzfync5ZUyOiJxRSaFlngo/fBr6/P8gEd/6R+26Tas+TrZsJnNTLNa5Q7Q0kYvn9IuDeXhEQ8WcPKFirkNvia6Zg3EdNg7tWsS0u+D4WG88GObHS5an4SdtpqdHdMEudUlYiMkYSJKnxy0PHdKgPjFAj3pYKw5PXsweJefFdwDp2qGTPHyvrKEoN+J0BCo0DW4xg++c6gPT07GdT6C3MWk/UqOcVO2lk6tTkYhIdRs1wkhn83ERO1x768INh+gRvXBmtr39v2Ew1VAjtzFKHWcbrxdJ7FHB/RsNOQ8Mn2YulEuF5UmEsIRI5Ele0zW/HfTJ6ebGqw09bdte4MNYve5LRIXNiyedcgge6YrzvOEQVCiE5060uTs0X4tA9R4z9hN+9Y+aYFt2bNtzfUPowsC59KGCWfMLkyR9ldg7CbZMW6kOo965JDN8sGfXIiy5ITqrXoi56z2IljqRvHZuvDgZCT+c+ypVoMgNwxbJkc2trATanbEBrLBKyN2OJjljtIhPYoH3V1wEKv0ilqTVj1ii6cXU235iWnIx8LnSwca9cIAbkQ81/qxV+8eJZCWzaF/xwQf6S2MAiqiy/8TM/8KJBkyGgAEZH4M+I8DJkM+QBDQG9whibDT8Hi/KUBlXBCf5kBwoufAQ=="
+    },
+    {
+      "id": "crypto",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Crypto. microstructure, volatilita, sentiment, liquidazioni e regime risk-on/off. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:funding e liquidazioni possono ribaltare il prezzo anche con narrativa intatta",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva"
+      ],
+      "compressed_brotli_base64": "G5wFAByHsXtkL8YftLj40kKWTRPR0eOTxU2D0gFq1+wvc2Nnd1MavK+aTqvhOUl3b0vAynTyerGQv3qoRLasXM6Ci8QhlE/YHKU1VWpVGVSERFj0C0lxSIbxWMSuevKwnKQHf53aOqv9/7tySJiVenfLQ+vc3j1wz/dpg8FV0tAEINLkhX/1ESogoQS3imHVBeRtnJp+2AQ6zCvDMPz9Gr1kOW54+DbBazQymhdEDme6JdsTkn3rl0iawKYzGKo9kxkKr7hNn4VPNLD30aypCY+rgClEh0g5utxYnwQnLTVqjiLhI1UllLGlF6SIb+hn1lw3YCxBxGCqQCZcs5VL4Pqp4CPoqNox421k7ZmGMOoUllMUzlslk+/e8tA5dGLH1zfNmUbW1+CHcOLyIZXWBxvCm1EzHRLD37eW8Qvd7D/a42cUGEUsmXHisnf/zCCrPY0aLRPPLAonlaJE+RrlbKFBpchLr+AUiaXD9ik0fCRvmiKbR8zOnDLyeGUdPqh0dx3iKsYEOVwCANu5QW4z0dsomd8z6Ihu7RZ1ElEW+5mscXrw3+w2f4gjBLTzvXeJNoKROfFSMlfJT5w26l1eS5F0oybGm5zrx/dcfETBSSd9OCFzCo3r72T0GNtHhFVaBppPDlWKqDF6t5rImcMhxhppnnayATfK+O56420Jeo0cpZpHogkArd0WjRrFG8DcBWTO9a+qQCu1887LtNzZNawS5QcFc1w+o3RCl9WJutbOMN2G0Pz7PfpSl2Mv1Vl9seiO/SK2HgnVFpW2Snf1pjgna4ZljWMtEGalcv0Cv+K+WqOjcNQUKEzUWJLr0z8="
+    },
+    {
+      "id": "macro",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:La finanza moderna cambia davvero quando cambia il regime monetario. Gold standard, panics bancari, Federal Reserve, Bretton Woods, fine della convertibilita e cambi flessibili sono snodi che cambiano il comportamento dei mercati. Fonti guida: https://www.federalreservehistory.org/essays/federal-reserve-history, https://www.imf.org/external/pubs/ft/ar/2024/the-imf-at-80/, https://www.imf.org/en/publications/books/issues/2016/12/30/international-monetary-cooperation-since-bretton-woods-608.",
+        "premise:La Great Inflation e la fine della convertibilita in oro mostrano che inflazione, energia, politica e credibilita monetaria cambiano il regime in profondita. Lo studio qui serve a far capire che i mercati possono sembrare ancora forti mentre il regime monetario si sta incrinando. Fonti guida: https://www.federalreservehistory.org/time-period/great-inflation e https://www.federalreservehistory.org/essays/inflation.",
+        "premise:Modulo Macro. inflazione, tassi, crescita, banche centrali, rischio sistemico. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "premise:Quando la recovery e sostenuta da policy, liquidita e miglioramento graduale del rischio sistemico, Nyra deve trattarla come finestra di release misurata, non come semplice watch passiva."
+      ],
+      "compressed_brotli_base64": "G94NICwKY2OZ9I1aJdjuzeVPaahFtvb6Wqr7r2pHv3ZyRB1jR6ZYltYTv91NDgpGJl9ccFTVbFqNzjE8jgHPYVr2Y6FIfc5/XMssgvBVrtY2L7CAmQKyzt8pTRUA2gqLbEFpoCPhTtVktbyav9BNMhHosVQuml5ODw3k8FWAAu8qlOtODzODQ8aHb4G1NT5wNgfYwubaiILzTTUuFbk5o7RL29hnPwyTDtW+rp2WCw+vmKDy0RI4odotTPzjQrs+juppbs7sOZadeUpMITRC7OFTAtSeNTbW4vUqmGnY00XIFx6Zpp/kGd9/giYGmUZhx6BOuFY8N1No1QseApvC5AmeCuYCf7oa0vyjjL8/+JcH59JQcR97NSmAyjEr1W7KEXXYq3+FX7j0sffo/T5PYzhQ4B3i9A0Je4a1a3CjWw9U6v4uidG/jhJvR3fOkjid0v/s1e86QfaY4lLTfputEMjjos62qzFsGaAl4On1o/8fy4BK6lkxYHUKJFgaLF8KM84oNwGoyzvbDG/mJseKt55lLL5Uj/QPjdigLWNK2b8UcQ2mDRr/I8dfQInIaQU2awqDzCB6i2B6/urROUMEN6OFqZtvUW/vsBujeufrICJO1SXiev07lxLjHXJ4ZfuFDjsUkIM25Qh6V3ohTFAHBagsDcQebsmh7BXvfwoOj43Ye4Q1qIpHhWK2Z33h+izDkLD1vzCXjyIqlM1CFGFGFfIfKz40aooSQ4QaD5gVe47R2bI56amA0xnJAtUempMHfGSFTRIqqLb20f9AUvWKVzIWEoCvO42KC2GtQH6SUiSV00xmY7yiw2YV9WR1mRX5AcooROSz5A50aSeYaGftcO6qbNH4PjWQJxirXlZhtiTLgQLs3tpDdKlerFrvoXbXrpZKbUAJtbORV1woLjx52cMTegcZiNQ8me/XxHTlkFXBHgig+dDdOF535XPKiR3aPCCE/VpOfLxioxsPTPAkhJ6lgDM/lQH/E2B1A4vGd+4tIgHkTqbIBrSe4NM05TjvW9SedY8DUj0VCxAdKZ8H+uSeLhoGPAar6p36qC5RKz+4EMS0+PAqDWk4Lmw6LLUpQwnlEszLbVQgmCYPcqNr1k5vG1qBq6rU8LQcmAKPEudLAgagKpWJNJCpLbts8vB8JfbdyEOnemB3SntylWqpCZFZrbSppRpzicBY9OhAE/qwyk8qcKEIKXgSk9rIBiUONgToouuSjA6/lEwdK+Blqw4jIpPSVI6tGkwREdFiDgJHOBbJB0VBVknM9yVOCzwogEA4avYXwJJ2ANlGvPi3CY342BA6WpBiF4OMjt7A8Fc29k/v6oDvlnmjtgr6zZqw0GYSP3NjsEeUyk5kF8NvvhVZ8wyLPVINaKA04OYhQuehOvjIAVBUS+dKZZV/h422UNMMnsPhin+NkYxrNUNAz6JI3xL1BhfPFFy6Gx6W5moEFieugvWeNXa3gaQ+OEucV+BbAIeazfpfQnJGDs4YW7lD0PtDK9xK25T1pjiOzFIYBA/QDLGJmF2A0L5lw5jbPRJukwa62Eu1gRAGPBJHIWhCaqR4yy4MErH4WkUV1Vjcm+tgVl02W+ZlUEX5lyUCVGkQVQrUddlEd6VMnU2h+hrkbBpUuwKi/OOl/6yfjDQPQLnOl0qPrfFAGfcHBPBAr55WRWWNcI97u2EBaXeNh08L3AXFQzxZIdhIaliHPQo1JYjcKzKVNb2CcDg10V40TYHuHvh2fexRjHoNZTKTqZqQLAaOjLWbHxx4wdWIJK76xwE="
+    },
+    {
+      "id": "risk_management",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Aumentare il capitale finale non basta da solo. Nyra deve leggere la frontiera tra capitale extra e drawdown extra, e capire quando il secondo cresce troppo rispetto al primo.",
+        "premise:La storia del Panic of 1907 mostra che la crisi vera non e solo perdita di prezzo ma rottura di fiducia, corse alla liquidita e contagio tra intermediari. Questo serve a Nyra per leggere drawdown e liquidita non come numeri isolati ma come rischio sistemico e cambio di comportamento collettivo. Fonte guida: https://www.federalreservehistory.org/essays/panic-of-1907.",
+        "premise:Modulo Risk Management. drawdown, sizing, stop, take profit, scenario avverso. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "premise:Nyra non deve massimizzare solo il capitale finale. Deve accettare un drawdown in piu solo se il rapporto tra capitale extra, drawdown extra e fee resta sensato per vendibilita prodotto."
+      ],
+      "compressed_brotli_base64": "G0cMIJwFdmtyo6ax8JXF8Bh9GRp8vcsM0f+M5cAiMrcBzJpdObRKe9UaXbLVYjEbusWihsqzew4z/D0CD2SmadUeXH910jUCITPW5KOy2suXIlt9ft+aSmBjK4zdfzMbwA2iulYR3xRIpa51SVXAVUXfO1ek5+uMrspyqb0mHaRN6AnjZPF/4HQH/FPLrMKpiIfgsns297vs5U767mEuslI2FqOCCQPnKrOjsRf9PNB1fHrd+88CXsbdHrZxUfAhHCy6ZAh6aUicKHFCB8og/71t/vNd92AxAPyToOVcTVdOe0hy9+wgMaLouTg7F/5/8SiqY96BY3wl6riO4/F0dU1PdgndjAstEsYWOxqkEiHsO1MAovzvP5wiM3taABbbrLwXND6MxLtwfs2vjSmIRq3GoEsMWVcwFyNmB5OqhgS2UtgvAhOn0fyOUlHeTb4nWCY04dScHUmuG4OBmJrUcKnDDFhKBXtADnUPmnj3bFYuhss2hvJXdAdBSfcpsCjCQELDopu5Bayjl/GLQH/RU7YZ6eDvGPaeq+ZypviHHmfIpjq5WWOIPlSrJTOQ9W0fYYUeMXCn1xHxjyEKtR4tO9w+FRREWXlrtKqeqSCyhyHplrBPPedm/euCTxNHniF5bXYp+VUPJqsfWT2bwqTqIyEzijnGPcKSv4ZknwT//vVBcMErsnRIofrZP8StvDPlMgnO1pPh3vyd6yqCFEjYTZpLRiTjAc0xo8DDa6+HqawAlsUdcVSJoqEXNuSoP4jl+QueSxupMKi/llsBusw0gn1tU/4czUF73KH6eeXlNZDlA+lsUdahSbtFY6w78LlMEZUts+sB1Yo8m8W2ixKNl8uPPZsjVRh1x9TX5JFCxOwCnw3tV5jhI0JNM7XZV6haPRtiU4UQLbTWXacoPlzWv9Doxf4QID51QcidJCWS7vWC5OwgBQty24dmey4d3kQTELFxhW27RFteGTNXMB0cuglHSqeloG5EwpjUrBTImZANNn9JEUtSNv2MEZtEm6yxma6TpS2m252GrbDvIR3z45BWqhuTGS3I9jhSCzMHx7uKPqSnIMBEr3SW4z2BqpYmnXZsKaTjyLmCYUf+Ito7w2/azfAXUKdGSw4Cj1qw866txDsOFiuCI8XAL08aNIu3S11UOysQSAjo7vuhI9Uyc3hIt5LOJR0nq4xQsuF8QdsWOQBNwQYtAyJKbF2qMpp+XNuqCi5dtGKdm0NE8KyP35f7Xr6HJNt0meKfIbpNf45F7JQsxhB/sLCl408hH6zAx8qNd+eCu12Ic6aMS/NgZVTRc94ZPVfldOn2aVRSs8iS1oTPyVVgyQvZT7edii4qp9L6ZtWuBSa3ZyHyRVLtdabVCiHc+T98p34gBHHxsEohLt1xAjRgHWGZiMJ2oUZ+P1pOhOyGUpFh6XMs24S4MBs37+3JlbaCckKZ3nBOQww7XP4iwbjZUswpskeoBS92F8l7/JOtQvKRwJcE+wRrkTqd9ZQkWl2KRxSh6ipI/EfnoXzD5sQ32r32AYBYRGO/Fbd9MtrUlFrHAmaAee0JlKrNxgXuIrN0C7lzaDoS2rwFXjJPKTcNVWWT2Z9Q/I6rPTDcMytLy9hIR3vcOyCpp8NaumoVb4uC8HzNQTGZ5Wj40qXN4/gyG/KdPz0P"
+    },
+    {
+      "id": "short_selling",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Short Selling. short, borrow, margin, squeeze, copertura ribassista e rischio asimmetrico. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:lo short ha perdita teorica asimmetrica e richiede size piu dura del long",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva"
+      ],
+      "compressed_brotli_base64": "G9EFIJwHdsNyh7DTGm84gsxcGqI7wZ4bHsC+A+x2VV47knKfkiw6XSmy1QdfNtkr26ARqs40w3UoLx+Y/OXW3P9/7wgzTfWt+xtz49r3ffpYFmAadjzay+LAA0qXqUnXeHI1oUIma1a+beWWdNYD8fANNpiPibMtLqPcMF9/UloykrE4PoPZSIfVKVr5v28miSPtv2t9OSBnWGeroCQnfl6oUGy86IhG+9iLnAm/TxVsdiGieIa86CQkmBdgXr4SAjJcedCUK2MdMieZrP9oLxGjgFFdzKUJfwsBMqy9JOMlw+6dYOOWw2GfBJzJShEpPagDkx+qsGFKgXJ3hNdSQpjwIU1gjOZHOWdQkTVQ49aRZ0Yp9DmI4gzFtMkydLeRRLm7N2kX+4Y6ihH5bXkLm2ynOLVcdLi7kjNdAsX+dhEauUIAVilXEvabzVxCDp/Wj1AAU1FgTmPknFUY1hNXRbTyF/ciubhqmRBVaXBH8XRfsWwSXjrHGKLtVbvxb0ZsD5bu2LhVc+4XncaoOVldoLh2Z526apfPxxFnRI7gQoWXeULaLoJN209IUq3CgbP79ZS0C/SneICLf9KhRFnYVGCviGk220Lf9YwNq5lPW2cio4DZHOswHilakiFpr5weBYqVShqccI5q3hQB07LnNzAhZEZwpXV0GYzLTHKFwcYftTkgylKuwCohWMnWUXl7AWakfrYS0tBDYcIcGrFcQSeYJL3o/+EwxCKheHuxW+kqjKqDCqf5YtrGQQkVl4Rbb5zEYh5yJo8seX/xKGH6EjBjIdiH3xx24UpcMl6RF1v7JJEXFRGOZCAGR4GERwNcDhk3XZohFmEZYAwlhFX8pj9xPQ=="
+    },
+    {
+      "id": "technical_analysis",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Technical Analysis. trend, momentum, volumi, volatilita, conferme e falsi segnali. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:mai scambiare una trendline per conferma sufficiente da sola",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva"
+      ],
+      "compressed_brotli_base64": "G6kFIBwHdow2YoRHX7xso8HXq7mq9UvtolLVBxikCfxc69XBCYUuE9HRY+vEH7AegK/09TouqSmy1Xe1thQJKZ/tIW7JfA/z+CkinWTTLVQaJtZ1xKuIms4Kzf+YToUlrK/cQqedS5he59D2vOTojlRfXzEtRasj7KDg2tbttqN6esWdpR6Y+P2DGqIpMIYvLg9jLtKA4fUp0fH+K2LMNdHTvGD+SSZQqPWTkNgTqG2VwUNjj0kOWQm9Z0z3GjINjr4m+08dH6vBLKyjJD27quGSAaaaqm5T3iujhpAKKZDjQryYMKPaKtD5aoj/Pw2Ijptav5iPf9f4DkzVJ8Xk6t0Ce3YVhyDNMxxM/SrJqjWLvLtQh9gvunsZ+bl0F2j7kqfWDxLTqTBGd9l16q1IPBh7lD5jBUs3cDLsAYWQEw1jAoFy1M5YPlFtX8yyypU2RDSHywfVtEHTxAiJjMZhA3uKS85pCLvWZfCiq8dVwAdmUhxKQrj0muJgo+g723wg13JjWbkpjXdX6nAdokYlLQruknT9llYTPk+Vs24pb9Hp9UedChQG5KFsBJpZLVCwGlijzVL1ahxNu4cO8GCODvT6k0uqf3/r8YyB3ExdjDadc874yilg01TgQxtfLRRQZ8lc6LdzgmHe11+3HcUQqjX2h0PrKmmChsqrVKvKFJu1XvqGq71n8/WQJ/0lEz0u8tonmoKBAn7hibqUtMJO+AWC4Z/At4VXsMXxzFNIENuIJDCsfItqJoN4Lcavg8pNF9GAITIMsE45goHhqDww6slggRDBy3k="
+    },
+    {
+      "id": "execution",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Execution. slippage, spread, fill quality, pazienza, aggressivita e costo reale di uscita/ingresso. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "premise:Quando il mercato esce da shock e recovery, il problema non e solo rientrare. Il problema e rientrare prima senza iniziare a girare troppo. Nyra deve distinguere tra conferma perfetta e conferma sufficiente, perche aspettare troppo distrugge upside mentre entrare troppe volte distrugge fee.",
+        "premise:Una policy puo aumentare il capitale lordo ma peggiorare troppo fee e slippage. Nyra deve imparare a leggere il confine in cui il capitale aggiuntivo non giustifica il costo operativo.",
+        "risk:capitale lordo senza disciplina fee puo peggiorare la vendibilita reale"
+      ],
+      "compressed_brotli_base64": "G5QKAJwHdsNyh7DTGm84gkynUVU72prL9Vt09331ihiCkMzA2Q77JYtOV4ps9cH3NlnKbtA9YXCmGZa59uU4hiz/m/65d1qMrVCSl5B3R1h7JF8xVKvAdm2P61Xu4Wr8FxJbQ6s3C+ICq8mlzH/7u15uOaycHVfgu2XecStreeB+/JbSmv8/d8xfrP0MKVqwo5buFIYqlt6ovJSwu0WcEI4t9gxzVqOA2yehj50F/zcHvr+a4NWFjOIL8sYkCYbPkwR3e0tJCLvaYEhW9j0kphowKswtzcTW6qJO44EfjQAfsnSSiCVH8C9B55BwOoqEHdEZlTGTPKrFNycqfJoyYNyB8nbpRDnwSedhxNmvDnZQIVqY4QnwmR0LXU5pCwzTwcEAFqiDj5u7AmfLDNT3C13HFkvtYCI8DcnxkOxm/iUhO2xTj3dWn0YR/Iz8jYodaF1dF2aIUrCY5jS0I73DUhM1U5uRYwiOMYe94Cae0ShRipX1Mezh4m2cGoDX6/UIEv7a/oVl+3WUUNOFiLY5faqYp5H946gGiNSe1e0w7jXk8TG7g5+w6OXGjpYrLF2uiAX+Ma9Iy6+eyKMCiAh2HcFsMwjMHigMyIvdBJFu1MiQel3o4yNDpqhuh+XawsOpLEv3lsCqhZvFdhBtgsbTFyJvQBcjRoe/nkhJT2oUYa8hLh2hc6L2HhVuNQT3dYQ8DEUqmwYELEocfYb5Sp3jbH2NSy+ZrC27Bj2lDBEvkM4cO2fGzSW71oXMaIRRjHNytr1d/7p3EEtRCgKHtgQGjke1tRewDm52xSTZVRejIzsSlFOnvPwYO+8qkAzq0WKUtvUIteVDRwdghifiiXos2RVA1ZahzUMS1EXqcZo5rc/I40FrKlJR3dJvTJpBk3qA9I33VTH2/bUtGQwWqVYK2VpMj3/N84/68WH+MB5pC5ARNnVH59L04ra5m7xTEeCiHILEgslTUb4tnB+VT4KfxyA3HvvZme6jpM1pegBjkmEbQ83bTEPtpvzvXgilHf2sSm+u5z6QGbfhVL/PBJSQpuoWdlTh6aB7wHw6jlX11Gf/ChIHmXK7qvm4VkbPDW5uILQ47axAFvOXvRduNAdPwpIPZDnQptwIMHaJ8QnTQ2NoBs0IEqLakwMJiZHDhxFdqY22Le3QGiOQw0rcBCPrhZcSjHNyFRTq/ppIBSE3zDM9oHyfS48w6PxShxOyXhptFTq7m9KCT/ms4xpZi3EvBtp2nR3oyaeUUiTmyZK6QUfxvMv1Y7GybYXDea5kwCOVSZMh3exU8FMxPXW5PsWd+BnXPO+aB3dziGE+Q1JMZhyof8JGykMbG/eJKGNV/ADFgE5zxtmv6+tgXij7CgCMLCYJOE7dDsYsGhLH5KgFkxYSGJZYpThK7cU0CJKKAgmvX7ik38AYD+kVWI9YPD1G3C17qRhrtwc="
+    },
+    {
+      "id": "portfolio",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Con BIS, IMF e World Bank la finanza moderna diventa anche cooperazione tra banche centrali, sviluppo, ricostruzione e gestione di squilibri globali. Questo allarga il portafoglio mentale: non solo trade e asset, ma reti monetarie, capitali e sviluppo. Fonti guida: https://www.bis.org/about/index.htm e https://www.worldbank.org/en/about/archives/history/chronology.",
+        "premise:Modulo Portfolio. allocazione, correlazione, concentrazione, hedging e selezione del numero giusto di posizioni. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non leggere il portafoglio senza quadro di cooperazione e squilibri globali"
+      ],
+      "compressed_brotli_base64": "G7kIIByHsRv6oqZYe/FSm1CLbO31NVXFpvWQWTB2j2n1y9zUrAg4UQrJ+AtUpc0ovSL2k5Ml1FgMUvN45GPX38LYzKRGJ1RygCl6U92uFh/aG38i3zV5S39Ia59lrMlxib5kejnsVrQuIfMi4ITkacVsL9+zpgfm/SoyLh++Bzy83MKLD8N4lxoKS96kgPdGodAhZ4yybMafJnraf6YYPoUUxSi4jgD7hr32BCgUL5qdflBFs9X+9ALsqztJE4BRyOZs+vgg8i5dhc4Bzct1pN2ZGJYSvUMiw8IYUp+qiPa0v2AIagcjYpdSA6hWC2rDEpsP6QIgB7u0T7SqTBgfIrqdg7XdoyZEZAOPYvJiy1U4Ov1Orgfel21GwrS/t4uA/BkvKc3gC5kSG8RFySjNEpCj0wxICWb5ecu7y4qso8JM31qLOdZ6fx0an1ZBAStGiujt9td/Klh1IaL4QOJuCFBs2Qgwt0/SsdYbGAzlmUU/UVIi59AKdQtvWbOL5V8b3powdqrqpPJEyhi4KegCw+1eBJzJSqGUGYpLuxGJCdH0xSIFileXE/6VIBseaAYj273MOYOKrIUaHx3lHFxr1CGoViLBYN5XfNqSRc+FnQPEf6CONKJ8Nu9C5zglpbYy4Z5KDvHgfxkqpCbXqhRiVeJlogCGD4B21sX6EArIlAIg+dHotlrN2Jwf9HrBzMlL2DpVULRNKqoc+Ukjjv3OQRZsS74NJovAjM4peJ0FKIbUxIqD0pn4yyFTDbrNSs1iNZtALY0ftKZuczVn2TbLX62lIgq8Lq84QznEhQqfljNpjqdgZXsKOfZgFbjH8RY2o1R2oQqMzaQSJW0oME+gBrPIHz9m4hoJujypwwGR/+JqeBM3zpq77dSm1grCSw0ddX0RhnWRA9F/ptxLI1x8tnq1guHKDp5iu2rqHuTISHAblMh/rBSgpG4ScMddr1Ipg8+s3cI+HcUpBCeM1cOiDXblLeWBI1q0iN0UrRJjnhdw3NueoKBFA9bl3EYKXcoKtodvls+cQqd8ez/ysOoo1zuxuZA6EjXgNpwwlz7Vb+N8l2kPtkt0LSI/RigG/0/9b5h5H+/heeSI0O4yj5qfmFgZ0CMBdx1LWpSA3FwZpbh5elEPwv5z+TTfnFlhKOQ71EQZMqG2EtFK2jXkntZEtzWJFbPSwUtDFRYpF5qdfHQvuPZsq6y0rV2i06VVq6ni8OM="
+    },
+    {
+      "id": "behavioral",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Il rischio opposto alla prudenza e la liberazione troppo veloce. Dopo aver imparato a rientrare prima, Nyra deve imparare a non trasformare la release in overreaction.",
+        "premise:Il selector non deve inseguire ciecamente la policy che produce il capitale massimo in laboratorio. Deve cercare il punto in cui capitale, fee, stabilita e drawdown restano insieme coerenti.",
+        "premise:La storia della finanza non e solo infrastruttura. E anche comportamento: corsa agli sportelli, euforia, fiducia, contagio, panico e desiderio di leva. Studiare storia serve a far capire che il comportamento umano ripete strutture anche se cambiano strumenti e tecnologia. Fonte guida: https://www.federalreservehistory.org/essays/federal-reserve-history.",
+        "premise:La storia finanziaria mostra che euforia, leva, scarsita di liquidita e reazione politica si rincorrono in cicli. Studiare questa linea storica serve a non trattare overtrading e squeeze come capricci psicologici ma come pattern ripetuti dentro strutture reali. Fonti guida: https://www.federalreservehistory.org/essays/panic-of-1907, https://www.federalreservehistory.org/time-period/great-inflation, https://www.cftc.gov/About/HistoryoftheCFTC/history_1970s.html."
+      ],
+      "compressed_brotli_base64": "G5ENACwKbPcUG6TpG374Jm5kuiBPTq1zjPb62HShNz8xs4kJxR+QkNCWHf3C91PJqlZsHWdJe10TBnmwH+h2jPxVxPDva/us2nu21oduod0AdmnJXwMBWZ48eyZQIlt/7nXCFXDFgatTSM97GXdN83uXz1oj+d2u1DHGcmMM4bYROM4DMZbWq9ZIpDiwxbjXM+jriZxGxcvEgvh1zZ9+PXXRle6ntwHp/aSxtiu9gsQQNdfkfISRIrlZ+k9Ls2e2KxxH3GeubEEOq0W9JI0gkDlrSqYmVcbnT0J9eMsUOX0mm+gDWGhn9IYWgG7sAJFj7r56TTyjIilUsi/zd2cDZhfmQCapobJx3j6l4ojmRGViZi9qiGxzeBpoZ65XZJlQIzw0SSnWDwm9DfdszPoAc8FoAAQLghSa/eNmrgaZ5SyUSf4g2KcqUCRHzHRCxeBoag4r+181aklnXij16YzUKypdf2+eQHQLWQf0FZVjYNi+RBTDmZZTDCRLK80oJR4MdWeyaCikD5351T5R5B7icpuFLulvyzZNENGVAp6qdU+yeZiOSz8WtVkgqbBk/g7N5oKxDEUB5byotzJgGqcnMEKzEw1/xiIAg3JDQb43ktudPN0FtDiztaL8DBBUUzpxk6El3mV0l26GUEh+rx8TQxj0WHC+Ms7NNJDs0UwGylx8YEukZzeRpDtiuWX5QFCjHiHu6QnVfKMb2/N/j7/XQNvEO9SNJ7LiMARSDZKIA6rWgJpT90QTXQIzZzwYNWdji28/XO+tfVNF9Yl+4o1V/5ZqHMQMdq/+va7jnfzkm763ZKnTz356vgj2/tYOJIUa/u3xMdOKLJt+mOIbT43ZtOAL4rT0ML/UbrOt+D8GD2g3pTdjPlaOYH2VwmeIifZqLKu2QCRkYwS9zWivHwVG0dAxDPnMzGlMNPcbg14TRqFs1zPfNYHueN4KJyMlDySVt0dhnLhuCYlm8hjDbzW6OyUgiyKJh06VZ95xKhJTdY/BEWw4d/+vkntgtmW/K53J35M4K3h6b8Mf7Ijzk36ALmEkPyuGiGhHWVoPGttNePwF/wpUYQjlDk9iuC+2SIuiDaL7xY81mQRCbFBNipEGzytrNYhUKgN/2EXDce4Yg8mas8XOXEGL3Zvu99LLkvUwPzGDxGX0R+NY41ztYGdvQ9kdQxlKuwxYRs5IFn5agm8HBQdvNkZl0mkpKmSNmL/KvBs8dmiYg0ouO80cRD2inSELj8JjdsdvsWUzRGFgQRaao0fMVJYq0dbsVKc5NNsZSQH3o+UCluhQ47uO8hPSoyyeCXSsC8jQUiZ/3LiuRmSzbl8m4Z609EoDNDulB0F019TLpAqXLIatPMPqshFnYvQK7ZwYZKY5C5oicYWSHMQHBC3vtMnwlpPQKAia9nTu71en6HK/BdL7S6u8qH/Y0v8Q85xaeQrXkjpGmCHpyhdhZjSc6r65uczb7naPSfbx1wYIKbeqS99i3gcfqhK4i3n868WOqfeaVhwJmTWGxFNOZr5QSKn2RIaWTO8QhYVHJ6nXYLG4lanNObRIHo2N0PwI3aMn3T5NBrYZT9ExPhJEYmB/rhqldxTKgPhSKQnwKCSewTGweEUcl6oFOWkdBKYV8zp5WQVUJySGB55x4G3OdIwi0ZTsOSTW0Kp9kGC1TV6ClHjoJYPcTmsVC5u+HW2vkpqk2qPHXHh8EvZTNOsxYX3NWDXfNcoXWDhroFGRhqP+OLSs3TLQisEYgeTxEhw215fXthvdwA3ceK8Es2+mMcoUJ9ZZnCyyeTlcjPyAgRcJS1vrged4UWYSu7aToTSWZRBznQ3xqPAvuPs8"
+    },
+    {
+      "id": "regime_detection",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Il passaggio shock -> stabilization -> recovery -> bull continuation va letto come transizione di regime. Nyra deve riconoscere quando il mercato non e piu in pura difesa ma non e ancora in trend maturo, per evitare rientri troppo tardi.",
+        "premise:La frontiera ottimale cambia per regime. In laterale il costo della libertà e alto, in recovery iniziale e medio, in bull chiaro e piu basso. Nyra deve leggere la frontiera in funzione del regime.",
+        "premise:La storia finanziaria evolve per salti: panics ottocenteschi, 1907, Grande Depressione, dopoguerra, inflazione anni Settanta, crisi globali recenti. Studiare storia qui serve a vedere che i mercati passano da un regime all altro e che gli strumenti istituzionali nascono spesso dopo una rottura. Fonti guida: https://www.federalreservehistory.org/essays/federal-reserve-history e https://www.imf.org/en/publications/books/issues/2016/12/30/international-monetary-cooperation-since-bretton-woods-608.",
+        "premise:Modulo Regime Detection. compressione, trend, mean reversion, risk-on/off e cambio di regime. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico."
+      ],
+      "compressed_brotli_base64": "G+MMYJwFjmvSpdB8hxbpeIjyKR0NQlWrqh18rU/J7cdUJ1nSGgIoykfS/twiPlug4avWq4huCf+4GVG1V23d86+v9mbsJJwG9MTzWdLiwNXSCdOFi4xECMtu9nbm7/+Z3Kf0Av2e2hwOJINCYhlkQDVhEBYfZ7F+r8tr/Q/Sts2w0YfEc/ivXk+LQXgK36sj3OKnJBzk3TvvnZbZlwfu5ZUwYsI3nkx8S/kY18NLK9aHGuEVKDy1tnyOCzXXnUIclUwKAeHlD1MTFYT5Gzd4/9dE9WmMEo1Pm7nqrI/QZQzbVASNjsbOQdext4nKxS6GJvZknTF9TI5lfYyhaEtit3Xz+7kxmtaCWNn3ELIHN64lxeNvhbXX00zMKHDgoWjIvCYhN11RoWFPTpe9KEB+SIw6ON3/Y7JUEl0tVevKH5aS7fhFgl1t19zIFiUfrfIj1nlJvD1tRiQc6jourTYNWl52U2jUK0ZmzERFLtDwG/jwCy4pFnYp5RgzKsVa9rmRuP1ubvi4Npb1oBM1e0ZN5iOF9Unxuazf8MVR0lKiLBxCMQAMkOQGN/Ytlc2y5a+6M36n93S1NctmuvNNYnGLhioOVfMtsnyOLLXC/P3bJ3gthv9n0L2I/sNUCah8RoPv9iPU7OFQYYlq0w2eRwu27lULbEWNIKGM4IaMpJpzj3Wbw7q8WNdfbo62nkQfb0vd0Bu25Q2k5g23xq0Ne55qRrA85WVEHbK/F+zLC2d1XV+Xo4pAbY+OywPP/ZvepbaEzxazn+LeuCJS9ybiBfpBBs3DigJRb7lMvc3L2wDB6RO60p1pMkYKoluyJMZPzL2Z30pd5nrDUFnpOIw8GzNthU6EFCbtq6v1n27wYVMgNzxroRBLTn+50PXvK9NRJM4UrREZM62MRHhn0vBplYExJpD8R2H5G7ySnSiyqHNGyWs77OPbLQg5VaQ1WunjtNjhcwF+YyaApgnhkGv5VL1x/iGbxsKT6cBPYGHzxbD03mRV1LFkIcHbnnWzCC/7oTOBl+49aX7sMBuHl8hkc8NftX2SK4mqeFVuIkfF1Krlp6nCI0oMUVZvSTNrvX7TCGGIfDIZeJsiq00eKsgjsIeLaBwaOW5ESm90win9DrEUpcCkHusRRDwy3vFoj0kRN3W63IYHzTGOtnf5L1SJOF5ccxBkSR+t4GAZuxHR14/FTlV3QkycEkJOV4tbxpt4k9Yb+U50R4UL9O/RqomaptlagkkMics/eCtPE4OPAoEJC4n3mXCTc21v08CsjI6gGXbK2N2/9VufjuYub9dMf0gQh/KK4ZcnqztJ62tn0hYHrl2Sga8vZz3XUBy/4u5z7co++jT5JbEIR4KNkgSaD28PlhZDtHLdKwZT3WghLDLVvCpcda+EaLDe5lhpWCtOiT2jFoodNEaj+4RIJHTKKZOF9Mk8p3sr53+KHa/5eOqTqpTyRvuec1nnzM+4J627uUtFvaszq5Min4+GydEMdackbojGrs8FzTWy/NO8WnfRU5RrJA/XZVQE1mPKNxDFMn8r39tv13Yg3bgDPQsMVn24ueG2Ye/oHWHdaxzwnbZpiT2IInGJ6bKokoHhsvY8G4fjjT+Ok8ucaBvxnpKOXbNcYAN7zLUOI8s/3BQJY93TSIrWeVnjyJDx/snhqTsuCRuZ/MBNly4Q+jqXffcLpTSmGP9tJ7ORmecPM6+0aFp2XcODw2URwQBGYbY00VGAzhMsLvLps3jFraXomgFp+JY8PnO6zI3YYr5167gjVk7RpcWt1Qz0ygD32t+g+4GJMxB3NTKQXkG+FEyqT8JYPH7nC/X1Pw=="
+    },
+    {
+      "id": "derivatives",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:La storia dei derivati moderni passa da forward agricoli, futures standardizzati, borse merci e poi regolazione CFTC. Questo serve per capire che leva, hedge e speculazione non sono pezzi separati: nascono come infrastruttura contrattuale e poi diventano rischio sistemico. Fonti guida: https://www.cftc.gov/About/HistoryoftheCFTC/history_precftc.html e https://www.cftc.gov/About/HistoryoftheCFTC/history_1970s.html.",
+        "premise:Modulo Derivatives. funding, basis, leverage, liquidazioni, futures e stress da positioning forzato. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la leva dei derivati va letta come struttura di rischio, non solo come acceleratore di rendimento",
+        "risk:la microstructure non basta senza conferma di contesto"
+      ],
+      "compressed_brotli_base64": "G9gIYByFcXvSyDthlXIfya9Ftvb6Wk3Nqt1Rzci9WsfYJtLz4bTwdxgHeD+tWbUe6qtP1zCKeSziiIjXv/H9r7USLvXr/fuZK8ygljYioewjQTVJkr0lSmWpbWb8LmpJD1R/nA4LCEQPDiVYr4j5wGHJd7DaWO4Em1F7JHZIw2e08BhtzQtJwyFu8GU4RuxQ9UPWrNr93lK3Q4juYEW7kdGyg1Ii+nclOL14O52NSVvTFffKhraoZgXxAYQhh60SGMywL7FSjzFsFmZ/7H8ZlvgmF1DWw3TELWEMv9ZnqWa4I464F2rkTRYstzFQW3+4wq7R3xwz46JyGqV2ScuYrOl4n/1cMi7sab/QRyWb+aBZ9hPsZK9tEJcq273PeVAByeVE8jwdkaV7n1SSH7Zb2Otkc70+KwxUBQfxsXYJdPDNV8EpmYQt1LhyE13qmfHwN2jCUCm/MZ0Fh9VtDkb5k9hBNnYGq+LIDKKMn2IgY/1dIBltVIJLMx63P4OIWS9krg8ZmX8k2LHFsNOnHUaiQkTq6jKT2BrLsA6le7ttv1yzFCyecf3uWF5yEpnCCDJxlY/lefMw5hxSXJKhJyegyLf1BOrq3Ulv8/+neAGefyVvYSdtiFNlc0WnqmPm6WjYXj8iCIOrLMM31qfKASQaSG6b3dG4XWgZ2S6IRol3Mbx5hTMlMfWhhALLQhq9eAYGlxDDO/p5CZyp5JJc6vAyk4ALRAsnJmso4MnpLTmBYG+t+RupNMibjcL0kYNMEbtvyuKBeypmhT+wQaWioXwf3MnLEZg1glaVXYMKm6oGaBjSkF8hzing11+XoqlaNmIVDeYOy2ty/mUdyE7Q+1wPsu6OQN60o7qLt/bKWUeYRVL1ZvQBbzi0CDtNYbsQYyVz4p2qi32di6IpqCwjg5H03UmWuihb3SGprr7fQgxbhJeg9rJsUw7qoHxpnYVCV3j0GCP2aeckbl7WJFtd7+XuvOLgZYnLUV2E2aOtJNIRgZxN5K2BUD6VPjJ0kAIAG6Sny6BaQs2Jfx6IikPkIUCIvlKRb+Qs4IuKp/Emk2Eg1N8AFKqoKVQhbx1Czio1Jw+I1uVV1FaZ7R1m2ENru6omkQH9ABGw7ix0bgplszI4jHzmpShoXmbYf+X8T3HLQ1UoG/iWb7gHXX3qvHxEXiWtux5whk/kLaoamd4P"
+    },
+    {
+      "id": "commodities",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Commodities. petrolio, gas, oro, supply shock, geopolitica e rischio logistico sulle materie prime. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:nelle commodity il rischio geopolitico puo dominare il fondamentale di breve",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva"
+      ],
+      "compressed_brotli_base64": "G8IFIJwHdsNyh7DTCu84guBR9xqiT8VRxUuLbgOc1ek4v7abW8mi05UiW33wvjpsWqPMVbWzLcgF6/pUWp9C/gD3f+rzCBREy3d/dA9bm9a4CwWTUkCLtfqi4rfU+ryk0ZrVnK2+nAXj3aZAjwT5d209NeObRtC9IzlTV9WE0ss2PHAfPtJKwrF1oyebY0SYibP8wbSkWxr6O/XT6LznvAhfoGP49mYiOeOTGrzkMENho2/Y0uTzMpFCwptJfLDwx1SSiI2E+/yTfJZ+F8+7UUcWPkRdfWY65nPENNhGNeutPV9nBYJw8KQTQ05hK1xVqsnmmCRWqkpExkziSCUCdXyzysB4BsLfrYKw50V6xNDajYIVOlUbZh6Vdc+ShRUnyKdRGLowjadvX9HX4lUGyX5hzmKy/koOcZW2pFPnPybhadTsd4nhn0XEoI7YAf6UynNQwPlw8FdU51/RIFMJKKh1o4yjd7WrVJ+q9WrYapL4o2Xm+tjTXcM6xf28DC+LdUUJL5s1GZrJ48W5Jldt3V3rj6lmIZ2udhi7c7FAO8GFmDeDFVEghOjEsO6c3hfh036KGn8JDd6ehyWpEG4AdGRaK+8wstz4VMIoUQjky8im61dwT+GE7iovSsK7fAl9vjrpw4kst4ySl+YiRpbIRnJhLTo2jipjZ2aJM07DqihMPLS63cBNqd8BPAgkWF1iCh7LWYmkflyWNagy8TTZg2E3Y5Ljag18k52EsNo/NuH/3E0fCVZo4uLcDkqv8074YxccXXjUtRGiy3yxq6COHWUxOYoxylppE7SXZmfrkqSTaUj4MH24nEskw0xRGpZRhWGSZo2xGw17GpYhQkMYZhr9AQ=="
+    },
+    {
+      "id": "event_driven",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Event Driven. earnings, banche centrali, guerra, headline risk, calendario e shock discreti. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva",
+        "risk:non trattare volatilita e trend come la stessa cosa"
+      ],
+      "compressed_brotli_base64": "G7UFABwFbrtBxD2t1wrk1V6fqer703rIbBi759/KMDVaYvwOockXUnJKioBsHX+4J44sxrrV2ANL172sgCKMx9YxwSb4B/oq0vVGMXY5oRv2h42K519gKv6wsAbPv5GzHd52Tz1Zuv2MPi1qxjwfFE5ZU0mnH7VgF283RcyiXNafB4QHYAgyWQ2w9ypF3aI9obNa6uDar7cU1Jidgq6PdL4znAuS1W5cUHq4D1zkOgOntIzhDjGbnlMoUo8wRSfuObv6u6z9PpxIG2wyqY6USr1ygO5sqekYt7VXNNnDJBmLexgKCnirqUvufJykyIJ32Wlc+2r1YGjoRw1eAUWTO1PxPMV7DFQY14VW8HA61FumZzUdxzlCaxr7RaqYQtynmYCGS3zIcTAwNJItVotkPW0mONkyTAD9unSXGoJSfxe08EfNU9CZmuLClIenTiw12f9NIefOYwbo0NI23xmuGJZmkrgRHuNyxBUmg8YhUIxU71Gdb4IaWiVoUQ8257HNxMTVdCngA6pZ5vGyEjvCA/SinrpA7F2yHd6UXbNju8TmEFg75rkfQikk9XtZQxYkd7SBcDOC+TU80ekOVQM7tRP0ySH4MXEErHFmU/0j3KdxEJ2ZYgSvMjKuTBUra/c46SPPGVU+GTP9W0ly/wuY5gnuGL7gK9S5L2Ofb013gCKYCMoaEmpH7agkvnGTHKYABliGKXux/iA1UlkcLbJ1i9FVu0/xI0yzFtDw/EMIzZxtfJ7sHELXQ38ZZ/ZbUyUC+o4maX/hAiVx6XLQCNMcNwVdDjIVb71PFE8MhZpYiFN3gjbGThJfiMZFwaFNLfwn"
+    },
+    {
+      "id": "exit_management",
+      "shard_count": 32,
+      "preview_chain": [
+        "premise:Modulo Exit Management. take profit, trailing stop, invalidazione, time stop e chiusura di basket o singole posizioni. Nyra studia definizioni, rischi, segnali, contesto macro, casi limite e regole di prudenza. Ogni record viene trasformato in concetti, vocabolario, regole rischio e scenari riutilizzabili. Il focus operativo e capire quando entrare, quando non entrare, come uscire e quando il costo reale annulla il vantaggio teorico.",
+        "risk:la microstructure non basta senza conferma di contesto",
+        "risk:non trasformare segnale ambiguo in esecuzione aggressiva",
+        "risk:non trattare volatilita e trend come la stessa cosa"
+      ],
+      "compressed_brotli_base64": "G9oFYIyTY2WejmuRrb2+NtOqKC1NbI1yB9n9QfQx3chbOgxeoGcf/3W4PCEeY3F4/boYe6m1f5kNiqAcEoQkSLhpxBl7i3mNeLaOjsV6h/O2I1Tjr0bmtqEGz9/M2R7vuVJPlu4/Yi6LdO2k/HLIJV7oI2OaNP2oOEWEDtge+WS4JjmC1n+gGC9ctVIwiZqbPkKg6EeY4oqiJXve8fMjpbsmBaUu8O2dDckaL9xQergYN3Bhb+CUkZEUkWGuT6FIdfqFSVy5pvqn3PHrcAJc7MNKtVMKoOUA3c3S0O6bPJl9K0ySHXdMBOGXAUUNdUkiuZrGz0950HjHF3tbxmj/peYzoBhyMRWvS3xGOsO4bgoFD1fE2830qmFBzRHaB7S/SBVTiPsyE9DwFG85DgZaIzniftsk6/9ugpMjgyrgEQBfbkFBw0DFVD0nQiQopXUYVqCJpcJ8TiHng8cCVUdLx8KzgeQ1p8SBcPfywjNMmsYWKDrVZzzd1tu0Kj2i7AoKP7WTnHQ1XQqhglcyffxciR3hAXpRT90g9ilox83RdV/sT7HVAh5A74ehZ0iKfbJaNiQfYghBF6LNr+FZXC54rHBBnwCsVAQSz1ugPnRpYnlCWcFAV1qfYRrEZGesBdCITS9mGznrbGFeIVP9u/wxVVGCS/MABmcnUYrH+vjgBwEDGFCSSKiN1MFbxtfFyZbRoYYeRk1ZyMQFmBBYheIKghblmYB0a4UvCRPON/WmCbxMURYQoUoiENoO4WT9S2/IIctf7RCSa4tGSn0qsKdOEsymWi651MZZm7aJ4iQFHlEpxKmdlDSkEwCnrbZQUagUhdhI334f"
+    }
+  ]
+}

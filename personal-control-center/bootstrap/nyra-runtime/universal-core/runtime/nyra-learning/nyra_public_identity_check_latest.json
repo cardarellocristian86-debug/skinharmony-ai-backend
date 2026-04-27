@@ -1,0 +1,45 @@
+{
+  "version": "nyra_public_identity_check_v1",
+  "generated_at": "2026-04-22T19:33:55.541Z",
+  "subject": "Cristian Cardarello",
+  "policy": [
+    "public web check only",
+    "do not use tax code, birth date, or email as public search keys",
+    "keep private identity anchors separate from public confirmation"
+  ],
+  "queries": [
+    "\"Cristian Cardarello\"",
+    "\"Cristian Cardarello\" SkinHarmony",
+    "\"Cristian Cardarello\" \"Smart Desk\""
+  ],
+  "search_results": [
+    {
+      "query": "\"Cristian Cardarello\"",
+      "urls": []
+    },
+    {
+      "query": "\"Cristian Cardarello\" SkinHarmony",
+      "urls": []
+    },
+    {
+      "query": "\"Cristian Cardarello\" \"Smart Desk\"",
+      "urls": []
+    }
+  ],
+  "candidate_pages": [
+    {
+      "url": "https://www.skinharmony.it/informazioni/",
+      "ok": true,
+      "chars": 3296,
+      "has_name": true,
+      "has_skinharmony": true,
+      "has_smartdesk": false,
+      "score": 0.9
+    }
+  ],
+  "verdict": {
+    "matched": true,
+    "strongest_url": "https://www.skinharmony.it/informazioni/",
+    "reason": "public page contains the subject name and strong SkinHarmony linkage"
+  }
+}

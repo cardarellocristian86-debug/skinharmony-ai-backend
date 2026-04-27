@@ -1,0 +1,56 @@
+{
+  "version": "nyra_massive_learning_autopilot_pack_v1",
+  "generated_at": "2026-04-26T19:38:35.061Z",
+  "source_report": "/Users/cristiancardarello/skinharmony-codex/reports/universal-core/learning/nyra_massive_multi_scenario_regression_latest.json",
+  "selected_bottlenecks": [
+    {
+      "bottleneck": "turnover_above_150pct",
+      "count": 226,
+      "pct": 45.2
+    },
+    {
+      "bottleneck": "capital_vs_qqq",
+      "count": 73,
+      "pct": 14.6
+    },
+    {
+      "bottleneck": "dirty_data_fallback",
+      "count": 53,
+      "pct": 10.6
+    },
+    {
+      "bottleneck": "anomalous_decisions",
+      "count": 50,
+      "pct": 10
+    }
+  ],
+  "selected_policy": "combined_candidate",
+  "selected_policy_deltas": {
+    "pass_rate": 7.6,
+    "win_rate_capital_vs_qqq": 3.8,
+    "win_rate_drawdown_vs_qqq": 5,
+    "avg_final_capital_nyra": 1704.06,
+    "avg_drawdown_nyra": -0.5552,
+    "avg_turnover": -29.7049,
+    "avg_fees": -1035.56,
+    "bull_clean_pass_rate": 0,
+    "lateral_dirty_pass_rate": 14,
+    "dirty_data_failure_pass_rate": 10
+  },
+  "promotion_status": "not_promoted_to_runtime",
+  "guardrails": {
+    "pass_rate_improved": true,
+    "turnover_not_worse": true,
+    "fees_not_worse": true,
+    "drawdown_not_worse_over_1pt": true,
+    "capital_not_worse_over_3pct": true,
+    "drawdown_win_rate_not_worse_over_3pt": true,
+    "no_category_collapses_below_baseline_minus_10pt": true
+  },
+  "boundaries": [
+    "sandbox only",
+    "stable selector unchanged",
+    "requires regression gate before promotion",
+    "candidate chosen by massive report metrics, not manual promotion"
+  ]
+}

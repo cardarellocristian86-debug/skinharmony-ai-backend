@@ -1,0 +1,139 @@
+{
+  "runner": "nyra_financial_bottleneck_observer",
+  "generated_at": "2026-04-26T19:07:23.074Z",
+  "mode": "offline_slow_lane",
+  "source_reports": {
+    "latest_readiness": "nyra_product_readiness_latest.json",
+    "baseline_readiness": "nyra_product_readiness_before_latest_retest.json",
+    "lateral": "nyra_lateral_market_latest.json",
+    "bubble": "nyra_bubble_detection_latest.json"
+  },
+  "metrics_snapshot": {
+    "capital_delta_vs_baseline": 0,
+    "fees_delta_vs_baseline": 0,
+    "drawdown_delta_vs_baseline": 0,
+    "score_delta_vs_baseline": 0,
+    "recovery_cash_pct": 19.0973,
+    "bull_cash_pct": 14.8766,
+    "lateral_guard_intact": true,
+    "bubble_guard_intact": true
+  },
+  "history_summary": {
+    "entries_total": 5,
+    "active_case_recurrence": 5,
+    "recurring_case_ids": [
+      "guardrails_preserve_then_refine"
+    ]
+  },
+  "active_case": {
+    "id": "guardrails_preserve_then_refine",
+    "label": "Guardrails are intact, refine slowly without breaking defense",
+    "score": 62.9656,
+    "core_state": "critical",
+    "priority_score": 51.41760000000001,
+    "risk_score": 43.1,
+    "evidence": [
+      "lateral_guard_intact=true",
+      "bubble_guard_intact=true",
+      "lateral_fees=200.59"
+    ],
+    "recommended_domains": [
+      "risk_management",
+      "execution",
+      "finance_macro"
+    ],
+    "recommended_actions": [
+      "verify",
+      "exercise",
+      "study"
+    ],
+    "web_context_needed": true,
+    "slow_lane_only": true,
+    "recurrence_count": 5
+  },
+  "candidate_cases": [
+    {
+      "id": "guardrails_preserve_then_refine",
+      "label": "Guardrails are intact, refine slowly without breaking defense",
+      "score": 62.9656,
+      "core_state": "critical",
+      "priority_score": 51.41760000000001,
+      "risk_score": 43.1,
+      "evidence": [
+        "lateral_guard_intact=true",
+        "bubble_guard_intact=true",
+        "lateral_fees=200.59"
+      ],
+      "recommended_domains": [
+        "risk_management",
+        "execution",
+        "finance_macro"
+      ],
+      "recommended_actions": [
+        "verify",
+        "exercise",
+        "study"
+      ],
+      "web_context_needed": true,
+      "slow_lane_only": true,
+      "recurrence_count": 5
+    },
+    {
+      "id": "aggressive_release_not_sellable",
+      "label": "Aggressive release improved capital but hurt sellability",
+      "score": 58.3576,
+      "core_state": "attention",
+      "priority_score": 52.1696,
+      "risk_score": 40.1,
+      "evidence": [
+        "capital_delta=0",
+        "fees_delta=0",
+        "drawdown_delta=0",
+        "score_delta=0"
+      ],
+      "recommended_domains": [
+        "finance_macro",
+        "risk_management",
+        "execution",
+        "regime_detection"
+      ],
+      "recommended_actions": [
+        "study",
+        "exercise",
+        "exercise",
+        "study"
+      ],
+      "web_context_needed": true,
+      "slow_lane_only": true,
+      "recurrence_count": 0
+    },
+    {
+      "id": "under_release_in_recovery",
+      "label": "Recovery release still too conservative",
+      "score": 42.944486,
+      "core_state": "attention",
+      "priority_score": 40.672000000000004,
+      "risk_score": 32.38,
+      "evidence": [
+        "recovery_cash_pct=19.0973",
+        "bull_cash_pct=14.8766",
+        "capital_delta=0"
+      ],
+      "recommended_domains": [
+        "regime_detection",
+        "finance_macro",
+        "execution",
+        "risk_management"
+      ],
+      "recommended_actions": [
+        "study",
+        "study",
+        "exercise",
+        "verify"
+      ],
+      "web_context_needed": true,
+      "slow_lane_only": true,
+      "recurrence_count": 0
+    }
+  ]
+}

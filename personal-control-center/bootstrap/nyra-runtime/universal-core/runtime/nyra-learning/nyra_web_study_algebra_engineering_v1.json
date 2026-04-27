@@ -1,0 +1,121 @@
+{
+  "pack_version": "nyra_web_study_algebra_engineering_v1",
+  "generated_at": "2026-04-22T09:15:00+02:00",
+  "scope": [
+    "algebra",
+    "computer_engineering"
+  ],
+  "sources": [
+    {
+      "domain": "algebra",
+      "source_name": "Khan Academy Algebra Unit 2",
+      "url": "https://www.khanacademy.org/math/algebra-home/alg-basic-eq-ineq",
+      "why_it_matters": "Base ufficiale e didattica per equazioni lineari, passaggi, verifica e struttura del problema.",
+      "concepts": [
+        "variabili, espressioni, equazioni",
+        "stessa operazione su entrambi i lati",
+        "equazioni a uno e due passaggi",
+        "variabile su entrambi i lati",
+        "problemi verbali tradotti in equazioni"
+      ],
+      "nyra_should_learn": [
+        "riconoscere il tipo di equazione",
+        "scegliere il metodo piu semplice coerente",
+        "verificare la soluzione nel testo iniziale"
+      ]
+    },
+    {
+      "domain": "algebra",
+      "source_name": "MIT Linear Algebra",
+      "url": "https://learn.mit.edu/c/unit/ocw?resource=4794",
+      "why_it_matters": "Introduzione primaria a sistemi lineari, matrici e struttura dei problemi applicati.",
+      "concepts": [
+        "sistemi lineari",
+        "matrici",
+        "vettori",
+        "struttura lineare dei modelli"
+      ],
+      "nyra_should_learn": [
+        "vedere quando un problema e scalare vs strutturale",
+        "riconoscere quando serve una rappresentazione matriciale",
+        "non trattare tutto come semplice equazione lineare"
+      ]
+    },
+    {
+      "domain": "computer_engineering",
+      "source_name": "MDN JavaScript Guide",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide",
+      "why_it_matters": "Riferimento ufficiale e stabile per sintassi, tipi, controllo di flusso, funzioni, oggetti, classi e moduli.",
+      "concepts": [
+        "grammar and types",
+        "control flow and error handling",
+        "functions",
+        "objects and classes",
+        "promises",
+        "modules"
+      ],
+      "nyra_should_learn": [
+        "scrivere funzioni piccole e verificabili",
+        "capire flussi, errori e stato",
+        "scegliere tra oggetti, classi e moduli in modo pragmatico"
+      ]
+    },
+    {
+      "domain": "computer_engineering",
+      "source_name": "TypeScript Handbook",
+      "url": "https://www.typescriptlang.org/docs/",
+      "why_it_matters": "Fonte primaria per type system, contracts, narrowing, generics e design di API affidabili.",
+      "concepts": [
+        "types",
+        "interfaces",
+        "narrowing",
+        "generics",
+        "utility types",
+        "modules"
+      ],
+      "nyra_should_learn": [
+        "usare i tipi per ridurre ambiguita",
+        "modellare contratti stabili",
+        "non sacrificare leggibilita per astrazione inutile"
+      ]
+    },
+    {
+      "domain": "computer_engineering",
+      "source_name": "CS50x 2024 Syllabus",
+      "url": "https://cs50.harvard.edu/x/2024/syllabus/",
+      "why_it_matters": "Visione ampia ma concreta di cosa significa imparare informatica in modo fondamentale: algoritmi, strutture dati, memoria, sicurezza, software engineering e web.",
+      "concepts": [
+        "algorithmic thinking",
+        "data structures",
+        "memory",
+        "security",
+        "software engineering",
+        "web programming"
+      ],
+      "nyra_should_learn": [
+        "ragionare prima sul problema e poi sul linguaggio",
+        "capire costi e vincoli delle strutture",
+        "tenere insieme correttezza, stile e prestazioni"
+      ]
+    }
+  ],
+  "distilled_summary": {
+    "algebra": [
+      "partire dalla struttura del problema, non dalla formula casuale",
+      "isolare la variabile con trasformazioni simmetriche e verificabili",
+      "controllare sempre la soluzione nel problema originale",
+      "riconoscere quando il problema richiede struttura lineare piu ampia"
+    ],
+    "computer_engineering": [
+      "progettare prima i contratti e poi le funzioni",
+      "ridurre il codice a unita piccole, verificabili e leggibili",
+      "usare i tipi per comprimere ambiguita e ridurre bug",
+      "scegliere strutture e moduli in base al costo e non alla moda"
+    ]
+  },
+  "limits": [
+    "questa base non implica padronanza completa dei domini",
+    "serve interrogazione attiva dopo lo studio",
+    "le fonti web vanno trattate come base primaria, ma integrate con test reali"
+  ]
+}
