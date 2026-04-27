@@ -536,6 +536,51 @@ function buildWorldPaperMovementChart() {
   `;
 }
 
+function buildSelfDiagnosisCard() {
+  const diagnosis = state.worldPaper?.selfDiagnosis || state.worldPaperAuto?.selfDiagnosis || null;
+  if (!diagnosis) {
+    return `
+      <div class="desk-summary-card self-diagnosis-card">
+        <small>Autodiagnosi Nyra</small>
+        <strong>non ancora disponibile</strong>
+        <p>Serve almeno un ciclo paper per collegare lettura mercato, esecuzione e spiegazione.</p>
+      </div>
+    `;
+  }
+  const self = diagnosis.self_diagnosis || {};
+  const levels = diagnosis.three_levels || {};
+  const summary = diagnosis.summary || {};
+  const severity = String(self.severity || "low");
+  return `
+    <div class="desk-summary-card self-diagnosis-card severity-${esc(severity)}">
+      <small>Autodiagnosi Nyra</small>
+      <strong>${esc(self.main_error_label || "collo non isolato")}</strong>
+      <p>${esc(self.evidence || "Nyra sta collegando risultato, motivo e prossima correzione.")}</p>
+      <div class="self-diagnosis-grid">
+        <div>
+          <span>Lettura mercato</span>
+          <strong>${esc(levels.market_reading || "-")}</strong>
+        </div>
+        <div>
+          <span>Esecuzione</span>
+          <strong>${esc(levels.execution || "-")}</strong>
+        </div>
+        <div>
+          <span>Perche</span>
+          <strong>${esc(levels.explanation || self.prudent_correction || "-")}</strong>
+        </div>
+      </div>
+      <div class="desk-tags">
+        <span>win ${esc(String(summary.win_count_recent ?? 0))}</span>
+        <span>loss ${esc(String(summary.loss_count_recent ?? 0))}</span>
+        <span>hold/skip ${esc(String(summary.hold_or_skip_recent ?? 0))}</span>
+        <span>fee ${esc(formatEur(summary.fees_total_eur || 0))}</span>
+        <span class="${Number(summary.alpha_vs_qqq_eur || 0) >= 0 ? "positive" : "negative"}">vs QQQ ${esc(formatEur(summary.alpha_vs_qqq_eur || 0))}</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderFinanceDeskBoard() {
   const container = byId("financeDeskBoard");
   const autoStatus = byId("worldPaperAutoStatus");
@@ -560,6 +605,7 @@ function renderFinanceDeskBoard() {
   const marketRows = buildWorldMarketRows();
   const paperRows = buildWorldPaperRows();
   const movementChart = buildWorldPaperMovementChart();
+  const selfDiagnosisCard = buildSelfDiagnosisCard();
   const previousOpenFolders = {};
   container.querySelectorAll(".desk-folder[data-folder]").forEach((folder) => {
     previousOpenFolders[folder.dataset.folder] = folder.open;
@@ -617,6 +663,7 @@ function renderFinanceDeskBoard() {
           <span>${esc(`delta ${formatEur(summary?.alpha_vs_qqq_eur || 0)}`)}</span>
         </div>
       </div>
+      ${selfDiagnosisCard}
     </div>
     ${movementChart}
     <div class="finance-desk-folders">
@@ -1190,7 +1237,7 @@ async function loadWorldPaperAutoStatus() {
   try {
     const response = await fetchJson("/api/nyra/finance/world-paper/auto/status");
     state.worldPaperAuto = response;
-    state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning };
+    state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning, selfDiagnosis: response.selfDiagnosis };
     state.financeTreasury = response.treasury || state.financeTreasury;
     renderDashboard();
   } catch (error) {
@@ -1259,7 +1306,7 @@ async function runWorldPaperStep(options = {}) {
       method: "POST",
       body: JSON.stringify(autoSelect ? { autoSelect: true } : { symbol })
     });
-    state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning };
+    state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning, selfDiagnosis: response.selfDiagnosis };
     state.financeTreasury = response.treasury || state.financeTreasury;
     renderDashboard();
     const actor = response.mode === "nyra_auto_select" ? "Nyra ha scelto da sola" : "Paper scelta manuale";
@@ -1282,7 +1329,7 @@ async function resetWorldPaper() {
       method: "POST",
       body: JSON.stringify({ initialCapitalEur: 1000000 })
     });
-    state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning };
+    state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning, selfDiagnosis: response.selfDiagnosis };
     state.financeTreasury = response.treasury || state.financeTreasury;
     renderDashboard();
     addMessage("nyra", "Portafoglio paper mondiale resettato a 1.000.000 EUR virtuali.", "world-market");

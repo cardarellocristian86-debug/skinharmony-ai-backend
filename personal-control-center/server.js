@@ -20,6 +20,7 @@ const nyraWorldPaperPortfolioPath = "personal-control-center/data/nyra-world-pap
 const nyraWorldMarketStudyPath = "universal-core/runtime/nyra-learning/nyra_world_market_study_latest.json";
 const nyraWorldPaperAutoStatePath = "personal-control-center/data/nyra-world-paper-auto-state.json";
 const nyraWorldPaperLearningPath = "universal-core/runtime/nyra-learning/nyra_world_paper_auto_learning_latest.json";
+const nyraFinancialSelfDiagnosisLivePath = "universal-core/runtime/nyra-learning/nyra_financial_self_diagnosis_live_latest.json";
 const nyraWorldAssetHistoryStudyPath = "universal-core/runtime/nyra-learning/nyra_world_asset_history_study_latest.json";
 const nyraWorldThesisLearningMassivePath = "universal-core/runtime/nyra-learning/nyra_world_thesis_learning_massive_latest.json";
 const nyraRenderAutopilotRuntimePath = "universal-core/runtime/nyra-learning/nyra_render_autopilot_latest.json";
@@ -3370,6 +3371,179 @@ function summarizeWorldPaperPortfolio(portfolio, worldScan = readJson(nyraWorldM
   };
 }
 
+function classifyWorldPaperMainError(summary, portfolio, result = null) {
+  const trades = Array.isArray(portfolio?.trades) ? portfolio.trades : [];
+  const recentTrades = trades.slice(0, 20);
+  const recentSkips = recentTrades.filter((trade) => /(pause|skip|hold|thesis_hold)/i.test(String(trade.type || "")));
+  const losingPositions = (Array.isArray(portfolio?.positions) ? portfolio.positions : [])
+    .filter((position) => Number(position.pnl_eur || 0) < 0);
+  const pnlEur = Number(summary?.pnl_eur || 0);
+  const feeDragPct = Number(summary?.fee_drag_pct || 0);
+  const alphaVsQqqPct = Number(summary?.alpha_vs_qqq_pct || 0);
+  const invested = Number(summary?.invested_eur || 0);
+  const capital = Number(summary?.capital_eur || portfolio?.initial_capital_eur || NYRA_FINANCE_SHARED_CAPITAL_EUR);
+  const investedPct = capital > 0 ? (invested / capital) * 100 : 0;
+  const lastAction = String(result?.action || recentTrades[0]?.type || "").toLowerCase();
+  const selected = result?.selected || null;
+  const selectedEdge = Number(selected?.edge_score || 0);
+  const selectedRisk = Number(selected?.risk_score || 0);
+  const selectedReason = String(selected?.reason || recentTrades[0]?.reason || "");
+
+  if (feeDragPct >= 0.2 && pnlEur <= 0) {
+    return {
+      code: "fee_bleed",
+      label: "sto perdendo per fee/churn",
+      severity: feeDragPct >= 0.8 ? "high" : "medium",
+      evidence: `fee drag ${feeDragPct}% su capitale, PnL ${pnlEur.toFixed(2)} EUR`,
+      correction: "ridurre cambi piccoli, preferire hold con tesi valida e aprire solo se edge netto supera costi"
+    };
+  }
+
+  if (investedPct < 5 && alphaVsQqqPct < -0.25 && recentSkips.length >= 3) {
+    return {
+      code: "too_conservative",
+      label: "sono troppo prudente",
+      severity: alphaVsQqqPct < -1 ? "high" : "medium",
+      evidence: `investito ${investedPct.toFixed(2)}%, ${recentSkips.length} hold/skip recenti, alpha vs QQQ ${alphaVsQqqPct}%`,
+      correction: "aprire micro-posizioni solo su edge pulito invece di restare ferma in modo totale"
+    };
+  }
+
+  if (losingPositions.length >= 2 && pnlEur < 0) {
+    return {
+      code: "open_positions_all_losing",
+      label: "le posizioni aperte sono tutte/debolmente in perdita",
+      severity: losingPositions.length >= 4 ? "medium" : "low",
+      evidence: `${losingPositions.length} posizioni aperte in perdita, PnL totale ${pnlEur.toFixed(2)} EUR, alpha vs QQQ ${alphaVsQqqPct}%`,
+      correction: "non chiudere nervosamente se la tesi resta valida, ma il prossimo ingresso deve essere piu selettivo e con conferma migliore"
+    };
+  }
+
+  if (losingPositions.length >= 2 && selectedRisk >= 60) {
+    return {
+      code: "dirty_signal_entry",
+      label: "sto entrando su segnali sporchi",
+      severity: "high",
+      evidence: `${losingPositions.length} posizioni in perdita e rischio candidato ${selectedRisk.toFixed(1)}`,
+      correction: "separare trend primario da rumore, bloccare overconfidence su spike/news non confermati"
+    };
+  }
+
+  if (/sell|rotation|penalizzata/i.test(lastAction) && pnlEur <= 0) {
+    return {
+      code: "exiting_too_early",
+      label: "sto uscendo troppo presto",
+      severity: "medium",
+      evidence: `ultima azione ${lastAction}, PnL ${pnlEur.toFixed(2)} EUR`,
+      correction: "prima di chiudere una perdita, verificare se la tesi multiverso e ancora valida"
+    };
+  }
+
+  if (selectedEdge >= 60 && selectedRisk <= 55 && /(skip|pause|hold)/i.test(lastAction)) {
+    return {
+      code: "timing_hesitation",
+      label: "sto sbagliando timing o sto esitando",
+      severity: "medium",
+      evidence: `edge ${selectedEdge.toFixed(1)}, rischio ${selectedRisk.toFixed(1)}, azione ${lastAction || "n/d"}`,
+      correction: "quando edge e rischio sono coerenti, usare ingresso progressivo invece di blocco pieno"
+    };
+  }
+
+  if (pnlEur < 0) {
+    return {
+      code: "unrealized_or_market_loss",
+      label: "sono sotto capitale ma il collo principale non e ancora isolato",
+      severity: "low",
+      evidence: `PnL ${pnlEur.toFixed(2)} EUR, motivo ultimo: ${selectedReason.slice(0, 140) || "non disponibile"}`,
+      correction: "continuare a distinguere perdita temporanea, errore di segnale e costo operativo"
+    };
+  }
+
+  return {
+    code: "stable_learning",
+    label: "sto lavorando senza collo critico immediato",
+    severity: "low",
+    evidence: `PnL ${pnlEur.toFixed(2)} EUR, fee drag ${feeDragPct}%`,
+    correction: "mantenere memoria degli errori e aumentare size solo dopo conferme ripetute"
+  };
+}
+
+function buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan = readJson(nyraWorldMarketScanPath, null), result = null, rebalanced = null } = {}) {
+  const safePortfolio = portfolio || readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
+  const summary = summarizeWorldPaperPortfolio(safePortfolio, worldScan);
+  const trades = Array.isArray(safePortfolio.trades) ? safePortfolio.trades : [];
+  const positions = Array.isArray(safePortfolio.positions) ? safePortfolio.positions : [];
+  const recentTrades = trades.slice(0, 30);
+  const realizedWins = recentTrades.filter((trade) => Number(trade.pnl_eur || 0) > 0).length;
+  const realizedLosses = recentTrades.filter((trade) => Number(trade.pnl_eur || 0) < 0).length;
+  const openWins = positions.filter((position) => Number(position.pnl_eur || 0) > 0).length;
+  const openLosses = positions.filter((position) => Number(position.pnl_eur || 0) < 0).length;
+  const holds = recentTrades.filter((trade) => /(hold|pause|skip|thesis_hold)/i.test(String(trade.type || ""))).length;
+  const mainError = classifyWorldPaperMainError(summary, safePortfolio, result);
+  const selected = result?.selected || null;
+  const selectedThesis = selected?.multiverse_thesis || null;
+  const marketReading = selected
+    ? `${selected.symbol}: edge ${Number(selected.edge_score || 0).toFixed(1)}, rischio ${Number(selected.risk_score || 0).toFixed(1)}, azione scan ${selected.action || "n/d"}${selectedThesis ? `, tesi ${selectedThesis.thesis_action}/${selectedThesis.thesis_valid ? "valida" : "debole"}` : ""}`
+    : "nessun candidato selezionato nell'ultimo ciclo";
+  const execution = result
+    ? `${result.action} su ${selected?.symbol || "NONE"}; marcia ${result.riskBudget?.gear || "-"}; posizioni ${summary.positions_count}; fee totali ${summary.fees_total_eur} EUR`
+    : `nessun ciclo eseguito in questa lettura; posizioni ${summary.positions_count}; fee totali ${summary.fees_total_eur} EUR`;
+  const explanation = mainError.correction;
+  const diagnosis = {
+    version: "nyra_financial_self_diagnosis_live_v1",
+    generated_at: new Date().toISOString(),
+    summary: {
+      capital_eur: summary.capital_eur,
+      pnl_eur: summary.pnl_eur,
+      pnl_pct: summary.pnl_pct,
+      alpha_vs_qqq_eur: summary.alpha_vs_qqq_eur,
+      alpha_vs_qqq_pct: summary.alpha_vs_qqq_pct,
+      fees_total_eur: summary.fees_total_eur,
+      fee_drag_pct: summary.fee_drag_pct,
+      win_count_recent: realizedWins + openWins,
+      loss_count_recent: realizedLosses + openLosses,
+      realized_win_count_recent: realizedWins,
+      realized_loss_count_recent: realizedLosses,
+      open_win_count: openWins,
+      open_loss_count: openLosses,
+      hold_or_skip_recent: holds,
+      positions_count: summary.positions_count
+    },
+    three_levels: {
+      market_reading: marketReading,
+      execution,
+      explanation
+    },
+    self_diagnosis: {
+      main_error_code: mainError.code,
+      main_error_label: mainError.label,
+      severity: mainError.severity,
+      evidence: mainError.evidence,
+      correction_next_cycle: mainError.correction,
+      lost_because: Number(summary.pnl_eur || 0) < 0 ? mainError.label : "non sto perdendo sul capitale totale in questo momento",
+      did_not_enter_because: /(skip|pause|hold)/i.test(String(result?.action || recentTrades[0]?.type || ""))
+        ? (recentTrades[0]?.reason || selected?.reason || "edge o rischio non abbastanza puliti")
+        : "non applicabile nell'ultimo ciclo",
+      prudent_correction: mainError.correction
+    },
+    operational_memory_link: {
+      error: mainError.code,
+      cause: mainError.evidence,
+      behavior_adjustment: mainError.correction,
+      verify_next: "nel prossimo ciclo confronta capitale, fee, alpha vs QQQ e numero di hold/skip"
+    },
+    rebalanced: rebalanced
+      ? {
+          closed_count: Array.isArray(rebalanced.closed) ? rebalanced.closed.length : 0,
+          rotation_primary: rebalanced.rotationPlan?.primaryClass || null,
+          rotation_secondary: rebalanced.rotationPlan?.secondaryClass || null
+        }
+      : null
+  };
+  writeJson(nyraFinancialSelfDiagnosisLivePath, diagnosis);
+  return diagnosis;
+}
+
 function worldPaperRiskBudget(profile = {}, treasury = null) {
   const gear = Math.max(1, Math.min(7, Number(profile.currentGear || 1)));
   const allocation = profile.allocation && typeof profile.allocation === "object" ? profile.allocation : {};
@@ -4439,6 +4613,7 @@ function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan
   const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
   const worldScan = scan || readJson(nyraWorldMarketScanPath, null);
   const summary = summarizeWorldPaperPortfolio(portfolio, worldScan);
+  const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan, result, rebalanced });
   const ranked = Array.isArray(worldScan?.ranked) ? worldScan.ranked : [];
   const topAlternatives = ranked.slice(0, 12).map((row, index) => ({
     rank: index + 1,
@@ -4514,6 +4689,7 @@ function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan
       recent_trades: Array.isArray(portfolio.trades) ? portfolio.trades.slice(0, 30) : []
     },
     learning: readJson(nyraWorldPaperLearningPath, null),
+    self_diagnosis: selfDiagnosis,
     market_memory: {
       assets_known: memory?.summary?.assets_known || readJson("universal-core/runtime/nyra-learning/nyra_world_market_memory_bank_latest.json", {})?.summary?.assets_known || 0,
       scan_markets: memory?.summary?.scan_markets || ranked.length,
@@ -4627,13 +4803,15 @@ function nyraWorldPaperAutoStatusPayload() {
   ensureWorldPaperBenchmark(portfolio, worldScan);
   const treasury = buildUnifiedFinanceTreasury(portfolio);
   const learning = readJson(nyraWorldPaperLearningPath, null);
+  const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan });
   return {
     ok: true,
     ...nyraWorldPaperAutoState,
     learning,
     portfolio,
     summary: summarizeWorldPaperPortfolio(portfolio, worldScan),
-    treasury
+    treasury,
+    selfDiagnosis
   };
 }
 
@@ -4643,12 +4821,14 @@ app.get("/api/nyra/finance/world-paper", (_req, res) => {
   ensureWorldPaperBenchmark(portfolio, worldScan);
   const treasury = buildUnifiedFinanceTreasury(portfolio);
   const learning = readJson(nyraWorldPaperLearningPath, null);
+  const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan });
   res.json({
     ok: true,
     portfolio,
     summary: summarizeWorldPaperPortfolio(portfolio, worldScan),
     learning,
-    treasury
+    treasury,
+    selfDiagnosis
   });
 });
 
@@ -4659,18 +4839,26 @@ app.post("/api/nyra/finance/world-paper/reset", (req, res) => {
   writeJson(nyraWorldPaperPortfolioPath, portfolio);
   const learning = buildWorldPaperLearningPolicy(portfolio);
   const treasury = buildUnifiedFinanceTreasury(portfolio);
+  const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan });
   res.json({
     ok: true,
     portfolio,
     summary: summarizeWorldPaperPortfolio(portfolio, worldScan),
     learning,
-    treasury
+    treasury,
+    selfDiagnosis
   });
 });
 
 app.post("/api/nyra/finance/world-paper/step", (req, res) => {
   try {
-    res.json(executeWorldPaperStep(req.body || {}));
+    const result = executeWorldPaperStep(req.body || {});
+    result.selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({
+      portfolio: result.portfolio,
+      worldScan: readJson(nyraWorldMarketScanPath, null),
+      result
+    });
+    res.json(result);
   } catch (error) {
     res.status(error.statusCode || 500).json({ ok: false, error: error.message });
   }

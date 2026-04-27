@@ -726,6 +726,47 @@ a {
   font-weight: 700;
 }
 
+.self-diagnosis-card {
+  grid-column: 1 / -1;
+  background: #ffffff;
+}
+
+.self-diagnosis-card.severity-high {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.self-diagnosis-card.severity-medium {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.self-diagnosis-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.self-diagnosis-grid div {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.self-diagnosis-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.self-diagnosis-grid strong {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .finance-desk-stream {
   display: grid;
   gap: 12px;
@@ -1552,6 +1593,10 @@ a {
   .readout-grid,
   .decision-grid,
   .composer-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .self-diagnosis-grid {
     grid-template-columns: 1fr;
   }
 
