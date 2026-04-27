@@ -25,6 +25,8 @@ services:
         value: "60"
       - key: NYRA_DISABLE_BASIC_AUTH
         value: "true"
+      - key: NYRA_ENABLE_BASIC_AUTH
+        value: "false"
       - key: NYRA_BASIC_USER
         sync: false
       - key: NYRA_BASIC_PASSWORD

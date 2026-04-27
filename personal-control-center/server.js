@@ -59,8 +59,9 @@ app.use((req, res, next) => {
     next();
     return;
   }
+  const authEnabled = ["1", "true", "yes", "on"].includes(String(process.env.NYRA_ENABLE_BASIC_AUTH || "").trim().toLowerCase());
   const authDisabled = ["1", "true", "yes", "on"].includes(String(process.env.NYRA_DISABLE_BASIC_AUTH || "").trim().toLowerCase());
-  if (authDisabled) {
+  if (!authEnabled || authDisabled) {
     next();
     return;
   }
