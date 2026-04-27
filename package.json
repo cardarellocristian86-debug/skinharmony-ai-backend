@@ -18,7 +18,8 @@
     "instagram:send": "node instagram_manager.js send",
     "instagram:sync": "node instagram_manager.js sync",
     "monitor:outreach": "node mail/monitor_campaigns.js",
-    "report:outreach": "node mail/track_outreach.js report"
+    "report:outreach": "node mail/track_outreach.js report",
+    "nyra:render": "node personal-control-center/server.js"
   },
   "dependencies": {
     "axios": "^1.14.0",

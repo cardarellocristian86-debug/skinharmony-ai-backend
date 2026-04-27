@@ -1,0 +1,11 @@
+personal-control-center/data/
+runtime/
+reports/
+universal-core/runtime/
+universal-core/data/world-market-cache/
+universal-core/data/world-market-history-cache/
+universal-core/reports/
+universal-core/native/
+universal-core/node_modules/
+node_modules/
+universal-core/data/

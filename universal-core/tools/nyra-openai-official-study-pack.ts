@@ -1,0 +1,297 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+type SourceNote = {
+  topic: string;
+  url: string;
+  verified_at: string;
+  extraction_mode: "web_official_page";
+};
+
+type Section = {
+  id: string;
+  title: string;
+  what_nyra_should_understand: string[];
+  scenarios_to_recreate: string[];
+};
+
+const ROOT = join(process.cwd(), "..");
+const RUNTIME_DIR = join(ROOT, "universal-core", "runtime", "nyra-learning");
+const REPORT_PATH = join(RUNTIME_DIR, "nyra_openai_official_study_latest.json");
+
+const VERIFIED_AT = "2026-04-23T17:35:00+02:00";
+
+const sources: SourceNote[] = [
+  {
+    topic: "company_about",
+    url: "https://openai.com/about/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "company_structure",
+    url: "https://openai.com/our-structure/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "models_overview",
+    url: "https://developers.openai.com/api/docs/models",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "audio_guide",
+    url: "https://developers.openai.com/api/docs/guides/audio",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "chatgpt_voice_mode",
+    url: "https://help.openai.com/en/articles/8400625-voice-mode",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "chatgpt_image_inputs",
+    url: "https://help.openai.com/en/articles/8400551-image-inputs-for-chatgpt-faq",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "dalle_origin",
+    url: "https://openai.com/index/dall-e",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "whisper_origin",
+    url: "https://openai.com/index/whisper/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "gpt4o_multimodal_shift",
+    url: "https://openai.com/index/gpt-4o-and-more-tools-to-chatgpt-free/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "safety_overview",
+    url: "https://openai.com/safety/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "gpt4v_system_card",
+    url: "https://openai.com/index/gpt-4v-system-card/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "gpt4o_system_card",
+    url: "https://openai.com/index/gpt-4o-system-card/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "preparedness_framework",
+    url: "https://openai.com/index/updating-our-preparedness-framework/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "model_spec_introduction",
+    url: "https://openai.com/index/introducing-the-model-spec/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "model_spec_latest",
+    url: "https://openai.com/index/sharing-the-latest-model-spec/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+  {
+    topic: "model_spec_process",
+    url: "https://openai.com/index/our-approach-to-the-model-spec/",
+    verified_at: VERIFIED_AT,
+    extraction_mode: "web_official_page",
+  },
+];
+
+const sections: Section[] = [
+  {
+    id: "origin_mission_structure",
+    title: "Origine, missione, struttura",
+    what_nyra_should_understand: [
+      "OpenAI si definisce azienda di ricerca e deployment dell AI con missione: fare in modo che l AGI benefici tutta l umanita.",
+      "Secondo la pagina struttura, OpenAI e nata nel 2015 come nonprofit.",
+      "Nel 2019 e stata creata una controllata for-profit per scalare ricerca e deployment.",
+      "Secondo l aggiornamento di struttura pubblicato il 28 ottobre 2025, la nonprofit e diventata OpenAI Foundation e la for-profit e OpenAI Group PBC.",
+      "La Foundation governa il Group e la missione resta il vincolo sopra la crescita commerciale.",
+    ],
+    scenarios_to_recreate: [
+      "spiegare a Cristian la differenza tra missione, governance e raccolta capitale",
+      "distinguere azienda di ricerca da semplice app consumer",
+      "spiegare perche struttura e missione influenzano come OpenAI costruisce prodotti",
+    ],
+  },
+  {
+    id: "models_platform",
+    title: "Modelli e piattaforma",
+    what_nyra_should_understand: [
+      "La pagina modelli dice che i modelli piu recenti supportano input testo e immagine, output testo, capacita multilingue e vision.",
+      "I modelli sono disponibili via Responses API e SDK client.",
+      "La pagina modelli aggiornata mostra famiglie frontier, mini e nano con compromessi diversi fra intelligenza, costo e latenza.",
+      "Nyra deve capire che ChatGPT e prodotto; la Platform e superficie sviluppatore; i modelli sono il motore sottostante.",
+    ],
+    scenarios_to_recreate: [
+      "scegliere modello piu adatto tra alta intelligenza e costo basso",
+      "spiegare differenza fra prodotto ChatGPT e API per sviluppatori",
+      "valutare quando serve reasoning e quando basta un mini model",
+    ],
+  },
+  {
+    id: "vision_images",
+    title: "Visione e immagini",
+    what_nyra_should_understand: [
+      "La FAQ immagini di ChatGPT dice che ChatGPT puo capire immagini aggiunte in conversazione come input.",
+      "Gli utenti possono caricare immagini, documenti o foto e continuare il dialogo con nuove immagini in turni successivi.",
+      "Le immagini statiche supportate in ChatGPT includono PNG, JPEG/JPG e GIF non animate; il video non e supportato nella FAQ image inputs.",
+      "La FAQ precisa che immagini ambigue o poco chiare riducono accuratezza e che non e adatto a interpretazione medica specialistica.",
+      "Le pagine modelli e immagine della docs dicono che i modelli immagine dedicati accettano testo e immagini come input e generano o modificano immagini come output.",
+    ],
+    scenarios_to_recreate: [
+      "spiegare come ChatGPT legge una foto caricata e quali limiti ha",
+      "distinguere analisi immagine da generazione immagine",
+      "riconoscere quando una foto e troppo ambigua per una risposta forte",
+    ],
+  },
+  {
+    id: "voice_audio",
+    title: "Voce e audio",
+    what_nyra_should_understand: [
+      "La Voice Mode FAQ dice che le conversazioni vocali permettono dialogo parlato con ChatGPT e sono basate su modelli nativamente multimodali.",
+      "La stessa FAQ indica disponibilita su app mobile ChatGPT e web desktop su chatgpt.com per utenti loggati.",
+      "La guida audio per sviluppatori descrive due strade: speech-to-speech con Realtime API oppure pipeline speech-to-text -> LLM -> text-to-speech.",
+      "La guida audio specifica che il percorso speech-to-speech e piu naturale e a bassa latenza, mentre la pipeline chained da piu controllo ma aggiunge latenza.",
+      "La guida audio dice che per text-to-speech si usa `audio/speech`; per speech-to-text si usa `audio/transcriptions`.",
+      "Le pagine modello `gpt-realtime` e `gpt-audio` mostrano modelli nativi per input/output audio e casi realtime.",
+    ],
+    scenarios_to_recreate: [
+      "spiegare a Cristian come nasce la voce di ChatGPT lato prodotto e lato API",
+      "distinguere voce realtime conversazionale da trascrizione + risposta + sintesi",
+      "capire quando usare bassa latenza e quando usare massimo controllo",
+    ],
+  },
+  {
+    id: "product_runtime_mapping",
+    title: "Mappa prodotto-runtime",
+    what_nyra_should_understand: [
+      "OpenAI non e una cosa sola: missione, governance, ricerca, modelli, API e prodotti ChatGPT stanno su livelli diversi.",
+      "ChatGPT usa modelli multimodali per testo, immagini e voce; la Platform espone endpoint e modelli per chi costruisce software.",
+      "Nyra deve imparare a non confondere feature utente con endpoint sviluppatore o con struttura societaria.",
+    ],
+    scenarios_to_recreate: [
+      "rispondere se Cristian chiede: ChatGPT come legge una foto?",
+      "rispondere se chiede: la voce e generata realtime o per passaggi?",
+      "rispondere se chiede: OpenAI e nata come nonprofit o azienda commerciale?",
+    ],
+  },
+  {
+    id: "release_timeline",
+    title: "Timeline e traiettoria tecnica",
+    what_nyra_should_understand: [
+      "DALL·E nel 2021 mostra una linea forte: usare il linguaggio per guidare generazione di immagini.",
+      "Whisper nel 2022 mostra una linea forte sull audio: riconoscimento vocale robusto, multilingue e multitask, con modello open-source.",
+      "GPT-4o nel 2024 segna il salto esplicito a un modello flagship su testo, voce e vision con impostazione omni.",
+      "La traiettoria tecnica non e casuale: testo -> immagine -> audio -> multimodalita nativa -> prodotto consumer e API piu integrate.",
+      "Nyra deve leggere le release non come marketing isolato ma come passaggi di una stessa convergenza multimodale.",
+    ],
+    scenarios_to_recreate: [
+      "spiegare a Cristian come OpenAI e arrivata dalla generazione testo alle interazioni voce+vision",
+      "collegare DALL·E, Whisper e GPT-4o come tappe di una stessa traiettoria",
+      "distinguere release di ricerca, release prodotto e disponibilita API",
+    ],
+  },
+  {
+    id: "limits_and_safety",
+    title: "Limiti e safety",
+    what_nyra_should_understand: [
+      "Le FAQ voice e image inputs dicono esplicitamente che i sistemi possono sbagliare e che l accuratezza va verificata nei casi importanti.",
+      "Sulle immagini ci sono limiti espliciti: niente video in quella FAQ, prestazioni peggiori su immagini ambigue e no uso come interprete medico specialistico.",
+      "Sulla voce la documentazione segnala limiti di uso, fallback di modello e differenze tra naturalezza e controllo.",
+      "La pagina safety di OpenAI mostra un ciclo continuo: insegnare, testare, condividere feedback e migliorare, non una sicurezza una volta per tutte.",
+      "Nyra deve interiorizzare che capire un sistema include capire dove puo sbagliare, non solo cosa sa fare.",
+    ],
+    scenarios_to_recreate: [
+      "dire a Cristian quando una risposta su foto o voce va tenuta prudente",
+      "riconoscere differenza tra capacita dichiarata e affidabilita operativa",
+      "spiegare perche safety e limiti fanno parte della comprensione tecnica del sistema",
+    ],
+  },
+  {
+    id: "system_cards_and_eval_logic",
+    title: "System card e logica di valutazione",
+    what_nyra_should_understand: [
+      "La GPT-4V system card tratta l ingresso immagine come un fronte di rischio e valutazione specifico, non come semplice feature cosmetica.",
+      "La GPT-4o system card descrive GPT-4o come modello omni addestrato end-to-end su testo, vision e audio, quindi la multimodalita non e solo concatenazione di moduli.",
+      "La GPT-4o system card distingue rischi su voce, speaker identification, inferenze non fondate, contenuti disallowed, persuasione e autonomia del modello.",
+      "La logica di system card insegna a Nyra che capire una famiglia di modelli significa leggere capability, limitazioni, mitigazioni e valutazioni insieme.",
+      "Nyra deve imparare che i numeri di performance o velocita senza il contesto di mitigazione raccontano solo meta del sistema.",
+    ],
+    scenarios_to_recreate: [
+      "spiegare a Cristian cosa cambia tra documentazione prodotto e system card",
+      "rispondere se chiede: un modello multimodale e solo una somma di tool o una rete unificata?",
+      "usare una system card per motivare una risposta prudente invece che assoluta",
+    ],
+  },
+  {
+    id: "preparedness_and_model_spec",
+    title: "Preparedness e Model Spec",
+    what_nyra_should_understand: [
+      "Il Preparedness Framework serve a tracciare e mitigare rischi severi dei frontier models, non solo bug minori o policy superficiali.",
+      "L aggiornamento 2025 del Preparedness Framework mette piu enfasi su rischi specifici, soglie operative e salvaguardie nel mondo reale.",
+      "Il Model Spec definisce il comportamento desiderato dei modelli nei prodotti OpenAI e nella API, quindi e il ponte tra missione, safety e comportamento osservabile.",
+      "Le pubblicazioni sul Model Spec spiegano che il beneficio per l umanita e obiettivo di OpenAI, non un obiettivo autonomo del modello da perseguire da solo.",
+      "Nyra deve interiorizzare questa differenza: una cosa e la missione della societa, un altra e la catena di comando o il comportamento operativo del modello.",
+    ],
+    scenarios_to_recreate: [
+      "spiegare a Cristian la differenza fra policy, spec, safety e comportamento modello",
+      "rispondere se chiede perche un modello non deve trasformare la missione astratta in iniziativa autonoma cieca",
+      "leggere i limiti come parte della progettazione e non solo come censura",
+    ],
+  },
+];
+
+function main(): void {
+  mkdirSync(RUNTIME_DIR, { recursive: true });
+  const report = {
+    version: "nyra_openai_official_study_v1",
+    generated_at: new Date().toISOString(),
+    status: "official_sources_distilled",
+    note:
+      "Distillazione manuale da fonti ufficiali OpenAI lette via web. Usata per coprire i domini che il fetch curl locale legge male su pagine JS-heavy o protette.",
+    sources,
+    sections,
+    integration_targets: [
+      "openai_company_history",
+      "openai_platform_models",
+      "openai_chatgpt_vision_images",
+      "openai_chatgpt_voice_audio",
+    ],
+    study_directive: {
+      mode: "deep_foundation",
+      keep_revisiting: true,
+      scenarios_after_each_section: true,
+      objective:
+        "capire come OpenAI e nata, come e strutturata, come funzionano modelli, immagini, visione e voce, e distinguere prodotto, modelli e API",
+    },
+  };
+
+  writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ ok: true, report_path: REPORT_PATH, sections: sections.length }, null, 2));
+}
+
+main();

@@ -1,0 +1,1568 @@
+{
+  "version": "nyra_world_market_universe_v2_global_proxy",
+  "generated_at": "2026-04-27T10:36:12.547Z",
+  "note": "Broad liquid global proxy universe for paper discovery. Not every world market is directly executable; this covers liquid ETFs, sectors, countries, commodities, FX proxies, inverse ETFs, crypto, and large global ADRs.",
+  "assets": [
+    {
+      "symbol": "SPY",
+      "yahoo": "SPY",
+      "name": "S&P 500 ETF",
+      "class": "equity_index",
+      "region": "US"
+    },
+    {
+      "symbol": "QQQ",
+      "yahoo": "QQQ",
+      "name": "Nasdaq 100 ETF",
+      "class": "equity_index",
+      "region": "US"
+    },
+    {
+      "symbol": "DIA",
+      "yahoo": "DIA",
+      "name": "Dow Jones ETF",
+      "class": "equity_index",
+      "region": "US"
+    },
+    {
+      "symbol": "IWM",
+      "yahoo": "IWM",
+      "name": "Russell 2000 ETF",
+      "class": "equity_index",
+      "region": "US"
+    },
+    {
+      "symbol": "MDY",
+      "yahoo": "MDY",
+      "name": "S&P MidCap 400 ETF",
+      "class": "equity_index",
+      "region": "US"
+    },
+    {
+      "symbol": "RSP",
+      "yahoo": "RSP",
+      "name": "Equal Weight S&P 500 ETF",
+      "class": "equity_index",
+      "region": "US"
+    },
+    {
+      "symbol": "ACWI",
+      "yahoo": "ACWI",
+      "name": "Global equities ETF",
+      "class": "global_equity",
+      "region": "Global"
+    },
+    {
+      "symbol": "VT",
+      "yahoo": "VT",
+      "name": "Total world stock ETF",
+      "class": "global_equity",
+      "region": "Global"
+    },
+    {
+      "symbol": "VEA",
+      "yahoo": "VEA",
+      "name": "Developed ex-US ETF",
+      "class": "global_equity",
+      "region": "Developed"
+    },
+    {
+      "symbol": "VWO",
+      "yahoo": "VWO",
+      "name": "Emerging markets ETF",
+      "class": "global_equity",
+      "region": "Emerging"
+    },
+    {
+      "symbol": "EFA",
+      "yahoo": "EFA",
+      "name": "EAFE developed markets ETF",
+      "class": "global_equity",
+      "region": "Developed"
+    },
+    {
+      "symbol": "EEM",
+      "yahoo": "EEM",
+      "name": "Emerging markets ETF",
+      "class": "global_equity",
+      "region": "Emerging"
+    },
+    {
+      "symbol": "XLK",
+      "yahoo": "XLK",
+      "name": "Technology sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLC",
+      "yahoo": "XLC",
+      "name": "Communication services sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLY",
+      "yahoo": "XLY",
+      "name": "Consumer discretionary sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLP",
+      "yahoo": "XLP",
+      "name": "Consumer staples sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLE",
+      "yahoo": "XLE",
+      "name": "Energy sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLF",
+      "yahoo": "XLF",
+      "name": "Financial sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLV",
+      "yahoo": "XLV",
+      "name": "Health care sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLI",
+      "yahoo": "XLI",
+      "name": "Industrial sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLB",
+      "yahoo": "XLB",
+      "name": "Materials sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLU",
+      "yahoo": "XLU",
+      "name": "Utilities sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XLRE",
+      "yahoo": "XLRE",
+      "name": "Real estate sector ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "XBI",
+      "yahoo": "XBI",
+      "name": "Biotech ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "SMH",
+      "yahoo": "SMH",
+      "name": "Semiconductor ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "SOXX",
+      "yahoo": "SOXX",
+      "name": "Semiconductor ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "KRE",
+      "yahoo": "KRE",
+      "name": "Regional banks ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "ITB",
+      "yahoo": "ITB",
+      "name": "US home construction ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "IYR",
+      "yahoo": "IYR",
+      "name": "US real estate ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "JETS",
+      "yahoo": "JETS",
+      "name": "Airlines ETF",
+      "class": "sector_us",
+      "region": "US"
+    },
+    {
+      "symbol": "ARKK",
+      "yahoo": "ARKK",
+      "name": "Innovation/growth ETF",
+      "class": "thematic_growth",
+      "region": "US"
+    },
+    {
+      "symbol": "BOTZ",
+      "yahoo": "BOTZ",
+      "name": "Robotics and AI ETF",
+      "class": "thematic_growth",
+      "region": "Global"
+    },
+    {
+      "symbol": "ROBO",
+      "yahoo": "ROBO",
+      "name": "Robotics ETF",
+      "class": "thematic_growth",
+      "region": "Global"
+    },
+    {
+      "symbol": "CIBR",
+      "yahoo": "CIBR",
+      "name": "Cybersecurity ETF",
+      "class": "thematic_growth",
+      "region": "US"
+    },
+    {
+      "symbol": "HACK",
+      "yahoo": "HACK",
+      "name": "Cybersecurity ETF",
+      "class": "thematic_growth",
+      "region": "US"
+    },
+    {
+      "symbol": "ICLN",
+      "yahoo": "ICLN",
+      "name": "Clean energy ETF",
+      "class": "thematic_growth",
+      "region": "Global"
+    },
+    {
+      "symbol": "TAN",
+      "yahoo": "TAN",
+      "name": "Solar ETF",
+      "class": "thematic_growth",
+      "region": "Global"
+    },
+    {
+      "symbol": "URA",
+      "yahoo": "URA",
+      "name": "Uranium ETF",
+      "class": "thematic_commodity",
+      "region": "Global"
+    },
+    {
+      "symbol": "LIT",
+      "yahoo": "LIT",
+      "name": "Lithium and battery ETF",
+      "class": "thematic_commodity",
+      "region": "Global"
+    },
+    {
+      "symbol": "COPX",
+      "yahoo": "COPX",
+      "name": "Copper miners ETF",
+      "class": "thematic_commodity",
+      "region": "Global"
+    },
+    {
+      "symbol": "GDX",
+      "yahoo": "GDX",
+      "name": "Gold miners ETF",
+      "class": "thematic_commodity",
+      "region": "Global"
+    },
+    {
+      "symbol": "GDXJ",
+      "yahoo": "GDXJ",
+      "name": "Junior gold miners ETF",
+      "class": "thematic_commodity",
+      "region": "Global"
+    },
+    {
+      "symbol": "SIL",
+      "yahoo": "SIL",
+      "name": "Silver miners ETF",
+      "class": "thematic_commodity",
+      "region": "Global"
+    },
+    {
+      "symbol": "EWJ",
+      "yahoo": "EWJ",
+      "name": "Japan ETF",
+      "class": "country_equity",
+      "region": "Japan"
+    },
+    {
+      "symbol": "EWG",
+      "yahoo": "EWG",
+      "name": "Germany ETF",
+      "class": "country_equity",
+      "region": "Germany"
+    },
+    {
+      "symbol": "EWU",
+      "yahoo": "EWU",
+      "name": "United Kingdom ETF",
+      "class": "country_equity",
+      "region": "UK"
+    },
+    {
+      "symbol": "EWQ",
+      "yahoo": "EWQ",
+      "name": "France ETF",
+      "class": "country_equity",
+      "region": "France"
+    },
+    {
+      "symbol": "EWI",
+      "yahoo": "EWI",
+      "name": "Italy ETF",
+      "class": "country_equity",
+      "region": "Italy"
+    },
+    {
+      "symbol": "EWP",
+      "yahoo": "EWP",
+      "name": "Spain ETF",
+      "class": "country_equity",
+      "region": "Spain"
+    },
+    {
+      "symbol": "EWL",
+      "yahoo": "EWL",
+      "name": "Switzerland ETF",
+      "class": "country_equity",
+      "region": "Switzerland"
+    },
+    {
+      "symbol": "EWN",
+      "yahoo": "EWN",
+      "name": "Netherlands ETF",
+      "class": "country_equity",
+      "region": "Netherlands"
+    },
+    {
+      "symbol": "EWD",
+      "yahoo": "EWD",
+      "name": "Sweden ETF",
+      "class": "country_equity",
+      "region": "Sweden"
+    },
+    {
+      "symbol": "EWK",
+      "yahoo": "EWK",
+      "name": "Belgium ETF",
+      "class": "country_equity",
+      "region": "Belgium"
+    },
+    {
+      "symbol": "EWO",
+      "yahoo": "EWO",
+      "name": "Austria ETF",
+      "class": "country_equity",
+      "region": "Austria"
+    },
+    {
+      "symbol": "EIRL",
+      "yahoo": "EIRL",
+      "name": "Ireland ETF",
+      "class": "country_equity",
+      "region": "Ireland"
+    },
+    {
+      "symbol": "ENOR",
+      "yahoo": "ENOR",
+      "name": "Norway ETF",
+      "class": "country_equity",
+      "region": "Norway"
+    },
+    {
+      "symbol": "EDEN",
+      "yahoo": "EDEN",
+      "name": "Denmark ETF",
+      "class": "country_equity",
+      "region": "Denmark"
+    },
+    {
+      "symbol": "EFNL",
+      "yahoo": "EFNL",
+      "name": "Finland ETF",
+      "class": "country_equity",
+      "region": "Finland"
+    },
+    {
+      "symbol": "EPOL",
+      "yahoo": "EPOL",
+      "name": "Poland ETF",
+      "class": "country_equity",
+      "region": "Poland"
+    },
+    {
+      "symbol": "GREK",
+      "yahoo": "GREK",
+      "name": "Greece ETF",
+      "class": "country_equity",
+      "region": "Greece"
+    },
+    {
+      "symbol": "TUR",
+      "yahoo": "TUR",
+      "name": "Turkey ETF",
+      "class": "country_equity",
+      "region": "Turkey"
+    },
+    {
+      "symbol": "EWZ",
+      "yahoo": "EWZ",
+      "name": "Brazil ETF",
+      "class": "country_equity",
+      "region": "Brazil"
+    },
+    {
+      "symbol": "EWW",
+      "yahoo": "EWW",
+      "name": "Mexico ETF",
+      "class": "country_equity",
+      "region": "Mexico"
+    },
+    {
+      "symbol": "ECH",
+      "yahoo": "ECH",
+      "name": "Chile ETF",
+      "class": "country_equity",
+      "region": "Chile"
+    },
+    {
+      "symbol": "EPU",
+      "yahoo": "EPU",
+      "name": "Peru ETF",
+      "class": "country_equity",
+      "region": "Peru"
+    },
+    {
+      "symbol": "ARGT",
+      "yahoo": "ARGT",
+      "name": "Argentina ETF",
+      "class": "country_equity",
+      "region": "Argentina"
+    },
+    {
+      "symbol": "EWC",
+      "yahoo": "EWC",
+      "name": "Canada ETF",
+      "class": "country_equity",
+      "region": "Canada"
+    },
+    {
+      "symbol": "EWA",
+      "yahoo": "EWA",
+      "name": "Australia ETF",
+      "class": "country_equity",
+      "region": "Australia"
+    },
+    {
+      "symbol": "ENZL",
+      "yahoo": "ENZL",
+      "name": "New Zealand ETF",
+      "class": "country_equity",
+      "region": "New Zealand"
+    },
+    {
+      "symbol": "MCHI",
+      "yahoo": "MCHI",
+      "name": "China ETF",
+      "class": "country_equity",
+      "region": "China"
+    },
+    {
+      "symbol": "FXI",
+      "yahoo": "FXI",
+      "name": "China large-cap ETF",
+      "class": "country_equity",
+      "region": "China"
+    },
+    {
+      "symbol": "KWEB",
+      "yahoo": "KWEB",
+      "name": "China internet ETF",
+      "class": "country_equity",
+      "region": "China"
+    },
+    {
+      "symbol": "ASHR",
+      "yahoo": "ASHR",
+      "name": "China A-shares ETF",
+      "class": "country_equity",
+      "region": "China"
+    },
+    {
+      "symbol": "EWH",
+      "yahoo": "EWH",
+      "name": "Hong Kong ETF",
+      "class": "country_equity",
+      "region": "Hong Kong"
+    },
+    {
+      "symbol": "EWT",
+      "yahoo": "EWT",
+      "name": "Taiwan ETF",
+      "class": "country_equity",
+      "region": "Taiwan"
+    },
+    {
+      "symbol": "EWY",
+      "yahoo": "EWY",
+      "name": "South Korea ETF",
+      "class": "country_equity",
+      "region": "South Korea"
+    },
+    {
+      "symbol": "INDA",
+      "yahoo": "INDA",
+      "name": "India ETF",
+      "class": "country_equity",
+      "region": "India"
+    },
+    {
+      "symbol": "EPI",
+      "yahoo": "EPI",
+      "name": "India earnings ETF",
+      "class": "country_equity",
+      "region": "India"
+    },
+    {
+      "symbol": "EIDO",
+      "yahoo": "EIDO",
+      "name": "Indonesia ETF",
+      "class": "country_equity",
+      "region": "Indonesia"
+    },
+    {
+      "symbol": "EWM",
+      "yahoo": "EWM",
+      "name": "Malaysia ETF",
+      "class": "country_equity",
+      "region": "Malaysia"
+    },
+    {
+      "symbol": "EPHE",
+      "yahoo": "EPHE",
+      "name": "Philippines ETF",
+      "class": "country_equity",
+      "region": "Philippines"
+    },
+    {
+      "symbol": "THD",
+      "yahoo": "THD",
+      "name": "Thailand ETF",
+      "class": "country_equity",
+      "region": "Thailand"
+    },
+    {
+      "symbol": "VNM",
+      "yahoo": "VNM",
+      "name": "Vietnam ETF",
+      "class": "country_equity",
+      "region": "Vietnam"
+    },
+    {
+      "symbol": "EWS",
+      "yahoo": "EWS",
+      "name": "Singapore ETF",
+      "class": "country_equity",
+      "region": "Singapore"
+    },
+    {
+      "symbol": "EZA",
+      "yahoo": "EZA",
+      "name": "South Africa ETF",
+      "class": "country_equity",
+      "region": "South Africa"
+    },
+    {
+      "symbol": "EGPT",
+      "yahoo": "EGPT",
+      "name": "Egypt ETF",
+      "class": "country_equity",
+      "region": "Egypt"
+    },
+    {
+      "symbol": "KSA",
+      "yahoo": "KSA",
+      "name": "Saudi Arabia ETF",
+      "class": "country_equity",
+      "region": "Saudi Arabia"
+    },
+    {
+      "symbol": "UAE",
+      "yahoo": "UAE",
+      "name": "UAE ETF",
+      "class": "country_equity",
+      "region": "UAE"
+    },
+    {
+      "symbol": "QAT",
+      "yahoo": "QAT",
+      "name": "Qatar ETF",
+      "class": "country_equity",
+      "region": "Qatar"
+    },
+    {
+      "symbol": "ISRA",
+      "yahoo": "ISRA",
+      "name": "Israel ETF",
+      "class": "country_equity",
+      "region": "Israel"
+    },
+    {
+      "symbol": "TLT",
+      "yahoo": "TLT",
+      "name": "US long treasury ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "IEF",
+      "yahoo": "IEF",
+      "name": "US 7-10Y treasury ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "SHY",
+      "yahoo": "SHY",
+      "name": "US short treasury ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "BIL",
+      "yahoo": "BIL",
+      "name": "Treasury bills ETF",
+      "class": "cash_proxy",
+      "region": "US"
+    },
+    {
+      "symbol": "TIP",
+      "yahoo": "TIP",
+      "name": "US TIPS ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "LQD",
+      "yahoo": "LQD",
+      "name": "Investment grade corporate bond ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "HYG",
+      "yahoo": "HYG",
+      "name": "High yield corporate bond ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "JNK",
+      "yahoo": "JNK",
+      "name": "High yield bond ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "EMB",
+      "yahoo": "EMB",
+      "name": "EM sovereign debt ETF",
+      "class": "bond",
+      "region": "Emerging"
+    },
+    {
+      "symbol": "BNDX",
+      "yahoo": "BNDX",
+      "name": "International bond ETF",
+      "class": "bond",
+      "region": "Global"
+    },
+    {
+      "symbol": "BWX",
+      "yahoo": "BWX",
+      "name": "International treasury ETF",
+      "class": "bond",
+      "region": "Global"
+    },
+    {
+      "symbol": "MUB",
+      "yahoo": "MUB",
+      "name": "Municipal bond ETF",
+      "class": "bond",
+      "region": "US"
+    },
+    {
+      "symbol": "GLD",
+      "yahoo": "GLD",
+      "name": "Gold ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "IAU",
+      "yahoo": "IAU",
+      "name": "Gold ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "SLV",
+      "yahoo": "SLV",
+      "name": "Silver ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "PPLT",
+      "yahoo": "PPLT",
+      "name": "Platinum ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "PALL",
+      "yahoo": "PALL",
+      "name": "Palladium ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "CPER",
+      "yahoo": "CPER",
+      "name": "Copper ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "USO",
+      "yahoo": "USO",
+      "name": "Oil ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "BNO",
+      "yahoo": "BNO",
+      "name": "Brent oil ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "UNG",
+      "yahoo": "UNG",
+      "name": "Natural gas ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "DBA",
+      "yahoo": "DBA",
+      "name": "Agriculture ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "DBC",
+      "yahoo": "DBC",
+      "name": "Broad commodity ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "DBB",
+      "yahoo": "DBB",
+      "name": "Base metals ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "DBP",
+      "yahoo": "DBP",
+      "name": "Precious metals ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "CORN",
+      "yahoo": "CORN",
+      "name": "Corn ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "WEAT",
+      "yahoo": "WEAT",
+      "name": "Wheat ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "SOYB",
+      "yahoo": "SOYB",
+      "name": "Soybean ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "CANE",
+      "yahoo": "CANE",
+      "name": "Sugar ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "BAL",
+      "yahoo": "BAL",
+      "name": "Cotton ETF",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "JO",
+      "yahoo": "JO",
+      "name": "Coffee ETN",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "NIB",
+      "yahoo": "NIB",
+      "name": "Cocoa ETN",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "COW",
+      "yahoo": "COW",
+      "name": "Livestock ETN",
+      "class": "commodity_proxy",
+      "region": "Global"
+    },
+    {
+      "symbol": "UUP",
+      "yahoo": "UUP",
+      "name": "US dollar ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "FXE",
+      "yahoo": "FXE",
+      "name": "Euro ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "FXY",
+      "yahoo": "FXY",
+      "name": "Japanese yen ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "FXB",
+      "yahoo": "FXB",
+      "name": "British pound ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "FXA",
+      "yahoo": "FXA",
+      "name": "Australian dollar ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "FXC",
+      "yahoo": "FXC",
+      "name": "Canadian dollar ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "FXF",
+      "yahoo": "FXF",
+      "name": "Swiss franc ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "CYB",
+      "yahoo": "CYB",
+      "name": "Chinese yuan ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "CEW",
+      "yahoo": "CEW",
+      "name": "Emerging currency ETF",
+      "class": "fx_proxy",
+      "region": "FX"
+    },
+    {
+      "symbol": "SH",
+      "yahoo": "SH",
+      "name": "Short S&P 500 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "PSQ",
+      "yahoo": "PSQ",
+      "name": "Short Nasdaq 100 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "DOG",
+      "yahoo": "DOG",
+      "name": "Short Dow ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "RWM",
+      "yahoo": "RWM",
+      "name": "Short Russell 2000 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "SDS",
+      "yahoo": "SDS",
+      "name": "2x short S&P 500 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "QID",
+      "yahoo": "QID",
+      "name": "2x short Nasdaq 100 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "SQQQ",
+      "yahoo": "SQQQ",
+      "name": "3x short Nasdaq 100 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "SPXU",
+      "yahoo": "SPXU",
+      "name": "3x short S&P 500 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "TZA",
+      "yahoo": "TZA",
+      "name": "3x short Russell 2000 ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "YANG",
+      "yahoo": "YANG",
+      "name": "3x short China ETF",
+      "class": "inverse_equity",
+      "region": "China"
+    },
+    {
+      "symbol": "DRV",
+      "yahoo": "DRV",
+      "name": "3x short real estate ETF",
+      "class": "inverse_equity",
+      "region": "US"
+    },
+    {
+      "symbol": "TMV",
+      "yahoo": "TMV",
+      "name": "3x short 20Y treasury ETF",
+      "class": "inverse_bond",
+      "region": "US"
+    },
+    {
+      "symbol": "AAPL",
+      "yahoo": "AAPL",
+      "name": "Apple",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "MSFT",
+      "yahoo": "MSFT",
+      "name": "Microsoft",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "NVDA",
+      "yahoo": "NVDA",
+      "name": "Nvidia",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "AMZN",
+      "yahoo": "AMZN",
+      "name": "Amazon",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "GOOGL",
+      "yahoo": "GOOGL",
+      "name": "Alphabet",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "META",
+      "yahoo": "META",
+      "name": "Meta",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "TSLA",
+      "yahoo": "TSLA",
+      "name": "Tesla",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "AVGO",
+      "yahoo": "AVGO",
+      "name": "Broadcom",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "AMD",
+      "yahoo": "AMD",
+      "name": "AMD",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "INTC",
+      "yahoo": "INTC",
+      "name": "Intel",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "ORCL",
+      "yahoo": "ORCL",
+      "name": "Oracle",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "CRM",
+      "yahoo": "CRM",
+      "name": "Salesforce",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "ADBE",
+      "yahoo": "ADBE",
+      "name": "Adobe",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "NFLX",
+      "yahoo": "NFLX",
+      "name": "Netflix",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "DIS",
+      "yahoo": "DIS",
+      "name": "Disney",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "JPM",
+      "yahoo": "JPM",
+      "name": "JPMorgan",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "BAC",
+      "yahoo": "BAC",
+      "name": "Bank of America",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "GS",
+      "yahoo": "GS",
+      "name": "Goldman Sachs",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "MS",
+      "yahoo": "MS",
+      "name": "Morgan Stanley",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "V",
+      "yahoo": "V",
+      "name": "Visa",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "MA",
+      "yahoo": "MA",
+      "name": "Mastercard",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "PYPL",
+      "yahoo": "PYPL",
+      "name": "PayPal",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "COST",
+      "yahoo": "COST",
+      "name": "Costco",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "WMT",
+      "yahoo": "WMT",
+      "name": "Walmart",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "HD",
+      "yahoo": "HD",
+      "name": "Home Depot",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "MCD",
+      "yahoo": "MCD",
+      "name": "McDonald's",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "NKE",
+      "yahoo": "NKE",
+      "name": "Nike",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "KO",
+      "yahoo": "KO",
+      "name": "Coca-Cola",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "PEP",
+      "yahoo": "PEP",
+      "name": "PepsiCo",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "PG",
+      "yahoo": "PG",
+      "name": "Procter & Gamble",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "JNJ",
+      "yahoo": "JNJ",
+      "name": "Johnson & Johnson",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "PFE",
+      "yahoo": "PFE",
+      "name": "Pfizer",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "LLY",
+      "yahoo": "LLY",
+      "name": "Eli Lilly",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "MRK",
+      "yahoo": "MRK",
+      "name": "Merck",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "UNH",
+      "yahoo": "UNH",
+      "name": "UnitedHealth",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "XOM",
+      "yahoo": "XOM",
+      "name": "Exxon Mobil",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "CVX",
+      "yahoo": "CVX",
+      "name": "Chevron",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "COP",
+      "yahoo": "COP",
+      "name": "ConocoPhillips",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "CAT",
+      "yahoo": "CAT",
+      "name": "Caterpillar",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "DE",
+      "yahoo": "DE",
+      "name": "Deere",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "BA",
+      "yahoo": "BA",
+      "name": "Boeing",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "GE",
+      "yahoo": "GE",
+      "name": "General Electric",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "HON",
+      "yahoo": "HON",
+      "name": "Honeywell",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "NOC",
+      "yahoo": "NOC",
+      "name": "Northrop Grumman",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "LMT",
+      "yahoo": "LMT",
+      "name": "Lockheed Martin",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "PLTR",
+      "yahoo": "PLTR",
+      "name": "Palantir",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "COIN",
+      "yahoo": "COIN",
+      "name": "Coinbase",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "MSTR",
+      "yahoo": "MSTR",
+      "name": "MicroStrategy",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "UBER",
+      "yahoo": "UBER",
+      "name": "Uber",
+      "class": "single_stock",
+      "region": "US"
+    },
+    {
+      "symbol": "SHOP",
+      "yahoo": "SHOP",
+      "name": "Shopify",
+      "class": "single_stock",
+      "region": "Canada"
+    },
+    {
+      "symbol": "BABA",
+      "yahoo": "BABA",
+      "name": "Alibaba",
+      "class": "single_stock",
+      "region": "China"
+    },
+    {
+      "symbol": "PDD",
+      "yahoo": "PDD",
+      "name": "PDD Holdings",
+      "class": "single_stock",
+      "region": "China"
+    },
+    {
+      "symbol": "BIDU",
+      "yahoo": "BIDU",
+      "name": "Baidu",
+      "class": "single_stock",
+      "region": "China"
+    },
+    {
+      "symbol": "TSM",
+      "yahoo": "TSM",
+      "name": "Taiwan Semiconductor",
+      "class": "single_stock",
+      "region": "Taiwan"
+    },
+    {
+      "symbol": "ASML",
+      "yahoo": "ASML",
+      "name": "ASML",
+      "class": "single_stock",
+      "region": "Netherlands"
+    },
+    {
+      "symbol": "NVO",
+      "yahoo": "NVO",
+      "name": "Novo Nordisk",
+      "class": "single_stock",
+      "region": "Denmark"
+    },
+    {
+      "symbol": "SAP",
+      "yahoo": "SAP",
+      "name": "SAP",
+      "class": "single_stock",
+      "region": "Germany"
+    },
+    {
+      "symbol": "TM",
+      "yahoo": "TM",
+      "name": "Toyota",
+      "class": "single_stock",
+      "region": "Japan"
+    },
+    {
+      "symbol": "SONY",
+      "yahoo": "SONY",
+      "name": "Sony",
+      "class": "single_stock",
+      "region": "Japan"
+    },
+    {
+      "symbol": "HSBC",
+      "yahoo": "HSBC",
+      "name": "HSBC",
+      "class": "single_stock",
+      "region": "UK"
+    },
+    {
+      "symbol": "SHEL",
+      "yahoo": "SHEL",
+      "name": "Shell",
+      "class": "single_stock",
+      "region": "UK"
+    },
+    {
+      "symbol": "RIO",
+      "yahoo": "RIO",
+      "name": "Rio Tinto",
+      "class": "single_stock",
+      "region": "UK"
+    },
+    {
+      "symbol": "UL",
+      "yahoo": "UL",
+      "name": "Unilever",
+      "class": "single_stock",
+      "region": "UK"
+    },
+    {
+      "symbol": "BP",
+      "yahoo": "BP",
+      "name": "BP",
+      "class": "single_stock",
+      "region": "UK"
+    },
+    {
+      "symbol": "VALE",
+      "yahoo": "VALE",
+      "name": "Vale",
+      "class": "single_stock",
+      "region": "Brazil"
+    },
+    {
+      "symbol": "PBR",
+      "yahoo": "PBR",
+      "name": "Petrobras",
+      "class": "single_stock",
+      "region": "Brazil"
+    },
+    {
+      "symbol": "MELI",
+      "yahoo": "MELI",
+      "name": "MercadoLibre",
+      "class": "single_stock",
+      "region": "Latin America"
+    },
+    {
+      "symbol": "BTC-EUR",
+      "yahoo": "BTC-EUR",
+      "name": "Bitcoin EUR",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "ETH-EUR",
+      "yahoo": "ETH-EUR",
+      "name": "Ethereum EUR",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "SOL-EUR",
+      "yahoo": "SOL-EUR",
+      "name": "Solana EUR",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "LINK-EUR",
+      "yahoo": "LINK-EUR",
+      "name": "Chainlink EUR",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "BNB-USD",
+      "yahoo": "BNB-USD",
+      "name": "BNB USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "XRP-USD",
+      "yahoo": "XRP-USD",
+      "name": "XRP USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "ADA-USD",
+      "yahoo": "ADA-USD",
+      "name": "Cardano USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "DOGE-USD",
+      "yahoo": "DOGE-USD",
+      "name": "Dogecoin USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "AVAX-USD",
+      "yahoo": "AVAX-USD",
+      "name": "Avalanche USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "DOT-USD",
+      "yahoo": "DOT-USD",
+      "name": "Polkadot USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "TRX-USD",
+      "yahoo": "TRX-USD",
+      "name": "TRON USD",
+      "class": "crypto",
+      "region": "Global"
+    },
+    {
+      "symbol": "MATIC-USD",
+      "yahoo": "MATIC-USD",
+      "name": "Polygon USD",
+      "class": "crypto",
+      "region": "Global"
+    }
+  ]
+}

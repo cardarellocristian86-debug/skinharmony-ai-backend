@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nyra Universal Decision Engine</title>
+    <link rel="stylesheet" href="/nyra.css?v=12" />
+  </head>
+  <body>
+    <div class="nyra-page">
+      <header class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">Universal Decision Engine</div>
+          <h1>Nyra</h1>
+          <p>
+            Una console unica per leggere stato, azione e motivo. Finanza, azienda, fabbrica e lettura Nyra locale
+            restano separati da Smart Desk.
+          </p>
+        </div>
+        <nav class="hero-nav">
+          <a href="/">Control Desk</a>
+          <a href="/financial-desk.html">Financial Desk</a>
+          <button type="button" id="financeLiveBtn">Aggiorna live finanza</button>
+          <button type="button" id="worldMarketBtn">Scansiona mercato mondiale</button>
+        </nav>
+      </header>
+
+      <section class="live-strip">
+        <div class="live-chip">
+          <small>Monitor live</small>
+          <strong id="financeLiveState">loading</strong>
+        </div>
+        <div class="live-chip">
+          <small>Ultimo aggiornamento</small>
+          <strong id="financeLiveAt">-</strong>
+        </div>
+        <div class="live-chip">
+          <small>Errore</small>
+          <strong id="financeLiveError">nessuno</strong>
+        </div>
+        <div class="live-chip">
+          <small>Apprendimento live</small>
+          <strong id="financeLearningState">observe</strong>
+        </div>
+        <div class="live-chip">
+          <small>Keep awake</small>
+          <strong id="financeKeepAwakeState">-</strong>
+        </div>
+        <div class="live-chip">
+          <small>Batteria runtime</small>
+          <strong id="financeKeepAwakeBattery">-</strong>
+        </div>
+      </section>
+
+      <section class="profile-strip">
+        <div class="profile-mode-card">
+          <div class="section-title">Modo Nyra finanza</div>
+          <div class="profile-mode-actions">
+            <button type="button" id="modeAutoBtn" class="ghost-btn">Automatico</button>
+            <button type="button" id="modeManualBtn" class="ghost-btn">Manuale</button>
+            <select id="manualProfileSelect">
+              <option value="capital_protection">Marcia 1 · Capital protection</option>
+              <option value="balanced_growth">Marcia 2 · Balanced growth</option>
+              <option value="aggressive_growth">Marcia 3 · Aggressive growth</option>
+              <option value="hard_growth">Marcia 4 · Hard growth</option>
+            </select>
+            <button type="button" id="saveProfileBtn" class="primary-btn">Applica</button>
+          </div>
+          <div class="profile-mode-note">
+            <small>Automatico usa il selector Nyra completo da marcia 1 a marcia 7. Manuale usa la marcia scelta da te.</small>
+          </div>
+        </div>
+        <div class="profile-status-card">
+          <div class="profile-chip">
+            <small>Profilo attuale</small>
+            <strong id="profileCurrent">-</strong>
+          </div>
+          <div class="profile-chip">
+            <small>Marcia</small>
+            <strong id="profileGear">-</strong>
+          </div>
+          <div class="profile-chip">
+            <small>Rischio attivo</small>
+            <strong id="profileRiskCap">-</strong>
+          </div>
+          <div class="profile-chip">
+            <small>Cash implicito</small>
+            <strong id="profileCash">-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="profile-warning" id="profileWarning" hidden>
+        <div class="profile-warning-copy">
+          <strong id="profileWarningTitle">Nyra avvisa</strong>
+          <p id="profileWarningMessage">-</p>
+        </div>
+        <div class="profile-warning-actions">
+          <button type="button" id="applyRecommendationBtn" class="primary-btn">Applica consiglio</button>
+        </div>
+      </section>
+
+      <section class="primary-strip">
+        <div class="primary-chip">
+          <small>Capitale iniziale</small>
+          <strong id="primaryCapitalStart">-</strong>
+        </div>
+        <div class="primary-chip primary-chip-green">
+          <small>Guadagno</small>
+          <strong id="primaryProfit">-</strong>
+        </div>
+        <div class="primary-chip">
+          <small>Capitale attuale</small>
+          <strong id="primaryCapitalCurrent">-</strong>
+        </div>
+        <div class="primary-chip primary-chip-red">
+          <small>Perdita</small>
+          <strong id="primaryLoss">-</strong>
+        </div>
+      </section>
+
+      <section class="mode-strip" id="modeStrip"></section>
+
+      <main class="layout">
+        <section class="primary-column">
+          <section class="card decision-card" id="decisionCard"></section>
+          <section class="details-grid">
+            <article class="card chart-card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">Andamento</div>
+                  <div class="section-note">Vista sintetica, non rumorosa.</div>
+                </div>
+              </div>
+              <div class="mini-chart" id="miniChart"></div>
+              <div class="metric-grid">
+                <div class="metric-box">
+                  <small id="primaryMetricLabel">-</small>
+                  <strong id="primaryMetricValue">-</strong>
+                </div>
+                <div class="metric-box">
+                  <small id="secondaryMetricLabel">-</small>
+                  <strong id="secondaryMetricValue">-</strong>
+                </div>
+              </div>
+            </article>
+
+            <article class="card composition-card">
+              <div class="section-head">
+                <div class="section-title">Composizione</div>
+              </div>
+              <div id="allocationList" class="allocation-list"></div>
+            </article>
+          </section>
+
+          <article class="card">
+            <div class="section-head">
+              <div class="section-title">Segnali principali</div>
+            </div>
+            <div id="signalsGrid" class="signals-grid"></div>
+          </article>
+
+          <article class="card finance-book-card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">Desk mercati Nyra</div>
+                <div class="section-note">Una sola plancia: crypto live, mercato mondiale e portafoglio paper nello stesso flusso.</div>
+              </div>
+              <div class="runtime-actions">
+                <button type="button" id="worldMarketInlineBtn" class="primary-btn">Scansiona ora</button>
+                <button type="button" id="worldPaperAutoBtn" class="primary-btn">Nyra sceglie</button>
+                <button type="button" id="worldPaperLoopStartBtn" class="primary-btn">Auto loop</button>
+                <button type="button" id="worldPaperLoopStopBtn" class="ghost-btn">Stop auto</button>
+                <button type="button" id="worldPaperStepBtn" class="primary-btn">Prova scelta</button>
+                <button type="button" id="worldPaperResetBtn" class="ghost-btn">Reset</button>
+              </div>
+            </div>
+            <div id="worldPaperAutoStatus" class="profile-mode-note"></div>
+            <div id="financeDeskBoard" class="finance-desk-board"></div>
+          </article>
+
+          <details class="card collapsible-card finance-moves-card">
+            <summary class="section-head collapsible-summary">
+              <div>
+                <div class="section-title">Report movimenti</div>
+                <div class="section-note">Lista operativa: entrate, uscite, blocchi e motivi.</div>
+              </div>
+              <span class="collapse-indicator">Apri</span>
+            </summary>
+            <div id="financeMoves" class="finance-moves"></div>
+          </details>
+
+          <details class="card collapsible-card finance-history-card">
+            <summary class="section-head collapsible-summary">
+              <div>
+                <div class="section-title">Storico cumulativo</div>
+                <div class="section-note">Cicli Nyra finanza salvati nel tempo.</div>
+              </div>
+              <span class="collapse-indicator">Apri</span>
+            </summary>
+            <div class="finance-history-analytics">
+              <div class="mini-chart" id="equityChart"></div>
+              <div id="assetPnlBoard" class="asset-pnl-board"></div>
+            </div>
+            <div id="financeHistory" class="finance-history"></div>
+          </details>
+
+          <details class="card collapsible-card finance-gear-history-card">
+            <summary class="section-head collapsible-summary">
+              <div>
+                <div class="section-title">Storico cambi marcia</div>
+                <div class="section-note">Da -> a, motivo e timestamp.</div>
+              </div>
+              <span class="collapse-indicator">Apri</span>
+            </summary>
+            <div id="profileHistoryList" class="profile-history-list"></div>
+          </details>
+
+          <article class="card runtime-card">
+            <div class="section-head">
+              <div>
+                <div class="section-title">Nyra Locale</div>
+                <div class="section-note">Read-only. Chiarisce, orienta e apre il punto giusto.</div>
+              </div>
+              <div class="runtime-actions">
+                <button type="button" id="snapshotBtn" class="ghost-btn">Snapshot</button>
+                <button type="button" id="clearBtn" class="ghost-btn">Pulisci</button>
+              </div>
+            </div>
+
+            <div class="runtime-shell">
+              <div id="messages" class="messages"></div>
+              <form id="chatForm" class="composer">
+                <textarea id="messageInput" rows="3" placeholder="Scrivi una domanda o un comando per Nyra"></textarea>
+                <div class="composer-footer">
+                  <div class="quick-actions">
+                    <button type="button" data-prompt="spiegami cosa vedi nella situazione attuale">Stato</button>
+                    <button type="button" data-prompt="cosa devo fare adesso in modo pulito?">Azione</button>
+                    <button type="button" data-prompt="dimmi limite e rischio di questa lettura">Limite</button>
+                  </div>
+                  <button id="sendBtn" type="submit" class="primary-btn">Invia</button>
+                </div>
+              </form>
+            </div>
+          </article>
+        </section>
+
+        <aside class="side-column">
+          <article class="mobile-shell">
+            <div class="mobile-notch"></div>
+            <div class="mobile-head">
+              <strong>NYRA</strong>
+              <span id="mobileRisk" class="status-pill">Rischio</span>
+            </div>
+            <div class="mobile-block">
+              <small>Stato</small>
+              <strong id="mobileState">-</strong>
+            </div>
+            <div class="mobile-action">
+              <small>Azione</small>
+              <strong id="mobileAction">-</strong>
+            </div>
+            <div class="mobile-reason">
+              <small>Motivo</small>
+              <p id="mobileReason">-</p>
+            </div>
+            <div class="mini-chart compact" id="mobileChart"></div>
+            <div class="metric-grid compact">
+              <div class="metric-box">
+                <small id="mobilePrimaryLabel">-</small>
+                <strong id="mobilePrimaryValue">-</strong>
+              </div>
+              <div class="metric-box">
+                <small id="mobileSecondaryLabel">-</small>
+                <strong id="mobileSecondaryValue">-</strong>
+              </div>
+            </div>
+          </article>
+
+          <details class="card collapsible-card" id="financeSideHistoryCard">
+            <summary class="section-head collapsible-summary">
+              <div class="section-title">Storico decisioni</div>
+              <span class="collapse-indicator">Apri</span>
+            </summary>
+            <div id="historyList" class="history-list"></div>
+          </details>
+
+          <article class="card readout-card" id="readoutCard">
+            <div class="section-head">
+              <div class="section-title">Readout Nyra</div>
+            </div>
+            <div class="readout-grid">
+              <div class="readout-box">
+                <small>Intent</small>
+                <strong id="intentValue">-</strong>
+              </div>
+              <div class="readout-box">
+                <small>Action band</small>
+                <strong id="bandValue">-</strong>
+              </div>
+              <div class="readout-box">
+                <small>Tono</small>
+                <strong id="toneValue">-</strong>
+              </div>
+              <div class="readout-box">
+                <small>Memoria</small>
+                <strong id="writeValue">false</strong>
+              </div>
+            </div>
+          </article>
+
+          <article class="card warning-card" id="warningCard">
+            <div class="warning-copy">
+              <strong>Safety gate</strong>
+              <p>
+                Nyra propone decisioni. Nei contesti critici l'esecuzione resta sotto controllo umano o gate dedicato.
+              </p>
+            </div>
+          </article>
+
+          <details class="card collapsible-card snapshot-card" id="snapshotCard">
+            <summary class="section-head collapsible-summary">
+              <div class="section-title">Snapshot locale</div>
+              <span class="collapse-indicator">Apri</span>
+            </summary>
+            <pre id="snapshotBox">Caricamento...</pre>
+          </details>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/nyra.js?v=12" defer></script>
+  </body>
+</html>

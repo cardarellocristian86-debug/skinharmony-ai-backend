@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SkinHarmony Control Desk</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="rail">
+        <div class="rail-brand">
+          <span class="rail-mark">CD</span>
+          <div>
+            <strong>Control Desk</strong>
+            <small>Enterprise command system</small>
+          </div>
+        </div>
+
+        <nav class="rail-nav">
+          <a href="#command">Command</a>
+          <a href="#tempo">Tempo</a>
+          <a href="#matrix">Matrix</a>
+          <a href="#channels">Channels</a>
+          <a href="#pipeline">Pipeline</a>
+          <a href="#capital">Capital</a>
+          <a href="#runtime">Runtime</a>
+          <a href="#finance-dock">Finance Dock</a>
+          <a href="#nyra">Nyra</a>
+          <a href="/nyra.html">Nyra Console</a>
+        </nav>
+
+        <section class="rail-panel">
+          <small class="label">Doctrine</small>
+          <p id="nyraDoctrine" class="rail-text">
+            Una priorita dominante. Una prossima mossa verificabile. Niente rumore se non cambia la decisione.
+          </p>
+        </section>
+
+        <section class="rail-panel">
+          <small class="label">Session</small>
+          <div id="sessionMeta" class="session-meta"></div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <small class="label">Control Plane</small>
+            <h1>SkinHarmony Control Desk</h1>
+            <p id="topbarSubtitle" class="topbar-subtitle">
+              Enterprise command room per sito, outreach, lead, Smart Desk, runtime e capitale.
+            </p>
+          </div>
+          <div class="topbar-actions">
+            <button id="refreshBtn" class="btn btn-secondary" type="button">Refresh</button>
+            <button id="syncAllBtn" class="btn btn-primary" type="button">Sync all</button>
+            <a class="btn btn-ghost" href="https://skinharmony-smartdesk-live.onrender.com" target="_blank" rel="noreferrer">Smart Desk</a>
+          </div>
+        </header>
+
+        <section id="command" class="panel hero">
+          <div class="hero-main">
+            <small class="label">Primary pressure</small>
+            <h2 id="primaryTitle">Caricamento...</h2>
+            <p id="primaryDetail" class="hero-detail"></p>
+            <div class="hero-meta">
+              <div>
+                <small>Status</small>
+                <strong id="primaryStatus">--</strong>
+              </div>
+              <div>
+                <small>Response</small>
+                <strong id="primaryResponse">--</strong>
+              </div>
+              <div>
+                <small>Data quality</small>
+                <strong id="primaryQuality">--</strong>
+              </div>
+              <div>
+                <small>Productivity</small>
+                <strong id="primaryProductivity">--</strong>
+              </div>
+            </div>
+          </div>
+          <div class="hero-side">
+            <small class="label">Next move</small>
+            <div id="nextMoveCard" class="signal-card strong"></div>
+          </div>
+        </section>
+
+        <section id="tempo" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Tempo</small>
+              <h2>Now / Next / Blocked / Watch</h2>
+            </div>
+          </div>
+          <div class="tempo-grid">
+            <div>
+              <div class="subsection-head">
+                <h3>Now</h3>
+                <small>Friche che richiedono azione immediata.</small>
+              </div>
+              <div id="nowQueue" class="stack-list"></div>
+            </div>
+            <div>
+              <div class="subsection-head">
+                <h3>Next</h3>
+                <small>Le prossime mosse utili dopo il primo intervento.</small>
+              </div>
+              <div id="nextQueue" class="stack-list"></div>
+            </div>
+            <div>
+              <div class="subsection-head">
+                <h3>Blocked</h3>
+                <small>Decisioni ferme per dati, runtime o struttura.</small>
+              </div>
+              <div id="blockedQueue" class="stack-list"></div>
+            </div>
+            <div>
+              <div class="subsection-head">
+                <h3>Watch</h3>
+                <small>Segnali da monitorare senza reagire adesso.</small>
+              </div>
+              <div id="watchQueue" class="stack-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="matrix" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Matrix</small>
+              <h2>Executive matrix</h2>
+            </div>
+          </div>
+          <div id="metricGrid" class="metric-grid"></div>
+          <div class="split-grid">
+            <div>
+              <div class="subsection-head">
+                <h3>Command queue</h3>
+                <small>Prima cosa da fare, poi il resto.</small>
+              </div>
+              <div id="commandQueue" class="stack-list"></div>
+            </div>
+            <div>
+              <div class="subsection-head">
+                <h3>Strategic line</h3>
+                <small>Direzione sintetica, non report lungo.</small>
+              </div>
+              <div id="strategyLine" class="stack-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="channels" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Observe</small>
+              <h2>Channel board</h2>
+            </div>
+          </div>
+          <div id="channelGrid" class="channel-grid"></div>
+          <div class="subsection-head">
+            <h3>Confidence layer</h3>
+            <small>Reale, stimato, incompleto o non collegato.</small>
+          </div>
+          <div id="confidenceBoard" class="confidence-board"></div>
+          <div id="funnelStrip" class="funnel-strip"></div>
+        </section>
+
+        <section id="pipeline" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Pipeline</small>
+              <h2>Lead, campaigns, follow-up</h2>
+            </div>
+          </div>
+          <div class="split-grid pipeline-grid">
+            <div>
+              <div class="subsection-head">
+                <h3>Campaign pressure</h3>
+                <small>Volume, reply, customer gap.</small>
+              </div>
+              <div id="campaignList" class="table-list"></div>
+            </div>
+            <div>
+              <div class="subsection-head">
+                <h3>Lead pressure</h3>
+                <small>Stale lead, latest movement, open follow-up.</small>
+              </div>
+              <div id="leadPressure" class="stack-list"></div>
+            </div>
+          </div>
+          <div class="subsection-head">
+            <h3>Segmented queue</h3>
+            <small>Commerciale, operativa, tecnica, strategica.</small>
+          </div>
+          <div id="segmentedQueue" class="segmented-grid"></div>
+        </section>
+
+        <section id="capital" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Capital</small>
+              <h2>Revenue, margin, inventory</h2>
+            </div>
+          </div>
+          <div class="split-grid capital-grid">
+            <div id="capitalBoard" class="stack-list"></div>
+            <div id="inventoryBoard" class="stack-list"></div>
+          </div>
+        </section>
+
+        <section id="runtime" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Govern</small>
+              <h2>Runtime and source integrity</h2>
+            </div>
+          </div>
+          <div class="split-grid runtime-grid">
+            <div id="runtimeBoard" class="stack-list"></div>
+            <div id="agendaBoard" class="stack-list"></div>
+          </div>
+        </section>
+
+        <section id="finance-dock" class="panel finance-dock">
+          <div class="section-head">
+            <div>
+              <small class="label">Dock</small>
+              <h2>Financial desk ingress</h2>
+            </div>
+          </div>
+          <div id="financeDockBoard" class="dock-grid"></div>
+        </section>
+
+        <section id="nyra" class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Nyra</small>
+              <h2>Command copilot</h2>
+            </div>
+          </div>
+          <div class="split-grid nyra-grid">
+            <div class="assistant-panel">
+              <form id="askForm" class="assistant-form">
+                <label>
+                  <span>Ask</span>
+                  <textarea id="askInput" rows="4" placeholder="Una richiesta sola, chiara, verificabile."></textarea>
+                </label>
+                <div class="form-actions">
+                  <button class="btn btn-secondary" type="submit">Ask AI</button>
+                </div>
+              </form>
+
+              <form id="actionForm" class="assistant-form">
+                <label>
+                  <span>Propose action</span>
+                  <textarea id="actionInput" rows="4" placeholder="Crea una proposta operativa, task o strategia."></textarea>
+                </label>
+                <div class="form-row">
+                  <label>
+                    <span>Mode</span>
+                    <select id="actionMode">
+                      <option value="brief">Brief</option>
+                      <option value="complete">Complete</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-primary" type="submit">Generate proposal</button>
+                </div>
+              </form>
+            </div>
+            <div class="assistant-output">
+              <div>
+                <div class="subsection-head">
+                  <h3>Response</h3>
+                </div>
+                <pre id="assistantAnswer" class="assistant-box">Nessuna risposta.</pre>
+              </div>
+              <div>
+                <div class="subsection-head">
+                  <h3>Proposal</h3>
+                </div>
+                <div id="proposalBox" class="proposal-box">Nessuna proposta.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+  </html>

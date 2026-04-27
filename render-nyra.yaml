@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: skinharmony-nyra-core
+    env: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm run nyra:render
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NYRA_STORAGE_ROOT
+        value: /var/data
+      - key: NYRA_FINANCE_SHARED_CAPITAL_EUR
+        value: "1000000"
+      - key: NYRA_WORLD_MARKET_CACHE_TTL_MS
+        value: "900000"
+      - key: NYRA_ASSET_HISTORY_CACHE_TTL_MS
+        value: "86400000"
+      - key: NYRA_BASIC_USER
+        sync: false
+      - key: NYRA_BASIC_PASSWORD
+        sync: false
+    disk:
+      name: nyra-core-data
+      mountPath: /var/data
+      sizeGB: 10

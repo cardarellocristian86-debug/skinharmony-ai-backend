@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Financial Desk</title>
+    <link rel="stylesheet" href="/financial-desk.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <small class="label">Financial Desk</small>
+          <h1>Pressure, regime, risk, execution</h1>
+          <p id="subtitle" class="subtitle">Workspace separato. Nessun market feed viene inventato.</p>
+        </div>
+        <div class="actions">
+          <button id="refreshBtn" type="button">Refresh</button>
+          <a href="/" class="link-btn">Control Desk</a>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="hero-main">
+          <small class="label">Primary gate</small>
+          <h2 id="primaryTitle">Desk non ancora operativo</h2>
+          <p id="primaryDetail"></p>
+          <div id="heroStats" class="hero-stats"></div>
+        </div>
+        <div class="hero-side">
+          <div id="regimeCard" class="signal-card"></div>
+          <div id="executionCard" class="signal-card"></div>
+        </div>
+      </section>
+
+      <section class="grid four">
+        <article id="feedCard" class="panel card"></article>
+        <article id="riskCard" class="panel card"></article>
+        <article id="capitalCard" class="panel card"></article>
+        <article id="readinessCard" class="panel card"></article>
+      </section>
+
+      <section class="grid two">
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Observe</small>
+              <h3>Now / Blocked / Watch</h3>
+            </div>
+          </div>
+          <div id="tempoGrid" class="tempo-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Scope</small>
+              <h3>Required surfaces</h3>
+            </div>
+          </div>
+          <div id="surfaceList" class="list"></div>
+        </section>
+      </section>
+
+      <section class="grid two">
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Doctrine</small>
+              <h3>Enterprise financial UI</h3>
+            </div>
+          </div>
+          <div id="doctrineList" class="list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <small class="label">Integration</small>
+              <h3>Readiness with Control Desk</h3>
+            </div>
+          </div>
+          <div id="integrationList" class="list"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/financial-desk.js" defer></script>
+  </body>
+  </html>
