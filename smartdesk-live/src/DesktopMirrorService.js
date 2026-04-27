@@ -1716,6 +1716,7 @@ class DesktopMirrorService {
     this.treatmentsRepository = this.createRepository("treatments", []);
     this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
+    this.aiGoldLearningRepository = this.createRepository("ai_gold_learning", []);
     this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
     this.goldStateRepository = this.createRepository("gold_state", []);
     this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
@@ -5257,6 +5258,7 @@ class DesktopMirrorService {
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
         { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
+        { name: "ai_gold_learning", filePath: path.join(DATA_DIR, "ai_gold_learning.json"), defaultValue: [] },
         { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
         { name: "gold_state", filePath: path.join(DATA_DIR, "gold_state.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
@@ -9399,6 +9401,7 @@ class DesktopMirrorService {
         actions: []
       };
     }
+    const learning = this.getAiMarketingAutopilotLearning(session);
     const marketingActions = this.getGoldState(session).marketingActions || this.buildGoldMarketingActionState(session);
     const actions = (marketingActions.actions || [])
       .sort((a, b) => {
@@ -9414,6 +9417,7 @@ class DesktopMirrorService {
       actions,
       debug: marketingActions.debug || {},
       counters: marketingActions.counters || {},
+      learning,
       sourceEndpoint: "/api/ai-gold/state",
       summary: {
         total: actions.length,
@@ -9422,6 +9426,254 @@ class DesktopMirrorService {
         done: actions.filter((item) => item.status === "done").length,
         archived: actions.filter((item) => ["archived", "discarded"].includes(String(item.status || ""))).length
       }
+    };
+  }
+
+  getAiGoldLearningRecordId(centerId = "") {
+    return `gold_learning:${String(centerId || DEFAULT_CENTER_ID)}`;
+  }
+
+  buildDefaultAiGoldLearningRecord(centerId = "", centerName = "") {
+    return {
+      id: this.getAiGoldLearningRecordId(centerId),
+      centerId: String(centerId || DEFAULT_CENTER_ID),
+      centerName: String(centerName || DEFAULT_CENTER_NAME),
+      updatedAt: nowIso(),
+      marketingAutopilot: {
+        totals: {
+          generated: 0,
+          approved: 0,
+          copied: 0,
+          done: 0,
+          archived: 0,
+          discarded: 0
+        },
+        segmentStats: {},
+        priorityStats: {},
+        toneStats: {},
+        lastActionAt: "",
+        lastGeneratedAt: "",
+        lastEvent: null
+      }
+    };
+  }
+
+  getAiGoldLearningRecord(session = null) {
+    const centerId = this.getCenterId(session);
+    const recordId = this.getAiGoldLearningRecordId(centerId);
+    const existing = this.aiGoldLearningRepository.findById(recordId);
+    if (existing) return existing;
+    const created = this.buildDefaultAiGoldLearningRecord(centerId, this.getCenterName(session));
+    this.aiGoldLearningRepository.create(created);
+    return created;
+  }
+
+  saveAiGoldLearningRecord(record = {}) {
+    const recordId = String(record.id || "");
+    if (!recordId) return null;
+    if (this.aiGoldLearningRepository.findById(recordId)) {
+      return this.aiGoldLearningRepository.update(recordId, () => record);
+    }
+    return this.aiGoldLearningRepository.create(record);
+  }
+
+  getAiMarketingLearningBucketKey(value = "", fallback = "non_indicato") {
+    const next = slugifySegment(value);
+    return next || fallback;
+  }
+
+  getAiMarketingLearningToneLabel(action = {}) {
+    const priority = String(action.priority || "").toLowerCase();
+    const risk = String(action.risk || "").toLowerCase();
+    if (priority === "alta" || risk === "alto") return "deciso";
+    if (priority === "media" || risk === "medio") return "equilibrato";
+    return "soft";
+  }
+
+  ensureAiMarketingLearningBucket(store = {}, key = "", label = "") {
+    const current = store[key];
+    if (current) {
+      return {
+        ...store,
+        [key]: {
+          generated: 0,
+          approved: 0,
+          copied: 0,
+          done: 0,
+          archived: 0,
+          discarded: 0,
+          ...current,
+          label: current.label || label || key
+        }
+      };
+    }
+    return {
+      ...store,
+      [key]: {
+        label: label || key,
+        generated: 0,
+        approved: 0,
+        copied: 0,
+        done: 0,
+        archived: 0,
+        discarded: 0
+      }
+    };
+  }
+
+  updateAiMarketingLearningRecord(mutator, session = null) {
+    const current = this.getAiGoldLearningRecord(session);
+    const next = mutator({
+      ...current,
+      marketingAutopilot: {
+        ...(current.marketingAutopilot || {}),
+        totals: {
+          generated: 0,
+          approved: 0,
+          copied: 0,
+          done: 0,
+          archived: 0,
+          discarded: 0,
+          ...((current.marketingAutopilot || {}).totals || {})
+        },
+        segmentStats: { ...((current.marketingAutopilot || {}).segmentStats || {}) },
+        priorityStats: { ...((current.marketingAutopilot || {}).priorityStats || {}) },
+        toneStats: { ...((current.marketingAutopilot || {}).toneStats || {}) }
+      }
+    });
+    return this.saveAiGoldLearningRecord({
+      ...next,
+      updatedAt: nowIso()
+    });
+  }
+
+  noteAiMarketingLearningGeneration(action = {}, session = null) {
+    const segmentKey = this.getAiMarketingLearningBucketKey(action.segment, "generico");
+    const priorityKey = this.getAiMarketingLearningBucketKey(action.priority, "media");
+    const toneLabel = this.getAiMarketingLearningToneLabel(action);
+    this.updateAiMarketingLearningRecord((record) => {
+      const learning = record.marketingAutopilot;
+      learning.segmentStats = this.ensureAiMarketingLearningBucket(learning.segmentStats, segmentKey, action.segment || "Generico");
+      learning.priorityStats = this.ensureAiMarketingLearningBucket(learning.priorityStats, priorityKey, action.priority || "Media");
+      learning.toneStats = this.ensureAiMarketingLearningBucket(learning.toneStats, toneLabel, toneLabel);
+      learning.totals.generated = Number(learning.totals.generated || 0) + 1;
+      learning.segmentStats[segmentKey].generated += 1;
+      learning.priorityStats[priorityKey].generated += 1;
+      learning.toneStats[toneLabel].generated += 1;
+      learning.lastGeneratedAt = nowIso();
+      learning.lastEvent = {
+        type: "generated",
+        clientId: String(action.clientId || ""),
+        clientName: String(action.clientName || "Cliente"),
+        segment: String(action.segment || ""),
+        priority: String(action.priority || ""),
+        at: nowIso()
+      };
+      return record;
+    }, session);
+  }
+
+  noteAiMarketingLearningOutcome(action = {}, status = "", session = null) {
+    const normalizedStatus = String(status || "").toLowerCase();
+    if (!["approved", "copied", "done", "archived", "discarded"].includes(normalizedStatus)) return;
+    const segmentKey = this.getAiMarketingLearningBucketKey(action.segment, "generico");
+    const priorityKey = this.getAiMarketingLearningBucketKey(action.priority, "media");
+    const toneLabel = this.getAiMarketingLearningToneLabel(action);
+    this.updateAiMarketingLearningRecord((record) => {
+      const learning = record.marketingAutopilot;
+      learning.segmentStats = this.ensureAiMarketingLearningBucket(learning.segmentStats, segmentKey, action.segment || "Generico");
+      learning.priorityStats = this.ensureAiMarketingLearningBucket(learning.priorityStats, priorityKey, action.priority || "Media");
+      learning.toneStats = this.ensureAiMarketingLearningBucket(learning.toneStats, toneLabel, toneLabel);
+      learning.totals[normalizedStatus] = Number(learning.totals[normalizedStatus] || 0) + 1;
+      learning.segmentStats[segmentKey][normalizedStatus] += 1;
+      learning.priorityStats[priorityKey][normalizedStatus] += 1;
+      learning.toneStats[toneLabel][normalizedStatus] += 1;
+      learning.lastActionAt = nowIso();
+      learning.lastEvent = {
+        type: normalizedStatus,
+        clientId: String(action.clientId || ""),
+        clientName: String(action.clientName || "Cliente"),
+        segment: String(action.segment || ""),
+        priority: String(action.priority || ""),
+        at: nowIso()
+      };
+      return record;
+    }, session);
+  }
+
+  getAiMarketingLearningBucketScore(bucket = {}) {
+    return (
+      Number(bucket.done || 0) * 4
+      + Number(bucket.copied || 0) * 2
+      + Number(bucket.approved || 0)
+      - Number(bucket.archived || 0) * 2
+      - Number(bucket.discarded || 0) * 3
+    );
+  }
+
+  getAiMarketingLearningBoost(suggestion = {}, learning = null) {
+    if (!learning) return 0;
+    const segmentKey = this.getAiMarketingLearningBucketKey(suggestion.segment, "generico");
+    const toneKey = this.getAiMarketingLearningToneLabel(suggestion);
+    const segmentBucket = learning.segmentStats?.[segmentKey] || null;
+    const toneBucket = learning.toneStats?.[toneKey] || null;
+    const segmentScore = segmentBucket ? this.getAiMarketingLearningBucketScore(segmentBucket) : 0;
+    const toneScore = toneBucket ? this.getAiMarketingLearningBucketScore(toneBucket) : 0;
+    return segmentScore * 10 + toneScore * 4;
+  }
+
+  getAiMarketingAutopilotLearning(session = null) {
+    const learning = this.getAiGoldLearningRecord(session).marketingAutopilot || {};
+    const totals = {
+      generated: Number(learning.totals?.generated || 0),
+      approved: Number(learning.totals?.approved || 0),
+      copied: Number(learning.totals?.copied || 0),
+      done: Number(learning.totals?.done || 0),
+      archived: Number(learning.totals?.archived || 0),
+      discarded: Number(learning.totals?.discarded || 0)
+    };
+    const segmentEntries = Object.entries(learning.segmentStats || {});
+    const toneEntries = Object.entries(learning.toneStats || {});
+    const bestSegment = segmentEntries
+      .map(([key, bucket]) => ({ key, bucket, score: this.getAiMarketingLearningBucketScore(bucket) }))
+      .sort((a, b) => b.score - a.score)[0] || null;
+    const bestTone = toneEntries
+      .map(([key, bucket]) => ({ key, bucket, score: this.getAiMarketingLearningBucketScore(bucket) }))
+      .sort((a, b) => b.score - a.score)[0] || null;
+    const approvalRate = totals.generated ? totals.approved / totals.generated : 0;
+    const archiveRate = totals.generated ? (totals.archived + totals.discarded) / totals.generated : 0;
+    const completionRate = totals.generated ? totals.done / totals.generated : 0;
+    let profileKey = "in_apprendimento";
+    let profileLabel = "Centro in apprendimento";
+    if (totals.generated >= 6 && archiveRate >= 0.35) {
+      profileKey = "prudente";
+      profileLabel = "Centro prudente";
+    } else if (totals.done >= 3 && completionRate >= 0.25) {
+      profileKey = "reattivo";
+      profileLabel = "Centro reattivo";
+    } else if (totals.approved >= 3 && totals.done < Math.max(1, Math.round(totals.approved / 3))) {
+      profileKey = "da_accompagnare";
+      profileLabel = "Centro da accompagnare";
+    }
+    return {
+      centerAdjusted: totals.generated > 0,
+      profileKey,
+      profileLabel,
+      generatedActions: totals.generated,
+      approvedActions: totals.approved,
+      copiedActions: totals.copied,
+      completedActions: totals.done,
+      archivedActions: totals.archived + totals.discarded,
+      approvalRate,
+      archiveRate,
+      completionRate,
+      bestSegmentKey: bestSegment?.key || "",
+      bestSegmentLabel: bestSegment?.bucket?.label || "",
+      preferredToneKey: bestTone?.key || "",
+      preferredToneLabel: bestTone?.bucket?.label || "",
+      lastActionAt: String(learning.lastActionAt || ""),
+      lastGeneratedAt: String(learning.lastGeneratedAt || ""),
+      lastEvent: learning.lastEvent || null
     };
   }
 
@@ -9442,10 +9694,12 @@ class DesktopMirrorService {
     const insight = snapshot.marketing || { suggestions: [] };
     const created = [];
     const priorityRank = { alta: 3, media: 2, bassa: 1 };
+    const learningRecord = this.getAiGoldLearningRecord(session).marketingAutopilot || {};
     const candidates = (insight.suggestions || [])
       .filter((item) => item.hasMarketingConsent)
       .sort((a, b) => (
         (priorityRank[b.priority] || 0) - (priorityRank[a.priority] || 0)
+        || this.getAiMarketingLearningBoost(b, learningRecord) - this.getAiMarketingLearningBoost(a, learningRecord)
         || Number(b.daysSinceLastVisit || 0) - Number(a.daysSinceLastVisit || 0)
       ))
       .slice(0, 12);
@@ -9487,6 +9741,7 @@ class DesktopMirrorService {
         valueLabel: suggestion.valueLabel || "",
         lossIfIgnoredCents: 0,
         suggestedMessage: suggestion.message || "",
+        learningAdjustment: this.getAiMarketingLearningBoost(suggestion, learningRecord),
         source: "ai_gold_marketing",
         aiProvider: "rules",
         generatedAt: nowIso(),
@@ -9497,6 +9752,7 @@ class DesktopMirrorService {
         copiedAt: ""
       };
       this.aiMarketingActionsRepository.create(action);
+      this.noteAiMarketingLearningGeneration(action, session);
       created.push(action);
     });
     if (created.length) {
@@ -9507,7 +9763,8 @@ class DesktopMirrorService {
       goldEnabled: true,
       generatedAt: nowIso(),
       createdCount: created.length,
-      actions: created
+      actions: created,
+      learning: this.getAiMarketingAutopilotLearning(session)
     };
   }
 
@@ -9560,11 +9817,16 @@ class DesktopMirrorService {
         completedAt: status === "done" ? now : "",
         archivedAt: ["archived", "discarded"].includes(status) ? now : "",
         approvedAt: status === "approved" ? now : "",
-        copiedAt: status === "copied" ? now : ""
+        copiedAt: status === "copied" ? now : "",
+        learningAdjustment: 0
       });
+      this.noteAiMarketingLearningOutcome(created, status, session);
       this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
       return created;
     }
+    const current = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
+      .find((item) => String(item.id || "") === String(actionId || ""));
+    const previousStatus = String(current?.status || "").toLowerCase();
     const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
       ...current,
       status: status === "discarded" ? "archived" : status,
@@ -9574,6 +9836,9 @@ class DesktopMirrorService {
       completedAt: status === "done" ? nowIso() : current.completedAt || "",
       archivedAt: ["archived", "discarded"].includes(status) ? nowIso() : current.archivedAt || ""
     }), session);
+    if (updated && previousStatus !== status) {
+      this.noteAiMarketingLearningOutcome(updated, status, session);
+    }
     return updated;
   }
 

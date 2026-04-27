@@ -1381,6 +1381,10 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
   }
 });
 
+app.get("/api/ai-gold/marketing/autopilot/learning", requirePlan("gold"), (req, res) => {
+  res.json(service.getAiMarketingAutopilotLearning(req.session));
+});
+
 app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
