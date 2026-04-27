@@ -713,11 +713,16 @@ function profileLabel(profile) {
   }[profile] || profile || "-";
 }
 
+function isManualFinanceProfile(profile) {
+  return ["capital_protection", "balanced_growth", "aggressive_growth", "hard_growth"].includes(String(profile || ""));
+}
+
 function renderProfilePanel() {
   const profile = state.financeProfile;
   const autoBtn = byId("modeAutoBtn");
   const manualBtn = byId("modeManualBtn");
   const select = byId("manualProfileSelect");
+  const modeNote = byId("profileModeRuntimeNote");
   if (!profile) {
     byId("profileCurrent").textContent = "-";
     byId("profileGear").textContent = "-";
@@ -726,14 +731,27 @@ function renderProfilePanel() {
     byId("profileWarning").hidden = true;
     autoBtn.classList.remove("active-choice");
     manualBtn.classList.remove("active-choice");
+    if (modeNote) modeNote.textContent = "Caricamento profilo Nyra finanza.";
     return;
   }
 
   const mode = profile.mode || "auto";
+  const currentProfile = String(profile.currentProfile || "");
+  const manualProfile = String(profile.manualProfile || "hard_growth");
   autoBtn.classList.toggle("active-choice", mode === "auto");
   manualBtn.classList.toggle("active-choice", mode === "manual");
   select.disabled = mode !== "manual";
-  if (profile.manualProfile) select.value = profile.manualProfile;
+  select.value = mode === "auto" && isManualFinanceProfile(currentProfile) ? currentProfile : manualProfile;
+  select.title =
+    mode === "auto"
+      ? "Automatico attivo: il menu mostra la marcia effettiva scelta da Nyra, non una scelta manuale."
+      : "Manuale attivo: la marcia scelta qui viene applicata davvero.";
+  if (modeNote) {
+    modeNote.textContent =
+      mode === "auto"
+        ? `Automatico attivo: Nyra sta usando davvero ${profileLabel(profile.currentProfile)} / Marcia ${profile.currentGear || "-"}. La marcia manuale salvata (${profileLabel(manualProfile)}) non comanda finche non passi a Manuale.`
+        : `Manuale attivo: Nyra usa la marcia scelta da te (${profileLabel(manualProfile)}). Se vede rischio, puo solo avvisare.`;
+  }
   byId("profileCurrent").textContent = profileLabel(profile.currentProfile);
   byId("profileGear").textContent = `Marcia ${profile.currentGear || "-"}`;
   byId("profileRiskCap").textContent = formatPct(profile.riskyWeight || 0);
@@ -743,7 +761,6 @@ function renderProfilePanel() {
   const warning = profile.warning || null;
   const currentGear = Number(profile.currentGear || 0);
   const recommendedGear = Number(warning?.recommendedGear || currentGear);
-  const currentProfile = String(profile.currentProfile || "");
   const recommendedProfile = String(warning?.recommendedProfile || currentProfile);
   const warningIsActionable =
     warning &&
@@ -1450,11 +1467,18 @@ function bindEvents() {
     if (!button) return;
     selectWorldMarketAsset(button.dataset.worldSymbol || "");
   });
-  byId("modeAutoBtn").addEventListener("click", () => saveFinanceProfile("auto", byId("manualProfileSelect").value));
+  byId("modeAutoBtn").addEventListener("click", () => {
+    const storedManual = state.financeProfile?.manualProfile || byId("manualProfileSelect").value || "hard_growth";
+    saveFinanceProfile("auto", storedManual);
+  });
   byId("modeManualBtn").addEventListener("click", () => saveFinanceProfile("manual", byId("manualProfileSelect").value));
   byId("saveProfileBtn").addEventListener("click", () => {
     const currentMode = state.financeProfile?.mode === "manual" ? "manual" : "auto";
-    saveFinanceProfile(currentMode, byId("manualProfileSelect").value);
+    const manualProfile =
+      currentMode === "manual"
+        ? byId("manualProfileSelect").value
+        : state.financeProfile?.manualProfile || "hard_growth";
+    saveFinanceProfile(currentMode, manualProfile);
   });
   byId("applyRecommendationBtn").addEventListener("click", async () => {
     try {
