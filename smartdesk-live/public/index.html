@@ -17,7 +17,49 @@
     </style>
     <script>
       (function () {
-        if (window.location.pathname !== "/ai-gold") return;
+        function createSecondaryButton(label, onClick) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "secondary-btn";
+          button.textContent = label;
+          button.addEventListener("click", onClick);
+          return button;
+        }
+
+        function hideImportGoldTopbar() {
+          document.querySelectorAll("button").forEach((button) => {
+            if ((button.textContent || "").trim().toLowerCase() !== "import gold") return;
+            button.style.display = "none";
+            button.dataset.importGoldMoved = "1";
+          });
+        }
+
+        function ensureImportGoldInSettings() {
+          if (window.location.pathname !== "/settings") return;
+          if (document.querySelector("[data-import-gold-settings='1']")) return;
+
+          const targetCard =
+            document.querySelector(".settings-grid")?.closest(".sh-card") ||
+            document.querySelector(".content-area .sh-card") ||
+            document.querySelector("main .sh-card");
+          if (!targetCard) return;
+
+          const wrapper = document.createElement("div");
+          wrapper.className = "dashboard-action-row mt-16";
+          wrapper.dataset.importGoldSettings = "1";
+
+          const note = document.createElement("div");
+          note.className = "settings-note";
+          note.textContent = "Import Gold resta in Impostazioni: non occupa spazio nella barra principale.";
+
+          const button = createSecondaryButton("Import Gold", () => {
+            window.location.href = "/gold-onboarding";
+          });
+
+          wrapper.appendChild(button);
+          wrapper.appendChild(note);
+          targetCard.prepend(wrapper);
+        }
 
         function hideAiGoldChatUi() {
           const selectors = [
@@ -44,8 +86,14 @@
           });
         }
 
-        hideAiGoldChatUi();
-        new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
+        function applySmartDeskUiFixes() {
+          hideImportGoldTopbar();
+          ensureImportGoldInSettings();
+          if (window.location.pathname === "/ai-gold") hideAiGoldChatUi();
+        }
+
+        applySmartDeskUiFixes();
+        new MutationObserver(applySmartDeskUiFixes).observe(document.documentElement, { childList: true, subtree: true });
       })();
     </script>
   </head>
