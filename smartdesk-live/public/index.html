@@ -20,40 +20,32 @@
         if (window.location.pathname !== "/ai-gold") return;
 
         function hideAiGoldChatUi() {
-          const patterns = [
-            /chiedi/i,
-            /scrivi una domanda/i,
-            /domanda operativa/i,
-            /ask ai/i
+          const selectors = [
+            ".ai-gold-question-box",
+            ".ai-gold-answer"
           ];
 
-          const maybeHide = (node) => {
-            if (!node || node.dataset?.aiGoldChatHidden === "1") return;
-            const text = [node.textContent || "", node.getAttribute?.("placeholder") || ""].join(" ").trim();
-            if (!patterns.some((pattern) => pattern.test(text))) return;
-            const block = node.closest("form, section, article, .card, .consultation-box, .stack, .two-col, .list-item") || node.parentElement;
-            if (!block) return;
+          selectors.forEach((selector) => {
+            document.querySelectorAll(selector).forEach((node) => {
+              const block = node.closest(".card, section, article, .stack, .two-col, .list-item") || node.parentElement;
+              if (!block || block.dataset?.aiGoldChatHidden === "1") return;
+              block.style.display = "none";
+              block.dataset.aiGoldChatHidden = "1";
+            });
+          });
+
+          document.querySelectorAll(".ai-gold-card-head").forEach((head) => {
+            const text = (head.textContent || "").trim().toLowerCase();
+            if (!text.includes("analisi ai")) return;
+            const block = head.closest(".card, section, article, .stack, .two-col, .list-item") || head.parentElement;
+            if (!block || block.dataset?.aiGoldChatHidden === "1") return;
             block.style.display = "none";
             block.dataset.aiGoldChatHidden = "1";
-          };
-
-          document.querySelectorAll("button, input, textarea, form").forEach(maybeHide);
+          });
         }
 
-        fetch("/api/auth/session", {
-          headers: {
-            Authorization: window.localStorage.getItem("skinharmony-web-token")
-              ? "Bearer " + window.localStorage.getItem("skinharmony-web-token")
-              : ""
-          }
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((session) => {
-            if (!session || String(session.role || "").toLowerCase() === "superadmin") return;
-            hideAiGoldChatUi();
-            new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
-          })
-          .catch(() => {});
+        hideAiGoldChatUi();
+        new MutationObserver(hideAiGoldChatUi).observe(document.documentElement, { childList: true, subtree: true });
       })();
     </script>
   </head>
