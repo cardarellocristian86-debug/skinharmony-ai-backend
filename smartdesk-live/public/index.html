@@ -20,7 +20,7 @@
         function createSecondaryButton(label, onClick) {
           const button = document.createElement("button");
           button.type = "button";
-          button.className = "secondary-btn";
+          button.className = "sh-button secondary-btn";
           button.textContent = label;
           button.addEventListener("click", onClick);
           return button;
@@ -47,11 +47,12 @@
           if (window.location.pathname !== "/settings") return;
           if (document.querySelector("[data-import-gold-cta='1']")) return;
 
-          const target =
-            document.querySelector(".content-area > .section-title")?.parentElement ||
-            document.querySelector(".content-area .sh-card") ||
-            document.querySelector("main .sh-card");
-          if (!target) return;
+          const title =
+            Array.from(document.querySelectorAll(".section-title, h1, h2")).find((node) =>
+              (node.textContent || "").trim().toLowerCase() === "impostazioni"
+            ) || null;
+          const target = title?.parentElement || document.querySelector(".content-area") || document.querySelector("main");
+          if (!target || !title) return;
 
           const wrapper = document.createElement("div");
           wrapper.className = "dashboard-action-row mt-16";
@@ -63,11 +64,7 @@
           button.classList.add("primary-btn");
 
           wrapper.appendChild(button);
-          if (target.querySelector(".section-title")) {
-            target.querySelector(".section-title").insertAdjacentElement("afterend", wrapper);
-          } else {
-            target.prepend(wrapper);
-          }
+          title.insertAdjacentElement("afterend", wrapper);
         }
 
         function hideAiGoldChatUi() {
