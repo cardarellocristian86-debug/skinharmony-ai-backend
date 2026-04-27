@@ -8,6 +8,7 @@ const { googleApiRequest } = require("../google_api");
 const rootDir = path.resolve(__dirname, "..");
 const app = express();
 const port = Number(process.env.PORT || process.env.CONTROL_CENTER_PORT || 3025);
+const host = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const nyraStorageRoot = process.env.NYRA_STORAGE_ROOT ? path.resolve(process.env.NYRA_STORAGE_ROOT) : "";
 const controlDataPath = "personal-control-center/data/marketing-data.json";
 const nyraFinanceHistoryPath = "personal-control-center/data/nyra-finance-history.json";
@@ -21,6 +22,8 @@ const nyraWorldPaperAutoStatePath = "personal-control-center/data/nyra-world-pap
 const nyraWorldPaperLearningPath = "universal-core/runtime/nyra-learning/nyra_world_paper_auto_learning_latest.json";
 const nyraWorldAssetHistoryStudyPath = "universal-core/runtime/nyra-learning/nyra_world_asset_history_study_latest.json";
 const nyraWorldThesisLearningMassivePath = "universal-core/runtime/nyra-learning/nyra_world_thesis_learning_massive_latest.json";
+const nyraRenderAutopilotRuntimePath = "universal-core/runtime/nyra-learning/nyra_render_autopilot_latest.json";
+const nyraRenderAutopilotReportPath = "reports/universal-core/nyra-learning/nyra_render_autopilot_latest.json";
 const nyraFinanceProfilePath = "personal-control-center/data/nyra-finance-profile.json";
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
@@ -630,7 +633,8 @@ const nyraWorldPaperAutoState = {
   lastFinishedAt: "",
   nextRunAt: "",
   lastError: "",
-  lastResult: null
+  lastResult: null,
+  cyclesCompleted: 0
 };
 
 let nyraWorldPaperAutoTimer = null;
@@ -643,7 +647,8 @@ function saveNyraWorldPaperAutoState() {
     lastFinishedAt: nyraWorldPaperAutoState.lastFinishedAt,
     nextRunAt: nyraWorldPaperAutoState.nextRunAt,
     lastError: nyraWorldPaperAutoState.lastError,
-    lastResult: nyraWorldPaperAutoState.lastResult
+    lastResult: nyraWorldPaperAutoState.lastResult,
+    cyclesCompleted: nyraWorldPaperAutoState.cyclesCompleted
   });
 }
 
@@ -657,6 +662,16 @@ function restoreNyraWorldPaperAutoState() {
   nyraWorldPaperAutoState.nextRunAt = stored.nextRunAt || "";
   nyraWorldPaperAutoState.lastError = stored.lastError || "";
   nyraWorldPaperAutoState.lastResult = stored.lastResult || null;
+  nyraWorldPaperAutoState.cyclesCompleted = Number(stored.cyclesCompleted || 0);
+}
+
+function applyNyraWorldPaperAutoEnvDefaults() {
+  const autostartRaw = String(process.env.NYRA_WORLD_PAPER_AUTOSTART || "").toLowerCase();
+  const autostart = ["1", "true", "yes", "on"].includes(autostartRaw);
+  const intervalMinutes = Number(process.env.NYRA_WORLD_PAPER_INTERVAL_MINUTES || 60);
+  const intervalMs = Math.max(5 * 60_000, Math.min(24 * 60 * 60_000, intervalMinutes * 60_000));
+  nyraWorldPaperAutoState.intervalMs = Number.isFinite(intervalMs) ? intervalMs : nyraWorldPaperAutoState.intervalMs;
+  if (autostart) nyraWorldPaperAutoState.enabled = true;
 }
 
 function readNyraBatteryState() {
@@ -4334,6 +4349,96 @@ function executeWorldPaperStep(body = {}) {
   return { ok: true, action: "paper_buy", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
 }
 
+function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan = null, study = null, assetHistory = null, memory = null } = {}) {
+  const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
+  const worldScan = scan || readJson(nyraWorldMarketScanPath, null);
+  const summary = summarizeWorldPaperPortfolio(portfolio, worldScan);
+  const ranked = Array.isArray(worldScan?.ranked) ? worldScan.ranked : [];
+  const topAlternatives = ranked.slice(0, 12).map((row, index) => ({
+    rank: index + 1,
+    symbol: row.symbol,
+    name: row.name,
+    class: row.class,
+    region: row.region,
+    action: row.action,
+    edge_score: row.edge_score,
+    risk_score: row.risk_score,
+    return_20d_pct: row.return_20d_pct,
+    fee_edge: row.fee_edge || null,
+    thesis: row.multiverse_thesis
+      ? {
+          action: row.multiverse_thesis.thesis_action,
+          valid: row.multiverse_thesis.thesis_valid,
+          confidence: row.multiverse_thesis.confidence,
+          expected_value_score: row.multiverse_thesis.expected_value_score,
+          reason: row.multiverse_thesis.reason
+        }
+      : null,
+    reason: row.reason
+  }));
+  const report = {
+    version: "nyra_render_autopilot_v1",
+    generated_at: new Date().toISOString(),
+    runtime: {
+      service: "skinharmony-nyra-core",
+      storage_root: nyraStorageRoot || "local",
+      paper_only: true,
+      no_real_orders: true,
+      autostart_env: String(process.env.NYRA_WORLD_PAPER_AUTOSTART || ""),
+      interval_minutes: Number((nyraWorldPaperAutoState.intervalMs / 60000).toFixed(2))
+    },
+    state: {
+      enabled: nyraWorldPaperAutoState.enabled,
+      running: nyraWorldPaperAutoState.running,
+      cycles_completed: nyraWorldPaperAutoState.cyclesCompleted,
+      last_started_at: nyraWorldPaperAutoState.lastStartedAt,
+      last_finished_at: nyraWorldPaperAutoState.lastFinishedAt,
+      next_run_at: nyraWorldPaperAutoState.nextRunAt,
+      last_error: nyraWorldPaperAutoState.lastError
+    },
+    last_cycle: result
+      ? {
+          action: result.action,
+          symbol: result.selected?.symbol || null,
+          profile: result.riskBudget?.profile || null,
+          gear: result.riskBudget?.gear || null,
+          study_aware: Boolean(result.autoChoice?.studyAware),
+          asset_history_aware: Boolean(result.autoChoice?.assetHistoryAware),
+          learning_aware: Boolean(result.autoChoice?.learningAware || result.learning),
+          learning_state: result.learning?.learning_state || null,
+          rotation_primary: rebalanced?.rotationPlan?.primaryClass || null,
+          rotation_closed_count: Array.isArray(rebalanced?.closed) ? rebalanced.closed.length : 0
+        }
+      : null,
+    portfolio: {
+      summary,
+      positions: Array.isArray(portfolio.positions) ? portfolio.positions : [],
+      recent_trades: Array.isArray(portfolio.trades) ? portfolio.trades.slice(0, 30) : []
+    },
+    learning: readJson(nyraWorldPaperLearningPath, null),
+    market_memory: {
+      assets_known: memory?.summary?.assets_known || readJson("universal-core/runtime/nyra-learning/nyra_world_market_memory_bank_latest.json", {})?.summary?.assets_known || 0,
+      scan_markets: memory?.summary?.scan_markets || ranked.length,
+      acquired_memory_preserved: true
+    },
+    study: {
+      market_study_generated_at: study?.generated_at || null,
+      asset_history_generated_at: assetHistory?.generated_at || null,
+      assets_studied: Array.isArray(assetHistory?.assets) ? assetHistory.assets.length : null
+    },
+    alternatives_not_taken: topAlternatives,
+    guardrails: [
+      "paper trading only: nessun ordine reale",
+      "non inventare dati mancanti",
+      "ogni decisione viene confrontata con alternative non prese",
+      "memoria e report persistono su NYRA_STORAGE_ROOT quando configurato"
+    ]
+  };
+  writeJson(nyraRenderAutopilotRuntimePath, report);
+  writeJson(nyraRenderAutopilotReportPath, report);
+  return report;
+}
+
 async function runNyraWorldPaperAutoCycle() {
   if (!nyraWorldPaperAutoState.enabled || nyraWorldPaperAutoState.running) return;
   nyraWorldPaperAutoState.running = true;
@@ -4341,6 +4446,10 @@ async function runNyraWorldPaperAutoCycle() {
   nyraWorldPaperAutoState.lastError = "";
   try {
     await refreshNyraFinanceProfileState();
+    await runNodeJson([
+      "--experimental-strip-types",
+      "universal-core/tools/nyra-world-news-thesis.ts"
+    ], { timeoutMs: 180000 });
     await runNodeJson([
       "--experimental-strip-types",
       "universal-core/tools/nyra-world-asset-history-study.ts"
@@ -4359,6 +4468,12 @@ async function runNyraWorldPaperAutoCycle() {
       "--experimental-strip-types",
       "universal-core/tools/nyra-world-market-memory-assimilator.ts"
     ], { timeoutMs: 120000 });
+    const scan = readJson(nyraWorldMarketScanPath, null);
+    const study = readJson(nyraWorldMarketStudyPath, null);
+    const assetHistory = readJson(nyraWorldAssetHistoryStudyPath, null);
+    const memory = readJson("universal-core/runtime/nyra-learning/nyra_world_market_memory_bank_latest.json", null);
+    nyraWorldPaperAutoState.cyclesCompleted += 1;
+    const autopilotReport = buildNyraRenderAutopilotReport({ result, rebalanced, scan, study, assetHistory, memory });
     nyraWorldPaperAutoState.lastResult = {
       at: new Date().toISOString(),
       action: result.action,
@@ -4372,13 +4487,19 @@ async function runNyraWorldPaperAutoCycle() {
       learningState: result.learning?.learning_state || null,
       closedCount: rebalanced.closed.length,
       rotationPrimary: rebalanced.rotationPlan?.primaryClass || null,
-      summary: result.summary
+      summary: result.summary,
+      reportPath: nyraRenderAutopilotReportPath,
+      report: {
+        portfolio: autopilotReport.portfolio?.summary || null,
+        alternativesCount: autopilotReport.alternatives_not_taken?.length || 0
+      }
     };
     nyraWorldPaperAutoState.lastFinishedAt = new Date().toISOString();
     saveNyraWorldPaperAutoState();
   } catch (error) {
     nyraWorldPaperAutoState.lastError = error.message;
     nyraWorldPaperAutoState.lastFinishedAt = new Date().toISOString();
+    buildNyraRenderAutopilotReport();
     saveNyraWorldPaperAutoState();
   } finally {
     nyraWorldPaperAutoState.running = false;
@@ -4459,6 +4580,13 @@ app.post("/api/nyra/finance/world-paper/step", (req, res) => {
 
 app.get("/api/nyra/finance/world-paper/auto/status", (_req, res) => {
   res.json(nyraWorldPaperAutoStatusPayload());
+});
+
+app.get("/api/nyra/finance/world-paper/auto/report", (_req, res) => {
+  res.json({
+    ok: true,
+    report: readJson(nyraRenderAutopilotRuntimePath, null)
+  });
 });
 
 app.post("/api/nyra/finance/world-paper/auto/start", (req, res) => {
@@ -5227,10 +5355,12 @@ app.post("/api/tasks", (req, res) => {
   res.json({ ok: true });
 });
 
-const server = app.listen(port, "127.0.0.1", () => {
-  console.log(`SkinHarmony Control Desk attivo su http://127.0.0.1:${port}`);
+const server = app.listen(port, host, () => {
+  console.log(`SkinHarmony Control Desk attivo su http://${host}:${port}`);
   restoreNyraWorldPaperAutoState();
-  scheduleNyraWorldPaperAutoLoop(false);
+  applyNyraWorldPaperAutoEnvDefaults();
+  const runPaperOnBoot = nyraWorldPaperAutoState.enabled && String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "true").toLowerCase() !== "false";
+  scheduleNyraWorldPaperAutoLoop(runPaperOnBoot);
   scheduleNyraFinanceLiveLoop(true);
 });
 

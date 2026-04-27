@@ -17,6 +17,12 @@ services:
         value: "900000"
       - key: NYRA_ASSET_HISTORY_CACHE_TTL_MS
         value: "86400000"
+      - key: NYRA_WORLD_PAPER_AUTOSTART
+        value: "true"
+      - key: NYRA_WORLD_PAPER_RUN_ON_BOOT
+        value: "true"
+      - key: NYRA_WORLD_PAPER_INTERVAL_MINUTES
+        value: "60"
       - key: NYRA_BASIC_USER
         sync: false
       - key: NYRA_BASIC_PASSWORD
