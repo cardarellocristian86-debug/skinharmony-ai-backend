@@ -48,13 +48,13 @@
           if (document.querySelector("[data-import-gold-cta='1']")) return;
 
           const target =
-            document.querySelector(".settings-grid") ||
+            document.querySelector(".content-area > .section-title")?.parentElement ||
             document.querySelector(".content-area .sh-card") ||
             document.querySelector("main .sh-card");
           if (!target) return;
 
           const wrapper = document.createElement("div");
-          wrapper.className = "dashboard-action-row";
+          wrapper.className = "dashboard-action-row mt-16";
           wrapper.dataset.importGoldCta = "1";
 
           const button = createSecondaryButton("Importa file Gold", () => {
@@ -63,7 +63,11 @@
           button.classList.add("primary-btn");
 
           wrapper.appendChild(button);
-          target.prepend(wrapper);
+          if (target.querySelector(".section-title")) {
+            target.querySelector(".section-title").insertAdjacentElement("afterend", wrapper);
+          } else {
+            target.prepend(wrapper);
+          }
         }
 
         function hideAiGoldChatUi() {
