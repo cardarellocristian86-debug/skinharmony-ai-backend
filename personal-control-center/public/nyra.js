@@ -550,6 +550,8 @@ function buildSelfDiagnosisCard() {
   const self = diagnosis.self_diagnosis || {};
   const levels = diagnosis.three_levels || {};
   const summary = diagnosis.summary || {};
+  const decision = diagnosis.decision_report || {};
+  const postTrade = diagnosis.post_trade_analysis || {};
   const severity = String(self.severity || "low");
   return `
     <div class="desk-summary-card self-diagnosis-card severity-${esc(severity)}">
@@ -577,6 +579,26 @@ function buildSelfDiagnosisCard() {
         <span>fee ${esc(formatEur(summary.fees_total_eur || 0))}</span>
         <span class="${Number(summary.alpha_vs_qqq_eur || 0) >= 0 ? "positive" : "negative"}">vs QQQ ${esc(formatEur(summary.alpha_vs_qqq_eur || 0))}</span>
       </div>
+      <details class="self-diagnosis-details">
+        <summary>Report decisione</summary>
+        <div class="self-diagnosis-grid">
+          <div><span>Qualita lettura</span><strong>${esc(formatPct(Number(decision.market_read_quality || 0)))}</strong></div>
+          <div><span>Expected edge</span><strong>${esc(String(decision.expected_edge ?? "-"))}</strong></div>
+          <div><span>Pressione costi</span><strong>${esc(formatPct(Number(decision.cost_pressure || 0)))}</strong></div>
+          <div><span>Pressione rischio</span><strong>${esc(formatPct(Number(decision.risk_pressure || 0)))}</strong></div>
+          <div><span>Errore se sbaglia</span><strong>${esc(decision.error_if_wrong || "-")}</strong></div>
+          <div><span>Confidence reale</span><strong>${esc(formatPct(Number(decision.confidence_real || 0)))}</strong></div>
+        </div>
+      </details>
+      <details class="self-diagnosis-details">
+        <summary>Post-trade analysis</summary>
+        <div class="self-diagnosis-grid">
+          <div><span>Outcome</span><strong>${esc(postTrade.outcome || "-")}</strong></div>
+          <div><span>Causa</span><strong>${esc(postTrade.cause || "-")}</strong></div>
+          <div><span>Evitabile</span><strong>${postTrade.avoidable ? "si" : "no"}</strong></div>
+          <div><span>Correzione</span><strong>${esc(postTrade.correction || "-")}</strong></div>
+        </div>
+      </details>
     </div>
   `;
 }

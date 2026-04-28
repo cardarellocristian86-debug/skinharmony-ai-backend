@@ -3482,6 +3482,21 @@ function buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan = readJson(n
   const mainError = classifyWorldPaperMainError(summary, safePortfolio, result);
   const selected = result?.selected || null;
   const selectedThesis = selected?.multiverse_thesis || null;
+  const latestTrade = recentTrades[0] || null;
+  const decisionReport = result?.decision_report || latestTrade?.decision_report || buildWorldPaperDecisionReport({
+    row: selected,
+    riskBudget: result?.riskBudget || {},
+    learning: result?.learning || readJson(nyraWorldPaperLearningPath, null),
+    portfolio: safePortfolio,
+    action: result?.action || latestTrade?.type || "observe",
+    reason: result?.action || latestTrade?.reason || mainError.correction
+  });
+  const postTradeAnalysis = result?.post_trade_analysis || latestTrade?.post_trade_analysis || buildWorldPaperPostTradeAnalysis({
+    trade: latestTrade,
+    position: selected ? positions.find((position) => String(position.symbol || "").toUpperCase() === String(selected.symbol || "").toUpperCase()) : null,
+    summary,
+    decisionReport
+  });
   const marketReading = selected
     ? `${selected.symbol}: edge ${Number(selected.edge_score || 0).toFixed(1)}, rischio ${Number(selected.risk_score || 0).toFixed(1)}, azione scan ${selected.action || "n/d"}${selectedThesis ? `, tesi ${selectedThesis.thesis_action}/${selectedThesis.thesis_valid ? "valida" : "debole"}` : ""}`
     : "nessun candidato selezionato nell'ultimo ciclo";
@@ -3509,6 +3524,8 @@ function buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan = readJson(n
       hold_or_skip_recent: holds,
       positions_count: summary.positions_count
     },
+    decision_report: decisionReport,
+    post_trade_analysis: postTradeAnalysis,
     three_levels: {
       market_reading: marketReading,
       execution,
@@ -3637,6 +3654,121 @@ function worldPaperHasFeeEdge(row, thesis = null, feeRate = 0.002, slippageRate 
     required_move_pct: Number(requiredMovePct.toFixed(4)),
     round_trip_cost_pct: Number(estimateWorldPaperRoundTripCostPct(feeRate, slippageRate).toFixed(4))
   };
+}
+
+function buildWorldPaperDecisionReport({ row = null, riskBudget = {}, learning = null, portfolio = null, action = "observe", reason = "" } = {}) {
+  const thesis = row?.multiverse_thesis || null;
+  const feeEdge = row?.fee_edge || worldPaperHasFeeEdge(row, thesis, NYRA_WORLD_PAPER_TRAINING_FEE_RATE, NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE, 1.4);
+  const edgeScore = Number(row?.edge_score || 0);
+  const riskScore = Number(row?.risk_score || 0);
+  const ev = Number(thesis?.expected_value_score || 0);
+  const confidence = Number(thesis?.confidence || row?.confidence || 0);
+  const feeDrag = Number(summarizeWorldPaperPortfolio(portfolio || emptyWorldPaperPortfolio()).fee_drag_pct || 0);
+  const marketReadQuality = Math.max(0, Math.min(1,
+    (edgeScore / 100) * 0.28 +
+    (Math.max(0, 100 - riskScore) / 100) * 0.24 +
+    (confidence / 100) * 0.24 +
+    (thesis?.thesis_valid ? 0.18 : 0) +
+    (feeEdge?.ok ? 0.06 : 0)
+  ));
+  const expectedEdge = Number((ev || (edgeScore - riskScore * 0.35)).toFixed(4));
+  const costPressure = Number(Math.max(0, Math.min(1, (Number(feeEdge?.required_move_pct || 0) / 3) + feeDrag / 5)).toFixed(4));
+  const riskPressure = Number(Math.max(0, Math.min(1, riskScore / 100)).toFixed(4));
+  const learningState = String(learning?.learning_state || learning?.policy?.learning_state || "observe");
+  const reasonPrimary = reason || row?.reason || thesis?.reason || "nessuna ragione primaria disponibile";
+  const reasonSecondary = [
+    `azione=${action}`,
+    `marcia=${riskBudget?.gear || "-"}`,
+    `EV=${expectedEdge}`,
+    `costo_rt=${Number(feeEdge?.round_trip_cost_pct || 0)}%`,
+    `learning=${learningState}`
+  ].join(" | ");
+  const errorIfWrong = riskPressure > 0.65
+    ? "lettura rischio troppo bassa: potrei entrare su segnale sporco o mercato fragile"
+    : costPressure > 0.45
+      ? "edge insufficiente sui costi: potrei pagare fee senza abbastanza movimento"
+      : marketReadQuality < 0.45
+        ? "qualita lettura debole: potrei confondere rumore e trend"
+        : "timing: la tesi puo essere giusta ma l'ingresso troppo presto o troppo tardi";
+  return {
+    market_read_quality: Number(marketReadQuality.toFixed(4)),
+    expected_edge: expectedEdge,
+    cost_pressure: costPressure,
+    risk_pressure: riskPressure,
+    reason_primary: reasonPrimary,
+    reason_secondary: reasonSecondary,
+    error_if_wrong: errorIfWrong,
+    confidence_real: Number(Math.max(0, Math.min(1, (marketReadQuality * 0.55 + Math.max(0, expectedEdge) / 80 * 0.25 + (1 - riskPressure) * 0.2))).toFixed(4))
+  };
+}
+
+function buildWorldPaperPostTradeAnalysis({ trade = null, position = null, summary = null, decisionReport = null } = {}) {
+  const pnl = Number(trade?.pnl_eur ?? position?.pnl_eur ?? 0);
+  const fee = Number(trade?.fee_eur || 0);
+  const reason = String(trade?.reason || decisionReport?.reason_primary || "");
+  const type = String(trade?.type || "").toLowerCase();
+  const riskPressure = Number(decisionReport?.risk_pressure || 0);
+  const costPressure = Number(decisionReport?.cost_pressure || 0);
+  const marketReadQuality = Number(decisionReport?.market_read_quality || 0);
+  const outcome = pnl > 0 ? "win" : "loss";
+  let cause = "timing";
+  if (fee > 0 && pnl <= 0 && (costPressure > 0.35 || Number(summary?.fee_drag_pct || 0) > 0.1)) cause = "fee";
+  else if (/sell|slippage|execution/i.test(type) || /slippage|esecuzione/i.test(reason)) cause = "execution";
+  else if (marketReadQuality < 0.45 || riskPressure > 0.65 || /segnale|sporco|rischio/i.test(reason)) cause = "lettura";
+  const avoidable = cause !== "execution" || fee > 0 || riskPressure > 0.65;
+  const correction = cause === "fee"
+    ? "ridurre churn: entrare solo se expected_edge copre i costi e mantenere la tesi se non e invalidata"
+    : cause === "lettura"
+      ? "migliorare filtro qualita: separare trend, rumore, rischio e notizie prima di aprire"
+      : cause === "execution"
+        ? "controllare prezzo, spread e slippage prima dell'esecuzione successiva"
+        : "migliorare timing: ingresso progressivo e verifica della tesi al ciclo successivo";
+  return {
+    outcome,
+    cause,
+    avoidable,
+    correction
+  };
+}
+
+function enrichWorldPaperStepResult(result, { persist = true } = {}) {
+  if (!result || typeof result !== "object") return result;
+  const portfolio = result.portfolio || readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
+  const summary = result.summary || summarizeWorldPaperPortfolio(portfolio);
+  const latestTrade = Array.isArray(portfolio.trades) ? portfolio.trades[0] : null;
+  const selected = result.selected || null;
+  const selectedPosition = selected && Array.isArray(portfolio.positions)
+    ? portfolio.positions.find((position) => String(position.symbol || "").toUpperCase() === String(selected.symbol || "").toUpperCase())
+    : null;
+  const decisionReport = result.decision_report || latestTrade?.decision_report || buildWorldPaperDecisionReport({
+    row: selected,
+    riskBudget: result.riskBudget || {},
+    learning: result.learning || readJson(nyraWorldPaperLearningPath, null),
+    portfolio,
+    action: result.action || latestTrade?.type || "observe",
+    reason: latestTrade?.reason || selected?.reason || result.action || ""
+  });
+  const postTradeAnalysis = result.post_trade_analysis || latestTrade?.post_trade_analysis || buildWorldPaperPostTradeAnalysis({
+    trade: latestTrade,
+    position: selectedPosition,
+    summary,
+    decisionReport
+  });
+
+  if (latestTrade) {
+    latestTrade.decision_report = latestTrade.decision_report || decisionReport;
+    latestTrade.post_trade_analysis = latestTrade.post_trade_analysis || postTradeAnalysis;
+    if (persist) {
+      portfolio.updated_at = new Date().toISOString();
+      writeJson(nyraWorldPaperPortfolioPath, portfolio);
+    }
+  }
+
+  result.portfolio = portfolio;
+  result.summary = summary;
+  result.decision_report = decisionReport;
+  result.post_trade_analysis = postTradeAnalysis;
+  return result;
 }
 
 function worldPaperDiversificationState(portfolio) {
@@ -4737,7 +4869,7 @@ async function runNyraWorldPaperAutoCycle() {
     const rebalanced = maybeRebalanceWorldPaperByRotation(portfolio, ranked, loadNyraFinanceProfileConfig());
     writeJson(nyraWorldPaperPortfolioPath, rebalanced.portfolio);
     buildWorldPaperLearningPolicy(rebalanced.portfolio);
-    const result = executeWorldPaperStep({ autoSelect: true });
+    const result = enrichWorldPaperStepResult(executeWorldPaperStep({ autoSelect: true }));
     await runNodeJson([
       "--experimental-strip-types",
       "universal-core/tools/nyra-world-market-memory-assimilator.ts"
@@ -4852,7 +4984,7 @@ app.post("/api/nyra/finance/world-paper/reset", (req, res) => {
 
 app.post("/api/nyra/finance/world-paper/step", (req, res) => {
   try {
-    const result = executeWorldPaperStep(req.body || {});
+    const result = enrichWorldPaperStepResult(executeWorldPaperStep(req.body || {}));
     result.selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({
       portfolio: result.portfolio,
       worldScan: readJson(nyraWorldMarketScanPath, null),

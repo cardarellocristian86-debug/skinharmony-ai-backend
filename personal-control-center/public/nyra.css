@@ -767,6 +767,25 @@ a {
   line-height: 1.35;
 }
 
+.self-diagnosis-details {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.76);
+  overflow: hidden;
+}
+
+.self-diagnosis-details summary {
+  cursor: pointer;
+  padding: 11px 12px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.self-diagnosis-details .self-diagnosis-grid {
+  padding: 0 12px 12px;
+}
+
 .finance-desk-stream {
   display: grid;
   gap: 12px;
