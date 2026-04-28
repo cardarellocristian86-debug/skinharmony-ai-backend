@@ -1650,15 +1650,13 @@ function readBooleanEnv(name, fallback = false) {
 
 function getTrialPaymentConfig() {
   return {
-    method: "bank_transfer",
-    enabled: readBooleanEnv("TRIAL_BANK_TRANSFER_ENABLED", true),
-    configured: Boolean(process.env.TRIAL_BANK_ACCOUNT_HOLDER && process.env.TRIAL_BANK_IBAN),
-    accountHolder: String(process.env.TRIAL_BANK_ACCOUNT_HOLDER || ""),
-    iban: String(process.env.TRIAL_BANK_IBAN || ""),
-    bankName: String(process.env.TRIAL_BANK_NAME || ""),
-    bic: String(process.env.TRIAL_BANK_BIC || ""),
-    reason: String(process.env.TRIAL_BANK_REASON || ""),
-    supportEmail: String(process.env.TRIAL_SUPPORT_EMAIL || "")
+    method: "card_nexi",
+    provider: "nexi",
+    enabled: true,
+    configured: Boolean(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL),
+    paymentUrl: String(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL || ""),
+    label: "Pagamento con carta Nexi",
+    note: "Dopo la prova l'attivazione passa da pagamento con carta Nexi."
   };
 }
 
