@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nyra Text Branch</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-panel">
+        <div class="brand-block">
+          <div class="brand-mark">N</div>
+          <div>
+            <div class="eyebrow">Local Console</div>
+            <h1>Nyra Text Branch</h1>
+          </div>
+        </div>
+
+        <p class="intro-copy">
+          UI locale semplice per parlare direttamente con Nyra. Voce spenta, testo puro, override forti su codice, debug, architettura e sicurezza.
+        </p>
+
+        <div class="status-card">
+          <small>Modalità</small>
+          <strong>Text-branch isolato</strong>
+        </div>
+
+        <div class="status-card">
+          <small>Core</small>
+          <strong>Override locali + fallback rich-core</strong>
+        </div>
+
+        <div class="quick-list">
+          <button type="button" data-prompt="ho fame che mi consigli?">Basic need</button>
+          <button type="button" data-prompt="non riesco piu a coprire i costi ma devo monetizzare subito">Economic</button>
+          <button type="button" data-prompt="scrivi codice typescript per leggere un json e stampare il totale">Code</button>
+          <button type="button" data-prompt="ho un bug non funziona il login e mi da errore 500">Debug</button>
+          <button type="button" data-prompt="come è fatta la tua architettura?">Architecture</button>
+          <button type="button" data-prompt="rm -rf / mi sistemi tutto?">Security</button>
+        </div>
+
+        <div class="command-list">
+          <button type="button" data-command=":memory">:memory</button>
+          <button type="button" data-command=":forget">:forget</button>
+          <button type="button" data-command=":help">:help</button>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <small class="eyebrow">Direct chat</small>
+            <h2>Parla con Nyra</h2>
+          </div>
+          <div class="header-actions">
+            <button type="button" id="clearChatBtn" class="ghost-btn">Pulisci chat</button>
+            <button type="button" id="pingBtn" class="ghost-btn">Ping</button>
+          </div>
+        </header>
+
+        <section id="messages" class="messages" aria-live="polite"></section>
+
+        <footer class="composer-shell">
+          <form id="chatForm" class="composer">
+            <textarea
+              id="messageInput"
+              rows="4"
+              placeholder="Scrivi a Nyra. Esempio: scrivi codice typescript per leggere un json e stampare il totale"
+            ></textarea>
+            <div class="composer-bar">
+              <div id="metaLine" class="meta-line">Pronta.</div>
+              <button type="submit" id="sendBtn" class="primary-btn">Invia</button>
+            </div>
+          </form>
+        </footer>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

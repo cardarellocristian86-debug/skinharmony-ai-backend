@@ -4931,6 +4931,54 @@ app.get("/api/nyra/snapshot", (_req, res) => {
   });
 });
 
+app.get("/api/nyra/text-learning/status", (_req, res) => {
+  const store = readJson("universal-core/runtime/nyra/nyra_learning_core.json", {
+    version: 1,
+    rules: [],
+    lastInteraction: null,
+    updatedAt: null
+  });
+  const sidecar = readJson("universal-core/runtime/nyra/text-branch-sidecar-memory.json", {
+    ownerPreferences: {},
+    ownerFacts: {},
+    dialogueNotes: [],
+    stableCorrections: [],
+    updatedAt: null
+  });
+  res.json({
+    ok: true,
+    mode: "nyra_text_learning_sandbox",
+    persistent: Boolean(nyraStorageRoot),
+    learning_rules: Array.isArray(store.rules) ? store.rules.length : 0,
+    last_interaction: store.lastInteraction || null,
+    sidecar_notes: Array.isArray(sidecar.dialogueNotes) ? sidecar.dialogueNotes.length : 0,
+    stable_corrections: Array.isArray(sidecar.stableCorrections) ? sidecar.stableCorrections.length : 0,
+    updated_at: store.updatedAt || sidecar.updatedAt || null
+  });
+});
+
+app.post("/api/nyra/text-chat", async (req, res) => {
+  const message = String(req.body.message || req.body.text || "").trim();
+  const sessionId = String(req.body.sessionId || "nyra-render-text-sandbox").trim();
+  if (!message) {
+    res.status(400).json({ ok: false, error: "Messaggio mancante." });
+    return;
+  }
+  try {
+    const output = await runNodeJson([
+      "--experimental-strip-types",
+      "universal-core/tools/nyra-text-chat-api.ts",
+      JSON.stringify({ text: message, sessionId })
+    ], { timeoutMs: 20000 });
+    res.json(output);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error.message || "Runtime Nyra text sandbox non disponibile."
+    });
+  }
+});
+
 app.post("/api/nyra/read-only", async (req, res) => {
   const message = String(req.body.message || "").trim();
   if (!message) {
