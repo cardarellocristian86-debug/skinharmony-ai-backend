@@ -780,16 +780,23 @@ function renderPrimaryStrip() {
   const paperSummary = state.worldPaper?.summary || null;
   const paperPortfolio = state.worldPaper?.portfolio || null;
   const raw = state.financeRaw;
+  const hasLiveCapital = state.mode === "finance" && Number.isFinite(Number(raw?.capital_eur));
   const hasPaperCapital = Number.isFinite(Number(paperSummary?.capital_eur));
-  const capital = hasPaperCapital
-    ? Number(paperPortfolio?.initial_capital_eur || 100000)
-    : Number(raw?.capital_eur || 0);
-  const current = hasPaperCapital
-    ? Number(paperSummary.capital_eur || 0)
-    : capital + Number(raw?.aggregate?.total_pnl_eur || 0);
-  const pnl = hasPaperCapital
-    ? Number(paperSummary.pnl_eur || current - capital)
-    : Number(raw?.aggregate?.total_pnl_eur || 0);
+  const capital = hasLiveCapital
+    ? Number(raw?.capital_eur || 0)
+    : hasPaperCapital
+      ? Number(paperPortfolio?.initial_capital_eur || 100000)
+      : 0;
+  const current = hasLiveCapital
+    ? capital + Number(raw?.aggregate?.total_pnl_eur || 0)
+    : hasPaperCapital
+      ? Number(paperSummary.capital_eur || 0)
+      : capital;
+  const pnl = hasLiveCapital
+    ? Number(raw?.aggregate?.total_pnl_eur || 0)
+    : hasPaperCapital
+      ? Number(paperSummary.pnl_eur || current - capital)
+      : 0;
   const profit = pnl > 0 ? pnl : 0;
   const loss = pnl < 0 ? Math.abs(pnl) : 0;
 
