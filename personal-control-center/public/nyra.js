@@ -18,6 +18,8 @@ const MODES = {
       ["Edge", "n.d."],
       ["Cash", "n.d."]
     ],
+    availabilityStatus: "live_pending",
+    availabilityNote: "Questo ramo si muove solo quando gli endpoint /api/nyra/finance/* producono report reali.",
     signals: ["Nessun testo finto", "Aspetta Nyra reale", "Report o monitor live", "UI pronta"],
     history: ["Avvio · waiting"],
     bars: [16, 20, 18, 24, 26, 22, 28, 30, 26, 34, 30, 36]
@@ -41,6 +43,8 @@ const MODES = {
       ["Decisione", "n.d."],
       ["Safety", "n.d."]
     ],
+    availabilityStatus: "offline",
+    availabilityNote: "Questo ramo non è collegato al runtime Nyra reale. La UI qui resta volutamente ferma.",
     signals: ["Dominio non collegato", "Nessuna Nyra finta", "Serve dataset reale", "UI in attesa"],
     history: ["Offline · no runtime"],
     bars: [12, 14, 16, 15, 18, 20, 17, 19, 16, 18, 17, 19]
@@ -64,6 +68,8 @@ const MODES = {
       ["Decisione", "n.d."],
       ["Contesto", "n.d."]
     ],
+    availabilityStatus: "offline",
+    availabilityNote: "Questo ramo non è collegato al runtime Nyra reale. Serve un branch vero prima che la console si muova.",
     signals: ["Dominio non collegato", "Nessuna Nyra finta", "Serve ramo reale", "UI in attesa"],
     history: ["Offline · no runtime"],
     bars: [12, 15, 17, 19, 16, 18, 20, 17, 18, 19, 16, 20]
@@ -120,6 +126,25 @@ function riskClass(risk) {
   return "risk-basso";
 }
 
+function availabilityMeta(modeKey) {
+  if (modeKey === "finance") {
+    const hasLiveFinance = Boolean(state.financeRaw);
+    return {
+      label: hasLiveFinance ? "live" : "live pending",
+      className: hasLiveFinance ? "availability-live" : "availability-pending",
+      note: hasLiveFinance
+        ? "Nyra sta leggendo un report reale del ramo finanza."
+        : "Questo ramo si muove solo quando gli endpoint /api/nyra/finance/* producono report reali."
+    };
+  }
+
+  return {
+    label: "offline reale",
+    className: "availability-offline",
+    note: MODES[modeKey]?.availabilityNote || "Ramo non collegato al runtime reale."
+  };
+}
+
 function renderModeStrip() {
   byId("modeStrip").innerHTML = Object.entries(MODES).map(([key, item]) => `
     <button class="mode-chip ${key === state.mode ? "active" : ""}" type="button" data-mode="${esc(key)}">
@@ -128,6 +153,7 @@ function renderModeStrip() {
         <strong class="mode-title">${esc(item.label)}</strong>
         <small class="mode-state">${esc(item.state)}</small>
       </span>
+      <span class="mode-availability ${esc(availabilityMeta(key).className)}">${esc(availabilityMeta(key).label)}</span>
       <span class="status-pill ${riskClass(item.risk)}">${esc(item.risk)}</span>
     </button>
   `).join("");
@@ -191,6 +217,7 @@ function buildAssetBars(item) {
 }
 
 function renderDecisionCard(data) {
+  const availability = availabilityMeta(state.mode);
   byId("decisionCard").innerHTML = `
     <div class="decision-top">
       <div>
@@ -218,6 +245,12 @@ function renderDecisionCard(data) {
     <div class="reason-box">
       <small>Motivo</small>
       <p>${esc(data.reason)}</p>
+    </div>
+
+    <div class="connection-box ${esc(availability.className)}">
+      <small>Stato runtime</small>
+      <strong>${esc(availability.label)}</strong>
+      <p>${esc(availability.note)}</p>
     </div>
   `;
 }
