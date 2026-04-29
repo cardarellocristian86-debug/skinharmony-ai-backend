@@ -407,14 +407,19 @@ function saveNyraFinanceHistory(entries = []) {
 
 function saveNyraFinanceRealtimeAutoimprovement(feedback = {}) {
   const assetStats = Array.isArray(feedback.assetStats) ? feedback.assetStats : [];
+  const selectedCycles = Number(feedback.selectedCycles || 0);
   const lossRate = Number(feedback.lossRate || 0);
   const winRate = Number(feedback.winRate || 0);
   const avgPnlPct = Number(feedback.avgSelectedPnlPct || 0);
+  const netPnlEur = Number(feedback.netPnlEur || 0);
   const maxLossStreak = Number(feedback.maxLossStreak || 0);
   const noTradeRatio = Number(feedback.noTradeRatio || 0);
   const maxDrawdownPct = Number(feedback.maxDrawdownPct || 0);
   const negativeAssets = assetStats
     .filter((asset) => Number(asset.selectedCount || 0) >= 2 && Number(asset.pnlEur || 0) < 0)
+    .map((asset) => asset.product);
+  const repeatedNegativeAssets = assetStats
+    .filter((asset) => Number(asset.selectedCount || 0) >= 5 && Number(asset.pnlEur || 0) < -1)
     .map((asset) => asset.product);
   const positiveAssets = assetStats
     .filter((asset) => Number(asset.selectedCount || 0) >= 2 && Number(asset.pnlEur || 0) > 0 && Number(asset.avgSpreadBps || 0) < 3)
@@ -422,7 +427,14 @@ function saveNyraFinanceRealtimeAutoimprovement(feedback = {}) {
   const expensiveAssets = assetStats
     .filter((asset) => Number(asset.avgSpreadBps || 0) > 8)
     .map((asset) => asset.product);
-  const protective = lossRate >= 0.55 || avgPnlPct < 0 || maxLossStreak >= 3 || maxDrawdownPct > 0.12;
+  const reviewSoftGuard =
+    selectedCycles >= 20 &&
+    netPnlEur < 0 &&
+    (lossRate >= 0.58 || avgPnlPct < -0.01);
+  const repeatedErrorGuard =
+    reviewSoftGuard &&
+    repeatedNegativeAssets.length > 0;
+  const protective = lossRate >= 0.55 || avgPnlPct < 0 || maxLossStreak >= 3 || maxDrawdownPct > 0.12 || reviewSoftGuard;
   const severeProtection = maxDrawdownPct > 3 || maxLossStreak >= 20 || (lossRate >= 0.85 && avgPnlPct < -0.35);
   const recoveryMicroMode = protective && !severeProtection;
   const release = noTradeRatio >= 0.6 && winRate >= 0.55 && avgPnlPct > 0 && maxLossStreak <= 1;
@@ -443,29 +455,43 @@ function saveNyraFinanceRealtimeAutoimprovement(feedback = {}) {
     learning_state: recoveryMicroMode ? "recovery_micro_learning" : protective ? "protective_learning" : release ? "release_learning" : "observe",
     metrics: {
       totalCycles: Number(feedback.totalCycles || 0),
-      selectedCycles: Number(feedback.selectedCycles || 0),
+      selectedCycles,
       noTradeRatio,
       winRate,
       lossRate,
       avgSelectedPnlPct: avgPnlPct,
-      netPnlEur: Number(feedback.netPnlEur || 0),
+      netPnlEur,
       maxDrawdownPct,
-      maxLossStreak
+      maxLossStreak,
+      review_soft_guard: reviewSoftGuard,
+      repeated_error_guard: repeatedErrorGuard
+    },
+    review: {
+      selected_cycles_window: selectedCycles,
+      repeated_negative_assets: repeatedNegativeAssets,
+      notes: [
+        reviewSoftGuard ? "il blocco recente e ancora negativo: entra solo con edge piu forte" : "nessun hardening review attivo",
+        repeatedErrorGuard ? `asset ripetitivamente negativi: ${repeatedNegativeAssets.join(", ")}` : "nessun asset ripetitivo bloccato"
+      ]
     },
     runtime_adjustments: {
-      minStrengthDelta: recoveryMicroMode ? 3 : protective ? 7 : release ? -3 : 0,
-      scoreDelta: recoveryMicroMode ? -2 : protective ? -9 : release ? 4 : 0,
-      sizeMultiplier: recoveryMicroMode ? 0.32 : protective ? 0.45 : release ? 1.08 : 1,
+      minStrengthDelta: repeatedErrorGuard ? 5 : recoveryMicroMode ? 3 : protective ? 7 : release ? -3 : 0,
+      scoreDelta: repeatedErrorGuard ? -4 : recoveryMicroMode ? -2 : protective ? -9 : release ? 4 : 0,
+      sizeMultiplier: repeatedErrorGuard ? 0.24 : recoveryMicroMode ? 0.32 : protective ? 0.45 : release ? 1.08 : 1,
       allowMicroTrades: recoveryMicroMode,
       recoveryMode: recoveryMicroMode,
-      dynamicRiskBudgetMultiplier: recoveryMicroMode ? 0.32 : protective ? 0.45 : release ? 1.08 : 1,
-      blockNegativeAssets: severeProtection ? negativeAssets : [],
-      watchNegativeAssets: recoveryMicroMode ? negativeAssets : [],
+      dynamicRiskBudgetMultiplier: repeatedErrorGuard ? 0.24 : recoveryMicroMode ? 0.32 : protective ? 0.45 : release ? 1.08 : 1,
+      blockNegativeAssets: severeProtection || repeatedErrorGuard ? [...new Set([...negativeAssets, ...repeatedNegativeAssets])] : [],
+      watchNegativeAssets: recoveryMicroMode && !repeatedErrorGuard ? negativeAssets : [],
       boostPositiveAssets: positiveAssets,
       penalizeExpensiveAssets: expensiveAssets,
       notes: [
-        recoveryMicroMode ? "recovery micro-mode active: drawdown riduce budget ma non azzera scelta" : protective ? "loss/drawdown guard active" : release ? "empirical release active" : "observe without policy shift",
-        negativeAssets.length ? `${severeProtection ? "negative assets blocked" : "negative assets watched"}: ${negativeAssets.join(", ")}` : "no repeated negative asset block",
+        repeatedErrorGuard ? "review hardening active: blocco negativo e asset ripetitivi, budget ancora piu basso" : recoveryMicroMode ? "recovery micro-mode active: drawdown riduce budget ma non azzera scelta" : protective ? "loss/drawdown guard active" : release ? "empirical release active" : "observe without policy shift",
+        (severeProtection || repeatedErrorGuard) && (negativeAssets.length || repeatedNegativeAssets.length)
+          ? `negative assets blocked: ${[...new Set([...negativeAssets, ...repeatedNegativeAssets])].join(", ")}`
+          : negativeAssets.length
+            ? `negative assets watched: ${negativeAssets.join(", ")}`
+            : "no repeated negative asset block",
         positiveAssets.length ? `positive low-spread assets: ${positiveAssets.join(", ")}` : "no positive low-spread boost",
         expensiveAssets.length ? `expensive spread assets: ${expensiveAssets.join(", ")}` : "no expensive spread penalty"
       ]
@@ -3880,6 +3906,8 @@ function chooseDiversifiedWorldPaperRow(preferredRow, rankedRows, portfolio, ris
 function buildWorldPaperLearningPolicy(portfolio) {
   const positions = Array.isArray(portfolio.positions) ? portfolio.positions : [];
   const trades = Array.isArray(portfolio.trades) ? portfolio.trades : [];
+  const realizedTrades = trades.filter((trade) => trade.type === "paper_sell");
+  const recentReviewTrades = realizedTrades.slice(0, 20);
   const summary = summarizeWorldPaperPortfolio(portfolio);
   const profile = loadNyraFinanceProfileConfig();
   const gear = Math.max(1, Math.min(7, Number(profile.currentGear || 1)));
@@ -3891,10 +3919,37 @@ function buildWorldPaperLearningPolicy(portfolio) {
     symbolLosses.set(position.symbol, (symbolLosses.get(position.symbol) || 0) + Math.abs(Number(position.pnl_eur || 0)));
     classLosses.set(position.class, (classLosses.get(position.class) || 0) + Math.abs(Number(position.pnl_eur || 0)));
   });
+  const recentLossSymbols = new Map();
+  const recentLossClasses = new Map();
+  recentReviewTrades.forEach((trade) => {
+    if (Number(trade.pnl_eur || 0) < 0) {
+      const symbolKey = String(trade.symbol || "").toUpperCase();
+      const classKey = String(trade.assetClass || "");
+      if (symbolKey) recentLossSymbols.set(symbolKey, (recentLossSymbols.get(symbolKey) || 0) + 1);
+      if (classKey) recentLossClasses.set(classKey, (recentLossClasses.get(classKey) || 0) + 1);
+    }
+  });
+  const repeatedLossSymbols = [...recentLossSymbols.entries()]
+    .filter(([, count]) => count >= 2)
+    .map(([symbol]) => symbol);
+  const repeatedLossClasses = [...recentLossClasses.entries()]
+    .filter(([, count]) => count >= 2)
+    .map(([assetClass]) => assetClass);
+  const recentReviewWins = recentReviewTrades.filter((trade) => Number(trade.pnl_eur || 0) > 0).length;
+  const recentReviewLosses = recentReviewTrades.filter((trade) => Number(trade.pnl_eur || 0) < 0).length;
+  const recentReviewNetPnlEur = recentReviewTrades.reduce((sum, trade) => sum + Number(trade.pnl_eur || 0), 0);
+  const recentReviewLossRate = recentReviewTrades.length ? recentReviewLosses / recentReviewTrades.length : 0;
   const repeatedHoldCount = trades.filter((trade) => trade.type === "hold").length;
   const allPositionsLosing = positions.length > 0 && losingPositions.length === positions.length;
   const diversification = worldPaperDiversificationState(portfolio);
   const recentTradeCount = trades.filter((trade) => minutesSinceIso(trade.at) <= 360).length;
+  const reviewSoftGuard =
+    recentReviewTrades.length >= 5 &&
+    recentReviewNetPnlEur < 0 &&
+    recentReviewLossRate >= 0.6;
+  const repeatedErrorGuard =
+    reviewSoftGuard &&
+    (repeatedLossSymbols.length > 0 || repeatedLossClasses.length > 0);
   const feeBleedGuard =
     Number(summary.alpha_vs_qqq_pct || 0) < -0.5 &&
     Number(summary.trades_count || 0) >= 30 &&
@@ -3905,9 +3960,11 @@ function buildWorldPaperLearningPolicy(portfolio) {
   const rawPauseSignal = allPositionsLosing && summary.pnl_eur < -40;
   const deepProtectionSignal = rawPauseSignal && summary.pnl_pct <= -3;
   const elasticLearning = rawPauseSignal && !deepProtectionSignal;
-  const pauseNewEntries = (deepProtectionSignal && !hardLearningMode) || feeBleedHardGuard;
+  const pauseNewEntries = (deepProtectionSignal && !hardLearningMode) || feeBleedHardGuard || repeatedErrorGuard;
   const learningState = feeBleedHardGuard
     ? "anti_fee_bleed_recovery"
+    : repeatedErrorGuard
+      ? "review_hardening_learning"
     : feeBleedGuard
       ? "benchmark_recovery_learning"
       : rawPauseSignal && hardLearningMode
@@ -3946,11 +4003,21 @@ function buildWorldPaperLearningPolicy(portfolio) {
       alpha_vs_qqq_pct: summary.alpha_vs_qqq_pct,
       fee_bleed_guard: feeBleedGuard,
       fee_bleed_hard_guard: feeBleedHardGuard,
+      review_soft_guard: reviewSoftGuard,
+      repeated_error_guard: repeatedErrorGuard,
       gear,
       hard_learning_mode: hardLearningMode,
       elastic_learning: elasticLearning,
-      deep_protection_signal: deepProtectionSignal
-      ,
+      deep_protection_signal: deepProtectionSignal,
+      block_review: {
+        window_trades: recentReviewTrades.length,
+        wins: recentReviewWins,
+        losses: recentReviewLosses,
+        loss_rate: Number(recentReviewLossRate.toFixed(4)),
+        net_pnl_eur: Number(recentReviewNetPnlEur.toFixed(2)),
+        repeated_loss_symbols: repeatedLossSymbols,
+        repeated_loss_classes: repeatedLossClasses
+      },
       diversification
     },
     policy: {
@@ -3961,22 +4028,36 @@ function buildWorldPaperLearningPolicy(portfolio) {
       paper_capital_replenishable: true,
       fee_bleed_guard_active: feeBleedGuard,
       fee_bleed_hard_guard_active: feeBleedHardGuard,
+      review_soft_guard_active: reviewSoftGuard,
+      repeated_error_guard_active: repeatedErrorGuard,
       benchmark_recovery_required: feeBleedGuard,
       diversification_required: true,
       diversification_rule: "Non concentrare la palestra su una sola famiglia: se una classe e gia piena o perdente, il prossimo probe deve cercare una classe diversa con edge/rischio puliti.",
       conviction_rule: "Se la tesi probabilistica e valida, Nyra deve darle tempo: niente chiusure nervose e niente micro-probe che regalano fee. Se la tesi non supera i costi, osserva.",
       anti_robinhood_rule: "Se Nyra perde contro QQQ e aumenta i trade, non sta imparando: sta trasferendo capitale alle fee. In quel caso stop nuove entrate deboli, hold ragionato e solo tesi ad alta convinzione.",
+      review_rule: "Ogni blocco di 20 trade chiusi va letto come una review: se Nyra perde nello stesso simbolo o nella stessa classe piu volte, la prossima entrata su quel contesto deve diventare piu dura o essere bloccata.",
+      contextual_memory_rule: "Nyra non deve ricordare solo l'asset; deve ricordare il contesto ripetuto di errore: simbolo, classe e pattern di churn.",
       training_directive: "Area test: il capitale e virtuale e ricaricabile. Nyra puo provare e sbagliare, ma deve cercare profitto con tesi, pazienza e size coerente; ogni fee pagata senza edge e un errore da correggere.",
       objective: "learn_to_generate_paper_profit",
       penalize_symbols: [...symbolLosses.entries()].map(([symbol, loss]) => ({ symbol, loss_eur: Number(loss.toFixed(2)) })),
       penalize_classes: [...classLosses.entries()].map(([assetClass, loss]) => ({ class: assetClass, loss_eur: Number(loss.toFixed(2)) })),
-      max_new_position_multiplier: feeBleedGuard ? Math.min(maxNewPositionMultiplier, 0.25) : maxNewPositionMultiplier,
-      min_edge_for_new_entry: feeBleedHardGuard ? 82 : feeBleedGuard ? 76 : deepProtectionSignal ? 72 : elasticLearning ? 62 : 55,
-      max_risk_for_new_entry: feeBleedHardGuard ? 34 : feeBleedGuard ? 42 : deepProtectionSignal ? 42 : elasticLearning ? 55 : 65,
+      review_context: {
+        repeated_loss_symbols: repeatedLossSymbols,
+        repeated_loss_classes: repeatedLossClasses,
+        recent_window_size: recentReviewTrades.length,
+        recent_window_net_pnl_eur: Number(recentReviewNetPnlEur.toFixed(2))
+      },
+      max_new_position_multiplier: feeBleedGuard || repeatedErrorGuard ? Math.min(maxNewPositionMultiplier, 0.25) : reviewSoftGuard ? Math.min(maxNewPositionMultiplier, 0.3) : maxNewPositionMultiplier,
+      min_edge_for_new_entry: feeBleedHardGuard ? 82 : repeatedErrorGuard ? 80 : feeBleedGuard ? 76 : reviewSoftGuard ? 70 : deepProtectionSignal ? 72 : elasticLearning ? 62 : 55,
+      max_risk_for_new_entry: feeBleedHardGuard ? 34 : repeatedErrorGuard ? 38 : feeBleedGuard ? 42 : reviewSoftGuard ? 48 : deepProtectionSignal ? 42 : elasticLearning ? 55 : 65,
       reason: feeBleedHardGuard
         ? "Anti Robin Hood attivo: Nyra e sotto QQQ e ha troppi trade. Blocca nuove aperture, smette di regalare fee e lavora su hold/tesi forti."
+        : repeatedErrorGuard
+          ? "Review hardening attivo: negli ultimi trade chiusi Nyra ha ripetuto errori negli stessi simboli o classi. Prima di riaprire lo stesso contesto servono edge piu alti, rischio piu basso e piu disciplina."
         : feeBleedGuard
           ? "Nyra e sotto benchmark con churn alto: deve recuperare disciplina, non aprire nuove prove deboli. Solo tesi ad alta convinzione possono passare."
+          : reviewSoftGuard
+            ? "Review a blocchi negativa: Nyra sta ancora imparando ma il blocco recente di trade e debole. Riduce la size e alza la qualita minima delle nuove entrate."
           : pauseNewEntries
         ? "Drawdown paper oltre soglia: protezione forte, ma resta area test ricaricabile; prova solo probe eccezionali su edge molto pulito e registra l'errore."
         : hardLearningMode && allPositionsLosing

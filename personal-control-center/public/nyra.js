@@ -656,6 +656,9 @@ function renderFinanceDeskBoard() {
   const benchmark = summary?.benchmark || treasury?.benchmark || null;
   const learningState = learning?.learning_state || "observe";
   const learningPolicy = learning?.policy || {};
+  const review = learning?.metrics?.block_review || learning?.review || null;
+  const reviewSymbols = learningPolicy.review_context?.repeated_loss_symbols || review?.repeated_negative_assets || [];
+  const reviewClasses = learningPolicy.review_context?.repeated_loss_classes || [];
   const liveRows = buildFinanceLiveRows();
   const marketRows = buildWorldMarketRows();
   const paperRows = buildWorldPaperRows();
@@ -697,6 +700,8 @@ function renderFinanceDeskBoard() {
           ${learningPolicy.paper_area_is_test_lab ? `<span>area test</span>` : ""}
           ${learningPolicy.paper_capital_replenishable ? `<span>capitale ricaricabile</span>` : ""}
           ${learningPolicy.fee_bleed_guard_active ? `<span>anti fee bleed</span>` : ""}
+          ${learningPolicy.review_soft_guard_active || learning?.metrics?.review_soft_guard ? `<span>review blocco attiva</span>` : ""}
+          ${learningPolicy.repeated_error_guard_active || learning?.metrics?.repeated_error_guard ? `<span>errori ripetuti bloccati</span>` : ""}
           ${learningPolicy.benchmark_recovery_required ? `<span>recupero vs QQQ</span>` : ""}
           <span>${learningPolicy.pause_new_entries ? "nuove entrate quasi bloccate" : learningPolicy.elastic_choice_enabled ? "nuove entrate elastiche" : "nuove entrate permesse"}</span>
           ${learningPolicy.max_new_position_multiplier !== undefined ? `<span>size x${esc(Number(learningPolicy.max_new_position_multiplier || 0).toFixed(2))}</span>` : ""}
@@ -704,7 +709,12 @@ function renderFinanceDeskBoard() {
           ${learningPolicy.conviction_rule ? `<span>confidence hold</span>` : ""}
           <span>cash reserve ${esc(formatEur(treasury?.marketAllocation?.cashReserveEur || 0))}</span>
         </div>
+        ${review ? `<small>review blocco: ${esc(String(review.window_trades || review.selected_cycles_window || 0))} trade · net ${esc(formatEur(review.net_pnl_eur !== undefined ? review.net_pnl_eur : (review.netPnlEur || 0)))}${review.loss_rate !== undefined ? ` · loss rate ${esc((Number(review.loss_rate || 0) * 100).toFixed(0))}%` : ""}</small>` : ""}
+        ${reviewSymbols.length ? `<small>simboli sotto hardening: ${esc(reviewSymbols.join(", "))}</small>` : ""}
+        ${reviewClasses.length ? `<small>classi sotto hardening: ${esc(reviewClasses.join(", "))}</small>` : ""}
         ${learningPolicy.conviction_rule ? `<small>${esc(learningPolicy.conviction_rule)}</small>` : ""}
+        ${learningPolicy.review_rule ? `<small>${esc(learningPolicy.review_rule)}</small>` : ""}
+        ${learningPolicy.contextual_memory_rule ? `<small>${esc(learningPolicy.contextual_memory_rule)}</small>` : ""}
         ${learningPolicy.anti_robinhood_rule ? `<small>${esc(learningPolicy.anti_robinhood_rule)}</small>` : ""}
         ${learningPolicy.training_directive ? `<small>${esc(learningPolicy.training_directive)}</small>` : ""}
       </div>
