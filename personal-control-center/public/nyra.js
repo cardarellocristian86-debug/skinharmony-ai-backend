@@ -786,6 +786,9 @@ function renderPrimaryStrip() {
   const paperPnl = hasPaperCapital
     ? Number(paperSummary?.pnl_eur || 0)
     : 0;
+  const paperCapitalCurrent = hasPaperCapital
+    ? Number(paperSummary?.capital_eur || 0)
+    : 0;
   const alphaVsQqq = hasPaperCapital
     ? Number(paperSummary?.alpha_vs_qqq_eur || 0)
     : 0;
@@ -805,6 +808,7 @@ function renderPrimaryStrip() {
   byId("primaryCapitalCurrent").textContent = capital ? formatEur(current) : "-";
   byId("primaryLivePnl").textContent = formatEur(livePnl);
   byId("primaryPaperPnl").textContent = hasPaperCapital ? formatEur(paperPnl) : "-";
+  byId("primaryPaperCapitalCurrent").textContent = hasPaperCapital ? formatEur(paperCapitalCurrent) : "-";
   byId("primarySource").textContent = source;
   byId("primaryAlpha").textContent = hasPaperCapital ? formatEur(alphaVsQqq) : "-";
 }
