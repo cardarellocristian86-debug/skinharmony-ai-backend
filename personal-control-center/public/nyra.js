@@ -782,28 +782,31 @@ function renderPrimaryStrip() {
   const raw = state.financeRaw;
   const hasLiveCapital = state.mode === "finance" && Number.isFinite(Number(raw?.capital_eur));
   const hasPaperCapital = Number.isFinite(Number(paperSummary?.capital_eur));
+  const livePnl = Number(raw?.aggregate?.total_pnl_eur || 0);
+  const paperPnl = hasPaperCapital
+    ? Number(paperSummary?.pnl_eur || 0)
+    : 0;
+  const alphaVsQqq = hasPaperCapital
+    ? Number(paperSummary?.alpha_vs_qqq_eur || 0)
+    : 0;
   const capital = hasLiveCapital
     ? Number(raw?.capital_eur || 0)
     : hasPaperCapital
       ? Number(paperPortfolio?.initial_capital_eur || 100000)
       : 0;
   const current = hasLiveCapital
-    ? capital + Number(raw?.aggregate?.total_pnl_eur || 0)
+    ? capital + livePnl
     : hasPaperCapital
       ? Number(paperSummary.capital_eur || 0)
       : capital;
-  const pnl = hasLiveCapital
-    ? Number(raw?.aggregate?.total_pnl_eur || 0)
-    : hasPaperCapital
-      ? Number(paperSummary.pnl_eur || current - capital)
-      : 0;
-  const profit = pnl > 0 ? pnl : 0;
-  const loss = pnl < 0 ? Math.abs(pnl) : 0;
+  const source = hasLiveCapital ? "live finance" : hasPaperCapital ? "world paper" : "nessuna";
 
   byId("primaryCapitalStart").textContent = capital ? formatEur(capital) : "-";
-  byId("primaryProfit").textContent = formatEur(profit);
   byId("primaryCapitalCurrent").textContent = capital ? formatEur(current) : "-";
-  byId("primaryLoss").textContent = formatEur(loss);
+  byId("primaryLivePnl").textContent = formatEur(livePnl);
+  byId("primaryPaperPnl").textContent = hasPaperCapital ? formatEur(paperPnl) : "-";
+  byId("primarySource").textContent = source;
+  byId("primaryAlpha").textContent = hasPaperCapital ? formatEur(alphaVsQqq) : "-";
 }
 
 function formatPct(value) {
