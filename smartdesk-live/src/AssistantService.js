@@ -1024,6 +1024,7 @@ class AssistantService {
       return { ...localDecision, provider: this.getFallbackProviderName() };
     }
 
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = [
       "Sei SkinHarmony AI Assistant, assistente operativo reale del gestionale.",
       "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
@@ -1236,6 +1237,7 @@ class AssistantService {
       return this.buildAiGoldCoreliaResponse(payload, session, context);
     }
 
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = [
       "Sei AI Gold di SkinHarmony Smart Desk con Corelia come motore decisionale.",
       "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
@@ -1293,6 +1295,7 @@ class AssistantService {
       };
     }
 
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = [
       "Sei AI Gold Marketing di SkinHarmony Smart Desk con Corelia come motore decisionale.",
       "Rifinisci azioni recall gia generate da dati reali.",
