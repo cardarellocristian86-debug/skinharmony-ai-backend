@@ -844,7 +844,7 @@ function renderPrimaryStrip() {
   setSignedPrimaryMetric("primaryPaperPnlChip", "primaryPaperPnl", paperPnl, hasPaperCapital);
   byId("primaryPaperCapitalCurrent").textContent = hasPaperCapital ? formatEur(paperCapitalCurrent) : "-";
   byId("primarySource").textContent = source;
-  setSignedPrimaryMetric("primaryAlphaChip", "primaryAlpha", alphaVsQqq, hasPaperCapital);
+  setSignedPrimaryMetric("primaryAlphaChip", "primaryAlpha", alphaVsQqq, !hasLiveCapital && hasPaperCapital);
 }
 
 function formatPct(value) {
