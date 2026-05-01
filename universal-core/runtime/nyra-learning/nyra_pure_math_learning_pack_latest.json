@@ -1,0 +1,429 @@
+{
+  "pack_version": "nyra_pure_math_learning_pack_v1",
+  "generated_at": "2026-05-01T10:30:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 3200,
+  "domains": [
+    {
+      "id": "logic_foundations",
+      "label": "Logic Foundations",
+      "summary": "proposizioni, implicazione, negazione, quantificatori e coerenza formale",
+      "concept_count": 8
+    },
+    {
+      "id": "set_theory",
+      "label": "Set Theory",
+      "summary": "insiemi, appartenenza, inclusione, unione, intersezione e complemento",
+      "concept_count": 8
+    },
+    {
+      "id": "relations_and_functions",
+      "label": "Relations and Functions",
+      "summary": "dominio, codominio, immagine, iniettivita e struttura delle relazioni",
+      "concept_count": 8
+    },
+    {
+      "id": "proof_methods",
+      "label": "Proof Methods",
+      "summary": "diretta, controesempio, contrapposizione e assurdo",
+      "concept_count": 8
+    },
+    {
+      "id": "induction",
+      "label": "Induction",
+      "summary": "base, passo induttivo e chiusura della catena logica",
+      "concept_count": 8
+    },
+    {
+      "id": "discrete_structures",
+      "label": "Discrete Structures",
+      "summary": "grafi, conteggio, casi finiti e strutture combinatorie",
+      "concept_count": 8
+    },
+    {
+      "id": "invariants_and_symmetry",
+      "label": "Invariants and Symmetry",
+      "summary": "quantita che restano stabili, simmetrie e conservazione strutturale",
+      "concept_count": 8
+    },
+    {
+      "id": "abstraction_and_structure",
+      "label": "Abstraction and Structure",
+      "summary": "riconoscere forma, isolare essenziale e separare struttura da contenuto",
+      "concept_count": 8
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "astrazione",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "controesempio",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "definizione",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "invariante",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "prova",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods"
+      ]
+    },
+    {
+      "concept": "struttura",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods"
+      ]
+    },
+    {
+      "concept": "verifica",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods"
+      ]
+    },
+    {
+      "concept": "abstraction_and_structure",
+      "weight": 400,
+      "domain": "abstraction_and_structure",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "discrete_structures",
+      "weight": 400,
+      "domain": "discrete_structures",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "induction",
+      "weight": 400,
+      "domain": "induction",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "invariants_and_symmetry",
+      "weight": 400,
+      "domain": "invariants_and_symmetry",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "logic_foundations",
+      "weight": 400,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "proof_methods",
+      "weight": 400,
+      "domain": "proof_methods",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "relations_and_functions",
+      "weight": 400,
+      "domain": "relations_and_functions",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "set_theory",
+      "weight": 400,
+      "domain": "set_theory",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "pure-math-scenario:abstraction_and_structure:1",
+      "domain": "abstraction_and_structure",
+      "prompt": "riconosci la struttura essenziale di abstraction_and_structure"
+    },
+    {
+      "id": "pure-math-scenario:abstraction_and_structure:2",
+      "domain": "abstraction_and_structure",
+      "prompt": "scegli la prova o il controesempio giusto per abstraction_and_structure"
+    },
+    {
+      "id": "pure-math-scenario:abstraction_and_structure:3",
+      "domain": "abstraction_and_structure",
+      "prompt": "spiega perche la forma conta piu del dettaglio in abstraction_and_structure"
+    },
+    {
+      "id": "pure-math-scenario:discrete_structures:1",
+      "domain": "discrete_structures",
+      "prompt": "riconosci la struttura essenziale di discrete_structures"
+    },
+    {
+      "id": "pure-math-scenario:discrete_structures:2",
+      "domain": "discrete_structures",
+      "prompt": "scegli la prova o il controesempio giusto per discrete_structures"
+    },
+    {
+      "id": "pure-math-scenario:discrete_structures:3",
+      "domain": "discrete_structures",
+      "prompt": "spiega perche la forma conta piu del dettaglio in discrete_structures"
+    },
+    {
+      "id": "pure-math-scenario:induction:1",
+      "domain": "induction",
+      "prompt": "riconosci la struttura essenziale di induction"
+    },
+    {
+      "id": "pure-math-scenario:induction:2",
+      "domain": "induction",
+      "prompt": "scegli la prova o il controesempio giusto per induction"
+    },
+    {
+      "id": "pure-math-scenario:induction:3",
+      "domain": "induction",
+      "prompt": "spiega perche la forma conta piu del dettaglio in induction"
+    },
+    {
+      "id": "pure-math-scenario:invariants_and_symmetry:1",
+      "domain": "invariants_and_symmetry",
+      "prompt": "riconosci la struttura essenziale di invariants_and_symmetry"
+    },
+    {
+      "id": "pure-math-scenario:invariants_and_symmetry:2",
+      "domain": "invariants_and_symmetry",
+      "prompt": "scegli la prova o il controesempio giusto per invariants_and_symmetry"
+    },
+    {
+      "id": "pure-math-scenario:invariants_and_symmetry:3",
+      "domain": "invariants_and_symmetry",
+      "prompt": "spiega perche la forma conta piu del dettaglio in invariants_and_symmetry"
+    },
+    {
+      "id": "pure-math-scenario:logic_foundations:1",
+      "domain": "logic_foundations",
+      "prompt": "riconosci la struttura essenziale di logic_foundations"
+    },
+    {
+      "id": "pure-math-scenario:logic_foundations:2",
+      "domain": "logic_foundations",
+      "prompt": "scegli la prova o il controesempio giusto per logic_foundations"
+    },
+    {
+      "id": "pure-math-scenario:logic_foundations:3",
+      "domain": "logic_foundations",
+      "prompt": "spiega perche la forma conta piu del dettaglio in logic_foundations"
+    },
+    {
+      "id": "pure-math-scenario:proof_methods:1",
+      "domain": "proof_methods",
+      "prompt": "riconosci la struttura essenziale di proof_methods"
+    },
+    {
+      "id": "pure-math-scenario:proof_methods:2",
+      "domain": "proof_methods",
+      "prompt": "scegli la prova o il controesempio giusto per proof_methods"
+    },
+    {
+      "id": "pure-math-scenario:proof_methods:3",
+      "domain": "proof_methods",
+      "prompt": "spiega perche la forma conta piu del dettaglio in proof_methods"
+    },
+    {
+      "id": "pure-math-scenario:relations_and_functions:1",
+      "domain": "relations_and_functions",
+      "prompt": "riconosci la struttura essenziale di relations_and_functions"
+    },
+    {
+      "id": "pure-math-scenario:relations_and_functions:2",
+      "domain": "relations_and_functions",
+      "prompt": "scegli la prova o il controesempio giusto per relations_and_functions"
+    },
+    {
+      "id": "pure-math-scenario:relations_and_functions:3",
+      "domain": "relations_and_functions",
+      "prompt": "spiega perche la forma conta piu del dettaglio in relations_and_functions"
+    },
+    {
+      "id": "pure-math-scenario:set_theory:1",
+      "domain": "set_theory",
+      "prompt": "riconosci la struttura essenziale di set_theory"
+    },
+    {
+      "id": "pure-math-scenario:set_theory:2",
+      "domain": "set_theory",
+      "prompt": "scegli la prova o il controesempio giusto per set_theory"
+    },
+    {
+      "id": "pure-math-scenario:set_theory:3",
+      "domain": "set_theory",
+      "prompt": "spiega perche la forma conta piu del dettaglio in set_theory"
+    }
+  ],
+  "proof_rules": [
+    "non saltare il passaggio logico che tiene insieme l argomento",
+    "prima definisci bene l oggetto, poi ragiona su di lui",
+    "se il contenuto confonde, riduci il problema alla struttura",
+    "se una tesi sembra vera, cerca anche il controesempio prima di crederle",
+    "se una via e lunga, cerca la forma astratta che la comprime",
+    "usa invarianti e simmetrie quando il movimento del problema e piu importante dei numeri"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 4703473,
+    "semantic_bytes": 8770,
+    "semantic_ratio": 0.001865,
+    "brotli_raw_bytes": 11630,
+    "brotli_semantic_bytes": 1229,
+    "brotli_ratio": 0.105675,
+    "loss_model": "semantic_distillation"
+  }
+}

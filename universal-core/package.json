@@ -99,6 +99,7 @@
     "check:nyra:quantum-gravity-compare": "node --experimental-strip-types tests/nyra-quantum-gravity-framework-compare-test.ts",
     "check:nyra:universal-scenarios": "node --experimental-strip-types tests/nyra-universal-scenarios-test.ts",
     "check:nyra:algebra-learning": "node --experimental-strip-types tests/nyra-algebra-learning-test.ts",
+    "check:nyra:pure-math-learning": "node --experimental-strip-types tests/nyra-pure-math-learning-test.ts",
     "check:nyra:algebra-method": "node --experimental-strip-types tests/nyra-algebra-method-test.ts",
     "check:nyra:algebra-duel": "node --experimental-strip-types tests/nyra-vs-baseline-algebra-duel.ts",
     "check:nyra:advanced-duel": "node --experimental-strip-types tests/nyra-vs-baseline-advanced-duel.ts",

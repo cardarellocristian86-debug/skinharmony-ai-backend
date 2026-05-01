@@ -1,0 +1,67 @@
+{
+  "version": "nyra_god_mode_study_sources_v1",
+  "scope": "god_mode_only",
+  "domains": {
+    "finance": [
+      {
+        "label": "Investor.gov - How Stock Markets Work",
+        "url": "https://www.investor.gov/introduction-investing/investing-basics/how-stock-markets-work",
+        "kind": "official_primer"
+      },
+      {
+        "label": "Investor.gov - Stocks",
+        "url": "https://www.investor.gov/introduction-investing/investing-basics/investment-products/stocks",
+        "kind": "official_primer"
+      },
+      {
+        "label": "SEC - Investor Resources",
+        "url": "https://www.sec.gov/investor",
+        "kind": "official_primer"
+      }
+    ],
+    "algebra": [
+      {
+        "label": "Khan Academy - Solving basic equations & inequalities",
+        "url": "https://www.khanacademy.org/math/algebra-home/alg-basic-eq-ineq",
+        "kind": "structured_curriculum"
+      },
+      {
+        "label": "Khan Academy - Linear equations, functions, & graphs",
+        "url": "https://www.khanacademy.org/math/algebra-home/alg-linear-eq-func",
+        "kind": "structured_curriculum"
+      },
+      {
+        "label": "Khan Academy - System of equations",
+        "url": "https://www.khanacademy.org/math/algebra-home/alg-system-of-equations",
+        "kind": "structured_curriculum"
+      },
+      {
+        "label": "Khan Academy - Quadratic equations & functions",
+        "url": "https://www.khanacademy.org/math/algebra-home/alg-quadratics",
+        "kind": "structured_curriculum"
+      }
+    ],
+    "pure_math": [
+      {
+        "label": "MIT OpenCourseWare - Mathematics for Computer Science",
+        "url": "https://ocw.mit.edu/courses/6-042j-mathematics-for-computer-science-spring-2015/",
+        "kind": "structured_curriculum"
+      },
+      {
+        "label": "Book of Proof - Open textbook",
+        "url": "https://www.people.vcu.edu/~rhammack/BookOfProof/",
+        "kind": "proof_textbook"
+      },
+      {
+        "label": "Khan Academy - Set theory and logic basics",
+        "url": "https://www.khanacademy.org/math/statistics-probability/probability-library/basic-set-ops",
+        "kind": "structured_curriculum"
+      },
+      {
+        "label": "Stanford Encyclopedia of Philosophy - Mathematical explanation",
+        "url": "https://plato.stanford.edu/entries/mathematics-explanation/",
+        "kind": "reference_essay"
+      }
+    ]
+  }
+}

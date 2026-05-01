@@ -1,0 +1,267 @@
+{
+  "runner": "nyra_pure_math_learning_test",
+  "records": {
+    "base": 8,
+    "repetitive": 3200
+  },
+  "saved_pack_path": "/Users/cristiancardarello/skinharmony-ai-backend/universal-core/runtime/nyra-learning/nyra_pure_math_learning_pack_latest.json",
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 4703473,
+    "semantic_bytes": 8770,
+    "semantic_ratio": 0.001865,
+    "brotli_raw_bytes": 11630,
+    "brotli_semantic_bytes": 1229,
+    "brotli_ratio": 0.105675,
+    "loss_model": "semantic_distillation"
+  },
+  "domains": [
+    {
+      "id": "logic_foundations",
+      "label": "Logic Foundations",
+      "summary": "proposizioni, implicazione, negazione, quantificatori e coerenza formale",
+      "concept_count": 8
+    },
+    {
+      "id": "set_theory",
+      "label": "Set Theory",
+      "summary": "insiemi, appartenenza, inclusione, unione, intersezione e complemento",
+      "concept_count": 8
+    },
+    {
+      "id": "relations_and_functions",
+      "label": "Relations and Functions",
+      "summary": "dominio, codominio, immagine, iniettivita e struttura delle relazioni",
+      "concept_count": 8
+    },
+    {
+      "id": "proof_methods",
+      "label": "Proof Methods",
+      "summary": "diretta, controesempio, contrapposizione e assurdo",
+      "concept_count": 8
+    },
+    {
+      "id": "induction",
+      "label": "Induction",
+      "summary": "base, passo induttivo e chiusura della catena logica",
+      "concept_count": 8
+    },
+    {
+      "id": "discrete_structures",
+      "label": "Discrete Structures",
+      "summary": "grafi, conteggio, casi finiti e strutture combinatorie",
+      "concept_count": 8
+    },
+    {
+      "id": "invariants_and_symmetry",
+      "label": "Invariants and Symmetry",
+      "summary": "quantita che restano stabili, simmetrie e conservazione strutturale",
+      "concept_count": 8
+    },
+    {
+      "id": "abstraction_and_structure",
+      "label": "Abstraction and Structure",
+      "summary": "riconoscere forma, isolare essenziale e separare struttura da contenuto",
+      "concept_count": 8
+    }
+  ],
+  "top_concepts": [
+    {
+      "concept": "astrazione",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "controesempio",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "definizione",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "invariante",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods",
+        "prova"
+      ]
+    },
+    {
+      "concept": "prova",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods"
+      ]
+    },
+    {
+      "concept": "struttura",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods"
+      ]
+    },
+    {
+      "concept": "verifica",
+      "weight": 3200,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "abstraction_and_structure",
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "discrete_structures",
+        "induction",
+        "invariante",
+        "invariants_and_symmetry",
+        "logic_foundations",
+        "proof_methods"
+      ]
+    },
+    {
+      "concept": "abstraction_and_structure",
+      "weight": 400,
+      "domain": "abstraction_and_structure",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "discrete_structures",
+      "weight": 400,
+      "domain": "discrete_structures",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "induction",
+      "weight": 400,
+      "domain": "induction",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "invariants_and_symmetry",
+      "weight": 400,
+      "domain": "invariants_and_symmetry",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "logic_foundations",
+      "weight": 400,
+      "domain": "logic_foundations",
+      "related_concepts": [
+        "astrazione",
+        "controesempio",
+        "definizione",
+        "invariante",
+        "prova",
+        "struttura",
+        "verifica"
+      ]
+    }
+  ],
+  "proof_rules": [
+    "non saltare il passaggio logico che tiene insieme l argomento",
+    "prima definisci bene l oggetto, poi ragiona su di lui",
+    "se il contenuto confonde, riduci il problema alla struttura",
+    "se una tesi sembra vera, cerca anche il controesempio prima di crederle",
+    "se una via e lunga, cerca la forma astratta che la comprime",
+    "usa invarianti e simmetrie quando il movimento del problema e piu importante dei numeri"
+  ]
+}

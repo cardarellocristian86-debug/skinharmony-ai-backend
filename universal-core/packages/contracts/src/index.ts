@@ -406,6 +406,54 @@ export type NyraAlgebraLearningPack = {
   storage_profile: NyraLearningStorageProfile;
 };
 
+export type NyraPureMathLearningDomain =
+  | "logic_foundations"
+  | "set_theory"
+  | "relations_and_functions"
+  | "proof_methods"
+  | "induction"
+  | "discrete_structures"
+  | "invariants_and_symmetry"
+  | "abstraction_and_structure";
+
+export type NyraPureMathLearningRecord = {
+  record_id: string;
+  domain: NyraPureMathLearningDomain;
+  title: string;
+  source_kind: "primer" | "rule" | "scenario" | "proof_map";
+  raw_text: string;
+  concept_nodes: string[];
+  vocabulary: string[];
+  scenario_seeds: string[];
+  proof_rules: string[];
+};
+
+export type NyraPureMathLearningPack = {
+  pack_version: "nyra_pure_math_learning_pack_v1";
+  generated_at: string;
+  owner_scope: "god_mode_only";
+  records_count: number;
+  domains: Array<{
+    id: NyraPureMathLearningDomain;
+    label: string;
+    summary: string;
+    concept_count: number;
+  }>;
+  concept_graph: Array<{
+    concept: string;
+    weight: number;
+    domain: NyraPureMathLearningDomain;
+    related_concepts: string[];
+  }>;
+  scenario_templates: Array<{
+    id: string;
+    domain: NyraPureMathLearningDomain;
+    prompt: string;
+  }>;
+  proof_rules: string[];
+  storage_profile: NyraLearningStorageProfile;
+};
+
 export type NyraVitalLearningDomain =
   | "life_foundations"
   | "physical_damage"
