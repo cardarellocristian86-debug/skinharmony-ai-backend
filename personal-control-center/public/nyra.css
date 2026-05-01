@@ -312,6 +312,16 @@ a {
   border-color: var(--red-line);
 }
 
+.primary-chip-positive {
+  background: var(--green-bg);
+  border-color: var(--green-line);
+}
+
+.primary-chip-negative {
+  background: var(--red-bg);
+  border-color: var(--red-line);
+}
+
 .hero-nav a,
 .hero-nav button,
 .mode-chip,

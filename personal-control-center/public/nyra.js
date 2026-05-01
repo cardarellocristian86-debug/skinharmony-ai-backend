@@ -786,6 +786,30 @@ function formatEur(value) {
   })} EUR`;
 }
 
+function formatSignedEur(value) {
+  const amount = Number(value || 0);
+  if (amount > 0) return `+${formatEur(amount)}`;
+  if (amount < 0) return `-${formatEur(Math.abs(amount))}`;
+  return formatEur(0);
+}
+
+function setSignedPrimaryMetric(chipId, valueId, value, enabled = true) {
+  const chip = byId(chipId);
+  const valueNode = byId(valueId);
+  if (!valueNode) return;
+  if (!enabled) {
+    valueNode.textContent = "-";
+    if (chip) chip.classList.remove("primary-chip-positive", "primary-chip-negative");
+    return;
+  }
+  const amount = Number(value || 0);
+  valueNode.textContent = formatSignedEur(amount);
+  if (!chip) return;
+  chip.classList.remove("primary-chip-positive", "primary-chip-negative");
+  if (amount > 0) chip.classList.add("primary-chip-positive");
+  if (amount < 0) chip.classList.add("primary-chip-negative");
+}
+
 function renderPrimaryStrip() {
   const paperSummary = state.worldPaper?.summary || null;
   const paperPortfolio = state.worldPaper?.portfolio || null;
@@ -816,11 +840,11 @@ function renderPrimaryStrip() {
 
   byId("primaryCapitalStart").textContent = capital ? formatEur(capital) : "-";
   byId("primaryCapitalCurrent").textContent = capital ? formatEur(current) : "-";
-  byId("primaryLivePnl").textContent = formatEur(livePnl);
-  byId("primaryPaperPnl").textContent = hasPaperCapital ? formatEur(paperPnl) : "-";
+  setSignedPrimaryMetric("primaryLivePnlChip", "primaryLivePnl", livePnl, true);
+  setSignedPrimaryMetric("primaryPaperPnlChip", "primaryPaperPnl", paperPnl, hasPaperCapital);
   byId("primaryPaperCapitalCurrent").textContent = hasPaperCapital ? formatEur(paperCapitalCurrent) : "-";
   byId("primarySource").textContent = source;
-  byId("primaryAlpha").textContent = hasPaperCapital ? formatEur(alphaVsQqq) : "-";
+  setSignedPrimaryMetric("primaryAlphaChip", "primaryAlpha", alphaVsQqq, hasPaperCapital);
 }
 
 function formatPct(value) {
