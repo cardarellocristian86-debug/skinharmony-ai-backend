@@ -346,6 +346,70 @@ function readToken(req) {
   return String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 }
 
+function readBridgeKey(req) {
+  const headerKey = String(req.headers["x-skinharmony-bridge-key"] || "").trim();
+  if (headerKey) return headerKey;
+  return readToken(req).trim();
+}
+
+function hashSecret(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function parseBridgeKeyRecords() {
+  const rawJson = String(process.env.SMARTDESK_BRIDGE_KEYS_JSON || "").trim();
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  const legacyKey = String(process.env.SMARTDESK_BRIDGE_API_KEY || "").trim();
+  if (!legacyKey) return [];
+  return [{
+    id: "legacy_bridge_key",
+    label: "Legacy Smart Desk Bridge key",
+    keyHash: hashSecret(legacyKey),
+    plan: "legacy",
+    scopes: ["health", "waas_bridge"]
+  }];
+}
+
+function findBridgeAccess(req) {
+  const providedKey = readBridgeKey(req);
+  if (!providedKey) {
+    return { ok: false, code: "missing_bridge_key" };
+  }
+
+  const providedHash = hashSecret(providedKey);
+  const now = new Date();
+  const records = parseBridgeKeyRecords();
+  for (const record of records) {
+    const keyHash = String(record.keyHash || record.key_hash || "").trim();
+    if (!keyHash || keyHash.length !== providedHash.length) continue;
+    if (!crypto.timingSafeEqual(Buffer.from(keyHash), Buffer.from(providedHash))) continue;
+
+    const expiresAt = String(record.expiresAt || record.expires_at || "").trim();
+    if (expiresAt && Number.isFinite(Date.parse(expiresAt)) && new Date(expiresAt) < now) {
+      return { ok: false, code: "bridge_key_expired", id: record.id || "" };
+    }
+
+    return {
+      ok: true,
+      id: record.id || "bridge_key",
+      label: record.label || record.name || "Smart Desk Bridge",
+      plan: record.plan || "annual",
+      expiresAt,
+      scopes: Array.isArray(record.scopes) ? record.scopes : ["health", "waas_bridge"]
+    };
+  }
+
+  return { ok: false, code: "invalid_bridge_key" };
+}
+
 function requireAuth(req, res, next) {
   const session = service.getSession(readToken(req));
   if (!session) {
@@ -481,7 +545,7 @@ function verifyWooCommerceWebhook(req) {
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SkinHarmony-Bridge-Key");
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
@@ -534,6 +598,32 @@ app.use("/exports", express.static(path.join(publicDir, "exports")));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "skinharmony-smartdesk-live" });
+});
+
+app.get("/api/health", (req, res) => {
+  const bridge = findBridgeAccess(req);
+  if (!bridge.ok) {
+    return res.status(401).json({
+      success: false,
+      ok: false,
+      code: bridge.code,
+      message: "Smart Desk Bridge non autorizzato."
+    });
+  }
+
+  return res.json({
+    success: true,
+    ok: true,
+    service: "skinharmony-smartdesk-live",
+    bridge: {
+      authorized: true,
+      id: bridge.id,
+      label: bridge.label,
+      plan: bridge.plan,
+      expiresAt: bridge.expiresAt,
+      scopes: bridge.scopes
+    }
+  });
 });
 
 app.get("/fleet-intelligence", (_req, res) => {
