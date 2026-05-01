@@ -551,7 +551,7 @@ function buildWorldPaperMovementChart() {
         <line class="paper-equity-baseline" x1="${left}" y1="${baselineY}" x2="${width - right}" y2="${baselineY}"></line>
         <polyline class="paper-equity-line ${currentAbove ? "above" : "below"}" points="${path}"></polyline>
         ${markers}
-        <text class="paper-equity-label" x="${left}" y="${Math.max(14, baselineY - 7)}">100.000 EUR</text>
+        <text class="paper-equity-label" x="${left}" y="${Math.max(14, baselineY - 7)}">${esc(formatEur(initialCapital))}</text>
       </svg>
       <div class="paper-equity-legend">
         <span class="legend-dot win"></span><span>vince / realizza profitto</span>
