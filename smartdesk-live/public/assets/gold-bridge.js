@@ -649,26 +649,26 @@
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">Lettura report piu netta</div>
-          <div class="enterprise-bridge-subtitle">Lo stato selezionato deve restare visibile anche con zero dati: giorno, settimana e mese non possono sembrare uguali.</div>
+          <div class="enterprise-bridge-title">Clearer report reading</div>
+          <div class="enterprise-bridge-subtitle">The selected state must remain visible even with zero data: day, week and month cannot look the same.</div>
         </div>
-        <div class="enterprise-bridge-pill">vista ${activePeriod}</div>
+        <div class="enterprise-bridge-pill">view ${activePeriod}</div>
       </div>
       <div class="enterprise-bridge-grid">
         <div class="enterprise-bridge-card">
-          <div class="enterprise-bridge-card-title">Periodo attivo</div>
+          <div class="enterprise-bridge-card-title">Active period</div>
           <div class="enterprise-bridge-card-value">${activePeriod}</div>
-          <div class="enterprise-bridge-card-copy">La selezione attiva va letta subito sopra numeri e liste.</div>
+          <div class="enterprise-bridge-card-copy">The active selection must be readable immediately above numbers and lists.</div>
         </div>
         <div class="enterprise-bridge-card">
-          <div class="enterprise-bridge-card-title">Se i dati sono zero</div>
-          <div class="enterprise-bridge-card-value">non e silenzio</div>
-          <div class="enterprise-bridge-card-copy">La UI deve spiegare se manca attivita, chiusura o semplicemente volume nel periodo scelto.</div>
+          <div class="enterprise-bridge-card-title">If data is zero</div>
+          <div class="enterprise-bridge-card-value">it is not silence</div>
+          <div class="enterprise-bridge-card-copy">The UI must explain whether activity, checkout or simply volume is missing in the selected period.</div>
         </div>
         <div class="enterprise-bridge-card">
-          <div class="enterprise-bridge-card-title">Azione utile</div>
-          <div class="enterprise-bridge-card-value">cambia vista o verifica chiusure</div>
-          <div class="enterprise-bridge-card-copy">Se il giorno e vuoto prova settimana o mese; se tutto e vuoto controlla agenda, cassa e associazioni servizio-operatore.</div>
+          <div class="enterprise-bridge-card-title">Useful action</div>
+          <div class="enterprise-bridge-card-value">change view or verify closures</div>
+          <div class="enterprise-bridge-card-copy">If the day is empty, try week or month; if everything is empty, check schedule, checkout and service-staff links.</div>
         </div>
       </div>
     `;
@@ -678,40 +678,40 @@
   function buildEnterpriseSurfacePanel(route) {
     const config = {
       "/services": {
-        title: "Servizi segmentati meglio",
-        subtitle: "Listino, operatori e risorse vanno letti come superfici diverse dello stesso sistema.",
+        title: "Services segmented more clearly",
+        subtitle: "Catalog, staff and resources should be read as different surfaces of the same system.",
         actions: [
-          { label: "Listino", href: "/services", active: true },
-          { label: "Turni", href: "/shifts" },
-          { label: "Protocolli", href: "/protocols" }
+          { label: "Catalog", href: "/services", active: true },
+          { label: "Shifts", href: "/shifts" },
+          { label: "Protocols", href: "/protocols" }
         ],
         cards: [
-          ["Listino", "Tieni prezzo, durata e categoria coerenti."],
-          ["Operatori", "Se manca staff la shell deve dirlo in modo utile."],
-          ["Risorse", "Tecnologie e postazioni vanno lette come vincoli operativi."]
+          ["Catalog", "Keep price, duration and category aligned."],
+          ["Staff", "If staff is missing the shell must say it in a useful way."],
+          ["Resources", "Technologies and rooms should be read as operational constraints."]
         ]
       },
       "/shifts": {
-        title: "Turni leggibili a blocchi",
-        subtitle: "Calendario, presenze e template devono essere separati meglio nelle schermate lunghe.",
+        title: "Shifts leggibili a blocchi",
+        subtitle: "Calendar, attendance and templates should be separated more clearly in long screens.",
         actions: [
-          { label: "Turni", href: "/shifts", active: true },
+          { label: "Shifts", href: "/shifts", active: true },
           { label: "Servizi", href: "/services" },
-          { label: "Protocolli", href: "/protocols" }
+          { label: "Protocols", href: "/protocols" }
         ],
         cards: [
-          ["Calendario", "Prima chi leggo oggi e dove ho buchi."],
-          ["Presenze", "Poi conferme e controllo operativo."],
-          ["Template", "Infine gli schemi replicabili del centro."]
+          ["Calendar", "First see who works today and where gaps exist."],
+          ["Attendance", "Then confirmations and operational control."],
+          ["Templates", "Finally the center reusable patterns."]
         ]
       },
       "/protocols": {
-        title: "Protocolli meno piatti",
+        title: "Protocols meno piatti",
         subtitle: "Libreria, scheda cliente e bozza AI devono sembrare tre piani distinti, non una pagina unica lunga.",
         actions: [
-          { label: "Protocolli", href: "/protocols", active: true },
+          { label: "Protocols", href: "/protocols", active: true },
           { label: "Servizi", href: "/services" },
-          { label: "Turni", href: "/shifts" }
+          { label: "Shifts", href: "/shifts" }
         ],
         cards: [
           ["Libreria", "Prima cosa esiste gia e cosa manca."],
@@ -820,7 +820,7 @@
     }
     if (isSurfaceRoute()) {
       const route = window.location.pathname || "/";
-      const targetText = route === "/services" ? "Servizi e risorse" : route === "/shifts" ? "Turni" : "Protocolli";
+      const targetText = route === "/services" ? "Servizi e risorse" : route === "/shifts" ? "Shifts" : "Protocols";
       const anchor = findAnchorByText(targetText);
       const panel = buildEnterpriseSurfacePanel(route);
       if (anchor && panel) {
