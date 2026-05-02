@@ -420,6 +420,149 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function localizeServerText(value, language = "it") {
+  if (language !== "en") return value;
+  return String(value || "")
+    .replace(/\bStato centro\b/g, "Center state")
+    .replace(/\bPriorità del giorno\b/g, "Daily priorities")
+    .replace(/\bOpportunità nascoste\b/g, "Hidden opportunities")
+    .replace(/\bAzioni immediate\b/g, "Immediate actions")
+    .replace(/\bRedditività prodotti e tecnologie\b/g, "Product and technology profitability")
+    .replace(/\bPerformance centro\b/g, "Center performance")
+    .replace(/\bsalute centro\b/g, "center health")
+    .replace(/\bStato centro non ancora rappresentativo\b/g, "Center state is not representative yet")
+    .replace(/\bLettura centro prudente: configurazione economica incompleta\b/g, "Cautious center reading: economic setup incomplete")
+    .replace(/\bVolume presente, lettura centro ancora prudente\b/g, "Volume is present, center reading is still cautious")
+    .replace(/\bIl centro ha segnali di lavoro reali, ma finché i costi non sono completi la salute centro va letta con prudenza e non come verdetto\./g, "The center shows real work signals, but until costs are complete its health must be read cautiously, not as a verdict.")
+    .replace(/\bIn questa fase non leggere questo blocco come giudizio sul centro: la lettura completa si sblocca quando configurazione economica e storico diventano più rappresentativi\./g, "At this stage do not read this block as a judgment on the center: the full reading unlocks when the economic setup and history become more representative.")
+    .replace(/\bAumenta agenda e richiami prima di lavorare sui margini\./g, "Increase schedule volume and recalls before working on margins.")
+    .replace(/\bRinforza continuità clienti e riempimento agenda\./g, "Strengthen client continuity and schedule fill.")
+    .replace(/\bMantieni il ritmo e controlla solo i punti deboli\./g, "Keep the pace and review only the weak points.")
+    .replace(/\bIl centro regge: lavora su margini e crescita selettiva\./g, "The center is holding: work on margins and selective growth.")
+    .replace(/\bcompleta configurazione prima di leggere lo stato centro\b/g, "complete setup before reading center state")
+    .replace(/\baumenta volume agenda e richiami prima dei margini\b/g, "increase schedule volume and recalls before margins")
+    .replace(/\brinforza continuità clienti e saturazione\b/g, "strengthen client continuity and schedule fill")
+    .replace(/\bmantieni controllo operativo\b/g, "keep operational control")
+    .replace(/\bCliente da presidiare prima che perda continuità\./g, "A client to protect before continuity is lost.")
+    .replace(/\bcontattare entro 3 giorni\b/g, "contact within 3 days")
+    .replace(/\bGiornata scarica:\b/g, "Low-load day:")
+    .replace(/\bRiempi il buco con recall mirati prima di spingere altri servizi\./g, "Fill the gap with targeted recalls before pushing other services.")
+    .replace(/\briempi buco agenda\b/g, "fill the schedule gap")
+    .replace(/\bpagamenti da collegare\b/g, "payments to link")
+    .replace(/\bSistema la cassa prima di leggere report e redditività\./g, "Fix checkout before reading reports and profitability.")
+    .replace(/\bAlcuni movimenti non sono collegati a cliente o appuntamento\./g, "Some movements are not linked to a client or appointment.")
+    .replace(/\bcollega pagamenti\b/g, "link payments")
+    .replace(/\bNon leggere questo come giudizio sul centro: prima va completata la configurazione economica\./g, "Do not read this as a judgment on the center: complete the economic setup first.")
+    .replace(/\bControlla subito prezzo, durata e consumo prodotto\./g, "Review price, duration and product consumption immediately.")
+    .replace(/\bMargine migliorabile: correggi prima di spingere il servizio\./g, "Margin can improve: correct it before pushing the service.")
+    .replace(/\bVolume presente, ma i costi non sono completi\. Mancano\b/g, "Volume is present, but costs are not complete. Missing")
+    .replace(/\bcosti servizio e\b/g, "service costs and")
+    .replace(/\bcosti orari\./g, "hourly costs.")
+    .replace(/\bcompleta configurazione costi\b/g, "complete cost setup")
+    .replace(/\bcontrolla costo servizio\b/g, "review service cost")
+    .replace(/\bservizio da spingere\b/g, "service to push")
+    .replace(/\bÈ un servizio utile da proporre con più continuità\./g, "It is a service worth proposing more consistently.")
+    .replace(/\busa questo servizio come riferimento commerciale\./g, "use this service as a commercial benchmark.")
+    .replace(/\bspingi questo servizio\b/g, "promote this service")
+    .replace(/\bSegnale utile ma secondario: prima chiarisci la configurazione economica\./g, "Useful but secondary signal: clarify the economic setup first.")
+    .replace(/\bUsa il suo schema come riferimento operativo\./g, "Use this pattern as an operational benchmark.")
+    .replace(/\btieni come riferimento, non come priorita primaria\b/g, "keep as reference, not as the primary priority")
+    .replace(/\busa come benchmark operativo\b/g, "use as operational benchmark")
+    .replace(/\bVerifica agenda, servizi assegnati e continuità cliente\./g, "Review schedule, assigned services and client continuity.")
+    .replace(/\bverifica operatore\b/g, "review operator")
+    .replace(/\btecnologia sottoutilizzata o poco redditizia\b/g, "underused or weak-profitability technology")
+    .replace(/\bDecidi se promuoverla meglio o ridurne il peso operativo\./g, "Decide whether to promote it better or reduce its operational weight.")
+    .replace(/\bpromuovi tecnologia coerente\b/g, "promote the right technology")
+    .replace(/\bsotto controllo\b/g, "under review")
+    .replace(/\bEvita stop operativi sui servizi collegati\./g, "Avoid operational stops on linked services.")
+    .replace(/\bverifica stock\b/g, "review stock")
+    .replace(/\bcliente alto valore da presidiare\b/g, "high-value client to protect")
+    .replace(/\bNon trattarlo come cliente normale: prepara percorso o upgrade\./g, "Do not treat this client as standard: prepare a path or an upgrade.")
+    .replace(/\bproponi percorso o upgrade\b/g, "propose a path or upgrade")
+    .replace(/\bRedditività non ancora leggibile\b/g, "Profitability not readable yet")
+    .replace(/\bRedditività pronta per lettura operativa\b/g, "Profitability ready for operational reading")
+    .replace(/\bIl centro lavora, ma i margini sarebbero fraintendibili finché costi servizi e costi orari restano incompleti\./g, "The center is working, but margins would be misleading until service costs and hourly staff costs are complete.")
+    .replace(/\bLa lettura economica può essere usata come supporto operativo\./g, "The economic reading can be used as operational support.")
+    .replace(/\bConfigurazione economica sufficiente per letture Gold più forti\./g, "Economic setup is sufficient for stronger Gold readings.")
+    .replace(/\bcontrolla margini e opportunita\b/g, "review margins and opportunities")
+    .replace(/\bclienti da leggere con priorità\b/g, "clients to review with priority")
+    .replace(/\bMarketing prudente: nessun contatto promosso oggi\b/g, "Cautious marketing: no contact promoted today")
+    .replace(/\bParti dai clienti più urgenti e prepara messaggi mirati\./g, "Start from the most urgent clients and prepare targeted messages.")
+    .replace(/\bCon le regole attuali Gold non ha trovato recall abbastanza sicuri da promuovere oggi\./g, "With the current rules Gold did not find recall actions safe enough to promote today.")
+    .replace(/\bGold ordina recall, rischio operativo e riferimenti economici reali già presenti prima di far partire il messaggio\./g, "Gold orders recall, operational risk and real economic references already present before starting the message.")
+    .replace(/\bQuesto non significa che il marketing non funzioni: oggi mancano contatti utili o segnali abbastanza solidi per spingere un’azione\./g, "This does not mean marketing is failing: today there are not enough useful contacts or strong enough signals to push an action.")
+    .replace(/\blavora la lista recall\b/g, "work the recall list")
+    .replace(/\brivedi contatti, consensi e storico\b/g, "review contacts, consents and history")
+    .replace(/\bQualità dati\b/g, "Data quality")
+    .replace(/\bCorreggi i dati che bloccano letture affidabili\./g, "Correct the data that blocks reliable readings.")
+    .replace(/\bMantieni puliti cassa, clienti e servizi\./g, "Keep checkout, clients and services clean.")
+    .replace(/\bDati sufficienti per lettura operativa\./g, "Data is sufficient for operational reading.")
+    .replace(/\bcorreggi dati sporchi quando rallentano l'analisi\b/g, "correct dirty data when it slows the analysis")
+    .replace(/\bGenera azioni\b/g, "Generate actions")
+    .replace(/\bPrepara messaggio\b/g, "Prepare message")
+    .replace(/\bApri dashboard\b/g, "Open dashboard")
+    .replace(/\bApri agenda\b/g, "Open schedule")
+    .replace(/\bApri cassa\b/g, "Open checkout")
+    .replace(/\bApri redditività\b/g, "Open profitability")
+    .replace(/\bApri marketing\b/g, "Open marketing")
+    .replace(/\bApri dettaglio\b/g, "Open details")
+    .replace(/\bApri servizi\b/g, "Open services")
+    .replace(/\bApri clienti\b/g, "Open clients")
+    .replace(/\bApri cliente\b/g, "Open client")
+    .replace(/\bApri magazzino\b/g, "Open stock")
+    .replace(/\bApri operatore\b/g, "Open operator")
+    .replace(/\bRedditività da configurare: configurazione economica incompleta\b/g, "Profitability to configure: incomplete economic setup")
+    .replace(/\bRedditività da configurare\b/g, "Profitability to configure")
+    .replace(/\blettura economica non ancora affidabile\b/g, "economic reading is not reliable yet")
+    .replace(/\bstai perdendo soldi\b/g, "you are losing money")
+    .replace(/\bmargine migliorabile\b/g, "margin can improve")
+    .replace(/\bstai guadagnando bene\b/g, "you are earning well")
+    .replace(/\bVolume presente, ma la redditivita non e leggibile finche non completi costi servizio e costi orari\./g, "Volume is present, but profitability cannot be read until service costs and hourly staff costs are complete.")
+    .replace(/\bVerifica prezzo, durata, costo operatore e consumo prodotti: il servizio rischia di lavorare in perdita\./g, "Review price, duration, staff cost and product consumption: the service may be working at a loss.")
+    .replace(/\bMargine basso: controlla durata reale e prodotti usati prima di spingere il servizio\./g, "Low margin: review real duration and products used before pushing the service.")
+    .replace(/\bServizio sano: puoi mantenerlo o usarlo come riferimento commerciale\./g, "Healthy service: you can keep it or use it as a commercial benchmark.")
+    .replace(/\bCompleta costi servizi e costo orario operatori prima di usare questa lettura come guida economica\./g, "Complete service costs and staff hourly cost before using this reading as an economic guide.")
+    .replace(/\bControlla il dato nel modulo servizi: prezzo, durata reale e consumo prodotto\./g, "Review the data in Services: price, real duration and product consumption.")
+    .replace(/\bVerifica costi inseriti e valuta se il servizio va spinto o corretto\./g, "Review entered costs and decide whether the service should be pushed or corrected.")
+    .replace(/\bUsalo come servizio benchmark per costruire offerte sostenibili\./g, "Use it as a benchmark service to build sustainable offers.")
+    .replace(/\bServizio\b/g, "Service")
+    .replace(/\bconfigurazione economica incompleta\b/g, "incomplete economic setup")
+    .replace(/\bin perdita\b/g, "at a loss")
+    .replace(/\bcon margine basso\b/g, "with low margin");
+}
+
+function localizeDecisionCenterPayload(payload, language = "it") {
+  if (!payload || language !== "en") return payload;
+  return {
+    ...payload,
+    summary: payload.summary ? {
+      ...payload.summary,
+      centerHealth: payload.summary.centerHealth ? {
+        ...payload.summary.centerHealth,
+        statusLabel: localizeServerText(payload.summary.centerHealth.statusLabel, language),
+        reason: localizeServerText(payload.summary.centerHealth.reason, language)
+      } : payload.summary.centerHealth
+    } : payload.summary,
+    sections: Array.isArray(payload.sections)
+      ? payload.sections.map((section) => ({
+          ...section,
+          title: localizeServerText(section.title, language),
+          items: Array.isArray(section.items)
+            ? section.items.map((item) => ({
+                ...item,
+                area: localizeServerText(item.area, language),
+                conclusion: localizeServerText(item.conclusion, language),
+                reason: localizeServerText(item.reason, language),
+                details: localizeServerText(item.details, language),
+                action: localizeServerText(item.action, language),
+                button: localizeServerText(item.button, language)
+              }))
+            : []
+        }))
+      : []
+  };
+}
+
 function addDaysIso(value, days) {
   const base = new Date(value || nowIso());
   const next = new Date(base.getTime() + Number(days || 0) * 86400000);
@@ -1714,7 +1857,6 @@ class DesktopMirrorService {
     this.treatmentsRepository = this.createRepository("treatments", []);
     this.protocolsRepository = this.createRepository("protocols", []);
     this.aiMarketingActionsRepository = this.createRepository("ai_marketing_actions", []);
-    this.aiGoldLearningRepository = this.createRepository("ai_gold_learning", []);
     this.dashboardSnapshotsRepository = this.createRepository("dashboard_snapshots", []);
     this.goldStateRepository = this.createRepository("gold_state", []);
     this.goldDecisionHistoryRepository = this.createRepository("gold_decision_history", []);
@@ -5256,7 +5398,6 @@ class DesktopMirrorService {
         { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
         { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
         { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
-        { name: "ai_gold_learning", filePath: path.join(DATA_DIR, "ai_gold_learning.json"), defaultValue: [] },
         { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
         { name: "gold_state", filePath: path.join(DATA_DIR, "gold_state.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
@@ -5372,6 +5513,11 @@ class DesktopMirrorService {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
     return { ...defaultSettings, ...(store[centerId] || {}), centerId };
+  }
+
+  getRuntimeLanguage(session = null) {
+    const settings = this.getSettings(session);
+    return String(settings.appLanguage || "it").toLowerCase() === "en" ? "en" : "it";
   }
 
   saveSettings(payload = {}, session = null) {
@@ -9399,7 +9545,6 @@ class DesktopMirrorService {
         actions: []
       };
     }
-    const learning = this.getAiMarketingAutopilotLearning(session);
     const marketingActions = this.getGoldState(session).marketingActions || this.buildGoldMarketingActionState(session);
     const actions = (marketingActions.actions || [])
       .sort((a, b) => {
@@ -9415,7 +9560,6 @@ class DesktopMirrorService {
       actions,
       debug: marketingActions.debug || {},
       counters: marketingActions.counters || {},
-      learning,
       sourceEndpoint: "/api/ai-gold/state",
       summary: {
         total: actions.length,
@@ -9425,273 +9569,6 @@ class DesktopMirrorService {
         archived: actions.filter((item) => ["archived", "discarded"].includes(String(item.status || ""))).length
       }
     };
-  }
-
-  getAiGoldLearningRecordId(centerId = "") {
-    return `gold_learning:${String(centerId || DEFAULT_CENTER_ID)}`;
-  }
-
-  buildDefaultAiGoldLearningRecord(centerId = "", centerName = "") {
-    return {
-      id: this.getAiGoldLearningRecordId(centerId),
-      centerId: String(centerId || DEFAULT_CENTER_ID),
-      centerName: String(centerName || DEFAULT_CENTER_NAME),
-      updatedAt: nowIso(),
-      marketingAutopilot: {
-        totals: {
-          generated: 0,
-          approved: 0,
-          copied: 0,
-          done: 0,
-          archived: 0,
-          discarded: 0
-        },
-        segmentStats: {},
-        priorityStats: {},
-        toneStats: {},
-        lastActionAt: "",
-        lastGeneratedAt: "",
-        lastEvent: null,
-        recentEvents: []
-      }
-    };
-  }
-
-  getAiGoldLearningRecord(session = null) {
-    const centerId = this.getCenterId(session);
-    const recordId = this.getAiGoldLearningRecordId(centerId);
-    const existing = this.aiGoldLearningRepository.findById(recordId);
-    if (existing) return existing;
-    const created = this.buildDefaultAiGoldLearningRecord(centerId, this.getCenterName(session));
-    this.aiGoldLearningRepository.create(created);
-    return created;
-  }
-
-  saveAiGoldLearningRecord(record = {}) {
-    const recordId = String(record.id || "");
-    if (!recordId) return null;
-    if (this.aiGoldLearningRepository.findById(recordId)) {
-      return this.aiGoldLearningRepository.update(recordId, () => record);
-    }
-    return this.aiGoldLearningRepository.create(record);
-  }
-
-  getAiMarketingLearningBucketKey(value = "", fallback = "non_indicato") {
-    const next = slugifySegment(value);
-    return next || fallback;
-  }
-
-  getAiMarketingLearningToneLabel(action = {}) {
-    const priority = String(action.priority || "").toLowerCase();
-    const risk = String(action.risk || "").toLowerCase();
-    if (priority === "alta" || risk === "alto") return "deciso";
-    if (priority === "media" || risk === "medio") return "equilibrato";
-    return "soft";
-  }
-
-  ensureAiMarketingLearningBucket(store = {}, key = "", label = "") {
-    const current = store[key];
-    if (current) {
-      return {
-        ...store,
-        [key]: {
-          generated: 0,
-          approved: 0,
-          copied: 0,
-          done: 0,
-          archived: 0,
-          discarded: 0,
-          ...current,
-          label: current.label || label || key
-        }
-      };
-    }
-    return {
-      ...store,
-      [key]: {
-        label: label || key,
-        generated: 0,
-        approved: 0,
-        copied: 0,
-        done: 0,
-        archived: 0,
-        discarded: 0
-      }
-    };
-  }
-
-  updateAiMarketingLearningRecord(mutator, session = null) {
-    const current = this.getAiGoldLearningRecord(session);
-    const next = mutator({
-      ...current,
-      marketingAutopilot: {
-        ...(current.marketingAutopilot || {}),
-        totals: {
-          generated: 0,
-          approved: 0,
-          copied: 0,
-          done: 0,
-          archived: 0,
-          discarded: 0,
-          ...((current.marketingAutopilot || {}).totals || {})
-        },
-        segmentStats: { ...((current.marketingAutopilot || {}).segmentStats || {}) },
-        priorityStats: { ...((current.marketingAutopilot || {}).priorityStats || {}) },
-        toneStats: { ...((current.marketingAutopilot || {}).toneStats || {}) },
-        recentEvents: Array.isArray((current.marketingAutopilot || {}).recentEvents)
-          ? [...((current.marketingAutopilot || {}).recentEvents || [])]
-          : []
-      }
-    });
-    return this.saveAiGoldLearningRecord({
-      ...next,
-      updatedAt: nowIso()
-    });
-  }
-
-  noteAiMarketingLearningGeneration(action = {}, session = null) {
-    const segmentKey = this.getAiMarketingLearningBucketKey(action.segment, "generico");
-    const priorityKey = this.getAiMarketingLearningBucketKey(action.priority, "media");
-    const toneLabel = this.getAiMarketingLearningToneLabel(action);
-    const event = {
-      type: "generated",
-      clientId: String(action.clientId || ""),
-      clientName: String(action.clientName || "Cliente"),
-      segment: String(action.segment || ""),
-      priority: String(action.priority || ""),
-      at: nowIso()
-    };
-    this.updateAiMarketingLearningRecord((record) => {
-      const learning = record.marketingAutopilot;
-      learning.segmentStats = this.ensureAiMarketingLearningBucket(learning.segmentStats, segmentKey, action.segment || "Generico");
-      learning.priorityStats = this.ensureAiMarketingLearningBucket(learning.priorityStats, priorityKey, action.priority || "Media");
-      learning.toneStats = this.ensureAiMarketingLearningBucket(learning.toneStats, toneLabel, toneLabel);
-      learning.totals.generated = Number(learning.totals.generated || 0) + 1;
-      learning.segmentStats[segmentKey].generated += 1;
-      learning.priorityStats[priorityKey].generated += 1;
-      learning.toneStats[toneLabel].generated += 1;
-      learning.lastGeneratedAt = nowIso();
-      learning.lastEvent = event;
-      learning.recentEvents = [event, ...(learning.recentEvents || [])].slice(0, 20);
-      return record;
-    }, session);
-  }
-
-  noteAiMarketingLearningOutcome(action = {}, status = "", session = null) {
-    const normalizedStatus = String(status || "").toLowerCase();
-    if (!["approved", "copied", "done", "archived", "discarded"].includes(normalizedStatus)) return;
-    const segmentKey = this.getAiMarketingLearningBucketKey(action.segment, "generico");
-    const priorityKey = this.getAiMarketingLearningBucketKey(action.priority, "media");
-    const toneLabel = this.getAiMarketingLearningToneLabel(action);
-    const event = {
-      type: normalizedStatus,
-      clientId: String(action.clientId || ""),
-      clientName: String(action.clientName || "Cliente"),
-      segment: String(action.segment || ""),
-      priority: String(action.priority || ""),
-      at: nowIso()
-    };
-    this.updateAiMarketingLearningRecord((record) => {
-      const learning = record.marketingAutopilot;
-      learning.segmentStats = this.ensureAiMarketingLearningBucket(learning.segmentStats, segmentKey, action.segment || "Generico");
-      learning.priorityStats = this.ensureAiMarketingLearningBucket(learning.priorityStats, priorityKey, action.priority || "Media");
-      learning.toneStats = this.ensureAiMarketingLearningBucket(learning.toneStats, toneLabel, toneLabel);
-      learning.totals[normalizedStatus] = Number(learning.totals[normalizedStatus] || 0) + 1;
-      learning.segmentStats[segmentKey][normalizedStatus] += 1;
-      learning.priorityStats[priorityKey][normalizedStatus] += 1;
-      learning.toneStats[toneLabel][normalizedStatus] += 1;
-      learning.lastActionAt = nowIso();
-      learning.lastEvent = event;
-      learning.recentEvents = [event, ...(learning.recentEvents || [])].slice(0, 20);
-      return record;
-    }, session);
-  }
-
-  getAiMarketingLearningBucketScore(bucket = {}) {
-    return (
-      Number(bucket.done || 0) * 4
-      + Number(bucket.copied || 0) * 2
-      + Number(bucket.approved || 0)
-      - Number(bucket.archived || 0) * 2
-      - Number(bucket.discarded || 0) * 3
-    );
-  }
-
-  getAiMarketingLearningBoost(suggestion = {}, learning = null) {
-    if (!learning) return 0;
-    const segmentKey = this.getAiMarketingLearningBucketKey(suggestion.segment, "generico");
-    const toneKey = this.getAiMarketingLearningToneLabel(suggestion);
-    const segmentBucket = learning.segmentStats?.[segmentKey] || null;
-    const toneBucket = learning.toneStats?.[toneKey] || null;
-    const segmentScore = segmentBucket ? this.getAiMarketingLearningBucketScore(segmentBucket) : 0;
-    const toneScore = toneBucket ? this.getAiMarketingLearningBucketScore(toneBucket) : 0;
-    return segmentScore * 10 + toneScore * 4;
-  }
-
-  getAiMarketingAutopilotLearning(session = null) {
-    const learning = this.getAiGoldLearningRecord(session).marketingAutopilot || {};
-    const totals = {
-      generated: Number(learning.totals?.generated || 0),
-      approved: Number(learning.totals?.approved || 0),
-      copied: Number(learning.totals?.copied || 0),
-      done: Number(learning.totals?.done || 0),
-      archived: Number(learning.totals?.archived || 0),
-      discarded: Number(learning.totals?.discarded || 0)
-    };
-    const segmentEntries = Object.entries(learning.segmentStats || {});
-    const toneEntries = Object.entries(learning.toneStats || {});
-    const bestSegment = segmentEntries
-      .map(([key, bucket]) => ({ key, bucket, score: this.getAiMarketingLearningBucketScore(bucket) }))
-      .sort((a, b) => b.score - a.score)[0] || null;
-    const bestTone = toneEntries
-      .map(([key, bucket]) => ({ key, bucket, score: this.getAiMarketingLearningBucketScore(bucket) }))
-      .sort((a, b) => b.score - a.score)[0] || null;
-    const approvalRate = totals.generated ? totals.approved / totals.generated : 0;
-    const archiveRate = totals.generated ? (totals.archived + totals.discarded) / totals.generated : 0;
-    const completionRate = totals.generated ? totals.done / totals.generated : 0;
-    let profileKey = "in_apprendimento";
-    let profileLabel = "Centro in apprendimento";
-    if (totals.generated >= 6 && archiveRate >= 0.35) {
-      profileKey = "prudente";
-      profileLabel = "Centro prudente";
-    } else if (totals.done >= 3 && completionRate >= 0.25) {
-      profileKey = "reattivo";
-      profileLabel = "Centro reattivo";
-    } else if (totals.approved >= 3 && totals.done < Math.max(1, Math.round(totals.approved / 3))) {
-      profileKey = "da_accompagnare";
-      profileLabel = "Centro da accompagnare";
-    }
-    return {
-      centerAdjusted: totals.generated > 0,
-      profileKey,
-      profileLabel,
-      generatedActions: totals.generated,
-      approvedActions: totals.approved,
-      copiedActions: totals.copied,
-      completedActions: totals.done,
-      archivedActions: totals.archived + totals.discarded,
-      approvalRate,
-      archiveRate,
-      completionRate,
-      bestSegmentKey: bestSegment?.key || "",
-      bestSegmentLabel: bestSegment?.bucket?.label || "",
-      preferredToneKey: bestTone?.key || "",
-      preferredToneLabel: bestTone?.bucket?.label || "",
-      lastActionAt: String(learning.lastActionAt || ""),
-      lastGeneratedAt: String(learning.lastGeneratedAt || ""),
-      lastEvent: learning.lastEvent || null,
-      recentEvents: Array.isArray(learning.recentEvents) ? learning.recentEvents.slice(0, 10) : []
-    };
-  }
-
-  resetAiMarketingAutopilotLearning(session = null) {
-    this.assertCanOperate(session);
-    if (!this.hasGoldIntelligence(session)) {
-      throw new Error("Learning disponibile solo con piano Gold");
-    }
-    const reset = this.buildDefaultAiGoldLearningRecord(this.getCenterId(session), this.getCenterName(session));
-    this.saveAiGoldLearningRecord(reset);
-    return this.getAiMarketingAutopilotLearning(session);
   }
 
   generateAiMarketingAutopilotActions(session = null) {
@@ -9711,12 +9588,10 @@ class DesktopMirrorService {
     const insight = snapshot.marketing || { suggestions: [] };
     const created = [];
     const priorityRank = { alta: 3, media: 2, bassa: 1 };
-    const learningRecord = this.getAiGoldLearningRecord(session).marketingAutopilot || {};
     const candidates = (insight.suggestions || [])
       .filter((item) => item.hasMarketingConsent)
       .sort((a, b) => (
         (priorityRank[b.priority] || 0) - (priorityRank[a.priority] || 0)
-        || this.getAiMarketingLearningBoost(b, learningRecord) - this.getAiMarketingLearningBoost(a, learningRecord)
         || Number(b.daysSinceLastVisit || 0) - Number(a.daysSinceLastVisit || 0)
       ))
       .slice(0, 12);
@@ -9758,7 +9633,6 @@ class DesktopMirrorService {
         valueLabel: suggestion.valueLabel || "",
         lossIfIgnoredCents: 0,
         suggestedMessage: suggestion.message || "",
-        learningAdjustment: this.getAiMarketingLearningBoost(suggestion, learningRecord),
         source: "ai_gold_marketing",
         aiProvider: "rules",
         generatedAt: nowIso(),
@@ -9769,7 +9643,6 @@ class DesktopMirrorService {
         copiedAt: ""
       };
       this.aiMarketingActionsRepository.create(action);
-      this.noteAiMarketingLearningGeneration(action, session);
       created.push(action);
     });
     if (created.length) {
@@ -9780,8 +9653,7 @@ class DesktopMirrorService {
       goldEnabled: true,
       generatedAt: nowIso(),
       createdCount: created.length,
-      actions: created,
-      learning: this.getAiMarketingAutopilotLearning(session)
+      actions: created
     };
   }
 
@@ -9834,16 +9706,11 @@ class DesktopMirrorService {
         completedAt: status === "done" ? now : "",
         archivedAt: ["archived", "discarded"].includes(status) ? now : "",
         approvedAt: status === "approved" ? now : "",
-        copiedAt: status === "copied" ? now : "",
-        learningAdjustment: 0
+        copiedAt: status === "copied" ? now : ""
       });
-      this.noteAiMarketingLearningOutcome(created, status, session);
       this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
       return created;
     }
-    const current = this.filterByCenter(this.aiMarketingActionsRepository.list(), session)
-      .find((item) => String(item.id || "") === String(actionId || ""));
-    const previousStatus = String(current?.status || "").toLowerCase();
     const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
       ...current,
       status: status === "discarded" ? "archived" : status,
@@ -9853,9 +9720,6 @@ class DesktopMirrorService {
       completedAt: status === "done" ? nowIso() : current.completedAt || "",
       archivedAt: ["archived", "discarded"].includes(status) ? nowIso() : current.archivedAt || ""
     }), session);
-    if (updated && previousStatus !== status) {
-      this.noteAiMarketingLearningOutcome(updated, status, session);
-    }
     return updated;
   }
 
@@ -12636,7 +12500,7 @@ class DesktopMirrorService {
       items: section.items.slice(0, 4)
     }));
     const totalInsights = sections.reduce((sum, section) => sum + section.items.length, 0);
-    return {
+    const payload = {
       goldEnabled: true,
       generatedAt: nowIso(),
       summary: {
@@ -12668,9 +12532,10 @@ class DesktopMirrorService {
       },
       sections
     };
+    return localizeDecisionCenterPayload(payload, this.getRuntimeLanguage(session));
   }
 
-  buildAiGoldProfitabilityFromOverview(overview = {}) {
+  buildAiGoldProfitabilityFromOverview(overview = {}, session = null) {
     const services = Array.isArray(overview.services) ? overview.services : [];
     const suggestions = services.map((service) => {
       const status = String(service.status || "HEALTHY");
@@ -12743,13 +12608,30 @@ class DesktopMirrorService {
         body: item.suggestion,
         serviceId: item.id
       }));
-    return {
+    const payload = {
       goldEnabled: true,
       generatedAt: nowIso(),
       summary: overview.totals,
       monthlyTrend: overview.monthlyTrend || [],
       alerts,
       suggestions
+    };
+    if (this.getRuntimeLanguage(session) !== "en") return payload;
+    return {
+      ...payload,
+      alerts: payload.alerts.map((item) => ({
+        ...item,
+        title: localizeServerText(item.title, "en"),
+        body: localizeServerText(item.body, "en")
+      })),
+      suggestions: payload.suggestions.map((item) => ({
+        ...item,
+        name: localizeServerText(item.name, "en"),
+        clearConclusion: localizeServerText(item.clearConclusion, "en"),
+        operatingAction: localizeServerText(item.operatingAction, "en"),
+        nextAction: localizeServerText(item.nextAction, "en"),
+        suggestion: localizeServerText(item.suggestion, "en")
+      }))
     };
   }
 
@@ -12765,7 +12647,7 @@ class DesktopMirrorService {
       };
     }
     const overview = precomputedOverview || this.getProfitabilityOverview(options, session);
-    return this.buildAiGoldProfitabilityFromOverview(overview);
+    return this.buildAiGoldProfitabilityFromOverview(overview, session);
   }
 
   getAiGoldProfitability(options = {}, session = null) {
@@ -12786,7 +12668,7 @@ class DesktopMirrorService {
         reason: "ok",
         eventSeq: stateOverview.meta?.eventSeq ?? null
       });
-      return this.buildAiGoldProfitabilityFromOverview(stateOverview);
+      return this.buildAiGoldProfitabilityFromOverview(stateOverview, session);
     }
     this.logGoldStateEndpoint("ai_profitability", session, {
       source: "raw_fallback",
@@ -12808,7 +12690,7 @@ class DesktopMirrorService {
       sourceLayer: "business_snapshot"
     };
     if (profitabilityBlockedForConfig && (!Array.isArray(profitability.suggestions) || profitability.suggestions.length === 0)) {
-      return {
+      const payload = {
         ...profitability,
         alerts: [{
           level: "warning",
@@ -12838,6 +12720,23 @@ class DesktopMirrorService {
           status: "CONFIG_REQUIRED",
           suggestion: "La redditivita resta prudente finche la configurazione economica non e completa."
         }]
+      };
+      if (this.getRuntimeLanguage(session) !== "en") return payload;
+      return {
+        ...payload,
+        alerts: payload.alerts.map((item) => ({
+          ...item,
+          title: localizeServerText(item.title, "en"),
+          body: localizeServerText(item.body, "en")
+        })),
+        suggestions: payload.suggestions.map((item) => ({
+          ...item,
+          name: localizeServerText(item.name, "en"),
+          clearConclusion: localizeServerText(item.clearConclusion, "en"),
+          operatingAction: localizeServerText(item.operatingAction, "en"),
+          nextAction: localizeServerText(item.nextAction, "en"),
+          suggestion: localizeServerText(item.suggestion, "en")
+        }))
       };
     }
     return profitability;
