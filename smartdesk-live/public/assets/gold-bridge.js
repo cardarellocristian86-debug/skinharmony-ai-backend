@@ -368,7 +368,7 @@
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const text = (node.textContent || "").trim();
-      if (text === "Centro sotto controllo") {
+      if (text === "Centro sotto controllo" || text === "Center under control") {
         let current = node;
         for (let i = 0; i < 5 && current; i += 1) {
           if (current.tagName === "SECTION" || current.classList?.contains("card")) {
@@ -389,7 +389,7 @@
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const text = (node.textContent || "").trim();
-      if (text === "Dati centro") {
+      if (text === "Dati centro" || text === "Center data") {
         let current = node;
         for (let i = 0; i < 5 && current; i += 1) {
           if (current.tagName === "SECTION" || current.classList?.contains("card")) return current;
@@ -431,39 +431,39 @@
     panel.innerHTML = `
       <div class="gold-bridge-header">
         <div>
-          <div class="gold-bridge-title">Alert prioritari AI</div>
-          <div class="gold-bridge-subtitle">Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare.</div>
+          <div class="gold-bridge-title">AI priority alerts</div>
+          <div class="gold-bridge-subtitle">The management system says what is happening. AI Gold says what to do.</div>
         </div>
         <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
       </div>
       <div class="gold-bridge-grid">
         <div class="gold-bridge-metric">
-          <div class="gold-bridge-label">Priorità di oggi</div>
-          <div class="gold-bridge-value">${primary?.label || "Monitorare il centro"}</div>
+          <div class="gold-bridge-label">Today's priority</div>
+          <div class="gold-bridge-value">${primary?.label || "Monitor the center"}</div>
         </div>
         <div class="gold-bridge-metric">
-          <div class="gold-bridge-label">Confidenza</div>
+          <div class="gold-bridge-label">Confidence</div>
           <div class="gold-bridge-value">${Math.round(confidence * 100)}%</div>
         </div>
         <div class="gold-bridge-metric">
-          <div class="gold-bridge-label">Azione</div>
+          <div class="gold-bridge-label">Action</div>
           <div class="gold-bridge-value">${primary?.action || "MONITOR"}</div>
         </div>
       </div>
       <div class="gold-bridge-list">
         <div class="gold-bridge-item">
-          <div class="gold-bridge-item-title">${context?.explanationShort || "Nessuna spiegazione disponibile."}</div>
-          <div class="gold-bridge-item-subtitle">Dominio: ${primary?.domain || "center"} · rischio ${(Number(risk.score || 0)).toFixed(2)}</div>
+          <div class="gold-bridge-item-title">${context?.explanationShort || "No explanation available yet."}</div>
+          <div class="gold-bridge-item-subtitle">Domain: ${primary?.domain || "center"} · risk ${(Number(risk.score || 0)).toFixed(2)}</div>
         </div>
         ${secondary.slice(0, 3).map((item) => `
           <div class="gold-bridge-item">
-            <div class="gold-bridge-item-title">${item.label || item.domain || "Priorità secondaria"}</div>
-            <div class="gold-bridge-item-subtitle">Dominio: ${item.domain || "center"} · score ${(Number(item.score || 0)).toFixed(2)}</div>
+            <div class="gold-bridge-item-title">${item.label || item.domain || "Secondary priority"}</div>
+            <div class="gold-bridge-item-subtitle">Domain: ${item.domain || "center"} · score ${(Number(item.score || 0)).toFixed(2)}</div>
           </div>
         `).join("")}
         ${blocked.length ? `
           <div class="gold-bridge-item">
-            <div class="gold-bridge-item-title">Azioni bloccate</div>
+            <div class="gold-bridge-item-title">Blocked actions</div>
             <div class="gold-bridge-item-subtitle">${blocked.join(" · ")}</div>
           </div>
         ` : ""}
@@ -605,26 +605,26 @@
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">Assetto enterprise attivo</div>
-          <div class="enterprise-bridge-subtitle">La shell deve spiegare cosa e attivo, cosa richiede conferma e quale prossima mossa ha senso adesso.</div>
+          <div class="enterprise-bridge-title">Enterprise setup active</div>
+          <div class="enterprise-bridge-subtitle">The shell must explain what is active, what still needs confirmation and which next move makes sense now.</div>
         </div>
-        <div class="enterprise-bridge-pill">${activeModules} moduli attivi</div>
+        <div class="enterprise-bridge-pill">${activeModules} active modules</div>
       </div>
       <div class="enterprise-bridge-grid">
         <div class="enterprise-bridge-card">
-          <div class="enterprise-bridge-card-title">Sessione</div>
+          <div class="enterprise-bridge-card-title">Session</div>
           <div class="enterprise-bridge-card-value">${role || "owner"}</div>
-          <div class="enterprise-bridge-card-copy">Le azioni sensibili restano confermabili: ${confirmationMode}.</div>
+          <div class="enterprise-bridge-card-copy">Sensitive actions remain confirmable: ${confirmationMode}.</div>
         </div>
         <div class="enterprise-bridge-card">
           <div class="enterprise-bridge-card-title">Gating</div>
-          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "redditivita leggibile" : "redditivita bloccata"}</div>
-          <div class="enterprise-bridge-card-copy">Quando un modulo non e attivo la UI deve aprire una guida premium, non lasciare un vuoto o un errore secco.</div>
+          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "profitability readable" : "profitability locked"}</div>
+          <div class="enterprise-bridge-card-copy">When a module is not active, the UI must open a premium guide instead of leaving an empty state or a blunt error.</div>
         </div>
         <div class="enterprise-bridge-card">
-          <div class="enterprise-bridge-card-title">Prossima mossa</div>
-          <div class="enterprise-bridge-card-value">Controlla moduli, sessione e coerenza copy</div>
-          <div class="enterprise-bridge-card-copy">Se il centro non puo agire, la vista deve dire dove andare: piano, impostazioni o ruolo corretto.</div>
+          <div class="enterprise-bridge-card-title">Next move</div>
+          <div class="enterprise-bridge-card-value">Review modules, session and copy consistency</div>
+          <div class="enterprise-bridge-card-copy">If the center cannot act, the view must say where to go next: plan, settings or the correct role.</div>
         </div>
       </div>
     `;
@@ -636,9 +636,9 @@
       document.querySelector(".dashboard-period-toggle .active-btn") ||
       document.querySelector(".dashboard-period-toggle [aria-pressed='true']");
     const raw = (activeButton?.textContent || "").trim().toLowerCase();
-    if (raw.includes("settim")) return "settimana";
-    if (raw.includes("mese")) return "mese";
-    return "giorno";
+    if (raw.includes("settim") || raw.includes("week")) return "week";
+    if (raw.includes("mese") || raw.includes("month")) return "month";
+    return "day";
   }
 
   function buildEnterpriseReportsPanel() {
@@ -805,7 +805,7 @@
       if (existing) runWithMutationLock(() => existing.remove());
     }
     if (isReportsRoute()) {
-      const anchor = findAnchorByText("Report operativi");
+      const anchor = findAnchorByText("Report operativi") || findAnchorByText("Operational reports");
       if (anchor) {
         const panel = buildEnterpriseReportsPanel();
         const existing = document.getElementById(ENTERPRISE_REPORTS_PANEL_ID);
@@ -821,7 +821,8 @@
     if (isSurfaceRoute()) {
       const route = window.location.pathname || "/";
       const targetText = route === "/services" ? "Servizi e risorse" : route === "/shifts" ? "Shifts" : "Protocols";
-      const anchor = findAnchorByText(targetText);
+      const fallbackText = route === "/services" ? "Services and resources" : route === "/shifts" ? "Shifts" : "Protocols";
+      const anchor = findAnchorByText(targetText) || findAnchorByText(fallbackText);
       const panel = buildEnterpriseSurfacePanel(route);
       if (anchor && panel) {
         const existing = document.getElementById(ENTERPRISE_SURFACE_PANEL_ID);
