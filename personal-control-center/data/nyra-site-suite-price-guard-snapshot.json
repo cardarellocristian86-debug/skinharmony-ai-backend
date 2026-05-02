@@ -1,0 +1,80 @@
+{
+  "ok": true,
+  "source": "skinharmony-site-suite",
+  "plugin_version": "1.1.9",
+  "module": "price_guard",
+  "official_prices": [
+    "29",
+    "295.80",
+    "79",
+    "758.40",
+    "179",
+    "1611"
+  ],
+  "currency": "EUR",
+  "price_guard_clean": true,
+  "issues_count": 0,
+  "updated_at": "2026-05-02T21:30:00Z",
+  "recommended_action": "none",
+  "price_lines": [
+    {
+      "key": "smartdesk_base_monthly",
+      "label": "Smart Desk Base Mensile",
+      "amount": 29,
+      "currency": "EUR",
+      "billing_cycle": "monthly",
+      "vat_excluded": true,
+      "status": "official"
+    },
+    {
+      "key": "smartdesk_base_annual",
+      "label": "Smart Desk Base Annuale",
+      "amount": 295.8,
+      "currency": "EUR",
+      "billing_cycle": "annual",
+      "vat_excluded": true,
+      "status": "official"
+    },
+    {
+      "key": "smartdesk_silver_monthly",
+      "label": "Smart Desk Silver Mensile",
+      "amount": 79,
+      "currency": "EUR",
+      "billing_cycle": "monthly",
+      "vat_excluded": true,
+      "status": "official"
+    },
+    {
+      "key": "smartdesk_silver_annual",
+      "label": "Smart Desk Silver Annuale",
+      "amount": 758.4,
+      "currency": "EUR",
+      "billing_cycle": "annual",
+      "vat_excluded": true,
+      "status": "official"
+    },
+    {
+      "key": "smartdesk_gold_monthly",
+      "label": "Smart Desk Gold Mensile",
+      "amount": 179,
+      "currency": "EUR",
+      "billing_cycle": "monthly",
+      "vat_excluded": true,
+      "status": "official"
+    },
+    {
+      "key": "smartdesk_gold_annual",
+      "label": "Smart Desk Gold Annuale",
+      "amount": 1611,
+      "currency": "EUR",
+      "billing_cycle": "annual",
+      "vat_excluded": true,
+      "status": "official"
+    }
+  ],
+  "scan_summary": {
+    "pages_scanned": 0,
+    "issues_count": 0,
+    "last_scan_at": null
+  }
+}

@@ -26,6 +26,11 @@ const nyraWorldThesisLearningMassivePath = "universal-core/runtime/nyra-learning
 const nyraRenderAutopilotRuntimePath = "universal-core/runtime/nyra-learning/nyra_render_autopilot_latest.json";
 const nyraRenderAutopilotReportPath = "reports/universal-core/nyra-learning/nyra_render_autopilot_latest.json";
 const nyraFinanceProfilePath = "personal-control-center/data/nyra-finance-profile.json";
+const nyraSiteSuitePriceGuardSnapshotPath = "personal-control-center/data/nyra-site-suite-price-guard-snapshot.json";
+const nyraSiteSuitePriceGuardUrl = String(
+  process.env.NYRA_SITE_SUITE_PRICE_GUARD_URL ||
+  "https://www.skinharmony.it/wp-json/shss/v1/price-guard/nyra-snapshot"
+).trim();
 const NYRA_WORLD_PAPER_TRAINING_FEE_RATE = 0.0005;
 const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
@@ -945,6 +950,213 @@ function nyraFinanceLiveStatusPayload() {
     history: loadNyraFinanceHistory(),
     finance: report ? buildNyraFinanceLiveCard(report) : null,
     raw: report
+  };
+}
+
+function normalizeNyraMacroSeverity(level = "ok") {
+  const normalized = String(level || "").toLowerCase();
+  if (["critical", "high"].includes(normalized)) return "critical";
+  if (["warning", "medium"].includes(normalized)) return "warning";
+  return "ok";
+}
+
+function buildNyraChannelRiskPayload() {
+  const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
+  const worldScan = readJson(nyraWorldMarketScanPath, null);
+  ensureWorldPaperBenchmark(portfolio, worldScan);
+  const summary = summarizeWorldPaperPortfolio(portfolio, worldScan);
+  const treasury = buildUnifiedFinanceTreasury(portfolio);
+  const learning = readJson(nyraWorldPaperLearningPath, null) || {};
+  const benchmarkPnlPct = Number(summary?.benchmark?.pnl_pct || 0);
+  const alphaVsQqqPct = Number(summary?.alpha_vs_qqq_pct || 0);
+  const cashReservePct = Number(treasury?.marketAllocation?.cashReservePct || 0);
+  const deployedPct = Number(treasury?.deployedPct || 0);
+  const repeatedErrorGuard = Boolean(learning?.metrics?.repeated_error_guard || learning?.policy?.repeated_error_guard_active);
+  const reviewSoftGuard = Boolean(learning?.metrics?.review_soft_guard || learning?.policy?.review_soft_guard_active);
+  const confidenceRaw = Number(nyraFinanceLiveState.lastReport?.confidence || nyraFinanceLiveState.lastReport?.aggregate?.confidence || 0);
+
+  let marketRegime = "neutral";
+  if (benchmarkPnlPct <= -8 || alphaVsQqqPct <= -6) marketRegime = "risk_off";
+  else if (benchmarkPnlPct >= 6 && alphaVsQqqPct >= 0) marketRegime = "recovery";
+  else if (benchmarkPnlPct >= 10 && alphaVsQqqPct >= 2) marketRegime = "risk_on";
+  else if (Math.abs(benchmarkPnlPct) <= 2) marketRegime = "lateral";
+
+  let channelRiskLevel = "medium";
+  if (marketRegime === "risk_off" || cashReservePct >= 0.55 || repeatedErrorGuard) channelRiskLevel = "high";
+  if ((marketRegime === "risk_off" && alphaVsQqqPct <= -8) || (repeatedErrorGuard && reviewSoftGuard && cashReservePct >= 0.65)) {
+    channelRiskLevel = "critical";
+  } else if (marketRegime === "recovery" && alphaVsQqqPct >= 0 && cashReservePct <= 0.4) {
+    channelRiskLevel = "low";
+  }
+
+  let consumerPressure = "neutral";
+  if (channelRiskLevel === "critical") consumerPressure = "severe";
+  else if (channelRiskLevel === "high") consumerPressure = "rising";
+  else if (channelRiskLevel === "low") consumerPressure = "easing";
+
+  let salesPosture = "selective_premium";
+  if (channelRiskLevel === "critical" || channelRiskLevel === "high") salesPosture = "defensive";
+  else if (channelRiskLevel === "low") salesPosture = "aggressive_capture";
+
+  const recommendedFunnelPosture =
+    salesPosture === "defensive"
+      ? ["push_demo", "push_lead_magnet", "push_retention"]
+      : salesPosture === "aggressive_capture"
+        ? ["push_trial", "push_upsell"]
+        : ["hold_positioning", "push_demo"];
+
+  const recommendedAction =
+    salesPosture === "defensive"
+      ? "prepare_defensive_channel_posture"
+      : salesPosture === "aggressive_capture"
+        ? "prepare_capture_mode_with_controlled_upsell"
+        : "maintain_selective_positioning_and_monitor";
+
+  return {
+    ok: true,
+    version: "v14",
+    channel_risk_level: channelRiskLevel,
+    consumer_pressure: consumerPressure,
+    market_regime: marketRegime,
+    sales_posture: salesPosture,
+    recommended_funnel_posture: recommendedFunnelPosture,
+    recommended_action: recommendedAction,
+    severity: normalizeNyraMacroSeverity(channelRiskLevel),
+    confidence_hint: confidenceRaw > 0 ? Number(confidenceRaw.toFixed(4)) : null,
+    explanation:
+      salesPosture === "defensive"
+        ? "Nyra vede contesto piu fragile o piu rumoroso del normale: meglio demo, lead magnet e retention prima di spingere offerte aggressive."
+        : salesPosture === "aggressive_capture"
+          ? "Nyra vede spazio migliore per acquisizione e upsell controllato: si puo spingere di piu senza rompere la disciplina."
+          : "Nyra non vede emergenza di canale, ma nemmeno strada libera totale: postura selettiva e premium.",
+    evidence: {
+      benchmark_pnl_pct: Number(benchmarkPnlPct.toFixed(4)),
+      alpha_vs_qqq_pct: Number(alphaVsQqqPct.toFixed(4)),
+      cash_reserve_pct: Number((cashReservePct * 100).toFixed(2)),
+      deployed_pct: Number(deployedPct.toFixed(4)),
+      repeated_error_guard: repeatedErrorGuard,
+      review_soft_guard: reviewSoftGuard
+    },
+    checked_at: new Date().toISOString()
+  };
+}
+
+function extractOfficialPricesFromSnapshot(snapshot) {
+  const raw = snapshot?.official_prices || snapshot?.officialPrices || snapshot?.prices || [];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (typeof item === "number") return item;
+      const match = String(item || "").replace(",", ".").match(/-?\d+(?:\.\d+)?/);
+      return match ? Number(match[0]) : null;
+    })
+    .filter((value) => Number.isFinite(value) && value > 0);
+}
+
+async function loadNyraPriceGuardSnapshot() {
+  const localSnapshot = readJson(nyraSiteSuitePriceGuardSnapshotPath, null);
+  if (!nyraSiteSuitePriceGuardUrl) {
+    return {
+      snapshot: localSnapshot,
+      sourceMode: localSnapshot ? "local_fallback" : "missing",
+      sourceUrl: null
+    };
+  }
+  try {
+    const remoteSnapshot = await fetchJson(nyraSiteSuitePriceGuardUrl, {
+      headers: { Accept: "application/json" }
+    });
+    if (remoteSnapshot && remoteSnapshot.ok) {
+      writeJson(nyraSiteSuitePriceGuardSnapshotPath, remoteSnapshot);
+      return {
+        snapshot: remoteSnapshot,
+        sourceMode: "remote_primary",
+        sourceUrl: nyraSiteSuitePriceGuardUrl
+      };
+    }
+  } catch (_error) {}
+  return {
+    snapshot: localSnapshot,
+    sourceMode: localSnapshot ? "local_fallback" : "missing",
+    sourceUrl: nyraSiteSuitePriceGuardUrl
+  };
+}
+
+async function buildNyraPricingCoherencePayload() {
+  const { snapshot, sourceMode, sourceUrl } = await loadNyraPriceGuardSnapshot();
+  const officialPrices = extractOfficialPricesFromSnapshot(snapshot);
+  const channelRisk = buildNyraChannelRiskPayload();
+
+  if (!snapshot || !officialPrices.length) {
+    return {
+      ok: true,
+      version: "v14",
+      price_guard_macro_alignment: "unknown",
+      inflation_pressure: "unknown",
+      margin_pressure: "unknown",
+      review_urgency: "watch",
+      recommended_action: "connect_price_guard_payload",
+      severity: "warning",
+      explanation: "Nyra non vede ancora un payload affidabile del Price Guard. Non inventa listini: segnala che il bridge pricing va collegato.",
+      evidence: {
+        price_guard_payload_connected: false,
+        official_prices_detected: 0,
+        channel_risk_level: channelRisk.channel_risk_level
+      },
+      source: {
+        mode: sourceMode,
+        remote_url: sourceUrl,
+        local_snapshot_path: nyraSiteSuitePriceGuardSnapshotPath
+      },
+      checked_at: new Date().toISOString()
+    };
+  }
+
+  const averageOfficialPrice = officialPrices.reduce((sum, value) => sum + value, 0) / officialPrices.length;
+  let inflationPressure = "medium";
+  let marginPressure = "medium";
+  let macroAlignment = "aligned";
+  let reviewUrgency = "watch";
+
+  if (["high", "critical"].includes(channelRisk.channel_risk_level)) {
+    inflationPressure = "high";
+    marginPressure = "high";
+    macroAlignment = averageOfficialPrice >= 150 ? "stretched" : "underpriced";
+    reviewUrgency = "review";
+  } else if (channelRisk.channel_risk_level === "low") {
+    inflationPressure = "low";
+    marginPressure = "low";
+    macroAlignment = "aligned";
+    reviewUrgency = "none";
+  }
+
+  return {
+    ok: true,
+    version: "v14",
+    price_guard_macro_alignment: macroAlignment,
+    inflation_pressure: inflationPressure,
+    margin_pressure: marginPressure,
+    review_urgency: reviewUrgency,
+    recommended_action: reviewUrgency === "review" ? "owner_review_price_structure" : "hold_price_structure_and_monitor",
+    severity: reviewUrgency === "review" ? "warning" : "ok",
+    explanation:
+      reviewUrgency === "review"
+        ? "Nyra vede un contesto macro piu duro del normale. Il listino ufficiale va rivisto dal proprietario, ma non viene cambiato automaticamente."
+        : "Nyra non vede un motivo sufficiente per forzare una revisione listino. Mantieni monitoraggio e Price Guard pulito.",
+    evidence: {
+      price_guard_payload_connected: true,
+      official_prices_detected: officialPrices.length,
+      average_official_price: Number(averageOfficialPrice.toFixed(2)),
+      channel_risk_level: channelRisk.channel_risk_level
+    },
+    source: {
+      mode: sourceMode,
+      remote_url: sourceUrl,
+      local_snapshot_path: nyraSiteSuitePriceGuardSnapshotPath,
+      snapshot_path: nyraSiteSuitePriceGuardSnapshotPath,
+      snapshot_updated_at: snapshot?.updated_at || snapshot?.updatedAt || null
+    },
+    checked_at: new Date().toISOString()
   };
 }
 
@@ -5109,6 +5321,22 @@ app.post("/api/nyra/finance/world-paper/auto/stop", (_req, res) => {
 
 app.get("/api/nyra/finance/live/status", (_req, res) => {
   res.json(nyraFinanceLiveStatusPayload());
+});
+
+app.get("/api/nyra/finance/channel-risk", (_req, res) => {
+  res.json(buildNyraChannelRiskPayload());
+});
+
+app.get("/api/nyra/finance/pricing-coherence", async (_req, res) => {
+  res.json(await buildNyraPricingCoherencePayload());
+});
+
+app.get("/api/nyra/finance/macro-signals", async (_req, res) => {
+  res.json({
+    ok: true,
+    channelRisk: buildNyraChannelRiskPayload(),
+    pricingCoherence: await buildNyraPricingCoherencePayload()
+  });
 });
 
 app.get("/api/nyra/finance/history", (_req, res) => {

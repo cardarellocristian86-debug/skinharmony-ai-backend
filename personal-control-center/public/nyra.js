@@ -87,6 +87,8 @@ const state = {
   financeLearning: null,
   financeKeepAwake: null,
   financeTreasury: null,
+  financeChannelRisk: null,
+  financePricingCoherence: null,
   worldMarketScan: null,
   worldMarketSelection: null,
   worldPaper: null,
@@ -636,6 +638,61 @@ function buildSelfDiagnosisCard() {
   `;
 }
 
+function buildChannelRiskSummaryCard() {
+  const payload = state.financeChannelRisk;
+  if (!payload) {
+    return `
+      <div class="desk-summary-card">
+        <small>Channel Risk</small>
+        <strong>non ancora disponibile</strong>
+        <p>Nyra non ha ancora esposto il segnale macro-operativo del canale.</p>
+      </div>
+    `;
+  }
+  const posture = String(payload.sales_posture || "-").replaceAll("_", " ");
+  const risk = String(payload.channel_risk_level || "-");
+  const funnel = Array.isArray(payload.recommended_funnel_posture) ? payload.recommended_funnel_posture : [];
+  return `
+    <div class="desk-summary-card">
+      <small>Channel Risk</small>
+      <strong>${esc(risk)} · ${esc(posture)}</strong>
+      <p>${esc(payload.explanation || "Nyra sta leggendo il contesto esterno e propone una postura commerciale.")}</p>
+      <div class="desk-tags">
+        <span>regime ${esc(payload.market_regime || "-")}</span>
+        <span>consumi ${esc(payload.consumer_pressure || "-")}</span>
+        <span>azione ${esc(payload.recommended_action || "-")}</span>
+      </div>
+      ${funnel.length ? `<small>funnel: ${esc(funnel.join(", "))}</small>` : ""}
+    </div>
+  `;
+}
+
+function buildPricingCoherenceSummaryCard() {
+  const payload = state.financePricingCoherence;
+  if (!payload) {
+    return `
+      <div class="desk-summary-card">
+        <small>Pricing Coherence</small>
+        <strong>non ancora disponibile</strong>
+        <p>Nyra non ha ancora esposto la lettura pricing vs macro.</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="desk-summary-card">
+      <small>Pricing Coherence</small>
+      <strong>${esc(payload.price_guard_macro_alignment || "-")}</strong>
+      <p>${esc(payload.explanation || "Nyra confronta listino ufficiale e pressione macro senza cambiare prezzi da sola.")}</p>
+      <div class="desk-tags">
+        <span>inflazione ${esc(payload.inflation_pressure || "-")}</span>
+        <span>margine ${esc(payload.margin_pressure || "-")}</span>
+        <span>urgenza ${esc(payload.review_urgency || "-")}</span>
+      </div>
+      <small>azione: ${esc(payload.recommended_action || "-")}</small>
+    </div>
+  `;
+}
+
 function renderFinanceDeskBoard() {
   const container = byId("financeDeskBoard");
   const autoStatus = byId("worldPaperAutoStatus");
@@ -728,6 +785,8 @@ function renderFinanceDeskBoard() {
           <span>${esc(`delta ${formatEur(summary?.alpha_vs_qqq_eur || 0)}`)}</span>
         </div>
       </div>
+      ${buildChannelRiskSummaryCard()}
+      ${buildPricingCoherenceSummaryCard()}
       ${selfDiagnosisCard}
     </div>
     ${movementChart}
@@ -769,6 +828,17 @@ function renderFinanceDeskBoard() {
       state.financeDeskOpenFolders[folder.dataset.folder] = folder.open;
     });
   });
+}
+
+async function loadFinanceMacroSignals() {
+  try {
+    const response = await fetchJson("/api/nyra/finance/macro-signals");
+    state.financeChannelRisk = response.channelRisk || state.financeChannelRisk;
+    state.financePricingCoherence = response.pricingCoherence || state.financePricingCoherence;
+    if (state.mode === "finance") renderDashboard();
+  } catch (error) {
+    addMessage("nyra", `Errore segnali macro: ${error.message}`, "error");
+  }
 }
 
 function moveStatusClass(status) {
@@ -1330,6 +1400,7 @@ async function loadWorldPaper() {
     const response = await fetchJson("/api/nyra/finance/world-paper");
     state.worldPaper = response;
     state.financeTreasury = response.treasury || state.financeTreasury;
+    await loadFinanceMacroSignals();
     renderDashboard();
   } catch (error) {
     addMessage("nyra", `Errore paper mondiale: ${error.message}`, "error");
@@ -1342,6 +1413,7 @@ async function loadWorldPaperAutoStatus() {
     state.worldPaperAuto = response;
     state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning, selfDiagnosis: response.selfDiagnosis };
     state.financeTreasury = response.treasury || state.financeTreasury;
+    await loadFinanceMacroSignals();
     renderDashboard();
   } catch (error) {
     addMessage("nyra", `Errore stato auto paper: ${error.message}`, "error");
@@ -1499,9 +1571,11 @@ async function refreshFinanceLiveStatus() {
     if (response.finance) {
       state.financeOverride = response.finance;
       state.financeRaw = response.raw || null;
+      await loadFinanceMacroSignals();
       if (state.mode === "finance") renderDashboard();
       return;
     }
+    await loadFinanceMacroSignals();
     if (state.mode === "finance") renderDashboard();
   } catch (error) {
     byId("financeLiveState").textContent = "errore";
