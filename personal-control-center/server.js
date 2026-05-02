@@ -27,6 +27,7 @@ const nyraRenderAutopilotRuntimePath = "universal-core/runtime/nyra-learning/nyr
 const nyraRenderAutopilotReportPath = "reports/universal-core/nyra-learning/nyra_render_autopilot_latest.json";
 const nyraFinanceProfilePath = "personal-control-center/data/nyra-finance-profile.json";
 const nyraSiteSuitePriceGuardSnapshotPath = "personal-control-center/data/nyra-site-suite-price-guard-snapshot.json";
+const nyraDecisionClarityPackPath = "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json";
 const nyraSiteSuitePriceGuardUrl = String(
   process.env.NYRA_SITE_SUITE_PRICE_GUARD_URL ||
   "https://www.skinharmony.it/wp-json/shss/v1/price-guard/nyra-snapshot"
@@ -1156,6 +1157,82 @@ async function buildNyraPricingCoherencePayload() {
       snapshot_path: nyraSiteSuitePriceGuardSnapshotPath,
       snapshot_updated_at: snapshot?.updated_at || snapshot?.updatedAt || null
     },
+    checked_at: new Date().toISOString()
+  };
+}
+
+function buildNyraDecisionClarityPayload() {
+  const pack = readJson(nyraDecisionClarityPackPath, null);
+  const report = nyraFinanceLiveState.lastReport || {};
+  const aggregate = report.aggregate || {};
+  const diagnostics = Array.isArray(report.candidate_diagnostics) ? report.candidate_diagnostics : [];
+  const topCandidate = diagnostics[0] || null;
+  const secondCandidate = diagnostics[1] || null;
+  const topScore = Number(topCandidate?.adjusted_score || 0);
+  const secondScore = Number(secondCandidate?.adjusted_score || 0);
+  const scoreGap = Number((topScore - secondScore).toFixed(4));
+  const confidenceRaw = Number(report.confidence || aggregate.confidence || 0);
+  const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
+  const worldScan = readJson(nyraWorldMarketScanPath, null);
+  const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan });
+  const learning = readJson(nyraWorldPaperLearningPath, null) || {};
+  const repeatedErrorGuard = Boolean(learning?.metrics?.repeated_error_guard || learning?.policy?.repeated_error_guard_active);
+  const reviewSoftGuard = Boolean(learning?.metrics?.review_soft_guard || learning?.policy?.review_soft_guard_active);
+
+  let ambiguityLevel = "medium";
+  if (scoreGap <= 0.35 || confidenceRaw <= 0.42) ambiguityLevel = "high";
+  else if (scoreGap >= 1.2 && confidenceRaw >= 0.62) ambiguityLevel = "low";
+
+  let clarityState = "calibrating";
+  if (ambiguityLevel === "high") clarityState = "uncertain";
+  else if (ambiguityLevel === "low" && confidenceRaw >= 0.75) clarityState = "decisive";
+  else if (ambiguityLevel === "low" && confidenceRaw >= 0.62) clarityState = "clear";
+
+  let actionReadiness = "confirm";
+  if (ambiguityLevel === "high" || repeatedErrorGuard) actionReadiness = "stop";
+  else if (ambiguityLevel === "low" && confidenceRaw >= 0.62 && !reviewSoftGuard) actionReadiness = "confirm_execute_candidate";
+
+  const recommendedAction =
+    actionReadiness === "stop"
+      ? "reduce_ambiguity_before_new_action"
+      : actionReadiness === "confirm_execute_candidate"
+        ? "allow_controlled_confirmation_path"
+        : "ask_for_confirmation_on_best_candidate";
+
+  const mainErrorLabel = selfDiagnosis?.self_diagnosis?.main_error_label || null;
+  const prudentCorrection = selfDiagnosis?.self_diagnosis?.prudent_correction || null;
+
+  return {
+    ok: true,
+    version: "v1",
+    pack_loaded: Boolean(pack),
+    clarity_state: clarityState,
+    ambiguity_level: ambiguityLevel,
+    action_readiness: actionReadiness,
+    recommended_action: recommendedAction,
+    severity: actionReadiness === "stop" ? "warning" : "ok",
+    explanation:
+      actionReadiness === "stop"
+        ? "Nyra vede ancora troppa ambiguita o guardrail attivi: meglio stringere il problema prima di spingere una nuova azione."
+        : actionReadiness === "confirm_execute_candidate"
+          ? "Nyra vede una candidata piu leggibile del solito: si puo passare a conferma controllata senza confondere prudenza e blocco."
+          : "Nyra sta migliorando la chiarezza ma non e ancora nel punto in cui il salto da memoria ad azione deve diventare automatico.",
+    evidence: {
+      confidence_hint: Number(confidenceRaw.toFixed(4)),
+      top_candidate_gap: scoreGap,
+      top_candidate: topCandidate?.product || null,
+      repeated_error_guard: repeatedErrorGuard,
+      review_soft_guard: reviewSoftGuard,
+      self_diagnosis_error: mainErrorLabel,
+      prudent_correction: prudentCorrection
+    },
+    pack: pack
+      ? {
+          domains_count: Array.isArray(pack.domains) ? pack.domains.length : 0,
+          rules_count: Array.isArray(pack.decision_rules) ? pack.decision_rules.length : 0,
+          generated_at: pack.generated_at || null
+        }
+      : null,
     checked_at: new Date().toISOString()
   };
 }
@@ -5331,11 +5408,16 @@ app.get("/api/nyra/finance/pricing-coherence", async (_req, res) => {
   res.json(await buildNyraPricingCoherencePayload());
 });
 
+app.get("/api/nyra/finance/decision-clarity", (_req, res) => {
+  res.json(buildNyraDecisionClarityPayload());
+});
+
 app.get("/api/nyra/finance/macro-signals", async (_req, res) => {
   res.json({
     ok: true,
     channelRisk: buildNyraChannelRiskPayload(),
-    pricingCoherence: await buildNyraPricingCoherencePayload()
+    pricingCoherence: await buildNyraPricingCoherencePayload(),
+    decisionClarity: buildNyraDecisionClarityPayload()
   });
 });
 

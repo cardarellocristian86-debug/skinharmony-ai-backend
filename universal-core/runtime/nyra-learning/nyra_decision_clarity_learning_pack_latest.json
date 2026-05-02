@@ -1,0 +1,431 @@
+{
+  "pack_version": "nyra_decision_clarity_learning_pack_v1",
+  "generated_at": "2026-05-03T11:20:00.000Z",
+  "owner_scope": "god_mode_only",
+  "records_count": 3200,
+  "domains": [
+    {
+      "id": "problem_framing",
+      "label": "Problem Framing",
+      "summary": "definire il problema reale prima di reagire al dettaglio piu rumoroso",
+      "concept_count": 8
+    },
+    {
+      "id": "ambiguity_reduction",
+      "label": "Ambiguity Reduction",
+      "summary": "separare il noto dall ignoto e non fingere certezza dove manca evidenza",
+      "concept_count": 8
+    },
+    {
+      "id": "evidence_thresholds",
+      "label": "Evidence Thresholds",
+      "summary": "capire quanta evidenza basta per osservare, suggerire, confermare o fermare",
+      "concept_count": 8
+    },
+    {
+      "id": "action_selection",
+      "label": "Action Selection",
+      "summary": "scegliere un azione prioritaria invece di disperdersi in molte ipotesi deboli",
+      "concept_count": 8
+    },
+    {
+      "id": "stop_confirm_execute",
+      "label": "Stop Confirm Execute",
+      "summary": "distinguere chiaramente quando fermarsi, chiedere conferma o poter procedere",
+      "concept_count": 8
+    },
+    {
+      "id": "memory_to_action",
+      "label": "Memory To Action",
+      "summary": "trasformare memoria e casi passati in decisione utile nel presente",
+      "concept_count": 8
+    },
+    {
+      "id": "fallback_control",
+      "label": "Fallback Control",
+      "summary": "usare fallback prudente solo quando serve, senza rifugiarsi nel vago",
+      "concept_count": 8
+    },
+    {
+      "id": "review_and_self_correction",
+      "label": "Review And Self Correction",
+      "summary": "rivedere una scelta, trovare il collo e correggerla senza perdere coerenza",
+      "concept_count": 8
+    }
+  ],
+  "concept_graph": [
+    {
+      "concept": "ambiguita",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguity_reduction",
+        "azione",
+        "controllo",
+        "evidence_thresholds",
+        "evidenza",
+        "fallback",
+        "fallback_control",
+        "memory_to_action",
+        "problem_framing"
+      ]
+    },
+    {
+      "concept": "azione",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguita",
+        "ambiguity_reduction",
+        "controllo",
+        "evidence_thresholds",
+        "evidenza",
+        "fallback",
+        "fallback_control",
+        "memory_to_action",
+        "problem_framing"
+      ]
+    },
+    {
+      "concept": "controllo",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguita",
+        "ambiguity_reduction",
+        "azione",
+        "evidence_thresholds",
+        "evidenza",
+        "fallback",
+        "fallback_control",
+        "memory_to_action",
+        "problem_framing"
+      ]
+    },
+    {
+      "concept": "evidenza",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguita",
+        "ambiguity_reduction",
+        "azione",
+        "controllo",
+        "evidence_thresholds",
+        "fallback",
+        "fallback_control",
+        "memory_to_action",
+        "problem_framing"
+      ]
+    },
+    {
+      "concept": "fallback",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguita",
+        "ambiguity_reduction",
+        "azione",
+        "controllo",
+        "evidence_thresholds",
+        "evidenza",
+        "fallback_control",
+        "memory_to_action",
+        "problem_framing"
+      ]
+    },
+    {
+      "concept": "problema_reale",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguita",
+        "ambiguity_reduction",
+        "azione",
+        "controllo",
+        "evidence_thresholds",
+        "evidenza",
+        "fallback",
+        "fallback_control",
+        "memory_to_action"
+      ]
+    },
+    {
+      "concept": "verifica",
+      "weight": 3200,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "action_selection",
+        "ambiguita",
+        "ambiguity_reduction",
+        "azione",
+        "controllo",
+        "evidence_thresholds",
+        "evidenza",
+        "fallback",
+        "fallback_control",
+        "memory_to_action"
+      ]
+    },
+    {
+      "concept": "action_selection",
+      "weight": 400,
+      "domain": "action_selection",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "ambiguity_reduction",
+      "weight": 400,
+      "domain": "ambiguity_reduction",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "evidence_thresholds",
+      "weight": 400,
+      "domain": "evidence_thresholds",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "fallback_control",
+      "weight": 400,
+      "domain": "fallback_control",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "memory_to_action",
+      "weight": 400,
+      "domain": "memory_to_action",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "problem_framing",
+      "weight": 400,
+      "domain": "problem_framing",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "review_and_self_correction",
+      "weight": 400,
+      "domain": "review_and_self_correction",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    },
+    {
+      "concept": "stop_confirm_execute",
+      "weight": 400,
+      "domain": "stop_confirm_execute",
+      "related_concepts": [
+        "ambiguita",
+        "azione",
+        "controllo",
+        "evidenza",
+        "fallback",
+        "problema_reale",
+        "verifica"
+      ]
+    }
+  ],
+  "scenario_templates": [
+    {
+      "id": "decision-clarity-scenario:action_selection:1",
+      "domain": "action_selection",
+      "prompt": "isola il collo principale in action_selection"
+    },
+    {
+      "id": "decision-clarity-scenario:action_selection:2",
+      "domain": "action_selection",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in action_selection"
+    },
+    {
+      "id": "decision-clarity-scenario:action_selection:3",
+      "domain": "action_selection",
+      "prompt": "spiega se qui serve stop confirm o execute in action_selection"
+    },
+    {
+      "id": "decision-clarity-scenario:ambiguity_reduction:1",
+      "domain": "ambiguity_reduction",
+      "prompt": "isola il collo principale in ambiguity_reduction"
+    },
+    {
+      "id": "decision-clarity-scenario:ambiguity_reduction:2",
+      "domain": "ambiguity_reduction",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in ambiguity_reduction"
+    },
+    {
+      "id": "decision-clarity-scenario:ambiguity_reduction:3",
+      "domain": "ambiguity_reduction",
+      "prompt": "spiega se qui serve stop confirm o execute in ambiguity_reduction"
+    },
+    {
+      "id": "decision-clarity-scenario:evidence_thresholds:1",
+      "domain": "evidence_thresholds",
+      "prompt": "isola il collo principale in evidence_thresholds"
+    },
+    {
+      "id": "decision-clarity-scenario:evidence_thresholds:2",
+      "domain": "evidence_thresholds",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in evidence_thresholds"
+    },
+    {
+      "id": "decision-clarity-scenario:evidence_thresholds:3",
+      "domain": "evidence_thresholds",
+      "prompt": "spiega se qui serve stop confirm o execute in evidence_thresholds"
+    },
+    {
+      "id": "decision-clarity-scenario:fallback_control:1",
+      "domain": "fallback_control",
+      "prompt": "isola il collo principale in fallback_control"
+    },
+    {
+      "id": "decision-clarity-scenario:fallback_control:2",
+      "domain": "fallback_control",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in fallback_control"
+    },
+    {
+      "id": "decision-clarity-scenario:fallback_control:3",
+      "domain": "fallback_control",
+      "prompt": "spiega se qui serve stop confirm o execute in fallback_control"
+    },
+    {
+      "id": "decision-clarity-scenario:memory_to_action:1",
+      "domain": "memory_to_action",
+      "prompt": "isola il collo principale in memory_to_action"
+    },
+    {
+      "id": "decision-clarity-scenario:memory_to_action:2",
+      "domain": "memory_to_action",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in memory_to_action"
+    },
+    {
+      "id": "decision-clarity-scenario:memory_to_action:3",
+      "domain": "memory_to_action",
+      "prompt": "spiega se qui serve stop confirm o execute in memory_to_action"
+    },
+    {
+      "id": "decision-clarity-scenario:problem_framing:1",
+      "domain": "problem_framing",
+      "prompt": "isola il collo principale in problem_framing"
+    },
+    {
+      "id": "decision-clarity-scenario:problem_framing:2",
+      "domain": "problem_framing",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in problem_framing"
+    },
+    {
+      "id": "decision-clarity-scenario:problem_framing:3",
+      "domain": "problem_framing",
+      "prompt": "spiega se qui serve stop confirm o execute in problem_framing"
+    },
+    {
+      "id": "decision-clarity-scenario:review_and_self_correction:1",
+      "domain": "review_and_self_correction",
+      "prompt": "isola il collo principale in review_and_self_correction"
+    },
+    {
+      "id": "decision-clarity-scenario:review_and_self_correction:2",
+      "domain": "review_and_self_correction",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in review_and_self_correction"
+    },
+    {
+      "id": "decision-clarity-scenario:review_and_self_correction:3",
+      "domain": "review_and_self_correction",
+      "prompt": "spiega se qui serve stop confirm o execute in review_and_self_correction"
+    },
+    {
+      "id": "decision-clarity-scenario:stop_confirm_execute:1",
+      "domain": "stop_confirm_execute",
+      "prompt": "isola il collo principale in stop_confirm_execute"
+    },
+    {
+      "id": "decision-clarity-scenario:stop_confirm_execute:2",
+      "domain": "stop_confirm_execute",
+      "prompt": "riduci l ambiguita e scegli il passo successivo in stop_confirm_execute"
+    },
+    {
+      "id": "decision-clarity-scenario:stop_confirm_execute:3",
+      "domain": "stop_confirm_execute",
+      "prompt": "spiega se qui serve stop confirm o execute in stop_confirm_execute"
+    }
+  ],
+  "decision_rules": [
+    "dopo la scelta rileggo il collo principale e verifico se la correzione e coerente",
+    "fallback prudente non vuol dire risposta vaga: deve spiegare cosa manca",
+    "memoria utile significa trasformare il caso passato in soglia operativa presente",
+    "prima nomina il problema reale, poi valuta le azioni",
+    "se il dato chiave manca, segnalo il buco e non fingo precisione",
+    "se la decisione resta incerta, riduco ambiguita con una domanda o con un vincolo",
+    "stop, confirm ed execute non vanno mai confusi nello stesso passaggio",
+    "una sola azione forte vale piu di molte ipotesi deboli"
+  ],
+  "storage_profile": {
+    "profile_version": "nyra_semantic_storage_v1",
+    "raw_bytes": 5823473,
+    "semantic_bytes": 9075,
+    "semantic_ratio": 0.001558,
+    "brotli_raw_bytes": 11720,
+    "brotli_semantic_bytes": 1352,
+    "brotli_ratio": 0.115358,
+    "loss_model": "semantic_distillation"
+  }
+}

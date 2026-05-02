@@ -89,6 +89,7 @@ const state = {
   financeTreasury: null,
   financeChannelRisk: null,
   financePricingCoherence: null,
+  financeDecisionClarity: null,
   worldMarketScan: null,
   worldMarketSelection: null,
   worldPaper: null,
@@ -693,6 +694,33 @@ function buildPricingCoherenceSummaryCard() {
   `;
 }
 
+function buildDecisionClaritySummaryCard() {
+  const payload = state.financeDecisionClarity;
+  if (!payload) {
+    return `
+      <div class="desk-summary-card">
+        <small>Decision Clarity</small>
+        <strong>non ancora disponibile</strong>
+        <p>Nyra non ha ancora esposto la lettura interna su ambiguita, evidenza e prontezza all azione.</p>
+      </div>
+    `;
+  }
+  const pack = payload.pack || null;
+  return `
+    <div class="desk-summary-card">
+      <small>Decision Clarity</small>
+      <strong>${esc(payload.clarity_state || "-")} · ${esc(payload.action_readiness || "-")}</strong>
+      <p>${esc(payload.explanation || "Nyra sta misurando se il passaggio da memoria ad azione e ancora troppo ambiguo.")}</p>
+      <div class="desk-tags">
+        <span>ambiguita ${esc(payload.ambiguity_level || "-")}</span>
+        <span>azione ${esc(payload.recommended_action || "-")}</span>
+        <span>confidence ${esc(formatPct(Number(payload.evidence?.confidence_hint || 0)))}</span>
+      </div>
+      ${pack ? `<small>pack ${esc(String(pack.domains_count || 0))} domini · ${esc(String(pack.rules_count || 0))} regole</small>` : ""}
+    </div>
+  `;
+}
+
 function renderFinanceDeskBoard() {
   const container = byId("financeDeskBoard");
   const autoStatus = byId("worldPaperAutoStatus");
@@ -787,6 +815,7 @@ function renderFinanceDeskBoard() {
       </div>
       ${buildChannelRiskSummaryCard()}
       ${buildPricingCoherenceSummaryCard()}
+      ${buildDecisionClaritySummaryCard()}
       ${selfDiagnosisCard}
     </div>
     ${movementChart}
@@ -835,6 +864,7 @@ async function loadFinanceMacroSignals() {
     const response = await fetchJson("/api/nyra/finance/macro-signals");
     state.financeChannelRisk = response.channelRisk || state.financeChannelRisk;
     state.financePricingCoherence = response.pricingCoherence || state.financePricingCoherence;
+    state.financeDecisionClarity = response.decisionClarity || state.financeDecisionClarity;
     if (state.mode === "finance") renderDashboard();
   } catch (error) {
     addMessage("nyra", `Errore segnali macro: ${error.message}`, "error");
