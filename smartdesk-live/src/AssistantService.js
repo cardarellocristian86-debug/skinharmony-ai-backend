@@ -304,6 +304,77 @@ function buildBlocked(message, action = null, payload = {}) {
   return { mode: "blocked_action", message, action, payload, requiresConfirmation: false };
 }
 
+function assistantLanguage(context = {}) {
+  return String(context.language || context.settings?.appLanguage || "it").toLowerCase() === "en" ? "en" : "it";
+}
+
+function localizeAssistantText(message, language) {
+  if (language !== "en") return message;
+  return String(message || "")
+    .replace(/\bLettura Smart allineata a Corelia Decision Engine\./g, "Smart reading aligned with the Corelia Decision Engine.")
+    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Corelia come motore decisionale:/g, "AI Gold operational reading on the available data, with Corelia as the decision engine:")
+    .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "On the Silver plan I can guide you through modules and reports, but I do not generate AI priorities.")
+    .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "On the Base plan the Smart button stays operational, but it does not use AI priorities.")
+    .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatic priorities and decision alerts are available on the Gold plan.")
+    .replace(/\bGli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold\./g, "Decision alerts, priority recall and AI readings are available on the Gold plan.")
+    .replace(/\bNon ho eseguito azioni automatiche\. Conferma sempre tu eventuali contatti, modifiche o verifiche operative\./g, "I did not execute automatic actions. You always confirm contacts, changes or operational checks.")
+    .replace(/\bCi sono priorita operative da gestire\./g, "There are operational priorities to handle.")
+    .replace(/\bAgenda vuota oggi\. Ti conviene lavorare su recall o clienti inattivi\./g, "The schedule is empty today. Work on recall or inactive clients.")
+    .replace(/\bSintesi operativa:/g, "Operational summary:")
+    .replace(/\bCosa fare ora:/g, "What to do now:")
+    .replace(/\bCosa puoi fare ora:/g, "What you can do now:")
+    .replace(/\bPriorità principale:/g, "Primary priority:")
+    .replace(/\bAzioni consigliate:/g, "Suggested actions:")
+    .replace(/\bBlocchi e verifiche:/g, "Blocks and checks:")
+    .replace(/\bEsecuzione:/g, "Execution:")
+    .replace(/\bStato centro:/g, "Center state:")
+    .replace(/\bMarketing:/g, "Marketing:")
+    .replace(/\bRedditività:/g, "Profitability:")
+    .replace(/\bTrend mensile:/g, "Monthly trend:")
+    .replace(/\bDomanda ricevuta:/g, "Question received:")
+    .replace(/\bApro la dashboard\./g, "Opening the dashboard.")
+    .replace(/\bApro l[’']agenda\./g, "Opening the schedule.")
+    .replace(/\bApro i clienti\./g, "Opening clients.")
+    .replace(/\bApro il magazzino\./g, "Opening stock.")
+    .replace(/\bApro i report\./g, "Opening reports.")
+    .replace(/\bApro la cassa operativa\./g, "Opening operational checkout.")
+    .replace(/\bApro turni e presenze\./g, "Opening shifts and attendance.")
+    .replace(/\bApro il controllo redditività\./g, "Opening profitability control.")
+    .replace(/\bApro i protocolli\./g, "Opening protocols.")
+    .replace(/\bApro l[’']area training\./g, "Opening the training area.")
+    .replace(/\bApro le impostazioni\./g, "Opening settings.")
+    .replace(/\bFiltro l[’']agenda sul periodo richiesto\./g, "Filtering the schedule for the requested period.")
+    .replace(/\bApro il form cliente\./g, "Opening the client form.")
+    .replace(/\bAlert letti dal gestionale:?/gi, "Alerts read from the management system")
+    .replace(/\bNessuna priorità principale disponibile\./g, "No primary priority available.")
+    .replace(/\bNessuna azione secondaria prioritaria\./g, "No secondary priority action.")
+    .replace(/\bNessun blocco critico dal Gold Engine\./g, "No critical block from the Gold Engine.")
+    .replace(/\bPosso accompagnarti all'azione, ma ogni esecuzione resta confermata dall'operatore\./g, "I can guide you to the action, but every execution is still confirmed by the operator.")
+    .replace(/\bNon eseguo azioni dirette se Gold segnala rischio, frizione o confidence insufficiente\./g, "I do not execute direct actions when Gold signals risk, friction or insufficient confidence.")
+    .replace(/\bApri Agenda\b/g, "Open schedule")
+    .replace(/\bApri agenda\b/g, "Open schedule")
+    .replace(/\bApri Clienti\b/g, "Open clients")
+    .replace(/\bApri clienti\b/g, "Open clients")
+    .replace(/\bApri Cassa\b/g, "Open checkout")
+    .replace(/\bApri cassa\b/g, "Open checkout")
+    .replace(/\bApri Report\b/g, "Open reports")
+    .replace(/\bApri report\b/g, "Open reports")
+    .replace(/\bApri Redditività\b/g, "Open profitability")
+    .replace(/\bApri redditività\b/g, "Open profitability")
+    .replace(/\bApri Marketing\b/g, "Open marketing")
+    .replace(/\bApri marketing\b/g, "Open marketing")
+    .replace(/\bMostrami priorità\b/g, "Show priorities");
+}
+
+function localizeAssistantEnvelope(response, context = {}) {
+  const language = assistantLanguage(context);
+  if (!response || language !== "en") return response;
+  return {
+    ...response,
+    message: localizeAssistantText(response.message, language)
+  };
+}
+
 function significantTokens(value) {
   const stop = new Set([
     "ai", "gold", "test", "top", "stylist", "senior", "junior", "lento",
@@ -474,6 +545,7 @@ class AssistantService {
     return {
       centerId: String(session?.centerId || ""),
       centerName: String(session?.centerName || ""),
+      language: assistantLanguage(context),
       subscriptionPlan: currentPlan,
       supportMode: Boolean(session?.supportMode),
       currentPage: String(context.currentPage || payload.page || "dashboard"),
@@ -1016,18 +1088,20 @@ class AssistantService {
     const localDecision = this.buildLocalDecision(message, context, session);
     const normalizedMessage = normalizeText(message);
     if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
-      return { ...localDecision, provider: this.getAiProviderMode() === "corelia_only" ? "corelia" : "rules" };
+      return localizeAssistantEnvelope({ ...localDecision, provider: this.getAiProviderMode() === "corelia_only" ? "corelia" : "rules" }, context);
     }
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!this.shouldUseOpenAI()) {
-      return { ...localDecision, provider: this.getFallbackProviderName() };
+      return localizeAssistantEnvelope({ ...localDecision, provider: this.getFallbackProviderName() }, context);
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = [
       "Sei SkinHarmony AI Assistant, assistente operativo reale del gestionale.",
-      "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
+      assistantLanguage(context) === "en"
+        ? "Respond in English, premium tone, clear, brief, concrete."
+        : "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
       "Riconosci il centro e il piano solo dal contesto di sessione. Non chiedere all'utente chi e se il contesto lo contiene.",
       "Usa esclusivamente dati del centro presenti nel contesto JSON. Non parlare di altri centri e non inventare dati mancanti.",
       "Non promettere azioni non eseguibili.",
@@ -1114,20 +1188,20 @@ class AssistantService {
             mergedPayload.durationMin = Number(sanitized.payload.durationMin);
           }
         }
-        return {
+        return localizeAssistantEnvelope({
           ...localDecision,
           payload: mergedPayload,
           message: buildConfirmationMessage(localDecision.action, mergedPayload, localDecision.message),
           requiresConfirmation: true,
           provider: "openai"
-        };
+        }, context);
       }
-      return {
+      return localizeAssistantEnvelope({
         ...sanitized,
         provider: "openai"
-      };
+      }, context);
     } catch {
-      return { ...localDecision, provider: this.getFallbackProviderName() };
+      return localizeAssistantEnvelope({ ...localDecision, provider: this.getFallbackProviderName() }, context);
     }
   }
 

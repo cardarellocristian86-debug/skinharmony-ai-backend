@@ -692,11 +692,11 @@
         ]
       },
       "/shifts": {
-        title: "Shifts leggibili a blocchi",
+        title: "Shifts readable in blocks",
         subtitle: "Calendar, attendance and templates should be separated more clearly in long screens.",
         actions: [
           { label: "Shifts", href: "/shifts", active: true },
-          { label: "Servizi", href: "/services" },
+          { label: "Services", href: "/services" },
           { label: "Protocols", href: "/protocols" }
         ],
         cards: [
@@ -706,17 +706,17 @@
         ]
       },
       "/protocols": {
-        title: "Protocols meno piatti",
-        subtitle: "Libreria, scheda cliente e bozza AI devono sembrare tre piani distinti, non una pagina unica lunga.",
+        title: "Protocols with clearer layers",
+        subtitle: "Library, client record and AI draft should feel like three distinct layers, not one long page.",
         actions: [
           { label: "Protocols", href: "/protocols", active: true },
-          { label: "Servizi", href: "/services" },
+          { label: "Services", href: "/services" },
           { label: "Shifts", href: "/shifts" }
         ],
         cards: [
-          ["Libreria", "Prima cosa esiste gia e cosa manca."],
-          ["Cliente", "Poi storico, sensibilita e area."],
-          ["Bozza AI", "Solo dopo suggerimento e conferma operatore."]
+          ["Library", "First see what already exists and what is missing."],
+          ["Client", "Then history, sensitivity and area."],
+          ["AI draft", "Only after that come suggestion and operator confirmation."]
         ]
       }
     }[route];
