@@ -426,6 +426,7 @@ function localizeServerText(value, language = "it") {
     .replace(/\bfatturato per operatore sotto soglia · agenda poco satura · continuità clienti bassa · pochi clienti attivi nel periodo\b/g, "revenue per operator below threshold · schedule fill is too low · client continuity is low · too few active clients in the period")
     .replace(/\bLa salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\.\b/g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
     .replace(/\bLa center health non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\.\b/g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
+    .replace(/La center health non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\./g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
     .replace(/\bStato centro non ancora rappresentativo\b/g, "Center state is not representative yet")
     .replace(/\bLettura centro prudente: configurazione economica incompleta\b/g, "Cautious center reading: economic setup incomplete")
     .replace(/\bVolume presente, lettura centro ancora prudente\b/g, "Volume is present, center reading is still cautious")
