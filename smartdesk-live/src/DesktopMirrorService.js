@@ -3472,7 +3472,7 @@ class DesktopMirrorService {
       reliabilityScore: Number(cashSelection?.reliabilityScore ?? signals.dataReliability ?? business.confidence ?? 0),
       ...decision.primaryAction
     });
-    return {
+    const payload = {
       goldEnabled: true,
       generatedAt: nowIso(),
       v7,
@@ -3521,6 +3521,7 @@ class DesktopMirrorService {
         lastEvent: state.lastEvent || null
       }
     };
+    return localizeDecisionCenterPayload(payload, this.getRuntimeLanguage(session));
   }
 
   goldClamp01(value) {
