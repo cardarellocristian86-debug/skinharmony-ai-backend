@@ -423,6 +423,8 @@ function normalizeText(value) {
 function localizeServerText(value, language = "it") {
   if (language !== "en") return value;
   return String(value || "")
+    .replace(/\bfatturato per operatore sotto soglia · agenda poco satura · continuità clienti bassa · pochi clienti attivi nel periodo\b/g, "revenue per operator below threshold · schedule fill is too low · client continuity is low · too few active clients in the period")
+    .replace(/\bLa salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\.\b/g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
     .replace(/\bStato centro non ancora rappresentativo\b/g, "Center state is not representative yet")
     .replace(/\bLettura centro prudente: configurazione economica incompleta\b/g, "Cautious center reading: economic setup incomplete")
     .replace(/\bVolume presente, lettura centro ancora prudente\b/g, "Volume is present, center reading is still cautious")
@@ -544,7 +546,6 @@ function localizeServerText(value, language = "it") {
     .replace(/\bcontinuità clienti bassa\b/g, "client continuity is low")
     .replace(/\bpochi clienti attivi nel periodo\b/g, "too few active clients in the period")
     .replace(/\bfatturato, saturazione agenda e continuità clienti sono coerenti con il periodo\./g, "revenue, schedule fill and client continuity are aligned with the period.")
-    .replace(/\bLa salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\./g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
     .replace(/\bCorreggi i dati che bloccano letture affidabili\./g, "Correct the data that blocks reliable readings.")
     .replace(/\bMantieni puliti cassa, clienti e servizi\./g, "Keep checkout, clients and services clean.")
     .replace(/\bDati sufficienti per lettura operativa\./g, "Data is sufficient for operational reading.")
