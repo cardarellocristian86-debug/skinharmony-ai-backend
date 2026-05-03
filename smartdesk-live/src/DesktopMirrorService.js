@@ -428,6 +428,10 @@ function localizeServerText(value, language = "it") {
     .replace(/\bVolume presente, lettura centro ancora prudente\b/g, "Volume is present, center reading is still cautious")
     .replace(/\bRedditività da configurare: configurazione economica incompleta\b/g, "Profitability to configure: incomplete economic setup")
     .replace(/\bRedditività da configurare\b/g, "Profitability to configure")
+    .replace(/\bQuadro da verificare\b/g, "Situation to verify")
+    .replace(/\bda verificare\b/g, "to verify")
+    .replace(/\bsotto_soglia\b/g, "below threshold")
+    .replace(/\bcontrollo\b/g, "control")
     .replace(/\blettura economica non ancora affidabile\b/g, "economic reading is not reliable yet")
     .replace(/\bstai perdendo soldi\b/g, "you are losing money")
     .replace(/\bmargine migliorabile\b/g, "margin can improve")
@@ -440,6 +444,7 @@ function localizeServerText(value, language = "it") {
     .replace(/\bPerformance centro\b/g, "Center performance")
     .replace(/\bsalute centro\b/g, "center health")
     .replace(/\bIl centro ha segnali di lavoro reali, ma finché i costi non sono completi la salute centro va letta con prudenza e non come verdetto\./g, "The center shows real work signals, but until costs are complete its health must be read cautiously, not as a verdict.")
+    .replace(/\bIl centro mostra volume reale, ma finché costi servizi e costi orari non sono completi la lettura complessiva va tenuta prudente\./g, "The center shows real volume, but until service costs and hourly staff costs are complete the overall reading must stay cautious.")
     .replace(/\bIn questa fase non leggere questo blocco come giudizio sul centro: la lettura completa si sblocca quando configurazione economica e storico diventano più rappresentativi\./g, "At this stage do not read this block as a judgment on the center: the full reading unlocks when the economic setup and history become more representative.")
     .replace(/\bAumenta agenda e richiami prima di lavorare sui margini\./g, "Increase schedule volume and recalls before working on margins.")
     .replace(/\bRinforza continuità clienti e riempimento agenda\./g, "Strengthen client continuity and schedule fill.")
@@ -458,6 +463,7 @@ function localizeServerText(value, language = "it") {
     .replace(/\bSistema la cassa prima di leggere report e redditività\./g, "Fix checkout before reading reports and profitability.")
     .replace(/\bAlcuni movimenti non sono collegati a cliente o appuntamento\./g, "Some movements are not linked to a client or appointment.")
     .replace(/\bcollega pagamenti\b/g, "link payments")
+    .replace(/\bSegnale secondario letto dal Gold State Layer\./g, "Secondary signal read from the Gold State Layer.")
     .replace(/\bNon leggere questo come giudizio sul centro: prima va completata la configurazione economica\./g, "Do not read this as a judgment on the center: complete the economic setup first.")
     .replace(/\bControlla subito prezzo, durata e consumo prodotto\./g, "Review price, duration and product consumption immediately.")
     .replace(/\bMargine migliorabile: correggi prima di spingere il servizio\./g, "Margin can improve: correct it before pushing the service.")
@@ -504,6 +510,7 @@ function localizeServerText(value, language = "it") {
     .replace(/\bMantieni puliti cassa, clienti e servizi\./g, "Keep checkout, clients and services clean.")
     .replace(/\bDati sufficienti per lettura operativa\./g, "Data is sufficient for operational reading.")
     .replace(/\bcorreggi dati sporchi quando rallentano l'analisi\b/g, "correct dirty data when it slows the analysis")
+    .replace(/\bOutput assertivi bloccati fino a dato piu affidabile\./g, "Assertive outputs remain blocked until data is more reliable.")
     .replace(/\bGenera azioni\b/g, "Generate actions")
     .replace(/\bPrepara messaggio\b/g, "Prepare message")
     .replace(/\bApri dashboard\b/g, "Open dashboard")
@@ -533,34 +540,21 @@ function localizeServerText(value, language = "it") {
 
 function localizeDecisionCenterPayload(payload, language = "it") {
   if (!payload || language !== "en") return payload;
-  return {
-    ...payload,
-    summary: payload.summary ? {
-      ...payload.summary,
-      centerHealth: payload.summary.centerHealth ? {
-        ...payload.summary.centerHealth,
-        statusLabel: localizeServerText(payload.summary.centerHealth.statusLabel, language),
-        reason: localizeServerText(payload.summary.centerHealth.reason, language)
-      } : payload.summary.centerHealth
-    } : payload.summary,
-    sections: Array.isArray(payload.sections)
-      ? payload.sections.map((section) => ({
-          ...section,
-          title: localizeServerText(section.title, language),
-          items: Array.isArray(section.items)
-            ? section.items.map((item) => ({
-                ...item,
-                area: localizeServerText(item.area, language),
-                conclusion: localizeServerText(item.conclusion, language),
-                reason: localizeServerText(item.reason, language),
-                details: localizeServerText(item.details, language),
-                action: localizeServerText(item.action, language),
-                button: localizeServerText(item.button, language)
-              }))
-            : []
-        }))
-      : []
+  const walk = (value) => {
+    if (typeof value === "string") {
+      return localizeServerText(value, language);
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => walk(item));
+    }
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, itemValue]) => [key, walk(itemValue)])
+      );
+    }
+    return value;
   };
+  return walk(payload);
 }
 
 function addDaysIso(value, days) {
