@@ -96,14 +96,30 @@ app.use(express.static(path.join(__dirname, "public")));
 
 function readJson(relativePath, fallback = null) {
   const filePath = resolveStoragePath(relativePath);
-  if (!fs.existsSync(filePath)) return fallback;
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  if (fs.existsSync(filePath)) {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  }
+  if (nyraStorageRoot && nyraPersistentPath(relativePath)) {
+    const repoPath = path.join(rootDir, relativePath);
+    if (fs.existsSync(repoPath)) {
+      return JSON.parse(fs.readFileSync(repoPath, "utf8"));
+    }
+  }
+  return fallback;
 }
 
 function readText(relativePath, fallback = "") {
   const filePath = resolveStoragePath(relativePath);
-  if (!fs.existsSync(filePath)) return fallback;
-  return fs.readFileSync(filePath, "utf8");
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, "utf8");
+  }
+  if (nyraStorageRoot && nyraPersistentPath(relativePath)) {
+    const repoPath = path.join(rootDir, relativePath);
+    if (fs.existsSync(repoPath)) {
+      return fs.readFileSync(repoPath, "utf8");
+    }
+  }
+  return fallback;
 }
 
 function seedNyraRuntimeFromBootstrap() {
