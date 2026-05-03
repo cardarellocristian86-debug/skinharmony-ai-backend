@@ -431,6 +431,12 @@ function localizeServerText(value, language = "it") {
     .replace(/\bQuadro da verificare\b/g, "Situation to verify")
     .replace(/\bda verificare\b/g, "to verify")
     .replace(/\bsotto_soglia\b/g, "below threshold")
+    .replace(/\bsotto soglia\b/g, "below threshold")
+    .replace(/\bbasso\b/g, "low")
+    .replace(/\bmedio\b/g, "medium")
+    .replace(/\balto\b/g, "high")
+    .replace(/\bcritico\b/g, "critical")
+    .replace(/\bbuono\b/g, "good")
     .replace(/\bcontrollo\b/g, "control")
     .replace(/\bVolume presente, completa costi per sbloccare redditivita\b/g, "Volume is present, complete costs to unlock profitability")
     .replace(/\bCompleta qualita dati\b/g, "Complete data quality")
@@ -529,6 +535,16 @@ function localizeServerText(value, language = "it") {
     .replace(/\blavora la lista recall\b/g, "work the recall list")
     .replace(/\brivedi contatti, consensi e storico\b/g, "review contacts, consents and history")
     .replace(/\bQualità dati\b/g, "Data quality")
+    .replace(/\bPrimo snapshot dashboard creato\. Le prossime aperture leggeranno il dato salvato\./g, "First dashboard snapshot created. The next openings will read the saved data.")
+    .replace(/\bCompleta e incassa gli appuntamenti per attivare un report più preciso\./g, "Complete and check out appointments to activate a more accurate report.")
+    .replace(/\bservizi con costi stimati non collegati a prodotti o tecnologie\b/g, "services with estimated costs not linked to products or technologies")
+    .replace(/\bappuntamenti passati senza pagamento collegato\b/g, "past appointments without a linked payment")
+    .replace(/\bfatturato per operatore sotto soglia\b/g, "revenue per operator below threshold")
+    .replace(/\bagenda poco satura\b/g, "schedule fill is too low")
+    .replace(/\bcontinuità clienti bassa\b/g, "client continuity is low")
+    .replace(/\bpochi clienti attivi nel periodo\b/g, "too few active clients in the period")
+    .replace(/\bfatturato, saturazione agenda e continuità clienti sono coerenti con il periodo\./g, "revenue, schedule fill and client continuity are aligned with the period.")
+    .replace(/\bLa salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\./g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
     .replace(/\bCorreggi i dati che bloccano letture affidabili\./g, "Correct the data that blocks reliable readings.")
     .replace(/\bMantieni puliti cassa, clienti e servizi\./g, "Keep checkout, clients and services clean.")
     .replace(/\bDati sufficienti per lettura operativa\./g, "Data is sufficient for operational reading.")
@@ -578,6 +594,47 @@ function localizeDecisionCenterPayload(payload, language = "it") {
     return value;
   };
   return walk(payload);
+}
+
+function localizeDashboardStatsPayload(payload, language = "it") {
+  if (!payload || language !== "en") return payload;
+  const next = { ...payload };
+  if (next.dataQuality && typeof next.dataQuality === "object") {
+    next.dataQuality = {
+      ...next.dataQuality,
+      alerts: Array.isArray(next.dataQuality.alerts)
+        ? next.dataQuality.alerts.map((item) => localizeServerText(item, language))
+        : next.dataQuality.alerts
+    };
+  }
+  if (next.dashboardCache && typeof next.dashboardCache === "object" && next.dashboardCache.message) {
+    next.dashboardCache = {
+      ...next.dashboardCache,
+      message: localizeServerText(next.dashboardCache.message, language)
+    };
+  }
+  return next;
+}
+
+function localizeOperationalReportPayload(report, language = "it") {
+  if (!report || language !== "en") return report;
+  return {
+    ...report,
+    insights: Array.isArray(report.insights)
+      ? report.insights.map((item) => localizeServerText(item, language))
+      : report.insights
+  };
+}
+
+function localizeCenterHealthPayload(health, language = "it") {
+  if (!health || language !== "en") return health;
+  return {
+    ...health,
+    status: localizeServerText(health.status, language),
+    statusLabel: localizeServerText(health.statusLabel, language),
+    reason: localizeServerText(health.reason, language),
+    note: localizeServerText(health.note, language)
+  };
 }
 
 function addDaysIso(value, days) {
@@ -8237,7 +8294,7 @@ class DesktopMirrorService {
     const generatedAt = snapshot?.generatedAt || "";
     const ageMs = generatedAt ? Date.now() - new Date(generatedAt).getTime() : 0;
     const stale = Boolean(generatedAt && ageMs > DASHBOARD_AUTO_REFRESH_MS);
-    return {
+    const response = {
       ...payload,
       dashboardCache: {
         cached: true,
@@ -8251,6 +8308,7 @@ class DesktopMirrorService {
         ...extra
       }
     };
+    return localizeDashboardStatsPayload(response, this.getRuntimeLanguage(session));
   }
 
   getDashboardStats(options = {}, session = null) {
@@ -8551,7 +8609,10 @@ class DesktopMirrorService {
       lowTechnologyUsage: [],
       insights
     };
-    return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.OPERATIONAL_REPORT, cacheOptions, session, report);
+    return localizeOperationalReportPayload(
+      this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.OPERATIONAL_REPORT, cacheOptions, session, report),
+      this.getRuntimeLanguage(session)
+    );
   }
 
   exportOperationalReport(options = {}, format = "pdf", session = null) {
@@ -8705,9 +8766,12 @@ class DesktopMirrorService {
       note: "La salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini."
     };
     if (!precomputedOperational) {
-      return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.CENTER_HEALTH, cacheOptions, session, health);
+      return localizeCenterHealthPayload(
+        this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.CENTER_HEALTH, cacheOptions, session, health),
+        this.getRuntimeLanguage(session)
+      );
     }
-    return health;
+    return localizeCenterHealthPayload(health, this.getRuntimeLanguage(session));
   }
 
   openExportsFolder() {
@@ -8760,9 +8824,16 @@ class DesktopMirrorService {
       }
     };
     if (!precomputed.centerHealth) {
-      return this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PROFITABILITY, cacheOptions, session, overview);
+      const cached = this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.PROFITABILITY, cacheOptions, session, overview);
+      return {
+        ...cached,
+        centerHealth: localizeCenterHealthPayload(cached.centerHealth, this.getRuntimeLanguage(session))
+      };
     }
-    return overview;
+    return {
+      ...overview,
+      centerHealth: localizeCenterHealthPayload(overview.centerHealth, this.getRuntimeLanguage(session))
+    };
   }
 
   getAiGoldMarketing(session = null) {
