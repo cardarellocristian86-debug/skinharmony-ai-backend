@@ -3790,6 +3790,45 @@ function summarizeWorldPaperPortfolio(portfolio, worldScan = readJson(nyraWorldM
   };
 }
 
+function buildWorldPaperProfitProtection(portfolio, summary = summarizeWorldPaperPortfolio(portfolio)) {
+  const initialCapital = Number(portfolio?.initial_capital_eur || NYRA_FINANCE_SHARED_CAPITAL_EUR);
+  const currentCapital = Number(summary?.capital_eur || initialCapital);
+  const currentProfitEur = Number((currentCapital - initialCapital).toFixed(2));
+  const storedPeakCapital = Number(portfolio?.peak_capital_eur || portfolio?.meta?.peak_capital_eur || initialCapital);
+  const storedPeakProfit = Number((storedPeakCapital - initialCapital).toFixed(2));
+  const peakCapitalEur = Math.max(initialCapital, storedPeakCapital, currentCapital);
+  const peakProfitEur = Math.max(0, Number((peakCapitalEur - initialCapital).toFixed(2)), storedPeakProfit);
+  const givebackEur = peakProfitEur > 0 ? Number((peakProfitEur - Math.max(0, currentProfitEur)).toFixed(2)) : 0;
+  const givebackPct = peakProfitEur > 0 ? Number(((givebackEur / peakProfitEur) * 100).toFixed(4)) : 0;
+  const alphaVsQqqEur = Number(summary?.alpha_vs_qqq_eur || 0);
+  const alphaVsQqqPct = Number(summary?.alpha_vs_qqq_pct || 0);
+  const profitLockActive = peakProfitEur >= 6000 || currentProfitEur >= 6000;
+  const benchmarkRelativeGuard =
+    currentProfitEur > 0 &&
+    (alphaVsQqqEur <= -2500 || alphaVsQqqPct <= -0.25);
+  const maxGivebackGuard =
+    peakProfitEur >= 5000 &&
+    (givebackEur >= 1800 || givebackPct >= 22);
+  const hardGivebackGuard =
+    peakProfitEur >= 8000 &&
+    (givebackEur >= 3000 || givebackPct >= 30);
+  return {
+    initialCapitalEur: initialCapital,
+    currentCapitalEur: currentCapital,
+    currentProfitEur,
+    peakCapitalEur: Number(peakCapitalEur.toFixed(2)),
+    peakProfitEur: Number(peakProfitEur.toFixed(2)),
+    givebackEur,
+    givebackPct,
+    alphaVsQqqEur: Number(alphaVsQqqEur.toFixed(2)),
+    alphaVsQqqPct: Number(alphaVsQqqPct.toFixed(4)),
+    profitLockActive,
+    benchmarkRelativeGuard,
+    maxGivebackGuard,
+    hardGivebackGuard
+  };
+}
+
 function classifyWorldPaperMainError(summary, portfolio, result = null) {
   const trades = Array.isArray(portfolio?.trades) ? portfolio.trades : [];
   const recentTrades = trades.slice(0, 20);
@@ -4336,6 +4375,7 @@ function buildWorldPaperLearningPolicy(portfolio) {
   const allPositionsLosing = positions.length > 0 && losingPositions.length === positions.length;
   const diversification = worldPaperDiversificationState(portfolio);
   const recentTradeCount = trades.filter((trade) => minutesSinceIso(trade.at) <= 360).length;
+  const profitProtection = buildWorldPaperProfitProtection(portfolio, summary);
   const reviewSoftGuard =
     recentReviewTrades.length >= 5 &&
     recentReviewNetPnlEur < 0 &&
@@ -4353,11 +4393,26 @@ function buildWorldPaperLearningPolicy(portfolio) {
   const rawPauseSignal = allPositionsLosing && summary.pnl_eur < -40;
   const deepProtectionSignal = rawPauseSignal && summary.pnl_pct <= -3;
   const elasticLearning = rawPauseSignal && !deepProtectionSignal;
-  const pauseNewEntries = (deepProtectionSignal && !hardLearningMode) || feeBleedHardGuard || repeatedErrorGuard;
-  const learningState = feeBleedHardGuard
+  const profitDefenseGuard =
+    profitProtection.profitLockActive &&
+    (profitProtection.maxGivebackGuard || profitProtection.benchmarkRelativeGuard);
+  const hardProfitDefenseGuard =
+    profitProtection.profitLockActive &&
+    (profitProtection.hardGivebackGuard ||
+      (profitProtection.benchmarkRelativeGuard && Number(summary.alpha_vs_qqq_pct || 0) <= -0.6));
+  const pauseNewEntries =
+    (deepProtectionSignal && !hardLearningMode) ||
+    feeBleedHardGuard ||
+    repeatedErrorGuard ||
+    hardProfitDefenseGuard;
+  const learningState = hardProfitDefenseGuard
+    ? "profit_lock_recovery"
+    : feeBleedHardGuard
     ? "anti_fee_bleed_recovery"
     : repeatedErrorGuard
       ? "review_hardening_learning"
+    : profitDefenseGuard
+      ? "profit_lock_learning"
     : feeBleedGuard
       ? "benchmark_recovery_learning"
       : rawPauseSignal && hardLearningMode
@@ -4402,6 +4457,7 @@ function buildWorldPaperLearningPolicy(portfolio) {
       hard_learning_mode: hardLearningMode,
       elastic_learning: elasticLearning,
       deep_protection_signal: deepProtectionSignal,
+      profit_protection: profitProtection,
       block_review: {
         window_trades: recentReviewTrades.length,
         wins: recentReviewWins,
@@ -4423,11 +4479,17 @@ function buildWorldPaperLearningPolicy(portfolio) {
       fee_bleed_hard_guard_active: feeBleedHardGuard,
       review_soft_guard_active: reviewSoftGuard,
       repeated_error_guard_active: repeatedErrorGuard,
+      profit_lock_active: profitProtection.profitLockActive,
+      benchmark_relative_guard_active: profitProtection.benchmarkRelativeGuard,
+      max_giveback_guard_active: profitProtection.maxGivebackGuard,
+      hard_profit_defense_guard_active: hardProfitDefenseGuard,
       benchmark_recovery_required: feeBleedGuard,
       diversification_required: true,
       diversification_rule: "Non concentrare la palestra su una sola famiglia: se una classe e gia piena o perdente, il prossimo probe deve cercare una classe diversa con edge/rischio puliti.",
-      conviction_rule: "Se la tesi probabilistica e valida, Nyra deve darle tempo: niente chiusure nervose e niente micro-probe che regalano fee. Se la tesi non supera i costi, osserva.",
+      conviction_rule: "Se la tesi probabilistica e valida, Nyra deve darle tempo: niente chiusure nervose dei winner e niente micro-probe che regalano fee. Se la tesi non supera i costi, osserva.",
       anti_robinhood_rule: "Se Nyra perde contro QQQ e aumenta i trade, non sta imparando: sta trasferendo capitale alle fee. In quel caso stop nuove entrate deboli, hold ragionato e solo tesi ad alta convinzione.",
+      profit_lock_rule: "Quando Nyra ha gia generato profitto, quel profitto va difeso: il sistema non puo restituire troppo del picco fatto solo per inseguire nuove prove. Prima protegge il vantaggio, poi attacca.",
+      benchmark_guard_rule: "Essere sopra zero non basta: se Nyra e verde ma resta sotto QQQ, la priorita diventa difendere i winner e bloccare le entrate marginali fino a recupero di disciplina.",
       review_rule: "Ogni blocco di 20 trade chiusi va letto come una review: se Nyra perde nello stesso simbolo o nella stessa classe piu volte, la prossima entrata su quel contesto deve diventare piu dura o essere bloccata.",
       contextual_memory_rule: "Nyra non deve ricordare solo l'asset; deve ricordare il contesto ripetuto di errore: simbolo, classe e pattern di churn.",
       training_directive: "Area test: il capitale e virtuale e ricaricabile. Nyra puo provare e sbagliare, ma deve cercare profitto con tesi, pazienza e size coerente; ogni fee pagata senza edge e un errore da correggere.",
@@ -4440,10 +4502,22 @@ function buildWorldPaperLearningPolicy(portfolio) {
         recent_window_size: recentReviewTrades.length,
         recent_window_net_pnl_eur: Number(recentReviewNetPnlEur.toFixed(2))
       },
-      max_new_position_multiplier: feeBleedGuard || repeatedErrorGuard ? Math.min(maxNewPositionMultiplier, 0.25) : reviewSoftGuard ? Math.min(maxNewPositionMultiplier, 0.3) : maxNewPositionMultiplier,
-      min_edge_for_new_entry: feeBleedHardGuard ? 82 : repeatedErrorGuard ? 80 : feeBleedGuard ? 76 : reviewSoftGuard ? 70 : deepProtectionSignal ? 72 : elasticLearning ? 62 : 55,
-      max_risk_for_new_entry: feeBleedHardGuard ? 34 : repeatedErrorGuard ? 38 : feeBleedGuard ? 42 : reviewSoftGuard ? 48 : deepProtectionSignal ? 42 : elasticLearning ? 55 : 65,
-      reason: feeBleedHardGuard
+      max_new_position_multiplier: hardProfitDefenseGuard
+        ? Math.min(maxNewPositionMultiplier, 0.12)
+        : profitDefenseGuard
+          ? Math.min(maxNewPositionMultiplier, 0.18)
+          : feeBleedGuard || repeatedErrorGuard
+            ? Math.min(maxNewPositionMultiplier, 0.25)
+            : reviewSoftGuard
+              ? Math.min(maxNewPositionMultiplier, 0.3)
+              : maxNewPositionMultiplier,
+      min_edge_for_new_entry: hardProfitDefenseGuard ? 84 : profitDefenseGuard ? 80 : feeBleedHardGuard ? 82 : repeatedErrorGuard ? 80 : feeBleedGuard ? 76 : reviewSoftGuard ? 70 : deepProtectionSignal ? 72 : elasticLearning ? 62 : 55,
+      max_risk_for_new_entry: hardProfitDefenseGuard ? 32 : profitDefenseGuard ? 36 : feeBleedHardGuard ? 34 : repeatedErrorGuard ? 38 : feeBleedGuard ? 42 : reviewSoftGuard ? 48 : deepProtectionSignal ? 42 : elasticLearning ? 55 : 65,
+      reason: hardProfitDefenseGuard
+        ? `Profit lock duro: Nyra aveva costruito fino a ${profitProtection.peakProfitEur.toFixed(2)} EUR sopra il capitale iniziale e ne ha restituiti ${profitProtection.givebackEur.toFixed(2)} EUR. Finche non recupera disciplina contro benchmark, blocca quasi tutte le nuove entrate e difende il vantaggio rimasto.`
+        : profitDefenseGuard
+          ? `Profit lock attivo: Nyra aveva toccato ${profitProtection.peakProfitEur.toFixed(2)} EUR sopra il capitale iniziale e ora ha dato indietro ${profitProtection.givebackEur.toFixed(2)} EUR. Prima protegge il profitto e tiene i winner validi, poi torna ad aprire nuovi test.`
+        : feeBleedHardGuard
         ? "Anti Robin Hood attivo: Nyra e sotto QQQ e ha troppi trade. Blocca nuove aperture, smette di regalare fee e lavora su hold/tesi forti."
         : repeatedErrorGuard
           ? "Review hardening attivo: negli ultimi trade chiusi Nyra ha ripetuto errori negli stessi simboli o classi. Prima di riaprire lo stesso contesto servono edge piu alti, rischio piu basso e piu disciplina."
@@ -4526,6 +4600,27 @@ function maybeRebalanceWorldPaperByRotation(portfolio, rankedRows, profile) {
         profile: profile.currentProfile || "capital_protection",
         price: Number(liveRow?.last_price || position.last_price || 0),
         reason: `Core/multiverse paper: perdita temporanea ma tesi valida (${thesis.reason})`
+      });
+      return;
+    }
+    if (
+      thesis?.thesis_valid &&
+      ["enter", "hold_thesis"].includes(String(thesis.thesis_action || "")) &&
+      Number(position.pnl_eur || 0) > 0 &&
+      !shouldCloseForPenalty
+    ) {
+      position.multiverse_thesis = thesis;
+      position.reason = `${position.reason || "paper position"}; winner retention: profitto aperto con tesi ancora valida, non chiudo solo per rotazione`;
+      kept.push(position);
+      portfolio.trades.unshift({
+        at: now,
+        type: "winner_hold",
+        symbol: position.symbol,
+        assetClass,
+        gear: profile.currentGear || "-",
+        profile: profile.currentProfile || "capital_protection",
+        price: Number(liveRow?.last_price || position.last_price || 0),
+        reason: `Core/multiverse paper: mantengo winner su ${position.symbol} finche la tesi regge (${thesis.reason})`
       });
       return;
     }
@@ -4875,6 +4970,7 @@ function executeWorldPaperStep(body = {}) {
   const mode = autoSelect ? "nyra_auto_select" : "manual_selection";
   const learning = readJson(nyraWorldPaperLearningPath, null);
   const learningPolicy = learning?.policy || {};
+  const learningMetrics = learning?.metrics || {};
   const assetHistoryForDiversification = readJson(nyraWorldAssetHistoryStudyPath, null);
   const diversificationChoice = autoSelect
     ? chooseDiversifiedWorldPaperRow(row, ranked, portfolio, riskBudget, learning, assetHistoryForDiversification)
@@ -4920,6 +5016,35 @@ function executeWorldPaperStep(body = {}) {
       writeJson(nyraWorldPaperPortfolioPath, portfolio);
       const policy = buildWorldPaperLearningPolicy(portfolio);
       return { ok: true, action: "anti_fee_bleed_pause", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
+    }
+  }
+  if (
+    autoSelect &&
+    row &&
+    !existingForSelected &&
+    (learningPolicy.hard_profit_defense_guard_active || learningPolicy.max_giveback_guard_active)
+  ) {
+    const thesis = row.multiverse_thesis || null;
+    const canExceptionalDefenseEntry =
+      thesis?.thesis_valid &&
+      row?.fee_edge?.ok &&
+      Number(row.edge_score || 0) >= Number(learningPolicy.min_edge_for_new_entry || 80) &&
+      Number(row.risk_score || 0) <= Number(learningPolicy.max_risk_for_new_entry || 36) &&
+      Number(thesis.confidence || 0) >= 68 &&
+      Number(thesis.expected_value_score || 0) >= 14;
+    if (!canExceptionalDefenseEntry) {
+      portfolio.trades.unshift({
+        at: now,
+        type: "profit_lock_pause",
+        symbol: row.symbol || "NONE",
+        gear: riskBudget.gear,
+        profile: riskBudget.profile,
+        reason: `Profit lock: Nyra aveva toccato ${Number(learningMetrics?.profit_protection?.peakProfitEur || 0).toFixed(2)} EUR sopra il capitale iniziale e ora protegge il vantaggio residuo. Non apro ${row.symbol} senza EV e convinzione eccezionali.`,
+        price: row.last_price || 0
+      });
+      writeJson(nyraWorldPaperPortfolioPath, portfolio);
+      const policy = buildWorldPaperLearningPolicy(portfolio);
+      return { ok: true, action: "profit_lock_pause", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
     }
   }
   if (
@@ -5210,9 +5335,14 @@ function executeWorldPaperStep(body = {}) {
     reason: `paper only: ${row.reason}; ${riskBudget.reason}`
   });
   portfolio.updated_at = now;
+  const updatedSummary = summarizeWorldPaperPortfolio(portfolio, scan);
+  portfolio.peak_capital_eur = Math.max(
+    Number(portfolio.peak_capital_eur || portfolio.initial_capital_eur || 0),
+    Number(updatedSummary.capital_eur || 0)
+  );
   writeJson(nyraWorldPaperPortfolioPath, portfolio);
   const policy = buildWorldPaperLearningPolicy(portfolio);
-  return { ok: true, action: "paper_buy", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
+  return { ok: true, action: "paper_buy", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: updatedSummary, treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
 }
 
 function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan = null, study = null, assetHistory = null, memory = null } = {}) {
