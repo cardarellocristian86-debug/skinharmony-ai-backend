@@ -731,6 +731,24 @@ a {
   margin-bottom: 14px;
 }
 
+.finance-chart-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.finance-chart-card {
+  display: grid;
+  gap: 8px;
+}
+
+.finance-chart-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
 .finance-asset-row {
   display: grid;
   grid-template-columns: minmax(0, 160px) minmax(140px, 0.8fr) minmax(0, 1fr) auto auto auto;
@@ -1646,6 +1664,10 @@ a {
   .details-grid,
   .profile-strip,
   .finance-history-analytics {
+    grid-template-columns: 1fr;
+  }
+
+  .finance-chart-stack {
     grid-template-columns: 1fr;
   }
 

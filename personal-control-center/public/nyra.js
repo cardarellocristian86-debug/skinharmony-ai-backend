@@ -1245,6 +1245,7 @@ function renderFinanceAnalytics() {
   const history = Array.isArray(state.financeHistory) ? state.financeHistory : [];
   if (state.mode !== "finance" || !history.length) {
     renderChart("equityChart", [12, 16, 14, 18], "yellow");
+    renderChart("qqqChart", [12, 14, 15, 17], "green");
     byId("assetPnlBoard").innerHTML = `<div class="history-row">Nessun dato asset ancora disponibile.</div>`;
     return;
   }
@@ -1256,6 +1257,15 @@ function renderFinanceAnalytics() {
   });
   const lastPnl = Number(history[history.length - 1]?.totalPnlEur || 0);
   renderChart("equityChart", equityBars, lastPnl > 0 ? "green" : lastPnl < 0 ? "red" : "yellow");
+  const qqqBars = history
+    .map((row) => Number(row.benchmarkValueEur || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const lastQqqPnl = Number(history[history.length - 1]?.benchmarkPnlEur || 0);
+  renderChart(
+    "qqqChart",
+    qqqBars.length ? qqqBars : [12, 14, 15, 17],
+    lastQqqPnl > 0 ? "green" : lastQqqPnl < 0 ? "red" : "yellow"
+  );
 
   const assetMap = new Map();
   history.forEach((row) => {

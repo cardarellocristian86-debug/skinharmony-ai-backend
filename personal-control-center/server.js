@@ -683,6 +683,11 @@ function summarizeNyraFinanceReport(report = {}) {
   const diagnostics = Array.isArray(report.candidate_diagnostics) ? report.candidate_diagnostics : [];
   const exits = Array.isArray(report.exits) ? report.exits : [];
   const portfolio = Array.isArray(report.portfolio) ? report.portfolio : [];
+  const benchmark = report.benchmark && typeof report.benchmark === "object"
+    ? report.benchmark
+    : aggregate.benchmark && typeof aggregate.benchmark === "object"
+      ? aggregate.benchmark
+      : null;
   const topCandidate = diagnostics[0] || null;
   const selected = Number(aggregate.selected_positions || 0);
   const totalPnl = Number(aggregate.total_pnl_eur || 0);
@@ -712,6 +717,9 @@ function summarizeNyraFinanceReport(report = {}) {
     generatedAt: report.generated_at || new Date().toISOString(),
     source: report.source || "n.d.",
     capitalEur: Number(report.capital_eur || 0),
+    benchmarkValueEur: benchmark ? Number(benchmark.current_value_eur || 0) : 0,
+    benchmarkPnlEur: benchmark ? Number(benchmark.pnl_eur || 0) : 0,
+    benchmarkPnlPct: benchmark ? Number(benchmark.pnl_pct || 0) : 0,
     selectedPositions: selected,
     totalPnlEur: roundMetric(totalPnl, 6),
     avgPnlPct: roundMetric(Number(aggregate.avg_pnl_pct || 0), 6),

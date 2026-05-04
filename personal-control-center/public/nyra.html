@@ -35,6 +35,10 @@
           <strong id="financeLiveAt">-</strong>
         </div>
         <div class="live-chip">
+          <small>Prossimo ciclo</small>
+          <strong id="financeNextRun">-</strong>
+        </div>
+        <div class="live-chip">
           <small>Errore</small>
           <strong id="financeLiveError">nessuno</strong>
         </div>
@@ -49,6 +53,14 @@
         <div class="live-chip">
           <small>Batteria runtime</small>
           <strong id="financeKeepAwakeBattery">-</strong>
+        </div>
+        <div class="live-chip">
+          <small>Paper auto</small>
+          <strong id="worldPaperAutoStateTop">-</strong>
+        </div>
+        <div class="live-chip">
+          <small>Ultimo simbolo</small>
+          <strong id="worldPaperLastSymbol">-</strong>
         </div>
       </section>
 
@@ -211,7 +223,16 @@
               <span class="collapse-indicator">Apri</span>
             </summary>
             <div class="finance-history-analytics">
-              <div class="mini-chart" id="equityChart"></div>
+              <div class="finance-chart-stack">
+                <div class="finance-chart-card">
+                  <small class="finance-chart-label">Nyra equity</small>
+                  <div class="mini-chart" id="equityChart"></div>
+                </div>
+                <div class="finance-chart-card">
+                  <small class="finance-chart-label">QQQ benchmark</small>
+                  <div class="mini-chart" id="qqqChart"></div>
+                </div>
+              </div>
               <div id="assetPnlBoard" class="asset-pnl-board"></div>
             </div>
             <div id="financeHistory" class="finance-history"></div>
@@ -341,6 +362,6 @@
       </main>
     </div>
 
-    <script src="/nyra.js?v=13" defer></script>
+    <script src="/nyra.js?v=14" defer></script>
   </body>
 </html>
