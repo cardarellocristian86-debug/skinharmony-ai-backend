@@ -520,6 +520,15 @@ function buildWorldPaperMovementChart() {
   const losses = realizedEvents.filter((event) => event.pnl < 0).length;
   const lastPoints = points.slice(-18);
   const startIndex = points.length - lastPoints.length;
+  const timelineIndexes = [...new Set([
+    0,
+    Math.max(0, Math.floor((points.length - 1) / 2)),
+    Math.max(0, points.length - 1)
+  ])];
+  const timelineTicks = timelineIndexes.map((index) => ({
+    key: index,
+    label: formatTimelineTick(points[index]?.at)
+  }));
   const markers = lastPoints.map((point, localIndex) => {
     const index = startIndex + localIndex;
     const pnl = Number(point.pnl || 0);
@@ -556,6 +565,9 @@ function buildWorldPaperMovementChart() {
         ${markers}
         <text class="paper-equity-label" x="${left}" y="${Math.max(14, baselineY - 7)}">${esc(formatEur(initialCapital))}</text>
       </svg>
+      <div class="paper-equity-axis">
+        ${timelineTicks.map((tick) => `<span>${esc(tick.label)}</span>`).join("")}
+      </div>
       <div class="paper-equity-legend">
         <span class="legend-dot win"></span><span>vince / realizza profitto</span>
         <span class="legend-dot loss"></span><span>perde / realizza perdita</span>
@@ -1186,6 +1198,18 @@ function renderFinanceMoves() {
 }
 
 function formatHistoryTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("it-IT", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function formatTimelineTick(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";

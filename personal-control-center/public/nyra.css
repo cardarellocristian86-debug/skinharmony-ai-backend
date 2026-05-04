@@ -988,6 +988,25 @@ a {
   font-weight: 800;
 }
 
+.paper-equity-axis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.paper-equity-axis span:nth-child(2) {
+  text-align: center;
+}
+
+.paper-equity-axis span:last-child {
+  text-align: right;
+}
+
 .paper-equity-legend,
 .paper-equity-stats,
 .paper-recent-moves {
