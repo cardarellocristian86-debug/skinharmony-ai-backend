@@ -3336,12 +3336,22 @@ app.get("/api/nyra/control", (_req, res) => {
 
 app.get("/api/nyra/finance", (_req, res) => {
   try {
+    const liveReport = nyraFinanceLiveState.lastReport || null;
+    const financeCard = liveReport ? buildNyraFinanceLiveCard(liveReport) : buildNyraFinanceCard();
     res.json({
       ok: true,
-      finance: buildNyraFinanceCard(),
+      finance: financeCard,
       profile: loadNyraFinanceProfileConfig(),
       history: loadNyraFinanceProfileHistory().entries || [],
-      realtimeAutoimprovement: readJson(nyraFinanceRealtimeAutoimprovePath, null)
+      realtimeAutoimprovement: readJson(nyraFinanceRealtimeAutoimprovePath, null),
+      live: {
+        enabled: nyraFinanceLiveState.enabled,
+        running: nyraFinanceLiveState.running,
+        lastStartedAt: nyraFinanceLiveState.lastStartedAt,
+        lastFinishedAt: nyraFinanceLiveState.lastFinishedAt,
+        lastError: nyraFinanceLiveState.lastError,
+        hasLiveReport: Boolean(liveReport)
+      }
     });
   } catch (error) {
     res.status(500).json({
