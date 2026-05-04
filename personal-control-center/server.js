@@ -390,6 +390,70 @@ function buildNyraFinanceLiveCard(report = {}) {
   };
 }
 
+function buildNyraFinanceHistoryCard(summary = {}) {
+  const topCandidate = summary.topCandidate || null;
+  const totalPnl = Number(summary.totalPnlEur || 0);
+  const avgPnlPct = Number(summary.avgPnlPct || 0);
+  const selected = Number(summary.selectedPositions || 0);
+  const profitable = Number(summary.profitableCount || 0);
+  const blocked = Number(summary.blockedCount || 0);
+  const watched = Number(summary.watchCount || 0);
+  const noTrade = Number(summary.noTradeCount || 0);
+  const risk = totalPnl < 0 ? "Medio" : "Basso";
+  const state = selected > 0
+    ? "Monitor live attivo"
+    : topCandidate
+      ? `${topCandidate.product} · ${topCandidate.status}`
+      : "Nessuna posizione forte";
+  const action = selected > 0
+    ? `Segui ${selected} posizioni e verifica il close`
+    : topCandidate
+      ? topCandidate.status === "watch"
+        ? `${topCandidate.product} ${topCandidate.side} da confermare`
+        : topCandidate.status === "blocked"
+          ? `${topCandidate.product} bloccato: resta in attesa`
+          : "Nessuna esecuzione: attendi edge reale"
+      : "Nessuna esecuzione: attendi edge reale";
+  const reason = topCandidate
+    ? `${topCandidate.product} ${topCandidate.action || "HOLD"} con score ${Number(topCandidate.adjustedScore || 0).toFixed(2)}. Note: ${(topCandidate.notes || []).join(", ") || "nessuna"}.`
+    : "Nyra non ha ancora abbastanza edge per aprire una posizione reale o di test.";
+
+  return {
+    source: "web-live-history",
+    sourceLabel: "Nyra live history",
+    generatedAt: summary.generatedAt || new Date().toISOString(),
+    label: "Finanza",
+    icon: "LN",
+    state,
+    level: `${selected} posizioni · storico recente`,
+    risk,
+    action,
+    reason,
+    primaryMetric: "PnL totale",
+    primaryValue: `${totalPnl.toFixed(2)} EUR`,
+    secondaryMetric: "PnL medio",
+    secondaryValue: `${avgPnlPct.toFixed(2)}%`,
+    allocation: [
+      ["Posizioni", String(selected)],
+      ["Profittevoli", String(profitable)],
+      ["Bloccate", String(blocked)],
+      ["Watch", String(watched || noTrade)]
+    ],
+    signals: [
+      `Top candidate: ${topCandidate ? `${topCandidate.product} · ${topCandidate.status}` : "n.d."}`,
+      `No trade: ${noTrade}`,
+      `Watch: ${watched}`,
+      `Exit: ${Number(summary.exitCount || 0)}`
+    ],
+    history: Array.isArray(summary.assets)
+      ? summary.assets.slice(0, 3).map((asset) => `${asset.product} · ${asset.status} · ${Number(asset.adjustedScore || 0).toFixed(1)}`)
+      : [],
+    bars: Array.isArray(summary.assets)
+      ? summary.assets.slice(0, 12).map((asset) => Math.max(8, Math.min(95, Math.round(Math.abs(Number(asset.adjustedScore || 0)) / 4))))
+      : [16, 22, 18, 26, 24, 32, 28, 36, 34, 42, 38, 46]
+  };
+}
+
 function roundMetric(value, digits = 6) {
   const factor = 10 ** digits;
   return Math.round(Number(value || 0) * factor) / factor;
@@ -3337,7 +3401,13 @@ app.get("/api/nyra/control", (_req, res) => {
 app.get("/api/nyra/finance", (_req, res) => {
   try {
     const liveReport = nyraFinanceLiveState.lastReport || null;
-    const financeCard = liveReport ? buildNyraFinanceLiveCard(liveReport) : buildNyraFinanceCard();
+    const history = loadNyraFinanceHistory();
+    const latestHistory = Array.isArray(history) && history.length ? history[history.length - 1] : null;
+    const financeCard = liveReport
+      ? buildNyraFinanceLiveCard(liveReport)
+      : latestHistory
+        ? buildNyraFinanceHistoryCard(latestHistory)
+        : buildNyraFinanceCard();
     res.json({
       ok: true,
       finance: financeCard,
