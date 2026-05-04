@@ -1443,6 +1443,7 @@ async function loadWorldPaperAutoStatus() {
     state.worldPaperAuto = response;
     state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning, selfDiagnosis: response.selfDiagnosis };
     state.financeTreasury = response.treasury || state.financeTreasury;
+    updateWorldPaperAutoHeader();
     await loadFinanceMacroSignals();
     renderDashboard();
   } catch (error) {
@@ -1552,6 +1553,7 @@ async function startWorldPaperAutoLoop() {
     state.worldPaperAuto = response;
     state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning };
     state.financeTreasury = response.treasury || state.financeTreasury;
+    updateWorldPaperAutoHeader();
     renderDashboard();
     addMessage("nyra", "Auto loop paper mondiale attivato. Nyra scansiona, sceglie e aggiorna in autonomia.", "world-market");
   } catch (error) {
@@ -1568,11 +1570,33 @@ async function stopWorldPaperAutoLoop() {
     state.worldPaperAuto = response;
     state.worldPaper = { portfolio: response.portfolio, summary: response.summary, learning: response.learning };
     state.financeTreasury = response.treasury || state.financeTreasury;
+    updateWorldPaperAutoHeader();
     renderDashboard();
     addMessage("nyra", "Auto loop paper mondiale fermato.", "world-market");
   } catch (error) {
     addMessage("nyra", `Errore stop auto loop: ${error.message}`, "error");
   }
+}
+
+function updateWorldPaperAutoHeader() {
+  const autoState = byId("worldPaperAutoStateTop");
+  const lastSymbol = byId("worldPaperLastSymbol");
+  if (!autoState || !lastSymbol) return;
+  const auto = state.worldPaperAuto;
+  if (!auto) {
+    autoState.textContent = "-";
+    lastSymbol.textContent = "-";
+    return;
+  }
+  const minutes = Number(auto.intervalMs || 0) > 0 ? Math.round(Number(auto.intervalMs || 0) / 60000) : 0;
+  autoState.textContent = auto.running
+    ? "in corso"
+    : auto.enabled
+      ? minutes > 0
+        ? `attivo · ${minutes} min`
+        : "attivo"
+      : "spento";
+  lastSymbol.textContent = auto.lastResult?.symbol || auto.summary?.best_symbol || "-";
 }
 
 function formatClock(value) {
@@ -1591,6 +1615,7 @@ async function refreshFinanceLiveStatus() {
         ? "attivo"
         : "fermato";
     byId("financeLiveAt").textContent = formatClock(response.lastFinishedAt || response.lastStartedAt);
+    byId("financeNextRun").textContent = formatClock(response.nextRunAt || "");
     byId("financeLiveError").textContent = response.lastError ? response.lastError.slice(0, 80) : "nessuno";
     state.financeHistory = Array.isArray(response.history) ? response.history : state.financeHistory;
     state.financeProfile = response.profile || state.financeProfile;
@@ -1610,6 +1635,7 @@ async function refreshFinanceLiveStatus() {
     if (state.mode === "finance") renderDashboard();
   } catch (error) {
     byId("financeLiveState").textContent = "errore";
+    byId("financeNextRun").textContent = "-";
     byId("financeLiveError").textContent = error.message;
   }
 }
