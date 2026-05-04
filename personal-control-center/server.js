@@ -4548,6 +4548,10 @@ function maybeRebalanceWorldPaperByRotation(portfolio, rankedRows, profile) {
 
   const rotationPlan = buildWorldRotationPlan(profile, portfolio, { ranked: rankedRows });
   const learning = buildWorldPaperLearningPolicy(portfolio);
+  const profitDefenseActive =
+    Boolean(learning?.policy?.hard_profit_defense_guard_active) ||
+    Boolean(learning?.policy?.max_giveback_guard_active) ||
+    Boolean(learning?.policy?.benchmark_relative_guard_active);
   const penalizedClasses = new Set((learning?.policy?.penalize_classes || []).map((item) => String(item.class || "")));
   const keepClasses = new Set([rotationPlan.primaryClass, rotationPlan.secondaryClass].filter(Boolean));
   const rowsBySymbol = new Map(rankedRows.map((row) => [String(row.symbol || "").toUpperCase(), row]));
@@ -4564,7 +4568,15 @@ function maybeRebalanceWorldPaperByRotation(portfolio, rankedRows, profile) {
     const shouldCloseForClass = keepClasses.size > 0 && !keepClasses.has(assetClass);
     const shouldCloseForPenalty = penalizedClasses.has(assetClass);
     const positionPnlPct = Number(position.pnl_pct || 0);
-    const minHoldMinutes = positionPnlPct < 0 ? 1440 : 720;
+    const baseHoldMinutes = positionPnlPct < 0 ? 1440 : 720;
+    let minHoldMinutes = baseHoldMinutes;
+    if (
+      positionPnlPct < 0 &&
+      profitDefenseActive &&
+      (shouldCloseForPenalty || Number(position.pnl_eur || 0) <= -500)
+    ) {
+      minHoldMinutes = 240;
+    }
     const canClose = holdMinutes >= minHoldMinutes;
     if (!canClose) {
       if (shouldCloseForClass || shouldCloseForPenalty) {
@@ -4582,6 +4594,25 @@ function maybeRebalanceWorldPaperByRotation(portfolio, rankedRows, profile) {
     const thesis = liveRow
       ? buildWorldMultiverseThesis(liveRow, riskBudget, assetHistory?.by_symbol?.[liveRow.symbol], thesisLearningPolicy)
       : position.multiverse_thesis || null;
+    if (
+      profitDefenseActive &&
+      Number(position.pnl_eur || 0) > 0 &&
+      !shouldCloseForPenalty
+    ) {
+      position.reason = `${position.reason || "paper position"}; profit lock: mantengo il winner finche non si deteriora davvero`;
+      kept.push(position);
+      portfolio.trades.unshift({
+        at: now,
+        type: "profit_lock_winner_hold",
+        symbol: position.symbol,
+        assetClass,
+        gear: profile.currentGear || "-",
+        profile: profile.currentProfile || "capital_protection",
+        price: Number(liveRow?.last_price || position.last_price || 0),
+        reason: `Profit lock paper: mantengo winner ${position.symbol} per difendere l'alpha residuo prima di ruotare`
+      });
+      return;
+    }
     if (
       thesis?.thesis_valid &&
       thesis.thesis_action === "hold_thesis" &&
