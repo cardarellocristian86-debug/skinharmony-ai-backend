@@ -1605,6 +1605,7 @@ async function refreshFinanceLiveStatus() {
       if (state.mode === "finance") renderDashboard();
       return;
     }
+    await loadFinanceMode();
     await loadFinanceMacroSignals();
     if (state.mode === "finance") renderDashboard();
   } catch (error) {
