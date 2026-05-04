@@ -907,6 +907,14 @@ a {
   align-items: flex-start;
 }
 
+.paper-equity-head-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .paper-equity-head small {
   display: block;
   color: var(--muted);
@@ -924,6 +932,37 @@ a {
   font-weight: 900;
   text-align: right;
   white-space: nowrap;
+}
+
+.paper-equity-phase {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.paper-equity-phase.protect {
+  border-color: rgba(202, 138, 4, 0.35);
+  background: rgba(254, 249, 195, 0.72);
+  color: #a16207;
+}
+
+.paper-equity-phase.recover {
+  border-color: rgba(59, 130, 246, 0.3);
+  background: rgba(219, 234, 254, 0.78);
+  color: #1d4ed8;
+}
+
+.paper-equity-phase.attack {
+  border-color: rgba(22, 163, 74, 0.28);
+  background: rgba(220, 252, 231, 0.78);
+  color: #166534;
 }
 
 .paper-equity-chart {
@@ -953,6 +992,20 @@ a {
   stroke-width: 4;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.paper-benchmark-line {
+  fill: none;
+  stroke: #1d4ed8;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 10 8;
+  opacity: 0.9;
+}
+
+.paper-benchmark-line.below {
+  stroke: #475569;
 }
 
 .paper-equity-line.above {
@@ -1041,6 +1094,13 @@ a {
   width: 22px;
   height: 0;
   border-top: 2px dashed #0f172a;
+  display: inline-block;
+}
+
+.legend-benchmark {
+  width: 22px;
+  height: 0;
+  border-top: 3px dashed #1d4ed8;
   display: inline-block;
 }
 

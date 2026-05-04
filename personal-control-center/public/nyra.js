@@ -461,6 +461,7 @@ function buildWorldPaperRows() {
 function buildWorldPaperMovementChart() {
   const portfolio = state.worldPaper?.portfolio;
   const summary = state.worldPaper?.summary;
+  const learning = state.worldPaper?.learning?.runtime || state.worldPaperAuto?.learning || null;
   if (!portfolio || !summary) {
     return `<section class="paper-equity-panel"><div class="history-row">Grafico movimenti non ancora disponibile.</div></section>`;
   }
@@ -516,6 +517,26 @@ function buildWorldPaperMovementChart() {
   const baselineY = toY(initialCapital);
   const path = points.map((point, index) => `${toX(index)},${toY(point.value)}`).join(" ");
   const currentAbove = currentCapital >= initialCapital;
+  const benchmark = summary?.benchmark || portfolio?.benchmark || null;
+  const benchmarkCurrentValue = Number(benchmark?.current_value_eur || 0);
+  const hasBenchmark = Number.isFinite(benchmarkCurrentValue) && benchmarkCurrentValue > 0;
+  const benchmarkPoints = hasBenchmark
+    ? [
+        { at: portfolio.started_at || trades[0]?.at || "", value: initialCapital },
+        { at: summary.generated_at || portfolio.updated_at || new Date().toISOString(), value: benchmarkCurrentValue }
+      ]
+    : [];
+  const benchmarkPath = benchmarkPoints.map((point, index) => {
+    const mappedIndex = benchmarkPoints.length === 1 ? 0 : index === 0 ? 0 : points.length - 1;
+    return `${toX(mappedIndex)},${toY(point.value)}`;
+  }).join(" ");
+  const benchmarkAbove = benchmarkCurrentValue >= initialCapital;
+  const learningState = String(learning?.learning_state || "").toLowerCase();
+  const phaseMeta = learningState.includes("recovery") || learningState.includes("benchmark")
+      ? { label: "Recover", className: "recover" }
+    : learningState.includes("profit_lock")
+      ? { label: "Protect", className: "protect" }
+      : { label: "Attack", className: "attack" };
   const wins = realizedEvents.filter((event) => event.pnl > 0).length;
   const losses = realizedEvents.filter((event) => event.pnl < 0).length;
   const lastPoints = points.slice(-18);
@@ -553,14 +574,18 @@ function buildWorldPaperMovementChart() {
           <small>Movimenti Nyra</small>
           <strong>${currentAbove ? "Sopra capitale iniziale" : "Sotto capitale iniziale"}</strong>
         </div>
-        <div class="paper-equity-status ${currentAbove ? "positive" : "negative"}">
-          ${esc(formatEur(currentCapital - initialCapital))}
+        <div class="paper-equity-head-meta">
+          <span class="paper-equity-phase ${esc(phaseMeta.className)}">${esc(phaseMeta.label)}</span>
+          <div class="paper-equity-status ${currentAbove ? "positive" : "negative"}">
+            ${esc(formatEur(currentCapital - initialCapital))}
+          </div>
         </div>
       </div>
       <svg class="paper-equity-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Grafico capitale paper Nyra">
         <rect class="paper-equity-zone-above" x="${left}" y="${top}" width="${innerW}" height="${Math.max(0, baselineY - top)}"></rect>
         <rect class="paper-equity-zone-below" x="${left}" y="${baselineY}" width="${innerW}" height="${Math.max(0, top + innerH - baselineY)}"></rect>
         <line class="paper-equity-baseline" x1="${left}" y1="${baselineY}" x2="${width - right}" y2="${baselineY}"></line>
+        ${hasBenchmark ? `<polyline class="paper-benchmark-line ${benchmarkAbove ? "above" : "below"}" points="${benchmarkPath}"></polyline>` : ""}
         <polyline class="paper-equity-line ${currentAbove ? "above" : "below"}" points="${path}"></polyline>
         ${markers}
         <text class="paper-equity-label" x="${left}" y="${Math.max(14, baselineY - 7)}">${esc(formatEur(initialCapital))}</text>
@@ -572,12 +597,14 @@ function buildWorldPaperMovementChart() {
         <span class="legend-dot win"></span><span>vince / realizza profitto</span>
         <span class="legend-dot loss"></span><span>perde / realizza perdita</span>
         <span class="legend-line"></span><span>capitale iniziale</span>
+        ${hasBenchmark ? `<span class="legend-benchmark"></span><span>QQQ buy & hold</span>` : ""}
       </div>
       <div class="paper-equity-stats">
         <span>Capitale attuale <strong>${esc(formatEur(currentCapital))}</strong></span>
         <span>Movimenti vincenti <strong class="positive">${esc(String(wins))}</strong></span>
         <span>Movimenti perdenti <strong class="negative">${esc(String(losses))}</strong></span>
         <span>Delta QQQ <strong class="${Number(summary.alpha_vs_qqq_eur || 0) >= 0 ? "positive" : "negative"}">${esc(formatEur(summary.alpha_vs_qqq_eur || 0))}</strong></span>
+        ${hasBenchmark ? `<span>QQQ attuale <strong class="${benchmarkAbove ? "positive" : "negative"}">${esc(formatEur(benchmarkCurrentValue - initialCapital))}</strong></span>` : ""}
       </div>
       ${recentRows ? `<div class="paper-recent-moves">${recentRows}</div>` : ""}
     </section>
