@@ -3802,9 +3802,9 @@ function buildWorldPaperProfitProtection(portfolio, summary = summarizeWorldPape
   const givebackPct = peakProfitEur > 0 ? Number(((givebackEur / peakProfitEur) * 100).toFixed(4)) : 0;
   const alphaVsQqqEur = Number(summary?.alpha_vs_qqq_eur || 0);
   const alphaVsQqqPct = Number(summary?.alpha_vs_qqq_pct || 0);
-  const profitLockActive = peakProfitEur >= 6000 || currentProfitEur >= 6000;
+  const profitLockActive = peakProfitEur >= 5000 || currentProfitEur >= 5000;
   const benchmarkRelativeGuard =
-    currentProfitEur > 0 &&
+    currentProfitEur >= 2500 &&
     (alphaVsQqqEur <= -2500 || alphaVsQqqPct <= -0.25);
   const maxGivebackGuard =
     peakProfitEur >= 5000 &&
