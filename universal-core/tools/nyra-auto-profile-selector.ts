@@ -1102,7 +1102,13 @@ export function selectNyraProfile(
       !brakeSoft &&
       !bubbleQualityDeterioration.active &&
       !recoveryAnticipation &&
-      !clearTrendRunway;
+      !clearTrendRunway &&
+      !clearRunway &&
+      !overdriveRunway &&
+      !protectedOverdriveRunway &&
+      !safeEnoughToJumpHigh &&
+      !positiveImpulse &&
+      !longPeriodHealthy;
     const upgradeNonEssential =
       turnoverPressureActive &&
       proposedLevel > previousLevel &&
@@ -1230,7 +1236,7 @@ export function chooseNyraManagedAllocation(
   const clientModeActive = options?.capitalContext?.clientMode === true;
   const clientHoldMonths = Math.max(options?.capitalContext?.clientHoldMonths ?? 0, 0);
   const turnoverPressureActive = annualTurnoverPct > 130;
-  const thresholdMultiplier = (turnoverPressureActive ? 1.1 : 1) * (shortHorizonActive ? 1.4 : 1) * (clientModeActive ? 1.35 : 1);
+  const thresholdMultiplier = (turnoverPressureActive ? 1.1 : 1) * (shortHorizonActive ? 1.4 : 1) * (clientModeActive ? 1.15 : 1);
   const minDelta = safetyUrgent ? 0 : riskIncrease ? 0.05 * thresholdMultiplier : 0.08 * thresholdMultiplier;
   const estimatedFee = allocationChange * TRADE_COST_RATE;
   const expectedBenefit = previousAllocation
@@ -1246,7 +1252,7 @@ export function chooseNyraManagedAllocation(
   const edgeSkip =
     previousAllocation !== null &&
     !safetyUrgent &&
-    expectedBenefit < minExpectedEdge * (turnoverPressureActive && riskIncrease ? 1.1 : 1) * (clientModeActive && riskIncrease ? 1.25 : 1) &&
+    expectedBenefit < minExpectedEdge * (turnoverPressureActive && riskIncrease ? 1.1 : 1) * (clientModeActive && riskIncrease ? 1.05 : 1) &&
     !healthyBullHighLiquidity.active;
   const smallChangeHold = mode === "auto" && previousAllocation !== null && allocationChange < minDelta;
   const clientHoldActive =
@@ -1255,7 +1261,12 @@ export function chooseNyraManagedAllocation(
     previousAllocation !== null &&
     clientHoldMonths > 0 &&
     !safetyUrgent &&
-    riskIncrease;
+    riskIncrease &&
+    !clearRunway &&
+    !clearTrendRunway &&
+    !overdriveRunway &&
+    !protectedOverdriveRunway &&
+    !healthyBullHighLiquidity.active;
   const probabilityRegime = mode === "auto"
     ? deriveProbabilityRegime(advisory, history, selector.lateral_mode, bubbleQualityDeterioration.active)
     : null;
