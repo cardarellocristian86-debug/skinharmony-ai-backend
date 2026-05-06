@@ -402,12 +402,12 @@ function deriveProbabilityRegime(
   const vol6 = std(history.QQQ.slice(-6));
   const flips6 = signFlips(history.QQQ.slice(-6));
   const qualityBreak =
-    advisory.break >= 0.26 ||
-    advisory.regime >= 0.18 ||
-    advisory.deterioration >= 0.1;
+    advisory.break >= 0.18 ||
+    advisory.regime >= 0.16 ||
+    advisory.deterioration >= 0.09;
 
   if (advisory.output.alert === "critical" || qqq1m <= -8 || qqq3m <= -4) return "crash";
-  if (qualityBreak || (qqq1m < -1.6 && qqq3m > -0.5 && advisory.deterioration > 0.055)) return "pre_break";
+  if (qualityBreak || (qqq1m < -1.2 && qqq3m > -0.5 && advisory.deterioration > 0.045)) return "pre_break";
   if (bubbleActive || advisory.euphoria > 0.45) return "bubble";
   if (lateralMode || (history.QQQ.length >= 6 && Math.abs(qqq6m) < 1.4 && flips6 >= 3 && vol6 > 1.1)) return "lateral";
   if (
@@ -1076,6 +1076,19 @@ export function selectNyraProfile(
       previousAutoProfile === "hard_growth" || isOverdriveProfile(previousAutoProfile);
     const proposedHigh = profile === "hard_growth" || isOverdriveProfile(profile);
 
+    const constructiveEscapeFromProtection =
+      previousAutoProfile === "capital_protection" &&
+      (
+        safeEnoughToJumpHigh ||
+        clearTrendRunway ||
+        clearRunway ||
+        roadOpen ||
+        roadMostlyOpen ||
+        positiveImpulse ||
+        cryptoImpulse ||
+        longPeriodHealthy
+      );
+
     if (bubbleQualityDeterioration.active && proposedHigh) {
       profile = bubbleQualityDeterioration.stage === "pre_break" ? "capital_protection" : "balanced_growth";
       reason += " Bubble guard override: overdrive vietato con crescita positiva ma qualita in peggioramento.";
@@ -1086,10 +1099,16 @@ export function selectNyraProfile(
       !previousHigh &&
       proposedHigh &&
       !recoveryAnticipation &&
+      !constructiveEscapeFromProtection &&
       !hysteresisGate.shouldAllowUpgrade(bullishPressure, feePressure)
     ) {
       profile = previousAutoProfile === "capital_protection" ? "capital_protection" : "balanced_growth";
       reason += ` HysteresisGate: evita upgrade prematuro, il segnale non ha ancora convinzione sufficiente.${releasePolicy ? " Nyra autowrite release attiva." : ""}`;
+    } else if (
+      constructiveEscapeFromProtection &&
+      proposedHigh
+    ) {
+      reason += " Escape from protection: contesto costruttivo reale, la 1 non puo trattenere la salita verso la 4.";
     }
 
     const profileChanged = previousAutoProfile !== profile;
