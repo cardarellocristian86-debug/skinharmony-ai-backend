@@ -1160,18 +1160,14 @@ export function selectNyraProfile(
       !brakeSoft &&
       !bubbleQualityDeterioration.active;
 
-    const probabilitySupportsReducedEntry =
-      probabilityRegimeDecision.action === "enter_reduced" ||
-      probabilityRegimeDecision.action === "enter" ||
-      probabilityRegimeDecision.action === "overdrive" ||
-      probabilityRegimeDecision.action === "progressive_reentry";
-
     const antiChurnShouldStandDown =
       constructiveEscapeFromProtection ||
       recoveryAnticipation ||
       (
-        probabilitySupportsReducedEntry &&
-        probabilityRegimeDecision.max_risk_exposure >= 0.32 &&
+        safeEnoughToJumpHigh &&
+        advisory.output.alert === "watch" &&
+        advisory.output.intensity === "low" &&
+        advisory.break < 0.36 &&
         bullishPressure >= 0.2
       );
 
