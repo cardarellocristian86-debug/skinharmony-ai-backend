@@ -949,6 +949,31 @@ function setSignedPrimaryMetric(chipId, valueId, value, enabled = true) {
   if (amount < 0) chip.classList.add("primary-chip-negative");
 }
 
+function formatSignedPercentPoints(value) {
+  const amount = Number(value || 0);
+  if (amount > 0) return `+${amount.toFixed(2)}%`;
+  if (amount < 0) return `${amount.toFixed(2)}%`;
+  return "0.00%";
+}
+
+function setPrimaryAlphaMetric(chipId, valueId, eurValue, pctValue, enabled = true) {
+  const chip = byId(chipId);
+  const valueNode = byId(valueId);
+  if (!valueNode) return;
+  if (!enabled) {
+    valueNode.textContent = "-";
+    if (chip) chip.classList.remove("primary-chip-positive", "primary-chip-negative");
+    return;
+  }
+  const eurAmount = Number(eurValue || 0);
+  const pctAmount = Number(pctValue || 0);
+  valueNode.textContent = `${formatSignedEur(eurAmount)} (${formatSignedPercentPoints(pctAmount)})`;
+  if (!chip) return;
+  chip.classList.remove("primary-chip-positive", "primary-chip-negative");
+  if (eurAmount > 0) chip.classList.add("primary-chip-positive");
+  if (eurAmount < 0) chip.classList.add("primary-chip-negative");
+}
+
 function renderPrimaryStrip() {
   const paperSummary = state.worldPaper?.summary || null;
   const paperPortfolio = state.worldPaper?.portfolio || null;
@@ -964,6 +989,9 @@ function renderPrimaryStrip() {
     : 0;
   const alphaVsQqq = hasPaperCapital
     ? Number(paperSummary?.alpha_vs_qqq_eur || 0)
+    : 0;
+  const alphaVsQqqPct = hasPaperCapital
+    ? Number(paperSummary?.alpha_vs_qqq_pct || 0)
     : 0;
   const capital = hasLiveCapital
     ? Number(raw?.capital_eur || 0)
@@ -983,7 +1011,7 @@ function renderPrimaryStrip() {
   setSignedPrimaryMetric("primaryPaperPnlChip", "primaryPaperPnl", paperPnl, hasPaperCapital);
   byId("primaryPaperCapitalCurrent").textContent = hasPaperCapital ? formatEur(paperCapitalCurrent) : "-";
   byId("primarySource").textContent = source;
-  setSignedPrimaryMetric("primaryAlphaChip", "primaryAlpha", alphaVsQqq, !hasLiveCapital && hasPaperCapital);
+  setPrimaryAlphaMetric("primaryAlphaChip", "primaryAlpha", alphaVsQqq, alphaVsQqqPct, hasPaperCapital);
 }
 
 function formatPct(value) {
