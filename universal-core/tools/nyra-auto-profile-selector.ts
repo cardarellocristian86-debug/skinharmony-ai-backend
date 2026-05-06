@@ -1160,9 +1160,26 @@ export function selectNyraProfile(
       !brakeSoft &&
       !bubbleQualityDeterioration.active;
 
-    if (profileChanged && expectedAdvantageLow && !recoveryAnticipation) {
+    const probabilitySupportsReducedEntry =
+      probabilityRegimeDecision.action === "enter_reduced" ||
+      probabilityRegimeDecision.action === "enter" ||
+      probabilityRegimeDecision.action === "overdrive" ||
+      probabilityRegimeDecision.action === "progressive_reentry";
+
+    const antiChurnShouldStandDown =
+      constructiveEscapeFromProtection ||
+      recoveryAnticipation ||
+      (
+        probabilitySupportsReducedEntry &&
+        probabilityRegimeDecision.max_risk_exposure >= 0.32 &&
+        bullishPressure >= 0.2
+      );
+
+    if (profileChanged && expectedAdvantageLow && !antiChurnShouldStandDown) {
       profile = previousAutoProfile;
       reason += " Anti-churn: vantaggio atteso basso, non cambia marcia.";
+    } else if (profileChanged && expectedAdvantageLow && antiChurnShouldStandDown) {
+      reason += " Anti-churn bypass: il contesto permette ingresso ridotto o uscita protetta dalla 1, quindi non blocca il salto.";
     }
   }
 
