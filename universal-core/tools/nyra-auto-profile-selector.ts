@@ -402,12 +402,12 @@ function deriveProbabilityRegime(
   const vol6 = std(history.QQQ.slice(-6));
   const flips6 = signFlips(history.QQQ.slice(-6));
   const qualityBreak =
-    advisory.break >= 0.18 ||
-    advisory.regime >= 0.16 ||
-    advisory.deterioration >= 0.09;
+    advisory.break >= 0.26 ||
+    advisory.regime >= 0.18 ||
+    advisory.deterioration >= 0.1;
 
   if (advisory.output.alert === "critical" || qqq1m <= -8 || qqq3m <= -4) return "crash";
-  if (qualityBreak || (qqq1m < -1.2 && qqq3m > -0.5 && advisory.deterioration > 0.045)) return "pre_break";
+  if (qualityBreak || (qqq1m < -1.6 && qqq3m > -0.5 && advisory.deterioration > 0.055)) return "pre_break";
   if (bubbleActive || advisory.euphoria > 0.45) return "bubble";
   if (lateralMode || (history.QQQ.length >= 6 && Math.abs(qqq6m) < 1.4 && flips6 >= 3 && vol6 > 1.1)) return "lateral";
   if (

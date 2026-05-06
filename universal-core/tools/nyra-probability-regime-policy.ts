@@ -126,6 +126,28 @@ export function chooseNyraProbabilityRegimeAction(input: NyraProbabilityRegimeIn
   }
 
   if (input.regime === "pre_break") {
+    if ((evBand === "high" || evBand === "medium") && quality >= 0.62) {
+      return {
+        regime: input.regime,
+        ev_band: evBand,
+        quality_score: quality,
+        action: "enter_reduced",
+        max_risk_exposure: evBand === "high" ? 0.46 : 0.36,
+        overdrive_allowed: false,
+        reason: "Pre-break: segnale ancora da trattare con rispetto, ma EV e qualita consentono un ingresso ridotto invece del taglio automatico.",
+      };
+    }
+    if (evBand === "low" && quality >= 0.68) {
+      return {
+        regime: input.regime,
+        ev_band: evBand,
+        quality_score: quality,
+        action: "hold",
+        max_risk_exposure: 0.28,
+        overdrive_allowed: false,
+        reason: "Pre-break: EV basso ma non deteriorato, mantiene disciplina senza ridurre automaticamente.",
+      };
+    }
     return {
       regime: input.regime,
       ev_band: evBand,
