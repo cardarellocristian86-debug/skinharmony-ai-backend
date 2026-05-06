@@ -99,7 +99,8 @@ const state = {
   financeLiveLoading: false,
   financeStatusTimer: null,
   worldPaperAutoTimer: null,
-  financeDeskOpenFolders: {}
+  financeDeskOpenFolders: {},
+  worldPaperChartRange: "7d"
 };
 
 const byId = (id) => document.getElementById(id);
@@ -496,8 +497,9 @@ function buildWorldPaperMovementChart() {
     type: "mark_to_market",
     reason: "Capitale attuale, incluse posizioni aperte"
   });
-
-  const values = points.map((point) => Number(point.value || 0));
+  const visibleRange = state.worldPaperChartRange || "7d";
+  const visiblePoints = filterPaperChartPoints(points, visibleRange);
+  const values = visiblePoints.map((point) => Number(point.value || 0));
   const minValue = Math.min(initialCapital, ...values);
   const maxValue = Math.max(initialCapital, ...values);
   const padding = Math.max(250, (maxValue - minValue) * 0.15);
@@ -512,22 +514,32 @@ function buildWorldPaperMovementChart() {
   const bottom = 34;
   const innerW = width - left - right;
   const innerH = height - top - bottom;
-  const toX = (index) => left + (points.length === 1 ? innerW / 2 : (index / (points.length - 1)) * innerW);
+  const toX = (index) => left + (visiblePoints.length === 1 ? innerW / 2 : (index / (visiblePoints.length - 1)) * innerW);
   const toY = (value) => top + (1 - ((Number(value || 0) - chartMin) / span)) * innerH;
   const baselineY = toY(initialCapital);
-  const path = points.map((point, index) => `${toX(index)},${toY(point.value)}`).join(" ");
+  const path = visiblePoints.map((point, index) => `${toX(index)},${toY(point.value)}`).join(" ");
   const currentAbove = currentCapital >= initialCapital;
   const benchmark = summary?.benchmark || portfolio?.benchmark || null;
   const benchmarkCurrentValue = Number(benchmark?.current_value_eur || 0);
   const hasBenchmark = Number.isFinite(benchmarkCurrentValue) && benchmarkCurrentValue > 0;
+  const benchmarkStartMs = Number.isFinite(new Date(portfolio.started_at || trades[0]?.at || "").getTime())
+    ? new Date(portfolio.started_at || trades[0]?.at || "").getTime()
+    : null;
+  const benchmarkEndMs = Number.isFinite(new Date(summary.generated_at || portfolio.updated_at || new Date().toISOString()).getTime())
+    ? new Date(summary.generated_at || portfolio.updated_at || new Date().toISOString()).getTime()
+    : null;
+  const visibleStartMs = Number.isFinite(new Date(visiblePoints[0]?.at || "").getTime()) ? new Date(visiblePoints[0].at).getTime() : null;
+  const benchmarkVisibleStartValue = hasBenchmark
+    ? interpolateSeriesValue(initialCapital, benchmarkCurrentValue, benchmarkStartMs, benchmarkEndMs, visibleStartMs)
+    : initialCapital;
   const benchmarkPoints = hasBenchmark
     ? [
-        { at: portfolio.started_at || trades[0]?.at || "", value: initialCapital },
-        { at: summary.generated_at || portfolio.updated_at || new Date().toISOString(), value: benchmarkCurrentValue }
+        { at: visiblePoints[0]?.at || portfolio.started_at || trades[0]?.at || "", value: benchmarkVisibleStartValue },
+        { at: visiblePoints[visiblePoints.length - 1]?.at || summary.generated_at || portfolio.updated_at || new Date().toISOString(), value: benchmarkCurrentValue }
       ]
     : [];
   const benchmarkPath = benchmarkPoints.map((point, index) => {
-    const mappedIndex = benchmarkPoints.length === 1 ? 0 : index === 0 ? 0 : points.length - 1;
+    const mappedIndex = benchmarkPoints.length === 1 ? 0 : index === 0 ? 0 : visiblePoints.length - 1;
     return `${toX(mappedIndex)},${toY(point.value)}`;
   }).join(" ");
   const benchmarkAbove = benchmarkCurrentValue >= initialCapital;
@@ -537,21 +549,22 @@ function buildWorldPaperMovementChart() {
     : learningState.includes("profit_lock")
       ? { label: "Protect", className: "protect" }
       : { label: "Attack", className: "attack" };
-  const wins = realizedEvents.filter((event) => event.pnl > 0).length;
-  const losses = realizedEvents.filter((event) => event.pnl < 0).length;
-  const lastPoints = points.slice(-18);
-  const startIndex = points.length - lastPoints.length;
+  const visibleEvents = visiblePoints.filter((point) => point.type !== "start" && point.type !== "mark_to_market");
+  const wins = visibleEvents.filter((event) => Number(event.pnl || 0) > 0).length;
+  const losses = visibleEvents.filter((event) => Number(event.pnl || 0) < 0).length;
+  const lastPoints = visiblePoints.slice(-18);
+  const markerOffset = Math.max(0, visiblePoints.length - lastPoints.length);
   const timelineIndexes = [...new Set([
     0,
-    Math.max(0, Math.floor((points.length - 1) / 2)),
-    Math.max(0, points.length - 1)
+    Math.max(0, Math.floor((visiblePoints.length - 1) / 2)),
+    Math.max(0, visiblePoints.length - 1)
   ])];
   const timelineTicks = timelineIndexes.map((index) => ({
     key: index,
-    label: formatTimelineTick(points[index]?.at)
+    label: formatTimelineTick(visiblePoints[index]?.at)
   }));
   const markers = lastPoints.map((point, localIndex) => {
-    const index = startIndex + localIndex;
+    const index = markerOffset + localIndex;
     const pnl = Number(point.pnl || 0);
     const tone = point.type === "start" ? "neutral" : pnl > 0 ? "win" : pnl < 0 ? "loss" : Number(point.value || 0) >= initialCapital ? "above" : "below";
     return `
@@ -560,11 +573,14 @@ function buildWorldPaperMovementChart() {
       </circle>
     `;
   }).join("");
-  const recentRows = realizedEvents.slice(-6).reverse().map((event) => `
+  const recentRows = visibleEvents.slice(-6).reverse().map((event) => `
     <div class="paper-move-chip ${event.pnl >= 0 ? "win" : "loss"}">
       <strong>${esc(event.symbol)}</strong>
       <span>${esc(formatEur(event.pnl))}</span>
     </div>
+  `).join("");
+  const rangeSelector = PAPER_CHART_RANGES.map((range) => `
+    <button type="button" class="paper-range-btn ${visibleRange === range.key ? "active" : ""}" data-range="${esc(range.key)}">${esc(range.label)}</button>
   `).join("");
 
   return `
@@ -575,6 +591,9 @@ function buildWorldPaperMovementChart() {
           <strong>${currentAbove ? "Sopra capitale iniziale" : "Sotto capitale iniziale"}</strong>
         </div>
         <div class="paper-equity-head-meta">
+          <div class="paper-equity-ranges" role="group" aria-label="Storico grafico Nyra">
+            ${rangeSelector}
+          </div>
           <span class="paper-equity-phase ${esc(phaseMeta.className)}">${esc(phaseMeta.label)}</span>
           <div class="paper-equity-status ${currentAbove ? "positive" : "negative"}">
             ${esc(formatEur(currentCapital - initialCapital))}
@@ -894,6 +913,14 @@ function renderFinanceDeskBoard() {
   container.querySelectorAll(".desk-folder[data-folder]").forEach((folder) => {
     folder.addEventListener("toggle", () => {
       state.financeDeskOpenFolders[folder.dataset.folder] = folder.open;
+    });
+  });
+  container.querySelectorAll(".paper-range-btn[data-range]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextRange = button.dataset.range || "7d";
+      if (state.worldPaperChartRange === nextRange) return;
+      state.worldPaperChartRange = nextRange;
+      renderFinanceDeskBoard();
     });
   });
 }
@@ -1274,6 +1301,42 @@ function formatTimelineTick(value) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+const PAPER_CHART_RANGES = [
+  { key: "1d", label: "1G", ms: 24 * 60 * 60 * 1000 },
+  { key: "7d", label: "7G", ms: 7 * 24 * 60 * 60 * 1000 },
+  { key: "1m", label: "1M", ms: 30 * 24 * 60 * 60 * 1000 },
+  { key: "3m", label: "3M", ms: 90 * 24 * 60 * 60 * 1000 },
+  { key: "1y", label: "1A", ms: 365 * 24 * 60 * 60 * 1000 }
+];
+
+function filterPaperChartPoints(points, rangeKey) {
+  if (!Array.isArray(points) || points.length <= 2) {
+    return Array.isArray(points) ? points : [];
+  }
+  const range = PAPER_CHART_RANGES.find((item) => item.key === rangeKey);
+  if (!range?.ms) return points;
+  const timed = points.map((point) => ({
+    ...point,
+    atMs: Number.isFinite(new Date(point.at).getTime()) ? new Date(point.at).getTime() : null
+  }));
+  const validTimes = timed.filter((point) => Number.isFinite(point.atMs));
+  const lastMs = validTimes.length ? validTimes[validTimes.length - 1].atMs : null;
+  if (!Number.isFinite(lastMs)) return points;
+  const cutoff = lastMs - range.ms;
+  const firstVisibleIndex = timed.findIndex((point) => Number.isFinite(point.atMs) && point.atMs >= cutoff);
+  if (firstVisibleIndex <= 0) return points;
+  const anchorIndex = Math.max(0, firstVisibleIndex - 1);
+  return timed.slice(anchorIndex).map(({ atMs, ...point }) => point);
+}
+
+function interpolateSeriesValue(startValue, endValue, startMs, endMs, targetMs) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || !Number.isFinite(targetMs)) {
+    return Number(startValue || 0);
+  }
+  const ratio = Math.max(0, Math.min(1, (targetMs - startMs) / (endMs - startMs)));
+  return Number(startValue || 0) + (Number(endValue || 0) - Number(startValue || 0)) * ratio;
 }
 
 function renderFinanceHistory() {
