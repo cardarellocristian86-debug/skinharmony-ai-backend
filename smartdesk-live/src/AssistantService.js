@@ -363,7 +363,12 @@ function localizeAssistantText(message, language) {
     .replace(/\bApri redditività\b/g, "Open profitability")
     .replace(/\bApri Marketing\b/g, "Open marketing")
     .replace(/\bApri marketing\b/g, "Open marketing")
-    .replace(/\bMostrami priorità\b/g, "Show priorities");
+    .replace(/\bMostrami priorità\b/g, "Show priorities")
+    .replace(/\bSintesi:\b/g, "Summary:")
+    .replace(/\bPriorità:\b/g, "Priorities:")
+    .replace(/\bAzioni consigliate:\b/g, "Suggested actions:")
+    .replace(/\bLimiti \/ dati mancanti:\b/g, "Limits / missing data:")
+    .replace(/\bStato centro non ancora rappresentativo\b/g, "Center state not yet representative");
 }
 
 function localizeAssistantEnvelope(response, context = {}) {
@@ -1206,6 +1211,7 @@ class AssistantService {
   }
 
   buildAiGoldFallback(question, context) {
+    const language = assistantLanguage(context);
     const snapshot = context.businessSnapshot || null;
     const marketing = snapshot?.marketing || context.marketing || {};
     const profitability = snapshot?.profitability || context.profitability || {};
@@ -1235,29 +1241,32 @@ class AssistantService {
     if (question) {
       lines.unshift(`Domanda ricevuta: ${question}`);
     }
-    return lines.join("\n");
+    return localizeAssistantText(lines.join("\n"), language);
   }
 
   buildAiGoldCoreliaResponse(payload = {}, session = null, context = null) {
+    const language = assistantLanguage(context || {});
+    const question = String(payload.question || payload.message || "").trim();
     if (!this.coreliaBridge) {
       return {
         goldEnabled: true,
         provider: this.getFallbackProviderName(),
-        answer: this.buildAiGoldFallback(String(payload.question || ""), context || {}),
+        answer: this.buildAiGoldFallback(question, context || {}),
         actions: []
       };
     }
     try {
       const structured = this.coreliaBridge.buildDialog({
-        message: String(payload.question || ""),
+        message: question,
         startDate: payload?.period?.startDate || "",
         endDate: payload?.period?.endDate || ""
       }, session);
-      const dialogue = this.nyraDialogue.render(structured, { message: String(payload.question || "") });
+      const dialogue = this.nyraDialogue.render(structured, { message: question });
+      const rawAnswer = String(dialogue.reply || structured.humanSummary || "");
       return {
         goldEnabled: true,
         provider: "corelia",
-        answer: String(dialogue.reply || structured.humanSummary || ""),
+        answer: localizeAssistantText(rawAnswer, language),
         actions: [],
         structured,
         dialogue,
@@ -1269,7 +1278,7 @@ class AssistantService {
       return {
         goldEnabled: true,
         provider: this.getFallbackProviderName(),
-        answer: this.buildAiGoldFallback(String(payload.question || ""), context || {}),
+        answer: this.buildAiGoldFallback(question, context || {}),
         actions: []
       };
     }
@@ -1285,26 +1294,28 @@ class AssistantService {
       };
     }
 
-    const question = String(payload.question || "").trim();
+    const question = String(payload.question || payload.message || "").trim();
     const snapshot = this.desktopMirror.getBusinessSnapshot
       ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
       : null;
     const goldCapabilities = this.getGoldCapabilitiesSafe(session);
     const goldDecisionContext = this.getGoldDecisionContextSafe(session);
+    const settings = this.getSettingsSafe(session);
     const context = snapshot?.snapshotAvailable ? {
       businessSnapshot: snapshot,
       goldCapabilities,
       goldDecisionContext,
       dashboard: this.getDashboardSafe(session),
-      settings: this.getSettingsSafe(session)
+      settings
     } : {
       marketing: this.desktopMirror.getAiGoldMarketing(session),
       profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
       goldCapabilities,
       goldDecisionContext,
       dashboard: this.getDashboardSafe(session),
-      settings: this.getSettingsSafe(session)
+      settings
     };
+    const language = assistantLanguage(context);
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!this.shouldUseOpenAI()) {
@@ -1312,20 +1323,35 @@ class AssistantService {
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
-    const instructions = [
-      "Sei AI Gold di SkinHarmony Smart Desk con Corelia come motore decisionale.",
-      "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
-      "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
-      "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
-      "Suggerisci azioni concrete che l'operatore deve confermare.",
-      "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
-      "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
-      "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
-      "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
-      "Evita claim medici, terapeutici o promesse di risultato.",
-      "Rispondi in italiano, tono premium, chiaro, pratico.",
-      "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."
-    ].join("\n");
+    const instructions = language === "en"
+      ? [
+        "You are AI Gold inside SkinHarmony Smart Desk with Corelia as the decision engine.",
+        "You are not a generic chatbot: you are an operational assistant for aesthetic, hair and hybrid centers.",
+        "Use only the data present in the JSON context. If data is missing, say so clearly.",
+        "Do not send messages, do not modify prices, do not change data and do not run automatic campaigns.",
+        "Suggest concrete actions that the operator must confirm.",
+        "When monthlyTrend is present, use it to read swings, drops, recoveries and operational instability.",
+        "When goldDecisionContext is present, use it as the official source: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 and trend.",
+        "Do not bypass canExecute, blockedActions, high risk or low confidence. If Gold blocks, you must block or ask for verification.",
+        "When goldCapabilities is present, use features and limits to understand what is active. If WhatsApp is not enabled, suggest only manual copy/fallback.",
+        "Avoid medical or therapeutic claims and avoid guaranteed outcomes.",
+        "Reply in English, premium, clear and practical.",
+        "Structure the answer as: Summary, Priorities, Suggested actions, Limits/missing data."
+      ].join("\n")
+      : [
+        "Sei AI Gold di SkinHarmony Smart Desk con Corelia come motore decisionale.",
+        "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
+        "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
+        "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
+        "Suggerisci azioni concrete che l'operatore deve confermare.",
+        "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
+        "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
+        "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
+        "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
+        "Evita claim medici, terapeutici o promesse di risultato.",
+        "Rispondi in italiano, tono premium, chiaro, pratico.",
+        "Struttura la risposta in: Sintesi, Priorità, Azioni consigliate, Limiti/dati mancanti."
+      ].join("\n");
 
     try {
       const response = await fetch("https://api.openai.com/v1/responses", {
@@ -1348,7 +1374,7 @@ class AssistantService {
       return {
         goldEnabled: true,
         provider: "openai",
-        answer,
+        answer: language === "en" ? localizeAssistantText(answer, language) : answer,
         actions: []
       };
     } catch {
