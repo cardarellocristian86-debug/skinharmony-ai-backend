@@ -295,6 +295,19 @@ function candidateFromSnapshots(
   }
   const side: TradeSide = tradableDecision.financial_action === "BUY" ? "LONG" : "SHORT";
   const multiverseThesis = evaluateFinancialMultiverseThesis(product, side, signedScore, tradableDecision, snapshots);
+  const hardRiskOnProfile =
+    selectorProfile === "hard_growth" ||
+    selectorProfile === "overdrive_5_auto_only" ||
+    selectorProfile === "overdrive_6_auto_only" ||
+    selectorProfile === "overdrive_7_auto_only";
+  const shortBurstConfirmed =
+    decision.microstructure_scenario === "continuation_burst" &&
+    shortFlowConfirmed &&
+    decision.microstructure_signals.horizon_alignment >= 0 &&
+    decision.risk.score < 58 &&
+    multiverseThesis.confidence >= 58 &&
+    multiverseThesis.expected_value_score >= 14 &&
+    multiverseThesis.adverse_risk < 60;
   if (multiverseThesis.thesis_valid) {
     runtimeOverlay.notes.push(`multiverse_${multiverseThesis.thesis_action}`);
     runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score + multiverseThesis.expected_value_score * 0.18);
@@ -318,6 +331,25 @@ function candidateFromSnapshots(
     runtimeOverlay.notes.push("multiverse_thesis_weak");
   } else {
     runtimeOverlay.notes.push("multiverse_watch_only");
+  }
+  if (actionScoreMismatch && !multiverseThesis.thesis_valid) {
+    runtimeOverlay.blocked = true;
+    runtimeOverlay.size_multiplier = 0;
+    runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score - 12);
+    runtimeOverlay.notes.push("mismatch_without_valid_thesis_block");
+  }
+  if (side === "SHORT" && hardRiskOnProfile) {
+    if (decision.microstructure_scenario === "neutral_compression") {
+      runtimeOverlay.blocked = true;
+      runtimeOverlay.size_multiplier = 0;
+      runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score - 18);
+      runtimeOverlay.notes.push("hard_growth_blocks_short_compression");
+    } else if (!multiverseThesis.thesis_valid || !shortBurstConfirmed) {
+      runtimeOverlay.blocked = true;
+      runtimeOverlay.size_multiplier = 0;
+      runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score - 14);
+      runtimeOverlay.notes.push("hard_growth_requires_confirmed_short_thesis");
+    }
   }
   const diagnostic: CandidateDiagnostic = {
     product,
