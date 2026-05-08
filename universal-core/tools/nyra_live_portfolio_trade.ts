@@ -251,14 +251,35 @@ function candidateFromSnapshots(
       : rawSignedScore;
 
   const recoveryMicroMode = isFinancialRecoveryMicroModeActive();
+  const hardRiskOnProfile =
+    selectorProfile === "hard_growth" ||
+    selectorProfile === "overdrive_5_auto_only" ||
+    selectorProfile === "overdrive_6_auto_only" ||
+    selectorProfile === "overdrive_7_auto_only";
   const fallbackSide: TradeSide | null = signedScore >= 95 ? "LONG" : signedScore <= -95 ? "SHORT" : null;
   const fallbackAction = fallbackSide === "LONG" ? "BUY" : fallbackSide === "SHORT" ? "SELL" : null;
-  const fallbackAllowed =
-    recoveryMicroMode &&
-    fallbackAction &&
+  const hardGrowthLongFallback =
+    hardRiskOnProfile &&
+    fallbackAction === "BUY" &&
     decision.financial_action === "HOLD" &&
-    decision.microstructure_signals.spread_bps <= 4 &&
-    decision.risk.score <= 72;
+    rawSignedScore >= 70 &&
+    decision.microstructure_signals.momentum >= 0.18 &&
+    decision.microstructure_signals.order_book_imbalance >= -0.05 &&
+    decision.microstructure_signals.trade_flow_imbalance >= -0.08 &&
+    decision.microstructure_signals.horizon_alignment >= 0 &&
+    decision.microstructure_signals.spread_bps <= 6 &&
+    decision.risk.score <= 62;
+  const fallbackAllowed =
+    fallbackAction &&
+    (
+      (
+        recoveryMicroMode &&
+        decision.financial_action === "HOLD" &&
+        decision.microstructure_signals.spread_bps <= 4 &&
+        decision.risk.score <= 72
+      ) ||
+      hardGrowthLongFallback
+    );
 
   if (decision.financial_action !== "BUY" && decision.financial_action !== "SELL" && !fallbackAllowed) {
     return {
@@ -290,16 +311,18 @@ function candidateFromSnapshots(
   if (actionScoreMismatch) livePolicy.notes.push("action_score_mismatch_corrected");
   const runtimeOverlay = selectorRuntimeOverlay(selectorProfile, livePolicy, decision.risk.score);
   if (fallbackAllowed) {
-    runtimeOverlay.notes.push("recovery_micro_hold_override");
-    runtimeOverlay.size_multiplier = round(runtimeOverlay.size_multiplier * 0.55, 6);
+    runtimeOverlay.notes.push(
+      hardGrowthLongFallback
+        ? "hard_growth_long_hold_override"
+        : "recovery_micro_hold_override"
+    );
+    runtimeOverlay.size_multiplier = round(
+      runtimeOverlay.size_multiplier * (hardGrowthLongFallback ? 0.72 : 0.55),
+      6,
+    );
   }
   const side: TradeSide = tradableDecision.financial_action === "BUY" ? "LONG" : "SHORT";
   const multiverseThesis = evaluateFinancialMultiverseThesis(product, side, signedScore, tradableDecision, snapshots);
-  const hardRiskOnProfile =
-    selectorProfile === "hard_growth" ||
-    selectorProfile === "overdrive_5_auto_only" ||
-    selectorProfile === "overdrive_6_auto_only" ||
-    selectorProfile === "overdrive_7_auto_only";
   const shortBurstConfirmed =
     decision.microstructure_scenario === "continuation_burst" &&
     shortFlowConfirmed &&
@@ -337,6 +360,31 @@ function candidateFromSnapshots(
     runtimeOverlay.size_multiplier = 0;
     runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score - 12);
     runtimeOverlay.notes.push("mismatch_without_valid_thesis_block");
+  }
+  if (side === "LONG" && hardRiskOnProfile) {
+    const longRiskOnConfirmed =
+      decision.microstructure_signals.momentum >= 0.14 &&
+      decision.microstructure_signals.horizon_alignment >= 0 &&
+      decision.risk.score < 64 &&
+      (
+        multiverseThesis.thesis_valid ||
+        (
+          multiverseThesis.thesis_action === "watch" &&
+          multiverseThesis.confidence >= 52 &&
+          multiverseThesis.expected_value_score >= 6 &&
+          multiverseThesis.adverse_risk < 68
+        )
+      );
+    if (longRiskOnConfirmed) {
+      runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score + 10);
+      runtimeOverlay.min_strength_required = Math.max(4, runtimeOverlay.min_strength_required - 3);
+      runtimeOverlay.size_multiplier = round(runtimeOverlay.size_multiplier * 1.22, 6);
+      runtimeOverlay.notes.push("hard_growth_long_bias");
+      if (runtimeOverlay.blocked && Math.abs(runtimeOverlay.adjusted_score) >= runtimeOverlay.min_strength_required) {
+        runtimeOverlay.blocked = false;
+        runtimeOverlay.notes.push("hard_growth_long_unblock");
+      }
+    }
   }
   if (side === "SHORT" && hardRiskOnProfile) {
     if (decision.microstructure_scenario === "neutral_compression") {
@@ -424,9 +472,9 @@ function selectorRuntimeOverlay(
       policy.size_multiplier = round(policy.size_multiplier * 0.92, 6);
       break;
     case "hard_growth":
-      policy.adjusted_score = round(policy.adjusted_score + 4);
-      policy.min_strength_required = Math.max(6, policy.min_strength_required - 1);
-      policy.size_multiplier = round(policy.size_multiplier * 1.08, 6);
+      policy.adjusted_score = round(policy.adjusted_score + 6);
+      policy.min_strength_required = Math.max(5, policy.min_strength_required - 2);
+      policy.size_multiplier = round(policy.size_multiplier * 1.12, 6);
       break;
     case "overdrive_5_auto_only":
       policy.adjusted_score = round(policy.adjusted_score + 7);
@@ -552,7 +600,15 @@ async function main() {
     .sort((a, b) => Math.abs(b.adjusted_score) - Math.abs(a.adjusted_score))
     .filter((candidate, index) => {
       if (index === 0) return true;
-      return Math.abs(candidate.adjusted_score) >= (selectorProfile === "capital_protection" ? 28 : selectorProfile === "balanced_growth" ? 24 : 20);
+      return Math.abs(candidate.adjusted_score) >= (
+        selectorProfile === "capital_protection"
+          ? 28
+          : selectorProfile === "balanced_growth"
+            ? 24
+            : selectorProfile === "hard_growth" && candidate.side === "LONG"
+              ? 14
+              : 20
+      );
     })
     .slice(0, Math.min(portfolioSize, profilePositionCap, Math.min(candidates.length, 4)));
 
