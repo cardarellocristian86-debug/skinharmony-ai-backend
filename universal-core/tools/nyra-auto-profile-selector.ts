@@ -702,17 +702,17 @@ export function selectNyraProfile(
     (qqq1m < -1.5 && qqq3m > 0 && qqq3m < qqq6m) ||
     (advisory.regime > 0.1 && advisory.break > 0.08);
   const lateralCandidateSignal =
-    Math.abs(qqq1m) <= 1.76 &&
-    Math.abs(qqq3m) <= 1.65 &&
-    Math.abs(qqq6m) <= 2.64 &&
-    Math.abs(spy3m) <= 1.32 &&
+    Math.abs(qqq1m) <= 1.1 &&
+    Math.abs(qqq3m) <= 1.0 &&
+    Math.abs(qqq6m) <= 1.85 &&
+    Math.abs(spy3m) <= 0.9 &&
     advisory.break < 0.154 &&
     advisory.regime < 0.121;
   const lateralConfirmedSignal =
-    efficiency6 <= 0.154 &&
-    efficiency4 <= 0.198 &&
+    efficiency6 <= 0.13 &&
+    efficiency4 <= 0.17 &&
     flipCount4 >= 2 &&
-    Math.abs(qqq6m) <= 4.8 &&
+    Math.abs(qqq6m) <= 3.2 &&
     advisory.break < 0.176 &&
     advisory.regime < 0.143;
   const breakoutCandidateSignal =
@@ -740,8 +740,8 @@ export function selectNyraProfile(
   const roadOpen =
     positiveImpulse &&
     longPeriodHealthy &&
-    advisory.break < 0.12 &&
-    advisory.regime < 0.1 &&
+    advisory.break < 0.18 &&
+    advisory.regime < 0.14 &&
     !longPeriodWeakening;
   const roadMostlyOpen =
     positiveImpulse &&
@@ -751,12 +751,12 @@ export function selectNyraProfile(
     advisory.policy >= 0.4 &&
     !longPeriodWeakening;
   const clearRunway =
-    qqq6m > 3.2 &&
-    qqq3m > 1.4 &&
-    spy6m > 1.8 &&
+    qqq6m > 2.6 &&
+    qqq3m > 1.0 &&
+    spy6m > 1.4 &&
     qqq1m > -2.2 &&
-    advisory.break < 0.24 &&
-    advisory.regime < 0.18 &&
+    advisory.break < 0.3 &&
+    advisory.regime < 0.22 &&
     !longPeriodWeakening;
   const benchmarkBullOverride =
     positiveImpulse &&
@@ -771,11 +771,11 @@ export function selectNyraProfile(
   const overdriveRunway =
     (
       qqq6m > 4.1 &&
-      qqq3m > 1.9 &&
-      spy6m > 2.5 &&
-      qqq1m > -1.6 &&
-      advisory.break < 0.16 &&
-      advisory.regime < 0.12 &&
+      qqq3m > 1.2 &&
+      spy6m > 1.8 &&
+      qqq1m > -1.1 &&
+      advisory.break < 0.24 &&
+      advisory.regime < 0.18 &&
       advisory.policy >= 0.04 &&
       !longPeriodWeakening
     ) ||
