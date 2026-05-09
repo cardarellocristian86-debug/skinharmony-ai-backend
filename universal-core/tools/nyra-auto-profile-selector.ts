@@ -737,7 +737,6 @@ export function selectNyraProfile(
   const breakoutConfirmed = breakoutCandidateSignal && previousBreakoutCandidate;
   const bubbleQualityDeterioration = detectPositiveGrowthQualityDeterioration(advisory, history);
   const recoveryAnticipation = breakoutCandidateSignal && !bubbleQualityDeterioration.active;
-  const lateralChop = lateralCandidateSignal || lateralConfirmedSignal;
   const roadOpen =
     positiveImpulse &&
     longPeriodHealthy &&
@@ -860,6 +859,12 @@ export function selectNyraProfile(
     advisory.output.intensity === "low" &&
     bearishPressure < 0.2 &&
     feePressure < 0.18;
+  const structuralBullOverride =
+    (benchmarkBullOverride || profitCushion > 1.45) &&
+    advisory.output.alert === "watch" &&
+    advisory.output.intensity === "low" &&
+    advisory.policy >= 0.48;
+  const lateralChop = (lateralCandidateSignal || lateralConfirmedSignal) && !structuralBullOverride;
   const overdriveAllowedByHorizon =
     (!shortHorizonActive && !clientModeActive) ||
     (
@@ -877,8 +882,24 @@ export function selectNyraProfile(
   const autoOverdriveEnabled = true;
 
   if (!previousAutoProfile) {
-    profile = "capital_protection";
-    reason = "Auto: parte in marcia 1, legge il mercato e salta in alto solo quando la strada e chiara.";
+    if (structuralBullOverride && autoOverdriveEnabled && overdriveAllowedByHorizon && (overdriveRunway || protectedOverdriveRunway)) {
+      profile = chooseOverdriveProfile({
+        overdriveRunway,
+        protectedOverdriveRunway,
+        overdriveRiskBudget,
+        generatedProfitRatio,
+        canRiskGeneratedProfit,
+        profitCushion,
+        clearTrendRunway: clearTrendRunway || benchmarkClearTrendRunway,
+      });
+      reason = "Auto cold start: bull strutturale gia leggibile, non parte in difesa e sale subito in overdrive.";
+    } else if (structuralBullOverride || roadMostlyOpen || clearRunway || safeEnoughToJumpHigh) {
+      profile = "hard_growth";
+      reason = "Auto cold start: contesto costruttivo gia leggibile, non spreca cicli in marcia 1.";
+    } else {
+      profile = "capital_protection";
+      reason = "Auto: parte in marcia 1, legge il mercato e salta in alto solo quando la strada e chiara.";
+    }
   } else if (bubbleQualityDeterioration.active) {
     profile = bubbleQualityDeterioration.stage === "pre_break" ? "capital_protection" : "balanced_growth";
     reason = bubbleQualityDeterioration.reason;
