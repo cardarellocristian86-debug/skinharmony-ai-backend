@@ -780,6 +780,12 @@ export function selectNyraProfile(
       !longPeriodWeakening
     ) ||
     benchmarkBullOverride;
+  const structuralBullOverride =
+    (benchmarkBullOverride || profitCushion > 1.45) &&
+    advisory.output.alert === "watch" &&
+    advisory.output.intensity === "low" &&
+    advisory.policy >= 0.48;
+  const lateralChop = (lateralCandidateSignal || lateralConfirmedSignal) && !structuralBullOverride;
   const protectedOverdriveRunway =
     (
       positiveImpulse &&
@@ -859,12 +865,6 @@ export function selectNyraProfile(
     advisory.output.intensity === "low" &&
     bearishPressure < 0.2 &&
     feePressure < 0.18;
-  const structuralBullOverride =
-    (benchmarkBullOverride || profitCushion > 1.45) &&
-    advisory.output.alert === "watch" &&
-    advisory.output.intensity === "low" &&
-    advisory.policy >= 0.48;
-  const lateralChop = (lateralCandidateSignal || lateralConfirmedSignal) && !structuralBullOverride;
   const overdriveAllowedByHorizon =
     (!shortHorizonActive && !clientModeActive) ||
     (
