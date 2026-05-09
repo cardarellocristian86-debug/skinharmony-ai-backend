@@ -220,22 +220,26 @@ function chooseOverdriveProfile(input: {
 }): "overdrive_5_auto_only" | "overdrive_6_auto_only" | "overdrive_7_auto_only" {
   if (
     input.clearTrendRunway &&
-    (input.profitCushion > 1.7 || input.generatedProfitRatio > 0.16 || input.overdriveRiskBudget > 1.05)
+    (input.profitCushion > 1.35 || input.generatedProfitRatio > 0.1 || input.overdriveRiskBudget > 0.88)
   ) {
     return "overdrive_7_auto_only";
   }
 
   if (
     input.overdriveRunway &&
-    (input.profitCushion > 3.2 || (input.generatedProfitRatio > 0.32 && input.canRiskGeneratedProfit))
+    (
+      input.profitCushion > 2.4 ||
+      input.overdriveRiskBudget > 1.15 ||
+      (input.generatedProfitRatio > 0.22 && input.canRiskGeneratedProfit)
+    )
   ) {
     return "overdrive_7_auto_only";
   }
 
   if (
-    (input.overdriveRunway && input.profitCushion > 2.6) ||
-    (input.protectedOverdriveRunway && input.overdriveRiskBudget > 1.35) ||
-    (input.generatedProfitRatio > 0.24 && input.canRiskGeneratedProfit)
+    (input.overdriveRunway && input.profitCushion > 1.9) ||
+    (input.protectedOverdriveRunway && input.overdriveRiskBudget > 1.02) ||
+    (input.generatedProfitRatio > 0.14 && input.canRiskGeneratedProfit)
   ) {
     return "overdrive_6_auto_only";
   }
@@ -755,24 +759,44 @@ export function selectNyraProfile(
     advisory.break < 0.24 &&
     advisory.regime < 0.18 &&
     !longPeriodWeakening;
-  const overdriveRunway =
-    qqq6m > 4.1 &&
-    qqq3m > 1.9 &&
-    spy6m > 2.5 &&
-    qqq1m > -1.6 &&
-    advisory.break < 0.16 &&
-    advisory.regime < 0.12 &&
-    advisory.policy >= 0.04 &&
-    !longPeriodWeakening;
-  const protectedOverdriveRunway =
+  const benchmarkBullOverride =
     positiveImpulse &&
     longPeriodHealthy &&
-    profitCushion > 2.05 &&
-    advisory.break < 0.2 &&
-    advisory.regime < 0.15 &&
-    advisory.output.intensity !== "high" &&
-    !lateralChop &&
-    !longPeriodWeakening;
+    qqq3m > 0.9 &&
+    qqq6m > 2.8 &&
+    spy3m > 0.45 &&
+    advisory.break < 0.38 &&
+    advisory.regime < 0.3 &&
+    advisory.output.alert !== "critical" &&
+    advisory.output.intensity !== "high";
+  const overdriveRunway =
+    (
+      qqq6m > 4.1 &&
+      qqq3m > 1.9 &&
+      spy6m > 2.5 &&
+      qqq1m > -1.6 &&
+      advisory.break < 0.16 &&
+      advisory.regime < 0.12 &&
+      advisory.policy >= 0.04 &&
+      !longPeriodWeakening
+    ) ||
+    benchmarkBullOverride;
+  const protectedOverdriveRunway =
+    (
+      positiveImpulse &&
+      longPeriodHealthy &&
+      profitCushion > 2.05 &&
+      advisory.break < 0.2 &&
+      advisory.regime < 0.15 &&
+      advisory.output.intensity !== "high" &&
+      !lateralChop &&
+      !longPeriodWeakening
+    ) ||
+    (
+      benchmarkBullOverride &&
+      profitCushion > 1.25 &&
+      !lateralChop
+    );
   const downgradeNotNecessary =
     advisory.break < 0.18 &&
     advisory.regime < 0.14 &&
@@ -830,15 +854,21 @@ export function selectNyraProfile(
     advisory.output.intensity === "low" &&
     bearishPressure < 0.11 &&
     feePressure < 0.14;
+  const benchmarkClearTrendRunway =
+    benchmarkBullOverride &&
+    advisory.output.alert === "watch" &&
+    advisory.output.intensity === "low" &&
+    bearishPressure < 0.2 &&
+    feePressure < 0.18;
   const overdriveAllowedByHorizon =
     (!shortHorizonActive && !clientModeActive) ||
     (
-      clearTrendRunway &&
+      (clearTrendRunway || benchmarkClearTrendRunway) &&
       overdriveRunway &&
-      overdriveRiskBudget > (clientModeActive ? 1.45 : 1.15) &&
-      feePressure < (clientModeActive ? 0.07 : 0.1) &&
-      bearishPressure < (clientModeActive ? 0.055 : 0.08) &&
-      profitCushion > (clientModeActive ? 2.4 : 0)
+      overdriveRiskBudget > (clientModeActive ? 1.2 : 0.88) &&
+      feePressure < (clientModeActive ? 0.12 : 0.18) &&
+      bearishPressure < (clientModeActive ? 0.12 : 0.2) &&
+      profitCushion > (clientModeActive ? 1.5 : 0)
     );
   let profile: NyraAutoDriveProfile;
   let reason: string;
@@ -1000,10 +1030,10 @@ export function selectNyraProfile(
         : "hard_growth";
       reason += " Isteresi forte: la priorita resta la 4 alta finche non serve frenare davvero.";
     } else if (
-      autoOverdriveEnabled &&
-      overdriveAllowedByHorizon &&
-      previousAutoProfile === "hard_growth" &&
-      (bullishPressure > 0.36 || profitCushion > 2.35 || generatedProfitRatio > 0.2) &&
+    autoOverdriveEnabled &&
+    overdriveAllowedByHorizon &&
+    previousAutoProfile === "hard_growth" &&
+      (bullishPressure > 0.28 || benchmarkBullOverride || profitCushion > 1.7 || generatedProfitRatio > 0.12) &&
       feePressure < 0.18 &&
       !brakeHard &&
       !brakeSoft &&
