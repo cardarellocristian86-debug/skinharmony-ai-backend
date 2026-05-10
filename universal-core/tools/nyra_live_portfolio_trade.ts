@@ -474,22 +474,22 @@ function selectorRuntimeOverlay(
     case "hard_growth":
       policy.adjusted_score = round(policy.adjusted_score + 6);
       policy.min_strength_required = Math.max(5, policy.min_strength_required - 2);
-      policy.size_multiplier = round(policy.size_multiplier * 1.12, 6);
+      policy.size_multiplier = round(policy.size_multiplier * 1.2, 6);
       break;
     case "overdrive_5_auto_only":
       policy.adjusted_score = round(policy.adjusted_score + 7);
       policy.min_strength_required = Math.max(5, policy.min_strength_required - 2);
-      policy.size_multiplier = round(policy.size_multiplier * 1.16, 6);
+      policy.size_multiplier = round(policy.size_multiplier * 1.26, 6);
       break;
     case "overdrive_6_auto_only":
       policy.adjusted_score = round(policy.adjusted_score + 10);
       policy.min_strength_required = Math.max(4, policy.min_strength_required - 3);
-      policy.size_multiplier = round(policy.size_multiplier * 1.22, 6);
+      policy.size_multiplier = round(policy.size_multiplier * 1.34, 6);
       break;
     case "overdrive_7_auto_only":
       policy.adjusted_score = round(policy.adjusted_score + 13);
       policy.min_strength_required = Math.max(3, policy.min_strength_required - 4);
-      policy.size_multiplier = round(policy.size_multiplier * 1.3, 6);
+      policy.size_multiplier = round(policy.size_multiplier * 1.42, 6);
       break;
   }
 
@@ -595,7 +595,13 @@ async function main() {
       ? 2
       : selectorProfile === "aggressive_growth"
         ? 3
-        : 4;
+        : selectorProfile === "hard_growth"
+          ? 5
+          : selectorProfile === "overdrive_5_auto_only"
+            ? 6
+            : selectorProfile === "overdrive_6_auto_only"
+              ? 7
+              : 8;
   const selectedCandidates = (debugNoLive ? [] : [...candidates])
     .sort((a, b) => Math.abs(b.adjusted_score) - Math.abs(a.adjusted_score))
     .filter((candidate, index) => {
@@ -606,11 +612,16 @@ async function main() {
           : selectorProfile === "balanced_growth"
             ? 24
             : selectorProfile === "hard_growth" && candidate.side === "LONG"
-              ? 14
-              : 20
+              ? 12
+              : (
+                (selectorProfile === "overdrive_5_auto_only" || selectorProfile === "overdrive_6_auto_only" || selectorProfile === "overdrive_7_auto_only") &&
+                candidate.side === "LONG"
+              )
+                ? 10
+                : 18
       );
     })
-    .slice(0, Math.min(portfolioSize, profilePositionCap, Math.min(candidates.length, 4)));
+    .slice(0, Math.min(portfolioSize, profilePositionCap, candidates.length));
 
   const totalStrength = selectedCandidates.reduce((sum, candidate) => sum + Math.abs(candidate.adjusted_score) * candidate.size_multiplier, 0) || 1;
   const totalRiskCap = Math.min(Math.max(selectorRiskCap, 0), 1);

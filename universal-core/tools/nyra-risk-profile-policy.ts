@@ -50,8 +50,8 @@ const PROFILE_CONFIG: Record<NyraRiskProfile, ProfileConfig> = {
     forbidRiskIncreaseOnWatch: false,
     euphoriaBtcCap: 0.13,
     euphoriaCashBump: 0,
-    critical: { SPY: 0.32, QQQ: 0.28, BTC: 0.08, GLD: 0.1, TLT: 0.07, CASH: 0.15 },
-    high: { SPY: 0.35, QQQ: 0.35, BTC: 0.15, GLD: 0.04, TLT: 0.02, CASH: 0.09 },
+    critical: { SPY: 0.34, QQQ: 0.29, BTC: 0.1, GLD: 0.08, TLT: 0.06, CASH: 0.13 },
+    high: { SPY: 0.35, QQQ: 0.35, BTC: 0.15, GLD: 0.03, TLT: 0.01, CASH: 0.11 },
     watch: { SPY: 0.35, QQQ: 0.35, BTC: 0.15, GLD: 0.03, TLT: 0.02, CASH: 0.1 },
   },
 };
@@ -287,10 +287,10 @@ export function chooseNyraRiskProfileAllocation(
     if ((profile === "aggressive_growth" || profile === "hard_growth") && positiveImpulse && !(profile === "hard_growth" && longPeriodWeakening)) {
       target = normalizeAllocation({
         ...target,
-        SPY: target.SPY + (profile === "hard_growth" ? 0.02 : 0.01),
-        QQQ: target.QQQ + (profile === "hard_growth" ? 0.03 : 0.02),
-        BTC: cryptoImpulse ? Math.min(target.BTC + (profile === "hard_growth" ? 0.02 : 0.01), 0.15) : target.BTC,
-        CASH: Math.max(target.CASH - (profile === "hard_growth" ? 0.06 : 0.04), 0),
+        SPY: target.SPY + (profile === "hard_growth" ? 0.03 : 0.01),
+        QQQ: target.QQQ + (profile === "hard_growth" ? 0.04 : 0.02),
+        BTC: cryptoImpulse ? Math.min(target.BTC + (profile === "hard_growth" ? 0.03 : 0.01), 0.15) : target.BTC,
+        CASH: Math.max(target.CASH - (profile === "hard_growth" ? 0.08 : 0.04), 0),
       });
       reason += profile === "hard_growth"
         ? " Recovery/healthy confermata: hard mode accelera il rientro risk-on in bull strutturale."
@@ -311,11 +311,12 @@ export function chooseNyraRiskProfileAllocation(
       } else {
         target = normalizeAllocation({
           ...target,
-          SPY: Math.min(target.SPY + 0.01, 0.35),
-          QQQ: Math.min(target.QQQ + 0.01, 0.35),
-          BTC: cryptoImpulse ? Math.min(target.BTC + 0.01, 0.15) : target.BTC,
-          GLD: Math.max(target.GLD - 0.01, 0),
+          SPY: Math.min(target.SPY + 0.02, 0.35),
+          QQQ: Math.min(target.QQQ + 0.02, 0.35),
+          BTC: cryptoImpulse ? Math.min(target.BTC + 0.02, 0.15) : target.BTC,
+          GLD: Math.max(target.GLD - 0.02, 0),
           TLT: Math.max(target.TLT - 0.01, 0),
+          CASH: Math.max(target.CASH - 0.02, 0),
         });
         reason += " Momentum pulito: hard mode massimizza l'esposizione risk-on.";
       }
