@@ -924,6 +924,8 @@ async function refreshNyraFinanceProfileState(overrides = {}) {
     "--manual-profile",
     manualProfile
   ], { timeoutMs: 20000 });
+  syncPersistentJson("personal-control-center/data/nyra-finance-profile.json");
+  syncPersistentJson("personal-control-center/data/nyra-finance-profile-history.json");
   const profileWarning = profileState.mode === "manual" &&
     profileState.warning &&
     (
@@ -986,6 +988,9 @@ async function runNyraFinanceLiveCycle() {
   try {
     await refreshNyraFinanceProfileState();
     const report = await runNodeJson(getNyraFinanceLiveArgs(), { timeoutMs: 120000 });
+    syncPersistentJson("runtime/nyra-learning/nyra_financial_live_feedback_latest.json");
+    syncPersistentJson("runtime/nyra-learning/nyra_financial_realtime_autoimprovement_latest.json");
+    syncPersistentJson("reports/universal-core/financial-core-test/nyra_live_portfolio_trade_latest.json");
     nyraFinanceLiveState.lastReport = report;
     appendNyraFinanceHistory(report);
     nyraFinanceLiveState.lastFinishedAt = new Date().toISOString();
@@ -1399,6 +1404,15 @@ function writeJson(relativePath, data) {
   const filePath = resolveStoragePath(relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function syncPersistentJson(relativePath) {
+  if (!nyraStorageRoot || !nyraPersistentPath(relativePath)) return;
+  const repoPath = path.join(rootDir, relativePath);
+  const persistentPath = path.join(nyraStorageRoot, relativePath);
+  if (!fs.existsSync(repoPath)) return;
+  fs.mkdirSync(path.dirname(persistentPath), { recursive: true });
+  fs.copyFileSync(repoPath, persistentPath);
 }
 
 function dateOnly(value) {
@@ -3478,6 +3492,9 @@ app.post("/api/nyra/finance/live", async (_req, res) => {
   try {
     await refreshNyraFinanceProfileState();
     const report = await runNodeJson(getNyraFinanceLiveArgs(), { timeoutMs: 120000 });
+    syncPersistentJson("runtime/nyra-learning/nyra_financial_live_feedback_latest.json");
+    syncPersistentJson("runtime/nyra-learning/nyra_financial_realtime_autoimprovement_latest.json");
+    syncPersistentJson("reports/universal-core/financial-core-test/nyra_live_portfolio_trade_latest.json");
     nyraFinanceLiveState.lastReport = report;
     const history = appendNyraFinanceHistory(report);
     res.json({
