@@ -36,7 +36,7 @@ const NYRA_WORLD_PAPER_TRAINING_FEE_RATE = 0.0005;
 const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
-const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
+const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 1000000);
 
 loadEnv();
 
@@ -753,7 +753,7 @@ function appendNyraFinanceHistory(report = {}) {
 }
 
 const nyraFinanceLiveState = {
-  enabled: true,
+  enabled: false,
   running: false,
   intervalMs: 60_000,
   lastStartedAt: "",
@@ -6501,7 +6501,7 @@ const server = app.listen(port, host, () => {
   applyNyraWorldPaperAutoEnvDefaults();
   const runPaperOnBoot = nyraWorldPaperAutoState.enabled && ["1", "true", "yes", "on"].includes(String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "").trim().toLowerCase());
   scheduleNyraWorldPaperAutoLoop(runPaperOnBoot);
-  scheduleNyraFinanceLiveLoop(true);
+  scheduleNyraFinanceLiveLoop(false);
 });
 
 server.on("error", (error) => {
