@@ -53,12 +53,15 @@ function main(): void {
     .filter((asset) => Number(asset.avgSpreadBps || 0) > 8)
     .map((asset) => asset.product);
   const chronicUnderdeployment = noTradeRatio >= 0.7 && selectedCycles >= 20;
-  const protective = lossRate >= 0.72 || avgPnlPct < -0.65 || maxLossStreak >= 8 || maxDrawdownPct > 0.22;
-  const severeProtection = maxDrawdownPct > 0.4 || maxLossStreak >= 80 || (lossRate >= 0.92 && avgPnlPct < -1.8);
-  const recoveryMicroMode = (protective && !severeProtection) || chronicUnderdeployment;
+  const protective = lossRate >= 0.78 || avgPnlPct < -0.9 || maxLossStreak >= 12 || maxDrawdownPct > 0.28;
+  const severeProtection = maxDrawdownPct > 0.45 || maxLossStreak >= 90 || (lossRate >= 0.94 && avgPnlPct < -2);
+  const recoveryMicroMode = protective && !severeProtection;
+  const coreReengage = chronicUnderdeployment && !severeProtection;
   const release = noTradeRatio >= 0.55 && winRate >= 0.5 && avgPnlPct > -0.1 && maxLossStreak <= 2;
   const selectedPolicy = recoveryMicroMode
     ? "live_recovery_micro_trade_v1"
+    : coreReengage
+    ? "live_core_reengage_v1"
     : protective
     ? "live_loss_streak_drawdown_guard_v1"
     : release
@@ -70,7 +73,7 @@ function main(): void {
     source_feedback: "runtime/nyra-learning/nyra_financial_live_feedback_latest.json",
     stable_runtime_modified: false,
     selected_policy: selectedPolicy,
-    learning_state: recoveryMicroMode ? "recovery_micro_learning" : protective ? "protective_learning" : release ? "release_learning" : "observe",
+    learning_state: recoveryMicroMode ? "recovery_micro_learning" : coreReengage ? "core_reengage_learning" : protective ? "protective_learning" : release ? "release_learning" : "observe",
     metrics: {
       totalCycles: Number(feedback.totalCycles || 0),
       selectedCycles: Number(feedback.selectedCycles || 0),
@@ -83,18 +86,18 @@ function main(): void {
       maxLossStreak,
     },
     runtime_adjustments: {
-      minStrengthDelta: recoveryMicroMode ? 1 : protective ? 3 : release ? -3 : 0,
-      scoreDelta: recoveryMicroMode ? 1 : protective ? -4 : release ? 4 : 0,
-      sizeMultiplier: recoveryMicroMode ? 0.58 : protective ? 0.72 : release ? 1.08 : 1,
-      allowMicroTrades: recoveryMicroMode,
+      minStrengthDelta: recoveryMicroMode ? 1 : coreReengage ? -2 : protective ? 2 : release ? -3 : 0,
+      scoreDelta: recoveryMicroMode ? 1 : coreReengage ? 5 : protective ? -2 : release ? 4 : 0,
+      sizeMultiplier: recoveryMicroMode ? 0.62 : coreReengage ? 0.92 : protective ? 0.82 : release ? 1.08 : 1,
+      allowMicroTrades: recoveryMicroMode || coreReengage,
       recoveryMode: recoveryMicroMode,
-      dynamicRiskBudgetMultiplier: recoveryMicroMode ? 0.58 : protective ? 0.72 : release ? 1.08 : 1,
+      dynamicRiskBudgetMultiplier: recoveryMicroMode ? 0.62 : coreReengage ? 0.9 : protective ? 0.82 : release ? 1.08 : 1,
       blockNegativeAssets: severeProtection ? negativeAssets : [],
-      watchNegativeAssets: recoveryMicroMode ? negativeAssets : [],
+      watchNegativeAssets: recoveryMicroMode ? negativeAssets : coreReengage ? [] : [],
       boostPositiveAssets: positiveAssets,
       penalizeExpensiveAssets: expensiveAssets,
       notes: [
-        recoveryMicroMode ? "recovery micro-mode active: protegge il downside ma riapre il budget operativo" : protective ? "loss/drawdown guard active" : release ? "empirical release active" : "observe without policy shift",
+        recoveryMicroMode ? "recovery micro-mode active: protegge il downside ma riapre il budget operativo" : coreReengage ? "core reengage active: meno freni meccanici, piu peso al Core" : protective ? "loss/drawdown guard active" : release ? "empirical release active" : "observe without policy shift",
         negativeAssets.length ? `${severeProtection ? "negative assets blocked" : "negative assets watched"}: ${negativeAssets.join(", ")}` : "no repeated negative asset block",
         positiveAssets.length ? `positive low-spread assets: ${positiveAssets.join(", ")}` : "no positive low-spread boost",
         expensiveAssets.length ? `expensive spread assets: ${expensiveAssets.join(", ")}` : "no expensive spread penalty",

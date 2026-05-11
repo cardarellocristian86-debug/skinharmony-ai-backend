@@ -276,10 +276,10 @@ export function evaluateFinancialLivePolicy(
       (assetFeedback.pnlEur ?? 0) < -80 &&
       (assetFeedback.avgSpreadBps ?? 0) > 8;
     if (expensiveAndNegative) {
-      adjusted -= 18;
-      minStrengthRequired += 8;
-      sizeMultiplier = 0;
-      notes.push("asset_hard_block_expensive_negative_history");
+      adjusted -= 8;
+      minStrengthRequired += 3;
+      sizeMultiplier = round(sizeMultiplier * 0.75, 6);
+      notes.push("asset_expensive_negative_history");
     }
   }
 
@@ -293,15 +293,14 @@ export function evaluateFinancialLivePolicy(
     if (realtimeAutoimprovement?.selected_policy) notes.push(`realtime_${realtimeAutoimprovement.selected_policy}`);
     if (Array.isArray(realtimeAdjustments.notes)) notes.push(...realtimeAdjustments.notes.slice(0, 3));
     if (Array.isArray(realtimeAdjustments.blockNegativeAssets) && realtimeAdjustments.blockNegativeAssets.includes(product)) {
-      adjusted -= 12;
-      minStrengthRequired += 5;
-      sizeMultiplier = round(sizeMultiplier * 0.5, 6);
+      adjusted -= 6;
+      minStrengthRequired += 2;
+      sizeMultiplier = round(sizeMultiplier * 0.82, 6);
       notes.push("realtime_negative_asset_guard");
     }
     if (Array.isArray(realtimeAdjustments.watchNegativeAssets) && realtimeAdjustments.watchNegativeAssets.includes(product)) {
-      adjusted -= 4;
-      minStrengthRequired += 1;
-      sizeMultiplier = round(sizeMultiplier * 0.72, 6);
+      adjusted -= 2;
+      sizeMultiplier = round(sizeMultiplier * 0.9, 6);
       notes.push("realtime_negative_asset_watch");
     }
     if (Array.isArray(realtimeAdjustments.boostPositiveAssets) && realtimeAdjustments.boostPositiveAssets.includes(product)) {
@@ -319,10 +318,15 @@ export function evaluateFinancialLivePolicy(
 
   const riskHardBlock = recoveryMicroMode ? decision.risk.score >= 86 : decision.risk.score >= 72;
   const strengthFloor = recoveryMicroMode ? minStrengthRequired * 0.62 : minStrengthRequired;
+  const coreAssistedLong =
+    decision.financial_action === "BUY" &&
+    signedScore > 0 &&
+    decision.risk.score < 64 &&
+    decision.core_state !== "protection";
   const blocked =
     sizeMultiplier === 0 ||
     riskHardBlock ||
-    Math.abs(adjusted) < strengthFloor ||
+    (!coreAssistedLong && Math.abs(adjusted) < strengthFloor) ||
     (decision.financial_action === "SELL" &&
       decision.microstructure_scenario === "exhaustion_reversal" &&
       (liveFeedback?.winRate ?? 1) < 0.3 &&

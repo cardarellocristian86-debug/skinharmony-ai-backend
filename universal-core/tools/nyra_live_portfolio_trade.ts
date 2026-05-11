@@ -385,6 +385,29 @@ function candidateFromSnapshots(
         runtimeOverlay.notes.push("hard_growth_long_unblock");
       }
     }
+    const coreDrivenLongReopen =
+      decision.microstructure_scenario === "neutral_compression" &&
+      decision.risk.score < 62 &&
+      decision.microstructure_signals.spread_bps <= 4 &&
+      (
+        multiverseThesis.thesis_valid ||
+        (
+          multiverseThesis.thesis_action === "watch" &&
+          multiverseThesis.confidence >= 48 &&
+          multiverseThesis.expected_value_score >= 4 &&
+          multiverseThesis.adverse_risk < 70
+        )
+      );
+    if (coreDrivenLongReopen) {
+      runtimeOverlay.adjusted_score = round(runtimeOverlay.adjusted_score + 8);
+      runtimeOverlay.min_strength_required = Math.max(4, runtimeOverlay.min_strength_required - 2);
+      runtimeOverlay.size_multiplier = round(Math.max(runtimeOverlay.size_multiplier, 0.2) * 1.12, 6);
+      runtimeOverlay.notes.push("core_driven_long_reopen");
+      if (runtimeOverlay.blocked) {
+        runtimeOverlay.blocked = false;
+        runtimeOverlay.notes.push("core_driven_long_unblock");
+      }
+    }
   }
   if (side === "SHORT" && hardRiskOnProfile) {
     if (decision.microstructure_scenario === "neutral_compression") {
