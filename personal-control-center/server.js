@@ -1015,8 +1015,10 @@ function scheduleNyraFinanceLiveLoop(immediate = false) {
 }
 
 function nyraFinanceLiveStatusPayload() {
-  const report = nyraFinanceLiveState.lastReport;
-  const realtimeAutoimprovement = readJson(nyraFinanceRealtimeAutoimprovePath, null);
+  const report = nyraFinanceLiveState.enabled ? nyraFinanceLiveState.lastReport : null;
+  const realtimeAutoimprovement = nyraFinanceLiveState.enabled
+    ? readJson(nyraFinanceRealtimeAutoimprovePath, null)
+    : null;
   nyraFinanceKeepAwakeState.battery = readNyraBatteryState();
   const paperPortfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
   const treasury = buildUnifiedFinanceTreasury(paperPortfolio, report);
@@ -5332,6 +5334,32 @@ function executeWorldPaperStep(body = {}) {
     writeJson(nyraWorldPaperPortfolioPath, portfolio);
     const policy = buildWorldPaperLearningPolicy(portfolio);
     return { ok: true, action: "hold", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
+  }
+  if (autoSelect) {
+    const thesis = row?.multiverse_thesis || null;
+    const feeEdge = row?.fee_edge || worldPaperHasFeeEdge(row, thesis, feeRate, slippageRate, thesis?.thesis_valid ? 1.2 : 1.6);
+    const disciplinedAutoEntry =
+      thesis?.thesis_valid &&
+      ["enter", "hold_thesis"].includes(String(thesis.thesis_action || "")) &&
+      feeEdge.ok &&
+      Number(row?.edge_score || 0) >= Math.max(55, minEdgeForNewEntry) &&
+      Number(row?.risk_score || 0) <= maxRiskForNewEntry &&
+      Number(thesis?.confidence || 0) >= 48 &&
+      Number(thesis?.expected_value_score || 0) >= 8;
+    if (!disciplinedAutoEntry) {
+      portfolio.trades.unshift({
+        at: now,
+        type: "study_skip_no_valid_thesis",
+        symbol: row?.symbol || "NONE",
+        gear: riskBudget.gear,
+        profile: riskBudget.profile,
+        reason: `studio senza ingresso: ${row?.symbol || "asset"} non passa il gate minimo di tesi/EV/confidenza/rischio. Nyra osserva e aggiorna memoria, ma non compra.`,
+        price: row?.last_price || 0
+      });
+      writeJson(nyraWorldPaperPortfolioPath, portfolio);
+      const policy = buildWorldPaperLearningPolicy(portfolio);
+      return { ok: true, action: "study_skip_no_valid_thesis", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
+    }
   }
   const budget = Math.min(
     Number(portfolio.cash_eur || 0),
