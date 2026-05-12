@@ -512,10 +512,10 @@ function sendCoreliaSafe(res, fallbackFactory, compute) {
     const fallback = typeof fallbackFactory === "function" ? fallbackFactory(error) : {};
     return res.status(200).json({
       success: false,
-      engineName: "Corelia",
-      runtimeStack: ["V0", "V2", "V7"],
+      engineName: "Universal Core",
+      runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
       fallback: true,
-      error: error instanceof Error ? error.message : "Corelia non disponibile",
+      error: error instanceof Error ? error.message : "Universal Core non disponibile",
       ...fallback
     });
   }
@@ -1273,9 +1273,9 @@ app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
 app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    title: "Corelia Decision Engine",
+    title: "Universal Core Decision Engine",
     sections: [],
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "universal_core_fallback"
   }), () => service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
@@ -1292,13 +1292,13 @@ app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
-    version: "corelia_enterprise_v1",
-    goldEngineVersion: "corelia_phi_multi_domain_v1",
-    decisionMatrixVersion: "corelia_decision_matrix_v1",
+    version: "universal_core_enterprise_v1",
+    goldEngineVersion: "universal_core_phi_multi_domain_v1",
+    decisionMatrixVersion: "universal_core_decision_matrix_v1",
     features: {},
     limits: {},
     rules: {},
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "universal_core_fallback"
   }), () => service.getGoldCapabilities(req.session));
 });
 
@@ -1319,7 +1319,7 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
     topSignals: [],
     globalConfidence: 0,
     systemRisk: 0,
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "universal_core_fallback"
   }), () => service.getGoldDecisionContext({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1329,11 +1329,11 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
 app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    version: "corelia_state_v1",
+    version: "universal_core_state_v1",
     snapshots: {},
     signals: {},
     decision: null,
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "universal_core_fallback"
   }), () => service.getGoldState(req.session));
 });
 
@@ -1349,8 +1349,8 @@ app.get("/api/corelia/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
-    version: "corelia_enterprise_v1",
-    sourceLayer: "corelia_fallback"
+    version: "universal_core_enterprise_v1",
+    sourceLayer: "universal_core_fallback"
   }), () => service.getGoldCapabilities(req.session));
 });
 
@@ -1362,7 +1362,7 @@ app.get("/api/corelia/decision-context", requirePlan("gold"), (req, res) => {
     secondaryActions: [],
     blockedActions: [],
     topSignals: [],
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "universal_core_fallback"
   }), () => service.getGoldDecisionContext({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1372,9 +1372,9 @@ app.get("/api/corelia/decision-context", requirePlan("gold"), (req, res) => {
 app.get("/api/corelia/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    title: "Corelia Decision Engine",
+    title: "Universal Core Decision Engine",
     sections: [],
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "universal_core_fallback"
   }), () => service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1480,7 +1480,7 @@ app.post("/api/corelia/dialog", requirePlan("gold"), (req, res) => {
       dialogue
     });
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Bridge Corelia/Nyra non disponibile");
+    res.status(400).send(error instanceof Error ? error.message : "Bridge Universal Core/Nyra non disponibile");
   }
 });
 

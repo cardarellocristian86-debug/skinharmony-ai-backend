@@ -311,8 +311,8 @@ function assistantLanguage(context = {}) {
 function localizeAssistantText(message, language) {
   if (language !== "en") return message;
   return String(message || "")
-    .replace(/\bLettura Smart allineata a Corelia Decision Engine\./g, "Smart reading aligned with the Corelia Decision Engine.")
-    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Corelia come motore decisionale:/g, "AI Gold operational reading on the available data, with Corelia as the decision engine:")
+    .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart reading aligned with the Universal Core Decision Engine.")
+    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Universal Core come motore decisionale:/g, "AI Gold operational reading on the available data, with Universal Core as the decision engine:")
     .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "On the Silver plan I can guide you through modules and reports, but I do not generate AI priorities.")
     .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "On the Base plan the Smart button stays operational, but it does not use AI priorities.")
     .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatic priorities and decision alerts are available on the Gold plan.")
@@ -753,7 +753,7 @@ class AssistantService {
     const blocked = Array.isArray(goldContext.blockedActions) ? goldContext.blockedActions : [];
     if (primary || secondary.length || blocked.length) {
       const lines = [
-        "Lettura Smart allineata a Corelia Decision Engine.",
+        "Lettura Smart allineata a Universal Core Decision Engine.",
         "",
         "Priorità principale:",
         primary
@@ -1223,7 +1223,7 @@ class AssistantService {
     const firstAlert = profitability.alerts?.[0];
     const lastDrop = [...monthlyTrend].reverse().find((item) => item.signal === "drop");
     const lines = [
-      "Lettura AI Gold operativa sui dati disponibili, con Corelia come motore decisionale:",
+      "Lettura AI Gold operativa sui dati disponibili, con Universal Core come motore decisionale:",
       centerHealth
         ? `Stato centro: ${centerHealth.statusLabel || centerHealth.status}. Azione: ${centerHealth.status === "sotto_soglia" ? "aumenta agenda e richiami prima dei margini" : "mantieni controllo operativo e correggi i punti deboli"}.`
         : "Stato centro: dato non disponibile nello snapshot.",
@@ -1325,7 +1325,7 @@ class AssistantService {
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = language === "en"
       ? [
-        "You are AI Gold inside SkinHarmony Smart Desk with Corelia as the decision engine.",
+        "You are AI Gold inside SkinHarmony Smart Desk with Universal Core as the decision engine.",
         "You are not a generic chatbot: you are an operational assistant for aesthetic, hair and hybrid centers.",
         "Use only the data present in the JSON context. If data is missing, say so clearly.",
         "Do not send messages, do not modify prices, do not change data and do not run automatic campaigns.",
@@ -1339,7 +1339,7 @@ class AssistantService {
         "Structure the answer as: Summary, Priorities, Suggested actions, Limits/missing data."
       ].join("\n")
       : [
-        "Sei AI Gold di SkinHarmony Smart Desk con Corelia come motore decisionale.",
+        "Sei AI Gold di SkinHarmony Smart Desk con Universal Core come motore decisionale.",
         "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
         "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
         "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
@@ -1397,7 +1397,7 @@ class AssistantService {
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = [
-      "Sei AI Gold Marketing di SkinHarmony Smart Desk con Corelia come motore decisionale.",
+      "Sei AI Gold Marketing di SkinHarmony Smart Desk con Universal Core come motore decisionale.",
       "Rifinisci azioni recall gia generate da dati reali.",
       "Non inventare dati non presenti.",
       "Non promettere risultati medici o terapeutici.",

@@ -986,7 +986,7 @@ const GOLD_DECISION_WEIGHTS = Object.freeze({
   centro: { need: 1.1, value: 1.2, urgency: 0.8, coherence: 1.0, friction: 1.3, bias: -1.1 }
 });
 
-// Corelia Decision Engine: layer premium sopra i dati del gestionale.
+// Universal Core Decision Engine: layer premium sopra i dati del gestionale.
 // Non e' usato dal Core operativo Base/Silver e non sostituisce CRUD, agenda, cassa o report.
 function sigmoid(value) {
   return 1 / (1 + Math.exp(-Number(value || 0)));
@@ -3337,11 +3337,11 @@ class DesktopMirrorService {
         action: Number(business.unlinkedPayments || 0) > 0 ? "VERIFY" : "OK"
       },
       goldEngine: {
-        engineName: "Corelia",
-        runtimeStack: ["V0", "V2", "V7"],
+        engineName: "Universal Core",
+        runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
         engineLayer: "gold_decision_engine",
-        engineVersion: "corelia_state_v1",
-        enterpriseLayer: "corelia_enterprise_v1",
+        engineVersion: "universal_core_state_v1",
+        enterpriseLayer: "universal_core_enterprise_v1",
         rule: "Gold legge Gold State Layer e mantiene fallback raw.",
         inventory: {
           source: "gold_state",
@@ -3518,7 +3518,7 @@ class DesktopMirrorService {
       },
       {
         key: "gold_engine",
-        title: "Corelia Decision Engine",
+        title: "Universal Core Decision Engine",
         items: [primaryItem, ...secondaryItems].slice(0, 4)
       },
       {
@@ -9893,7 +9893,7 @@ class DesktopMirrorService {
     if (contactClass.includes("mantenimento")) {
       return { key: "mantenimento", label: "Mantenimento", type: "mantenimento" };
     }
-    return { key: "reminder_appuntamento", label: "Reminder appuntamento", type: "reminder" };
+    return { key: "reminder_appuntamento", label: "Promemoria appuntamento", type: "reminder" };
   }
 
   buildGoldWhatsappMessage(client = {}, suggestion = {}, overrideMessage = "") {
@@ -10639,11 +10639,11 @@ class DesktopMirrorService {
       goldEnabled,
       silverCoreEnabled,
       currentPlan: plan,
-      version: "corelia_enterprise_v1",
-      goldEngineVersion: "corelia_phi_multi_domain_v1",
-      decisionMatrixVersion: "corelia_decision_matrix_v1",
-      engineName: "Corelia",
-      runtimeStack: ["V0", "V2", "V7"],
+      version: "universal_core_enterprise_v1",
+      goldEngineVersion: "universal_core_phi_multi_domain_v1",
+      decisionMatrixVersion: "universal_core_decision_matrix_v1",
+      engineName: "Universal Core",
+      runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
       progressiveIntelligence,
       features: {
         hasDecisionMatrix: goldEnabled,
@@ -12077,12 +12077,12 @@ class DesktopMirrorService {
         cached: false,
         cacheTtlMs: SNAPSHOT_CACHE_TTL_MS,
         freshness: "fresh",
-        rule: "Corelia comprime e ordina il campo, AI Gold lo espone in forma operativa.",
+        rule: "Universal Core comprime e ordina il campo, AI Gold lo espone in forma operativa.",
         dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session)))
       },
       blockMeta: {
         policyVersion: "2026-04-16-update-modes",
-        rule: "Live solo operativo immediato; event-driven per sintesi; timeout/batch per analisi pesanti; manuale per verifiche; Corelia resta read-first.",
+        rule: "Live solo operativo immediato; event-driven per sintesi; timeout/batch per analisi pesanti; manuale per verifiche; Universal Core resta read-first.",
         modes: UPDATE_MODES,
         policies: ANALYTICS_UPDATE_POLICIES,
         realtime: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.REALTIME).map(([key]) => key),
@@ -12114,10 +12114,10 @@ class DesktopMirrorService {
       economic: economicReading,
       goldEngine: {
         engineLayer: "gold_decision_engine",
-        engineVersion: "corelia_phi_multi_domain_v1",
-        enterpriseLayer: "corelia_enterprise_v1",
-        engineName: "Corelia",
-        runtimeStack: ["V0", "V2", "V7"],
+        engineVersion: "universal_core_phi_multi_domain_v1",
+        enterpriseLayer: "universal_core_enterprise_v1",
+        engineName: "Universal Core",
+        runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
         enterpriseRule: "Gold Enterprise ordina con storico, rischio esplicito, valore atteso, costo opportunita, utilita netta, simulazione V1 e learning bayesiano sugli outcome.",
         temporalLayer: "gold_temporal_v1",
         temporalMode: "test_parallel",
@@ -12288,7 +12288,7 @@ class DesktopMirrorService {
         level: item.band === "alta" ? "critical" : item.band === "media" ? "warning" : item.band === "bassa" ? "info" : "success",
         area: item.domain,
         conclusion: item.explanationShort || item.output || "Segnale Gold",
-        reason: item.explanationLong || item.suggestedAction || "Priorità calcolata da Corelia Decision Engine.",
+        reason: item.explanationLong || item.suggestedAction || "Priorità calcolata da Universal Core Decision Engine.",
         details: `Necessità ${Math.round(Number(item.factors?.need || 0) * 100)} · Valore ${Math.round(Number(item.factors?.value || 0) * 100)} · Urgenza ${Math.round(Number(item.factors?.urgency || 0) * 100)} · Coerenza ${Math.round(Number(item.factors?.coherence || 0) * 100)} · Frizione ${Math.round(Number(item.factors?.friction || 0) * 100)}`,
         impactCents: Number(item.amountCents || item.revenueCents || 0),
         riskCents: 0,
@@ -12359,7 +12359,7 @@ class DesktopMirrorService {
       },
       {
         key: "gold_engine",
-        title: "Corelia Decision Engine",
+        title: "Universal Core Decision Engine",
         items: goldEnginePriorityItems
       },
       {
