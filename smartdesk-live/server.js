@@ -8,6 +8,7 @@ const { CoreliaBridge } = require("./src/corelia/CoreliaBridge");
 const { NyraDialogueAdapter } = require("./src/nyra/NyraDialogueAdapter");
 const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter");
 const { WhatsappService } = require("./src/WhatsappService");
+const { SuiteAppKeyBridge } = require("./src/SuiteAppKeyBridge");
 
 const app = express();
 let service = null;
@@ -15,6 +16,7 @@ let assistantService = null;
 let coreliaBridge = null;
 let nyraDialogue = null;
 let whatsappService = null;
+let suiteAppKeyBridge = null;
 const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
 
@@ -545,7 +547,7 @@ function verifyWooCommerceWebhook(req) {
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SkinHarmony-Bridge-Key");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SkinHarmony-Bridge-Key, X-SkinHarmony-Bridge");
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
@@ -804,6 +806,53 @@ app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
     res.status(400).json({
       success: false,
       message: error instanceof Error ? error.message : "Webhook WhatsApp non gestibile"
+    });
+  }
+});
+
+app.get("/api/suite-bridge/status", (_req, res) => {
+  res.json({
+    success: true,
+    service: "skinharmony-smartdesk-live",
+    bridge: suiteAppKeyBridge.status()
+  });
+});
+
+app.post("/api/suite-bridge/activate", async (req, res) => {
+  try {
+    const result = await suiteAppKeyBridge.activate(req.body || {});
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "suite_bridge_activate_failed",
+      message: error instanceof Error ? error.message : "Attivazione App Key non riuscita."
+    });
+  }
+});
+
+app.post("/api/suite-bridge/config-bundle", async (req, res) => {
+  try {
+    const result = await suiteAppKeyBridge.configBundle(req.body || {});
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "suite_bridge_config_failed",
+      message: error instanceof Error ? error.message : "Bundle configurazione non disponibile."
+    });
+  }
+});
+
+app.post("/api/suite-bridge/pulse", async (req, res) => {
+  try {
+    const result = await suiteAppKeyBridge.pulse(req.body || {});
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "suite_bridge_pulse_failed",
+      message: error instanceof Error ? error.message : "Pulse Suite non inviato."
     });
   }
 });
@@ -1699,11 +1748,13 @@ async function bootstrap() {
   coreliaBridge = new CoreliaBridge(service);
   nyraDialogue = new NyraDialogueAdapter();
   whatsappService = new WhatsappService();
+  suiteAppKeyBridge = new SuiteAppKeyBridge();
 
   app.listen(port, () => {
     console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
     console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
     console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
+    console.log(`[SmartDesk] Suite App Key Bridge: ${suiteAppKeyBridge.isConfigured() ? suiteAppKeyBridge.baseUrl : "non configurato"}`);
   });
 }
 
