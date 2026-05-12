@@ -5627,6 +5627,19 @@ function nyraWorldPaperAutoStatusPayload() {
   };
 }
 
+function resetNyraWorldPaperAutoStateArtifacts() {
+  nyraWorldPaperAutoState.running = false;
+  nyraWorldPaperAutoState.lastStartedAt = "";
+  nyraWorldPaperAutoState.lastFinishedAt = "";
+  nyraWorldPaperAutoState.lastError = "";
+  nyraWorldPaperAutoState.lastResult = null;
+  nyraWorldPaperAutoState.cyclesCompleted = 0;
+  if (!nyraWorldPaperAutoState.enabled) {
+    nyraWorldPaperAutoState.nextRunAt = "";
+  }
+  saveNyraWorldPaperAutoState();
+}
+
 app.get("/api/nyra/finance/world-paper", (_req, res) => {
   const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
   const worldScan = readJson(nyraWorldMarketScanPath, null);
@@ -5649,9 +5662,11 @@ app.post("/api/nyra/finance/world-paper/reset", (req, res) => {
   const worldScan = readJson(nyraWorldMarketScanPath, null);
   ensureWorldPaperBenchmark(portfolio, worldScan);
   writeJson(nyraWorldPaperPortfolioPath, portfolio);
+  resetNyraWorldPaperAutoStateArtifacts();
   const learning = buildWorldPaperLearningPolicy(portfolio);
   const treasury = buildUnifiedFinanceTreasury(portfolio);
   const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan });
+  buildNyraRenderAutopilotReport();
   res.json({
     ok: true,
     portfolio,
