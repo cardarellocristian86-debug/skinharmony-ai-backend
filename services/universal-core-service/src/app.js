@@ -8,6 +8,7 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
+import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
 import {
   BRANCH_PACKAGES,
@@ -18,7 +19,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.1-ramo-testo";
+const SERVICE_VERSION = "0.3.2-language-guard";
 
 function nowIso() {
   return new Date().toISOString();
@@ -425,11 +426,19 @@ function buildTextGuardIssuesFromClaimShield(text, data = {}) {
   }));
 }
 
-function buildTextBranchInput(req, payload = {}) {
+async function buildTextBranchInput(req, payload = {}) {
   const data = typeof payload.data === "object" && payload.data ? payload.data : payload;
   const text = textValue(data.text || data.content || data.copy || data.draft);
   const providedIssues = normalizeTextGuardIssues(data.issues);
-  const issues = providedIssues.length ? providedIssues : buildTextGuardIssuesFromClaimShield(text, data);
+  const claimIssues = buildTextGuardIssuesFromClaimShield(text, data);
+  const issues = await detectLanguageGuardIssues({
+    text,
+    locale: data.locale || payload.locale || "it",
+    existingIssues: [...providedIssues, ...claimIssues],
+    options: {
+      useLanguageTool: data.use_languagetool ?? payload.use_languagetool,
+    },
+  });
   return {
     request_id: textValue(data.request_id || payload.request_id, `text_guard_${crypto.randomUUID()}`),
     generated_at: textValue(data.generated_at || payload.generated_at, nowIso()),
@@ -1015,14 +1024,14 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["ramo_testo"]);
     if (!resolution.selected_branches.includes("ramo_testo")) {
       audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch: "ramo_testo" });
       return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
     }
 
-    const input = buildTextBranchInput(req, req.body || {});
+    const input = await buildTextBranchInput(req, req.body || {});
     const decision = runTextBranch(input);
     audit.append("core_content_guard_checked", {
       tenant_id: req.tenantId,
@@ -1055,6 +1064,11 @@ export function createUniversalCoreService(options = {}) {
         execution_allowed: false,
         publish_requires_owner_confirmation: true,
         mode: "content_guard_review_only",
+      },
+      language_guard: {
+        supported_locales: supportedLanguageGuardLocales(),
+        local_dictionary_enabled: true,
+        languagetool_enabled: process.env.LANGUAGETOOL_DISABLED === "1" || process.env.NODE_ENV === "test" ? false : true,
       },
     });
   });

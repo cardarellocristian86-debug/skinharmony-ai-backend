@@ -195,10 +195,11 @@ try {
     domain: "suite",
     object_id: "waas-page",
     key_path: "hero.body",
-    text: "Questo trattamento garantisce guarigione definitiva.",
+    text: "Questa paggina garantisce guarigione definitiva.",
   }, connectorKey);
   assert(textGuard.status === 200 && textGuard.json.branch === "ramo_testo", "content guard endpoint failed");
   assert(textGuard.json.decision?.publish_safe === false, "content guard publish safety failed");
+  assert(textGuard.json.issues?.some((issue) => issue.type === "spelling" && issue.original.toLowerCase() === "paggina"), "content guard spelling dictionary failed");
   assert(textGuard.json.guardrail?.execution_allowed === false, "content guard guardrail failed");
   mark("content_guard_ramo_testo", true, {
     state: textGuard.json.decision.state,
@@ -206,6 +207,33 @@ try {
     publish_safe: textGuard.json.decision.publish_safe,
     issue_count: textGuard.json.issue_count,
   });
+
+  const textGuardEnglish = await api(base, "POST", "/v1/content-guard/check", {
+    tenant_id: "tenant_demo_skinharmony",
+    locale: "en",
+    context: "manual_review",
+    domain: "manual",
+    text: "Please recieve the adress.",
+  }, connectorKey);
+  assert(textGuardEnglish.status === 200 && textGuardEnglish.json.issues?.some((issue) => issue.original.toLowerCase() === "recieve"), "english dictionary failed");
+
+  const textGuardFrench = await api(base, "POST", "/v1/content-guard/check", {
+    tenant_id: "tenant_demo_skinharmony",
+    locale: "fr",
+    context: "manual_review",
+    domain: "manual",
+    text: "La qualite du developpement.",
+  }, connectorKey);
+  assert(textGuardFrench.status === 200 && textGuardFrench.json.issues?.some((issue) => issue.original.toLowerCase() === "qualite"), "french dictionary failed");
+
+  const textGuardSpanish = await api(base, "POST", "/v1/content-guard/check", {
+    tenant_id: "tenant_demo_skinharmony",
+    locale: "es",
+    context: "manual_review",
+    domain: "manual",
+    text: "La informacion de gestion.",
+  }, connectorKey);
+  assert(textGuardSpanish.status === 200 && textGuardSpanish.json.issues?.some((issue) => issue.original.toLowerCase() === "informacion"), "spanish dictionary failed");
 
   const financeTestBranch = await api(base, "POST", "/v1/branches/nyra_finance_beauty_test/analyze", {
     tenant_id: "tenant_demo_skinharmony",
