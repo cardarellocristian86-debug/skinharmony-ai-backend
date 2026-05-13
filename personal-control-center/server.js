@@ -790,6 +790,7 @@ const nyraWorldPaperAutoState = {
 };
 
 let nyraWorldPaperAutoTimer = null;
+let nyraWorldPaperAutoWatchdogTimer = null;
 
 function saveNyraWorldPaperAutoState() {
   writeJson(nyraWorldPaperAutoStatePath, {
@@ -5609,6 +5610,25 @@ function scheduleNyraWorldPaperAutoLoop(immediate = false) {
   if (immediate) runNyraWorldPaperAutoCycle().catch(() => {});
 }
 
+function ensureNyraWorldPaperAutoLoopAlive() {
+  if (!nyraWorldPaperAutoState.enabled) return;
+  const nextRunAtMs = Date.parse(nyraWorldPaperAutoState.nextRunAt || "");
+  const staleNextRun = Number.isFinite(nextRunAtMs) && nextRunAtMs > 0 && nextRunAtMs < (Date.now() - 90_000);
+  const missingTimer = !nyraWorldPaperAutoTimer;
+  if (nyraWorldPaperAutoState.running) return;
+  if (!missingTimer && !staleNextRun) return;
+  scheduleNyraWorldPaperAutoLoop(staleNextRun);
+}
+
+function startNyraWorldPaperAutoWatchdog() {
+  if (nyraWorldPaperAutoWatchdogTimer) clearInterval(nyraWorldPaperAutoWatchdogTimer);
+  nyraWorldPaperAutoWatchdogTimer = setInterval(() => {
+    try {
+      ensureNyraWorldPaperAutoLoopAlive();
+    } catch (_error) {}
+  }, 60_000);
+}
+
 function nyraWorldPaperAutoStatusPayload() {
   const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
   const worldScan = readJson(nyraWorldMarketScanPath, null);
@@ -6544,6 +6564,7 @@ const server = app.listen(port, host, () => {
   applyNyraWorldPaperAutoEnvDefaults();
   const runPaperOnBoot = nyraWorldPaperAutoState.enabled && ["1", "true", "yes", "on"].includes(String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "").trim().toLowerCase());
   scheduleNyraWorldPaperAutoLoop(runPaperOnBoot);
+  startNyraWorldPaperAutoWatchdog();
   scheduleNyraFinanceLiveLoop(false);
 });
 
