@@ -67,12 +67,24 @@ try {
   assert(generated.json.record.preset === "suite_connector", "key preset failed");
   mark("key_generate", true, { key_id: generated.json.record.key_id, preset: generated.json.record.preset, scopes: generated.json.record.allowed_scopes });
 
+  const codexGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_demo_skinharmony",
+    brand_scope: "skinharmony",
+    preset: "codex_automation",
+    tier: "internal",
+    label: "Codex branch package test",
+  });
+  assert(codexGenerated.status === 201 && codexGenerated.json.key, "codex key generation failed");
+  const codexKey = codexGenerated.json.key;
+  mark("codex_key_generate", true, { key_id: codexGenerated.json.record.key_id, tier: codexGenerated.json.record.metadata.tier });
+
   const presets = await api(base, "GET", "/v1/keys/presets", undefined);
   assert(presets.status === 200 && presets.json.presets?.codex_automation?.scopes?.includes("automation:codex"), "key presets list failed");
   mark("key_presets", true, { presets: Object.keys(presets.json.presets) });
 
   const tenant = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
   assert(tenant.status === 200 && tenant.json.tenant_id === "tenant_demo_skinharmony", "tenant status failed");
+  assert(tenant.json.active_branches?.includes("suite_governance"), "tenant active branches missing suite governance");
   mark("tenant_status", true, tenant.json);
 
   const decision = await api(base, "POST", "/v1/decision", {
@@ -120,7 +132,28 @@ try {
 
   const branches = await api(base, "GET", "/v1/branches?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
-  mark("branches_registry", true, { branches: Object.keys(branches.json.branches) });
+  assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
+  mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
+
+  const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=front_desk_base,nyra_finance_beauty_test", undefined, connectorKey);
+  assert(authorizedBranches.status === 200 && authorizedBranches.json.branch_package?.selected_branches?.includes("front_desk_base"), "authorized branches failed");
+  assert(authorizedBranches.json.branch_package?.denied_branches?.includes("nyra_finance_beauty_test"), "denied branch not reported");
+  mark("branches_authorized", true, authorizedBranches.json.branch_package);
+
+  const codexContext = await api(base, "POST", "/v1/codex/context", {
+    tenant_id: "tenant_demo_skinharmony",
+    task: "marketing_recall",
+    user_input: "Ho 50 clienti che non vengono da 2 mesi",
+    branches: ["front_desk_base", "operations_silver", "executive_gold", "nyra_finance_beauty_test"],
+  }, codexKey);
+  assert(codexContext.status === 200 && codexContext.json.context?.selected_branches?.includes("executive_gold"), "codex context failed");
+  assert(codexContext.json.context?.selected_branches?.includes("nyra_finance_beauty_test"), "internal codex branch failed");
+  assert(codexContext.json.guardrail?.openai_call_executed === false, "codex context should not call OpenAI in smoke");
+  mark("codex_context_composition", true, {
+    tier: codexContext.json.context.tier,
+    selected_branches: codexContext.json.context.selected_branches,
+    rule_count: codexContext.json.context.deterministic_context.rule_count,
+  });
 
   const marketingBranch = await api(base, "POST", "/v1/branches/marketing_copy/analyze", {
     tenant_id: "tenant_demo_skinharmony",
@@ -161,7 +194,7 @@ try {
       volatility: 70,
       commercial_relevance: 48,
     },
-  }, connectorKey);
+  }, codexKey);
   assert(financeTestBranch.status === 200 && financeTestBranch.json.guardrail.mode === "test_only" && financeTestBranch.json.branch_output?.production_connected === false, "finance test branch failed");
   mark("branch_nyra_finance_test", true, {
     mode: financeTestBranch.json.guardrail.mode,
@@ -235,6 +268,8 @@ try {
 
   const revoke = await api(base, "POST", "/v1/keys/revoke", { key_id: generated.json.record.key_id });
   assert(revoke.status === 200 && revoke.json.key.status === "revoked", "revoke failed");
+  const revokeCodex = await api(base, "POST", "/v1/keys/revoke", { key_id: codexGenerated.json.record.key_id });
+  assert(revokeCodex.status === 200 && revokeCodex.json.key.status === "revoked", "codex revoke failed");
   const denied = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
   assert(denied.status === 401, "revoked key still works");
   mark("key_revoke", true, { denied_status: denied.status, error: denied.json.error });

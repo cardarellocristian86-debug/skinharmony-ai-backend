@@ -8,10 +8,16 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
+import {
+  BRANCH_PACKAGES,
+  composeBranchContext,
+  deterministicBranchRegistry,
+  resolveBranchesForKey,
+} from "../branches/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.2.0-render-ready";
+const SERVICE_VERSION = "0.3.0-branch-packages";
 
 function nowIso() {
   return new Date().toISOString();
@@ -299,45 +305,53 @@ function arrayValue(value, max = 20) {
 
 function branchRegistry() {
   return {
+    ...deterministicBranchRegistry(),
     beauty_market: {
       label: "Beauty Market Intelligence",
       domain: "market",
+      tier: "network",
       production_status: "advisory",
       description: "Legge segnali mercato beauty/wellness e produce postura commerciale, senza trading e senza dati finanziari sensibili.",
     },
     marketing_copy: {
       label: "Nyra Marketing Copy",
       domain: "marketing",
+      tier: "network",
       production_status: "advisory",
       description: "Prepara brief copywriting e testi da revisionare con Claim Guard, non pubblica automaticamente.",
     },
     cosmetic_chemistry: {
       label: "Cosmetic Chemistry Positioning",
       domain: "product",
+      tier: "network",
       production_status: "advisory",
       description: "Aiuta a posizionare attivi cosmetici in modo prudente, senza claim medici o terapeutici.",
     },
     technology_market: {
       label: "Technology Trend Intelligence",
       domain: "technology",
+      tier: "network",
       production_status: "advisory",
       description: "Valuta domanda, maturita e messaggio commerciale per tecnologie beauty/wellness.",
     },
     business_strategy: {
       label: "Business Strategy",
       domain: "strategy",
+      tier: "network",
       production_status: "advisory",
       description: "Ordina priorita commerciali, canale, CRM e prossime azioni per owner/manager.",
     },
     translation_governance: {
       label: "Translation Governance",
       domain: "translation",
+      tier: "network",
       production_status: "advisory",
       description: "Valuta payload traducibili, readiness e rischio di traduzione. Non traduce HTML finale.",
     },
     nyra_finance_beauty_test: {
       label: "Nyra Finance Beauty Test",
       domain: "market_test",
+      tier: "internal",
       production_status: "test_only",
       description: "Area separata per correlare segnali finanziari/mercato beauty. Non entra nel prodotto operativo.",
     },
@@ -722,12 +736,15 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/tenant/status", createAuth(keyStore, audit), (req, res) => {
+    const branchResolution = resolveBranchesForKey(req.coreKey);
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       brand_scope: req.coreKey.brand_scope,
       key_id: req.coreKey.key_id,
       key_type: req.coreKey.key_type,
+      tier: branchResolution.tier,
+      active_branches: branchResolution.allowed_branches,
       allowed_scopes: req.coreKey.allowed_scopes,
       status: req.coreKey.status,
       expires_at: req.coreKey.expires_at,
@@ -839,15 +856,68 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey);
     res.json({
       ok: true,
       branches: branchRegistry(),
+      packages: BRANCH_PACKAGES,
+      tenant_package: resolution,
       rule: "Ogni ramo produce decisioni advisory/read-only. Azioni operative e pubblicazione richiedono conferma owner.",
+    });
+  });
+
+  app.get("/v1/branches/authorized", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const requested = typeof req.query.branches === "string" && req.query.branches.trim()
+      ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
+      : [];
+    const resolution = resolveBranchesForKey(req.coreKey, requested);
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      branch_package: resolution,
+      branches: Object.fromEntries(resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value))),
+    });
+  });
+
+  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+    const requestedBranches = Array.isArray(req.body?.branches)
+      ? req.body.branches
+      : Array.isArray(req.body?.requested_branches)
+        ? req.body.requested_branches
+        : [];
+    const context = composeBranchContext({
+      keyRecord: req.coreKey,
+      requestedBranches,
+      task: req.body?.task || "",
+      userInput: req.body?.user_input || req.body?.input || "",
+      locale: req.body?.locale || "it",
+    });
+    audit.append("core_codex_context_composed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      tier: context.tier,
+      selected_branches: context.selected_branches,
+      denied_branches: context.denied_branches,
+    });
+    res.json({
+      ok: true,
+      context,
+      guardrail: {
+        destructive_automation: false,
+        execution_allowed: false,
+        openai_call_executed: false,
+        mode: "context_composition_only",
+      },
     });
   });
 
   app.post("/v1/branches/:branch/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branch = String(req.params.branch || "").trim();
+    const resolution = resolveBranchesForKey(req.coreKey, [branch]);
+    if (!resolution.selected_branches.includes(branch)) {
+      audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch });
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
     const payload = buildBranchPayload(branch, { ...(req.body || {}), tenant_id: req.tenantId });
     if (!payload) return publicError(res, 404, "branch_not_found");
     payload.core_input.context.tenant_id = req.tenantId;

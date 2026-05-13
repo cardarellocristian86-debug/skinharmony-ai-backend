@@ -61,7 +61,20 @@ export function createKeyStore(storageRoot, audit) {
       expires_at: input.expires_at || null,
       last_used_at: null,
       revoked_at: null,
-      metadata: typeof input.metadata === "object" && input.metadata ? input.metadata : {},
+      metadata: {
+        ...(typeof input.metadata === "object" && input.metadata ? input.metadata : {}),
+        tier: String(input.tier || input.metadata?.tier || preset?.tier || "").trim() || undefined,
+        active_branches: Array.isArray(input.active_branches)
+          ? input.active_branches.map(String)
+          : Array.isArray(input.metadata?.active_branches)
+            ? input.metadata.active_branches.map(String)
+            : undefined,
+        branch_limits: typeof input.branch_limits === "object" && input.branch_limits
+          ? input.branch_limits
+          : typeof input.metadata?.branch_limits === "object" && input.metadata.branch_limits
+            ? input.metadata.branch_limits
+            : undefined,
+      },
     };
 
     if (!record.tenant_id) {
