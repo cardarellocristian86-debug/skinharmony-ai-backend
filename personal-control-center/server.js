@@ -5347,6 +5347,99 @@ function executeWorldPaperStep(body = {}) {
       Number(row?.risk_score || 0) <= maxRiskForNewEntry &&
       Number(thesis?.confidence || 0) >= 48 &&
       Number(thesis?.expected_value_score || 0) >= 8;
+    const currentSummary = summarizeWorldPaperPortfolio(portfolio, scan);
+    const recentHoldOrSkipCount = portfolio.trades
+      .slice(0, 20)
+      .filter((trade) => /(hold|pause|skip)/i.test(String(trade.type || ""))).length;
+    const canCoreReengage =
+      !existing &&
+      Number(currentSummary.positions_count || 0) === 0 &&
+      Number(currentSummary.alpha_vs_qqq_pct || 0) <= -0.25 &&
+      recentHoldOrSkipCount >= 5;
+    let relaxedProbeRow = null;
+    if (!disciplinedAutoEntry && canCoreReengage) {
+      const thesisPolicy = loadWorldThesisLearningPolicy();
+      const evaluatedCandidates = [row, ...ranked]
+        .filter(Boolean)
+        .map((candidate) => {
+          const candidateHistory = assetHistoryForDiversification?.by_symbol?.[candidate.symbol];
+          const candidateThesis = candidate.multiverse_thesis || buildWorldMultiverseThesis(candidate, riskBudget, candidateHistory, thesisPolicy);
+          const candidateFeeEdge = candidate.fee_edge || worldPaperHasFeeEdge(candidate, candidateThesis, feeRate, slippageRate, candidateThesis?.thesis_valid ? 1.2 : 1.6);
+          return {
+            row: {
+              ...candidate,
+              multiverse_thesis: candidateThesis,
+              fee_edge: candidateFeeEdge
+            },
+            thesis: candidateThesis,
+            feeEdge: candidateFeeEdge
+          };
+        });
+      relaxedProbeRow = evaluatedCandidates.find(({ row: candidate, thesis: candidateThesis, feeEdge: candidateFeeEdge }) => (
+        String(candidate?.action || "").toLowerCase() !== "avoid" &&
+        candidateFeeEdge.ok &&
+        Number(candidate?.edge_score || 0) >= 58 &&
+        Number(candidate?.risk_score || 0) <= 58 &&
+        Number(candidateThesis?.expected_value_score || 0) >= 0 &&
+        (
+          (candidateThesis?.thesis_valid && Number(candidateThesis?.confidence || 0) >= 44) ||
+          Number(candidate?.edge_score || 0) >= 66
+        )
+      ))?.row || null;
+    }
+    if (!disciplinedAutoEntry && relaxedProbeRow) {
+      const probeBudget = Math.min(
+        Number(portfolio.cash_eur || 0),
+        Number(treasury.paperCashAvailableEur || 0),
+        capital * Math.min(maxAllocation * newPositionMultiplier, 0.012)
+      );
+      if (probeBudget >= 100) {
+        row = relaxedProbeRow;
+        const probePrice = Number(row.last_price || 0) * (1 + slippageRate);
+        const fee = probeBudget * feeRate;
+        const netBudget = probeBudget - fee;
+        const quantity = probePrice > 0 ? netBudget / probePrice : 0;
+        const marketValue = quantity * Number(row.last_price || 0);
+        const position = {
+          symbol: row.symbol,
+          name: row.name,
+          class: row.class,
+          region: row.region,
+          quantity: Number(quantity.toFixed(8)),
+          entry_price: Number(probePrice.toFixed(6)),
+          last_price: Number(row.last_price || 0),
+          cost_basis_eur: Number(probeBudget.toFixed(2)),
+          market_value_eur: Number(marketValue.toFixed(2)),
+          pnl_eur: Number((marketValue - probeBudget).toFixed(2)),
+          pnl_pct: probeBudget > 0 ? Number((((marketValue / probeBudget) - 1) * 100).toFixed(4)) : 0,
+          opened_at: now,
+          gear: riskBudget.gear,
+          profile: riskBudget.profile,
+          max_allocation: Math.min(maxAllocation * newPositionMultiplier, 0.012),
+          last_action: row.action,
+          multiverse_thesis: row.multiverse_thesis || null,
+          reason: `${row.reason}; core reengage probe per evitare stallo totale contro QQQ`
+        };
+        portfolio.cash_eur = Number((Number(portfolio.cash_eur || 0) - probeBudget).toFixed(2));
+        portfolio.positions.push(position);
+        portfolio.trades.unshift({
+          at: now,
+          type: "core_reengage_probe_buy",
+          symbol: row.symbol,
+          gear: riskBudget.gear,
+          profile: riskBudget.profile,
+          budget_eur: Number(probeBudget.toFixed(2)),
+          fee_eur: Number(fee.toFixed(2)),
+          slippage_pct: Number((slippageRate * 100).toFixed(2)),
+          price: position.entry_price,
+          reason: `Nyra era sottoesposta e sotto QQQ con ${recentHoldOrSkipCount} hold/skip recenti: apre micro-probe disciplinato su ${row.symbol} per non restare a 0% deployata.`
+        });
+        portfolio.updated_at = now;
+        writeJson(nyraWorldPaperPortfolioPath, portfolio);
+        const policy = buildWorldPaperLearningPolicy(portfolio);
+        return { ok: true, action: "core_reengage_probe_buy", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
+      }
+    }
     if (!disciplinedAutoEntry) {
       portfolio.trades.unshift({
         at: now,
