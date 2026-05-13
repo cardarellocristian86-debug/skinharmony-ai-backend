@@ -9,6 +9,7 @@ import { branchTechnologyMarket } from "./branch-technology-market.js";
 import { branchBusinessStrategy } from "./branch-business-strategy.js";
 import { branchTranslationGovernance } from "./branch-translation-governance.js";
 import { branchNyraFinanceBeautyTest } from "./branch-nyra-finance-beauty-test.js";
+import { branchRamoTesto } from "./branch-ramo-testo.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -21,6 +22,7 @@ const BRANCHES = [
   branchTechnologyMarket,
   branchBusinessStrategy,
   branchTranslationGovernance,
+  branchRamoTesto,
   branchNyraFinanceBeautyTest,
 ];
 
@@ -28,9 +30,9 @@ export const BRANCH_PACKAGES = Object.freeze({
   base: ["front_desk_base"],
   silver: ["front_desk_base", "operations_silver"],
   gold: ["front_desk_base", "operations_silver", "executive_gold"],
-  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance"],
-  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance"],
-  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "nyra_finance_beauty_test"],
+  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo"],
+  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo"],
+  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo", "nyra_finance_beauty_test"],
 });
 
 export function deterministicBranchRegistry() {

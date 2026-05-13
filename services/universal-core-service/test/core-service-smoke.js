@@ -133,6 +133,7 @@ try {
   const branches = await api(base, "GET", "/v1/branches?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
+  assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
 
   const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=front_desk_base,nyra_finance_beauty_test", undefined, connectorKey);
@@ -185,6 +186,25 @@ try {
   mark("branch_cosmetic_chemistry", true, {
     state: chemistryBranch.json.output.state,
     research_required: chemistryBranch.json.branch_output.web_research_required,
+  });
+
+  const textGuard = await api(base, "POST", "/v1/content-guard/check", {
+    tenant_id: "tenant_demo_skinharmony",
+    locale: "it",
+    context: "page_copy",
+    domain: "suite",
+    object_id: "waas-page",
+    key_path: "hero.body",
+    text: "Questo trattamento garantisce guarigione definitiva.",
+  }, connectorKey);
+  assert(textGuard.status === 200 && textGuard.json.branch === "ramo_testo", "content guard endpoint failed");
+  assert(textGuard.json.decision?.publish_safe === false, "content guard publish safety failed");
+  assert(textGuard.json.guardrail?.execution_allowed === false, "content guard guardrail failed");
+  mark("content_guard_ramo_testo", true, {
+    state: textGuard.json.decision.state,
+    risk: textGuard.json.decision.risk_band,
+    publish_safe: textGuard.json.decision.publish_safe,
+    issue_count: textGuard.json.issue_count,
   });
 
   const financeTestBranch = await api(base, "POST", "/v1/branches/nyra_finance_beauty_test/analyze", {

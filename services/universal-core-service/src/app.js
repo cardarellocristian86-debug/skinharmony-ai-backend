@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
 import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branches/flowcore/src/index.ts";
+import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
@@ -17,7 +18,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.0-branch-packages";
+const SERVICE_VERSION = "0.3.1-ramo-testo";
 
 function nowIso() {
   return new Date().toISOString();
@@ -348,6 +349,13 @@ function branchRegistry() {
       production_status: "advisory",
       description: "Valuta payload traducibili, readiness e rischio di traduzione. Non traduce HTML finale.",
     },
+    ramo_testo: {
+      label: "Ramo Testo / Content Guard",
+      domain: "content_guard",
+      tier: "network",
+      production_status: "advisory",
+      description: "Valuta qualita testo, traduzioni, claim risk, brand tone e publish safety. Non pubblica automaticamente.",
+    },
     nyra_finance_beauty_test: {
       label: "Nyra Finance Beauty Test",
       domain: "market_test",
@@ -355,6 +363,86 @@ function branchRegistry() {
       production_status: "test_only",
       description: "Area separata per correlare segnali finanziari/mercato beauty. Non entra nel prodotto operativo.",
     },
+  };
+}
+
+function normalizeTextGuardSeverity(value) {
+  const severity = String(value || "").toLowerCase();
+  return ["low", "medium", "high", "blocker"].includes(severity) ? severity : "medium";
+}
+
+function normalizeTextGuardType(value) {
+  const type = String(value || "").toLowerCase();
+  const allowed = [
+    "spelling",
+    "accent",
+    "grammar",
+    "punctuation",
+    "style",
+    "readability",
+    "glossary",
+    "translation_mismatch",
+    "claim_risk",
+    "brand_tone",
+    "publish_safety",
+  ];
+  return allowed.includes(type) ? type : "style";
+}
+
+function normalizeTextGuardIssues(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 100).map((issue, index) => {
+    const original = textValue(issue?.original || issue?.term || issue?.text || "");
+    return {
+      id: textValue(issue?.id, `issue_${index + 1}`),
+      type: normalizeTextGuardType(issue?.type),
+      severity: normalizeTextGuardSeverity(issue?.severity),
+      start: Number.isFinite(Number(issue?.start)) ? Number(issue.start) : 0,
+      end: Number.isFinite(Number(issue?.end)) ? Number(issue.end) : original.length,
+      original,
+      suggestions: Array.isArray(issue?.suggestions) ? issue.suggestions.slice(0, 5).map((item) => textValue(item)).filter(Boolean) : [],
+      message: textValue(issue?.message, "Elemento da revisionare"),
+      reason: textValue(issue?.reason, "Controllo Content Guard"),
+      safe_to_auto_apply: Boolean(issue?.safe_to_auto_apply) && normalizeTextGuardType(issue?.type) !== "claim_risk" && normalizeTextGuardType(issue?.type) !== "publish_safety",
+    };
+  });
+}
+
+function buildTextGuardIssuesFromClaimShield(text, data = {}) {
+  const claimResult = claimShieldCheck({ text, context: data.context || {} });
+  if (!claimResult.issues?.length) return [];
+  return claimResult.issues.map((issue, index) => ({
+    id: `claim_${index + 1}`,
+    type: issue.severity === "critical" ? "publish_safety" : "claim_risk",
+    severity: issue.severity === "critical" ? "blocker" : issue.severity === "high" ? "high" : "medium",
+    start: Math.max(0, text.toLowerCase().indexOf(String(issue.term || "").toLowerCase())),
+    end: Math.max(0, text.toLowerCase().indexOf(String(issue.term || "").toLowerCase())) + String(issue.term || "").length,
+    original: String(issue.term || ""),
+    suggestions: ["Riformulare con linguaggio prudente e approvazione owner."],
+    message: issue.message || "Claim da revisionare",
+    reason: "Claim Shield ha rilevato un rischio prima della pubblicazione.",
+    safe_to_auto_apply: false,
+  }));
+}
+
+function buildTextBranchInput(req, payload = {}) {
+  const data = typeof payload.data === "object" && payload.data ? payload.data : payload;
+  const text = textValue(data.text || data.content || data.copy || data.draft);
+  const providedIssues = normalizeTextGuardIssues(data.issues);
+  const issues = providedIssues.length ? providedIssues : buildTextGuardIssuesFromClaimShield(text, data);
+  return {
+    request_id: textValue(data.request_id || payload.request_id, `text_guard_${crypto.randomUUID()}`),
+    generated_at: textValue(data.generated_at || payload.generated_at, nowIso()),
+    locale: textValue(data.locale || payload.locale, "it"),
+    tenant_id: req.tenantId,
+    actor_id: textValue(data.actor_id || payload.actor_id),
+    context: textValue(data.context || payload.context, "manual_review"),
+    domain: textValue(data.domain || payload.domain, "manual"),
+    object_id: data.object_id ?? payload.object_id,
+    key_path: textValue(data.key_path || payload.key_path),
+    text,
+    source_text: textValue(data.source_text || payload.source_text),
+    issues,
   };
 }
 
@@ -465,6 +553,22 @@ function buildBranchPayload(branch, payload = {}) {
       item_count: items.length,
       unstable_item_count: unstableKeys,
       fallback_policy: "fallback_to_it",
+    };
+  } else if (branch === "ramo_testo") {
+    const text = textValue(data.text || data.content || data.copy || data.draft);
+    const providedIssues = normalizeTextGuardIssues(data.issues);
+    const issues = providedIssues.length ? providedIssues : buildTextGuardIssuesFromClaimShield(text, data);
+    if (!text) missing.push("text");
+    const highIssues = issues.filter((issue) => issue.severity === "high" || issue.severity === "blocker").length;
+    const claimIssues = issues.filter((issue) => issue.type === "claim_risk" || issue.type === "publish_safety").length;
+    addSignal("issue_severity", "Gravita problemi testo/content guard", Math.min(100, highIssues * 32 + claimIssues * 24), "content_guard", ["text"]);
+    addSignal("publish_safety", "Sicurezza pubblicazione testo", claimIssues ? 88 : 20, "content_guard", ["publish_safety"]);
+    branchOutput = {
+      text_context: textValue(data.context, "manual_review"),
+      issue_count: issues.length,
+      claim_issue_count: claimIssues,
+      publish_safe_advisory: issues.every((issue) => issue.type !== "claim_risk" && issue.type !== "publish_safety" && issue.severity !== "blocker"),
+      rule: "Ramo Testo produce review e suggested action; non salva, non pubblica e non corregge automaticamente.",
     };
   } else if (branch === "nyra_finance_beauty_test") {
     const beta = clampScore(data.beauty_market_correlation ?? data.correlation_score ?? 40);
@@ -907,6 +1011,50 @@ export function createUniversalCoreService(options = {}) {
         execution_allowed: false,
         openai_call_executed: false,
         mode: "context_composition_only",
+      },
+    });
+  });
+
+  app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["ramo_testo"]);
+    if (!resolution.selected_branches.includes("ramo_testo")) {
+      audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch: "ramo_testo" });
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
+
+    const input = buildTextBranchInput(req, req.body || {});
+    const decision = runTextBranch(input);
+    audit.append("core_content_guard_checked", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      issue_count: input.issues.length,
+      state: decision.state,
+      risk: decision.risk_band,
+      publish_safe: decision.publish_safe,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      branch: "ramo_testo",
+      decision,
+      issue_count: input.issues.length,
+      issues: input.issues.map((issue) => ({
+        id: issue.id,
+        type: issue.type,
+        severity: issue.severity,
+        start: issue.start,
+        end: issue.end,
+        original: issue.original,
+        suggestions: issue.suggestions,
+        message: issue.message,
+        reason: issue.reason,
+        safe_to_auto_apply: issue.safe_to_auto_apply,
+      })),
+      guardrail: {
+        destructive_automation: false,
+        execution_allowed: false,
+        publish_requires_owner_confirmation: true,
+        mode: "content_guard_review_only",
       },
     });
   });
