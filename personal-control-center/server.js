@@ -5378,12 +5378,20 @@ function executeWorldPaperStep(body = {}) {
       relaxedProbeRow = evaluatedCandidates.find(({ row: candidate, thesis: candidateThesis, feeEdge: candidateFeeEdge }) => (
         String(candidate?.action || "").toLowerCase() !== "avoid" &&
         candidateFeeEdge.ok &&
-        Number(candidate?.edge_score || 0) >= 58 &&
         Number(candidate?.risk_score || 0) <= 58 &&
-        Number(candidateThesis?.expected_value_score || 0) >= 0 &&
         (
           (candidateThesis?.thesis_valid && Number(candidateThesis?.confidence || 0) >= 44) ||
-          Number(candidate?.edge_score || 0) >= 66
+          (
+            Number(candidate?.edge_score || 0) >= 66 &&
+            Number(candidateThesis?.expected_value_score || 0) >= 0
+          ) ||
+          (
+            Number(candidate?.edge_score || 0) >= 90 &&
+            Number(candidate?.risk_score || 0) <= 25 &&
+            Number(candidateThesis?.confidence || 0) >= 68 &&
+            Number(candidateThesis?.expected_value_score || 0) >= -12 &&
+            Number(assetHistoryForDiversification?.by_symbol?.[candidate.symbol]?.knowledge_score || 0) >= 50
+          )
         )
       ))?.row || null;
     }
