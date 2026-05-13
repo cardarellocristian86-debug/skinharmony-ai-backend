@@ -9,6 +9,7 @@ const { NyraDialogueAdapter } = require("./src/nyra/NyraDialogueAdapter");
 const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter");
 const { WhatsappService } = require("./src/WhatsappService");
 const { SuiteAppKeyBridge } = require("./src/SuiteAppKeyBridge");
+const { UniversalCoreBridge } = require("./src/UniversalCoreBridge");
 
 const app = express();
 let service = null;
@@ -17,6 +18,7 @@ let coreliaBridge = null;
 let nyraDialogue = null;
 let whatsappService = null;
 let suiteAppKeyBridge = null;
+let universalCoreBridge = null;
 const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
 
@@ -512,10 +514,10 @@ function sendCoreliaSafe(res, fallbackFactory, compute) {
     const fallback = typeof fallbackFactory === "function" ? fallbackFactory(error) : {};
     return res.status(200).json({
       success: false,
-      engineName: "Universal Core",
-      runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
+      engineName: "Corelia",
+      runtimeStack: ["V0", "V2", "V7"],
       fallback: true,
-      error: error instanceof Error ? error.message : "Universal Core non disponibile",
+      error: error instanceof Error ? error.message : "Corelia non disponibile",
       ...fallback
     });
   }
@@ -853,6 +855,66 @@ app.post("/api/suite-bridge/pulse", async (req, res) => {
       success: false,
       code: "suite_bridge_pulse_failed",
       message: error instanceof Error ? error.message : "Pulse Suite non inviato."
+    });
+  }
+});
+
+app.get("/api/universal-core/status", (_req, res) => {
+  res.json({
+    success: true,
+    service: "skinharmony-smartdesk-live",
+    bridge: universalCoreBridge.status()
+  });
+});
+
+app.get("/api/universal-core/tenant-status", requireAuth, async (_req, res) => {
+  try {
+    const result = await universalCoreBridge.tenantStatus();
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "universal_core_tenant_status_failed",
+      message: error instanceof Error ? error.message : "Stato tenant Core non disponibile."
+    });
+  }
+});
+
+app.get("/api/universal-core/pulse", requireAuth, async (_req, res) => {
+  try {
+    const result = await universalCoreBridge.ecosystemPulse();
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "universal_core_pulse_failed",
+      message: error instanceof Error ? error.message : "Pulse Universal Core non disponibile."
+    });
+  }
+});
+
+app.post("/api/universal-core/decision", requireAuth, async (req, res) => {
+  try {
+    const result = await universalCoreBridge.decision(req.body || {});
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "universal_core_decision_failed",
+      message: error instanceof Error ? error.message : "Decisione Universal Core non disponibile."
+    });
+  }
+});
+
+app.post("/api/universal-core/branches/:branch", requireAuth, async (req, res) => {
+  try {
+    const result = await universalCoreBridge.branchAnalyze(req.params.branch, req.body || {});
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "universal_core_branch_failed",
+      message: error instanceof Error ? error.message : "Ramo Universal Core non disponibile."
     });
   }
 });
@@ -1273,9 +1335,9 @@ app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
 app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    title: "Universal Core Decision Engine",
+    title: "Corelia Decision Engine",
     sections: [],
-    sourceLayer: "universal_core_fallback"
+    sourceLayer: "corelia_fallback"
   }), () => service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
@@ -1292,13 +1354,13 @@ app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
-    version: "universal_core_enterprise_v1",
-    goldEngineVersion: "universal_core_phi_multi_domain_v1",
-    decisionMatrixVersion: "universal_core_decision_matrix_v1",
+    version: "corelia_enterprise_v1",
+    goldEngineVersion: "corelia_phi_multi_domain_v1",
+    decisionMatrixVersion: "corelia_decision_matrix_v1",
     features: {},
     limits: {},
     rules: {},
-    sourceLayer: "universal_core_fallback"
+    sourceLayer: "corelia_fallback"
   }), () => service.getGoldCapabilities(req.session));
 });
 
@@ -1319,7 +1381,7 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
     topSignals: [],
     globalConfidence: 0,
     systemRisk: 0,
-    sourceLayer: "universal_core_fallback"
+    sourceLayer: "corelia_fallback"
   }), () => service.getGoldDecisionContext({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1329,11 +1391,11 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
 app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    version: "universal_core_state_v1",
+    version: "corelia_state_v1",
     snapshots: {},
     signals: {},
     decision: null,
-    sourceLayer: "universal_core_fallback"
+    sourceLayer: "corelia_fallback"
   }), () => service.getGoldState(req.session));
 });
 
@@ -1349,8 +1411,8 @@ app.get("/api/corelia/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
-    version: "universal_core_enterprise_v1",
-    sourceLayer: "universal_core_fallback"
+    version: "corelia_enterprise_v1",
+    sourceLayer: "corelia_fallback"
   }), () => service.getGoldCapabilities(req.session));
 });
 
@@ -1362,7 +1424,7 @@ app.get("/api/corelia/decision-context", requirePlan("gold"), (req, res) => {
     secondaryActions: [],
     blockedActions: [],
     topSignals: [],
-    sourceLayer: "universal_core_fallback"
+    sourceLayer: "corelia_fallback"
   }), () => service.getGoldDecisionContext({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1372,9 +1434,9 @@ app.get("/api/corelia/decision-context", requirePlan("gold"), (req, res) => {
 app.get("/api/corelia/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    title: "Universal Core Decision Engine",
+    title: "Corelia Decision Engine",
     sections: [],
-    sourceLayer: "universal_core_fallback"
+    sourceLayer: "corelia_fallback"
   }), () => service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1480,7 +1542,7 @@ app.post("/api/corelia/dialog", requirePlan("gold"), (req, res) => {
       dialogue
     });
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Bridge Universal Core/Nyra non disponibile");
+    res.status(400).send(error instanceof Error ? error.message : "Bridge Corelia/Nyra non disponibile");
   }
 });
 
@@ -1517,18 +1579,6 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
     });
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile generare Marketing Autopilot");
-  }
-});
-
-app.get("/api/ai-gold/marketing/autopilot/learning", requirePlan("gold"), (req, res) => {
-  res.json(service.getAiMarketingAutopilotLearning(req.session));
-});
-
-app.post("/api/ai-gold/marketing/autopilot/learning/reset", requirePlan("gold"), (req, res) => {
-  try {
-    res.json(service.resetAiMarketingAutopilotLearning(req.session));
-  } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile azzerare l'apprendimento");
   }
 });
 
@@ -1749,12 +1799,14 @@ async function bootstrap() {
   nyraDialogue = new NyraDialogueAdapter();
   whatsappService = new WhatsappService();
   suiteAppKeyBridge = new SuiteAppKeyBridge();
+  universalCoreBridge = new UniversalCoreBridge();
 
   app.listen(port, () => {
     console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
     console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
     console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
     console.log(`[SmartDesk] Suite App Key Bridge: ${suiteAppKeyBridge.isConfigured() ? suiteAppKeyBridge.baseUrl : "non configurato"}`);
+    console.log(`[SmartDesk] Universal Core Bridge: ${universalCoreBridge.isConfigured() ? universalCoreBridge.baseUrl : "non configurato"}`);
   });
 }
 

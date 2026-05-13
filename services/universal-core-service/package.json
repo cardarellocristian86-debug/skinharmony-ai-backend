@@ -1,0 +1,11 @@
+{
+  "name": "@skinharmony/universal-core-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types server.js",
+    "test": "node --experimental-strip-types test/core-service-smoke.js",
+    "core:client": "node tools/core-service-client.js"
+  }
+}

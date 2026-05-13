@@ -1,0 +1,123 @@
+# SkinHarmony Universal Core Service
+
+Servizio centrale Render-ready per esporre Universal Core come decision engine multi-tenant.
+
+Ruoli:
+- WordPress/Suite raccolgono dati e renderizzano UI.
+- Smart Desk esegue operazioni nel proprio perimetro.
+- Universal Core decide priorita, rischio, review e guardrail.
+- Nyra spiega le priorita in modo operativo.
+
+## Endpoint principali
+
+- `GET /healthz`
+- `GET /v1/keys/presets`
+- `POST /v1/keys/generate` con admin key
+- `POST /v1/keys/revoke` con admin key
+- `GET /v1/tenant/status`
+- `POST /v1/snapshot`
+- `GET /v1/snapshot`
+- `POST /v1/decision`
+- `POST /v1/flowcore/decision`
+- `GET /v1/branches`
+- `POST /v1/branches/:branch/analyze`
+- `GET /v1/ecosystem-pulse`
+- `GET /v1/calibration/status`
+- `POST /v1/calibration/evaluate`
+- `POST /v1/policy/check`
+- `POST /v1/claim-guard/check`
+- `GET /v1/compliance/claim-shield/status`
+- `POST /v1/compliance/claim-shield/check`
+- `POST /v1/pricing-guard/check`
+- `POST /v1/sync/suite`
+- `POST /v1/sync/wordpress`
+- `GET /v1/review/pending`
+- `POST /v1/review/action`
+
+## Chiavi
+
+Le chiavi sono scoped, revocabili e tenant-bound. La chiave in chiaro viene mostrata solo alla creazione.
+
+Tipi:
+- `connector`: WordPress/Suite/Smart Desk verso Core.
+- `automation`: Codex/automazioni controllate, con scope limitato.
+- `user_session`: riservato a sessioni prodotto future.
+
+Preset pronti:
+- `suite_connector`: collega Site Suite al Core.
+- `smartdesk_connector`: collega Smart Desk al Core.
+- `wordpress_connector`: collega un WordPress/nodo al Core.
+- `codex_automation`: chiave scoped per automazioni controllate Codex.
+- `readonly_monitor`: sola lettura/monitoraggio.
+
+## Rami Core attivi
+
+Questi rami permettono di usare Universal Core come giudice centrale, non solo come endpoint generico:
+
+- `beauty_market`: postura mercato beauty/wellness per canale, prezzo e priorita.
+- `marketing_copy`: brief copywriting controllato da Claim Guard, sempre con review owner.
+- `cosmetic_chemistry`: posizionamento prudente degli attivi cosmetici, senza claim medici.
+- `technology_market`: lettura domanda/maturita per tecnologie beauty/wellness.
+- `business_strategy`: priorita commerciali, CRM, churn, pipeline e readiness.
+- `translation_governance`: payload stringhe strutturate per traduzione governata dal Core.
+- `nyra_finance_beauty_test`: ramo separato test-only per segnali mercato/finanza beauty. Non e collegato alla produzione.
+
+Esempio:
+
+```bash
+curl -X POST "$CORE_URL/v1/branches/marketing_copy/analyze" \
+  -H "Authorization: Bearer $SH_CORE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"skinharmony","data":{"offer":"WaaS Network","target":"Brand cosmetico professionale"}}'
+```
+
+Scope utili:
+- `read:snapshot`
+- `write:snapshot`
+- `read:decision`
+- `write:decision`
+- `read:review`
+- `write:review`
+- `write:sync_suite`
+- `write:sync_wordpress`
+- `claim:check`
+- `pricing:check`
+- `policy:check`
+- `automation:codex`
+- `admin:tenant`
+- `admin:keys`
+
+## Sicurezza
+
+- Nessuna automazione distruttiva.
+- Publish e azioni operative richiedono conferma owner.
+- Tenant isolation su ogni richiesta.
+- Audit JSONL locale o su disco persistente Render.
+- Claim/Pricing Guard sono advisory/supporto governance, non sostituiscono verifiche legali o fiscali.
+- Nyra Finance resta test-only se non viene esplicitamente promossa con nuova policy owner.
+
+## Utility locale
+
+Generare una key:
+
+```bash
+npm run core:client -- generate-key --url http://127.0.0.1:8787 --admin-key "$CORE_SERVICE_ADMIN_KEY" --tenant skinharmony --brand skinharmony --preset suite_connector
+```
+
+Generare una key Codex controllata:
+
+```bash
+npm run core:client -- generate-key --url http://127.0.0.1:8787 --admin-key "$CORE_SERVICE_ADMIN_KEY" --tenant skinharmony --brand skinharmony --preset codex_automation
+```
+
+Verificarla:
+
+```bash
+npm run core:client -- verify-key --url http://127.0.0.1:8787 --key "$SH_CORE_KEY"
+```
+
+Provare una decisione:
+
+```bash
+npm run core:client -- decision --url http://127.0.0.1:8787 --key "$SH_CORE_KEY" --tenant skinharmony
+```
