@@ -21,6 +21,16 @@ export const AI_GATEWAY_ADAPTERS = new Set([
   "skinharmony_core",
 ]);
 
+export const ACTION_MEDIATION_STATES = new Set([
+  "allow",
+  "rewrite",
+  "confirm",
+  "defer",
+  "sandbox",
+  "block",
+  "rollback_required",
+]);
+
 const SENSITIVE_ACTIONS = new Set([
   "publish",
   "approve",
@@ -227,6 +237,146 @@ function policyWarningsFromText(tenantPolicy = {}, value = "") {
     .filter(Boolean)
     .filter((claim) => body.includes(claim))
     .map((claim) => `tenant_forbidden_claim:${claim}`);
+}
+
+function requiresRollbackPlan(payload = {}, action = {}, warnings = []) {
+  const body = [
+    action.type,
+    action.label,
+    payload.user_request,
+    payload.llm_output,
+    payload.output,
+    flattenForScan(payload.context),
+  ].join(" ").toLowerCase();
+  const touchesRuntime = ["deploy", "update", "migration", "release", "rollback", "write_production"].some((token) => body.includes(token));
+  const mentionsRollback = body.includes("rollback") || body.includes("piano di rientro") || body.includes("restore");
+  const risky = warnings.some((warning) => String(warning).includes("failed") || String(warning).includes("degraded") || String(warning).includes("sensitive"));
+  return touchesRuntime && !mentionsRollback && risky;
+}
+
+function businessExplanation({ verdictBase = {}, mode = "advisory", action = {}, warnings = [], tenantPolicy = {}, selectedVariant = null, mediationState = "defer" }) {
+  const uniqueWarnings = [...new Set(warnings)].slice(0, 8);
+  const actionName = text(action.label || action.type || "azione richiesta", "azione richiesta");
+  const riskBand = verdictBase.risk?.band || "medium";
+  const riskScore = verdictBase.risk?.score;
+  const scoreText = Number.isFinite(Number(riskScore)) ? ` (${Number(riskScore).toFixed(0)}/100)` : "";
+  const policyName = tenantPolicy.source === "default_policy" ? "policy generica tenant" : `policy ${tenantPolicy.source}`;
+
+  const byState = {
+    allow: {
+      summary: "Azione consentita: rischio basso e nessun blocco Core rilevante.",
+      why: `Core ha letto "${actionName}" come operazione compatibile con ${policyName}.`,
+      safe_alternative: "Procedere mantenendo audit e log dell'esecuzione.",
+      owner_message: "Non serve conferma owner.",
+    },
+    rewrite: {
+      summary: "Azione riscrivibile: il contenuto puo essere corretto entro i guardrail.",
+      why: `Core ha rilevato elementi da correggere prima della pubblicazione o dell'uso operativo.`,
+      safe_alternative: "Usare la variante riscritta e mantenere la bozza originale in audit.",
+      owner_message: "Conferma owner consigliata se il contenuto impatta clienti, prezzi o claim.",
+    },
+    confirm: {
+      summary: "Azione sensibile: serve conferma owner prima di procedere.",
+      why: `Core ha visto rischio ${riskBand}${scoreText} su "${actionName}".`,
+      safe_alternative: selectedVariant
+        ? `Valutare la variante "${selectedVariant.label}" prima dell'esecuzione.`
+        : "Passare da staging/review e poi confermare manualmente.",
+      owner_message: "Cristian o owner autorizzato deve confermare l'audit prima dell'esecuzione.",
+    },
+    defer: {
+      summary: "Azione rimandata: mancano dati o contesto sufficiente.",
+      why: "Core non ha abbastanza informazioni per produrre un via libera affidabile.",
+      safe_alternative: "Completare contesto, ruolo, output LLM o dati runtime e rilanciare il gate.",
+      owner_message: "Non e un blocco: serve completare i dati.",
+    },
+    sandbox: {
+      summary: "Azione da provare in sandbox: non va eseguita direttamente in produzione.",
+      why: `Core ha rilevato runtime o flusso non abbastanza stabile per produzione.`,
+      safe_alternative: "Eseguire test isolato, raccogliere esito e poi richiedere conferma.",
+      owner_message: "Conferma owner richiesta solo dopo test sandbox riuscito.",
+    },
+    block: {
+      summary: "Azione bloccata: rischio alto o violazione di guardrail.",
+      why: uniqueWarnings.length ? `Motivi principali: ${uniqueWarnings.join(", ")}.` : "Core ha rilevato un blocco deterministico.",
+      safe_alternative: "Preparare una variante meno rischiosa o passare da workflow manuale controllato.",
+      owner_message: "Non procedere senza nuova valutazione Core.",
+    },
+    rollback_required: {
+      summary: "Azione possibile solo con rollback documentato.",
+      why: `Core ha rilevato una modifica runtime/release senza piano di rientro sufficiente.`,
+      safe_alternative: "Aggiungere manifest, backup, checksum, staging e rollback prima di procedere.",
+      owner_message: "Owner puo confermare solo dopo piano di rollback esplicito.",
+    },
+  };
+
+  return {
+    audience: "business_and_operator",
+    mode,
+    summary: byState[mediationState]?.summary || byState.defer.summary,
+    why: byState[mediationState]?.why || byState.defer.why,
+    risk_readout: {
+      band: riskBand,
+      score: riskScore ?? null,
+      reasons: uniqueWarnings,
+    },
+    safe_alternative: byState[mediationState]?.safe_alternative || byState.defer.safe_alternative,
+    owner_message: byState[mediationState]?.owner_message || byState.defer.owner_message,
+  };
+}
+
+function actionMediation({ payload = {}, mode = "advisory", action = {}, contract = {}, coreOutput = {}, warnings = [], policyWarnings = [], agnosticWorkflowRisk = {}, selectedVariant = null, forcedBlocked = false, executionAllowed = false, requiresOwnerConfirmation = false }) {
+  const missing = Array.isArray(coreOutput.data_quality?.missing_fields)
+    ? coreOutput.data_quality.missing_fields
+    : [];
+  const runtime = contextualRuntime(payload);
+  const runtimeStatus = text(runtime.status || runtime.health || runtime.state).toLowerCase();
+  const hardBlocked = forcedBlocked || contract.state === "blocked" || contract.control_level === "blocked";
+
+  let state = "defer";
+  if (hardBlocked) {
+    state = "block";
+  } else if (requiresRollbackPlan(payload, action, warnings)) {
+    state = "rollback_required";
+  } else if (mode === "rewrite" && policyWarnings.length) {
+    state = "rewrite";
+  } else if (missing.length || !text(payload.llm_output || payload.output)) {
+    state = "defer";
+  } else if (["degraded", "warning", "unstable", "failed"].includes(runtimeStatus) && ["deploy", "update", "sync", "release", "migration"].includes(action.type.toLowerCase())) {
+    state = "sandbox";
+  } else if (requiresOwnerConfirmation || contract.control_level === "confirm") {
+    state = "confirm";
+  } else if (executionAllowed || ["allow_advisory", "ready", "ok"].includes(String(contract.state || "").toLowerCase())) {
+    state = "allow";
+  } else {
+    state = mode === "advisory" ? "allow" : "defer";
+  }
+
+  return {
+    state,
+    execution_allowed: state === "allow" && executionAllowed,
+    owner_confirmation_required: ["confirm", "rewrite", "rollback_required"].includes(state) || requiresOwnerConfirmation,
+    sandbox_required: state === "sandbox",
+    rollback_required: state === "rollback_required",
+    rewrite_allowed: state === "rewrite",
+    blocked: state === "block",
+    next_step:
+      state === "allow" ? "execute_with_audit" :
+      state === "rewrite" ? "rewrite_then_review" :
+      state === "confirm" ? "request_owner_confirmation" :
+      state === "defer" ? "collect_missing_context" :
+      state === "sandbox" ? "run_in_sandbox_first" :
+      state === "rollback_required" ? "add_rollback_plan" :
+      "stop_and_redesign",
+    recommended_variant: selectedVariant
+      ? { id: selectedVariant.id, label: selectedVariant.label, score: selectedVariant.score }
+      : null,
+    flags: {
+      agnostic_workflow_risk: Boolean(agnosticWorkflowRisk.triggered),
+      policy_warning: policyWarnings.length > 0,
+      runtime_status: runtimeStatus || "unknown",
+      gateway_mode: mode,
+    },
+  };
 }
 
 function pressureScore(value) {
@@ -518,6 +668,41 @@ export function buildAiGatewayVerdict({
   ];
 
   const forcedBlocked = agnosticWorkflowRisk.triggered;
+  const baseRecommendedVariant = selectedVariant
+    ? { id: selectedVariant.id, label: selectedVariant.label, score: selectedVariant.score }
+    : {
+        id: mode === "rewrite" ? "rewrite_with_guardrails" : mode === "hard-gating" ? "gate_before_execution" : "advisory_only",
+        label: mode === "rewrite" ? "Riscrivi entro guardrail Core" : mode === "hard-gating" ? "Blocca o richiedi owner" : "Spiega senza eseguire",
+        score: null,
+      };
+  const mediation = actionMediation({
+    payload,
+    mode,
+    action,
+    contract,
+    coreOutput,
+    warnings,
+    policyWarnings,
+    agnosticWorkflowRisk,
+    selectedVariant,
+    forcedBlocked,
+    executionAllowed,
+    requiresOwnerConfirmation,
+  });
+  const explanation = businessExplanation({
+    verdictBase: {
+      risk: {
+        band: forcedBlocked ? "high" : contract.risk_band,
+        score: forcedBlocked ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
+      },
+    },
+    mode,
+    action,
+    warnings,
+    tenantPolicy,
+    selectedVariant,
+    mediationState: mediation.state,
+  });
   return {
     schema_version: AI_GATEWAY_SCHEMA_VERSION,
     tenant_id: tenantId,
@@ -552,24 +737,21 @@ export function buildAiGatewayVerdict({
       agnosticWorkflowFlags: agnosticWorkflowRisk.hits.map((hit) => hit.id),
     },
     executionAllowed: forcedBlocked ? false : executionAllowed,
-    recommendedVariant: selectedVariant
-      ? { id: selectedVariant.id, label: selectedVariant.label, score: selectedVariant.score }
-      : {
-          id: mode === "rewrite" ? "rewrite_with_guardrails" : mode === "hard-gating" ? "gate_before_execution" : "advisory_only",
-          label: mode === "rewrite" ? "Riscrivi entro guardrail Core" : mode === "hard-gating" ? "Blocca o richiedi owner" : "Spiega senza eseguire",
-          score: null,
-        },
+    recommendedVariant: baseRecommendedVariant,
     requiresOwnerConfirmation: forcedBlocked ? true : requiresOwnerConfirmation,
+    action_mediation: mediation,
+    explainability: explanation,
+    commercial_explanation: explanation.summary,
     final_output: text(payload.llm_output || payload.output || ""),
     audit_id: `audit_${crypto.randomUUID()}`,
     decision_contract: contract,
     tenant_policy: tenantPolicy,
     core_output: coreOutput,
-    adapter_instruction: adapterInstruction(adapter, mode, executionAllowed),
+    adapter_instruction: adapterInstruction(adapter, mode, executionAllowed, mediation),
   };
 }
 
-function adapterInstruction(adapter, mode, executionAllowed) {
+function adapterInstruction(adapter, mode, executionAllowed, mediation = {}) {
   const common = "Inviare sempre richiesta e output LLM al Core prima di pubblicare, sincronizzare, modificare stato o avviare automazioni.";
   const perAdapter = {
     codex: "Codex puo proporre patch e comandi, ma applica solo entro verdict Core e conferma owner.",
@@ -583,6 +765,8 @@ function adapterInstruction(adapter, mode, executionAllowed) {
     common,
     adapter: perAdapter[adapter] || perAdapter.generic,
     mode,
+    mediation_state: mediation.state || "defer",
     execution: executionAllowed ? "execution_allowed_after_owner_confirmation" : "no_execution_from_gateway",
+    next_step: mediation.next_step || "follow_core_verdict",
   };
 }

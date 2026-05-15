@@ -19,7 +19,10 @@
     "instagram:sync": "node instagram_manager.js sync",
     "monitor:outreach": "node mail/monitor_campaigns.js",
     "report:outreach": "node mail/track_outreach.js report",
-    "nyra:render": "node personal-control-center/server.js"
+    "nyra:render": "node personal-control-center/server.js",
+    "core:service": "node --experimental-strip-types services/universal-core-service/server.js",
+    "core:service:test": "node --experimental-strip-types services/universal-core-service/test/core-service-smoke.js",
+    "core:client": "node services/universal-core-service/tools/core-service-client.js"
   },
   "dependencies": {
     "axios": "^1.14.0",

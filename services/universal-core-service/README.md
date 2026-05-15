@@ -80,6 +80,48 @@ Endpoint:
 - `POST /v1/decision`: decisione generale con `decision_contract`.
 - `POST /v1/action-evaluator`: gate per azioni sensibili.
 - `POST /v1/codex/guard`: guardiano Codex dedicato.
+- `POST /v1/ai-gateway/evaluate`: AI Gateway centrale per Codex, Suite, Smart Desk e altri client.
+
+## AI Gateway 0.3.6 - Action Mediation
+
+Dal runtime `0.3.6-action-mediation` il verdict non e piu solo allow/block/review.
+
+Il Gateway restituisce anche:
+
+```json
+{
+  "action_mediation": {
+    "state": "allow | rewrite | confirm | defer | sandbox | block | rollback_required",
+    "execution_allowed": false,
+    "owner_confirmation_required": true,
+    "sandbox_required": false,
+    "rollback_required": false,
+    "rewrite_allowed": false,
+    "blocked": false,
+    "next_step": "request_owner_confirmation"
+  },
+  "explainability": {
+    "audience": "business_and_operator",
+    "summary": "Azione sensibile: serve conferma owner prima di procedere.",
+    "why": "Core ha visto rischio medio su questa azione.",
+    "safe_alternative": "Passare da staging/review e poi confermare manualmente.",
+    "owner_message": "Cristian o owner autorizzato deve confermare l'audit prima dell'esecuzione."
+  },
+  "commercial_explanation": "Azione sensibile: serve conferma owner prima di procedere."
+}
+```
+
+Significato operativo:
+
+- `allow`: procedere con audit.
+- `rewrite`: riscrivere/correggere prima di pubblicare o usare.
+- `confirm`: serve conferma owner.
+- `defer`: mancano dati o contesto.
+- `sandbox`: prima test isolato, poi nuova conferma.
+- `block`: stop reale.
+- `rollback_required`: serve piano di rollback prima di procedere.
+
+Questi stati servono a non appiattire tutto in un blocco duro: Core puo fermare davvero solo cio che e pericoloso, mentre le azioni sensibili diventano confermabili e spiegabili.
 
 ## Codex come executor controllato
 

@@ -34,6 +34,14 @@ Health check:
 GET /healthz
 ```
 
+Versione runtime attesa dopo questo aggiornamento:
+
+```text
+0.3.6-action-mediation
+```
+
+La `0.3.6` aggiunge `action_mediation`, `explainability` e `commercial_explanation` ai verdict AI Gateway. Non cambia gli endpoint esistenti.
+
 ## Generazione chiavi live
 
 Suite:

@@ -34,7 +34,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.5-ai-gateway";
+const SERVICE_VERSION = "0.3.6-action-mediation";
 
 function nowIso() {
   return new Date().toISOString();
@@ -279,6 +279,200 @@ function reviewStore(storageRoot) {
       write(rows);
       return record;
     },
+  };
+}
+
+function evidenceStore(storageRoot) {
+  const file = path.join(storageRoot, "evidence", "events.jsonl");
+  ensureDir(path.dirname(file));
+  const signingSecret = process.env.CORE_EVIDENCE_SIGNING_SECRET || "dev-evidence-signing-secret";
+
+  function sign(record) {
+    return crypto.createHmac("sha256", signingSecret).update(JSON.stringify(record)).digest("hex");
+  }
+
+  function append(tenantId, eventType, payload = {}) {
+    const record = {
+      evidence_id: `ev_${crypto.randomUUID()}`,
+      tenant_id: tenantId,
+      event_type: eventType,
+      created_at: nowIso(),
+      payload,
+    };
+    const signature = sign(record);
+    const signed = { ...record, signature, signature_alg: "hmac-sha256" };
+    fs.appendFileSync(file, `${JSON.stringify(signed)}\n`, "utf8");
+    return signed;
+  }
+
+  function recent(tenantId, limit = 50) {
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .slice(-Math.max(1, Math.min(200, Number(limit) || 50)))
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return { event_type: "evidence_parse_error", raw: line };
+        }
+      })
+      .filter((event) => !tenantId || event.tenant_id === tenantId);
+  }
+
+  return { append, recent };
+}
+
+function suiteRunbookCatalog() {
+  return [
+    {
+      id: "provision_customer_node",
+      label: "Provision cliente",
+      action_type: "codex_automation",
+      risk_hint: 46,
+      required_confirmation: true,
+      steps: ["validate_tenant_scope", "generate_scoped_key", "prepare_site_clone", "write_evidence"],
+    },
+    {
+      id: "clone_waas_template",
+      label: "Clone template WaaS",
+      action_type: "suite_sync",
+      risk_hint: 42,
+      required_confirmation: true,
+      steps: ["select_template", "check_license", "prepare_clone_plan", "write_evidence"],
+    },
+    {
+      id: "sync_site_content",
+      label: "Sync contenuti sito",
+      action_type: "publish",
+      risk_hint: 58,
+      required_confirmation: true,
+      steps: ["content_guard", "claim_guard", "owner_review", "write_evidence"],
+    },
+    {
+      id: "update_plugin_manifest",
+      label: "Update plugin manifest",
+      action_type: "release",
+      risk_hint: 70,
+      required_confirmation: true,
+      steps: ["verify_checksum", "verify_channel", "prepare_rollback", "write_evidence"],
+    },
+    {
+      id: "price_claim_audit",
+      label: "Audit prezzi/claim",
+      action_type: "claim_validation",
+      risk_hint: 55,
+      required_confirmation: false,
+      steps: ["pricing_guard", "claim_guard", "policy_check", "write_evidence"],
+    },
+    {
+      id: "bridge_crm_report",
+      label: "Bridge CRM report",
+      action_type: "sync",
+      risk_hint: 38,
+      required_confirmation: true,
+      steps: ["validate_connector_scope", "read_snapshot", "prepare_report", "write_evidence"],
+    },
+  ];
+}
+
+function buildConnectorSdkManifest() {
+  return {
+    manifest_version: "core_connector_sdk_v1",
+    positioning: "AI Governance + Automation Control Plane per PMI e verticali premium",
+    rule: "AI e automazioni possono agire solo passando da Core, policy, audit, tenant isolation e conferma quando serve.",
+    transports: ["rest_json", "mcp_ready_schema"],
+    auth: {
+      header: "Authorization: Bearer <SHX key>",
+      key_types: ["connector", "automation", "user_session"],
+      tenant_scoped: true,
+    },
+    adapters: ["wordpress", "site_suite", "smart_desk", "crm", "ecommerce", "files", "external_api"],
+    required_client_behaviour: [
+      "send_tenant_id_on_every_request",
+      "never_execute_when_executionAllowed_false",
+      "ask_owner_when_requiresOwnerConfirmation_true",
+      "store_evidence_id_for_sensitive_actions",
+    ],
+    core_routes: {
+      gate: "/v1/ai-gateway/evaluate",
+      control_plane: "/v1/control-plane/overview",
+      runbooks: "/v1/runbooks",
+      runbook_evaluate: "/v1/runbooks/evaluate",
+      release_check: "/v1/releases/manifest/check",
+      evidence: "/v1/evidence/recent",
+    },
+  };
+}
+
+function evaluateReleaseManifest(payload = {}) {
+  const manifest = typeof payload.manifest === "object" && payload.manifest ? payload.manifest : payload;
+  const version = textValue(manifest.version || manifest.stable_version);
+  const channel = textValue(manifest.channel || manifest.release_channel, "stable");
+  const packageUrl = textValue(manifest.package_url || manifest.package || manifest.zip_url);
+  const checksum = textValue(manifest.checksum_sha256 || manifest.sha256 || manifest.checksum);
+  const rollbackUrl = textValue(manifest.rollback_url);
+  const signed = Boolean(manifest.signature || manifest.signed === true);
+  const issues = [];
+
+  if (!version) issues.push({ code: "missing_version", severity: "critical" });
+  if (!["stable", "beta", "canary"].includes(channel)) issues.push({ code: "invalid_channel", severity: "critical", channel });
+  if (!packageUrl) issues.push({ code: "missing_package_url", severity: "critical" });
+  if (!checksum || !/^[a-f0-9]{64}$/i.test(checksum)) issues.push({ code: "missing_or_invalid_sha256", severity: "critical" });
+  if (!signed) issues.push({ code: "missing_manifest_signature", severity: "high" });
+  if (!rollbackUrl) issues.push({ code: "missing_rollback_url", severity: "high" });
+  if (manifest.skip_integrity_check === true || manifest.bypass_checksum === true) issues.push({ code: "integrity_bypass_requested", severity: "critical" });
+
+  const critical = issues.some((issue) => issue.severity === "critical");
+  return {
+    status: critical ? "blocked" : issues.length ? "review_required" : "ready",
+    execution_allowed: false,
+    owner_confirmation_required: true,
+    manifest: { version, channel, package_url: packageUrl, checksum_sha256: checksum || null, rollback_url: rollbackUrl || null, signed },
+    issues,
+    required_next_step: critical ? "fix_manifest_before_release" : issues.length ? "owner_review_before_release" : "staging_canary_then_owner_confirmation",
+  };
+}
+
+function buildControlPlaneOverview({ tenantId, keyRecord, keyStore, snapshot, auditEvents, evidenceEvents }) {
+  const branchResolution = resolveBranchesForKey(keyRecord);
+  const suitePolicy = buildSuitePolicy(keyRecord, branchResolution);
+  const tenantKeys = keyStore.listKeys({ tenant_id: tenantId });
+  const auditPulse = summarizeAuditPulse(auditEvents);
+  const activeKeys = tenantKeys.filter((key) => key.status === "active").length;
+  const suspendedKeys = tenantKeys.filter((key) => key.status === "suspended").length;
+  const revokedKeys = tenantKeys.filter((key) => key.status === "revoked").length;
+
+  return {
+    tenant_id: tenantId,
+    generated_at: nowIso(),
+    positioning: "AI Governance + Automation Control Plane per PMI e verticali premium",
+    control_plane: {
+      api_keys: { total: tenantKeys.length, active: activeKeys, suspended: suspendedKeys, revoked: revokedKeys },
+      licenses: { tier: branchResolution.tier, suite_policy: suitePolicy },
+      versions: { service_version: SERVICE_VERSION, connector_sdk_manifest: "core_connector_sdk_v1" },
+      update: { release_manifest_check: "/v1/releases/manifest/check", automatic_update_allowed: false },
+      gate: { ai_gateway: "/v1/ai-gateway/evaluate", policy_check: "/v1/policy/check" },
+      automations: { runbook_count: suiteRunbookCatalog().length, execution_default: "confirm_or_block" },
+      errors: { auth_failures_24h: auditPulse.auth_failures_24h, scope_denied_24h: auditPulse.scope_denied_24h },
+      audit: { events_24h: auditPulse.total_events_24h, evidence_events: evidenceEvents.length },
+    },
+    tenant_isolation: {
+      mode: "tenant_scoped_keys",
+      current_key_id: keyRecord.key_id,
+      admin_scope: hasScope(keyRecord, SCOPES.ADMIN_TENANT),
+      cross_tenant_block_default: true,
+      staging_production_separation_required: true,
+    },
+    latest_snapshot: snapshot ? { snapshot_id: snapshot.snapshot_id, source: snapshot.source, created_at: snapshot.created_at } : null,
+    next_missing_blocks: [
+      "external_ui_dashboard",
+      "customer_connector_packages",
+      "production_signature_secret_rotation",
+      "enterprise_agnostic_demo",
+    ],
   };
 }
 
@@ -919,6 +1113,7 @@ export function createUniversalCoreService(options = {}) {
   const keyStore = createKeyStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
   const reviews = reviewStore(storageRoot);
+  const evidence = evidenceStore(storageRoot);
   const app = express();
 
   app.disable("x-powered-by");
@@ -981,6 +1176,129 @@ export function createUniversalCoreService(options = {}) {
       mode: "local_first_render_ready",
       suite_policy: suitePolicy,
     });
+  });
+
+  app.get("/v1/control-plane/overview", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
+    const overview = buildControlPlaneOverview({
+      tenantId: req.tenantId,
+      keyRecord: req.coreKey,
+      keyStore,
+      snapshot: snapshots.latest(req.tenantId),
+      auditEvents: audit.recent(200),
+      evidenceEvents: evidence.recent(req.tenantId, 50),
+    });
+    audit.append("core_control_plane_overview_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    res.json({ ok: true, overview });
+  });
+
+  app.get("/v1/connectors/sdk/manifest", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
+    audit.append("core_connector_sdk_manifest_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    res.json({ ok: true, tenant_id: req.tenantId, sdk: buildConnectorSdkManifest() });
+  });
+
+  app.get("/v1/runbooks", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      runbooks: suiteRunbookCatalog(),
+      rule: "I runbook preparano e valutano automazioni. L'esecuzione resta bloccata finche Core non consente e l'owner conferma quando richiesto.",
+    });
+  });
+
+  app.post("/v1/runbooks/evaluate", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const runbookId = textValue(req.body?.runbook_id || req.body?.id);
+    const runbook = suiteRunbookCatalog().find((item) => item.id === runbookId);
+    if (!runbook) return publicError(res, 404, "runbook_not_found");
+
+    const coreInput = {
+      request_id: req.body?.request_id || `runbook_${crypto.randomUUID()}`,
+      generated_at: nowIso(),
+      domain: "core_automation_suite",
+      context: {
+        tenant_id: req.tenantId,
+        actor_id: req.body?.actor_id || undefined,
+        locale: req.body?.locale || "it",
+        metadata: {
+          action_type: runbook.action_type,
+          runbook_id: runbook.id,
+          source: "suite_runbook_marketplace",
+        },
+      },
+      signals: [
+        normalizeSignal({
+          id: `runbook:${runbook.id}`,
+          label: runbook.label,
+          category: "automation_runbook",
+          normalized_score: runbook.risk_hint,
+          severity_hint: runbook.risk_hint,
+          confidence_hint: 82,
+          evidence: [
+            { label: "Runbook approvato in catalogo", value: runbook.id },
+            { label: "Esecuzione reale non inclusa in questo endpoint", value: true },
+          ],
+          tags: ["runbook", runbook.action_type],
+        }),
+      ],
+      data_quality: {
+        score: Number(req.body?.data_quality_score ?? 75),
+        missing_fields: [],
+      },
+      constraints: safeConstraints({
+        require_confirmation: true,
+        max_control_level: "confirm",
+        allow_automation: false,
+        safety_mode: true,
+        blocked_actions: ["execute_without_evidence", "cross_tenant_execution", "release_without_checksum"],
+      }, req.coreKey, false),
+    };
+    const output = runUniversalCore(coreInput);
+    const decisionContract = normalizeDecisionContract(output, { action_type: runbook.action_type, publish_intent: ["publish", "release"].includes(runbook.action_type) });
+    const evidenceRecord = evidence.append(req.tenantId, "runbook_evaluated", {
+      runbook,
+      request: req.body || {},
+      decision_contract: decisionContract,
+      execution_allowed: false,
+      rollback_possible: true,
+    });
+    audit.append("core_runbook_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      runbook_id: runbook.id,
+      control_level: decisionContract.control_level,
+      evidence_id: evidenceRecord.evidence_id,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      runbook,
+      decision_contract: decisionContract,
+      output,
+      evidence: evidenceRecord,
+      guardrail: {
+        execution_allowed: false,
+        owner_confirmation_required: true,
+        mode: "evaluate_only_no_side_effects",
+      },
+    });
+  });
+
+  app.post("/v1/releases/manifest/check", createAuth(keyStore, audit, SCOPES.POLICY_CHECK), (req, res) => {
+    const result = evaluateReleaseManifest(req.body || {});
+    const evidenceRecord = evidence.append(req.tenantId, "release_manifest_checked", {
+      result,
+      rollback_possible: Boolean(result.manifest.rollback_url),
+    });
+    audit.append("core_release_manifest_checked", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      status: result.status,
+      evidence_id: evidenceRecord.evidence_id,
+    });
+    res.json({ ok: true, tenant_id: req.tenantId, result, evidence: evidenceRecord });
+  });
+
+  app.get("/v1/evidence/recent", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    res.json({ ok: true, tenant_id: req.tenantId, evidence: evidence.recent(req.tenantId, Number(req.query.limit || 50)) });
   });
 
   app.get("/v1/ecosystem-pulse", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -1110,6 +1428,9 @@ export function createUniversalCoreService(options = {}) {
         "executionAllowed",
         "recommendedVariant",
         "requiresOwnerConfirmation",
+        "action_mediation",
+        "explainability",
+        "commercial_explanation",
       ],
       rule: "ChatGPT/Codex propongono; AI Gateway invia al Core; Universal Core decide; Nyra/adapter spiegano; i client eseguono solo entro verdict.",
     });
@@ -1152,9 +1473,11 @@ export function createUniversalCoreService(options = {}) {
       adapter: verdict.adapter,
       mode: verdict.mode,
       decision: verdict.decision,
+      mediation_state: verdict.action_mediation?.state,
       risk: verdict.risk?.band,
       execution_allowed: verdict.executionAllowed,
       owner_confirmation_required: verdict.requiresOwnerConfirmation,
+      next_step: verdict.action_mediation?.next_step,
     });
     return res.json({
       ok: true,

@@ -112,6 +112,68 @@ try {
   assert(tenant.json.active_branches?.includes("suite_governance"), "tenant active branches missing suite governance");
   mark("tenant_status", true, tenant.json);
 
+  const controlPlane = await api(base, "GET", "/v1/control-plane/overview?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(controlPlane.status === 200 && controlPlane.json.overview?.control_plane?.api_keys?.active >= 1, "control plane overview failed");
+  assert(controlPlane.json.overview?.tenant_isolation?.cross_tenant_block_default === true, "tenant isolation summary failed");
+  mark("control_plane_overview", true, {
+    positioning: controlPlane.json.overview.positioning,
+    active_keys: controlPlane.json.overview.control_plane.api_keys.active,
+    runbook_count: controlPlane.json.overview.control_plane.automations.runbook_count,
+  });
+
+  const sdkManifest = await api(base, "GET", "/v1/connectors/sdk/manifest?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(sdkManifest.status === 200 && sdkManifest.json.sdk?.manifest_version === "core_connector_sdk_v1", "connector sdk manifest failed");
+  assert(sdkManifest.json.sdk?.transports?.includes("mcp_ready_schema"), "connector sdk mcp-ready transport missing");
+  mark("connector_sdk_manifest", true, {
+    adapters: sdkManifest.json.sdk.adapters,
+    routes: Object.keys(sdkManifest.json.sdk.core_routes),
+  });
+
+  const runbooks = await api(base, "GET", "/v1/runbooks?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(runbooks.status === 200 && runbooks.json.runbooks?.some((item) => item.id === "update_plugin_manifest"), "runbook catalog failed");
+  mark("runbook_marketplace_catalog", true, { runbooks: runbooks.json.runbooks.map((item) => item.id) });
+
+  const runbookEval = await api(base, "POST", "/v1/runbooks/evaluate", {
+    tenant_id: "tenant_demo_skinharmony",
+    runbook_id: "update_plugin_manifest",
+    actor_id: "core_service_smoke",
+    inputs: { version: "5.2.0", channel: "canary" },
+  }, connectorKey);
+  assert(runbookEval.status === 200 && runbookEval.json.guardrail?.execution_allowed === false, "runbook evaluation should not execute");
+  assert(runbookEval.json.evidence?.signature, "runbook evaluation evidence signature missing");
+  mark("runbook_evaluate_with_evidence", true, {
+    runbook_id: runbookEval.json.runbook.id,
+    control_level: runbookEval.json.decision_contract.control_level,
+    evidence_id: runbookEval.json.evidence.evidence_id,
+  });
+
+  const releaseCheck = await api(base, "POST", "/v1/releases/manifest/check", {
+    tenant_id: "tenant_demo_skinharmony",
+    manifest: {
+      version: "5.2.0",
+      channel: "stable",
+      package_url: "https://example.invalid/skinharmony-site-suite-5.2.0.zip",
+      checksum_sha256: "bad",
+      signed: false,
+      rollback_url: "",
+    },
+  }, connectorKey);
+  assert(releaseCheck.status === 200 && releaseCheck.json.result?.status === "blocked", "release manifest invalid checksum should block");
+  assert(releaseCheck.json.evidence?.signature, "release manifest evidence signature missing");
+  mark("release_manifest_check", true, {
+    status: releaseCheck.json.result.status,
+    issues: releaseCheck.json.result.issues.map((item) => item.code),
+    evidence_id: releaseCheck.json.evidence.evidence_id,
+  });
+
+  const evidenceRecent = await api(base, "GET", "/v1/evidence/recent?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(evidenceRecent.status === 200 && evidenceRecent.json.evidence?.length >= 2, "evidence recent failed");
+  assert(evidenceRecent.json.evidence.every((item) => item.signature), "signed evidence missing");
+  mark("signed_evidence_layer", true, {
+    evidence_count: evidenceRecent.json.evidence.length,
+    event_types: evidenceRecent.json.evidence.map((item) => item.event_type),
+  });
+
   const decision = await api(base, "POST", "/v1/decision", {
     tenant_id: "tenant_demo_skinharmony",
     domain: "crm",
@@ -200,6 +262,8 @@ try {
   assert(gatewaySchema.json.adapters?.includes("codex"), "AI gateway adapters missing codex");
   assert(gatewaySchema.json.payload_schema?.properties?.gateway_mode, "AI gateway payload schema missing");
   assert(gatewaySchema.json.verdict_schema?.properties?.decision_state, "AI gateway verdict schema missing");
+  assert(gatewaySchema.json.verdict_schema?.properties?.action_mediation, "AI gateway mediation schema missing");
+  assert(gatewaySchema.json.verdict_schema?.properties?.explainability, "AI gateway explainability schema missing");
   mark("ai_gateway_schema", true, {
     schema_version: gatewaySchema.json.schema_version,
     modes: gatewaySchema.json.modes,
@@ -225,9 +289,12 @@ try {
   assert(aiGatewayCodex.json.verdict?.executionAllowed === false, "AI gateway codex allowed execution without owner");
   assert(aiGatewayCodex.json.verdict?.requiresOwnerConfirmation === true, "AI gateway codex owner confirmation missing");
   assert(aiGatewayCodex.json.verdict?.recommendedVariant?.id === "staging_first", "AI gateway recommended wrong variant");
+  assert(["confirm", "sandbox", "rollback_required", "block"].includes(aiGatewayCodex.json.verdict?.action_mediation?.state), "AI gateway codex mediation missing");
+  assert(aiGatewayCodex.json.verdict?.explainability?.summary, "AI gateway codex explainability missing");
   assert(aiGatewayCodex.json.benchmark?.delta?.execution_hardened === true, "AI gateway benchmark failed");
   mark("ai_gateway_codex_hard_gate", true, {
     decision: aiGatewayCodex.json.verdict.decision,
+    mediation: aiGatewayCodex.json.verdict.action_mediation,
     risk: aiGatewayCodex.json.verdict.risk,
     executionAllowed: aiGatewayCodex.json.verdict.executionAllowed,
     recommendedVariant: aiGatewayCodex.json.verdict.recommendedVariant,
@@ -246,8 +313,11 @@ try {
   }, connectorKey);
   assert(aiGatewaySuite.status === 200 && aiGatewaySuite.json.verdict?.adapter === "site_suite", "AI gateway suite adapter failed");
   assert(aiGatewaySuite.json.verdict?.policyFlags?.readOnlyDefault === true, "AI gateway read-only default failed");
+  assert(aiGatewaySuite.json.verdict?.action_mediation?.state, "AI gateway suite mediation missing");
+  assert(aiGatewaySuite.json.verdict?.commercial_explanation, "AI gateway suite commercial explanation missing");
   mark("ai_gateway_site_suite_advisory", true, {
     decision: aiGatewaySuite.json.verdict.decision,
+    mediation: aiGatewaySuite.json.verdict.action_mediation,
     adapter: aiGatewaySuite.json.verdict.adapter,
     executionAllowed: aiGatewaySuite.json.verdict.executionAllowed,
   });
@@ -308,9 +378,11 @@ try {
   assert(codexB2BWorkflow.json.verdict?.decision_state === "blocked", "B2B workflow state should be blocked");
   assert(codexB2BWorkflow.json.verdict?.risk?.band === "high", "B2B workflow risk should be high");
   assert(codexB2BWorkflow.json.verdict?.executionAllowed === false, "B2B workflow execution should be false");
+  assert(codexB2BWorkflow.json.verdict?.action_mediation?.state === "block", "B2B workflow mediation should block");
   assert(codexB2BWorkflow.json.verdict?.policyFlags?.agnosticWorkflowRisk === true, "B2B workflow agnostic flag missing");
   mark("codex_core_b2b_workflow_macro_guard", true, {
     decision: codexB2BWorkflow.json.verdict.decision,
+    mediation: codexB2BWorkflow.json.verdict.action_mediation,
     risk: codexB2BWorkflow.json.verdict.risk,
     flags: codexB2BWorkflow.json.verdict.policyFlags.agnosticWorkflowFlags,
   });
