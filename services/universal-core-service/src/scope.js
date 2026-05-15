@@ -15,6 +15,7 @@ export const SCOPES = Object.freeze({
   PRICING_CHECK: "pricing:check",
   POLICY_CHECK: "policy:check",
   AUTOMATION_CODEX: "automation:codex",
+  AI_GATEWAY: "gateway:ai",
 });
 
 export const DEFAULT_CONNECTOR_SCOPES = [
@@ -27,6 +28,7 @@ export const DEFAULT_CONNECTOR_SCOPES = [
   SCOPES.CLAIM_CHECK,
   SCOPES.PRICING_CHECK,
   SCOPES.POLICY_CHECK,
+  SCOPES.AI_GATEWAY,
 ];
 
 export const DEFAULT_AUTOMATION_SCOPES = [
@@ -41,6 +43,7 @@ export const DEFAULT_AUTOMATION_SCOPES = [
   SCOPES.PRICING_CHECK,
   SCOPES.POLICY_CHECK,
   SCOPES.AUTOMATION_CODEX,
+  SCOPES.AI_GATEWAY,
 ];
 
 export const KEY_PRESETS = Object.freeze({
@@ -56,6 +59,7 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.CLAIM_CHECK,
       SCOPES.PRICING_CHECK,
       SCOPES.POLICY_CHECK,
+      SCOPES.AI_GATEWAY,
     ],
   },
   smartdesk_connector: {
@@ -67,6 +71,7 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.READ_DECISION,
       SCOPES.WRITE_SYNC_SUITE,
       SCOPES.POLICY_CHECK,
+      SCOPES.AI_GATEWAY,
     ],
   },
   wordpress_connector: {
@@ -80,6 +85,7 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.CLAIM_CHECK,
       SCOPES.PRICING_CHECK,
       SCOPES.POLICY_CHECK,
+      SCOPES.AI_GATEWAY,
     ],
   },
   codex_automation: {
@@ -97,6 +103,7 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.CLAIM_CHECK,
       SCOPES.PRICING_CHECK,
       SCOPES.POLICY_CHECK,
+      SCOPES.AI_GATEWAY,
     ],
   },
 });

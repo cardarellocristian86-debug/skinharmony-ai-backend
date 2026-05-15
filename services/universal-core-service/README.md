@@ -18,6 +18,9 @@ Ruoli:
 - `POST /v1/snapshot`
 - `GET /v1/snapshot`
 - `POST /v1/decision`
+- `POST /v1/action-evaluator`
+- `POST /v1/codex/context`
+- `POST /v1/codex/guard`
 - `POST /v1/flowcore/decision`
 - `GET /v1/branches`
 - `POST /v1/branches/:branch/analyze`
@@ -49,6 +52,62 @@ Preset pronti:
 - `wordpress_connector`: collega un WordPress/nodo al Core.
 - `codex_automation`: chiave scoped per automazioni controllate Codex.
 - `readonly_monitor`: sola lettura/monitoraggio.
+
+## Decision contract v1
+
+Ogni client che deve pubblicare, approvare, cambiare stato, proporre pricing, validare claim, decidere workflow o attivare Codex deve leggere il contratto decisionale del Core prima di agire.
+
+Forma stabile:
+
+```json
+{
+  "state": "observe | attention | blocked | ready",
+  "confidence": 0,
+  "risk_band": "low | medium | high",
+  "control_level": "observe | confirm | blocked",
+  "publish_safe": false,
+  "recommended_actions": [],
+  "blocked_reasons": []
+}
+```
+
+Regola architetturale:
+
+`OpenAI genera. Universal Core decide. Nyra spiega. I client eseguono solo entro i limiti del Core.`
+
+Endpoint:
+
+- `POST /v1/decision`: decisione generale con `decision_contract`.
+- `POST /v1/action-evaluator`: gate per azioni sensibili.
+- `POST /v1/codex/guard`: guardiano Codex dedicato.
+
+## Codex come executor controllato
+
+Codex non deve essere arbitro finale. Il flusso corretto e:
+
+1. Codex/client invia task, contesto e rami richiesti a `/v1/codex/guard`.
+2. Core valuta il task.
+3. Se la chiave abilita rami, il Core li compone nel contesto.
+4. Se la chiave non abilita rami, il Core lavora comunque come guardiano generico.
+5. Codex usa `decision_contract` come fonte primaria.
+
+Esempio con rami:
+
+```bash
+curl -X POST "$CORE_URL/v1/codex/guard" \
+  -H "Authorization: Bearer $SH_CODEX_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"skinharmony","task":"Genera testo marketing controllato","branches":["marketing_copy","ramo_testo"],"user_input":"Hero pagina WaaS senza claim medici"}'
+```
+
+Esempio senza rami:
+
+```bash
+curl -X POST "$CORE_URL/v1/codex/guard" \
+  -H "Authorization: Bearer $SH_CODEX_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"skinharmony","task":"Controlla errori e proponi patch","user_input":"Non pubblicare nulla senza conferma"}'
+```
 
 ## Rami Core attivi
 

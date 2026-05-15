@@ -10,6 +10,8 @@
   "scripts": {
     "test": "echo \"TODO: run universal core contract tests\"",
     "check": "node --experimental-strip-types tests/contract-smoke-test.ts",
+    "check:core:v1-calibrated": "node --experimental-strip-types tests/decision-v1-calibrated-test.ts",
+    "core-api:start": "node --experimental-strip-types services/core-api/src/server.ts",
     "check:assistant": "node --experimental-strip-types tests/assistant-runtime-policy-test.ts",
     "check:assistant:self": "node --experimental-strip-types tests/assistant-self-performance-test.ts",
     "check:assistant:hypothesis": "node --experimental-strip-types tests/assistant-hypothesis-selection-test.ts",

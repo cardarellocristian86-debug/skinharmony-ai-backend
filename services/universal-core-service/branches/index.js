@@ -10,6 +10,14 @@ import { branchBusinessStrategy } from "./branch-business-strategy.js";
 import { branchTranslationGovernance } from "./branch-translation-governance.js";
 import { branchNyraFinanceBeautyTest } from "./branch-nyra-finance-beauty-test.js";
 import { branchRamoTesto } from "./branch-ramo-testo.js";
+import { branchCodexCodeSafety } from "./branch-codex-code-safety.js";
+import { branchCodexArchitectureGuard } from "./branch-codex-architecture-guard.js";
+import { branchCodexTestStrategy } from "./branch-codex-test-strategy.js";
+import { branchCodexReleaseGate } from "./branch-codex-release-gate.js";
+import { branchCodexSecurityGuard } from "./branch-codex-security-guard.js";
+import { branchCodexProductLogic } from "./branch-codex-product-logic.js";
+import { branchCodexUiUxGuard } from "./branch-codex-ui-ux-guard.js";
+import { branchCodexBusinessGuard } from "./branch-codex-business-guard.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -24,15 +32,37 @@ const BRANCHES = [
   branchTranslationGovernance,
   branchRamoTesto,
   branchNyraFinanceBeautyTest,
+  branchCodexCodeSafety,
+  branchCodexArchitectureGuard,
+  branchCodexTestStrategy,
+  branchCodexReleaseGate,
+  branchCodexSecurityGuard,
+  branchCodexProductLogic,
+  branchCodexUiUxGuard,
+  branchCodexBusinessGuard,
+];
+
+const CODEX_GUARD_BRANCHES = [
+  "codex_code_safety",
+  "codex_architecture_guard",
+  "codex_test_strategy",
+  "codex_release_gate",
+  "codex_security_guard",
+  "codex_product_logic",
+  "codex_ui_ux_guard",
+  "codex_business_guard",
 ];
 
 export const BRANCH_PACKAGES = Object.freeze({
+  starter: ["front_desk_base"],
   base: ["front_desk_base"],
+  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "translation_governance", "ramo_testo"],
   silver: ["front_desk_base", "operations_silver"],
   gold: ["front_desk_base", "operations_silver", "executive_gold"],
   network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo"],
   enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo"],
-  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo", "nyra_finance_beauty_test"],
+  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo", "nyra_finance_beauty_test", ...CODEX_GUARD_BRANCHES],
+  codex_guard: CODEX_GUARD_BRANCHES,
 });
 
 export function deterministicBranchRegistry() {
@@ -72,7 +102,7 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
           : "base";
   const tier = normalizeTier(metadata.tier || keyRecord?.tier || presetTier);
   const fromPackage = BRANCH_PACKAGES[tier] || BRANCH_PACKAGES.base;
-  const explicit = Array.isArray(metadata.active_branches) && metadata.active_branches.length
+  const explicit = Array.isArray(metadata.active_branches)
     ? metadata.active_branches.map(String)
     : fromPackage;
   const allowed = [...new Set(explicit)].filter((id) => Boolean(getBranch(id)));
@@ -123,7 +153,7 @@ export function composeBranchContext({ keyRecord, requestedBranches = [], task =
       ],
     },
     prompt_contract: [
-      "Rispondi come assistente operativo SkinHarmony, non come chatbot generico.",
+      "Rispondi come assistente operativo del tenant autorizzato, non come chatbot generico.",
       "Usa solo i rami autorizzati.",
       "Distingui sempre fatto, ipotesi e dato mancante.",
       "Produci output breve, operativo, con prossima azione e guardrail.",

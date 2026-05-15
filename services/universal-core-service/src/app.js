@@ -10,16 +10,31 @@ import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
+import { buildCodexGuardResponse, normalizeDecisionContract } from "./decisionContract.js";
 import {
   BRANCH_PACKAGES,
   composeBranchContext,
   deterministicBranchRegistry,
   resolveBranchesForKey,
 } from "../branches/index.js";
+import { buildSuitePolicy } from "./suitePolicy.js";
+import { getTenantPolicy } from "./tenantRegistry.js";
+import {
+  AI_GATEWAY_ADAPTERS,
+  AI_GATEWAY_MODES,
+  AI_GATEWAY_SCHEMA_VERSION,
+  buildAiGatewayCoreInput,
+  buildAiGatewayVerdict,
+  validateAiGatewayPayload,
+} from "./aiGateway.js";
+import {
+  AI_GATEWAY_PAYLOAD_SCHEMA,
+  AI_GATEWAY_VERDICT_SCHEMA,
+} from "./gatewaySchema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.2-language-guard";
+const SERVICE_VERSION = "0.3.5-ai-gateway";
 
 function nowIso() {
   return new Date().toISOString();
@@ -93,6 +108,69 @@ function buildCoreInput(req, keyRecord) {
       missing_fields: Array.isArray(req.body?.data_quality?.missing_fields) ? req.body.data_quality.missing_fields : [],
     },
     constraints: safeConstraints(req.body?.constraints, keyRecord, req.body?.owner_confirmed === true),
+  };
+}
+
+function buildActionEvaluatorInput(req, keyRecord) {
+  const body = req.body || {};
+  const actionType = String(body.action_type || body.action?.type || body.domain || "workflow_decision");
+  const actionLabel = String(body.action_label || body.action?.label || body.task || actionType);
+  const riskHint = Number(body.risk_hint ?? body.action?.risk_hint ?? 45);
+  const confidenceHint = Number(body.confidence_hint ?? body.action?.confidence_hint ?? 75);
+  const publishIntent = body.publish_intent === true || actionType === "publish";
+  const sensitive =
+    publishIntent ||
+    ["publish", "approve", "change_state", "pricing", "claim_validation", "workflow_decision", "sync", "send", "delete", "write", "deploy", "update", "codex_automation"].includes(actionType);
+
+  return {
+    request_id: body.request_id || `action_${crypto.randomUUID()}`,
+    generated_at: nowIso(),
+    domain: body.domain || "action_evaluator",
+    context: {
+      tenant_id: safeTenantId(req, keyRecord),
+      actor_id: body.actor_id || undefined,
+      plan: body.plan || undefined,
+      locale: body.locale || "it",
+      metadata: {
+        action_type: actionType,
+        publish_intent: publishIntent ? "true" : "false",
+        source: "action_evaluator",
+        ...(typeof body.metadata === "object" && body.metadata ? body.metadata : {}),
+      },
+    },
+    signals: [
+      normalizeSignal({
+        id: `action:${actionType}`,
+        category: "action",
+        label: actionLabel,
+        normalized_score: sensitive ? Math.max(45, riskHint) : riskHint,
+        severity_hint: sensitive ? Math.max(45, riskHint) : riskHint,
+        confidence_hint: confidenceHint,
+        risk_hint: riskHint,
+        evidence: Array.isArray(body.evidence) ? body.evidence : [{ label: "Azione richiesta dal client", value: actionType }],
+        tags: ["action_gate", actionType],
+      }),
+    ],
+    data_quality: {
+      score: Number(body.data_quality?.score ?? body.data_quality_score ?? 70),
+      missing_fields: Array.isArray(body.data_quality?.missing_fields) ? body.data_quality.missing_fields : [],
+    },
+    constraints: safeConstraints({
+      ...(typeof body.constraints === "object" && body.constraints ? body.constraints : {}),
+      require_confirmation: true,
+      max_control_level: "confirm",
+      blocked_action_rules: [
+        ...(Array.isArray(body.constraints?.blocked_action_rules) ? body.constraints.blocked_action_rules : []),
+        ...(publishIntent
+          ? [{
+              action_id: `action:${actionType}`,
+              reason_code: "publish_requires_owner_review",
+              severity: 80,
+              blocks_execution: false,
+            }]
+          : []),
+      ],
+    }, keyRecord, body.owner_confirmed === true),
   };
 }
 
@@ -287,6 +365,43 @@ function buildFlowCoreBranchInput(payload = {}) {
       metrics.process_legitimacy_score === undefined ? undefined : Number(metrics.process_legitimacy_score),
     data_quality_score: Number(metrics.data_quality_score ?? metrics.data_quality?.score ?? 70),
     temporal_stability_score: Number(metrics.temporal_stability_score ?? metrics.stability_score ?? 70),
+  };
+}
+
+function baselineAiDecision(payload = {}) {
+  const action = String(payload.requested_action?.type || payload.action_type || payload.domain || "advisory").toLowerCase();
+  const llmOutput = String(payload.llm_output || payload.output || "");
+  const sensitive =
+    ["publish", "approve", "delete", "deploy", "update", "sync", "send", "write", "pricing", "claim_validation"].includes(action) ||
+    /password|secret|token|api key|private key|reset --hard|drop table/i.test(llmOutput);
+  return {
+    model: "baseline_without_core",
+    decision: sensitive ? "likely_allow_with_prompt_warning" : "allow",
+    executionAllowed: true,
+    ownerConfirmationEnforced: false,
+    auditRequired: false,
+    risk: sensitive ? "uncontrolled" : "unknown",
+  };
+}
+
+function gatewayBenchmark(payload = {}, verdict = {}) {
+  const baseline = baselineAiDecision(payload);
+  return {
+    baseline,
+    gateway: {
+      model: "universal_core_ai_gateway",
+      decision: verdict.decision,
+      executionAllowed: verdict.executionAllowed,
+      ownerConfirmationEnforced: verdict.requiresOwnerConfirmation,
+      auditRequired: true,
+      risk: verdict.risk?.band || "unknown",
+    },
+    delta: {
+      execution_hardened: baseline.executionAllowed === true && verdict.executionAllowed === false,
+      owner_confirmation_added: baseline.ownerConfirmationEnforced === false && verdict.requiresOwnerConfirmation === true,
+      audit_added: true,
+      verdict_schema: AI_GATEWAY_SCHEMA_VERSION,
+    },
   };
 }
 
@@ -850,6 +965,7 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/tenant/status", createAuth(keyStore, audit), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
+    const suitePolicy = buildSuitePolicy(req.coreKey, branchResolution);
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -863,6 +979,7 @@ export function createUniversalCoreService(options = {}) {
       expires_at: req.coreKey.expires_at,
       last_used_at: req.coreKey.last_used_at,
       mode: "local_first_render_ready",
+      suite_policy: suitePolicy,
     });
   });
 
@@ -918,17 +1035,175 @@ export function createUniversalCoreService(options = {}) {
       input.signals.push(normalizeSignal({ id: "core:no_signal", label: "Nessun segnale operativo fornito", normalized_score: 10, tags: ["system"] }));
     }
     const output = runUniversalCore(input);
+    const decisionContract = normalizeDecisionContract(output, {
+      action_type: req.body?.action_type || req.body?.domain || input.domain,
+      publish_intent: req.body?.publish_intent === true,
+    });
     audit.append("core_decision_run", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, request_id: input.request_id, state: output.state, risk: output.risk?.band });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       output,
+      decision_contract: decisionContract,
       guardrail: {
         destructive_automation: false,
         publish_requires_owner_confirmation: true,
         execution_from_api_allowed: output.execution_profile.can_execute === true && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX),
       },
     });
+  });
+
+  app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const input = buildActionEvaluatorInput(req, req.coreKey);
+    const output = runUniversalCore(input);
+    const decisionContract = normalizeDecisionContract(output, {
+      action_type: req.body?.action_type || input.context.metadata.action_type,
+      publish_intent: req.body?.publish_intent === true,
+    });
+    audit.append("core_action_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      request_id: input.request_id,
+      action_type: input.context.metadata.action_type,
+      state: decisionContract.state,
+      control_level: decisionContract.control_level,
+      publish_safe: decisionContract.publish_safe,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      decision_contract: decisionContract,
+      output,
+      guardrail: {
+        destructive_automation: false,
+        execution_allowed: false,
+        owner_confirmation_required: decisionContract.control_level !== "observe",
+        mode: "core_action_gate",
+      },
+    });
+  });
+
+  app.get("/v1/ai-gateway/schema", (req, res) => {
+    res.json({
+      ok: true,
+      schema_version: AI_GATEWAY_SCHEMA_VERSION,
+      payload_schema: AI_GATEWAY_PAYLOAD_SCHEMA,
+      verdict_schema: AI_GATEWAY_VERDICT_SCHEMA,
+      modes: [...AI_GATEWAY_MODES],
+      adapters: [...AI_GATEWAY_ADAPTERS],
+      required_fields: ["user_request"],
+      recommended_fields: [
+        "llm_output",
+        "context",
+        "requested_action",
+        "runtime_state",
+        "role_scope",
+        "flow_pressure",
+        "variants",
+      ],
+      verdict_fields: [
+        "decision",
+        "risk",
+        "confidence",
+        "warnings",
+        "policyFlags",
+        "executionAllowed",
+        "recommendedVariant",
+        "requiresOwnerConfirmation",
+      ],
+      rule: "ChatGPT/Codex propongono; AI Gateway invia al Core; Universal Core decide; Nyra/adapter spiegano; i client eseguono solo entro verdict.",
+    });
+  });
+  app.get("/api/v1/ai-gateway/schema", (req, res) => {
+    res.redirect(307, "/v1/ai-gateway/schema");
+  });
+
+  function handleAiGateway(req, res, adapterOverride = "") {
+    const validation = validateAiGatewayPayload(req.body || {});
+    if (!validation.ok) {
+      audit.append("core_ai_gateway_validation_failed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        errors: validation.errors,
+        adapter: adapterOverride || req.body?.adapter || "generic",
+      });
+      return publicError(res, 400, "ai_gateway_payload_invalid", validation.errors.join(", "));
+    }
+
+    const input = buildAiGatewayCoreInput({
+      payload: req.body || {},
+      tenantId: req.tenantId,
+      keyRecord: req.coreKey,
+      adapterOverride,
+    });
+    const output = runUniversalCore(input);
+    const verdict = buildAiGatewayVerdict({
+      payload: req.body || {},
+      tenantId: req.tenantId,
+      keyRecord: req.coreKey,
+      coreOutput: output,
+      adapterOverride,
+    });
+    const benchmark = req.body?.include_benchmark === true ? gatewayBenchmark(req.body || {}, verdict) : undefined;
+    audit.append("core_ai_gateway_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      request_id: input.request_id,
+      adapter: verdict.adapter,
+      mode: verdict.mode,
+      decision: verdict.decision,
+      risk: verdict.risk?.band,
+      execution_allowed: verdict.executionAllowed,
+      owner_confirmation_required: verdict.requiresOwnerConfirmation,
+    });
+    return res.json({
+      ok: true,
+      gateway: {
+        schema_version: AI_GATEWAY_SCHEMA_VERSION,
+        core_centralized: true,
+        adapters_separated: true,
+        no_duplicated_logic: true,
+        openai_call_executed: false,
+        audit_event: "core_ai_gateway_evaluated",
+      },
+      verdict,
+      benchmark,
+    });
+  }
+
+  app.post("/v1/ai-gateway/evaluate", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res);
+  });
+  app.post("/api/v1/ai-gateway/evaluate", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res);
+  });
+
+  app.post("/v1/adapters/codex/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "codex");
+  });
+  app.post("/api/v1/adapters/codex/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "codex");
+  });
+
+  app.post("/v1/adapters/site-suite/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "site_suite");
+  });
+  app.post("/api/v1/adapters/site-suite/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "site_suite");
+  });
+
+  app.post("/v1/adapters/smart-desk/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "smart_desk");
+  });
+  app.post("/api/v1/adapters/smart-desk/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "smart_desk");
+  });
+
+  app.post("/v1/adapters/skinharmony-core/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "skinharmony_core");
+  });
+  app.post("/api/v1/adapters/skinharmony-core/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    return handleAiGateway(req, res, "skinharmony_core");
   });
 
   app.post("/v1/flowcore/decision", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -1005,6 +1280,7 @@ export function createUniversalCoreService(options = {}) {
       userInput: req.body?.user_input || req.body?.input || "",
       locale: req.body?.locale || "it",
     });
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
     audit.append("core_codex_context_composed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -1015,6 +1291,33 @@ export function createUniversalCoreService(options = {}) {
     res.json({
       ok: true,
       context,
+      tenant_policy: tenantPolicy,
+      decision_contract: normalizeDecisionContract(runUniversalCore({
+        request_id: req.body?.request_id || `codex_context_${crypto.randomUUID()}`,
+        generated_at: nowIso(),
+        domain: "codex",
+        context: {
+          tenant_id: req.tenantId,
+          locale: req.body?.locale || "it",
+          metadata: {
+            action_type: "codex_automation",
+            source: "codex_context",
+          },
+        },
+        signals: [
+          normalizeSignal({
+            id: "codex:context_request",
+            label: req.body?.task || "Contesto Codex richiesto",
+            category: "codex",
+            normalized_score: context.selected_branches.length ? 35 : 45,
+            confidence_hint: 80,
+            evidence: [{ label: context.selected_branches.length ? "Rami specializzati disponibili" : "Nessun ramo richiesto/autorizzato: uso guardiano generico", value: true }],
+            tags: ["codex", context.selected_branches.length ? "branch_context" : "generic_guard"],
+          }),
+        ],
+        data_quality: { score: 75, missing_fields: [] },
+        constraints: safeConstraints({ require_confirmation: true, max_control_level: "confirm" }, req.coreKey, false),
+      }), { action_type: "codex_automation" }),
       guardrail: {
         destructive_automation: false,
         execution_allowed: false,
@@ -1022,6 +1325,60 @@ export function createUniversalCoreService(options = {}) {
         mode: "context_composition_only",
       },
     });
+  });
+
+  app.post("/v1/codex/guard", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+    const requestedBranches = Array.isArray(req.body?.branches)
+      ? req.body.branches
+      : Array.isArray(req.body?.requested_branches)
+        ? req.body.requested_branches
+        : [];
+    const context = composeBranchContext({
+      keyRecord: req.coreKey,
+      requestedBranches,
+      task: req.body?.task || "",
+      userInput: req.body?.user_input || req.body?.input || "",
+      locale: req.body?.locale || "it",
+    });
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const evaluatorInput = buildActionEvaluatorInput({
+      get: () => "",
+      body: {
+        ...(req.body || {}),
+        tenant_id: req.tenantId,
+        domain: "codex",
+        action_type: req.body?.action_type || "codex_automation",
+        action_label: req.body?.task || "Codex AI controlled work",
+        risk_hint: req.body?.risk_hint ?? (context.selected_branches.length ? 35 : 45),
+        evidence: [
+          { label: context.selected_branches.length ? "Rami Core disponibili per il task" : "Nessun ramo disponibile: guardiano generico Core attivo", value: context.selected_branches.length },
+          { label: tenantPolicy.source === "tenant_registry" ? "Tenant policy specifica caricata" : "Policy tenant generica caricata", value: tenantPolicy.source },
+          ...(Array.isArray(req.body?.evidence) ? req.body.evidence : []),
+        ],
+      },
+    }, req.coreKey);
+    const output = runUniversalCore(evaluatorInput);
+    const response = buildCodexGuardResponse({
+      tenantId: req.tenantId,
+      keyRecord: req.coreKey,
+      coreOutput: output,
+      branchContext: context,
+      requestedBranches,
+      task: req.body?.task || "",
+      actionType: req.body?.action_type || "codex_automation",
+    });
+    response.tenant_policy = tenantPolicy;
+    audit.append("core_codex_guard_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      task: req.body?.task || "",
+      mode: response.codex_guard.mode,
+      state: response.decision_contract.state,
+      control_level: response.decision_contract.control_level,
+      selected_branches: response.codex_guard.selected_branches,
+      denied_branches: response.codex_guard.denied_branches,
+    });
+    res.json({ ok: true, ...response });
   });
 
   app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {

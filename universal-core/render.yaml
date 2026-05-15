@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: skinharmony-universal-core
+    runtime: node
+    rootDir: universal-core
+    buildCommand: npm ci
+    startCommand: node --experimental-strip-types services/core-api/src/server.ts
+    envVars:
+      - key: UNIVERSAL_CORE_MODE
+        value: decision_contract_v1_calibrated
+      - key: SHX_KEYS_JSON
+        sync: false

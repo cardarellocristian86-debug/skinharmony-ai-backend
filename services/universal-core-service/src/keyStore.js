@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { DEFAULT_AUTOMATION_SCOPES, DEFAULT_CONNECTOR_SCOPES, KEY_PRESETS, sanitizeScopes } from "./scope.js";
 import { ensureDir } from "./audit.js";
+import { normalizeAllowedDomains, normalizeSuiteLimits, sanitizeSuiteModules } from "./suitePolicy.js";
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -64,11 +65,33 @@ export function createKeyStore(storageRoot, audit) {
       metadata: {
         ...(typeof input.metadata === "object" && input.metadata ? input.metadata : {}),
         tier: String(input.tier || input.metadata?.tier || preset?.tier || "").trim() || undefined,
+        suite_tier: String(input.suite_tier || input.metadata?.suite_tier || input.tier || input.metadata?.tier || preset?.tier || "").trim() || undefined,
         active_branches: Array.isArray(input.active_branches)
           ? input.active_branches.map(String)
           : Array.isArray(input.metadata?.active_branches)
             ? input.metadata.active_branches.map(String)
             : undefined,
+        suite_modules: sanitizeSuiteModules(
+          Array.isArray(input.suite_modules)
+            ? input.suite_modules
+            : Array.isArray(input.metadata?.suite_modules)
+              ? input.metadata.suite_modules
+              : [],
+        ),
+        suite_limits: normalizeSuiteLimits(
+          typeof input.suite_limits === "object" && input.suite_limits
+            ? input.suite_limits
+            : typeof input.metadata?.suite_limits === "object" && input.metadata.suite_limits
+              ? input.metadata.suite_limits
+              : { seat_limit: input.seat_limit || input.metadata?.seat_limit },
+        ),
+        allowed_domains: normalizeAllowedDomains(input.allowed_domains || input.metadata?.allowed_domains),
+        suite_policy: {
+          ...(typeof input.metadata?.suite_policy === "object" && input.metadata.suite_policy ? input.metadata.suite_policy : {}),
+          ...(typeof input.suite_policy === "object" && input.suite_policy ? input.suite_policy : {}),
+          soft_gate: true,
+          hard_block: false,
+        },
         branch_limits: typeof input.branch_limits === "object" && input.branch_limits
           ? input.branch_limits
           : typeof input.metadata?.branch_limits === "object" && input.metadata.branch_limits

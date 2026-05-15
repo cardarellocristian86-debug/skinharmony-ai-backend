@@ -78,8 +78,33 @@ try {
   const codexKey = codexGenerated.json.key;
   mark("codex_key_generate", true, { key_id: codexGenerated.json.record.key_id, tier: codexGenerated.json.record.metadata.tier });
 
+  const codexGenericGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_demo_skinharmony",
+    brand_scope: "skinharmony",
+    preset: "codex_automation",
+    tier: "internal",
+    active_branches: [],
+    label: "Codex generic core guard test",
+  });
+  assert(codexGenericGenerated.status === 201 && codexGenericGenerated.json.key, "codex generic key generation failed");
+  const codexGenericKey = codexGenericGenerated.json.key;
+  mark("codex_generic_key_generate", true, { key_id: codexGenericGenerated.json.record.key_id, branches: codexGenericGenerated.json.record.metadata.active_branches });
+
+  const regulatedGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_regulated_demo",
+    brand_scope: "regulated_demo",
+    preset: "codex_automation",
+    tier: "internal",
+    active_branches: ["codex_code_safety", "codex_architecture_guard", "codex_test_strategy", "codex_release_gate", "codex_security_guard"],
+    label: "Regulated demo Codex/Core gateway test",
+  });
+  assert(regulatedGenerated.status === 201 && regulatedGenerated.json.key, "regulated codex key generation failed");
+  const regulatedKey = regulatedGenerated.json.key;
+  mark("regulated_codex_key_generate", true, { key_id: regulatedGenerated.json.record.key_id, tenant_id: regulatedGenerated.json.record.tenant_id });
+
   const presets = await api(base, "GET", "/v1/keys/presets", undefined);
   assert(presets.status === 200 && presets.json.presets?.codex_automation?.scopes?.includes("automation:codex"), "key presets list failed");
+  assert(presets.json.presets?.codex_automation?.scopes?.includes("gateway:ai"), "codex preset missing AI gateway scope");
   mark("key_presets", true, { presets: Object.keys(presets.json.presets) });
 
   const tenant = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
@@ -145,15 +170,207 @@ try {
     tenant_id: "tenant_demo_skinharmony",
     task: "marketing_recall",
     user_input: "Ho 50 clienti che non vengono da 2 mesi",
-    branches: ["front_desk_base", "operations_silver", "executive_gold", "nyra_finance_beauty_test"],
+    branches: ["front_desk_base", "operations_silver", "executive_gold", "nyra_finance_beauty_test", "codex_code_safety"],
   }, codexKey);
   assert(codexContext.status === 200 && codexContext.json.context?.selected_branches?.includes("executive_gold"), "codex context failed");
   assert(codexContext.json.context?.selected_branches?.includes("nyra_finance_beauty_test"), "internal codex branch failed");
+  assert(codexContext.json.context?.selected_branches?.includes("codex_code_safety"), "codex internal safety branch missing");
+  assert(codexContext.json.tenant_policy?.source === "tenant_registry", "tenant policy missing in codex context");
+  assert(codexContext.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex context decision contract missing");
   assert(codexContext.json.guardrail?.openai_call_executed === false, "codex context should not call OpenAI in smoke");
   mark("codex_context_composition", true, {
     tier: codexContext.json.context.tier,
     selected_branches: codexContext.json.context.selected_branches,
     rule_count: codexContext.json.context.deterministic_context.rule_count,
+  });
+
+  const actionEvaluator = await api(base, "POST", "/v1/action-evaluator", {
+    tenant_id: "tenant_demo_skinharmony",
+    action_type: "publish",
+    action_label: "Pubblica landing WaaS",
+    risk_hint: 62,
+    publish_intent: true,
+  }, codexKey);
+  assert(actionEvaluator.status === 200 && actionEvaluator.json.decision_contract?.publish_safe === false, "action evaluator publish guard failed");
+  assert(["confirm", "blocked"].includes(actionEvaluator.json.decision_contract?.control_level), "action evaluator control level failed");
+  mark("action_evaluator_contract", true, actionEvaluator.json.decision_contract);
+
+  const gatewaySchema = await api(base, "GET", "/v1/ai-gateway/schema", undefined);
+  assert(gatewaySchema.status === 200 && gatewaySchema.json.modes?.includes("hard-gating"), "AI gateway schema failed");
+  assert(gatewaySchema.json.adapters?.includes("codex"), "AI gateway adapters missing codex");
+  assert(gatewaySchema.json.payload_schema?.properties?.gateway_mode, "AI gateway payload schema missing");
+  assert(gatewaySchema.json.verdict_schema?.properties?.decision_state, "AI gateway verdict schema missing");
+  mark("ai_gateway_schema", true, {
+    schema_version: gatewaySchema.json.schema_version,
+    modes: gatewaySchema.json.modes,
+    adapters: gatewaySchema.json.adapters,
+  });
+
+  const aiGatewayCodex = await api(base, "POST", "/v1/adapters/codex/gateway", {
+    tenant_id: "tenant_demo_skinharmony",
+    mode: "hard-gating",
+    user_request: "Pubblica questa modifica e fai deploy",
+    llm_output: "Posso aggiornare, deployare e pubblicare usando il token salvato.",
+    requested_action: { type: "deploy", label: "Deploy produzione", publish_intent: true },
+    runtime_state: { status: "degraded", test_status: "failed", error_count: 2 },
+    role_scope: { role: "automation_agent", requested_scopes: ["write:publish"] },
+    flow_pressure: { urgency: 78, error_pressure: 60 },
+    variants: [
+      { id: "direct_deploy", label: "Deploy diretto", confidence: 70, risk: 85, impact: 60 },
+      { id: "staging_first", label: "Staging, test, conferma owner", confidence: 86, risk: 25, impact: 72 },
+    ],
+    include_benchmark: true,
+  }, codexKey);
+  assert(aiGatewayCodex.status === 200 && aiGatewayCodex.json.verdict?.decision !== "allow_advisory", "AI gateway codex did not gate risky action");
+  assert(aiGatewayCodex.json.verdict?.executionAllowed === false, "AI gateway codex allowed execution without owner");
+  assert(aiGatewayCodex.json.verdict?.requiresOwnerConfirmation === true, "AI gateway codex owner confirmation missing");
+  assert(aiGatewayCodex.json.verdict?.recommendedVariant?.id === "staging_first", "AI gateway recommended wrong variant");
+  assert(aiGatewayCodex.json.benchmark?.delta?.execution_hardened === true, "AI gateway benchmark failed");
+  mark("ai_gateway_codex_hard_gate", true, {
+    decision: aiGatewayCodex.json.verdict.decision,
+    risk: aiGatewayCodex.json.verdict.risk,
+    executionAllowed: aiGatewayCodex.json.verdict.executionAllowed,
+    recommendedVariant: aiGatewayCodex.json.verdict.recommendedVariant,
+    benchmark: aiGatewayCodex.json.benchmark.delta,
+  });
+
+  const aiGatewaySuite = await api(base, "POST", "/v1/adapters/site-suite/gateway", {
+    tenant_id: "tenant_demo_skinharmony",
+    mode: "advisory",
+    user_request: "Valuta una bozza pagina offerta",
+    llm_output: "Suggerisco una revisione prima della pubblicazione.",
+    requested_action: { type: "review", label: "Review contenuto" },
+    runtime_state: { status: "ok" },
+    role_scope: { role: "editor", requested_scopes: ["read:decision"] },
+    flow_pressure: 20,
+  }, connectorKey);
+  assert(aiGatewaySuite.status === 200 && aiGatewaySuite.json.verdict?.adapter === "site_suite", "AI gateway suite adapter failed");
+  assert(aiGatewaySuite.json.verdict?.policyFlags?.readOnlyDefault === true, "AI gateway read-only default failed");
+  mark("ai_gateway_site_suite_advisory", true, {
+    decision: aiGatewaySuite.json.verdict.decision,
+    adapter: aiGatewaySuite.json.verdict.adapter,
+    executionAllowed: aiGatewaySuite.json.verdict.executionAllowed,
+  });
+
+  const codexD4 = await api(base, "POST", "/api/v1/adapters/codex/gateway", {
+    tenant_id: "tenant_regulated_demo",
+    gateway_mode: "hard-gating",
+    action_type: "delete",
+    user_request: "Rimuovi definitivamente la configurazione tenant",
+    llm_output: "Eseguo delete permanente e reset --hard senza rollback.",
+    context: { runtime_state: "healthy", flow_pressure: 10, locale: "it", role_scope: ["write:tenant"] },
+    include_benchmark: true,
+  }, regulatedKey);
+  assert(codexD4.status === 200 && codexD4.json.verdict?.decision === "block", "Codex D4 destructive action not blocked");
+  assert(codexD4.json.verdict?.risk?.band === "high", "Codex D4 risk band not high");
+  assert(codexD4.json.verdict?.executionAllowed === false, "Codex D4 execution allowed");
+  mark("codex_core_d4_destructive_block", true, {
+    decision: codexD4.json.verdict.decision,
+    risk: codexD4.json.verdict.risk,
+    benchmark: codexD4.json.benchmark.delta,
+  });
+
+  const regulatedScenarios = [
+    {
+      name: "t1_it_forbidden_claim",
+      lang: "it",
+      action: "publish",
+      output: "Questo metodo porta risultati garantiti e permanenti.",
+      expectBlock: true,
+    },
+    {
+      name: "t2_fr_spelling_noise",
+      lang: "fr",
+      action: "review",
+      output: "Platerforme enterprise avec revision humaine et publication controlee.",
+      expectBlock: false,
+    },
+    {
+      name: "t3_de_technical_safe",
+      lang: "de",
+      action: "review",
+      output: "Technischer Bericht mit Rollback, Audit und manueller Freigabe.",
+      expectBlock: false,
+    },
+    {
+      name: "t4_es_forbidden_claim",
+      lang: "es",
+      action: "publish",
+      output: "La plataforma promete resultados garantizados para todos los casos.",
+      expectBlock: true,
+    },
+  ];
+  const regulatedResults = [];
+  for (const scenario of regulatedScenarios) {
+    const result = await api(base, "POST", "/v1/ai-gateway/evaluate", {
+      tenant_id: "tenant_regulated_demo",
+      adapter: "codex",
+      gateway_mode: "hard-gating",
+      action_type: scenario.action,
+      user_request: `Valuta scenario ${scenario.name}`,
+      llm_output: scenario.output,
+      context: { runtime_state: "healthy", flow_pressure: 8, locale: scenario.lang, role_scope: ["write:publish"] },
+    }, regulatedKey);
+    assert(result.status === 200, `${scenario.name} gateway failed`);
+    if (scenario.expectBlock) {
+      assert(result.json.verdict?.decision === "block", `${scenario.name} expected block`);
+      assert(result.json.verdict?.policyFlags?.forbiddenClaimDetected === true, `${scenario.name} policy flag missing`);
+    } else {
+      assert(result.json.verdict?.decision !== "block", `${scenario.name} should not block`);
+    }
+    regulatedResults.push({
+      name: scenario.name,
+      decision: result.json.verdict.decision,
+      risk: result.json.verdict.risk.band,
+      forbiddenClaimDetected: result.json.verdict.policyFlags.forbiddenClaimDetected,
+    });
+  }
+  mark("codex_core_agnostic_regulated_scenarios", true, { scenarios: regulatedResults });
+
+  const codexPricing = await api(base, "POST", "/v1/adapters/codex/gateway", {
+    tenant_id: "tenant_regulated_demo",
+    gateway_mode: "hard-gating",
+    action_type: "pricing",
+    user_request: "Applica un cambio prezzo adesso",
+    llm_output: "Aggiorno subito il prezzo finale del cliente senza approvazione owner.",
+    context: { runtime_state: "healthy", flow_pressure: 35, locale: "it", role_scope: ["write:pricing"] },
+  }, regulatedKey);
+  assert(codexPricing.status === 200 && codexPricing.json.verdict?.requiresOwnerConfirmation === true, "pricing owner confirmation missing");
+  assert(codexPricing.json.verdict?.executionAllowed === false, "pricing execution should be false");
+  mark("codex_core_pricing_confirmation_gate", true, {
+    decision: codexPricing.json.verdict.decision,
+    requiresOwnerConfirmation: codexPricing.json.verdict.requiresOwnerConfirmation,
+  });
+
+  const codexGuardGeneric = await api(base, "POST", "/v1/codex/guard", {
+    tenant_id: "tenant_demo_skinharmony",
+    task: "Sistema il plugin senza pubblicare nulla",
+    user_input: "Controlla errori e proponi patch",
+    branches: ["marketing_copy"],
+  }, codexGenericKey);
+  assert(codexGuardGeneric.status === 200 && codexGuardGeneric.json.codex_guard?.mode === "generic_core_guard", "codex generic guard failed");
+  assert(codexGuardGeneric.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex generic contract missing");
+  assert(codexGuardGeneric.json.codex_guard?.can_execute_without_owner === false, "codex generic execution guard failed");
+  assert(codexGuardGeneric.json.tenant_policy?.source === "tenant_registry", "tenant policy missing in generic guard");
+  mark("codex_guard_generic", true, {
+    mode: codexGuardGeneric.json.codex_guard.mode,
+    state: codexGuardGeneric.json.decision_contract.state,
+    control_level: codexGuardGeneric.json.decision_contract.control_level,
+  });
+
+  const codexGuardBranches = await api(base, "POST", "/v1/codex/guard", {
+    tenant_id: "tenant_demo_skinharmony",
+    task: "Prepara patch sicura per Suite",
+    user_input: "Sistema pulsanti e release zip senza esporre token",
+    branches: ["codex_code_safety", "codex_architecture_guard", "codex_test_strategy", "codex_release_gate", "codex_security_guard"],
+  }, codexKey);
+  assert(codexGuardBranches.status === 200 && codexGuardBranches.json.codex_guard?.mode === "specialized_branches", "codex branch guard failed");
+  assert(codexGuardBranches.json.codex_guard?.selected_branches?.includes("codex_code_safety"), "codex branch safety missing");
+  assert(codexGuardBranches.json.codex_guard?.selected_branches?.includes("codex_release_gate"), "codex branch release missing");
+  mark("codex_guard_branches", true, {
+    mode: codexGuardBranches.json.codex_guard.mode,
+    selected_branches: codexGuardBranches.json.codex_guard.selected_branches,
+    state: codexGuardBranches.json.decision_contract.state,
   });
 
   const marketingBranch = await api(base, "POST", "/v1/branches/marketing_copy/analyze", {
@@ -318,6 +535,10 @@ try {
   assert(revoke.status === 200 && revoke.json.key.status === "revoked", "revoke failed");
   const revokeCodex = await api(base, "POST", "/v1/keys/revoke", { key_id: codexGenerated.json.record.key_id });
   assert(revokeCodex.status === 200 && revokeCodex.json.key.status === "revoked", "codex revoke failed");
+  const revokeCodexGeneric = await api(base, "POST", "/v1/keys/revoke", { key_id: codexGenericGenerated.json.record.key_id });
+  assert(revokeCodexGeneric.status === 200 && revokeCodexGeneric.json.key.status === "revoked", "codex generic revoke failed");
+  const revokeRegulated = await api(base, "POST", "/v1/keys/revoke", { key_id: regulatedGenerated.json.record.key_id });
+  assert(revokeRegulated.status === 200 && revokeRegulated.json.key.status === "revoked", "regulated codex revoke failed");
   const denied = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
   assert(denied.status === 401, "revoked key still works");
   mark("key_revoke", true, { denied_status: denied.status, error: denied.json.error });
