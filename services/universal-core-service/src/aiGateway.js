@@ -120,6 +120,102 @@ function riskFromText(value = "") {
   };
 }
 
+function flattenForScan(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function parseMaybeJson(value) {
+  if (typeof value !== "string") return value;
+  const raw = value.trim();
+  if (!raw || !["{", "["].includes(raw[0])) return value;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return value;
+  }
+}
+
+function collectObjectValues(value, path = "", output = []) {
+  if (value === undefined || value === null) return output;
+  if (typeof value !== "object") {
+    output.push({ path, value });
+    return output;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectObjectValues(item, `${path}[${index}]`, output));
+    return output;
+  }
+  Object.entries(value).forEach(([key, item]) => collectObjectValues(item, path ? `${path}.${key}` : key, output));
+  return output;
+}
+
+function detectAgnosticWorkflowRisk(payload = {}) {
+  const parsedUserRequest = parseMaybeJson(payload.user_request);
+  const parsedOutput = parseMaybeJson(payload.llm_output || payload.output);
+  const scanText = [
+    payload.action_type,
+    payload.requested_action,
+    flattenForScan(parsedUserRequest),
+    flattenForScan(parsedOutput),
+    flattenForScan(payload.context),
+    flattenForScan(payload.runtime_state),
+  ].join(" ").toLowerCase();
+
+  const patterns = [
+    { id: "bypass_audit", category: "override", tokens: ["bypass_audit", "bypass audit", "bypass_staging_audit", "skip audit"] },
+    { id: "hot_swap", category: "override", tokens: ["hot_swap", "hot swap", "runtime hot swap"] },
+    { id: "override_threshold", category: "override", tokens: ["override_threshold", "override threshold", "override_liquidity_threshold"] },
+    { id: "cross_border", category: "network_movement", tokens: ["cross_border", "cross-border", "cross border"] },
+    { id: "ledger", category: "network_movement", tokens: ["ledger", "ledger_transfer", "cross_border_ledger_transfer"] },
+    { id: "offshore", category: "network_movement", tokens: ["offshore", "offshore_node"] },
+    { id: "cross_tenant", category: "network_movement", tokens: ["cross-tenant", "cross_tenant", "cross tenant"] },
+  ];
+
+  const hits = [];
+  for (const pattern of patterns) {
+    if (pattern.tokens.some((token) => scanText.includes(token))) {
+      hits.push({ id: pattern.id, category: pattern.category });
+    }
+  }
+
+  const structuredValues = [
+    ...collectObjectValues(parsedUserRequest),
+    ...collectObjectValues(parsedOutput),
+    ...collectObjectValues(payload.context),
+  ];
+  const autonomousAuthorization = structuredValues.some((entry) => {
+    const key = String(entry.path || "").toLowerCase();
+    const value = String(entry.value || "").toLowerCase();
+    return key.endsWith("authorized_by") && value === "ai_agent_auto";
+  }) || scanText.includes('"authorized_by":"ai_agent_auto"') || scanText.includes('"authorized_by": "ai_agent_auto"');
+
+  const mediumRiskContext =
+    hits.length > 0 ||
+    scanText.includes("market_volatility_index\":\"high") ||
+    scanText.includes("market_volatility_index\": \"high") ||
+    scanText.includes("risk_tolerance_coefficient") ||
+    scanText.includes("automated_workflow");
+
+  if (autonomousAuthorization && mediumRiskContext) {
+    hits.push({ id: "ai_agent_auto_authorization", category: "autonomous_authorization" });
+  }
+
+  const uniqueHits = Array.from(new Map(hits.map((hit) => [hit.id, hit])).values());
+  return {
+    triggered: uniqueHits.length > 0,
+    severity: uniqueHits.length ? 100 : 0,
+    risk_band: uniqueHits.length ? "high" : "low",
+    hits: uniqueHits,
+    warnings: uniqueHits.map((hit) => `agnostic_workflow_flag:${hit.id}`),
+  };
+}
+
 function policyWarningsFromText(tenantPolicy = {}, value = "") {
   const body = text(value).toLowerCase();
   if (!body) return [];
@@ -204,6 +300,7 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
   const actionType = action.type.toLowerCase();
   const sensitive = action.sensitive || action.publish_intent || SENSITIVE_ACTIONS.has(actionType);
   const selectedVariant = rankGatewayVariants(payload.variants);
+  const agnosticWorkflowRisk = detectAgnosticWorkflowRisk(payload);
   const missingFields = [
     ...(!text(payload.llm_output || payload.output) ? ["llm_output"] : []),
     ...(!text(roleScope.role || roleScope.actor_role) ? ["role_scope.role"] : []),
@@ -294,6 +391,21 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
     });
   }
 
+  if (agnosticWorkflowRisk.triggered) {
+    signals.push({
+      id: "gateway:agnostic_workflow_guard",
+      source: "ai_gateway",
+      category: "workflow_guard",
+      label: "Blocco agnostico workflow sensibile",
+      value: 100,
+      normalized_score: 100,
+      severity_hint: 100,
+      confidence_hint: 92,
+      evidence: agnosticWorkflowRisk.hits.map((hit) => ({ label: hit.id, value: hit.category })),
+      tags: ["ai_gateway", "workflow_guard", "blocked"],
+    });
+  }
+
   return {
     request_id: text(payload.request_id, `ai_gateway_${crypto.randomUUID()}`),
     generated_at: nowIso(),
@@ -345,6 +457,14 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
               blocks_execution: mode === "hard-gating",
             }]
           : []),
+        ...(agnosticWorkflowRisk.triggered
+          ? [{
+              action_id: "policy:agnostic_workflow_guard",
+              reason_code: "agnostic_sensitive_workflow_flag_detected",
+              severity: 100,
+              blocks_execution: true,
+            }]
+          : []),
       ],
       allowed_actions: arrayValue(payload.constraints?.allowed_actions),
       permissions: keyRecord?.allowed_scopes || [],
@@ -366,6 +486,7 @@ export function buildAiGatewayVerdict({
   const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier);
   const policyWarnings = policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || "");
   const selectedVariant = rankGatewayVariants(payload.variants);
+  const agnosticWorkflowRisk = detectAgnosticWorkflowRisk(payload);
   const contract = normalizeDecisionContract(coreOutput, {
     action_type: action.type,
     publish_intent: action.publish_intent,
@@ -390,26 +511,28 @@ export function buildAiGatewayVerdict({
   const warnings = [
     ...outputRisk.warnings,
     ...policyWarnings,
+    ...agnosticWorkflowRisk.warnings,
     ...(contract.blocked_reasons || []),
     ...(requiresOwnerConfirmation && !payload.owner_confirmed ? ["owner_confirmation_required"] : []),
     ...(tenantPolicy.source === "default_policy" ? ["generic_tenant_policy_loaded"] : []),
   ];
 
+  const forcedBlocked = agnosticWorkflowRisk.triggered;
   return {
     schema_version: AI_GATEWAY_SCHEMA_VERSION,
     tenant_id: tenantId,
     key_id: keyRecord?.key_id || null,
     adapter,
     mode,
-    decision_state: contract.state === "blocked" ? "blocked" : contract.control_level === "confirm" ? "attention" : "ready",
-    decision: contract.state === "blocked"
+    decision_state: forcedBlocked || contract.state === "blocked" ? "blocked" : contract.control_level === "confirm" ? "attention" : "ready",
+    decision: forcedBlocked || contract.state === "blocked"
       ? "block"
       : contract.control_level === "confirm"
         ? "review"
         : "allow_advisory",
     risk: {
-      band: contract.risk_band,
-      score: coreOutput.risk?.score ?? null,
+      band: forcedBlocked ? "high" : contract.risk_band,
+      score: forcedBlocked ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
       reasons: [...new Set(warnings)].slice(0, 30),
     },
     confidence: contract.confidence,
@@ -425,8 +548,10 @@ export function buildAiGatewayVerdict({
       forbiddenClaimDetected: policyWarnings.length > 0,
       destructiveAction: outputRisk.warnings.some((warning) => warning.includes("delete") || warning.includes("reset --hard")),
       priceAnomaly: action.type.toLowerCase() === "pricing",
+      agnosticWorkflowRisk: agnosticWorkflowRisk.triggered,
+      agnosticWorkflowFlags: agnosticWorkflowRisk.hits.map((hit) => hit.id),
     },
-    executionAllowed,
+    executionAllowed: forcedBlocked ? false : executionAllowed,
     recommendedVariant: selectedVariant
       ? { id: selectedVariant.id, label: selectedVariant.label, score: selectedVariant.score }
       : {
@@ -434,7 +559,7 @@ export function buildAiGatewayVerdict({
           label: mode === "rewrite" ? "Riscrivi entro guardrail Core" : mode === "hard-gating" ? "Blocca o richiedi owner" : "Spiega senza eseguire",
           score: null,
         },
-    requiresOwnerConfirmation,
+    requiresOwnerConfirmation: forcedBlocked ? true : requiresOwnerConfirmation,
     final_output: text(payload.llm_output || payload.output || ""),
     audit_id: `audit_${crypto.randomUUID()}`,
     decision_contract: contract,
