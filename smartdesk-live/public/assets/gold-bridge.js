@@ -418,12 +418,18 @@
     return root.firstElementChild;
   }
 
-  function buildPanel(context, capabilities) {
+  function buildPanel(context, capabilities, customerIntelligence) {
     const primary = context?.primaryAction || capabilities?.primaryAction || null;
     const secondary = Array.isArray(context?.secondaryActions) ? context.secondaryActions : [];
     const blocked = Array.isArray(context?.blockedActions) ? context.blockedActions : [];
     const confidence = Number(context?.confidence ?? capabilities?.confidence ?? 0);
     const risk = context?.risk || capabilities?.risk || { score: 0, band: "low" };
+    const customerContract = customerIntelligence?.contract || null;
+    const readiness = customerIntelligence?.readiness || null;
+    const localSummary = customerIntelligence?.localSummary || {};
+    const customerSchema = customerContract?.schema_version || "";
+    const nextStep = readiness?.next_step || "waiting_for_core";
+    const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
 
     const panel = document.createElement("section");
     panel.id = PANEL_ID;
@@ -467,6 +473,15 @@
             <div class="gold-bridge-item-subtitle">${blocked.join(" · ")}</div>
           </div>
         ` : ""}
+        ${customerSchema ? `
+          <div class="gold-bridge-item">
+            <div class="gold-bridge-item-title">Customer Intelligence Core</div>
+            <div class="gold-bridge-item-subtitle">
+              ${customerSchema} · clienti ${Number(localSummary.clients || 0)} · consensi ${Number(readiness?.granted_consent_count ?? localSummary.consents_registered ?? 0)} · invio automatico ${automaticSendAllowed ? "abilitato" : "bloccato"}
+            </div>
+            <div class="gold-bridge-item-subtitle">Prossima azione: ${nextStep}</div>
+          </div>
+        ` : ""}
       </div>
     `;
     return panel;
@@ -482,15 +497,16 @@
     injectStyle();
 
     try {
-      const [capabilities, context] = await Promise.all([
+      const [capabilities, context, customerIntelligence] = await Promise.all([
         fetchJson("/api/ai-gold/capabilities"),
-        fetchJson("/api/ai-gold/decision-context")
+        fetchJson("/api/ai-gold/decision-context"),
+        fetchJson("/api/ai-gold/customer-intelligence").catch(() => null)
       ]);
       if (token !== renderToken) return;
 
       const anchor = findAnchor();
       if (!anchor) return;
-      const panel = buildPanel(context, capabilities);
+      const panel = buildPanel(context, capabilities, customerIntelligence);
       const existing = document.getElementById(PANEL_ID);
       runWithMutationLock(() => {
         if (existing) {

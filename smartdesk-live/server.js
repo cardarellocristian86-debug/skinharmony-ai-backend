@@ -1414,6 +1414,34 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
+app.get("/api/ai-gold/customer-intelligence", requirePlan("gold"), async (req, res) => {
+  try {
+    const payload = service.buildCustomerIntelligenceCorePayload(req.session);
+    const [contract, readiness] = await Promise.all([
+      universalCoreBridge.customerIntelligenceContract(),
+      universalCoreBridge.customerIntelligenceReadiness(payload)
+    ]);
+    return res.status(contract.success || readiness.success ? 200 : 400).json({
+      success: contract.success || readiness.success,
+      sourceLayer: "universal_core_customer_intelligence",
+      contract: contract.contract || null,
+      readiness: readiness.readiness || null,
+      rule: readiness.rule || contract.contract?.rule || "AI Gold prepara bozze e priorita; l'operatore conferma sempre.",
+      localSummary: payload.local_summary,
+      automation: {
+        automaticSendAllowed: Boolean(contract.contract?.automation_limits?.automatic_send_allowed) && Boolean(readiness.readiness?.can_send_automatically),
+        operatorConfirmationRequired: true
+      }
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "ai_gold_customer_intelligence_failed",
+      message: error instanceof Error ? error.message : "Customer Intelligence Gold non disponibile."
+    });
+  }
+});
+
 app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,

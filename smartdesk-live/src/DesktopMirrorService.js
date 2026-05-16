@@ -11080,6 +11080,103 @@ class DesktopMirrorService {
     };
   }
 
+  buildCustomerIntelligenceCorePayload(session = null) {
+    this.assertCanOperate(session);
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const marketingActions = this.filterByCenter(this.aiMarketingActionsRepository.list(), session);
+    const events = [
+      ...clients.slice(0, 80).map((client) => ({
+        type: "lead.created",
+        customer_id: client.id,
+        source: "smartdesk_client",
+        created_at: client.createdAt || client.updatedAt || new Date().toISOString(),
+      })),
+      ...appointments.slice(0, 120).map((appointment) => ({
+        type: String(appointment.status || "").toLowerCase() === "completed" ? "appointment.completed" : "appointment.booked",
+        customer_id: appointment.clientId,
+        appointment_id: appointment.id,
+        service_id: appointment.serviceId || (Array.isArray(appointment.serviceIds) ? appointment.serviceIds[0] : ""),
+        starts_at: appointment.startAt || appointment.date || appointment.createdAt,
+      })),
+      ...payments.slice(0, 80).map((payment) => ({
+        type: "payment.received",
+        customer_id: payment.clientId,
+        payment_id: payment.id,
+        amount: Number(payment.amountCents || payment.amount || 0),
+        created_at: payment.createdAt || payment.paidAt || payment.date,
+      })),
+      ...marketingActions.slice(0, 80).map((action) => ({
+        type: String(action.status || "") === "approved" ? "marketing.message_approved" : "marketing.message_drafted",
+        customer_id: action.clientId,
+        channel: action.channel || "manual",
+        draft_id: action.id,
+        created_at: action.generatedAt || action.createdAt || action.updatedAt,
+      })),
+    ].filter((event) => event.customer_id || event.type === "lead.created");
+
+    const consents = clients.flatMap((client) => {
+      const capturedAt = client.marketingConsentAt || client.privacyConsentAt || client.createdAt || "";
+      const source = client.consentSource || "smartdesk";
+      return [
+        {
+          customer_id: client.id,
+          channel: "email",
+          purpose: "recall",
+          status: client.marketingConsent ? "granted" : "unknown",
+          source,
+          captured_at: capturedAt,
+        },
+        {
+          customer_id: client.id,
+          channel: "phone",
+          purpose: "recall",
+          status: client.marketingConsent ? "granted" : "unknown",
+          source,
+          captured_at: capturedAt,
+        },
+      ];
+    });
+
+    const focusClient = clients.find((client) => client.marketingConsent && (client.email || client.phone)) || clients[0] || {};
+    const clientPayments = payments.filter((payment) => String(payment.clientId || "") === String(focusClient.id || ""));
+    const clientAppointments = appointments.filter((appointment) => String(appointment.clientId || "") === String(focusClient.id || ""));
+    const totalSpend = clientPayments.reduce((sum, payment) => sum + Number(payment.amountCents || payment.amount || 0), 0);
+    return {
+      events,
+      consents,
+      customer_profile: {
+        customer_id: focusClient.id || "",
+        display_name: focusClient.name || `${focusClient.firstName || ""} ${focusClient.lastName || ""}`.trim(),
+        preferred_channel: focusClient.email ? "email" : focusClient.phone ? "phone" : "",
+        last_visit_at: focusClient.lastVisit || clientAppointments.slice(-1)[0]?.startAt || "",
+        last_contact_at: marketingActions.find((action) => String(action.clientId || "") === String(focusClient.id || ""))?.updatedAt || "",
+        visit_frequency_days: clientAppointments.length >= 2 ? 45 : "",
+        total_spend: totalSpend,
+        average_ticket: clientPayments.length ? Math.round(totalSpend / clientPayments.length) : "",
+        services_used: [...new Set(clientAppointments.map((item) => item.serviceName || item.serviceId).filter(Boolean))],
+        products_purchased: [],
+        lifecycle_state: focusClient.lastVisit ? "known_customer" : "lead",
+        recall_priority: focusClient.marketingConsent ? "review" : "blocked_until_consent",
+        churn_risk: "",
+        consent_summary: {
+          marketing: focusClient.marketingConsent ? "granted" : "unknown",
+          privacy: focusClient.privacyConsent ? "granted" : "unknown",
+        },
+        next_best_action: focusClient.marketingConsent ? "prepare_draft_for_operator_confirmation" : "complete_consent_registry",
+        evidence_refs: ["smartdesk_clients", "smartdesk_appointments", "smartdesk_payments", "smartdesk_ai_marketing_actions"],
+      },
+      local_summary: {
+        clients: clients.length,
+        appointments: appointments.length,
+        payments: payments.length,
+        marketing_actions: marketingActions.length,
+        consents_registered: consents.filter((item) => item.status === "granted").length,
+      },
+    };
+  }
+
   rankGoldDecisionAnomalies(input = {}) {
     const dataQuality = input.dataQuality || {};
     const profitabilityOverview = input.profitabilityOverview || {};
