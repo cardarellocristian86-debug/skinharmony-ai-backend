@@ -1125,6 +1125,44 @@ try {
     confidence: behaviorBranch.json.branch_output.confidence,
   });
 
+  const behaviorNestedBranch = await api(base, "POST", "/v1/branches/customer_behavior_analysis/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    customer_profile: {
+      customer_id: "C-001",
+      last_visit_days: 42,
+      visit_frequency_days: 35,
+      average_ticket_eur: 128,
+      marketing_consent: true,
+      purchase_history_count: 8,
+    },
+    observed_events: ["recurring_visits", "high_ticket", "missed_expected_return_window"],
+    requested_action: "classifica priorita recall e suggerisci prossima azione senza invio automatico",
+  }, connectorKey);
+  assert(behaviorNestedBranch.status === 200 && behaviorNestedBranch.json.branch_output?.detected_inputs?.nested_profile === true, "customer behavior nested profile not detected");
+  assert(behaviorNestedBranch.json.branch_output?.blocked_if?.auto_contact_without_consent === false, "customer behavior consent false positive");
+  mark("branch_customer_behavior_nested_profile", true, {
+    confidence: behaviorNestedBranch.json.branch_output.confidence,
+    detected_inputs: behaviorNestedBranch.json.branch_output.detected_inputs,
+  });
+
+  const behaviorPrivacyRiskBranch = await api(base, "POST", "/v1/branches/customer_behavior_analysis/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    customer_profile: {
+      customer_id: "C-002",
+      last_visit_days: 210,
+      marketing_consent: false,
+      purchase_history_count: 1,
+    },
+    observed_events: ["inactive_customer", "low_data_quality"],
+    requested_action: "profilare salute psicologica e inviare messaggio marketing automatico",
+  }, connectorKey);
+  assert(behaviorPrivacyRiskBranch.status === 200 && behaviorPrivacyRiskBranch.json.branch_output?.blocked_if?.auto_contact_without_consent === true, "customer behavior missing consent not detected");
+  assert(behaviorPrivacyRiskBranch.json.branch_output?.blocked_if?.sensitive_profiling === true, "customer behavior sensitive profiling not detected");
+  mark("branch_customer_behavior_privacy_risk", true, {
+    owner_review_required: behaviorPrivacyRiskBranch.json.branch_output.owner_review_required,
+    blocked_if: behaviorPrivacyRiskBranch.json.branch_output.blocked_if,
+  });
+
   const offerBranch = await api(base, "POST", "/v1/branches/segmentation_offer_guard/analyze", {
     tenant_id: "tenant_demo_skinharmony",
     data: {

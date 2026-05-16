@@ -37,7 +37,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.12-marketing-intelligence-tree";
+const SERVICE_VERSION = "0.3.13-customer-profiling-guard";
 
 function nowIso() {
   return new Date().toISOString();
@@ -1289,21 +1289,44 @@ function buildBranchPayload(branch, payload = {}) {
       blocked_if: { missing_consent: !consent, auto_send: autoSend },
     };
   } else if (branch === "customer_behavior_analysis") {
-    const sampleSize = Number(data.sample_size ?? data.customer_count ?? 0);
-    const hasRecency = data.has_recency === true || data.last_activity_available === true;
-    const hasFrequency = data.has_frequency === true || data.frequency_available === true;
-    const hasValue = data.has_value === true || data.value_available === true;
-    const sensitiveProfiling = data.sensitive_profiling === true || data.infers_health === true || data.infers_psychology === true;
+    const profile = typeof payload.customer_profile === "object" && payload.customer_profile ? payload.customer_profile : {};
+    const observedEvents = normalizeList(payload.observed_events || data.observed_events || data.events, 50);
+    const requestedAction = textValue(payload.requested_action || data.requested_action || data.action);
+    const sampleSize = Number(data.sample_size ?? data.customer_count ?? profile.sample_size ?? profile.customer_count ?? (profile.purchase_history_count ? 12 : 0));
+    const hasRecency = data.has_recency === true || data.last_activity_available === true || Number.isFinite(Number(profile.last_visit_days)) || Number.isFinite(Number(data.last_visit_days));
+    const hasFrequency = data.has_frequency === true || data.frequency_available === true || Number.isFinite(Number(profile.visit_frequency_days)) || Number.isFinite(Number(data.visit_frequency_days)) || observedEvents.includes("recurring_visits");
+    const hasValue = data.has_value === true || data.value_available === true || Number.isFinite(Number(profile.average_ticket_eur)) || Number.isFinite(Number(data.average_ticket_eur)) || observedEvents.includes("high_ticket");
+    const consentKnown = data.marketing_consent === true || data.consent === true || profile.marketing_consent === true;
+    const autoContact = data.auto_contact === true || data.auto_send === true || data.send_now === true || requestedAction.includes("automatico") || requestedAction.includes("auto");
+    const sensitiveProfiling =
+      data.sensitive_profiling === true ||
+      data.infers_health === true ||
+      data.infers_psychology === true ||
+      data.infers_sensitive_category === true ||
+      observedEvents.includes("sensitive_profiling") ||
+      requestedAction.includes("salute") ||
+      requestedAction.includes("psicolog") ||
+      requestedAction.includes("categoria protetta");
     const dataCompleteness = [hasRecency, hasFrequency, hasValue].filter(Boolean).length;
     addSignal("data_completeness", "Dati comportamento disponibili", 100 - dataCompleteness * 30, "customer_intelligence", ["data"]);
     addSignal("sample_quality", "Campione dati sufficiente", sampleSize >= 50 ? 12 : sampleSize >= 10 ? 38 : 74, "customer_intelligence", ["sample"]);
     addSignal("sensitive_inference", "Profilazione sensibile evitata", sensitiveProfiling ? 98 : 8, "privacy", ["profiling"]);
+    addSignal("consent_for_contact", "Consenso prima di contatto diretto", !autoContact || consentKnown ? 10 : 92, "privacy", ["consent"]);
     branchOutput = {
       behavior_mode: "observed_patterns_only",
       confidence: sampleSize >= 50 && dataCompleteness >= 2 ? "medium_high" : "low_or_partial",
       allowed_outputs: ["segmenti operativi", "clienti da seguire", "rischio churn prudente", "next best action manuale"],
       blocked_outputs: ["diagnosi sensibili", "profilazione salute", "decisioni automatiche irreversibili"],
-      owner_review_required: sensitiveProfiling,
+      owner_review_required: sensitiveProfiling || (autoContact && !consentKnown),
+      blocked_if: {
+        sensitive_profiling: sensitiveProfiling,
+        auto_contact_without_consent: autoContact && !consentKnown,
+      },
+      detected_inputs: {
+        nested_profile: Object.keys(profile).length > 0,
+        observed_events_count: observedEvents.length,
+        data_completeness: dataCompleteness,
+      },
     };
   } else if (branch === "segmentation_offer_guard") {
     const segment = textValue(data.segment || data.customer_segment || data.audience);
