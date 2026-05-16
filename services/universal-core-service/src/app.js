@@ -34,7 +34,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.6-action-mediation";
+const SERVICE_VERSION = "0.3.7-site-factory-visual-guards";
 
 function nowIso() {
   return new Date().toISOString();
@@ -801,18 +801,124 @@ function buildBranchPayload(branch, payload = {}) {
   } else if (branch === "marketing_copy") {
     const offer = textValue(data.offer || data.product || data.service);
     const target = textValue(data.target || data.audience || data.customer_type);
+    const proof = textValue(data.proof || data.evidence || data.source);
+    const cta = textValue(data.cta || data.call_to_action);
     if (!offer) missing.push("offer");
     if (!target) missing.push("target");
+    if (!proof && data.public_copy === true) missing.push("proof_or_source");
+    if (!cta) missing.push("cta");
     const claimResult = claimShieldCheck({ text: textValue(data.draft || data.claims || data.copy || ""), context: data.context || {} });
+    const unsupportedTrend = Boolean(data.trend_claim) && !data.sources_provided;
+    const inventedProof = Boolean(data.case_study || data.testimonial) && data.proof_verified !== true;
     addSignal("claim_risk", "Rischio claim nel copy marketing", claimResult.risk_score, "claim", ["claim_guard"]);
-    addSignal("brief_completeness", "Completezza brief marketing", 100 - missing.length * 25, "marketing", ["brief"]);
+    addSignal("brief_completeness", "Completezza brief marketing", 100 - missing.length * 18, "marketing", ["brief"]);
+    addSignal("unsupported_proof", "Rischio prova/trend non supportati", unsupportedTrend || inventedProof ? 82 : 12, "marketing", ["proof"]);
     branchOutput = {
       copy_mode: "brief_first_owner_review",
       offer,
       target,
+      proof_required: !proof,
+      cta_required: !cta,
       safe_angle: "benefici estetici, esperienza, metodo, controllo e servizio; evitare promesse mediche o risultati garantiti.",
       blocked_claims: claimResult.issues.map((issue) => issue.term),
+      unsupported_proof_risk: unsupportedTrend || inventedProof,
       owner_review_required: true,
+    };
+  } else if (branch === "codex_site_factory_guard") {
+    const sourceUrl = textValue(data.source_url || data.source_site || data.clone_source);
+    const targetTenant = textValue(data.target_tenant || data.tenant_target || payload.tenant_id || data.tenant_id);
+    const sourceTenant = textValue(data.source_tenant || data.tenant_source);
+    const contentScope = arrayValue(data.content_scope || data.pages || data.modules, 50);
+    const hasBackup = data.has_backup === true || data.backup_ready === true;
+    const stagingMode = data.staging_mode === true || data.mode === "staging" || data.publish_mode === "staging";
+    const publishIntent = data.publish_intent === true || data.live_overwrite === true || data.mode === "live";
+    const credentialsIncluded = data.credentials_included === true || data.copy_credentials === true || data.has_secrets === true;
+    const privateDataIncluded = data.contains_private_data === true || data.copy_customer_data === true || data.copy_orders === true;
+    const trackingClone = data.copy_tracking_ids === true || data.tracking_ids_included === true;
+    const legalPagesIncluded = data.legal_pages_included === true || data.privacy_cookie_terms_ready === true;
+    const claimPriceGuard = data.claim_price_guard_enabled === true || (data.claim_guard_enabled === true && data.price_guard_enabled === true);
+    const coreConnector = data.core_connector_enabled === true || data.core_ready === true;
+    if (!sourceUrl) missing.push("source_url");
+    if (!targetTenant) missing.push("target_tenant");
+    if (!contentScope.length) missing.push("content_scope");
+    if (!legalPagesIncluded) missing.push("legal_pages");
+    const tenantMismatch = Boolean(sourceTenant && targetTenant && sourceTenant !== targetTenant && data.cross_tenant_approved !== true);
+    const cloneLeakRisk = credentialsIncluded || privateDataIncluded || trackingClone;
+    const liveOverwriteRisk = publishIntent && (!hasBackup || !stagingMode);
+    const governanceMissing = [legalPagesIncluded, claimPriceGuard, coreConnector].filter(Boolean).length;
+    addSignal("missing_clone_inputs", "Input clonazione sito mancanti", missing.length * 18, "site_factory", ["clone_plan"]);
+    addSignal("tenant_scope_risk", "Rischio scope tenant nella clonazione", tenantMismatch ? 95 : 10, "tenant", ["tenant_isolation"]);
+    addSignal("data_leak_risk", "Rischio copia credenziali/dati privati/tracking", cloneLeakRisk ? 96 : 8, "security", ["privacy"]);
+    addSignal("live_overwrite_risk", "Rischio sovrascrittura sito live", liveOverwriteRisk ? 90 : 12, "release", ["staging"]);
+    addSignal("governance_readiness", "Readiness Core, claim, price e pagine legali", 100 - governanceMissing * 28, "governance", ["guardrails"]);
+    branchOutput = {
+      clone_mode: "staging_plan_only",
+      source_url: sourceUrl,
+      target_tenant: targetTenant,
+      source_tenant: sourceTenant || null,
+      content_scope_count: contentScope.length,
+      publish_allowed: false,
+      required_steps: [
+        "mappa pagine, menu, form, media, prodotti/offerte e shortcode",
+        "escludi credenziali, gateway, tracking ID, ordini, clienti e segreti",
+        "crea staging o bozza prima del live",
+        "collega Core, licenza, update policy, Claim Guard e Price Guard",
+        "verifica legal pages, SEO, redirect e traduzioni strutturate",
+        "richiedi owner confirmation prima di pubblicare o sovrascrivere",
+      ],
+      blocked_if: {
+        tenant_mismatch: tenantMismatch,
+        clone_leak_risk: cloneLeakRisk,
+        live_overwrite_risk: liveOverwriteRisk,
+      },
+    };
+  } else if (branch === "codex_website_visual_guard") {
+    const tenant = textValue(payload.tenant_id || data.tenant_id);
+    const brandKitReady = data.brand_tokens_ready === true || data.brand_kit_ready === true || data.uses_skinharmony_palette === true;
+    const responsiveReady = data.responsive === true || data.mobile_verified === true;
+    const textOverflow = data.text_overflow === true || data.overflowing_text === true;
+    const deadButtons = Number(data.dead_buttons ?? 0);
+    const nestedCards = data.nested_cards === true || data.card_inside_card === true;
+    const technicalLabels = data.technical_labels === true || data.internal_labels_public === true;
+    const mediaReady = data.has_media_assets === true || data.media_assets_ready === true;
+    const assetRights = data.asset_rights === true || data.asset_policy === "approved";
+    const buttonTargets = data.button_targets_verified === true || data.cta_links_verified === true;
+    const contrast = clampScore(data.contrast_score ?? 78, 78);
+    if (!brandKitReady) missing.push("brand_tokens");
+    if (!responsiveReady) missing.push("mobile_responsive_check");
+    if (!mediaReady) missing.push("media_assets");
+    if (!buttonTargets) missing.push("button_targets");
+    const brandRisk = brandKitReady ? 10 : 78;
+    const layoutRisk = (textOverflow ? 45 : 0) + (nestedCards ? 25 : 0) + (!responsiveReady ? 30 : 0);
+    const interactionRisk = Math.min(100, deadButtons * 25 + (buttonTargets ? 0 : 45));
+    const assetRisk = mediaReady && assetRights ? 10 : mediaReady ? 45 : 70;
+    const publicLabelRisk = technicalLabels ? 82 : 10;
+    addSignal("brand_system_mismatch", "Brand kit o palette non pronti", brandRisk, "visual", ["brand"]);
+    addSignal("layout_integrity", "Integrita layout, card e responsive", layoutRisk, "ux", ["layout"]);
+    addSignal("interaction_readiness", "Pulsanti e CTA verificati", interactionRisk, "ux", ["buttons"]);
+    addSignal("asset_readiness", "Asset visuali pertinenti e autorizzati", assetRisk, "visual", ["assets"]);
+    addSignal("public_language", "Etichette tecniche esposte al pubblico", publicLabelRisk, "ux", ["copy"]);
+    addSignal("contrast", "Contrasto e leggibilita", 100 - contrast, "accessibility", ["readability"]);
+    branchOutput = {
+      visual_mode: "premium_site_review",
+      tenant,
+      publish_allowed: false,
+      skinharmony_palette: tenant.includes("skin") || data.uses_skinharmony_palette === true ? "#4FB6D6" : "tenant_brand_tokens_required",
+      required_checks: [
+        "desktop e mobile senza testo fuori contenitore",
+        "card con dimensioni stabili e senza nesting inutile",
+        "ogni pulsante collegato a pagina, dialog, salvataggio o feedback",
+        "brand kit o palette SkinHarmony applicati",
+        "media pertinenti con diritti/sorgente approvati",
+        "nessuna etichetta tecnica interna nella UI pubblica",
+      ],
+      blocked_if: {
+        text_overflow: textOverflow,
+        dead_buttons: deadButtons > 0,
+        nested_cards: nestedCards,
+        technical_labels_public: technicalLabels,
+        missing_asset_rights: mediaReady && !assetRights,
+      },
     };
   } else if (branch === "cosmetic_chemistry") {
     const active = textValue(data.active || data.ingredient || data.hero_ingredient);

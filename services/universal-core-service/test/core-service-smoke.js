@@ -219,6 +219,8 @@ try {
 
   const branches = await api(base, "GET", "/v1/branches?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
+  assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
+  assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
@@ -244,6 +246,62 @@ try {
     tier: codexContext.json.context.tier,
     selected_branches: codexContext.json.context.selected_branches,
     rule_count: codexContext.json.context.deterministic_context.rule_count,
+  });
+
+  const codexSiteContext = await api(base, "POST", "/v1/codex/context", {
+    tenant_id: "tenant_demo_skinharmony",
+    task: "Clonare sito cliente e creare nodo Suite controllato",
+    user_input: "Creo un clone staging senza copiare credenziali, clienti, ordini o tracking ID.",
+    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "marketing_copy"],
+  }, codexKey);
+  assert(codexSiteContext.status === 200 && codexSiteContext.json.context?.selected_branches?.includes("codex_site_factory_guard"), "site factory codex context missing");
+  assert(codexSiteContext.json.context?.selected_branches?.includes("codex_website_visual_guard"), "website visual codex context missing");
+  assert(codexSiteContext.json.context?.deterministic_context?.rule_count >= 15, "site/visual guard rules not composed");
+  mark("codex_site_visual_context", true, {
+    selected_branches: codexSiteContext.json.context.selected_branches,
+    rule_count: codexSiteContext.json.context.deterministic_context.rule_count,
+  });
+
+  const siteFactoryAnalyze = await api(base, "POST", "/v1/branches/codex_site_factory_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    source_url: "https://example.com",
+    target_tenant: "tenant_demo_skinharmony",
+    content_scope: ["home", "waas", "offerte", "contatti"],
+    has_backup: true,
+    staging_mode: true,
+    legal_pages_included: true,
+    claim_price_guard_enabled: true,
+    core_connector_enabled: true,
+  }, codexKey);
+  assert(siteFactoryAnalyze.status === 200 && siteFactoryAnalyze.json.branch_output?.clone_mode === "staging_plan_only", "site factory analyze failed");
+  assert(siteFactoryAnalyze.json.branch_output?.publish_allowed === false, "site factory should not allow publish");
+  assert(siteFactoryAnalyze.json.output?.signals?.length || siteFactoryAnalyze.json.output?.state, "site factory core output missing");
+  mark("codex_site_factory_analyze", true, {
+    clone_mode: siteFactoryAnalyze.json.branch_output.clone_mode,
+    warnings: siteFactoryAnalyze.json.warnings,
+    state: siteFactoryAnalyze.json.output.state,
+  });
+
+  const visualAnalyze = await api(base, "POST", "/v1/branches/codex_website_visual_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    uses_skinharmony_palette: true,
+    responsive: true,
+    text_overflow: false,
+    dead_buttons: 0,
+    nested_cards: false,
+    technical_labels: false,
+    has_media_assets: true,
+    asset_rights: true,
+    button_targets_verified: true,
+    contrast_score: 86,
+  }, codexKey);
+  assert(visualAnalyze.status === 200 && visualAnalyze.json.branch_output?.visual_mode === "premium_site_review", "visual guard analyze failed");
+  assert(visualAnalyze.json.branch_output?.required_checks?.length >= 5, "visual guard checks missing");
+  assert(visualAnalyze.json.output?.state, "visual guard core output missing");
+  mark("codex_website_visual_analyze", true, {
+    visual_mode: visualAnalyze.json.branch_output.visual_mode,
+    checks: visualAnalyze.json.branch_output.required_checks.length,
+    state: visualAnalyze.json.output.state,
   });
 
   const actionEvaluator = await api(base, "POST", "/v1/action-evaluator", {

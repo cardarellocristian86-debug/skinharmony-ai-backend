@@ -18,6 +18,8 @@ import { branchCodexSecurityGuard } from "./branch-codex-security-guard.js";
 import { branchCodexProductLogic } from "./branch-codex-product-logic.js";
 import { branchCodexUiUxGuard } from "./branch-codex-ui-ux-guard.js";
 import { branchCodexBusinessGuard } from "./branch-codex-business-guard.js";
+import { branchCodexSiteFactoryGuard } from "./branch-codex-site-factory-guard.js";
+import { branchCodexWebsiteVisualGuard } from "./branch-codex-website-visual-guard.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -40,6 +42,8 @@ const BRANCHES = [
   branchCodexProductLogic,
   branchCodexUiUxGuard,
   branchCodexBusinessGuard,
+  branchCodexSiteFactoryGuard,
+  branchCodexWebsiteVisualGuard,
 ];
 
 const CODEX_GUARD_BRANCHES = [
@@ -51,6 +55,8 @@ const CODEX_GUARD_BRANCHES = [
   "codex_product_logic",
   "codex_ui_ux_guard",
   "codex_business_guard",
+  "codex_site_factory_guard",
+  "codex_website_visual_guard",
 ];
 
 export const BRANCH_PACKAGES = Object.freeze({
