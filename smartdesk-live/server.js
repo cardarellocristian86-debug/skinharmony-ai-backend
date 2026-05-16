@@ -919,6 +919,32 @@ app.post("/api/universal-core/branches/:branch", requireAuth, async (req, res) =
   }
 });
 
+app.get("/api/universal-core/customer-intelligence/contract", requireAuth, async (_req, res) => {
+  try {
+    const result = await universalCoreBridge.customerIntelligenceContract();
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "universal_core_customer_intelligence_contract_failed",
+      message: error instanceof Error ? error.message : "Contratto Customer Intelligence non disponibile."
+    });
+  }
+});
+
+app.post("/api/universal-core/customer-intelligence/readiness", requireAuth, async (req, res) => {
+  try {
+    const result = await universalCoreBridge.customerIntelligenceReadiness(req.body || {});
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      code: "universal_core_customer_intelligence_readiness_failed",
+      message: error instanceof Error ? error.message : "Readiness Customer Intelligence non disponibile."
+    });
+  }
+});
+
 app.use("/api", (req, res, next) => {
   if (req.path.startsWith("/auth/")) {
     return next();

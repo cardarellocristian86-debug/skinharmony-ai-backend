@@ -23,6 +23,8 @@ POST /api/suite/nodes/heartbeat
 POST /api/suite/nodes/snapshot
 POST /api/suite/evidence
 GET  /api/suite/runbooks
+GET  /api/suite/customer-intelligence/contract
+POST /api/suite/customer-intelligence/readiness
 POST /api/suite/runbooks/preview
 POST /api/suite/runbooks/dispatch
 POST /api/suite/runbooks/artifacts
@@ -49,6 +51,14 @@ Variabili minime:
 ```text
 NODE_ENV=production
 SUITE_CONTROL_PLANE_API_KEY=<chiave lunga scoped>
+```
+
+Per leggere il contratto Customer Intelligence da Universal Core:
+
+```text
+UNIVERSAL_CORE_URL=https://skinharmony-universal-core.onrender.com
+UNIVERSAL_CORE_KEY=<chiave Core scoped>
+UNIVERSAL_CORE_TENANT_ID=<tenant default>
 ```
 
 Storage persistente opzionale:

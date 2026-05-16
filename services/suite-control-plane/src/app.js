@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const SERVICE_VERSION = "0.3.1-suite-runbook-alignment";
+const SERVICE_VERSION = "0.3.2-customer-intelligence-bridge";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const RUNBOOK_CATALOG = [
   {
@@ -92,6 +92,10 @@ function readSecret(req) {
 
 function publicError(res, status, code, message = code) {
   return res.status(status).json({ ok: false, error: code, message });
+}
+
+function normalizeBaseUrl(value = "") {
+  return String(value || "").trim().replace(/\/+$/, "");
 }
 
 function sanitizeId(value, fallbackPrefix) {
@@ -381,9 +385,72 @@ function createAuth() {
   };
 }
 
+function createUniversalCoreClient(options = {}) {
+  const baseUrl = normalizeBaseUrl(options.baseUrl || process.env.UNIVERSAL_CORE_URL);
+  const apiKey = String(options.apiKey || process.env.UNIVERSAL_CORE_KEY || "").trim();
+  const defaultTenantId = sanitizeId(options.tenantId || process.env.UNIVERSAL_CORE_TENANT_ID || "suite-control-plane", "tenant");
+  const timeoutMs = Number(options.timeoutMs || process.env.UNIVERSAL_CORE_TIMEOUT_MS || 8000);
+
+  async function request(method, route, body, tenantId = defaultTenantId) {
+    if (!baseUrl || !apiKey) {
+      return { success: false, code: "universal_core_not_configured" };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${baseUrl}${route}`, {
+        method,
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          "x-sh-tenant-id": tenantId,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let json = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { raw: text };
+      }
+      return {
+        success: response.ok && json.ok !== false,
+        http_status: response.status,
+        provider_url: baseUrl,
+        ...json,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        code: error?.name === "AbortError" ? "universal_core_timeout" : "universal_core_unreachable",
+        provider_url: baseUrl,
+        message: error instanceof Error ? error.message : "Universal Core non raggiungibile.",
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    isConfigured: () => Boolean(baseUrl && apiKey),
+    status: () => ({ configured: Boolean(baseUrl && apiKey), provider_url: baseUrl, tenant_id: defaultTenantId }),
+    customerIntelligenceContract: (tenantId = defaultTenantId) => request("GET", `/v1/customer-intelligence/contract?tenant_id=${encodeURIComponent(tenantId)}`, undefined, tenantId),
+    customerIntelligenceReadiness: (payload = {}, tenantId = defaultTenantId) => request("POST", "/v1/customer-intelligence/readiness", {
+      tenant_id: tenantId,
+      events: Array.isArray(payload.events) ? payload.events : [],
+      consents: Array.isArray(payload.consents) ? payload.consents : [],
+      customer_profile: payload.customer_profile || payload.customerProfile || {},
+    }, tenantId),
+  };
+}
+
 export function createSuiteControlPlane(options = {}) {
   const app = express();
   const storage = options.storage || createSuiteControlStorage();
+  const coreClient = options.coreClient || createUniversalCoreClient(options.universalCore || {});
   const auth = createAuth();
 
   app.use(express.json({ limit: "1mb" }));
@@ -395,6 +462,7 @@ export function createSuiteControlPlane(options = {}) {
       version: SERVICE_VERSION,
       storage_mode: storage.mode,
       storage_persistent: storage.mode === "file",
+      universal_core: coreClient.status(),
       generated_at: nowIso(),
     });
   });
@@ -450,6 +518,39 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       runbooks: storage.runbookCatalog(),
+    });
+  });
+
+  app.get("/api/suite/customer-intelligence/contract", auth, async (req, res) => {
+    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "suite-control-plane", "tenant");
+    const result = await coreClient.customerIntelligenceContract(tenantId);
+    if (!result.success) {
+      return publicError(res, result.http_status || 503, result.code || "customer_intelligence_contract_unavailable", result.message || "Contratto Customer Intelligence non disponibile.");
+    }
+    return res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      source: "universal_core",
+      tenant_id: tenantId,
+      contract: result.contract,
+    });
+  });
+
+  app.post("/api/suite/customer-intelligence/readiness", auth, async (req, res) => {
+    const tenantId = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || "suite-control-plane", "tenant");
+    const result = await coreClient.customerIntelligenceReadiness(req.body || {}, tenantId);
+    if (!result.success) {
+      return publicError(res, result.http_status || 503, result.code || "customer_intelligence_readiness_unavailable", result.message || "Readiness Customer Intelligence non disponibile.");
+    }
+    return res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      source: "universal_core",
+      tenant_id: tenantId,
+      readiness: result.readiness,
+      rule: result.rule,
     });
   });
 

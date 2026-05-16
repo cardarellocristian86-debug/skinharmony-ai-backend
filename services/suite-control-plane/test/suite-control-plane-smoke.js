@@ -4,7 +4,38 @@ import os from "node:os";
 import path from "node:path";
 import { createSuiteControlPlane } from "../src/app.js";
 
-const { app } = createSuiteControlPlane();
+const mockCoreClient = {
+  status: () => ({ configured: true, provider_url: "mock://universal-core", tenant_id: "tenant_demo" }),
+  async customerIntelligenceContract(tenantId) {
+    return {
+      success: true,
+      contract: {
+        schema_version: "customer_intelligence_contract_v1",
+        tenant_id: tenantId,
+        automation_limits: { automatic_send_allowed: false },
+        data_contract: {
+          event_taxonomy: [{ id: "appointment.completed" }],
+          consent_registry: { valid_statuses: ["unknown", "granted", "revoked", "expired"] },
+        },
+      },
+    };
+  },
+  async customerIntelligenceReadiness(payload) {
+    return {
+      success: true,
+      readiness: {
+        schema_version: "customer_intelligence_readiness_v1",
+        event_count: Array.isArray(payload.events) ? payload.events.length : 0,
+        granted_consent_count: 1,
+        can_send_automatically: false,
+        next_step: "prepare_draft_for_operator_confirmation",
+      },
+      rule: "Readiness e solo valutazione: nessun invio automatico e nessuna modifica dati cliente.",
+    };
+  },
+};
+
+const { app } = createSuiteControlPlane({ coreClient: mockCoreClient });
 const server = app.listen(0);
 await new Promise((resolve) => server.once("listening", resolve));
 const port = server.address().port;
@@ -79,6 +110,26 @@ try {
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "setup_site_suite"));
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "clone_waas_site"));
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "claim_price_audit"));
+
+  const customerContract = await request("/api/suite/customer-intelligence/contract?tenant_id=tenant_demo", { headers });
+  assert.equal(customerContract.response.status, 200);
+  assert.equal(customerContract.body.source, "universal_core");
+  assert.equal(customerContract.body.contract.schema_version, "customer_intelligence_contract_v1");
+  assert.equal(customerContract.body.contract.automation_limits.automatic_send_allowed, false);
+
+  const customerReadiness = await request("/api/suite/customer-intelligence/readiness", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      tenant_id: "tenant_demo",
+      events: [{ type: "appointment.completed" }],
+      consents: [{ status: "granted", channel: "email", purpose: "recall" }],
+      customer_profile: { customer_id: "client_demo" },
+    }),
+  });
+  assert.equal(customerReadiness.response.status, 200);
+  assert.equal(customerReadiness.body.readiness.can_send_automatically, false);
+  assert.equal(customerReadiness.body.readiness.next_step, "prepare_draft_for_operator_confirmation");
 
   const preview = await request("/api/suite/runbooks/preview", {
     method: "POST",
