@@ -44,6 +44,14 @@ NODE_ENV=production
 SUITE_CONTROL_PLANE_API_KEY=<chiave lunga scoped>
 ```
 
+Storage persistente opzionale:
+
+```text
+SUITE_CONTROL_STORAGE_ROOT=/var/data/suite-control-plane
+```
+
+Se `SUITE_CONTROL_STORAGE_ROOT` non è presente, il servizio usa memoria volatile. Con disco Render montato su `/var/data`, nodi, snapshot ed evidence restano disponibili dopo restart.
+
 Health check:
 
 ```text

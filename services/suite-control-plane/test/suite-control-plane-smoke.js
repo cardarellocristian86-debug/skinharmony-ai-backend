@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createSuiteControlPlane } from "../src/app.js";
 
 const { app } = createSuiteControlPlane();
@@ -77,6 +80,21 @@ try {
   const overview = await request("/api/suite/overview", { headers });
   assert.equal(overview.response.status, 200);
   assert.equal(overview.body.overview.nodes_total, 1);
+
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-suite-control-"));
+  process.env.SUITE_CONTROL_STORAGE_ROOT = storageRoot;
+  const persistedOne = createSuiteControlPlane();
+  persistedOne.storage.heartbeat({
+    node_id: "wp_persisted_node",
+    tenant_id: "tenant_demo",
+    plugin_version: "5.1.13",
+  });
+  const persistedTwo = createSuiteControlPlane();
+  const persistedOverview = persistedTwo.storage.overview();
+  assert.equal(persistedTwo.storage.mode, "file");
+  assert.equal(persistedOverview.nodes_total, 1);
+  assert.equal(persistedOverview.nodes[0].node_id, "wp_persisted_node");
+  delete process.env.SUITE_CONTROL_STORAGE_ROOT;
 
   console.log("Suite Control Plane smoke OK");
 } finally {

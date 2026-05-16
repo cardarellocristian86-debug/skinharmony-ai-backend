@@ -1,5 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 const SERVICE_VERSION = "0.1.0-suite-runtime";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
@@ -24,9 +26,10 @@ function sanitizeId(value, fallbackPrefix) {
   return cleaned || `${fallbackPrefix}_${crypto.randomUUID()}`;
 }
 
-function createMemoryStorage() {
-  const nodes = new Map();
-  const evidence = [];
+function createMemoryStorage(options = {}) {
+  const nodes = new Map((options.nodes || []).map((node) => [node.node_id, node]));
+  const evidence = Array.isArray(options.evidence) ? options.evidence : [];
+  const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
 
   function getOrCreateNode(nodeId, tenantId = "unknown") {
     const id = sanitizeId(nodeId, "node");
@@ -82,6 +85,7 @@ function createMemoryStorage() {
         health: payload.health && typeof payload.health === "object" ? payload.health : {},
       };
       appendNodeEvent(node, "heartbeat", node.latest_heartbeat);
+      onChange({ nodes: Array.from(nodes.values()), evidence });
       return node;
     },
     snapshot(payload) {
@@ -95,6 +99,7 @@ function createMemoryStorage() {
         validation: payload.validation && typeof payload.validation === "object" ? payload.validation : {},
       };
       appendNodeEvent(node, "snapshot", node.latest_snapshot);
+      onChange({ nodes: Array.from(nodes.values()), evidence });
       return node;
     },
     evidence(payload) {
@@ -114,6 +119,7 @@ function createMemoryStorage() {
       node.evidence_count += 1;
       node.last_seen_at = event.received_at;
       appendNodeEvent(node, "evidence", event);
+      onChange({ nodes: Array.from(nodes.values()), evidence });
       return { node, event };
     },
     dashboard(nodeId) {
@@ -147,6 +153,39 @@ function createMemoryStorage() {
   };
 }
 
+function createSuiteControlStorage() {
+  const storageRoot = process.env.SUITE_CONTROL_STORAGE_ROOT || "";
+  if (!storageRoot) return createMemoryStorage();
+
+  fs.mkdirSync(storageRoot, { recursive: true });
+  const stateFile = path.join(storageRoot, "suite-control-state.json");
+  let initialState = { nodes: [], evidence: [] };
+  if (fs.existsSync(stateFile)) {
+    try {
+      initialState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    } catch {
+      initialState = { nodes: [], evidence: [] };
+    }
+  }
+
+  const storage = createMemoryStorage({
+    nodes: Array.isArray(initialState.nodes) ? initialState.nodes : [],
+    evidence: Array.isArray(initialState.evidence) ? initialState.evidence : [],
+    onChange(state) {
+      const tmpFile = `${stateFile}.tmp`;
+      fs.writeFileSync(tmpFile, `${JSON.stringify({
+        saved_at: nowIso(),
+        nodes: state.nodes,
+        evidence: state.evidence.slice(0, 1000),
+      }, null, 2)}\n`);
+      fs.renameSync(tmpFile, stateFile);
+    },
+  });
+  storage.mode = "file";
+  storage.state_file = stateFile;
+  return storage;
+}
+
 function createAuth() {
   const configuredKey = process.env.SUITE_CONTROL_PLANE_API_KEY || "";
   const devKey = process.env.NODE_ENV === "production" ? "" : "dev-suite-control-plane-key";
@@ -161,7 +200,7 @@ function createAuth() {
 
 export function createSuiteControlPlane(options = {}) {
   const app = express();
-  const storage = options.storage || createMemoryStorage();
+  const storage = options.storage || createSuiteControlStorage();
   const auth = createAuth();
 
   app.use(express.json({ limit: "1mb" }));
@@ -172,6 +211,7 @@ export function createSuiteControlPlane(options = {}) {
       service: "skinharmony-suite-control-plane",
       version: SERVICE_VERSION,
       storage_mode: storage.mode,
+      storage_persistent: storage.mode === "file",
       generated_at: nowIso(),
     });
   });

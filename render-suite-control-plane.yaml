@@ -6,8 +6,14 @@ services:
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
+    disk:
+      name: suite-control-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: SUITE_CONTROL_STORAGE_ROOT
+        value: /var/data/suite-control-plane
       - key: SUITE_CONTROL_PLANE_API_KEY
         sync: false
