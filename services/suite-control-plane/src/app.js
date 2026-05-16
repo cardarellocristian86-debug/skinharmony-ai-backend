@@ -522,7 +522,7 @@ export function createSuiteControlPlane(options = {}) {
   });
 
   app.get("/api/suite/customer-intelligence/contract", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "suite-control-plane", "tenant");
+    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
     const result = await coreClient.customerIntelligenceContract(tenantId);
     if (!result.success) {
       return publicError(res, result.http_status || 503, result.code || "customer_intelligence_contract_unavailable", result.message || "Contratto Customer Intelligence non disponibile.");
@@ -538,7 +538,7 @@ export function createSuiteControlPlane(options = {}) {
   });
 
   app.post("/api/suite/customer-intelligence/readiness", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || "suite-control-plane", "tenant");
+    const tenantId = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
     const result = await coreClient.customerIntelligenceReadiness(req.body || {}, tenantId);
     if (!result.success) {
       return publicError(res, result.http_status || 503, result.code || "customer_intelligence_readiness_unavailable", result.message || "Readiness Customer Intelligence non disponibile.");
