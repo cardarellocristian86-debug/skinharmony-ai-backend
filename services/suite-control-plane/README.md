@@ -9,6 +9,7 @@ Questo servizio sposta fuori da WordPress le parti che diventano pesanti quando 
 - snapshot di stato;
 - raccolta evidence/audit;
 - catalogo runbook controllati;
+- storage artifact runbook;
 - dashboard remota per nodo.
 
 Il plugin resta UI locale + receiver controllato. Universal Core resta il gate decisionale. Il Control Plane prepara solo preview/dispatch controllati: nessuna esecuzione remota cieca.
@@ -24,6 +25,8 @@ POST /api/suite/evidence
 GET  /api/suite/runbooks
 POST /api/suite/runbooks/preview
 POST /api/suite/runbooks/dispatch
+POST /api/suite/runbooks/artifacts
+GET  /api/suite/nodes/:nodeId/runbook-artifacts
 GET  /api/suite/nodes/:nodeId/dashboard
 ```
 
@@ -54,7 +57,7 @@ Storage persistente opzionale:
 SUITE_CONTROL_STORAGE_ROOT=/var/data/suite-control-plane
 ```
 
-Se `SUITE_CONTROL_STORAGE_ROOT` non è presente, il servizio usa memoria volatile. Con disco Render montato su `/var/data`, nodi, snapshot, evidence e dispatch runbook restano disponibili dopo restart.
+Se `SUITE_CONTROL_STORAGE_ROOT` non è presente, il servizio usa memoria volatile. Con disco Render montato su `/var/data`, nodi, snapshot, evidence, dispatch runbook e artifact restano disponibili dopo restart.
 
 Health check:
 

@@ -113,17 +113,40 @@ try {
   assert.equal(dispatch.body.accepted, true);
   assert.equal(dispatch.body.dispatch.state, "queued_for_node_pull");
 
+  const artifact = await request("/api/suite/runbooks/artifacts", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      node_id: "wp_test_node",
+      tenant_id: "tenant_demo",
+      runbook_id: "plugin_update_preflight",
+      artifact_type: "preflight_report",
+      signature: "sig_test",
+      payload: { ok: true, release: "5.1.14" },
+    }),
+  });
+  assert.equal(artifact.response.status, 201);
+  assert.equal(artifact.body.accepted, true);
+  assert.match(artifact.body.artifact_id, /^artifact_/);
+
+  const artifactList = await request("/api/suite/nodes/wp_test_node/runbook-artifacts", { headers });
+  assert.equal(artifactList.response.status, 200);
+  assert.equal(artifactList.body.artifacts.length, 1);
+  assert.equal(artifactList.body.artifacts[0].runbook_id, "plugin_update_preflight");
+
   const dashboard = await request("/api/suite/nodes/wp_test_node/dashboard", { headers });
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.body.dashboard.node.node_id, "wp_test_node");
   assert.equal(dashboard.body.dashboard.node.evidence_count, 1);
   assert.equal(dashboard.body.dashboard.dispatches.length, 2);
+  assert.equal(dashboard.body.dashboard.runbook_artifacts.length, 1);
 
   const overview = await request("/api/suite/overview", { headers });
   assert.equal(overview.response.status, 200);
   assert.equal(overview.body.overview.nodes_total, 1);
   assert.equal(overview.body.overview.runbooks_total, runbooks.body.runbooks.length);
   assert.equal(overview.body.overview.dispatches_total, 2);
+  assert.equal(overview.body.overview.runbook_artifacts_total, 1);
 
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-suite-control-"));
   process.env.SUITE_CONTROL_STORAGE_ROOT = storageRoot;
@@ -142,12 +165,21 @@ try {
     runbook_id: "smartdesk_bridge_check",
     node_id: "wp_persisted_node",
   });
+  persistedOne.storage.runbookArtifact({
+    node_id: "wp_persisted_node",
+    tenant_id: "tenant_demo",
+    runbook_id: "smartdesk_bridge_check",
+    artifact_type: "bridge_report",
+    signature: "persisted_sig",
+    payload: { ok: true },
+  });
   const persistedTwo = createSuiteControlPlane();
   const persistedOverview = persistedTwo.storage.overview();
   assert.equal(persistedTwo.storage.mode, "file");
   assert.equal(persistedOverview.nodes_total, 1);
   assert.equal(persistedOverview.nodes[0].node_id, "wp_persisted_node");
   assert.equal(persistedOverview.dispatches_total, 1);
+  assert.equal(persistedOverview.runbook_artifacts_total, 1);
   delete process.env.SUITE_CONTROL_STORAGE_ROOT;
 
   console.log("Suite Control Plane smoke OK");

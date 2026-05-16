@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const SERVICE_VERSION = "0.2.0-runbook-marketplace";
+const SERVICE_VERSION = "0.3.0-runbook-artifacts";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const RUNBOOK_CATALOG = [
   {
@@ -97,10 +97,11 @@ function createMemoryStorage(options = {}) {
   const nodes = new Map((options.nodes || []).map((node) => [node.node_id, node]));
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
   const dispatches = Array.isArray(options.dispatches) ? options.dispatches : [];
+  const artifacts = Array.isArray(options.artifacts) ? options.artifacts : [];
   const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
 
   function emitChange() {
-    onChange({ nodes: Array.from(nodes.values()), evidence, dispatches });
+    onChange({ nodes: Array.from(nodes.values()), evidence, dispatches, artifacts });
   }
 
   function getOrCreateNode(nodeId, tenantId = "unknown") {
@@ -233,6 +234,31 @@ function createMemoryStorage(options = {}) {
       emitChange();
       return dispatch;
     },
+    runbookArtifact(payload) {
+      const node = getOrCreateNode(payload.node_id, payload.tenant_id);
+      const artifact = {
+        id: `artifact_${crypto.randomUUID()}`,
+        received_at: nowIso(),
+        node_id: node.node_id,
+        tenant_id: node.tenant_id,
+        runbook_id: sanitizeId(payload.runbook_id, "runbook"),
+        artifact_type: sanitizeId(payload.artifact_type || "runbook_execution_record", "artifact_type"),
+        signature: String(payload.signature || ""),
+        source: String(payload.source || "wordpress_node"),
+        payload: payload.payload && typeof payload.payload === "object" ? payload.payload : {},
+      };
+      artifacts.unshift(artifact);
+      if (artifacts.length > 1000) artifacts.length = 1000;
+      node.last_seen_at = artifact.received_at;
+      node.runbook_artifact_count = (node.runbook_artifact_count || 0) + 1;
+      appendNodeEvent(node, "runbook_artifact", artifact);
+      emitChange();
+      return { node, artifact };
+    },
+    runbookArtifacts(nodeId, limit = 50) {
+      const id = sanitizeId(nodeId, "node");
+      return artifacts.filter((item) => item.node_id === id).slice(0, limit);
+    },
     dashboard(nodeId) {
       const node = nodes.get(sanitizeId(nodeId, "node"));
       if (!node) return null;
@@ -241,6 +267,7 @@ function createMemoryStorage(options = {}) {
         recent_events: node.events.slice(0, 50),
         evidence: evidence.filter((item) => item.node_id === node.node_id).slice(0, 50),
         dispatches: dispatches.filter((item) => item.node_id === node.node_id).slice(0, 50),
+        runbook_artifacts: artifacts.filter((item) => item.node_id === node.node_id).slice(0, 50),
       };
     },
     overview() {
@@ -250,6 +277,7 @@ function createMemoryStorage(options = {}) {
         nodes_online: allNodes.filter((node) => node.status === "online").length,
         evidence_total: evidence.length,
         dispatches_total: dispatches.length,
+        runbook_artifacts_total: artifacts.length,
         runbooks_total: RUNBOOK_CATALOG.length,
         nodes: allNodes
           .map((node) => ({
@@ -260,6 +288,7 @@ function createMemoryStorage(options = {}) {
             heartbeat_count: node.heartbeat_count,
             snapshot_count: node.snapshot_count,
             evidence_count: node.evidence_count,
+            runbook_artifact_count: node.runbook_artifact_count || 0,
           }))
           .sort((a, b) => String(b.last_seen_at || "").localeCompare(String(a.last_seen_at || ""))),
       };
@@ -273,12 +302,12 @@ function createSuiteControlStorage() {
 
   fs.mkdirSync(storageRoot, { recursive: true });
   const stateFile = path.join(storageRoot, "suite-control-state.json");
-  let initialState = { nodes: [], evidence: [] };
+  let initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [] };
   if (fs.existsSync(stateFile)) {
     try {
       initialState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     } catch {
-      initialState = { nodes: [], evidence: [] };
+      initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [] };
     }
   }
 
@@ -286,6 +315,7 @@ function createSuiteControlStorage() {
     nodes: Array.isArray(initialState.nodes) ? initialState.nodes : [],
     evidence: Array.isArray(initialState.evidence) ? initialState.evidence : [],
     dispatches: Array.isArray(initialState.dispatches) ? initialState.dispatches : [],
+    artifacts: Array.isArray(initialState.artifacts) ? initialState.artifacts : [],
     onChange(state) {
       const tmpFile = `${stateFile}.tmp`;
       fs.writeFileSync(tmpFile, `${JSON.stringify({
@@ -293,6 +323,7 @@ function createSuiteControlStorage() {
         nodes: state.nodes,
         evidence: state.evidence.slice(0, 1000),
         dispatches: state.dispatches.slice(0, 1000),
+        artifacts: state.artifacts.slice(0, 1000),
       }, null, 2)}\n`);
       fs.renameSync(tmpFile, stateFile);
     },
@@ -406,6 +437,31 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       dispatch,
+    });
+  });
+
+  app.post("/api/suite/runbooks/artifacts", auth, (req, res) => {
+    const { node, artifact } = storage.runbookArtifact(req.body || {});
+    res.status(201).json({
+      ok: true,
+      accepted: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      node_id: node.node_id,
+      tenant_id: node.tenant_id,
+      artifact_id: artifact.id,
+      received_at: artifact.received_at,
+    });
+  });
+
+  app.get("/api/suite/nodes/:nodeId/runbook-artifacts", auth, (req, res) => {
+    const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      node_id: sanitizeId(req.params.nodeId, "node"),
+      artifacts: storage.runbookArtifacts(req.params.nodeId, limit),
     });
   });
 
