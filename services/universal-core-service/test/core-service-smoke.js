@@ -110,7 +110,32 @@ try {
   const tenant = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
   assert(tenant.status === 200 && tenant.json.tenant_id === "tenant_demo_skinharmony", "tenant status failed");
   assert(tenant.json.active_branches?.includes("suite_governance"), "tenant active branches missing suite governance");
+  assert(tenant.json.entitlement?.schema_version === "core_entitlement_v1", "tenant entitlement missing");
   mark("tenant_status", true, tenant.json);
+
+  const tenantUpsert = await api(base, "POST", "/v1/tenants/upsert", {
+    tenant_id: "tenant_demo_skinharmony",
+    label: "SkinHarmony Demo",
+    sector: "beauty_wellness",
+    environment: "production",
+    brand_scope: "skinharmony",
+    active_branch_groups: ["content_intelligence", "business_governance"],
+  });
+  assert(tenantUpsert.status === 201 && tenantUpsert.json.tenant?.sector === "beauty_wellness", "tenant registry upsert failed");
+  mark("tenant_registry_upsert", true, tenantUpsert.json.tenant);
+
+  const tenantRegistry = await api(base, "GET", "/v1/tenants/registry?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(tenantRegistry.status === 200 && tenantRegistry.json.tenants?.some((item) => item.tenant_id === "tenant_demo_skinharmony"), "tenant registry read failed");
+  mark("tenant_registry_read", true, { count: tenantRegistry.json.tenants.length });
+
+  const entitlement = await api(base, "GET", "/v1/entitlements/current?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(entitlement.status === 200 && entitlement.json.entitlement?.branches?.includes("suite_governance"), "entitlement current failed");
+  assert(entitlement.json.entitlement?.limits?.wordpress_nodes >= 1, "entitlement limits missing");
+  mark("entitlement_current", true, {
+    tier: entitlement.json.entitlement.tier,
+    branches: entitlement.json.entitlement.branches.length,
+    limits: entitlement.json.entitlement.limits,
+  });
 
   const controlPlane = await api(base, "GET", "/v1/control-plane/overview?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(controlPlane.status === 200 && controlPlane.json.overview?.control_plane?.api_keys?.active >= 1, "control plane overview failed");
@@ -119,6 +144,42 @@ try {
     positioning: controlPlane.json.overview.positioning,
     active_keys: controlPlane.json.overview.control_plane.api_keys.active,
     runbook_count: controlPlane.json.overview.control_plane.automations.runbook_count,
+  });
+
+  const entityGraphWrite = await api(base, "POST", "/v1/entity-graph/upsert", {
+    tenant_id: "tenant_demo_skinharmony",
+    entities: [
+      { entity_id: "brand_demo", entity_type: "brand", label: "Brand Demo", risk_band: "low", value_score: 70 },
+      { entity_id: "distributor_demo", entity_type: "distributor", label: "Distributore Demo", risk_band: "medium", value_score: 55 },
+      { entity_id: "node_demo", entity_type: "wordpress_node", label: "Nodo WordPress Demo", risk_band: "low", value_score: 45 }
+    ],
+    relations: [
+      { relation_id: "rel_brand_distributor", from_entity_id: "brand_demo", to_entity_id: "distributor_demo", relation_type: "sells_to" },
+      { relation_id: "rel_distributor_node", from_entity_id: "distributor_demo", to_entity_id: "node_demo", relation_type: "governs_node" }
+    ],
+  }, connectorKey);
+  assert(entityGraphWrite.status === 201 && entityGraphWrite.json.graph?.entities?.length >= 3, "entity graph upsert failed");
+  assert(entityGraphWrite.json.evidence?.signature, "entity graph evidence missing");
+  mark("entity_graph_upsert", true, {
+    entities: entityGraphWrite.json.graph.entities.length,
+    relations: entityGraphWrite.json.graph.relations.length,
+  });
+
+  const entityGraphRead = await api(base, "GET", "/v1/entity-graph?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(entityGraphRead.status === 200 && entityGraphRead.json.graph?.relations?.length >= 2, "entity graph read failed");
+  assert(entityGraphRead.json.primitive_types?.includes("policy"), "entity graph primitives missing");
+  mark("entity_graph_read", true, {
+    entities: entityGraphRead.json.graph.entities.length,
+    relations: entityGraphRead.json.graph.relations.length,
+  });
+
+  const controlDashboard = await api(base, "GET", "/v1/control-plane/dashboard?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(controlDashboard.status === 200 && controlDashboard.json.schema_version === "horizontal_control_plane_dashboard_v1", "control dashboard failed");
+  assert(controlDashboard.json.action_mediation_states?.includes("rollback_required"), "control dashboard mediation states missing");
+  assert(controlDashboard.json.network_graph_summary?.entity_count >= 3, "control dashboard graph summary missing");
+  mark("control_plane_dashboard", true, {
+    entities: controlDashboard.json.network_graph_summary.entity_count,
+    maturity: controlDashboard.json.branch_maturity_summary,
   });
 
   const sdkManifest = await api(base, "GET", "/v1/connectors/sdk/manifest?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
@@ -238,6 +299,14 @@ try {
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), groups: Object.keys(branches.json.groups), tenant_package: branches.json.tenant_package });
+
+  const branchMaturity = await api(base, "GET", "/v1/branches/maturity?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(branchMaturity.status === 200 && branchMaturity.json.schema_version === "branch_maturity_v1", "branch maturity failed");
+  assert(branchMaturity.json.statuses?.agent_orchestration_guard?.maturity === "advisory", "branch maturity status missing agent guard");
+  assert(branchMaturity.json.groups?.automation_control?.maturity_summary?.advisory >= 1, "branch maturity group summary failed");
+  mark("branch_maturity", true, {
+    automation_control: branchMaturity.json.groups.automation_control.maturity_summary,
+  });
 
   const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=front_desk_base,nyra_finance_beauty_test", undefined, connectorKey);
   assert(authorizedBranches.status === 200 && authorizedBranches.json.branch_package?.selected_branches?.includes("front_desk_base"), "authorized branches failed");
@@ -617,6 +686,44 @@ try {
   assert(actionEvaluator.status === 200 && actionEvaluator.json.decision_contract?.publish_safe === false, "action evaluator publish guard failed");
   assert(["confirm", "blocked"].includes(actionEvaluator.json.decision_contract?.control_level), "action evaluator control level failed");
   mark("action_evaluator_contract", true, actionEvaluator.json.decision_contract);
+
+  const policyMediation = await api(base, "POST", "/v1/policy/check", {
+    tenant_id: "tenant_demo_skinharmony",
+    action: {
+      action_type: "publish",
+      risk_hint: 62,
+    },
+    policy: {
+      approval_required: true,
+      required_branches: ["ramo_testo", "translation_governance"],
+    },
+    context: {
+      owner_confirmed: false,
+      audit_ready: true,
+    },
+  }, connectorKey);
+  assert(policyMediation.status === 200 && policyMediation.json.result?.policy_engine?.action_mediation?.state === "confirm", "policy mediation confirm failed");
+  mark("policy_engine_mediation", true, policyMediation.json.result.policy_engine);
+
+  const actionMediation = await api(base, "POST", "/v1/action-mediation/evaluate", {
+    tenant_id: "tenant_demo_skinharmony",
+    action: {
+      action_type: "deploy",
+      risk_hint: 74,
+      owner_confirmed: true,
+    },
+    context: {
+      rollback_ready: false,
+      sandbox: false,
+      audit_ready: true,
+    },
+  }, connectorKey);
+  assert(actionMediation.status === 200 && actionMediation.json.result?.action_mediation?.state === "rollback_required", "action mediation rollback_required failed");
+  assert(actionMediation.json.evidence?.signature, "action mediation evidence missing");
+  mark("action_mediation_evaluate", true, {
+    state: actionMediation.json.result.action_mediation.state,
+    evidence_id: actionMediation.json.evidence.evidence_id,
+  });
 
   const gatewaySchema = await api(base, "GET", "/v1/ai-gateway/schema", undefined);
   assert(gatewaySchema.status === 200 && gatewaySchema.json.modes?.includes("hard-gating"), "AI gateway schema failed");

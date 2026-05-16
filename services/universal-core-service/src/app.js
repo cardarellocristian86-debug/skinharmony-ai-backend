@@ -36,7 +36,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.10-enterprise-guard-branches";
+const SERVICE_VERSION = "0.3.11-horizontal-control-plane";
 
 function nowIso() {
   return new Date().toISOString();
@@ -50,6 +50,25 @@ function readSecret(req) {
 
 function publicError(res, status, code, message = code) {
   return res.status(status).json({ ok: false, error: code, message });
+}
+
+function readJsonFile(file, fallback) {
+  if (!fs.existsSync(file)) return fallback;
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(file, value) {
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+}
+
+function normalizeList(value, max = 100) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, max).map((item) => String(item || "").trim()).filter(Boolean);
 }
 
 function safeTenantId(req, keyRecord) {
@@ -325,6 +344,280 @@ function evidenceStore(storageRoot) {
   }
 
   return { append, recent };
+}
+
+function tenantRegistryStore(storageRoot) {
+  const file = path.join(storageRoot, "tenants", "registry.json");
+  const read = () => readJsonFile(file, []);
+  const write = (rows) => writeJsonFile(file, rows);
+
+  function normalizeTenant(input = {}) {
+    const tenantId = String(input.tenant_id || input.id || "").trim();
+    if (!tenantId) throw new Error("tenant_id_required");
+    return {
+      tenant_id: tenantId,
+      label: String(input.label || input.name || tenantId).trim(),
+      sector: String(input.sector || input.industry || "generic").trim(),
+      lifecycle_state: String(input.lifecycle_state || input.status || "active").trim(),
+      environment: String(input.environment || "production").trim(),
+      brand_scope: String(input.brand_scope || "").trim(),
+      parent_tenant_id: String(input.parent_tenant_id || "").trim() || null,
+      allowed_domains: normalizeList(input.allowed_domains || input.domains, 50),
+      active_branch_groups: normalizeList(input.active_branch_groups || input.branch_groups, 50),
+      active_branches: normalizeList(input.active_branches || input.branches, 100),
+      policy_profile: String(input.policy_profile || "default").trim(),
+      notes: String(input.notes || "").trim(),
+      updated_at: nowIso(),
+    };
+  }
+
+  return {
+    list() {
+      return read();
+    },
+    get(tenantId) {
+      return read().find((row) => row.tenant_id === tenantId) || null;
+    },
+    upsert(input = {}) {
+      const normalized = normalizeTenant(input);
+      const rows = read();
+      const index = rows.findIndex((row) => row.tenant_id === normalized.tenant_id);
+      if (index >= 0) {
+        rows[index] = { ...rows[index], ...normalized, created_at: rows[index].created_at || nowIso() };
+      } else {
+        rows.push({ ...normalized, created_at: nowIso() });
+      }
+      write(rows);
+      return rows.find((row) => row.tenant_id === normalized.tenant_id);
+    },
+  };
+}
+
+function entityGraphStore(storageRoot) {
+  const file = path.join(storageRoot, "entity-graph", "graph.json");
+  const empty = () => ({ entities: [], relations: [] });
+  const read = () => readJsonFile(file, empty());
+  const write = (graph) => writeJsonFile(file, {
+    entities: Array.isArray(graph.entities) ? graph.entities : [],
+    relations: Array.isArray(graph.relations) ? graph.relations : [],
+  });
+
+  function normalizeEntity(input = {}, tenantId = "") {
+    const id = String(input.entity_id || input.id || "").trim() || `ent_${crypto.randomUUID()}`;
+    return {
+      entity_id: id,
+      tenant_id: String(input.tenant_id || tenantId || "").trim(),
+      entity_type: String(input.entity_type || input.type || "generic_entity").trim(),
+      label: String(input.label || input.name || id).trim(),
+      lifecycle_state: String(input.lifecycle_state || input.status || "active").trim(),
+      risk_band: String(input.risk_band || "low").trim(),
+      value_score: Number(input.value_score ?? 0),
+      metadata: typeof input.metadata === "object" && input.metadata ? input.metadata : {},
+      updated_at: nowIso(),
+    };
+  }
+
+  function normalizeRelation(input = {}, tenantId = "") {
+    const id = String(input.relation_id || input.id || "").trim() || `rel_${crypto.randomUUID()}`;
+    return {
+      relation_id: id,
+      tenant_id: String(input.tenant_id || tenantId || "").trim(),
+      from_entity_id: String(input.from_entity_id || input.from || "").trim(),
+      to_entity_id: String(input.to_entity_id || input.to || "").trim(),
+      relation_type: String(input.relation_type || input.type || "linked_to").trim(),
+      policy_scope: String(input.policy_scope || "tenant").trim(),
+      metadata: typeof input.metadata === "object" && input.metadata ? input.metadata : {},
+      updated_at: nowIso(),
+    };
+  }
+
+  return {
+    readTenant(tenantId) {
+      const graph = read();
+      return {
+        entities: graph.entities.filter((entity) => entity.tenant_id === tenantId),
+        relations: graph.relations.filter((relation) => relation.tenant_id === tenantId),
+      };
+    },
+    upsert(tenantId, payload = {}) {
+      const graph = read();
+      const entities = Array.isArray(payload.entities) ? payload.entities : payload.entity ? [payload.entity] : [];
+      const relations = Array.isArray(payload.relations) ? payload.relations : payload.relation ? [payload.relation] : [];
+      for (const rawEntity of entities) {
+        const entity = normalizeEntity(rawEntity, tenantId);
+        const index = graph.entities.findIndex((row) => row.tenant_id === entity.tenant_id && row.entity_id === entity.entity_id);
+        if (index >= 0) graph.entities[index] = { ...graph.entities[index], ...entity };
+        else graph.entities.push({ ...entity, created_at: nowIso() });
+      }
+      for (const rawRelation of relations) {
+        const relation = normalizeRelation(rawRelation, tenantId);
+        const index = graph.relations.findIndex((row) => row.tenant_id === relation.tenant_id && row.relation_id === relation.relation_id);
+        if (index >= 0) graph.relations[index] = { ...graph.relations[index], ...relation };
+        else graph.relations.push({ ...relation, created_at: nowIso() });
+      }
+      write(graph);
+      return this.readTenant(tenantId);
+    },
+  };
+}
+
+function branchMaturityReport() {
+  const registry = branchRegistry();
+  const groups = deterministicBranchGroups();
+  const statuses = {};
+  for (const [branchId, profile] of Object.entries(registry)) {
+    const productionStatus = profile.production_status || "unknown";
+    const maturity =
+      productionStatus === "test_only"
+        ? "test"
+        : productionStatus === "advisory"
+          ? "advisory"
+          : productionStatus === "production"
+            ? "production"
+            : "pilot";
+    statuses[branchId] = {
+      branch_id: branchId,
+      label: profile.label,
+      domain: profile.domain,
+      production_status: productionStatus,
+      maturity,
+      execution_default: maturity === "production" ? "confirm" : maturity === "advisory" ? "advisory_only" : "test_only",
+      promotion_required: maturity === "production" ? [] : ["benchmark_pass", "owner_approval", "regression_test", "audit_sample"],
+    };
+  }
+  return {
+    schema_version: "branch_maturity_v1",
+    statuses,
+    groups: Object.fromEntries(
+      Object.entries(groups).map(([groupId, group]) => [
+        groupId,
+        {
+          ...group,
+          maturity_summary: group.branches.reduce((acc, branchId) => {
+            const maturity = statuses[branchId]?.maturity || "unknown";
+            acc[maturity] = (acc[maturity] || 0) + 1;
+            return acc;
+          }, {}),
+        },
+      ]),
+    ),
+  };
+}
+
+function buildEntitlement(keyRecord, branchResolution) {
+  const metadata = keyRecord?.metadata && typeof keyRecord.metadata === "object" ? keyRecord.metadata : {};
+  const limits = metadata.suite_limits && typeof metadata.suite_limits === "object" ? metadata.suite_limits : {};
+  return {
+    schema_version: "core_entitlement_v1",
+    tenant_id: keyRecord?.tenant_id || "",
+    key_id: keyRecord?.key_id || "",
+    key_type: keyRecord?.key_type || "",
+    tier: branchResolution.tier,
+    status: keyRecord?.status || "unknown",
+    expires_at: keyRecord?.expires_at || null,
+    branch_groups: metadata.active_branch_groups || branchResolution.allowed_groups || [],
+    branches: branchResolution.allowed_branches,
+    scopes: keyRecord?.allowed_scopes || [],
+    limits: {
+      monthly_core_calls: Number(limits.monthly_core_calls ?? limits.core_calls ?? 0),
+      codex_automation_runs: Number(limits.codex_automation_runs ?? 0),
+      smartdesk_seats: Number(limits.smartdesk_seats ?? limits.seat_limit ?? 0),
+      wordpress_nodes: Number(limits.wordpress_nodes ?? 1),
+      runbook_executions: Number(limits.runbook_executions ?? 0),
+    },
+    environments: normalizeList(metadata.environments || ["production"], 10),
+    soft_gate: metadata.suite_policy?.soft_gate !== false,
+    hard_block: metadata.suite_policy?.hard_block === true,
+    rule: "La key abilita perimetro, non proprieta globale: ogni azione resta scoped, auditata e mediata dal Core.",
+  };
+}
+
+function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy = {}, context = {} }) {
+  const actionType = String(action.action_type || action.type || policy.action_type || "advisory").toLowerCase();
+  const mode = String(policy.mode || policy.gateway_mode || "hard-gating");
+  const riskHint = Number(action.risk_hint ?? policy.risk_hint ?? 25);
+  const branchRequired = normalizeList(policy.required_branches || action.required_branches, 50);
+  const missingBranches = branchRequired.filter((branchId) => !entitlement.branches.includes(branchId));
+  const sensitiveDomain = tenantPolicy.sensitive_domains?.some((domain) => actionType.includes(String(domain).toLowerCase())) || false;
+  const destructive = ["delete", "drop", "reset", "payment", "charge", "publish", "deploy", "update"].some((token) => actionType.includes(token));
+  const ownerConfirmed = context.owner_confirmed === true || action.owner_confirmed === true || policy.owner_confirmed === true;
+  const sandbox = context.sandbox === true || action.sandbox === true || policy.sandbox === true;
+  const rollbackReady = context.rollback_ready === true || action.rollback_ready === true || policy.rollback_ready === true;
+  const crossTenant = context.cross_tenant === true || action.cross_tenant === true || policy.cross_tenant === true;
+  const pii = context.contains_pii === true || action.contains_pii === true || policy.contains_pii === true;
+  const missingAudit = context.audit_ready === false || action.audit_ready === false;
+
+  let mediation = "allow";
+  const reasons = [];
+  if (crossTenant) {
+    mediation = "block";
+    reasons.push("cross_tenant_denied");
+  } else if (destructive && !ownerConfirmed) {
+    mediation = "confirm";
+    reasons.push("owner_confirmation_required");
+  } else if (destructive && !rollbackReady && !sandbox) {
+    mediation = "rollback_required";
+    reasons.push("rollback_or_sandbox_required");
+  } else if (pii && !policy.consent_collected) {
+    mediation = "defer";
+    reasons.push("privacy_consent_required");
+  } else if (missingBranches.length) {
+    mediation = "defer";
+    reasons.push("missing_required_branches");
+  } else if (riskHint >= 70 || sensitiveDomain) {
+    mediation = ownerConfirmed ? "sandbox" : "confirm";
+    reasons.push("sensitive_or_high_risk_action");
+  } else if (mode === "rewrite") {
+    mediation = "rewrite";
+    reasons.push("rewrite_mode_requested");
+  }
+  if (missingAudit) {
+    mediation = mediation === "block" ? "block" : "defer";
+    reasons.push("audit_required");
+  }
+
+  return {
+    schema_version: "policy_engine_v1",
+    tenant_id: entitlement.tenant_id,
+    action_type: actionType,
+    decision: mediation === "block" ? "blocked" : mediation === "allow" ? "ready" : "attention",
+    action_mediation: {
+      state: mediation,
+      execution_allowed: mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
+      owner_confirmation_required: mediation === "confirm" || mediation === "rollback_required",
+      sandbox_required: mediation === "sandbox",
+      rollback_required: mediation === "rollback_required",
+      rewrite_allowed: mediation === "rewrite",
+      blocked: mediation === "block",
+      next_step:
+        mediation === "allow"
+          ? "execute_with_audit"
+          : mediation === "rewrite"
+            ? "rewrite_then_review"
+            : mediation === "confirm"
+              ? "ask_owner_confirmation"
+              : mediation === "sandbox"
+                ? "run_in_sandbox"
+                : mediation === "rollback_required"
+                  ? "prepare_rollback_before_execution"
+                  : mediation === "defer"
+                    ? "complete_missing_policy_or_data"
+                    : "stop_and_redesign",
+    },
+    risk: {
+      band: mediation === "block" ? "high" : riskHint >= 70 ? "high" : riskHint >= 35 ? "medium" : "low",
+      score: Math.max(0, Math.min(100, riskHint + (destructive ? 15 : 0) + (crossTenant ? 50 : 0))),
+      reasons: reasons,
+    },
+    policy_flags: {
+      missing_required_branches: missingBranches,
+      sensitive_domain: sensitiveDomain,
+      destructive_action: destructive,
+      cross_tenant: crossTenant,
+      pii,
+      tenant_policy_source: tenantPolicy.source,
+    },
+  };
 }
 
 function suiteRunbookCatalog() {
@@ -1569,6 +1862,8 @@ export function createUniversalCoreService(options = {}) {
   const snapshots = snapshotStore(storageRoot);
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
+  const tenants = tenantRegistryStore(storageRoot);
+  const entityGraph = entityGraphStore(storageRoot);
   const app = express();
 
   app.disable("x-powered-by");
@@ -1613,9 +1908,34 @@ export function createUniversalCoreService(options = {}) {
     return res.json({ ok: true, key: record });
   });
 
+  app.get("/v1/tenants/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const all = tenants.list();
+    const visible = hasScope(req.coreKey, SCOPES.ADMIN_TENANT)
+      ? all
+      : all.filter((tenant) => tenant.tenant_id === req.tenantId);
+    audit.append("core_tenant_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, count: visible.length });
+    res.json({
+      ok: true,
+      tenants: visible,
+      schema_version: "tenant_registry_v1",
+      rule: "Universal Core resta agnostico: settore, dizionario e policy entrano dal tenant registry.",
+    });
+  });
+
+  app.post("/v1/tenants/upsert", requireAdmin, (req, res) => {
+    try {
+      const tenant = tenants.upsert(req.body || {});
+      audit.append("core_tenant_upserted", { tenant_id: tenant.tenant_id, sector: tenant.sector, environment: tenant.environment });
+      res.status(201).json({ ok: true, tenant, schema_version: "tenant_registry_v1" });
+    } catch (error) {
+      publicError(res, 400, error.message || "tenant_upsert_failed");
+    }
+  });
+
   app.get("/v1/tenant/status", createAuth(keyStore, audit), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const suitePolicy = buildSuitePolicy(req.coreKey, branchResolution);
+    const entitlement = buildEntitlement(req.coreKey, branchResolution);
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -1629,8 +1949,16 @@ export function createUniversalCoreService(options = {}) {
       expires_at: req.coreKey.expires_at,
       last_used_at: req.coreKey.last_used_at,
       mode: "local_first_render_ready",
+      entitlement,
       suite_policy: suitePolicy,
     });
+  });
+
+  app.get("/v1/entitlements/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const branchResolution = resolveBranchesForKey(req.coreKey);
+    const entitlement = buildEntitlement(req.coreKey, branchResolution);
+    audit.append("core_entitlement_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, tier: entitlement.tier });
+    res.json({ ok: true, entitlement });
   });
 
   app.get("/v1/control-plane/overview", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
@@ -1644,6 +1972,50 @@ export function createUniversalCoreService(options = {}) {
     });
     audit.append("core_control_plane_overview_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, overview });
+  });
+
+  app.get("/v1/control-plane/dashboard", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const branchResolution = resolveBranchesForKey(req.coreKey);
+    const entitlement = buildEntitlement(req.coreKey, branchResolution);
+    const graph = entityGraph.readTenant(req.tenantId);
+    const maturity = branchMaturityReport();
+    const overview = buildControlPlaneOverview({
+      tenantId: req.tenantId,
+      keyRecord: req.coreKey,
+      keyStore,
+      snapshot: snapshots.latest(req.tenantId),
+      auditEvents: audit.recent(200),
+      evidenceEvents: evidence.recent(req.tenantId, 50),
+    });
+    const riskEntities = graph.entities.filter((entity) => ["medium", "high", "critical"].includes(entity.risk_band));
+    audit.append("core_control_plane_dashboard_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    res.json({
+      ok: true,
+      schema_version: "horizontal_control_plane_dashboard_v1",
+      tenant_id: req.tenantId,
+      overview,
+      entitlement,
+      network_graph_summary: {
+        entity_count: graph.entities.length,
+        relation_count: graph.relations.length,
+        risk_entity_count: riskEntities.length,
+        entity_types: graph.entities.reduce((acc, entity) => {
+          acc[entity.entity_type] = (acc[entity.entity_type] || 0) + 1;
+          return acc;
+        }, {}),
+      },
+      branch_maturity_summary: Object.values(maturity.statuses).reduce((acc, item) => {
+        acc[item.maturity] = (acc[item.maturity] || 0) + 1;
+        return acc;
+      }, {}),
+      action_mediation_states: ["allow", "rewrite", "confirm", "defer", "sandbox", "block", "rollback_required"],
+      next_missing_blocks: [
+        "external_enterprise_ui",
+        "usage_metering_billing_webhook",
+        "customer_self_service_connector_install",
+        "tenant_policy_editor_ui",
+      ],
+    });
   });
 
   app.get("/v1/connectors/sdk/manifest", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
@@ -2033,6 +2405,12 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
+  app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const report = branchMaturityReport();
+    audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    res.json({ ok: true, ...report });
+  });
+
   app.get("/v1/branches/authorized", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const requested = typeof req.query.branches === "string" && req.query.branches.trim()
       ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
@@ -2294,6 +2672,30 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
+  app.get("/v1/entity-graph", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const graph = entityGraph.readTenant(req.tenantId);
+    audit.append("core_entity_graph_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, entities: graph.entities.length, relations: graph.relations.length });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      schema_version: "generic_entity_graph_v1",
+      graph,
+      primitive_types: ["tenant", "entity", "relation", "transaction", "policy", "event", "document", "product", "user", "license", "node"],
+      rule: "Il Core resta orizzontale: i verticali sono dizionari/policy sopra il grafo generico.",
+    });
+  });
+
+  app.post("/v1/entity-graph/upsert", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const graph = entityGraph.upsert(req.tenantId, req.body || {});
+    const evidenceRecord = evidence.append(req.tenantId, "entity_graph_upserted", {
+      key_id: req.coreKey.key_id,
+      entity_count: graph.entities.length,
+      relation_count: graph.relations.length,
+    });
+    audit.append("core_entity_graph_upserted", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, entities: graph.entities.length, relations: graph.relations.length });
+    res.status(201).json({ ok: true, tenant_id: req.tenantId, graph, evidence: evidenceRecord });
+  });
+
   app.post("/v1/snapshot", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
     const record = snapshots.append(req.tenantId, req.body?.source || "unknown", req.body?.payload || req.body || {});
     audit.append("core_snapshot_written", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
@@ -2318,14 +2720,45 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/policy/check", createAuth(keyStore, audit, SCOPES.POLICY_CHECK), (req, res) => {
     const policy = req.body?.policy || {};
+    const branchResolution = resolveBranchesForKey(req.coreKey);
+    const entitlement = buildEntitlement(req.coreKey, branchResolution);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const mediation = evaluatePolicyEngine({
+      tenantPolicy,
+      entitlement,
+      action: req.body?.action || req.body || {},
+      policy,
+      context: req.body?.context || {},
+    });
     const result = {
       status: policy.approval_required ? "approval_required" : "ok",
       hard_block: false,
       owner_confirmation_required: Boolean(policy.approval_required),
       recommended_action: policy.approval_required ? "owner_review_before_execution" : "continue_with_audit",
+      policy_engine: mediation,
     };
-    audit.append("core_policy_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status });
+    audit.append("core_policy_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, mediation: mediation.action_mediation.state });
     res.json({ ok: true, result });
+  });
+
+  app.post("/v1/action-mediation/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const branchResolution = resolveBranchesForKey(req.coreKey);
+    const entitlement = buildEntitlement(req.coreKey, branchResolution);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const result = evaluatePolicyEngine({
+      tenantPolicy,
+      entitlement,
+      action: req.body?.action || req.body || {},
+      policy: req.body?.policy || {},
+      context: req.body?.context || {},
+    });
+    const evidenceRecord = evidence.append(req.tenantId, "action_mediation_evaluated", {
+      request: req.body || {},
+      result,
+      key_id: req.coreKey.key_id,
+    });
+    audit.append("core_action_mediation_evaluated", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, state: result.action_mediation.state, evidence_id: evidenceRecord.evidence_id });
+    res.json({ ok: true, result, evidence: evidenceRecord });
   });
 
   app.post("/v1/claim-guard/check", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
