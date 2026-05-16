@@ -222,14 +222,24 @@ try {
   assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
   assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
   assert(branches.json.branches?.codex_wordpress_platform_guard?.production_status === "advisory", "wordpress platform guard branch missing");
+  assert(branches.json.groups?.content_intelligence?.branches?.includes("ramo_testo"), "content intelligence group missing ramo_testo");
+  assert(branches.json.groups?.platform_engineering?.branches?.includes("codex_wordpress_platform_guard"), "platform engineering group missing wordpress guard");
+  assert(branches.json.groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group missing site factory guard");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
-  mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
+  mark("branches_registry", true, { branches: Object.keys(branches.json.branches), groups: Object.keys(branches.json.groups), tenant_package: branches.json.tenant_package });
 
   const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=front_desk_base,nyra_finance_beauty_test", undefined, connectorKey);
   assert(authorizedBranches.status === 200 && authorizedBranches.json.branch_package?.selected_branches?.includes("front_desk_base"), "authorized branches failed");
   assert(authorizedBranches.json.branch_package?.denied_branches?.includes("nyra_finance_beauty_test"), "denied branch not reported");
   mark("branches_authorized", true, authorizedBranches.json.branch_package);
+
+  const authorizedContentGroup = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=content_intelligence", undefined, connectorKey);
+  assert(authorizedContentGroup.status === 200 && authorizedContentGroup.json.branch_package?.requested_groups?.includes("content_intelligence"), "content group request not tracked");
+  assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("marketing_copy"), "content group did not select marketing_copy");
+  assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("translation_governance"), "content group did not select translation_governance");
+  assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("ramo_testo"), "content group did not select ramo_testo");
+  mark("branches_authorized_group_content", true, authorizedContentGroup.json.branch_package);
 
   const codexContext = await api(base, "POST", "/v1/codex/context", {
     tenant_id: "tenant_demo_skinharmony",
@@ -253,13 +263,18 @@ try {
     tenant_id: "tenant_demo_skinharmony",
     task: "Clonare sito cliente e creare nodo Suite controllato",
     user_input: "Creo un clone staging senza copiare credenziali, clienti, ordini o tracking ID.",
-    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "codex_wordpress_platform_guard", "marketing_copy"],
+    branches: ["site_factory", "platform_engineering", "content_intelligence"],
   }, codexKey);
   assert(codexSiteContext.status === 200 && codexSiteContext.json.context?.selected_branches?.includes("codex_site_factory_guard"), "site factory codex context missing");
   assert(codexSiteContext.json.context?.selected_branches?.includes("codex_website_visual_guard"), "website visual codex context missing");
   assert(codexSiteContext.json.context?.selected_branches?.includes("codex_wordpress_platform_guard"), "wordpress platform codex context missing");
+  assert(codexSiteContext.json.context?.selected_branches?.includes("marketing_copy"), "content group codex context missing marketing copy");
+  assert(codexSiteContext.json.context?.selected_groups?.includes("site_factory"), "site factory group not tracked in context");
+  assert(codexSiteContext.json.context?.selected_groups?.includes("platform_engineering"), "platform engineering group not tracked in context");
+  assert(codexSiteContext.json.context?.branch_groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group profile missing in context");
   assert(codexSiteContext.json.context?.deterministic_context?.rule_count >= 15, "site/visual guard rules not composed");
   mark("codex_site_visual_context", true, {
+    selected_groups: codexSiteContext.json.context.selected_groups,
     selected_branches: codexSiteContext.json.context.selected_branches,
     rule_count: codexSiteContext.json.context.deterministic_context.rule_count,
   });

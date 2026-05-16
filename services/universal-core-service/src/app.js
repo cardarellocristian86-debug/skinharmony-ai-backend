@@ -15,6 +15,7 @@ import { buildCodexGuardResponse, normalizeDecisionContract } from "./decisionCo
 import {
   BRANCH_PACKAGES,
   composeBranchContext,
+  deterministicBranchGroups,
   deterministicBranchRegistry,
   resolveBranchesForKey,
 } from "../branches/index.js";
@@ -35,7 +36,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.8-wordpress-platform-text-translation-guards";
+const SERVICE_VERSION = "0.3.9-branch-groups";
 
 function nowIso() {
   return new Date().toISOString();
@@ -1785,6 +1786,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({
       ok: true,
       branches: branchRegistry(),
+      groups: deterministicBranchGroups(),
       packages: BRANCH_PACKAGES,
       tenant_package: resolution,
       rule: "Ogni ramo produce decisioni advisory/read-only. Azioni operative e pubblicazione richiedono conferma owner.",
@@ -1800,6 +1802,7 @@ export function createUniversalCoreService(options = {}) {
       ok: true,
       tenant_id: req.tenantId,
       branch_package: resolution,
+      groups: deterministicBranchGroups(),
       branches: Object.fromEntries(resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value))),
     });
   });
