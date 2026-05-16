@@ -422,10 +422,11 @@ function hasAnyPayloadValue(payload = {}) {
 }
 
 class AssistantService {
-  constructor(desktopMirror) {
+  constructor(desktopMirror, options = {}) {
     this.desktopMirror = desktopMirror;
     this.coreliaBridge = desktopMirror ? new CoreliaBridge(desktopMirror) : null;
     this.nyraDialogue = new NyraDialogueAdapter();
+    this.universalCoreBridge = options.universalCoreBridge || null;
   }
 
   getAiProviderMode() {
@@ -1244,7 +1245,111 @@ class AssistantService {
     return localizeAssistantText(lines.join("\n"), language);
   }
 
-  buildAiGoldCoreliaResponse(payload = {}, session = null, context = null) {
+  buildUniversalCoreDecisionPayload(payload = {}, structured = {}, context = {}, session = null) {
+    const question = String(payload.question || payload.message || "").trim();
+    const decisionContext = context?.goldDecisionContext || {};
+    const capabilities = context?.goldCapabilities || {};
+    const snapshot = context?.businessSnapshot || {};
+    const risk = decisionContext.risk || capabilities.risk || {};
+    const topSignals = Array.isArray(decisionContext.topSignals) ? decisionContext.topSignals : [];
+    return {
+      domain: "smartdesk_ai_gold",
+      signals: [
+        { id: "question", value: question || "richiesta AI Gold", weight: 0.7 },
+        { id: "local_primary_signal", value: structured.primarySignal || structured.humanSummary || "", weight: 0.9 },
+        { id: "local_primary_action", value: structured.primaryAction || "", weight: 0.8 },
+        ...topSignals.slice(0, 5).map((item, index) => ({
+          id: `gold_signal_${index + 1}`,
+          value: typeof item === "string" ? item : (item.label || item.reason || item.id || ""),
+          weight: 0.5
+        }))
+      ].filter((item) => String(item.value || "").trim()),
+      data_quality: snapshot.dataQuality || { score: 70 },
+      metadata: {
+        surface: "ai_gold",
+        source_layer: "smartdesk_render",
+        local_engine: "corelia",
+        explanation_layer: "nyra",
+        current_plan: session?.subscriptionPlan || session?.plan || "",
+        role: session?.role || "",
+        local_intent: structured.intent || "",
+        local_domain: structured.domain || "",
+        local_action_band: structured.actionBand || "",
+        local_ui_reading_band: structured.uiReadingBand || "",
+        decision_context_primary_action: decisionContext.primaryAction?.id || decisionContext.primaryAction?.label || "",
+        decision_context_confidence: decisionContext.globalConfidence || decisionContext.confidence || "",
+        decision_context_risk: risk.score || risk.band || ""
+      },
+      constraints: {
+        allow_automation: false,
+        require_confirmation: true,
+        safety_mode: true,
+        operator_must_confirm: true
+      }
+    };
+  }
+
+  normalizeUniversalCoreOutput(coreResult = {}, localStructured = {}) {
+    const verdict = coreResult.verdict || coreResult.decision_contract || coreResult.core_output || coreResult;
+    const mediation = verdict.action_mediation || coreResult.action_mediation || {};
+    const risk = verdict.risk || coreResult.risk || {};
+    const riskScore = Number(risk.score ?? risk.risk_score ?? coreResult.systemRisk ?? 0);
+    const confidenceRaw = Number(verdict.confidence ?? coreResult.confidence ?? localStructured.confidence ?? 0);
+    const confidence = confidenceRaw > 1 ? confidenceRaw / 100 : confidenceRaw;
+    const recommended = Array.isArray(verdict.recommended_actions)
+      ? verdict.recommended_actions[0]
+      : Array.isArray(coreResult.recommended_actions)
+        ? coreResult.recommended_actions[0]
+        : null;
+    const explainability = verdict.explainability || coreResult.explainability || {};
+    const summary = String(
+      explainability.summary
+      || coreResult.commercial_explanation
+      || coreResult.summary
+      || localStructured.humanSummary
+      || localStructured.primarySignal
+      || "Lettura AI Gold verificata dal Core."
+    ).replace(/[.!?]+$/g, "");
+    const nextStep = String(
+      mediation.next_step
+      || recommended?.label
+      || localStructured.recommendedNextStep
+      || localStructured.primaryAction
+      || "verificare e confermare prima di agire"
+    );
+    const riskReasons = Array.isArray(risk.reasons) ? risk.reasons : [];
+    const warningText = [
+      risk.band ? `Rischio Core: ${risk.band}` : "",
+      ...riskReasons
+    ].filter(Boolean);
+
+    return {
+      ...localStructured,
+      sourceLayer: "universal_core_remote",
+      primarySignal: summary,
+      primaryAction: String(recommended?.label || localStructured.primaryAction || nextStep),
+      recommendedNextStep: nextStep,
+      reasons: [
+        explainability.why,
+        recommended?.reason,
+        ...(Array.isArray(localStructured.reasons) ? localStructured.reasons : [])
+      ].filter(Boolean).slice(0, 4),
+      risks: warningText.length ? warningText : (localStructured.risks || []),
+      confidence,
+      urgency: Math.max(Number(localStructured.urgency || 0), Math.min(1, riskScore / 100)),
+      universalCore: {
+        success: coreResult.success !== false,
+        providerUrl: coreResult.providerUrl || "",
+        decision: verdict.decision || verdict.state || coreResult.decision || "",
+        controlLevel: verdict.control_level || "",
+        actionMediation: mediation,
+        risk,
+        auditId: verdict.audit_id || coreResult.audit_id || coreResult.request_id || ""
+      }
+    };
+  }
+
+  async buildAiGoldCoreliaResponse(payload = {}, session = null, context = null) {
     const language = assistantLanguage(context || {});
     const question = String(payload.question || payload.message || "").trim();
     if (!this.coreliaBridge) {
@@ -1261,18 +1366,29 @@ class AssistantService {
         startDate: payload?.period?.startDate || "",
         endDate: payload?.period?.endDate || ""
       }, session);
-      const dialogue = this.nyraDialogue.render(structured, { message: question });
+      let universalCore = null;
+      let resolvedStructured = structured;
+      if (this.universalCoreBridge?.isConfigured?.()) {
+        universalCore = await this.universalCoreBridge.decision(
+          this.buildUniversalCoreDecisionPayload(payload, structured, context || {}, session)
+        );
+        if (universalCore?.success) {
+          resolvedStructured = this.normalizeUniversalCoreOutput(universalCore, structured);
+        }
+      }
+      const dialogue = this.nyraDialogue.render(resolvedStructured, { message: question });
       const rawAnswer = String(dialogue.reply || structured.humanSummary || "");
       return {
         goldEnabled: true,
-        provider: "corelia",
+        provider: universalCore?.success ? "universal_core_nyra" : "corelia",
         answer: localizeAssistantText(rawAnswer, language),
         actions: [],
-        structured,
+        structured: resolvedStructured,
         dialogue,
-        uiReadingBand: structured.uiReadingBand,
-        uiReadingLabel: structured.uiReadingLabel,
-        conflictIndex: Number(structured?.v7?.conflictIndex || 0)
+        universalCore,
+        uiReadingBand: resolvedStructured.uiReadingBand,
+        uiReadingLabel: resolvedStructured.uiReadingLabel,
+        conflictIndex: Number(resolvedStructured?.v7?.conflictIndex || 0)
       };
     } catch {
       return {
@@ -1319,13 +1435,13 @@ class AssistantService {
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!this.shouldUseOpenAI()) {
-      return this.buildAiGoldCoreliaResponse(payload, session, context);
+      return await this.buildAiGoldCoreliaResponse(payload, session, context);
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = language === "en"
       ? [
-        "You are AI Gold inside SkinHarmony Smart Desk with Universal Core as the decision engine.",
+        "You are AI Gold inside SkinHarmony Smart Desk. Universal Core is the primary decision gate when available; Corelia is the local fallback.",
         "You are not a generic chatbot: you are an operational assistant for aesthetic, hair and hybrid centers.",
         "Use only the data present in the JSON context. If data is missing, say so clearly.",
         "Do not send messages, do not modify prices, do not change data and do not run automatic campaigns.",
@@ -1339,7 +1455,7 @@ class AssistantService {
         "Structure the answer as: Summary, Priorities, Suggested actions, Limits/missing data."
       ].join("\n")
       : [
-        "Sei AI Gold di SkinHarmony Smart Desk con Universal Core come motore decisionale.",
+        "Sei AI Gold di SkinHarmony Smart Desk. Universal Core è il gate decisionale primario quando disponibile; Corelia è il fallback locale.",
         "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
         "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
         "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
@@ -1378,7 +1494,7 @@ class AssistantService {
         actions: []
       };
     } catch {
-      return this.buildAiGoldCoreliaResponse(payload, session, context);
+      return await this.buildAiGoldCoreliaResponse(payload, session, context);
     }
   }
 

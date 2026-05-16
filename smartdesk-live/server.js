@@ -1794,12 +1794,12 @@ async function bootstrap() {
 
   service = new DesktopMirrorService({ persistenceAdapter });
   await service.init();
-  assistantService = new AssistantService(service);
+  universalCoreBridge = new UniversalCoreBridge();
+  assistantService = new AssistantService(service, { universalCoreBridge });
   coreliaBridge = new CoreliaBridge(service);
   nyraDialogue = new NyraDialogueAdapter();
   whatsappService = new WhatsappService();
   suiteAppKeyBridge = new SuiteAppKeyBridge();
-  universalCoreBridge = new UniversalCoreBridge();
 
   app.listen(port, () => {
     console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
