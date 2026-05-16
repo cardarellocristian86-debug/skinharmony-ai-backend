@@ -1,0 +1,32 @@
+export const branchDataIntegrationOrchestration = {
+  id: "data_integration_orchestration",
+  file: "branch-data-integration-orchestration.js",
+  tier: "internal",
+  label: "Data Integration Orchestration",
+  domain: "data_integration",
+  production_status: "advisory",
+  description: "Guardrail per API, webhook, import/export, sync, deduplica, retry, idempotenza e mapping dati tra sistemi senza leakage cross-tenant.",
+  rules: [
+    "Ogni integrazione deve dichiarare source system, target system, schema mapping, owner del dato e tenant scope.",
+    "Sync, webhook e import massivi devono essere idempotenti: retry e doppio invio non devono creare duplicati, ordini doppi, licenze doppie o stock errato.",
+    "Non usare accessi diretti a database di tenant diversi: passare da adapter, API scoped, audit e policy.",
+    "Segreti, token, password, chiavi gateway e PII non devono stare nel payload libero, nei log o nei prompt.",
+    "Ogni webhook deve avere firma/verifica origine, timeout, retry policy, dead-letter o coda manuale se fallisce.",
+    "Se i dati coinvolgono clienti, ordini, pagamenti o Smart Desk, esportare snapshot minimali e aggregati quando possibile.",
+    "Un'integrazione non deve diventare logica decisionale nascosta: il Core decide, gli adapter trasportano.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "integration_review",
+    blocked_actions: [
+      "direct_cross_tenant_db_access",
+      "secrets_in_payload",
+      "unsigned_webhook",
+      "non_idempotent_sync",
+      "bulk_sync_without_mapping",
+      "pii_in_logs",
+      "unbounded_retry_loop",
+    ],
+  },
+};

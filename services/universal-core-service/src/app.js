@@ -36,7 +36,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.9-branch-groups";
+const SERVICE_VERSION = "0.3.10-enterprise-guard-branches";
 
 function nowIso() {
   return new Date().toISOString();
@@ -985,6 +985,246 @@ function buildBranchPayload(branch, payload = {}) {
         external_layer: "adapter_timeout_retry_audit_no_secret_logs",
       },
       structural_risk: structuralRisk,
+    };
+  } else if (branch === "data_integration_orchestration") {
+    const sourceSystems = arrayValue(data.source_systems || data.sources || data.source_system, 20);
+    const targetSystems = arrayValue(data.target_systems || data.targets || data.target_system, 20);
+    const hasSchemaMapping = data.has_schema_mapping === true || data.schema_mapping_ready === true;
+    const idempotent = data.idempotent === true || data.idempotency_key === true;
+    const retryReady = data.retry_policy === true || data.has_retry_policy === true;
+    const timeoutReady = data.timeout_ready === true || data.has_timeout === true;
+    const dedupReady = data.deduplication === true || data.has_deduplication === true;
+    const webhookSigned = data.webhook_signature === true || data.signed_webhook === true || data.webhook !== true;
+    const containsPii = data.contains_pii === true || data.personal_data === true;
+    const directDb = data.direct_db_access === true || data.direct_cross_tenant_db_access === true;
+    const crossTenant = data.cross_tenant === true || data.cross_tenant_data_access === true;
+    const secretsInPayload = data.secrets_in_payload === true || data.logs_secret === true || data.secret_in_payload === true;
+    const bulkSync = data.bulk_sync === true || data.sync_mode === "bulk";
+    if (!sourceSystems.length) missing.push("source_systems");
+    if (!targetSystems.length) missing.push("target_systems");
+    if (!hasSchemaMapping) missing.push("schema_mapping");
+    const reliabilityReady = [idempotent, retryReady, timeoutReady, dedupReady, webhookSigned].filter(Boolean).length;
+    addSignal("mapping_readiness", "Readiness mapping dati sorgente/destinazione", hasSchemaMapping ? 12 : 78, "data_integration", ["mapping"]);
+    addSignal("idempotency_reliability", "Idempotenza, retry, timeout, deduplica e firma webhook", 100 - reliabilityReady * 18, "data_integration", ["sync"]);
+    addSignal("tenant_data_risk", "Rischio cross-tenant o accesso DB diretto", directDb || crossTenant ? 96 : 8, "tenant", ["tenant_isolation"]);
+    addSignal("payload_sensitivity", "PII o segreti nel payload/log", secretsInPayload ? 98 : containsPii ? 58 : 8, "privacy", ["payload"]);
+    addSignal("bulk_sync_risk", "Sync massivo senza controlli completi", bulkSync && reliabilityReady < 4 ? 78 : 14, "data_integration", ["bulk_sync"]);
+    branchOutput = {
+      integration_mode: "adapter_snapshot_sync",
+      source_systems: sourceSystems,
+      target_systems: targetSystems,
+      required_checks: [
+        "mappa schema, owner del dato e tenant scope",
+        "usa idempotency key, retry bounded, timeout e deduplica",
+        "firma/verifica webhook e niente segreti nei log",
+        "usa snapshot minimali o aggregati per PII e dati cliente",
+        "audit per import/export/sync e dead-letter manuale se fallisce",
+      ],
+      blocked_if: {
+        missing_schema_mapping: !hasSchemaMapping,
+        direct_db_access: directDb,
+        cross_tenant_scope: crossTenant,
+        secrets_in_payload: secretsInPayload,
+        non_idempotent_bulk_sync: bulkSync && !idempotent,
+      },
+    };
+  } else if (branch === "commerce_fulfillment_guard") {
+    const hasOfficialPrice = data.has_official_price === true || data.official_price === true || data.price_source === "official";
+    const checkoutConfirmed = data.checkout_confirmed === true || data.payment_status === "paid" || data.order_status === "paid";
+    const contractOrTrial = data.contract_approved === true || data.trial_authorized === true || data.owner_override === true;
+    const idempotency = data.order_idempotency_key === true || Boolean(textValue(data.idempotency_key));
+    const stockPolicy = data.stock_policy_ready === true || data.stock_policy === "configured";
+    const licensePolicy = data.license_policy_ready === true || data.license_policy === "configured";
+    const refundPolicy = data.refund_policy_ready === true || data.refund_policy === "configured";
+    const settlementPolicy = data.settlement_policy_ready === true || data.settlement_policy === "configured" || data.settlement_required !== true;
+    const inventedPrice = data.invented_price === true || data.price_source === "invented";
+    const licenseWithoutPayment = data.license_without_payment === true || (data.generate_license === true && !checkoutConfirmed && !contractOrTrial);
+    const chargeWithoutCheckout = data.charge_without_checkout === true || data.manual_charge === true;
+    const oversellStock = data.oversell_stock === true || data.stock_negative_allowed === true;
+    const doubleFulfillment = data.double_fulfillment === true || data.duplicate_order_processing === true;
+    if (!hasOfficialPrice) missing.push("official_price");
+    if (!idempotency) missing.push("idempotency_key");
+    const policyReady = [stockPolicy, licensePolicy, refundPolicy, settlementPolicy].filter(Boolean).length;
+    addSignal("price_source", "Prezzo da listino ufficiale/contratto", inventedPrice ? 98 : hasOfficialPrice ? 8 : 64, "commerce", ["price"]);
+    addSignal("fulfillment_auth", "Evento commerciale prima di licenza/seat/key", licenseWithoutPayment || chargeWithoutCheckout ? 94 : 12, "commerce", ["license"]);
+    addSignal("idempotency", "Fulfillment idempotente", idempotency && !doubleFulfillment ? 10 : 76, "commerce", ["order"]);
+    addSignal("policy_readiness", "Policy stock/licenze/refund/settlement", 100 - policyReady * 22, "commerce", ["policy"]);
+    addSignal("stock_risk", "Stock e riserva merce coerenti", oversellStock ? 84 : 12, "stock", ["warehouse"]);
+    branchOutput = {
+      fulfillment_mode: "quote_or_checkout_first",
+      activation_allowed: false,
+      policy_ready_count: policyReady,
+      required_checks: [
+        "usa prezzo ufficiale, contratto o preventivo approvato",
+        "ordine/pagamento/trial/override owner prima di licenza o App Key",
+        "idempotency key per ordini, seat, stock e chiavi",
+        "stock, acconto/saldo e settlement configurabili per azienda",
+        "refund e chargeback con audit e nessun payout automatico non autorizzato",
+      ],
+      blocked_if: {
+        invented_price: inventedPrice,
+        license_without_commercial_event: licenseWithoutPayment,
+        charge_without_checkout: chargeWithoutCheckout,
+        double_fulfillment: doubleFulfillment,
+        oversell_stock: oversellStock,
+      },
+    };
+  } else if (branch === "observability_roi_guard") {
+    const hasAudit = data.has_audit_id === true || Boolean(textValue(data.audit_id));
+    const hasTrace = data.has_trace_id === true || Boolean(textValue(data.trace_id));
+    const metricsDefined = data.metrics_defined === true || Array.isArray(data.metrics);
+    const evidenceEnabled = data.evidence_enabled === true || data.audit_evidence === true;
+    const healthcheck = data.health_check === true || data.healthcheck_ready === true;
+    const logsPii = data.logs_pii === true || data.pii_in_logs === true;
+    const logsSecret = data.logs_secret === true || data.secret_in_logs === true;
+    const roiMetrics = arrayValue(data.roi_metrics || data.value_metrics, 20);
+    const budget = Number(data.performance_budget_ms ?? data.latency_budget_ms ?? 0);
+    const latency = Number(data.latency_ms ?? 0);
+    const budgetExceeded = budget > 0 && latency > budget;
+    if (!hasAudit) missing.push("audit_id");
+    if (!metricsDefined) missing.push("metrics_defined");
+    if (!healthcheck) missing.push("health_check");
+    const observabilityReady = [hasAudit, hasTrace, metricsDefined, evidenceEnabled, healthcheck].filter(Boolean).length;
+    addSignal("audit_traceability", "Audit, trace ed evidence layer", 100 - observabilityReady * 18, "observability", ["audit"]);
+    addSignal("roi_measurability", "Metriche ROI e valore operativo", roiMetrics.length ? 12 : 68, "roi", ["telemetry"]);
+    addSignal("log_safety", "PII o segreti nei log", logsSecret ? 98 : logsPii ? 82 : 8, "privacy", ["logs"]);
+    addSignal("performance_budget", "Budget performance e health", budgetExceeded ? 72 : healthcheck ? 12 : 52, "performance", ["health"]);
+    branchOutput = {
+      observability_mode: "audit_evidence_roi",
+      roi_metrics: roiMetrics,
+      required_checks: [
+        "audit_id e trace_id per ogni automazione",
+        "log senza PII/segreti e con dati mascherati",
+        "metriche ROI: tempo risparmiato, errori evitati, lead recuperati, costi ridotti",
+        "health check, latency budget e stato degradato leggibile",
+      ],
+      blocked_if: {
+        automation_without_audit: !hasAudit,
+        pii_in_logs: logsPii,
+        secret_in_logs: logsSecret,
+        no_healthcheck: !healthcheck,
+        roi_claim_without_metrics: data.roi_claim === true && !roiMetrics.length,
+      },
+    };
+  } else if (branch === "legal_privacy_compliance_guard") {
+    const consentRequired = data.consent_required === true || data.contains_personal_data === true || data.contains_sensitive_data === true;
+    const consentCollected = data.consent_collected === true || data.consent_status === "collected";
+    const sensitive = data.contains_sensitive_data === true || data.health_data === true || data.images === true || data.payment_data === true;
+    const retention = data.retention_policy === true || data.retention_policy_ready === true;
+    const dpaReady = data.dpa_ready === true || data.processor_agreement_ready === true || data.external_processor !== true;
+    const claimReviewed = data.claim_reviewed === true || data.owner_claim_approval === true || data.publish_claim !== true;
+    const deleteExportReady = data.delete_export_ready === true || data.data_subject_request_ready === true;
+    const legalGuarantee = data.legal_guarantee_claimed === true || /compliance assoluta|garantito per legge|legalmente garantito/i.test(textValue(data.text || data.claim || data.copy));
+    const crossBrand = data.cross_brand_policy_leak === true || data.cross_tenant === true;
+    const privacyRisk = consentRequired && !consentCollected;
+    if (consentRequired && !consentCollected) missing.push("consent");
+    if (!retention) missing.push("retention_policy");
+    addSignal("consent_readiness", "Consenso e finalita dati", privacyRisk ? 92 : 10, "privacy", ["gdpr"]);
+    addSignal("sensitive_data_scope", "Dati sensibili, immagini, pagamenti o salute", sensitive && !dpaReady ? 84 : sensitive ? 48 : 8, "privacy", ["sensitive"]);
+    addSignal("claim_review", "Claim/revisione owner prima della pubblicazione", claimReviewed ? 12 : 82, "compliance", ["claim"]);
+    addSignal("tenant_policy_isolation", "Isolamento policy brand/tenant", crossBrand ? 96 : 8, "tenant", ["brand_scope"]);
+    addSignal("legal_language", "Promesse legali/compliance assoluta", legalGuarantee ? 94 : 8, "legal", ["wording"]);
+    branchOutput = {
+      compliance_mode: "advisory_with_owner_review",
+      legal_advice_replacement: false,
+      required_checks: [
+        "consenso, finalita, minimizzazione e retention",
+        "DPA/processor agreement se dati passano da fornitori esterni",
+        "claim pubblici e pricing come governance/advisory, non imposizione",
+        "data export/delete request con audit",
+        "nessuna garanzia legale automatica nel copy pubblico",
+      ],
+      blocked_if: {
+        personal_data_without_consent: privacyRisk,
+        sensitive_data_without_scope: sensitive && !dpaReady,
+        unreviewed_claim_publish: !claimReviewed,
+        cross_brand_policy_leak: crossBrand,
+        legal_guarantee_claim: legalGuarantee,
+        missing_retention_policy: !retention,
+      },
+      delete_export_ready: deleteExportReady,
+    };
+  } else if (branch === "agent_orchestration_guard") {
+    const actionType = textValue(data.action_type || payload.action_type, "advisory");
+    const gatewayMode = textValue(data.gateway_mode || payload.gateway_mode, "advisory");
+    const ownerConfirmation = data.owner_confirmation === true || data.owner_confirmed === true || data.owner_confirmation_received === true;
+    const sandbox = data.sandbox === true || data.dry_run === true || data.local_only === true;
+    const rollback = data.rollback === true || data.rollback_ready === true || data.undo_ready === true;
+    const runbookId = textValue(data.runbook_id || data.workflow_id);
+    const autonomous = data.autonomous_execution === true || data.agent_auto_execute === true;
+    const destructive = data.destructive_action === true || ["delete", "git_reset_hard", "drop_database"].includes(actionType);
+    const publish = data.publish_intent === true || actionType === "publish";
+    const payment = data.payment_action === true || actionType === "payment" || actionType === "charge";
+    const crossTenant = data.cross_tenant === true || data.cross_tenant_data_access === true;
+    const sensitive = destructive || publish || payment || crossTenant || actionType === "update" || actionType === "deploy";
+    if (sensitive && !ownerConfirmation) missing.push("owner_confirmation");
+    if (sensitive && !rollback && !sandbox) missing.push("rollback_or_sandbox");
+    addSignal("action_sensitivity", "Sensibilita azione agente", destructive ? 98 : payment ? 88 : publish || crossTenant ? 76 : actionType === "update" || actionType === "deploy" ? 58 : 18, "agent_orchestration", ["action"]);
+    addSignal("owner_confirmation", "Conferma owner tracciata", sensitive && !ownerConfirmation ? 86 : 8, "agent_orchestration", ["confirm"]);
+    addSignal("rollback_sandbox", "Sandbox, dry-run o rollback", sensitive && !rollback && !sandbox ? 76 : 10, "agent_orchestration", ["rollback"]);
+    addSignal("prompt_only_decision", "Decisione non affidata solo al prompt", autonomous && !runbookId ? 74 : 10, "agent_orchestration", ["runbook"]);
+    branchOutput = {
+      orchestration_mode: "core_decides_agent_executes",
+      action_type: actionType,
+      gateway_mode: gatewayMode,
+      mediation_states: ["allow", "rewrite", "confirm", "defer", "sandbox", "block", "rollback_required"],
+      execution_allowed_advisory: false,
+      required_checks: [
+        "decision contract prima di scrivere, pubblicare, deployare, pagare o modificare tenant",
+        "owner confirmation esplicita e limitata allo scope",
+        "dry-run/sandbox o rollback per azioni sensibili",
+        "audit con input, verdict, branch usato, azione, esito",
+      ],
+      blocked_if: {
+        destructive_without_owner: destructive && !ownerConfirmation,
+        autonomous_sensitive_action: autonomous && sensitive,
+        cross_tenant_write: crossTenant,
+        no_rollback_or_sandbox: sensitive && !rollback && !sandbox,
+      },
+    };
+  } else if (branch === "runtime_deployment_scaling_guard") {
+    const targetRuntime = textValue(data.target_runtime || data.runtime_mode || "local");
+    const envReady = data.env_vars_configured === true || data.environment_ready === true;
+    const secretsInEnv = data.secrets_in_env === true || data.secret_store_ready === true || data.has_secrets !== true;
+    const secretLeak = data.secret_in_repo === true || data.secret_in_zip === true || data.secret_in_logs === true;
+    const migrationPlan = data.migration_plan === true || data.migration_plan_ready === true || data.database_migration !== true;
+    const backupReady = data.backup_ready === true || data.has_backup === true || data.database_migration !== true;
+    const rollbackReady = data.rollback_ready === true || data.has_rollback === true;
+    const healthcheckReady = data.healthcheck_ready === true || data.health_check === true;
+    const canary = data.canary_enabled === true || data.rollout_strategy === "canary" || data.deploy_to_production !== true;
+    const preflight = data.preflight_passed === true || data.preflight_ready === true || data.deploy_to_production !== true;
+    const queueRequired = data.queue_required === true || data.high_volume === true;
+    const queueReady = data.queue_ready === true || queueRequired === false;
+    const storageReady = data.storage_ready === true || data.database_ready === true || targetRuntime === "local";
+    const productionDeploy = data.deploy_to_production === true || data.environment === "production";
+    const unsafeProduction = productionDeploy && (!preflight || !rollbackReady || !healthcheckReady);
+    if (!envReady && targetRuntime !== "local") missing.push("env_vars");
+    if (!healthcheckReady) missing.push("healthcheck");
+    if (productionDeploy && !rollbackReady) missing.push("rollback");
+    addSignal("runtime_readiness", "Runtime, env e storage pronti", envReady && storageReady ? 12 : 66, "runtime", ["render"]);
+    addSignal("secret_handling", "Segreti fuori da repo/zip/log", secretLeak ? 98 : secretsInEnv ? 8 : 62, "security", ["secret"]);
+    addSignal("migration_safety", "Migrazione con piano e backup", migrationPlan && backupReady ? 12 : 82, "deployment", ["migration"]);
+    addSignal("release_safety", "Preflight, healthcheck, rollback e canary", unsafeProduction ? 92 : productionDeploy ? 38 : 12, "release", ["deploy"]);
+    addSignal("scaling_readiness", "Queue/cache/rate limit per carico alto", queueRequired && !queueReady ? 76 : 10, "scaling", ["queue"]);
+    branchOutput = {
+      deployment_mode: "local_shared_dedicated_runtime_guard",
+      target_runtime: targetRuntime,
+      production_deploy: productionDeploy,
+      required_checks: [
+        "segreti solo in env/secret store",
+        "preflight, healthcheck, rollback e canary prima del live",
+        "backup e migration plan per cambio schema/storage",
+        "queue/cache/rate limit se high-volume",
+        "degrade-safe se Core remoto non risponde",
+      ],
+      blocked_if: {
+        production_deploy_without_preflight: productionDeploy && !preflight,
+        migration_without_backup: !migrationPlan || !backupReady,
+        secret_leak: secretLeak,
+        missing_rollback: productionDeploy && !rollbackReady,
+        missing_healthcheck: !healthcheckReady,
+        queue_required_not_ready: queueRequired && !queueReady,
+      },
     };
   } else if (branch === "cosmetic_chemistry") {
     const active = textValue(data.active || data.ingredient || data.hero_ingredient);

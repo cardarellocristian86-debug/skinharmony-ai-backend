@@ -1,0 +1,31 @@
+export const branchAgentOrchestrationGuard = {
+  id: "agent_orchestration_guard",
+  file: "branch-agent-orchestration-guard.js",
+  tier: "internal",
+  label: "Agent Orchestration Guard",
+  domain: "agent_orchestration",
+  production_status: "advisory",
+  description: "Guardrail per Codex, agenti, runbook, marketplace automazioni, sandbox, owner confirmation, rollback e action mediation.",
+  rules: [
+    "OpenAI genera, Universal Core decide, Nyra spiega, i client eseguono solo entro policy.",
+    "Un agente non deve eseguire azioni sensibili solo perché il prompt lo chiede: deve passare da decision contract, scope e audit.",
+    "Azioni su file, deploy, publish, pagamento, licenze, tenant, update e dati cliente richiedono mediation: allow, rewrite, confirm, defer, sandbox, block o rollback_required.",
+    "La conferma owner deve essere esplicita, tracciata e limitata allo scope della singola azione.",
+    "Runbook e automazioni devono avere preflight, dry-run dove possibile, undo/rollback e report.",
+    "Default operativo: read-only/sandbox. Scrittura solo con scope, conferma e prova di reversibilità.",
+    "Se l'agente non sa quale sistema governa la decisione, deve fermarsi e chiedere verdict al Core.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "agent_orchestration_review",
+    blocked_actions: [
+      "agent_autonomous_destructive_action",
+      "publish_without_core_verdict",
+      "payment_without_owner_confirm",
+      "tenant_write_without_scope",
+      "runbook_without_rollback",
+      "prompt_only_decision",
+    ],
+  },
+};

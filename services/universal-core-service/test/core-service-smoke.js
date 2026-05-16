@@ -222,9 +222,19 @@ try {
   assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
   assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
   assert(branches.json.branches?.codex_wordpress_platform_guard?.production_status === "advisory", "wordpress platform guard branch missing");
+  assert(branches.json.branches?.data_integration_orchestration?.production_status === "advisory", "data integration branch missing");
+  assert(branches.json.branches?.commerce_fulfillment_guard?.production_status === "advisory", "commerce fulfillment branch missing");
+  assert(branches.json.branches?.observability_roi_guard?.production_status === "advisory", "observability ROI branch missing");
+  assert(branches.json.branches?.legal_privacy_compliance_guard?.production_status === "advisory", "legal privacy branch missing");
+  assert(branches.json.branches?.agent_orchestration_guard?.production_status === "advisory", "agent orchestration branch missing");
+  assert(branches.json.branches?.runtime_deployment_scaling_guard?.production_status === "advisory", "runtime deployment branch missing");
   assert(branches.json.groups?.content_intelligence?.branches?.includes("ramo_testo"), "content intelligence group missing ramo_testo");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("codex_wordpress_platform_guard"), "platform engineering group missing wordpress guard");
+  assert(branches.json.groups?.platform_engineering?.branches?.includes("runtime_deployment_scaling_guard"), "platform engineering group missing runtime guard");
   assert(branches.json.groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group missing site factory guard");
+  assert(branches.json.groups?.business_governance?.branches?.includes("commerce_fulfillment_guard"), "business governance group missing commerce guard");
+  assert(branches.json.groups?.security_defense?.branches?.includes("legal_privacy_compliance_guard"), "security defense group missing legal guard");
+  assert(branches.json.groups?.automation_control?.branches?.includes("agent_orchestration_guard"), "automation control group missing agent guard");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), groups: Object.keys(branches.json.groups), tenant_package: branches.json.tenant_package });
@@ -268,6 +278,8 @@ try {
   assert(codexSiteContext.status === 200 && codexSiteContext.json.context?.selected_branches?.includes("codex_site_factory_guard"), "site factory codex context missing");
   assert(codexSiteContext.json.context?.selected_branches?.includes("codex_website_visual_guard"), "website visual codex context missing");
   assert(codexSiteContext.json.context?.selected_branches?.includes("codex_wordpress_platform_guard"), "wordpress platform codex context missing");
+  assert(codexSiteContext.json.context?.selected_branches?.includes("data_integration_orchestration"), "site factory context missing data integration");
+  assert(codexSiteContext.json.context?.selected_branches?.includes("runtime_deployment_scaling_guard"), "site factory context missing runtime deployment");
   assert(codexSiteContext.json.context?.selected_branches?.includes("marketing_copy"), "content group codex context missing marketing copy");
   assert(codexSiteContext.json.context?.selected_groups?.includes("site_factory"), "site factory group not tracked in context");
   assert(codexSiteContext.json.context?.selected_groups?.includes("platform_engineering"), "platform engineering group not tracked in context");
@@ -391,6 +403,208 @@ try {
     state: wordpressRiskAnalyze.json.output.state,
     risk: wordpressRiskAnalyze.json.output.risk.band,
     blocked_if: wordpressRiskAnalyze.json.branch_output.blocked_if,
+  });
+
+  const dataIntegrationAnalyze = await api(base, "POST", "/v1/branches/data_integration_orchestration/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    source_systems: ["wordpress"],
+    target_systems: ["universal_core"],
+    has_schema_mapping: true,
+    idempotent: true,
+    retry_policy: true,
+    timeout_ready: true,
+    deduplication: true,
+    webhook_signature: true,
+    contains_pii: false,
+    cross_tenant: false,
+    secrets_in_payload: false,
+  }, codexKey);
+  assert(dataIntegrationAnalyze.status === 200 && dataIntegrationAnalyze.json.branch_output?.integration_mode === "adapter_snapshot_sync", "data integration analyze failed");
+  assert(dataIntegrationAnalyze.json.branch_output?.blocked_if?.secrets_in_payload === false, "data integration false positive");
+  mark("data_integration_analyze", true, {
+    state: dataIntegrationAnalyze.json.output.state,
+    blocked_if: dataIntegrationAnalyze.json.branch_output.blocked_if,
+  });
+
+  const dataIntegrationRiskAnalyze = await api(base, "POST", "/v1/branches/data_integration_orchestration/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    source_systems: ["tenant_a_db"],
+    target_systems: ["tenant_b_db"],
+    has_schema_mapping: false,
+    direct_db_access: true,
+    cross_tenant: true,
+    secrets_in_payload: true,
+    bulk_sync: true,
+  }, codexKey);
+  assert(dataIntegrationRiskAnalyze.status === 200 && dataIntegrationRiskAnalyze.json.branch_output?.blocked_if?.cross_tenant_scope === true, "data integration cross tenant not detected");
+  assert(dataIntegrationRiskAnalyze.json.branch_output?.blocked_if?.secrets_in_payload === true, "data integration secrets not detected");
+  mark("data_integration_risk_analyze", true, {
+    state: dataIntegrationRiskAnalyze.json.output.state,
+    risk: dataIntegrationRiskAnalyze.json.output.risk.band,
+    blocked_if: dataIntegrationRiskAnalyze.json.branch_output.blocked_if,
+  });
+
+  const commerceAnalyze = await api(base, "POST", "/v1/branches/commerce_fulfillment_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    has_official_price: true,
+    checkout_confirmed: true,
+    order_idempotency_key: true,
+    stock_policy_ready: true,
+    license_policy_ready: true,
+    refund_policy_ready: true,
+    settlement_policy_ready: true,
+    invented_price: false,
+    generate_license: true,
+  }, codexKey);
+  assert(commerceAnalyze.status === 200 && commerceAnalyze.json.branch_output?.fulfillment_mode === "quote_or_checkout_first", "commerce fulfillment analyze failed");
+  assert(commerceAnalyze.json.branch_output?.blocked_if?.invented_price === false, "commerce invented price false positive");
+  mark("commerce_fulfillment_analyze", true, {
+    state: commerceAnalyze.json.output.state,
+    blocked_if: commerceAnalyze.json.branch_output.blocked_if,
+  });
+
+  const commerceRiskAnalyze = await api(base, "POST", "/v1/branches/commerce_fulfillment_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    invented_price: true,
+    generate_license: true,
+    checkout_confirmed: false,
+    charge_without_checkout: true,
+    double_fulfillment: true,
+    oversell_stock: true,
+  }, codexKey);
+  assert(commerceRiskAnalyze.status === 200 && commerceRiskAnalyze.json.branch_output?.blocked_if?.invented_price === true, "commerce invented price not detected");
+  assert(commerceRiskAnalyze.json.branch_output?.blocked_if?.license_without_commercial_event === true, "commerce license without event not detected");
+  mark("commerce_fulfillment_risk_analyze", true, {
+    state: commerceRiskAnalyze.json.output.state,
+    risk: commerceRiskAnalyze.json.output.risk.band,
+    blocked_if: commerceRiskAnalyze.json.branch_output.blocked_if,
+  });
+
+  const observabilityAnalyze = await api(base, "POST", "/v1/branches/observability_roi_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    audit_id: "audit_demo",
+    trace_id: "trace_demo",
+    metrics_defined: true,
+    evidence_enabled: true,
+    health_check: true,
+    roi_metrics: ["time_saved", "errors_avoided"],
+    performance_budget_ms: 500,
+    latency_ms: 180,
+  }, codexKey);
+  assert(observabilityAnalyze.status === 200 && observabilityAnalyze.json.branch_output?.observability_mode === "audit_evidence_roi", "observability analyze failed");
+  assert(observabilityAnalyze.json.branch_output?.blocked_if?.automation_without_audit === false, "observability audit false positive");
+  mark("observability_roi_analyze", true, {
+    state: observabilityAnalyze.json.output.state,
+    blocked_if: observabilityAnalyze.json.branch_output.blocked_if,
+  });
+
+  const legalAnalyze = await api(base, "POST", "/v1/branches/legal_privacy_compliance_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    contains_personal_data: true,
+    consent_collected: true,
+    retention_policy: true,
+    dpa_ready: true,
+    claim_reviewed: true,
+    delete_export_ready: true,
+  }, codexKey);
+  assert(legalAnalyze.status === 200 && legalAnalyze.json.branch_output?.compliance_mode === "advisory_with_owner_review", "legal privacy analyze failed");
+  assert(legalAnalyze.json.branch_output?.blocked_if?.personal_data_without_consent === false, "legal privacy consent false positive");
+  mark("legal_privacy_compliance_analyze", true, {
+    state: legalAnalyze.json.output.state,
+    blocked_if: legalAnalyze.json.branch_output.blocked_if,
+  });
+
+  const legalRiskAnalyze = await api(base, "POST", "/v1/branches/legal_privacy_compliance_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    contains_personal_data: true,
+    consent_collected: false,
+    contains_sensitive_data: true,
+    dpa_ready: false,
+    publish_claim: true,
+    claim_reviewed: false,
+    text: "Compliance assoluta garantita per legge.",
+  }, codexKey);
+  assert(legalRiskAnalyze.status === 200 && legalRiskAnalyze.json.branch_output?.blocked_if?.personal_data_without_consent === true, "legal privacy consent risk not detected");
+  assert(legalRiskAnalyze.json.branch_output?.blocked_if?.legal_guarantee_claim === true, "legal guarantee not detected");
+  mark("legal_privacy_compliance_risk_analyze", true, {
+    state: legalRiskAnalyze.json.output.state,
+    risk: legalRiskAnalyze.json.output.risk.band,
+    blocked_if: legalRiskAnalyze.json.branch_output.blocked_if,
+  });
+
+  const agentAnalyze = await api(base, "POST", "/v1/branches/agent_orchestration_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    action_type: "update",
+    owner_confirmed: true,
+    sandbox: true,
+    rollback_ready: true,
+    runbook_id: "rb_local_patch",
+  }, codexKey);
+  assert(agentAnalyze.status === 200 && agentAnalyze.json.branch_output?.orchestration_mode === "core_decides_agent_executes", "agent orchestration analyze failed");
+  assert(agentAnalyze.json.branch_output?.blocked_if?.destructive_without_owner === false, "agent owner false positive");
+  mark("agent_orchestration_analyze", true, {
+    state: agentAnalyze.json.output.state,
+    blocked_if: agentAnalyze.json.branch_output.blocked_if,
+  });
+
+  const agentRiskAnalyze = await api(base, "POST", "/v1/branches/agent_orchestration_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    action_type: "delete",
+    autonomous_execution: true,
+    owner_confirmed: false,
+    cross_tenant: true,
+    sandbox: false,
+    rollback_ready: false,
+  }, codexKey);
+  assert(agentRiskAnalyze.status === 200 && agentRiskAnalyze.json.branch_output?.blocked_if?.destructive_without_owner === true, "agent destructive risk not detected");
+  assert(agentRiskAnalyze.json.branch_output?.blocked_if?.cross_tenant_write === true, "agent cross tenant risk not detected");
+  mark("agent_orchestration_risk_analyze", true, {
+    state: agentRiskAnalyze.json.output.state,
+    risk: agentRiskAnalyze.json.output.risk.band,
+    blocked_if: agentRiskAnalyze.json.branch_output.blocked_if,
+  });
+
+  const runtimeAnalyze = await api(base, "POST", "/v1/branches/runtime_deployment_scaling_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    target_runtime: "dedicated_render",
+    env_vars_configured: true,
+    secret_store_ready: true,
+    migration_plan: true,
+    backup_ready: true,
+    rollback_ready: true,
+    healthcheck_ready: true,
+    canary_enabled: true,
+    preflight_passed: true,
+    queue_required: true,
+    queue_ready: true,
+    storage_ready: true,
+    deploy_to_production: true,
+  }, codexKey);
+  assert(runtimeAnalyze.status === 200 && runtimeAnalyze.json.branch_output?.deployment_mode === "local_shared_dedicated_runtime_guard", "runtime deployment analyze failed");
+  assert(runtimeAnalyze.json.branch_output?.blocked_if?.production_deploy_without_preflight === false, "runtime preflight false positive");
+  mark("runtime_deployment_scaling_analyze", true, {
+    state: runtimeAnalyze.json.output.state,
+    blocked_if: runtimeAnalyze.json.branch_output.blocked_if,
+  });
+
+  const runtimeRiskAnalyze = await api(base, "POST", "/v1/branches/runtime_deployment_scaling_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    target_runtime: "production_render",
+    deploy_to_production: true,
+    preflight_passed: false,
+    rollback_ready: false,
+    healthcheck_ready: false,
+    secret_in_repo: true,
+    database_migration: true,
+    migration_plan: false,
+    backup_ready: false,
+  }, codexKey);
+  assert(runtimeRiskAnalyze.status === 200 && runtimeRiskAnalyze.json.branch_output?.blocked_if?.production_deploy_without_preflight === true, "runtime missing preflight not detected");
+  assert(runtimeRiskAnalyze.json.branch_output?.blocked_if?.secret_leak === true, "runtime secret leak not detected");
+  mark("runtime_deployment_scaling_risk_analyze", true, {
+    state: runtimeRiskAnalyze.json.output.state,
+    risk: runtimeRiskAnalyze.json.output.risk.band,
+    blocked_if: runtimeRiskAnalyze.json.branch_output.blocked_if,
   });
 
   const actionEvaluator = await api(base, "POST", "/v1/action-evaluator", {

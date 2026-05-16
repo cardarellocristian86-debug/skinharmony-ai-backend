@@ -1,0 +1,30 @@
+export const branchObservabilityRoiGuard = {
+  id: "observability_roi_guard",
+  file: "branch-observability-roi-guard.js",
+  tier: "internal",
+  label: "Observability ROI Guard",
+  domain: "observability_roi",
+  production_status: "advisory",
+  description: "Guardrail per audit, prove, metriche, performance, ROI telemetry, salute nodi e valore misurabile delle automazioni.",
+  rules: [
+    "Ogni azione automatizzata deve produrre audit_id, trace_id, input sintetico, decisione Core, rischio, esito e possibile rollback.",
+    "Prima di vendere un'automazione enterprise, misurare cosa migliora: tempo risparmiato, errori evitati, lead recuperati, ordini sbloccati, costi ridotti.",
+    "Log e metriche non devono contenere PII o segreti; usare mascheramento, aggregati e data minimization.",
+    "Ogni servizio esposto deve avere health check, error budget, latenza osservabile e stato degradato leggibile.",
+    "I report manageriali devono mostrare valore operativo, non solo conteggi tecnici.",
+    "Se manca telemetria, il Core deve trattare il risultato come advisory e non come prova di performance.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: false,
+    allowed_action_level: "observability_review",
+    blocked_actions: [
+      "automation_without_audit",
+      "roi_claim_without_metrics",
+      "pii_in_logs",
+      "secret_in_logs",
+      "no_healthcheck",
+      "untraceable_action",
+    ],
+  },
+};

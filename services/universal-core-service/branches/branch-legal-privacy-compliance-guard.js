@@ -1,0 +1,31 @@
+export const branchLegalPrivacyComplianceGuard = {
+  id: "legal_privacy_compliance_guard",
+  file: "branch-legal-privacy-compliance-guard.js",
+  tier: "internal",
+  label: "Legal Privacy Compliance Guard",
+  domain: "legal_privacy_compliance",
+  production_status: "advisory",
+  description: "Guardrail legale/privacy agnostico per claim, consenso, GDPR, retention, DPA, dati sensibili, pagamenti e responsabilita.",
+  rules: [
+    "Il Core non sostituisce consulenza legale: deve segnalare rischio, prova mancante e necessità di revisione.",
+    "Prima di inviare, pubblicare, sincronizzare o analizzare dati personali, verificare consenso, finalità, minimizzazione e retention.",
+    "Claim pubblici, prezzi, sconti e promesse commerciali devono restare advisory o approvati dal soggetto owner.",
+    "Dati salute, immagini, documenti, pagamenti e minori richiedono soglie privacy piu alte e conferma owner.",
+    "Ogni tenant deve vedere solo dati, policy e claim del proprio brand_scope; niente contaminazione tra brand.",
+    "Export, delete request, access request e data portability devono essere tracciabili e reversibili dove possibile.",
+    "Evitare termini come garanzia legale automatica, prezzo imposto, sanzione automatica o compliance assoluta.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "compliance_review",
+    blocked_actions: [
+      "legal_guarantee_claim",
+      "publish_unreviewed_claim",
+      "process_personal_data_without_consent",
+      "cross_brand_policy_leak",
+      "sensitive_data_without_scope",
+      "delete_request_without_audit",
+    ],
+  },
+};

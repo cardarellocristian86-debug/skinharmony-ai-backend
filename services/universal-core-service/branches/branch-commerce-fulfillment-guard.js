@@ -1,0 +1,32 @@
+export const branchCommerceFulfillmentGuard = {
+  id: "commerce_fulfillment_guard",
+  file: "branch-commerce-fulfillment-guard.js",
+  tier: "internal",
+  label: "Commerce Fulfillment Guard",
+  domain: "commerce_fulfillment",
+  production_status: "advisory",
+  description: "Guardrail per checkout, ordini, licenze, app key, seat, stock, acconto/saldo, settlement, rinnovi e fulfillment commerciale.",
+  rules: [
+    "Non inventare prezzi: usare listino ufficiale, piano, contratto o preventivo approvato.",
+    "Nessuna licenza, App Key, seat Smart Desk o modulo premium deve essere attivato senza evento commerciale autorizzato: pagamento, trial, contratto o override owner.",
+    "Il fulfillment deve essere idempotente: lo stesso ordine non deve generare due licenze, due chiavi o due scarichi stock.",
+    "Stock, riserva merce, acconto/saldo e saldo prima spedizione devono essere configurabili per azienda, non hardcoded su SkinHarmony.",
+    "Refund, chargeback e settlement devono lasciare audit e non muovere denaro automaticamente senza policy e conferma.",
+    "Se il checkout e WooCommerce, usare stati ordine, product meta e order meta; non creare carrelli paralleli non governati.",
+    "Upgrade, renewal, grace period e soft gate devono degradare in modo leggibile, senza blocchi brutali non spiegati.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "commerce_fulfillment_review",
+    blocked_actions: [
+      "invent_price",
+      "license_without_commercial_event",
+      "double_fulfillment",
+      "charge_without_checkout",
+      "settlement_without_contract",
+      "stock_decrement_without_order",
+      "hard_block_without_soft_gate",
+    ],
+  },
+};

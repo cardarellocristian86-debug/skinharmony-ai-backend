@@ -21,6 +21,12 @@ import { branchCodexBusinessGuard } from "./branch-codex-business-guard.js";
 import { branchCodexSiteFactoryGuard } from "./branch-codex-site-factory-guard.js";
 import { branchCodexWebsiteVisualGuard } from "./branch-codex-website-visual-guard.js";
 import { branchCodexWordPressPlatformGuard } from "./branch-codex-wordpress-platform-guard.js";
+import { branchDataIntegrationOrchestration } from "./branch-data-integration-orchestration.js";
+import { branchCommerceFulfillmentGuard } from "./branch-commerce-fulfillment-guard.js";
+import { branchObservabilityRoiGuard } from "./branch-observability-roi-guard.js";
+import { branchLegalPrivacyComplianceGuard } from "./branch-legal-privacy-compliance-guard.js";
+import { branchAgentOrchestrationGuard } from "./branch-agent-orchestration-guard.js";
+import { branchRuntimeDeploymentScalingGuard } from "./branch-runtime-deployment-scaling-guard.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -46,6 +52,12 @@ const BRANCHES = [
   branchCodexSiteFactoryGuard,
   branchCodexWebsiteVisualGuard,
   branchCodexWordPressPlatformGuard,
+  branchDataIntegrationOrchestration,
+  branchCommerceFulfillmentGuard,
+  branchObservabilityRoiGuard,
+  branchLegalPrivacyComplianceGuard,
+  branchAgentOrchestrationGuard,
+  branchRuntimeDeploymentScalingGuard,
 ];
 
 const CODEX_GUARD_BRANCHES = [
@@ -60,6 +72,12 @@ const CODEX_GUARD_BRANCHES = [
   "codex_site_factory_guard",
   "codex_website_visual_guard",
   "codex_wordpress_platform_guard",
+  "data_integration_orchestration",
+  "commerce_fulfillment_guard",
+  "observability_roi_guard",
+  "legal_privacy_compliance_guard",
+  "agent_orchestration_guard",
+  "runtime_deployment_scaling_guard",
 ];
 
 export const BRANCH_GROUPS = Object.freeze({
@@ -79,22 +97,30 @@ export const BRANCH_GROUPS = Object.freeze({
       "codex_release_gate",
       "codex_security_guard",
       "codex_product_logic",
+      "data_integration_orchestration",
+      "observability_roi_guard",
+      "runtime_deployment_scaling_guard",
     ],
   },
   site_factory: {
     label: "Site Factory",
     description: "Clonazione siti, creazione nodi, template WaaS, layout, UI responsive e brand kit.",
-    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "codex_ui_ux_guard", "suite_governance"],
+    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "codex_ui_ux_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "suite_governance"],
   },
   business_governance: {
     label: "Business Governance",
     description: "CRM, filiera, listini, pricing, strategia, offerte, contratti e governance commerciale.",
-    branches: ["suite_governance", "beauty_market", "business_strategy", "codex_business_guard"],
+    branches: ["suite_governance", "beauty_market", "business_strategy", "codex_business_guard", "commerce_fulfillment_guard", "legal_privacy_compliance_guard", "observability_roi_guard"],
   },
   security_defense: {
     label: "Security / Defensive Intelligence",
     description: "Tenant isolation, segreti, audit, policy, hardening e difesa da automazioni rischiose.",
-    branches: ["codex_security_guard", "codex_code_safety", "codex_release_gate", "codex_architecture_guard"],
+    branches: ["codex_security_guard", "codex_code_safety", "codex_release_gate", "codex_architecture_guard", "legal_privacy_compliance_guard", "agent_orchestration_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "observability_roi_guard"],
+  },
+  automation_control: {
+    label: "Automation Control",
+    description: "Codex, agenti, runbook, audit, action mediation, deploy e ROI delle automazioni.",
+    branches: ["agent_orchestration_guard", "observability_roi_guard", "runtime_deployment_scaling_guard", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
   },
   nyra_interpretation: {
     label: "Nyra Interpretation Layer",

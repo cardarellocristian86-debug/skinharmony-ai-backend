@@ -1,0 +1,32 @@
+export const branchRuntimeDeploymentScalingGuard = {
+  id: "runtime_deployment_scaling_guard",
+  file: "branch-runtime-deployment-scaling-guard.js",
+  tier: "internal",
+  label: "Runtime Deployment Scaling Guard",
+  domain: "runtime_deployment",
+  production_status: "advisory",
+  description: "Guardrail per local, shared, dedicated runtime, Render, env, migrazioni, rollback, canary, scaling, storage e deploy sicuri.",
+  rules: [
+    "Distinguere sempre local WordPress, shared central runtime e dedicated runtime: ogni modalità ha storage, tenant, chiavi e failure mode diversi.",
+    "Deploy produzione solo con health check, env verificati, preflight, backup se migrazione, canary/rollout e rollback documentato.",
+    "Segreti solo in environment o secret store; mai nello zip, nel repo, nei log o nel payload ai modelli.",
+    "Migrazioni database, cambio storage e sync runtime richiedono snapshot, compatibilità schema e piano di recupero.",
+    "Se il carico aumenta, scalare con queue, cache, rate limit e separazione runtime prima di spostare logica decisionale nei client.",
+    "Smart Desk, Suite e nodi devono poter lavorare local-first o degrade-safe quando il Core remoto è offline.",
+    "Nessun deploy automatico aggressivo su tenant cliente: usare stable/beta, manifest firmato, checksum e owner confirmation.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "deployment_scaling_review",
+    blocked_actions: [
+      "production_deploy_without_preflight",
+      "migration_without_backup",
+      "secret_in_repo_or_zip",
+      "no_rollback_plan",
+      "unsafe_auto_update",
+      "cross_tenant_runtime_coupling",
+      "missing_healthcheck",
+    ],
+  },
+};
