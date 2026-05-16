@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: skinharmony-suite-control-plane
+    name: skinharmony-suite-control
     runtime: node
     rootDir: services/suite-control-plane
     buildCommand: npm ci
