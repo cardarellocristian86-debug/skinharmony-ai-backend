@@ -264,6 +264,34 @@ try {
     routes: Object.keys(sdkManifest.json.sdk.core_routes),
   });
 
+  const customerContract = await api(base, "GET", "/v1/customer-intelligence/contract?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(customerContract.status === 200 && customerContract.json.contract?.schema_version === "customer_intelligence_contract_v1", "customer intelligence contract failed");
+  assert(customerContract.json.contract?.data_contract?.consent_registry?.valid_statuses?.includes("granted"), "customer intelligence consent registry missing");
+  assert(customerContract.json.contract?.automation_limits?.automatic_send_allowed === false, "customer intelligence automatic send must be disabled");
+  mark("customer_intelligence_contract", true, {
+    events: customerContract.json.contract.data_contract.event_taxonomy.length,
+    states: customerContract.json.contract.data_contract.journey_states,
+  });
+
+  const customerReadiness = await api(base, "POST", "/v1/customer-intelligence/readiness", {
+    tenant_id: "tenant_demo_skinharmony",
+    events: [{ id: "evt_1", type: "appointment.completed" }],
+    consents: [{ channel: "email", purpose: "recall", status: "granted" }],
+    customer_profile: {
+      customer_id: "client_demo",
+      display_name: "Cliente Demo",
+      preferred_channel: "email",
+      last_visit_at: "2026-05-01",
+      consent_summary: { email_recall: "granted" },
+    },
+  }, connectorKey);
+  assert(customerReadiness.status === 200 && customerReadiness.json.readiness?.can_send_automatically === false, "customer readiness should never allow automatic send");
+  assert(customerReadiness.json.readiness?.granted_consent_count === 1, "customer readiness consent count failed");
+  mark("customer_intelligence_readiness", true, {
+    profile_completeness: customerReadiness.json.readiness.customer_profile_completeness,
+    next_step: customerReadiness.json.readiness.next_step,
+  });
+
   const runbooks = await api(base, "GET", "/v1/runbooks?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(runbooks.status === 200 && runbooks.json.runbooks?.some((item) => item.id === "update_plugin_manifest"), "runbook catalog failed");
   mark("runbook_marketplace_catalog", true, { runbooks: runbooks.json.runbooks.map((item) => item.id) });

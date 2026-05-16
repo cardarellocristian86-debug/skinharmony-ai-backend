@@ -49,6 +49,20 @@ class UniversalCoreBridge {
     return this.request("GET", `/v1/ecosystem-pulse?tenant_id=${encodeURIComponent(this.tenantId)}`);
   }
 
+  async customerIntelligenceContract() {
+    return this.request("GET", `/v1/customer-intelligence/contract?tenant_id=${encodeURIComponent(this.tenantId)}`);
+  }
+
+  async customerIntelligenceReadiness(payload = {}) {
+    return this.request("POST", "/v1/customer-intelligence/readiness", {
+      tenant_id: this.tenantId,
+      brand_scope: this.brandScope,
+      events: Array.isArray(payload.events) ? payload.events : [],
+      consents: Array.isArray(payload.consents) ? payload.consents : [],
+      customer_profile: payload.customer_profile || payload.customerProfile || {},
+    });
+  }
+
   async decision(payload = {}) {
     return this.request("POST", "/v1/decision", {
       tenant_id: this.tenantId,

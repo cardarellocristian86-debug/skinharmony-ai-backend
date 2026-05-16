@@ -34,10 +34,14 @@ import {
   AI_GATEWAY_PAYLOAD_SCHEMA,
   AI_GATEWAY_VERDICT_SCHEMA,
 } from "./gatewaySchema.js";
+import {
+  buildCustomerIntelligenceContract,
+  summarizeCustomerIntelligenceReadiness,
+} from "./customerIntelligenceContract.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.14-root-owner-override";
+const SERVICE_VERSION = "0.3.15-customer-intelligence-contract";
 
 function nowIso() {
   return new Date().toISOString();
@@ -812,6 +816,8 @@ function buildConnectorSdkManifest() {
       runbook_evaluate: "/v1/runbooks/evaluate",
       release_check: "/v1/releases/manifest/check",
       evidence: "/v1/evidence/recent",
+      customer_intelligence_contract: "/v1/customer-intelligence/contract",
+      customer_intelligence_readiness: "/v1/customer-intelligence/readiness",
     },
   };
 }
@@ -2427,6 +2433,34 @@ export function createUniversalCoreService(options = {}) {
   app.get("/v1/connectors/sdk/manifest", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
     audit.append("core_connector_sdk_manifest_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, tenant_id: req.tenantId, sdk: buildConnectorSdkManifest() });
+  });
+
+  app.get("/v1/customer-intelligence/contract", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const branchResolution = resolveBranchesForKey(req.coreKey);
+    const contract = buildCustomerIntelligenceContract({
+      tenantId: req.tenantId,
+      plan: req.coreKey?.metadata?.tier || req.coreKey?.preset || "",
+      branches: branchResolution.selected_branches || [],
+      scopes: req.coreKey?.allowed_scopes || [],
+    });
+    audit.append("core_customer_intelligence_contract_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    res.json({ ok: true, contract });
+  });
+
+  app.post("/v1/customer-intelligence/readiness", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const readiness = summarizeCustomerIntelligenceReadiness(req.body || {});
+    audit.append("core_customer_intelligence_readiness_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      event_count: readiness.event_count,
+      consent_count: readiness.consent_count,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      readiness,
+      rule: "Readiness e solo valutazione: nessun invio automatico e nessuna modifica dati cliente.",
+    });
   });
 
   app.get("/v1/runbooks", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
