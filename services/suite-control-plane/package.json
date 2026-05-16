@@ -1,0 +1,13 @@
+{
+  "name": "@skinharmony/suite-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/suite-control-plane-smoke.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

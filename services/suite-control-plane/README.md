@@ -1,0 +1,57 @@
+# SkinHarmony Suite Control Plane
+
+Runtime remoto separabile per `SkinHarmony Site Suite`.
+
+Questo servizio sposta fuori da WordPress le parti che diventano pesanti quando aumentano i nodi:
+
+- registry nodi Suite;
+- heartbeat dei siti WordPress;
+- snapshot di stato;
+- raccolta evidence/audit;
+- dashboard remota per nodo.
+
+Il plugin resta UI locale + receiver controllato. Universal Core resta il gate decisionale.
+
+## Endpoint
+
+```text
+GET  /health
+GET  /api/suite/overview
+POST /api/suite/nodes/heartbeat
+POST /api/suite/nodes/snapshot
+POST /api/suite/evidence
+GET  /api/suite/nodes/:nodeId/dashboard
+```
+
+Tutti gli endpoint `/api/suite/*` richiedono:
+
+```text
+Authorization: Bearer <SUITE_CONTROL_PLANE_API_KEY>
+```
+
+oppure:
+
+```text
+x-sh-suite-key: <SUITE_CONTROL_PLANE_API_KEY>
+```
+
+## Render
+
+Variabili minime:
+
+```text
+NODE_ENV=production
+SUITE_CONTROL_PLANE_API_KEY=<chiave lunga scoped>
+```
+
+Health check:
+
+```text
+GET /health
+```
+
+## Test
+
+```bash
+npm --prefix services/suite-control-plane test
+```

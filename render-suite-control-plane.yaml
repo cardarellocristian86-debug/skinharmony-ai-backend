@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: skinharmony-suite-control-plane
+    runtime: node
+    rootDir: services/suite-control-plane
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUITE_CONTROL_PLANE_API_KEY
+        sync: false
