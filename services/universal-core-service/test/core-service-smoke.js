@@ -221,6 +221,7 @@ try {
   assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
   assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
   assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
+  assert(branches.json.branches?.codex_wordpress_platform_guard?.production_status === "advisory", "wordpress platform guard branch missing");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
@@ -252,10 +253,11 @@ try {
     tenant_id: "tenant_demo_skinharmony",
     task: "Clonare sito cliente e creare nodo Suite controllato",
     user_input: "Creo un clone staging senza copiare credenziali, clienti, ordini o tracking ID.",
-    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "marketing_copy"],
+    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "codex_wordpress_platform_guard", "marketing_copy"],
   }, codexKey);
   assert(codexSiteContext.status === 200 && codexSiteContext.json.context?.selected_branches?.includes("codex_site_factory_guard"), "site factory codex context missing");
   assert(codexSiteContext.json.context?.selected_branches?.includes("codex_website_visual_guard"), "website visual codex context missing");
+  assert(codexSiteContext.json.context?.selected_branches?.includes("codex_wordpress_platform_guard"), "wordpress platform codex context missing");
   assert(codexSiteContext.json.context?.deterministic_context?.rule_count >= 15, "site/visual guard rules not composed");
   mark("codex_site_visual_context", true, {
     selected_branches: codexSiteContext.json.context.selected_branches,
@@ -302,6 +304,61 @@ try {
     visual_mode: visualAnalyze.json.branch_output.visual_mode,
     checks: visualAnalyze.json.branch_output.required_checks.length,
     state: visualAnalyze.json.output.state,
+  });
+
+  const wordpressAnalyze = await api(base, "POST", "/v1/branches/codex_wordpress_platform_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    platform: "wordpress",
+    plugin_type: "woocommerce_bridge",
+    uses_woocommerce: true,
+    has_nonce: true,
+    has_capability_check: true,
+    sanitizes_input: true,
+    escapes_output: true,
+    rest_permission_callback: true,
+    admin_feedback: true,
+    has_tests: true,
+    has_rollback: true,
+    config_in_zip: false,
+    shortcode_mutates_state: false,
+    assumes_dependency: false,
+    hardcoded_secret: false,
+    bypass_checkout: false,
+    auto_update_without_preflight: false,
+    cross_tenant_data_access: false,
+  }, codexKey);
+  assert(wordpressAnalyze.status === 200 && wordpressAnalyze.json.branch_output?.platform_mode === "wordpress_plugin_engineering_guard", "wordpress platform analyze failed");
+  assert(wordpressAnalyze.json.branch_output?.blocked_if?.missing_security_baseline === false, "wordpress platform security baseline false positive");
+  assert(wordpressAnalyze.json.output?.state, "wordpress platform core output missing");
+  mark("codex_wordpress_platform_analyze", true, {
+    platform_mode: wordpressAnalyze.json.branch_output.platform_mode,
+    state: wordpressAnalyze.json.output.state,
+    blocked_if: wordpressAnalyze.json.branch_output.blocked_if,
+  });
+
+  const wordpressRiskAnalyze = await api(base, "POST", "/v1/branches/codex_wordpress_platform_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    platform: "wordpress",
+    uses_woocommerce: true,
+    has_nonce: false,
+    has_capability_check: false,
+    sanitizes_input: false,
+    escapes_output: false,
+    rest_permission_callback: false,
+    config_in_zip: true,
+    shortcode_mutates_state: true,
+    assumes_dependency: true,
+    hardcoded_secret: true,
+    bypass_checkout: true,
+    auto_update_without_preflight: true,
+    cross_tenant_data_access: true,
+  }, codexKey);
+  assert(wordpressRiskAnalyze.status === 200 && wordpressRiskAnalyze.json.branch_output?.blocked_if?.hardcoded_secret === true, "wordpress risk hardcoded secret not detected");
+  assert(wordpressRiskAnalyze.json.branch_output?.blocked_if?.checkout_bypass === true, "wordpress risk checkout bypass not detected");
+  mark("codex_wordpress_platform_risk_analyze", true, {
+    state: wordpressRiskAnalyze.json.output.state,
+    risk: wordpressRiskAnalyze.json.output.risk.band,
+    blocked_if: wordpressRiskAnalyze.json.branch_output.blocked_if,
   });
 
   const actionEvaluator = await api(base, "POST", "/v1/action-evaluator", {
@@ -626,6 +683,101 @@ try {
     text: "La informacion de gestion.",
   }, connectorKey);
   assert(textGuardSpanish.status === 200 && textGuardSpanish.json.issues?.some((issue) => issue.original.toLowerCase() === "informacion"), "spanish dictionary failed");
+
+  const translationBranch = await api(base, "POST", "/v1/branches/translation_governance/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      source_lang: "it",
+      target_lang: "en",
+      items: [
+        {
+          key_path: "packages.0.price",
+          source_text: "Fee iniziale 750 EUR",
+          translated_text: "Initial fee 750 EUR",
+        },
+        {
+          key_path: "packages.0.cta",
+          source_text: "Richiedi informazioni [sh_waas_offer]",
+          translated_text: "Request information [sh_waas_offer]",
+        },
+      ],
+    },
+  }, connectorKey);
+  assert(translationBranch.status === 200 && translationBranch.json.branch_output?.translation_mode === "structured_strings_only", "translation governance branch failed");
+  assert(translationBranch.json.branch_output?.altered_protected_token_count === 0, "translation protected token false positive");
+  mark("branch_translation_governance", true, {
+    state: translationBranch.json.output.state,
+    review_required: translationBranch.json.branch_output.review_required,
+    altered_protected_token_count: translationBranch.json.branch_output.altered_protected_token_count,
+  });
+
+  const translationRiskBranch = await api(base, "POST", "/v1/branches/translation_governance/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      source_lang: "it",
+      target_lang: "en",
+      items: [
+        {
+          key_path: "packages.0.price",
+          source_text: "Fee iniziale 750 EUR",
+          translated_text: "Initial fee 900 USD",
+        },
+        {
+          key_path: "hero.html",
+          source_text: "<section><h1>Offerta</h1></section>",
+          translated_text: "<section><h1>Offer</h1></section>",
+        },
+      ],
+    },
+  }, connectorKey);
+  assert(translationRiskBranch.status === 200 && translationRiskBranch.json.branch_output?.review_required === true, "translation risk review not required");
+  assert(translationRiskBranch.json.branch_output?.html_blob_detected === true, "translation html blob not detected");
+  mark("branch_translation_governance_risk", true, {
+    state: translationRiskBranch.json.output.state,
+    risk: translationRiskBranch.json.output.risk.band,
+    html_blob_detected: translationRiskBranch.json.branch_output.html_blob_detected,
+    altered_protected_token_count: translationRiskBranch.json.branch_output.altered_protected_token_count,
+  });
+
+  const textBranch = await api(base, "POST", "/v1/branches/ramo_testo/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      locale: "it",
+      context: "page_copy",
+      domain: "suite",
+      key_path: "hero.title",
+      target: "brand e distributori",
+      cta: "Richiedi informazioni",
+      text: "Sistema premium per controllare rete e vendite senza promesse mediche.",
+      public_text: true,
+    },
+  }, connectorKey);
+  assert(textBranch.status === 200 && textBranch.json.branch_output?.publish_safe_advisory === true, "ramo testo safe branch failed");
+  mark("branch_ramo_testo_enhanced", true, {
+    state: textBranch.json.output.state,
+    mixed_language: textBranch.json.branch_output.mixed_language,
+    publish_safe_advisory: textBranch.json.branch_output.publish_safe_advisory,
+  });
+
+  const textRiskBranch = await api(base, "POST", "/v1/branches/ramo_testo/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      locale: "it",
+      context: "page_copy",
+      text: "The trattamento garantisce risultati clinically provati senza fonte.",
+      public_text: true,
+      mentions_study: true,
+      sources_provided: false,
+    },
+  }, connectorKey);
+  assert(textRiskBranch.status === 200 && textRiskBranch.json.branch_output?.mixed_language === true, "ramo testo mixed language not detected");
+  assert(textRiskBranch.json.branch_output?.unsupported_proof === true, "ramo testo unsupported proof not detected");
+  mark("branch_ramo_testo_risk_enhanced", true, {
+    state: textRiskBranch.json.output.state,
+    risk: textRiskBranch.json.output.risk.band,
+    mixed_language: textRiskBranch.json.branch_output.mixed_language,
+    unsupported_proof: textRiskBranch.json.branch_output.unsupported_proof,
+  });
 
   const financeTestBranch = await api(base, "POST", "/v1/branches/nyra_finance_beauty_test/analyze", {
     tenant_id: "tenant_demo_skinharmony",

@@ -11,11 +11,15 @@ export const branchTranslationGovernance = {
     "I key_path devono restare stabili per memory, review e readiness.",
     "Se manca traduzione approvata, fallback all'italiano.",
     "Ogni testo commerciale tradotto passa da claim/pricing review se contiene promesse, prezzi o CTA.",
+    "Conservare placeholder, shortcode, URL, product ID, importi, date e variabili senza tradurli o alterarli.",
+    "Non mescolare lingue dentro la stessa stringa salvo brand name, prodotto o termine tecnico approvato.",
+    "Ogni traduzione deve sapere source_lang, target_lang, domain, object_id e contesto d'uso.",
+    "Se la traduzione modifica tono, promessa o responsabilita commerciale, segnare review_required.",
   ],
   guardrails: {
     destructive_automation: false,
     publish_requires_owner_confirmation: true,
     allowed_action_level: "translation_review",
-    blocked_actions: ["translate_html_blob", "auto_publish_translation", "drop_fallback"],
+    blocked_actions: ["translate_html_blob", "auto_publish_translation", "drop_fallback", "translate_shortcode", "alter_placeholder", "alter_price", "remove_legal_meaning"],
   },
 };

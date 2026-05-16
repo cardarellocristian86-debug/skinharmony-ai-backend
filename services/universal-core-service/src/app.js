@@ -34,7 +34,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.7-site-factory-visual-guards";
+const SERVICE_VERSION = "0.3.8-wordpress-platform-text-translation-guards";
 
 function nowIso() {
   return new Date().toISOString();
@@ -920,6 +920,70 @@ function buildBranchPayload(branch, payload = {}) {
         missing_asset_rights: mediaReady && !assetRights,
       },
     };
+  } else if (branch === "codex_wordpress_platform_guard") {
+    const platform = textValue(data.platform || data.cms || "wordpress").toLowerCase();
+    const pluginType = textValue(data.plugin_type || data.module_type || "plugin");
+    const usesWooCommerce = data.uses_woocommerce === true || data.woocommerce === true;
+    const hasNonce = data.has_nonce === true || data.nonce === true;
+    const hasCapability = data.has_capability_check === true || data.capability_check === true;
+    const sanitizesInput = data.sanitizes_input === true || data.sanitize_input === true;
+    const escapesOutput = data.escapes_output === true || data.escape_output === true;
+    const configInZip = data.config_in_zip === true || data.writes_runtime_data_to_zip === true;
+    const shortcodeMutates = data.shortcode_mutates_state === true || data.shortcode_writes_data === true;
+    const assumesDependency = data.assumes_dependency === true || data.fatal_if_dependency_missing === true;
+    const hardcodedSecret = data.hardcoded_secret === true || data.secret_in_code === true || data.logs_secret === true;
+    const bypassCheckout = data.bypass_checkout === true || data.custom_checkout_without_woocommerce === true;
+    const autoUpdate = data.auto_update_without_preflight === true || data.aggressive_auto_update === true;
+    const crossTenant = data.cross_tenant_data_access === true || data.cross_tenant === true;
+    const hasRestPermission = data.rest_permission_callback === true || data.rest_permissions === true || data.uses_rest !== true;
+    const hasAdminFeedback = data.admin_feedback === true || data.buttons_have_feedback === true;
+    const hasTests = data.has_tests === true || data.smoke_test === true || data.tested === true;
+    const hasRollback = data.has_rollback === true || data.rollback_ready === true || data.update_touched !== true;
+    const securityMissing = [hasNonce, hasCapability, sanitizesInput, escapesOutput, hasRestPermission].filter(Boolean).length;
+    const structuralRisk = configInZip || shortcodeMutates || assumesDependency || bypassCheckout || autoUpdate || crossTenant;
+    if (!platform.includes("wordpress")) warnings.push("Ramo ottimizzato per WordPress/WooCommerce: verificare adapter se piattaforma diversa.");
+    if (usesWooCommerce && bypassCheckout) warnings.push("WooCommerce presente: evitare checkout parallelo non governato.");
+    addSignal("wp_security_baseline", "Nonce, capability, sanitize, escape e REST permission", 100 - securityMissing * 18, "security", ["wordpress"]);
+    addSignal("runtime_data_location", "Configurazione/dati runtime fuori dallo zip", configInZip ? 92 : 8, "architecture", ["plugin_data"]);
+    addSignal("shortcode_contract", "Shortcode senza mutazioni di stato", shortcodeMutates ? 88 : 8, "wordpress", ["shortcode"]);
+    addSignal("dependency_safety", "Feature detection e fallback dipendenze", assumesDependency ? 82 : 12, "compatibility", ["dependency"]);
+    addSignal("secret_handling", "Segreti non hardcoded e non loggati", hardcodedSecret ? 98 : 6, "security", ["secret"]);
+    addSignal("woocommerce_contract", "Checkout WooCommerce rispettato", bypassCheckout ? 86 : 10, "commerce", ["woocommerce"]);
+    addSignal("update_safety", "Update con preflight, manifest e rollback", autoUpdate || !hasRollback ? 72 : 12, "release", ["update"]);
+    addSignal("admin_operability", "Admin UI con feedback e test", hasAdminFeedback && hasTests ? 12 : 46, "ux", ["admin"]);
+    branchOutput = {
+      platform_mode: "wordpress_plugin_engineering_guard",
+      platform,
+      plugin_type: pluginType,
+      publish_allowed: false,
+      required_checks: [
+        "verifica nonce, capability, sanitize input ed escape output",
+        "usa option/post meta/CPT/storage controllato per dati runtime, non lo zip",
+        "shortcode solo render/read; mutazioni tramite REST/admin-post/AJAX autorizzati",
+        "WooCommerce tramite product/order meta, status hook e thank-you flow",
+        "feature detection per dipendenze opzionali e fallback senza fatal error",
+        "manifest/update con checksum, preflight, rollback e owner confirmation",
+        "admin UI con pulsanti collegati, feedback visibile e test smoke",
+      ],
+      blocked_if: {
+        missing_security_baseline: securityMissing < 5,
+        config_inside_zip: configInZip,
+        shortcode_mutates_state: shortcodeMutates,
+        fatal_dependency_assumption: assumesDependency,
+        hardcoded_secret: hardcodedSecret,
+        checkout_bypass: bypassCheckout,
+        unsafe_update: autoUpdate,
+        cross_tenant_data_access: crossTenant,
+      },
+      recommended_architecture: {
+        data_layer: "options/post_meta/cpt/custom_tables_if_needed",
+        render_layer: "shortcodes_blocks_templates_read_only",
+        mutation_layer: "rest_admin_post_ajax_with_nonce_capability",
+        commerce_layer: usesWooCommerce ? "woocommerce_hooks_order_meta_license_gate" : "adapter_or_quote_first",
+        external_layer: "adapter_timeout_retry_audit_no_secret_logs",
+      },
+      structural_risk: structuralRisk,
+    };
   } else if (branch === "cosmetic_chemistry") {
     const active = textValue(data.active || data.ingredient || data.hero_ingredient);
     const functionText = textValue(data.function || data.cosmetic_function);
@@ -967,31 +1031,74 @@ function buildBranchPayload(branch, payload = {}) {
     const items = Array.isArray(data.items) ? data.items : [];
     if (!items.length) missing.push("items");
     const unstableKeys = items.filter((item) => !textValue(item.key_path) || !textValue(item.source_text)).length;
-    const readiness = Math.max(0, 100 - missing.length * 35 - unstableKeys * 12);
+    const sourceLang = textValue(data.source_lang, "it");
+    const targetLang = textValue(data.target_lang, "en");
+    const supportedLanguages = ["it", "en", "fr", "es"];
+    const unsupportedLanguage = !supportedLanguages.includes(sourceLang) || !supportedLanguages.includes(targetLang);
+    const htmlBlob = items.some((item) => /<\/?[a-z][\s\S]*>/i.test(textValue(item.source_text)));
+    const alteredProtectedTokens = items.filter((item) => {
+      const source = textValue(item.source_text);
+      const translated = textValue(item.translated_text || item.target_text);
+      if (!translated) return false;
+      const tokens = source.match(/(\[[^\]]+\]|\{[^}]+\}|%[a-zA-Z0-9_$]+%|https?:\/\/\S+|\b\d+[,.]?\d*\s?(?:€|EUR|%))/g) || [];
+      return tokens.some((token) => !translated.includes(token));
+    }).length;
+    const readiness = Math.max(0, 100 - missing.length * 35 - unstableKeys * 12 - (unsupportedLanguage ? 25 : 0) - (htmlBlob ? 30 : 0) - alteredProtectedTokens * 18);
     addSignal("payload_readiness", "Readiness payload traduzioni strutturate", readiness, "translation", ["core_translation"]);
     addSignal("unstable_keys", "Key path instabili o stringhe mancanti", Math.min(100, unstableKeys * 18), "translation", ["key_path"]);
+    addSignal("protected_tokens", "Placeholder, shortcode, URL, prezzi o variabili alterati", Math.min(100, alteredProtectedTokens * 30), "translation", ["protected_tokens"]);
+    addSignal("html_blob", "HTML intero inviato alla traduzione", htmlBlob ? 86 : 6, "translation", ["html"]);
     branchOutput = {
       translation_mode: "structured_strings_only",
-      source_lang: textValue(data.source_lang, "it"),
-      target_lang: textValue(data.target_lang, "en"),
+      source_lang: sourceLang,
+      target_lang: targetLang,
       item_count: items.length,
       unstable_item_count: unstableKeys,
+      altered_protected_token_count: alteredProtectedTokens,
+      html_blob_detected: htmlBlob,
+      supported_languages: supportedLanguages,
       fallback_policy: "fallback_to_it",
+      review_required: unsupportedLanguage || htmlBlob || alteredProtectedTokens > 0 || unstableKeys > 0,
     };
   } else if (branch === "ramo_testo") {
     const text = textValue(data.text || data.content || data.copy || data.draft);
     const providedIssues = normalizeTextGuardIssues(data.issues);
     const issues = providedIssues.length ? providedIssues : buildTextGuardIssuesFromClaimShield(text, data);
     if (!text) missing.push("text");
+    const locale = textValue(data.locale || payload.locale, "it");
+    const publicText = data.public_text === true || data.publish_intent === true || data.context === "page_copy";
+    const hasKeyPath = Boolean(textValue(data.key_path || payload.key_path));
+    const hasDomain = Boolean(textValue(data.domain || payload.domain));
+    const hasTarget = Boolean(textValue(data.target || data.audience));
+    const hasCta = Boolean(textValue(data.cta || data.call_to_action)) || publicText === false;
+    const mixedLanguage = locale === "it"
+      ? /\b(the|and|with|for|results|guaranteed)\b/i.test(text)
+      : locale === "en"
+        ? /\b(che|con|per|risultati|garantiti|paggina)\b/i.test(text)
+        : false;
+    const unsupportedProof = (data.mentions_study === true || data.mentions_trend === true || /studio|study|clinicamente|clinically|trend/i.test(text)) && data.sources_provided !== true;
     const highIssues = issues.filter((issue) => issue.severity === "high" || issue.severity === "blocker").length;
     const claimIssues = issues.filter((issue) => issue.type === "claim_risk" || issue.type === "publish_safety").length;
+    const structureMissing = [hasKeyPath, hasDomain, hasTarget, hasCta].filter(Boolean).length;
     addSignal("issue_severity", "Gravita problemi testo/content guard", Math.min(100, highIssues * 32 + claimIssues * 24), "content_guard", ["text"]);
     addSignal("publish_safety", "Sicurezza pubblicazione testo", claimIssues ? 88 : 20, "content_guard", ["publish_safety"]);
+    addSignal("text_structure", "Contesto, domain, key_path, target e CTA", 100 - structureMissing * 22, "content_guard", ["structure"]);
+    addSignal("language_consistency", "Coerenza lingua del testo", mixedLanguage ? 68 : 8, "content_guard", ["language"]);
+    addSignal("unsupported_proof", "Studio, trend o prova non supportati", unsupportedProof ? 84 : 8, "content_guard", ["proof"]);
     branchOutput = {
       text_context: textValue(data.context, "manual_review"),
+      locale,
       issue_count: issues.length,
       claim_issue_count: claimIssues,
-      publish_safe_advisory: issues.every((issue) => issue.type !== "claim_risk" && issue.type !== "publish_safety" && issue.severity !== "blocker"),
+      structure_missing: {
+        key_path: !hasKeyPath,
+        domain: !hasDomain,
+        target: !hasTarget,
+        cta: !hasCta,
+      },
+      mixed_language: mixedLanguage,
+      unsupported_proof: unsupportedProof,
+      publish_safe_advisory: issues.every((issue) => issue.type !== "claim_risk" && issue.type !== "publish_safety" && issue.severity !== "blocker") && !unsupportedProof && !mixedLanguage,
       rule: "Ramo Testo produce review e suggested action; non salva, non pubblica e non corregge automaticamente.",
     };
   } else if (branch === "nyra_finance_beauty_test") {

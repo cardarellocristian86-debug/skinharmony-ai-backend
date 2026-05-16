@@ -11,11 +11,15 @@ export const branchRamoTesto = {
     "Non pubblicare e non correggere automaticamente senza conferma utente.",
     "Bloccare solo in modo soft/advisory pubblicazione, sync pubblico e auto publish quando ci sono claim risk o publish safety.",
     "Distinguere errori linguistici correggibili da rischi claim/compliance che richiedono review owner.",
+    "Separare spelling, grammatica, tono, brand voice, claim risk, pricing risk e publish safety in categorie diverse.",
+    "Per testi pubblici richiedere sempre lingua, dominio, key_path stabile, target, CTA e contesto di pubblicazione.",
+    "Le correzioni linguistiche sono suggerimenti; claim, prezzi, promesse, studi e risultati richiedono review owner o fonte approvata.",
+    "Non trasformare una traduzione in riscrittura commerciale aggressiva senza brief e conferma.",
   ],
   guardrails: {
     destructive_automation: false,
     publish_requires_owner_confirmation: true,
     allowed_action_level: "review_only",
-    blocked_actions: ["auto_publish", "public_sync", "medical_claim", "unsafe_claim"],
+    blocked_actions: ["auto_publish", "public_sync", "medical_claim", "unsafe_claim", "invent_source", "invent_result", "rewrite_claim_as_fact"],
   },
 };

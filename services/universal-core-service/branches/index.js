@@ -20,6 +20,7 @@ import { branchCodexUiUxGuard } from "./branch-codex-ui-ux-guard.js";
 import { branchCodexBusinessGuard } from "./branch-codex-business-guard.js";
 import { branchCodexSiteFactoryGuard } from "./branch-codex-site-factory-guard.js";
 import { branchCodexWebsiteVisualGuard } from "./branch-codex-website-visual-guard.js";
+import { branchCodexWordPressPlatformGuard } from "./branch-codex-wordpress-platform-guard.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -44,6 +45,7 @@ const BRANCHES = [
   branchCodexBusinessGuard,
   branchCodexSiteFactoryGuard,
   branchCodexWebsiteVisualGuard,
+  branchCodexWordPressPlatformGuard,
 ];
 
 const CODEX_GUARD_BRANCHES = [
@@ -57,6 +59,7 @@ const CODEX_GUARD_BRANCHES = [
   "codex_business_guard",
   "codex_site_factory_guard",
   "codex_website_visual_guard",
+  "codex_wordpress_platform_guard",
 ];
 
 export const BRANCH_PACKAGES = Object.freeze({
