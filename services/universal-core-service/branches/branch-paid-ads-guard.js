@@ -1,0 +1,30 @@
+export const branchPaidAdsGuard = {
+  id: "paid_ads_guard",
+  file: "branch-paid-ads-guard.js",
+  tier: "network",
+  label: "Paid Ads Guard",
+  domain: "marketing",
+  production_status: "advisory",
+  description: "Ramo per sponsorizzate, campagne paid, claim, targeting e budget safety. Non pubblica campagne.",
+  rules: [
+    "Separare sempre messaggio, pubblico, promessa, prova, budget e landing page.",
+    "Non promettere risultati garantiti, non usare claim medici e non inventare prove o dati di performance.",
+    "Targeting sensibile, salute, corpo, insicurezze personali o categorie protette richiedono owner/compliance review.",
+    "Budget, ROAS, CAC e conversion rate sono ipotesi finche non arrivano da dati reali o piattaforma ads.",
+    "Ogni campagna paid resta bozza: pubblicazione e aumento budget richiedono conferma owner.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "campaign_draft_review",
+    blocked_actions: [
+      "auto_publish_ads",
+      "auto_increase_budget",
+      "sensitive_targeting_without_review",
+      "medical_claim",
+      "guaranteed_result_claim",
+      "invented_roas",
+      "invented_cac",
+    ],
+  },
+};

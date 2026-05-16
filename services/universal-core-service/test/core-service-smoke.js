@@ -107,6 +107,80 @@ try {
   assert(presets.json.presets?.codex_automation?.scopes?.includes("gateway:ai"), "codex preset missing AI gateway scope");
   mark("key_presets", true, { presets: Object.keys(presets.json.presets) });
 
+  const setupToken = await api(base, "POST", "/v1/setup-token/create", {
+    tenant_id: "tenant_bootstrap_demo",
+    brand_scope: "skinharmony",
+    preset: "codex_automation",
+    plan: "gold",
+    role: "codex automation",
+    branch_groups: ["codex", "business_governance"],
+    branches: ["codex_code_safety", "codex_architecture_guard", "codex_release_gate"],
+    modules: ["suite_control_plane", "codex_connector", "smartdesk_node"],
+    limits: {
+      monthly_core_calls: 1000,
+      codex_automation_runs: 50,
+      wordpress_nodes: 2,
+      runbook_executions: 25,
+    },
+    tenant: {
+      tenant_id: "tenant_bootstrap_demo",
+      label: "Tenant Bootstrap Demo",
+      sector: "beauty_wellness",
+      environment: "staging",
+      brand_scope: "skinharmony",
+      active_branch_groups: ["codex", "business_governance"],
+    },
+  });
+  assert(setupToken.status === 201 && setupToken.json.setup_token?.startsWith("SHX-SETUP-"), "setup token create failed");
+  assert(setupToken.json.token?.tenant_id === "tenant_bootstrap_demo", "setup token tenant failed");
+  mark("setup_token_create", true, { token_id: setupToken.json.token.token_id, tenant_id: setupToken.json.token.tenant_id });
+
+  const setupConsume = await api(base, "POST", "/v1/setup-token/consume", {
+    setup_token: setupToken.json.setup_token,
+    connector: "codex",
+    actor_id: "core_service_smoke",
+  });
+  assert(setupConsume.status === 200 && setupConsume.json.api_key?.startsWith("SHX-AUTOMATION-"), "setup token consume failed");
+  assert(setupConsume.json.profile?.schema_version === "core_bootstrap_profile_v1", "bootstrap profile schema failed");
+  assert(setupConsume.json.profile?.tenant?.tenant_id === "tenant_bootstrap_demo", "bootstrap profile tenant failed");
+  assert(setupConsume.json.profile?.branches?.selected?.includes("codex_code_safety"), "bootstrap profile branches failed");
+  assert(setupConsume.json.profile?.limits?.wordpress_nodes === 2, "bootstrap profile limits failed");
+  assert(setupConsume.json.profile?.scope?.allowed_scopes?.includes("automation:codex"), "bootstrap profile scopes failed");
+  const bootstrapKey = setupConsume.json.api_key;
+  mark("setup_token_consume", true, {
+    key_id: setupConsume.json.key.key_id,
+    tenant_id: setupConsume.json.profile.tenant.tenant_id,
+    gate_mode: setupConsume.json.profile.gate_mode,
+  });
+
+  const setupConsumeAgain = await api(base, "POST", "/v1/setup-token/consume", {
+    setup_token: setupToken.json.setup_token,
+  });
+  assert(setupConsumeAgain.status === 409 && setupConsumeAgain.json.error === "setup_token_already_consumed", "setup token should be single-use");
+  mark("setup_token_single_use", true, { error: setupConsumeAgain.json.error });
+
+  const bootstrapProfile = await api(base, "GET", "/v1/bootstrap/profile", undefined, bootstrapKey);
+  assert(bootstrapProfile.status === 200 && bootstrapProfile.json.schema_version === "core_bootstrap_profile_v1", "bootstrap profile read failed");
+  assert(bootstrapProfile.json.connector_contract?.sensitive_actions_require_core === true, "bootstrap connector contract failed");
+  assert(bootstrapProfile.json.recommended_folders?.reports === "reports/codex-core", "bootstrap folders failed");
+  mark("bootstrap_profile_read", true, {
+    tenant_id: bootstrapProfile.json.tenant.tenant_id,
+    selected_branches: bootstrapProfile.json.branches.selected,
+  });
+
+  const revocableSetupToken = await api(base, "POST", "/v1/setup-token/create", {
+    tenant_id: "tenant_bootstrap_demo",
+    preset: "suite_connector",
+    plan: "silver",
+  });
+  assert(revocableSetupToken.status === 201 && revocableSetupToken.json.setup_token, "revocable setup token create failed");
+  const revokedSetupToken = await api(base, "POST", "/v1/setup-token/revoke", {
+    setup_token: revocableSetupToken.json.setup_token,
+    reason: "smoke_test_revoke",
+  });
+  assert(revokedSetupToken.status === 200 && revokedSetupToken.json.token?.status === "revoked", "setup token revoke failed");
+  mark("setup_token_revoke", true, { token_id: revokedSetupToken.json.token.token_id, status: revokedSetupToken.json.token.status });
+
   const tenant = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
   assert(tenant.status === 200 && tenant.json.tenant_id === "tenant_demo_skinharmony", "tenant status failed");
   assert(tenant.json.active_branches?.includes("suite_governance"), "tenant active branches missing suite governance");
@@ -289,7 +363,17 @@ try {
   assert(branches.json.branches?.legal_privacy_compliance_guard?.production_status === "advisory", "legal privacy branch missing");
   assert(branches.json.branches?.agent_orchestration_guard?.production_status === "advisory", "agent orchestration branch missing");
   assert(branches.json.branches?.runtime_deployment_scaling_guard?.production_status === "advisory", "runtime deployment branch missing");
+  assert(branches.json.branches?.paid_ads_guard?.production_status === "advisory", "paid ads guard branch missing");
+  assert(branches.json.branches?.lifecycle_crm_guard?.production_status === "advisory", "lifecycle CRM guard branch missing");
+  assert(branches.json.branches?.customer_behavior_analysis?.production_status === "advisory", "customer behavior branch missing");
+  assert(branches.json.branches?.segmentation_offer_guard?.production_status === "advisory", "segmentation offer branch missing");
+  assert(branches.json.branches?.funnel_conversion_guard?.production_status === "advisory", "funnel conversion branch missing");
+  assert(branches.json.branches?.email_recall_guard?.production_status === "advisory", "email recall branch missing");
+  assert(branches.json.branches?.content_localization_guard?.production_status === "advisory", "content localization branch missing");
   assert(branches.json.groups?.content_intelligence?.branches?.includes("ramo_testo"), "content intelligence group missing ramo_testo");
+  assert(branches.json.groups?.marketing_intelligence?.branches?.includes("paid_ads_guard"), "marketing intelligence group missing paid ads");
+  assert(branches.json.groups?.marketing_intelligence?.branches?.includes("customer_behavior_analysis"), "marketing intelligence group missing behavior analysis");
+  assert(branches.json.groups?.marketing_intelligence?.branches?.includes("segmentation_offer_guard"), "marketing intelligence group missing segmentation offer");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("codex_wordpress_platform_guard"), "platform engineering group missing wordpress guard");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("runtime_deployment_scaling_guard"), "platform engineering group missing runtime guard");
   assert(branches.json.groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group missing site factory guard");
@@ -319,6 +403,13 @@ try {
   assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("translation_governance"), "content group did not select translation_governance");
   assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("ramo_testo"), "content group did not select ramo_testo");
   mark("branches_authorized_group_content", true, authorizedContentGroup.json.branch_package);
+
+  const authorizedMarketingGroup = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=marketing_intelligence", undefined, connectorKey);
+  assert(authorizedMarketingGroup.status === 200 && authorizedMarketingGroup.json.branch_package?.requested_groups?.includes("marketing_intelligence"), "marketing group request not tracked");
+  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("paid_ads_guard"), "marketing group did not select paid ads");
+  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("email_recall_guard"), "marketing group did not select email recall");
+  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("customer_behavior_analysis"), "marketing group did not select customer behavior");
+  mark("branches_authorized_group_marketing", true, authorizedMarketingGroup.json.branch_package);
 
   const codexContext = await api(base, "POST", "/v1/codex/context", {
     tenant_id: "tenant_demo_skinharmony",
@@ -350,6 +441,7 @@ try {
   assert(codexSiteContext.json.context?.selected_branches?.includes("data_integration_orchestration"), "site factory context missing data integration");
   assert(codexSiteContext.json.context?.selected_branches?.includes("runtime_deployment_scaling_guard"), "site factory context missing runtime deployment");
   assert(codexSiteContext.json.context?.selected_branches?.includes("marketing_copy"), "content group codex context missing marketing copy");
+  assert(codexSiteContext.json.context?.selected_branches?.includes("content_localization_guard"), "content group codex context missing localization guard");
   assert(codexSiteContext.json.context?.selected_groups?.includes("site_factory"), "site factory group not tracked in context");
   assert(codexSiteContext.json.context?.selected_groups?.includes("platform_engineering"), "platform engineering group not tracked in context");
   assert(codexSiteContext.json.context?.branch_groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group profile missing in context");
@@ -370,11 +462,17 @@ try {
   assert(niraCoreBridge.status === 200 && niraCoreBridge.json.result?.god_mode_active === true, "nira core bridge god mode failed");
   assert(niraCoreBridge.json.result?.automation_plan?.execution_allowed === false, "nira core bridge must not auto execute");
   assert(niraCoreBridge.json.guardrail?.owner_confirmation_required === true, "nira core bridge owner confirmation missing");
+  assert(niraCoreBridge.json.result?.core_branch_diagnostics?.branch_router_used === true, "nira core bridge branch router not used");
+  assert(niraCoreBridge.json.result?.core_branch_diagnostics?.actual_selected_branches?.includes("runtime_deployment_scaling_guard"), "nira core bridge runtime branch missing");
+  assert(niraCoreBridge.json.result?.core_branch_diagnostics?.actual_selected_branches?.includes("codex_wordpress_platform_guard"), "nira core bridge wordpress branch missing");
   mark("nira_core_bridge", true, {
     mode: niraCoreBridge.json.result.mode,
     action: niraCoreBridge.json.result.selected_by_core.primary_action_id,
     control_level: niraCoreBridge.json.result.selected_by_core.control_level,
     execution_allowed: niraCoreBridge.json.result.automation_plan.execution_allowed,
+    branch_router_used: niraCoreBridge.json.result.core_branch_diagnostics.branch_router_used,
+    selected_branches: niraCoreBridge.json.result.core_branch_diagnostics.actual_selected_branches,
+    denied_branches: niraCoreBridge.json.result.core_branch_diagnostics.actual_denied_branches,
   });
 
   const siteFactoryAnalyze = await api(base, "POST", "/v1/branches/codex_site_factory_guard/analyze", {
@@ -973,6 +1071,120 @@ try {
     state: marketingBranch.json.output.state,
     risk: marketingBranch.json.output.risk.band,
     owner_review_required: marketingBranch.json.branch_output.owner_review_required,
+  });
+
+  const paidAdsBranch = await api(base, "POST", "/v1/branches/paid_ads_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      campaign_goal: "lead_generation",
+      audience: "brand professionali",
+      ad_copy: "Campagna senza risultati garantiti e senza claim medici.",
+      daily_budget: 50,
+      landing_ready: true,
+      tracking_consent: true,
+      invented_roas: true,
+    },
+  }, connectorKey);
+  assert(paidAdsBranch.status === 200 && paidAdsBranch.json.branch_output?.ads_mode === "draft_review_only", "paid ads branch failed");
+  assert(paidAdsBranch.json.branch_output?.blocked_if?.invented_performance === true, "paid ads invented performance guard failed");
+  mark("branch_paid_ads_guard", true, {
+    state: paidAdsBranch.json.output.state,
+    risk: paidAdsBranch.json.output.risk.band,
+    blocked_if: paidAdsBranch.json.branch_output.blocked_if,
+  });
+
+  const lifecycleBranch = await api(base, "POST", "/v1/branches/lifecycle_crm_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      customer_state: "at_risk",
+      last_activity_days: 72,
+      marketing_consent: true,
+      channel: "email",
+      contact_reason: "follow up percorso",
+    },
+  }, connectorKey);
+  assert(lifecycleBranch.status === 200 && lifecycleBranch.json.branch_output?.crm_marketing_mode === "lifecycle_priority_advisory", "lifecycle CRM branch failed");
+  mark("branch_lifecycle_crm_guard", true, {
+    state: lifecycleBranch.json.output.state,
+    can_prepare_message: lifecycleBranch.json.branch_output.can_prepare_message,
+  });
+
+  const behaviorBranch = await api(base, "POST", "/v1/branches/customer_behavior_analysis/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      sample_size: 80,
+      has_recency: true,
+      has_frequency: true,
+      has_value: true,
+      sensitive_profiling: false,
+    },
+  }, connectorKey);
+  assert(behaviorBranch.status === 200 && behaviorBranch.json.branch_output?.behavior_mode === "observed_patterns_only", "customer behavior branch failed");
+  mark("branch_customer_behavior_analysis", true, {
+    state: behaviorBranch.json.output.state,
+    confidence: behaviorBranch.json.branch_output.confidence,
+  });
+
+  const offerBranch = await api(base, "POST", "/v1/branches/segmentation_offer_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      segment: "distributori network",
+      price_policy_ready: true,
+      price_source: "official",
+      margin_checked: true,
+    },
+  }, connectorKey);
+  assert(offerBranch.status === 200 && offerBranch.json.branch_output?.offer_mode === "draft_with_price_guard", "segmentation offer branch failed");
+  mark("branch_segmentation_offer_guard", true, {
+    state: offerBranch.json.output.state,
+    price_guard_required: offerBranch.json.branch_output.price_guard_required,
+  });
+
+  const funnelBranch = await api(base, "POST", "/v1/branches/funnel_conversion_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      funnel_goal: "waas_request",
+      cta: "Richiedi informazioni",
+      tracking_ready: true,
+      invented_conversion_rate: false,
+    },
+  }, connectorKey);
+  assert(funnelBranch.status === 200 && funnelBranch.json.branch_output?.funnel_mode === "conversion_plan_review", "funnel conversion branch failed");
+  mark("branch_funnel_conversion_guard", true, {
+    state: funnelBranch.json.output.state,
+    publish_allowed: funnelBranch.json.branch_output.publish_allowed,
+  });
+
+  const recallBranch = await api(base, "POST", "/v1/branches/email_recall_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      customer_state: "at_risk",
+      days_since_last_visit: 66,
+      consent: false,
+      channel: "email",
+      contact_reason: "recupero cliente",
+    },
+  }, connectorKey);
+  assert(recallBranch.status === 200 && recallBranch.json.branch_output?.blocked_if?.missing_consent === true, "email recall consent guard failed");
+  mark("branch_email_recall_guard", true, {
+    state: recallBranch.json.output.state,
+    blocked_if: recallBranch.json.branch_output.blocked_if,
+  });
+
+  const localizationBranch = await api(base, "POST", "/v1/branches/content_localization_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      source_locale: "it",
+      target_locale: "en",
+      key_path: "packages.0.title",
+      glossary_ready: true,
+      claim_recheck_ready: true,
+    },
+  }, connectorKey);
+  assert(localizationBranch.status === 200 && localizationBranch.json.branch_output?.localization_mode === "structured_strings_only", "content localization branch failed");
+  mark("branch_content_localization_guard", true, {
+    state: localizationBranch.json.output.state,
+    target_locale: localizationBranch.json.branch_output.target_locale,
   });
 
   const chemistryBranch = await api(base, "POST", "/v1/branches/cosmetic_chemistry/analyze", {

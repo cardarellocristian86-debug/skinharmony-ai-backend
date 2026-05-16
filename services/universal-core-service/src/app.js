@@ -9,6 +9,7 @@ import { runTextBranch } from "../../../universal-core/packages/branches/ramo-te
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
+import { createSetupTokenStore } from "./setupTokenStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
 import { buildCodexGuardResponse, normalizeDecisionContract } from "./decisionContract.js";
@@ -36,7 +37,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.11-horizontal-control-plane";
+const SERVICE_VERSION = "0.3.12-marketing-intelligence-tree";
 
 function nowIso() {
   return new Date().toISOString();
@@ -530,6 +531,119 @@ function buildEntitlement(keyRecord, branchResolution) {
     hard_block: metadata.suite_policy?.hard_block === true,
     rule: "La key abilita perimetro, non proprieta globale: ogni azione resta scoped, auditata e mediata dal Core.",
   };
+}
+
+function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, branchResolution = null, entitlement = null }) {
+  const metadata = keyRecord?.metadata && typeof keyRecord.metadata === "object" ? keyRecord.metadata : {};
+  const resolvedBranches = branchResolution || resolveBranchesForKey(keyRecord);
+  const resolvedEntitlement = entitlement || buildEntitlement(keyRecord, resolvedBranches);
+  const resolvedTenantPolicy = tenantPolicy || getTenantPolicy(keyRecord?.tenant_id, metadata.tier || metadata.suite_tier);
+  const maturity = branchMaturityReport();
+  const registry = branchRegistry();
+  const branchProfiles = Object.fromEntries(
+    resolvedBranches.allowed_branches
+      .map((branchId) => [branchId, registry[branchId]])
+      .filter(([, profile]) => Boolean(profile)),
+  );
+
+  return {
+    ok: true,
+    schema_version: "core_bootstrap_profile_v1",
+    generated_at: nowIso(),
+    tenant: {
+      tenant_id: keyRecord?.tenant_id || tenant?.tenant_id || "",
+      label: tenant?.label || keyRecord?.tenant_id || "",
+      sector: tenant?.sector || "generic",
+      environment: tenant?.environment || metadata.environments?.[0] || "production",
+      brand_scope: keyRecord?.brand_scope || tenant?.brand_scope || "",
+      domains: Array.isArray(tenant?.domains) ? tenant.domains : [],
+      nodes: Array.isArray(tenant?.nodes) ? tenant.nodes : [],
+    },
+    plan: {
+      tier: resolvedEntitlement.tier,
+      suite_tier: metadata.suite_tier || resolvedEntitlement.tier,
+      modules: Array.isArray(metadata.suite_modules) ? metadata.suite_modules : [],
+      status: keyRecord?.status || "unknown",
+      expires_at: keyRecord?.expires_at || null,
+    },
+    branches: {
+      selected: resolvedBranches.allowed_branches,
+      denied: resolvedBranches.denied_branches || [],
+      groups: resolvedEntitlement.branch_groups,
+      profiles: branchProfiles,
+      maturity: Object.fromEntries(
+        resolvedBranches.allowed_branches
+          .map((branchId) => [branchId, maturity.statuses[branchId]])
+          .filter(([, status]) => Boolean(status)),
+      ),
+    },
+    policy: {
+      source: resolvedTenantPolicy.source,
+      sensitive_domains: resolvedTenantPolicy.sensitive_domains || [],
+      blocked_actions: resolvedTenantPolicy.blocked_actions || [],
+      confirm_actions: resolvedTenantPolicy.confirm_actions || [],
+      sandbox_actions: resolvedTenantPolicy.sandbox_actions || [],
+      action_mediation_states: ["allow", "rewrite", "confirm", "defer", "sandbox", "block", "rollback_required"],
+      rule: "AI e automazioni possono agire solo passando da Core, policy, audit, tenant isolation e conferma quando serve.",
+    },
+    limits: resolvedEntitlement.limits,
+    recommended_folders: {
+      config: ".skinharmony-core/config",
+      key: ".skinharmony-core/keys",
+      memory: ".skinharmony-core/memory",
+      reports: "reports/codex-core",
+      policies: ".skinharmony-core/policies",
+      logs: ".skinharmony-core/logs",
+      snapshots: ".skinharmony-core/snapshots",
+      ...(typeof metadata.recommended_folders === "object" && metadata.recommended_folders ? metadata.recommended_folders : {}),
+    },
+    scope: {
+      key_id: keyRecord?.key_id || "",
+      key_type: keyRecord?.key_type || "",
+      role: metadata.role || keyRecord?.preset || keyRecord?.key_type || "connector",
+      allowed_scopes: keyRecord?.allowed_scopes || [],
+      tenant_scoped: true,
+      cross_tenant_block_default: true,
+      revocation_supported: true,
+    },
+    gate_mode: metadata.gate_mode || "hard_gating",
+    connector_contract: {
+      init_command: "sh-core-codex init --setup-token SHX-SETUP-...",
+      profile_endpoint: "GET /v1/bootstrap/profile",
+      sensitive_actions_require_core: true,
+      local_doctor_required: true,
+    },
+  };
+}
+
+function inferNiraBranchRequest(body = {}) {
+  const explicit = normalizeList(body.branches || body.branch_ids || body.branch_groups, 80);
+  if (explicit.length) return explicit;
+
+  const target = String(body.target_system || "").toLowerCase();
+  const text = String(body.text || body.request || body.task || "").toLowerCase();
+  const requested = ["automation_control"];
+
+  if (target === "suite" || target === "wordpress" || /(suite|wordpress|wp|plugin|waas|sito|template)/.test(text)) {
+    requested.push("platform_engineering", "site_factory");
+  }
+  if (target === "smartdesk" || /(smartdesk|smart desk|crm|agenda|gestionale)/.test(text)) {
+    requested.push("business_governance", "data_integration_orchestration");
+  }
+  if (/(marketing|campagn|ads|sponsorizzat|copy|testi|recall|email|clienti|segment|funnel|conversion|comportament|localizzaz|traduzion)/.test(text)) {
+    requested.push("marketing_intelligence", "content_intelligence");
+  }
+  if (target === "universal_core" || /(core|policy|gate|rami|branch|tenant|key|entitlement)/.test(text)) {
+    requested.push("security_defense");
+  }
+  if (/(privacy|gdpr|audit|tenant|cross tenant|chiav|api key)/.test(text)) {
+    requested.push("security_defense");
+  }
+  if (/(render|deploy|release|runtime|server|nodi|node|update|rollback)/.test(text)) {
+    requested.push("runtime_deployment_scaling_guard", "observability_roi_guard");
+  }
+
+  return [...new Set(requested)];
 }
 
 function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy = {}, context = {} }) {
@@ -1118,6 +1232,139 @@ function buildBranchPayload(branch, payload = {}) {
       blocked_claims: claimResult.issues.map((issue) => issue.term),
       unsupported_proof_risk: unsupportedTrend || inventedProof,
       owner_review_required: true,
+    };
+  } else if (branch === "paid_ads_guard") {
+    const campaignGoal = textValue(data.campaign_goal || data.goal || data.objective);
+    const audience = textValue(data.audience || data.target || data.customer_segment);
+    const budget = Number(data.budget ?? data.daily_budget ?? 0);
+    const landingReady = data.landing_ready === true || data.landing_page_ready === true;
+    const consentReady = data.consent_ready === true || data.tracking_consent === true;
+    const sensitiveTargeting = data.sensitive_targeting === true || data.health_targeting === true || data.body_insecurity_targeting === true;
+    const autoPublish = data.auto_publish === true || data.publish_now === true;
+    const autoBudget = data.auto_increase_budget === true || data.budget_auto_scale === true;
+    const inventedPerformance = data.invented_roas === true || data.invented_cac === true || data.performance_source === "invented";
+    const claimResult = claimShieldCheck({ text: textValue(data.ad_copy || data.copy || data.draft || ""), context: data.context || {} });
+    if (!campaignGoal) missing.push("campaign_goal");
+    if (!audience) missing.push("audience");
+    if (!landingReady) missing.push("landing_page");
+    addSignal("claim_risk", "Rischio claim ads", claimResult.risk_score, "claim", ["ads"]);
+    addSignal("targeting_safety", "Targeting e categorie sensibili", sensitiveTargeting ? 92 : 12, "privacy", ["targeting"]);
+    addSignal("budget_control", "Budget e auto-scale controllati", autoBudget || budget <= 0 ? 68 : 16, "ads", ["budget"]);
+    addSignal("performance_proof", "Performance non inventata", inventedPerformance ? 90 : 10, "ads", ["proof"]);
+    addSignal("publish_safety", "Pubblicazione campagna controllata", autoPublish ? 96 : 8, "ads", ["publish"]);
+    branchOutput = {
+      ads_mode: "draft_review_only",
+      campaign_goal: campaignGoal,
+      audience,
+      budget,
+      owner_review_required: true,
+      publish_allowed: false,
+      required_checks: ["Claim Guard", "landing pronta", "tracking/consenso", "budget owner-approved", "policy piattaforma ads"],
+      blocked_if: { sensitive_targeting: sensitiveTargeting, auto_publish: autoPublish, auto_budget_scale: autoBudget, invented_performance: inventedPerformance },
+    };
+  } else if (branch === "lifecycle_crm_guard" || branch === "email_recall_guard") {
+    const customerState = textValue(data.customer_state || data.lifecycle_state || data.status);
+    const lastActivityDays = Number(data.last_activity_days ?? data.days_since_last_visit ?? 0);
+    const consent = data.marketing_consent === true || data.consent === true;
+    const channel = textValue(data.channel || data.preferred_channel);
+    const autoSend = data.auto_send === true || data.send_now === true;
+    const hasReason = Boolean(textValue(data.reason || data.contact_reason || data.next_action_reason));
+    const isLost = customerState === "lost" || lastActivityDays >= 180;
+    if (!customerState) missing.push("customer_state");
+    if (!channel && branch === "email_recall_guard") missing.push("channel");
+    if (!hasReason) missing.push("contact_reason");
+    addSignal("consent_readiness", "Consenso marketing e canale", consent ? 8 : 88, "privacy", ["consent"]);
+    addSignal("recall_priority", "Priorita recall/lifecycle", isLost ? 72 : lastActivityDays >= 60 ? 58 : 24, "crm_marketing", ["lifecycle"]);
+    addSignal("message_safety", "Invio manuale e tono non aggressivo", autoSend ? 96 : 10, "crm_marketing", ["message"]);
+    addSignal("brief_completeness", "Completezza motivo e prossima azione", hasReason ? 12 : 54, "crm_marketing", ["brief"]);
+    branchOutput = {
+      crm_marketing_mode: branch === "email_recall_guard" ? "message_draft_only" : "lifecycle_priority_advisory",
+      customer_state: customerState,
+      last_activity_days: Number.isFinite(lastActivityDays) ? lastActivityDays : null,
+      channel,
+      can_prepare_message: consent && hasReason,
+      send_allowed: false,
+      owner_review_required: true,
+      required_checks: ["consenso", "motivo contatto", "canale", "stato cliente", "nessun invio automatico"],
+      blocked_if: { missing_consent: !consent, auto_send: autoSend },
+    };
+  } else if (branch === "customer_behavior_analysis") {
+    const sampleSize = Number(data.sample_size ?? data.customer_count ?? 0);
+    const hasRecency = data.has_recency === true || data.last_activity_available === true;
+    const hasFrequency = data.has_frequency === true || data.frequency_available === true;
+    const hasValue = data.has_value === true || data.value_available === true;
+    const sensitiveProfiling = data.sensitive_profiling === true || data.infers_health === true || data.infers_psychology === true;
+    const dataCompleteness = [hasRecency, hasFrequency, hasValue].filter(Boolean).length;
+    addSignal("data_completeness", "Dati comportamento disponibili", 100 - dataCompleteness * 30, "customer_intelligence", ["data"]);
+    addSignal("sample_quality", "Campione dati sufficiente", sampleSize >= 50 ? 12 : sampleSize >= 10 ? 38 : 74, "customer_intelligence", ["sample"]);
+    addSignal("sensitive_inference", "Profilazione sensibile evitata", sensitiveProfiling ? 98 : 8, "privacy", ["profiling"]);
+    branchOutput = {
+      behavior_mode: "observed_patterns_only",
+      confidence: sampleSize >= 50 && dataCompleteness >= 2 ? "medium_high" : "low_or_partial",
+      allowed_outputs: ["segmenti operativi", "clienti da seguire", "rischio churn prudente", "next best action manuale"],
+      blocked_outputs: ["diagnosi sensibili", "profilazione salute", "decisioni automatiche irreversibili"],
+      owner_review_required: sensitiveProfiling,
+    };
+  } else if (branch === "segmentation_offer_guard") {
+    const segment = textValue(data.segment || data.customer_segment || data.audience);
+    const pricePolicyReady = data.price_policy_ready === true || data.price_guard_ready === true;
+    const marginReady = data.margin_checked === true || data.margin_guard_ready === true;
+    const officialPrice = data.has_official_price === true || data.price_source === "official";
+    const inventedOffer = data.invented_offer === true || data.invented_discount === true || data.price_source === "invented";
+    const crossTenantOffer = data.cross_tenant_offer === true || data.cross_tenant === true;
+    if (!segment) missing.push("segment");
+    if (!pricePolicyReady) missing.push("price_policy");
+    addSignal("price_policy", "Listino e policy prezzo pronti", pricePolicyReady && officialPrice ? 10 : 82, "pricing", ["price_guard"]);
+    addSignal("margin_policy", "Margine e sconto sostenibili", marginReady ? 12 : 62, "pricing", ["margin"]);
+    addSignal("offer_integrity", "Offerta non inventata e scoped", inventedOffer || crossTenantOffer ? 96 : 12, "offer_strategy", ["scope"]);
+    branchOutput = {
+      offer_mode: "draft_with_price_guard",
+      segment,
+      price_guard_required: true,
+      owner_review_required: true,
+      publish_allowed: false,
+      blocked_if: { invented_offer: inventedOffer, cross_tenant_offer: crossTenantOffer, missing_price_policy: !pricePolicyReady },
+    };
+  } else if (branch === "funnel_conversion_guard") {
+    const funnelGoal = textValue(data.funnel_goal || data.goal || data.conversion_event);
+    const cta = textValue(data.cta || data.call_to_action);
+    const trackingReady = data.tracking_ready === true || data.consent_tracking_ready === true;
+    const checkoutChange = data.checkout_change === true || data.checkout_modification === true;
+    const inventedConversion = data.invented_conversion_rate === true || data.claim_guaranteed_growth === true;
+    if (!funnelGoal) missing.push("funnel_goal");
+    if (!cta) missing.push("cta");
+    addSignal("funnel_completeness", "Obiettivo, CTA e tracking funnel", 100 - [funnelGoal, cta, trackingReady].filter(Boolean).length * 28, "conversion", ["funnel"]);
+    addSignal("tracking_privacy", "Tracking privacy-safe", trackingReady ? 12 : 70, "privacy", ["tracking"]);
+    addSignal("checkout_safety", "Checkout non modificato senza owner", checkoutChange ? 84 : 10, "commerce", ["checkout"]);
+    addSignal("proof_integrity", "Conversioni non inventate", inventedConversion ? 92 : 10, "conversion", ["proof"]);
+    branchOutput = {
+      funnel_mode: "conversion_plan_review",
+      funnel_goal: funnelGoal,
+      cta,
+      publish_allowed: false,
+      owner_review_required: checkoutChange || inventedConversion,
+      blocked_if: { checkout_change_without_owner: checkoutChange, invented_conversion_rate: inventedConversion, tracking_missing: !trackingReady },
+    };
+  } else if (branch === "content_localization_guard") {
+    const sourceLocale = textValue(data.source_locale || "it");
+    const targetLocale = textValue(data.target_locale || data.locale || "");
+    const stableKeyPath = data.stable_key_path === true || Boolean(textValue(data.key_path));
+    const htmlBlob = data.html_blob === true || data.translate_html === true;
+    const glossaryReady = data.glossary_ready === true || data.tenant_glossary_ready === true;
+    const claimRecheck = data.claim_recheck_ready === true || data.claim_guard_ready === true;
+    if (!targetLocale) missing.push("target_locale");
+    if (!stableKeyPath) missing.push("key_path");
+    addSignal("atomic_strings", "Stringhe atomiche e key_path stabili", stableKeyPath && !htmlBlob ? 10 : 86, "localization", ["key_path"]);
+    addSignal("glossary_readiness", "Glossario e tono tenant", glossaryReady ? 12 : 48, "translation", ["glossary"]);
+    addSignal("claim_recheck", "Claim ricontrollati dopo localizzazione", claimRecheck ? 12 : 72, "claim", ["translation"]);
+    branchOutput = {
+      localization_mode: "structured_strings_only",
+      source_locale: sourceLocale,
+      target_locale: targetLocale,
+      publish_allowed: false,
+      fallback_locale: sourceLocale,
+      owner_review_required: !claimRecheck || htmlBlob,
+      blocked_if: { html_blob_translation: htmlBlob, unstable_key_path: !stableKeyPath, missing_claim_recheck: !claimRecheck },
     };
   } else if (branch === "codex_site_factory_guard") {
     const sourceUrl = textValue(data.source_url || data.source_site || data.clone_source);
@@ -1859,6 +2106,7 @@ export function createUniversalCoreService(options = {}) {
 
   const audit = createAudit(storageRoot);
   const keyStore = createKeyStore(storageRoot, audit);
+  const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
@@ -1906,6 +2154,141 @@ export function createUniversalCoreService(options = {}) {
     const record = keyStore.revokeKey(String(req.body?.key_id || ""), req.body?.status);
     if (!record) return publicError(res, 404, "key_not_found");
     return res.json({ ok: true, key: record });
+  });
+
+  app.post("/v1/setup-token/create", requireAdmin, (req, res) => {
+    try {
+      const body = req.body || {};
+      const tenantInput = body.tenant && typeof body.tenant === "object" ? body.tenant : null;
+      let tenant = null;
+      if (tenantInput) {
+        tenant = tenants.upsert({
+          ...tenantInput,
+          tenant_id: tenantInput.tenant_id || body.tenant_id,
+          brand_scope: tenantInput.brand_scope || body.brand_scope,
+          environment: tenantInput.environment || body.environment,
+          active_branch_groups: tenantInput.active_branch_groups || body.branch_groups || body.active_branch_groups,
+          active_branches: tenantInput.active_branches || body.branches || body.active_branches,
+        });
+        audit.append("core_tenant_upserted", { tenant_id: tenant.tenant_id, sector: tenant.sector, environment: tenant.environment, source: "setup_token_create" });
+      }
+      const result = setupTokens.create({
+        ...body,
+        tenant: tenant || tenantInput || body.tenant,
+        tenant_id: body.tenant_id || tenant?.tenant_id,
+        brand_scope: body.brand_scope || tenant?.brand_scope,
+        environment: body.environment || tenant?.environment,
+      });
+      res.status(201).json({
+        ok: true,
+        setup_token: result.setup_token,
+        token: result.record,
+        tenant,
+        warning: "Il setup token in chiaro viene mostrato solo ora e puo essere consumato una sola volta.",
+      });
+    } catch (error) {
+      publicError(res, 400, error.message || "setup_token_create_failed");
+    }
+  });
+
+  app.post("/v1/setup-token/consume", (req, res) => {
+    const body = req.body || {};
+    const consumed = setupTokens.consume(body.setup_token || body.token, {
+      actor_id: body.actor_id,
+      connector: body.connector || body.client,
+      host: body.host,
+    });
+    if (!consumed.ok) return publicError(res, consumed.status || 400, consumed.error);
+
+    try {
+      const setupRecord = consumed.record;
+      const keyResult = keyStore.createKey({
+        tenant_id: setupRecord.tenant_id,
+        brand_scope: setupRecord.brand_scope,
+        key_type: setupRecord.key_type,
+        preset: setupRecord.preset,
+        label: setupRecord.label,
+        tier: setupRecord.plan,
+        suite_tier: setupRecord.plan,
+        allowed_scopes: setupRecord.scopes,
+        active_branches: setupRecord.branches,
+        suite_modules: setupRecord.modules,
+        suite_limits: setupRecord.limits,
+        expires_at: setupRecord.key_expires_at,
+        metadata: {
+          tier: setupRecord.plan,
+          suite_tier: setupRecord.plan,
+          role: setupRecord.role,
+          setup_token_id: setupRecord.token_id,
+          active_branch_groups: setupRecord.branch_groups,
+          active_branches: setupRecord.branches,
+          suite_modules: setupRecord.modules,
+          suite_limits: setupRecord.limits,
+          environments: [setupRecord.environment].filter(Boolean),
+          gate_mode: setupRecord.gate_mode,
+          recommended_folders: setupRecord.recommended_folders,
+          setup_policy: setupRecord.policy,
+          setup_metadata: setupRecord.metadata,
+        },
+      });
+      const tenant = tenants.get(setupRecord.tenant_id);
+      const branchResolution = resolveBranchesForKey(keyResult.record);
+      const entitlement = buildEntitlement(keyResult.record, branchResolution);
+      const tenantPolicy = getTenantPolicy(setupRecord.tenant_id, setupRecord.plan);
+      const profile = buildBootstrapProfile({
+        keyRecord: keyResult.record,
+        tenant,
+        tenantPolicy,
+        branchResolution,
+        entitlement,
+      });
+      audit.append("core_bootstrap_profile_issued", {
+        tenant_id: setupRecord.tenant_id,
+        key_id: keyResult.record.key_id,
+        setup_token_id: setupRecord.token_id,
+      });
+      return res.json({
+        ok: true,
+        api_key: keyResult.key,
+        key: keyResult.record,
+        setup_token: setupRecord,
+        profile,
+        warning: "La API key in chiaro viene mostrata solo ora. Salvarla nel connector, non nel plugin pubblico.",
+      });
+    } catch (error) {
+      audit.append("core_setup_token_consume_failed", {
+        tenant_id: consumed.record?.tenant_id,
+        token_id: consumed.record?.token_id,
+        error: error.message || "key_generation_failed",
+      });
+      return publicError(res, 400, error.message || "setup_token_consume_failed");
+    }
+  });
+
+  app.post("/v1/setup-token/revoke", requireAdmin, (req, res) => {
+    const record = setupTokens.revoke(req.body?.token_id || req.body?.setup_token || req.body?.token, req.body?.reason);
+    if (!record) return publicError(res, 404, "setup_token_not_found");
+    return res.json({ ok: true, token: record });
+  });
+
+  app.get("/v1/setup-token/list", requireAdmin, (req, res) => {
+    res.json({ ok: true, tokens: setupTokens.list({ tenant_id: req.query.tenant_id }) });
+  });
+
+  app.get("/v1/bootstrap/profile", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const branchResolution = resolveBranchesForKey(req.coreKey);
+    const entitlement = buildEntitlement(req.coreKey, branchResolution);
+    const tenant = tenants.get(req.tenantId);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.coreKey?.metadata?.tier);
+    const profile = buildBootstrapProfile({
+      keyRecord: req.coreKey,
+      tenant,
+      tenantPolicy,
+      branchResolution,
+      entitlement,
+    });
+    audit.append("core_bootstrap_profile_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    return res.json(profile);
   });
 
   app.get("/v1/tenants/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -2543,6 +2926,14 @@ export function createUniversalCoreService(options = {}) {
     const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
     const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
+    const requestedBranches = inferNiraBranchRequest(req.body || {});
+    const branchContext = composeBranchContext({
+      keyRecord: req.coreKey,
+      requestedBranches,
+      task: String(req.body?.task || req.body?.request || req.body?.text || ""),
+      userInput: String(req.body?.text || req.body?.request || req.body?.task || ""),
+      locale: req.body?.locale || "it",
+    });
     const result = runNiraUniversalCoreBridge({
       request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
       text: String(req.body?.text || req.body?.request || req.body?.task || ""),
@@ -2551,6 +2942,20 @@ export function createUniversalCoreService(options = {}) {
       access_scope: ownerVerified ? "owner_full" : "limited",
       mode: requestedGodMode ? "god_mode_owner_only" : "standard",
       target_system: req.body?.target_system || "universal_core",
+      scenario_candidates: Array.isArray(req.body?.scenario_candidates)
+        ? req.body.scenario_candidates
+        : (Array.isArray(req.body?.scenarios) ? req.body.scenarios : undefined),
+      minimum_uniqueness_ratio: typeof req.body?.minimum_uniqueness_ratio === "number"
+        ? req.body.minimum_uniqueness_ratio
+        : undefined,
+      core_branch_context: {
+        tier: branchContext.tier,
+        selected_branches: branchContext.selected_branches,
+        denied_branches: branchContext.denied_branches,
+        selected_groups: branchContext.selected_groups,
+        denied_groups: branchContext.denied_groups,
+        branch_profiles: branchContext.branch_profiles,
+      },
     });
     const guardedResult = {
       ...result,
@@ -2572,11 +2977,20 @@ export function createUniversalCoreService(options = {}) {
       control_level: guardedResult.selected_by_core.control_level,
       risk_band: guardedResult.selected_by_core.risk_band,
       execution_allowed: guardedResult.automation_plan.execution_allowed,
+      selected_branches: guardedResult.core_branch_diagnostics.actual_selected_branches,
+      denied_branches: guardedResult.core_branch_diagnostics.actual_denied_branches,
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       result: guardedResult,
+      branch_context: {
+        selected_branches: branchContext.selected_branches,
+        denied_branches: branchContext.denied_branches,
+        selected_groups: branchContext.selected_groups,
+        denied_groups: branchContext.denied_groups,
+        tier: branchContext.tier,
+      },
       guardrail: {
         execution_allowed: false,
         owner_confirmation_required: true,

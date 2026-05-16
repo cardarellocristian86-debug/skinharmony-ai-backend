@@ -4,6 +4,13 @@ import { branchExecGold } from "./branch-exec-gold.js";
 import { branchSuiteGovernance } from "./branch-suite-governance.js";
 import { branchBeautyMarket } from "./branch-beauty-market.js";
 import { branchMarketingCopy } from "./branch-marketing-copy.js";
+import { branchPaidAdsGuard } from "./branch-paid-ads-guard.js";
+import { branchLifecycleCrmGuard } from "./branch-lifecycle-crm-guard.js";
+import { branchCustomerBehaviorAnalysis } from "./branch-customer-behavior-analysis.js";
+import { branchSegmentationOfferGuard } from "./branch-segmentation-offer-guard.js";
+import { branchFunnelConversionGuard } from "./branch-funnel-conversion-guard.js";
+import { branchEmailRecallGuard } from "./branch-email-recall-guard.js";
+import { branchContentLocalizationGuard } from "./branch-content-localization-guard.js";
 import { branchCosmeticChemistry } from "./branch-cosmetic-chemistry.js";
 import { branchTechnologyMarket } from "./branch-technology-market.js";
 import { branchBusinessStrategy } from "./branch-business-strategy.js";
@@ -35,6 +42,13 @@ const BRANCHES = [
   branchSuiteGovernance,
   branchBeautyMarket,
   branchMarketingCopy,
+  branchPaidAdsGuard,
+  branchLifecycleCrmGuard,
+  branchCustomerBehaviorAnalysis,
+  branchSegmentationOfferGuard,
+  branchFunnelConversionGuard,
+  branchEmailRecallGuard,
+  branchContentLocalizationGuard,
   branchCosmeticChemistry,
   branchTechnologyMarket,
   branchBusinessStrategy,
@@ -80,11 +94,32 @@ const CODEX_GUARD_BRANCHES = [
   "runtime_deployment_scaling_guard",
 ];
 
+const MARKETING_INTELLIGENCE_BRANCHES = [
+  "marketing_copy",
+  "paid_ads_guard",
+  "lifecycle_crm_guard",
+  "customer_behavior_analysis",
+  "segmentation_offer_guard",
+  "funnel_conversion_guard",
+  "email_recall_guard",
+  "content_localization_guard",
+  "ramo_testo",
+  "translation_governance",
+  "cosmetic_chemistry",
+  "technology_market",
+  "beauty_market",
+];
+
 export const BRANCH_GROUPS = Object.freeze({
   content_intelligence: {
     label: "Content Intelligence",
     description: "Marketing, claim, traduzione, correzione testo, fonti e publish safety.",
-    branches: ["marketing_copy", "translation_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+    branches: ["marketing_copy", "content_localization_guard", "translation_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+  },
+  marketing_intelligence: {
+    label: "Marketing Intelligence",
+    description: "Albero marketing: copy, ads, CRM lifecycle, comportamento clienti, segmenti/offerte, funnel, recall e localizzazione.",
+    branches: MARKETING_INTELLIGENCE_BRANCHES,
   },
   platform_engineering: {
     label: "Platform Engineering",
@@ -110,7 +145,7 @@ export const BRANCH_GROUPS = Object.freeze({
   business_governance: {
     label: "Business Governance",
     description: "CRM, filiera, listini, pricing, strategia, offerte, contratti e governance commerciale.",
-    branches: ["suite_governance", "beauty_market", "business_strategy", "codex_business_guard", "commerce_fulfillment_guard", "legal_privacy_compliance_guard", "observability_roi_guard"],
+    branches: ["suite_governance", "beauty_market", "business_strategy", "codex_business_guard", "commerce_fulfillment_guard", "legal_privacy_compliance_guard", "observability_roi_guard", "lifecycle_crm_guard", "segmentation_offer_guard", "customer_behavior_analysis"],
   },
   security_defense: {
     label: "Security / Defensive Intelligence",
@@ -132,12 +167,12 @@ export const BRANCH_GROUPS = Object.freeze({
 export const BRANCH_PACKAGES = Object.freeze({
   starter: ["front_desk_base"],
   base: ["front_desk_base"],
-  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "translation_governance", "ramo_testo"],
+  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "ramo_testo"],
   silver: ["front_desk_base", "operations_silver"],
   gold: ["front_desk_base", "operations_silver", "executive_gold"],
-  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo"],
-  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo"],
-  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "beauty_market", "marketing_copy", "cosmetic_chemistry", "technology_market", "business_strategy", "translation_governance", "ramo_testo", "nyra_finance_beauty_test", ...CODEX_GUARD_BRANCHES],
+  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy"],
+  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy"],
+  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", ...CODEX_GUARD_BRANCHES],
   codex_guard: CODEX_GUARD_BRANCHES,
 });
 
