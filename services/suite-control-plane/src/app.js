@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const SERVICE_VERSION = "0.3.2-customer-intelligence-bridge";
+const SERVICE_VERSION = "0.3.3-ecosystem-tracks";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const RUNBOOK_CATALOG = [
   {
@@ -78,6 +78,33 @@ const RUNBOOK_CATALOG = [
     execution_mode: "proposal_only",
     description: "Accoda la generazione di un report cliente controllato usando solo summary e stato nodo.",
   },
+  {
+    id: "smartdesk_gold_customer_intelligence_sync",
+    label: "Smart Desk Gold Customer Intelligence",
+    category: "smartdesk_gold",
+    risk: "low",
+    owner_confirmation_required: false,
+    execution_mode: "proposal_only",
+    description: "Verifica contratto Customer Intelligence, consensi e readiness Gold senza inviare messaggi o modificare dati cliente.",
+  },
+  {
+    id: "customer_360_profile_review",
+    label: "Customer 360 profile review",
+    category: "customer_intelligence",
+    risk: "low",
+    owner_confirmation_required: false,
+    execution_mode: "proposal_only",
+    description: "Prepara una revisione profilo cliente leggendo solo summary e readiness Core.",
+  },
+  {
+    id: "journey_builder_guarded_draft",
+    label: "Journey builder controllato",
+    category: "marketing_governance",
+    risk: "medium",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Prepara bozze journey marketing governate da Core; nessun invio automatico e conferma owner/operatore obbligatoria.",
+  },
 ];
 
 function nowIso() {
@@ -130,6 +157,72 @@ function buildRunbookPreview(runbook, node) {
     next_action: blocking.length === 0
       ? "Chiedere conferma owner e inviare al nodo solo come richiesta controllata."
       : "Registrare heartbeat/snapshot del nodo prima di preparare dispatch.",
+  };
+}
+
+function buildEcosystemTracks(overview, runbooks, coreStatus) {
+  const list = Array.isArray(runbooks) ? runbooks : [];
+  const nodes = Array.isArray(overview?.nodes) ? overview.nodes : [];
+  const suiteRunbooks = list.filter((runbook) => [
+    "provisioning",
+    "configuration",
+    "release",
+    "governance",
+    "reporting",
+  ].includes(runbook.category));
+  const smartDeskRunbooks = list.filter((runbook) => [
+    "integration",
+    "smartdesk_gold",
+    "customer_intelligence",
+    "marketing_governance",
+  ].includes(runbook.category));
+
+  return {
+    schema_version: "suite_ecosystem_tracks_v1",
+    generated_at: nowIso(),
+    core: {
+      configured: Boolean(coreStatus?.configured),
+      tenant_id: coreStatus?.tenant_id || "",
+      provider_url: coreStatus?.provider_url || "",
+    },
+    suite_provider_track: {
+      purpose: "vendere, configurare e governare nodi WordPress/Suite, tenant, runbook, audit e update controllati.",
+      status: nodes.length ? "active" : "waiting_for_first_node",
+      nodes_total: overview?.nodes_total || 0,
+      nodes_online: overview?.nodes_online || 0,
+      runbooks: suiteRunbooks.map((runbook) => ({
+        id: runbook.id,
+        label: runbook.label,
+        category: runbook.category,
+        risk: runbook.risk,
+        owner_confirmation_required: runbook.owner_confirmation_required,
+      })),
+      next_actions: nodes.length
+        ? ["verificare snapshot nodi", "accodare runbook solo con conferma quando richiesto", "salvare evidence/artifact"]
+        : ["collegare primo nodo Suite/WordPress", "registrare heartbeat", "inviare snapshot readiness"],
+    },
+    smartdesk_gold_track: {
+      purpose: "leggere operativita centro, profilazione cliente, consenso, marketing Gold e Customer Intelligence tramite Core.",
+      status: coreStatus?.configured ? "core_ready" : "core_not_configured",
+      runbooks: smartDeskRunbooks.map((runbook) => ({
+        id: runbook.id,
+        label: runbook.label,
+        category: runbook.category,
+        risk: runbook.risk,
+        owner_confirmation_required: runbook.owner_confirmation_required,
+      })),
+      guardrails: [
+        "nessun invio automatico",
+        "consenso marketing obbligatorio",
+        "operatore conferma sempre",
+        "Core decide readiness/rischio",
+      ],
+      next_actions: [
+        "mostrare stato Customer Intelligence Gold in Suite",
+        "collegare report readiness per tenant",
+        "preparare Customer 360 e journey controllato come runbook",
+      ],
+    },
   };
 }
 
@@ -473,6 +566,16 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       overview: storage.overview(),
+    });
+  });
+
+  app.get("/api/suite/ecosystem/tracks", auth, (req, res) => {
+    const overview = storage.overview();
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      tracks: buildEcosystemTracks(overview, storage.runbookCatalog(), coreClient.status()),
     });
   });
 

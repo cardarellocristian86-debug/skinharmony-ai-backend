@@ -19,6 +19,7 @@ Il plugin resta UI locale + receiver controllato. Universal Core resta il gate d
 ```text
 GET  /health
 GET  /api/suite/overview
+GET  /api/suite/ecosystem/tracks
 POST /api/suite/nodes/heartbeat
 POST /api/suite/nodes/snapshot
 POST /api/suite/evidence
@@ -31,6 +32,11 @@ POST /api/suite/runbooks/artifacts
 GET  /api/suite/nodes/:nodeId/runbook-artifacts
 GET  /api/suite/nodes/:nodeId/dashboard
 ```
+
+`/api/suite/ecosystem/tracks` tiene separati i due binari del prodotto:
+
+- `suite_provider_track`: nodi WordPress/Suite, provisioning, update, runbook, evidence e audit;
+- `smartdesk_gold_track`: Smart Desk Gold, Customer Intelligence, consenso, marketing governato e journey controllati.
 
 Tutti gli endpoint `/api/suite/*` richiedono:
 

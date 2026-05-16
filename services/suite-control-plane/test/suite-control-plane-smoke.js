@@ -105,11 +105,22 @@ try {
 
   const runbooks = await request("/api/suite/runbooks", { headers });
   assert.equal(runbooks.response.status, 200);
-  assert.ok(runbooks.body.runbooks.length >= 8);
+  assert.ok(runbooks.body.runbooks.length >= 11);
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "customer_report"));
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "setup_site_suite"));
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "clone_waas_site"));
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "claim_price_audit"));
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "smartdesk_gold_customer_intelligence_sync"));
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "customer_360_profile_review"));
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "journey_builder_guarded_draft"));
+
+  const tracks = await request("/api/suite/ecosystem/tracks", { headers });
+  assert.equal(tracks.response.status, 200);
+  assert.equal(tracks.body.tracks.schema_version, "suite_ecosystem_tracks_v1");
+  assert.equal(tracks.body.tracks.core.configured, true);
+  assert.ok(tracks.body.tracks.suite_provider_track.runbooks.some((runbook) => runbook.id === "setup_site_suite"));
+  assert.ok(tracks.body.tracks.smartdesk_gold_track.runbooks.some((runbook) => runbook.id === "smartdesk_gold_customer_intelligence_sync"));
+  assert.ok(tracks.body.tracks.smartdesk_gold_track.guardrails.includes("nessun invio automatico"));
 
   const customerContract = await request("/api/suite/customer-intelligence/contract?tenant_id=tenant_demo", { headers });
   assert.equal(customerContract.response.status, 200);
