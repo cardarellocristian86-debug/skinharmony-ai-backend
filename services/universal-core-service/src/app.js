@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
 import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branches/flowcore/src/index.ts";
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
+import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
@@ -1915,6 +1916,53 @@ export function createUniversalCoreService(options = {}) {
       denied_branches: response.codex_guard.denied_branches,
     });
     res.json({ ok: true, ...response });
+  });
+
+  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+    const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
+    const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
+    const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
+    const result = runNiraUniversalCoreBridge({
+      request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
+      text: String(req.body?.text || req.body?.request || req.body?.task || ""),
+      tenant_id: req.tenantId,
+      owner_verified: ownerVerified,
+      access_scope: ownerVerified ? "owner_full" : "limited",
+      mode: requestedGodMode ? "god_mode_owner_only" : "standard",
+      target_system: req.body?.target_system || "universal_core",
+    });
+    const guardedResult = {
+      ...result,
+      selected_by_core: {
+        ...result.selected_by_core,
+        can_execute: false,
+      },
+      automation_plan: {
+        ...result.automation_plan,
+        execution_allowed: false,
+        next_step: "Preparare runbook/evidence e chiedere conferma owner prima di ogni scrittura reale.",
+      },
+    };
+    audit.append("core_nira_bridge_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      mode: guardedResult.mode,
+      god_mode_active: guardedResult.god_mode_active,
+      control_level: guardedResult.selected_by_core.control_level,
+      risk_band: guardedResult.selected_by_core.risk_band,
+      execution_allowed: guardedResult.automation_plan.execution_allowed,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      result: guardedResult,
+      guardrail: {
+        execution_allowed: false,
+        owner_confirmation_required: true,
+        audit_required: true,
+        mode: "nira_prepare_core_select_no_auto_execute",
+      },
+    });
   });
 
   app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {

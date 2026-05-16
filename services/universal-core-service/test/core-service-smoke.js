@@ -264,6 +264,23 @@ try {
     rule_count: codexSiteContext.json.context.deterministic_context.rule_count,
   });
 
+  const niraCoreBridge = await api(base, "POST", "/v1/nira/core-bridge", {
+    tenant_id: "tenant_demo_skinharmony",
+    mode: "god_mode_owner_only",
+    owner_confirmed: true,
+    target_system: "suite",
+    text: "Metti Nira come ponte sopra Universal Core per preparare runbook Render e alleggerire Suite WordPress senza eseguire automaticamente.",
+  }, codexKey);
+  assert(niraCoreBridge.status === 200 && niraCoreBridge.json.result?.god_mode_active === true, "nira core bridge god mode failed");
+  assert(niraCoreBridge.json.result?.automation_plan?.execution_allowed === false, "nira core bridge must not auto execute");
+  assert(niraCoreBridge.json.guardrail?.owner_confirmation_required === true, "nira core bridge owner confirmation missing");
+  mark("nira_core_bridge", true, {
+    mode: niraCoreBridge.json.result.mode,
+    action: niraCoreBridge.json.result.selected_by_core.primary_action_id,
+    control_level: niraCoreBridge.json.result.selected_by_core.control_level,
+    execution_allowed: niraCoreBridge.json.result.automation_plan.execution_allowed,
+  });
+
   const siteFactoryAnalyze = await api(base, "POST", "/v1/branches/codex_site_factory_guard/analyze", {
     tenant_id: "tenant_demo_skinharmony",
     source_url: "https://example.com",
