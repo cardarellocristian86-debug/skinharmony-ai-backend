@@ -72,14 +72,58 @@ try {
   assert.equal(evidence.response.status, 200);
   assert.match(evidence.body.evidence_id, /^evidence_/);
 
+  const runbooks = await request("/api/suite/runbooks", { headers });
+  assert.equal(runbooks.response.status, 200);
+  assert.ok(runbooks.body.runbooks.length >= 4);
+
+  const preview = await request("/api/suite/runbooks/preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "plugin_update_preflight",
+      node_id: "wp_test_node",
+    }),
+  });
+  assert.equal(preview.response.status, 200);
+  assert.equal(preview.body.preview.state, "ready_for_owner_confirmation");
+  assert.equal(preview.body.preview.owner_confirmation_required, true);
+
+  const rejectedDispatch = await request("/api/suite/runbooks/dispatch", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "plugin_update_preflight",
+      node_id: "wp_test_node",
+    }),
+  });
+  assert.equal(rejectedDispatch.response.status, 409);
+  assert.equal(rejectedDispatch.body.accepted, false);
+
+  const dispatch = await request("/api/suite/runbooks/dispatch", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "plugin_update_preflight",
+      node_id: "wp_test_node",
+      owner_confirmed: true,
+      payload: { release: "5.1.14" },
+    }),
+  });
+  assert.equal(dispatch.response.status, 202);
+  assert.equal(dispatch.body.accepted, true);
+  assert.equal(dispatch.body.dispatch.state, "queued_for_node_pull");
+
   const dashboard = await request("/api/suite/nodes/wp_test_node/dashboard", { headers });
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.body.dashboard.node.node_id, "wp_test_node");
   assert.equal(dashboard.body.dashboard.node.evidence_count, 1);
+  assert.equal(dashboard.body.dashboard.dispatches.length, 2);
 
   const overview = await request("/api/suite/overview", { headers });
   assert.equal(overview.response.status, 200);
   assert.equal(overview.body.overview.nodes_total, 1);
+  assert.equal(overview.body.overview.runbooks_total, runbooks.body.runbooks.length);
+  assert.equal(overview.body.overview.dispatches_total, 2);
 
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-suite-control-"));
   process.env.SUITE_CONTROL_STORAGE_ROOT = storageRoot;
@@ -89,11 +133,21 @@ try {
     tenant_id: "tenant_demo",
     plugin_version: "5.1.13",
   });
+  persistedOne.storage.snapshot({
+    node_id: "wp_persisted_node",
+    tenant_id: "tenant_demo",
+    summary: { runtime_mode: "shared_render" },
+  });
+  persistedOne.storage.runbookDispatch({
+    runbook_id: "smartdesk_bridge_check",
+    node_id: "wp_persisted_node",
+  });
   const persistedTwo = createSuiteControlPlane();
   const persistedOverview = persistedTwo.storage.overview();
   assert.equal(persistedTwo.storage.mode, "file");
   assert.equal(persistedOverview.nodes_total, 1);
   assert.equal(persistedOverview.nodes[0].node_id, "wp_persisted_node");
+  assert.equal(persistedOverview.dispatches_total, 1);
   delete process.env.SUITE_CONTROL_STORAGE_ROOT;
 
   console.log("Suite Control Plane smoke OK");

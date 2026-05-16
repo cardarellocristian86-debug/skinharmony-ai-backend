@@ -3,8 +3,46 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const SERVICE_VERSION = "0.1.0-suite-runtime";
+const SERVICE_VERSION = "0.2.0-runbook-marketplace";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
+const RUNBOOK_CATALOG = [
+  {
+    id: "site_clone_readiness",
+    label: "Template clone readiness",
+    category: "provisioning",
+    risk: "medium",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Verifica se un nodo WordPress e pronto per clone template, senza clonare o modificare il sito.",
+  },
+  {
+    id: "plugin_update_preflight",
+    label: "Plugin update preflight",
+    category: "release",
+    risk: "high",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Prepara controlli per aggiornamento plugin: versione, manifest, rollback e stato nodo.",
+  },
+  {
+    id: "claim_price_guard_scan",
+    label: "Claim and price guard scan",
+    category: "governance",
+    risk: "medium",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Richiede una scansione controllata di claim, prezzi e policy commerciali.",
+  },
+  {
+    id: "smartdesk_bridge_check",
+    label: "Smart Desk bridge check",
+    category: "integration",
+    risk: "low",
+    owner_confirmation_required: false,
+    execution_mode: "proposal_only",
+    description: "Controlla readiness bridge Smart Desk e produce prossime azioni senza inviare dati cliente raw.",
+  },
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -26,10 +64,44 @@ function sanitizeId(value, fallbackPrefix) {
   return cleaned || `${fallbackPrefix}_${crypto.randomUUID()}`;
 }
 
+function getRunbook(runbookId) {
+  const id = sanitizeId(runbookId, "runbook");
+  return RUNBOOK_CATALOG.find((runbook) => runbook.id === id) || null;
+}
+
+function buildRunbookPreview(runbook, node) {
+  const nodeOnline = node && node.status === "online";
+  const hasSnapshot = Boolean(node && node.latest_snapshot);
+  const blocking = [];
+  if (!node) blocking.push("node_not_registered");
+  if (node && !nodeOnline) blocking.push("node_not_online");
+  if (node && !hasSnapshot) blocking.push("snapshot_missing");
+
+  const state = blocking.length === 0 ? "ready_for_owner_confirmation" : "blocked_until_node_ready";
+  return {
+    runbook_id: runbook.id,
+    label: runbook.label,
+    category: runbook.category,
+    risk: runbook.risk,
+    execution_mode: runbook.execution_mode,
+    owner_confirmation_required: runbook.owner_confirmation_required,
+    state,
+    blocking,
+    next_action: blocking.length === 0
+      ? "Chiedere conferma owner e inviare al nodo solo come richiesta controllata."
+      : "Registrare heartbeat/snapshot del nodo prima di preparare dispatch.",
+  };
+}
+
 function createMemoryStorage(options = {}) {
   const nodes = new Map((options.nodes || []).map((node) => [node.node_id, node]));
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
+  const dispatches = Array.isArray(options.dispatches) ? options.dispatches : [];
   const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
+
+  function emitChange() {
+    onChange({ nodes: Array.from(nodes.values()), evidence, dispatches });
+  }
 
   function getOrCreateNode(nodeId, tenantId = "unknown") {
     const id = sanitizeId(nodeId, "node");
@@ -85,7 +157,7 @@ function createMemoryStorage(options = {}) {
         health: payload.health && typeof payload.health === "object" ? payload.health : {},
       };
       appendNodeEvent(node, "heartbeat", node.latest_heartbeat);
-      onChange({ nodes: Array.from(nodes.values()), evidence });
+      emitChange();
       return node;
     },
     snapshot(payload) {
@@ -99,7 +171,7 @@ function createMemoryStorage(options = {}) {
         validation: payload.validation && typeof payload.validation === "object" ? payload.validation : {},
       };
       appendNodeEvent(node, "snapshot", node.latest_snapshot);
-      onChange({ nodes: Array.from(nodes.values()), evidence });
+      emitChange();
       return node;
     },
     evidence(payload) {
@@ -119,8 +191,47 @@ function createMemoryStorage(options = {}) {
       node.evidence_count += 1;
       node.last_seen_at = event.received_at;
       appendNodeEvent(node, "evidence", event);
-      onChange({ nodes: Array.from(nodes.values()), evidence });
+      emitChange();
       return { node, event };
+    },
+    runbookCatalog() {
+      return RUNBOOK_CATALOG;
+    },
+    runbookPreview(payload) {
+      const runbook = getRunbook(payload.runbook_id);
+      if (!runbook) return null;
+      const node = nodes.get(sanitizeId(payload.node_id, "node")) || null;
+      return buildRunbookPreview(runbook, node);
+    },
+    runbookDispatch(payload) {
+      const runbook = getRunbook(payload.runbook_id);
+      if (!runbook) return null;
+      const node = nodes.get(sanitizeId(payload.node_id, "node")) || null;
+      const preview = buildRunbookPreview(runbook, node);
+      const ownerConfirmed = payload.owner_confirmed === true || payload.owner_confirmed === "true" || payload.owner_confirmed === "yes";
+      const accepted = preview.state === "ready_for_owner_confirmation"
+        && (!runbook.owner_confirmation_required || ownerConfirmed);
+      const dispatch = {
+        id: `dispatch_${crypto.randomUUID()}`,
+        created_at: nowIso(),
+        runbook_id: runbook.id,
+        node_id: node ? node.node_id : sanitizeId(payload.node_id, "node"),
+        tenant_id: node ? node.tenant_id : sanitizeId(payload.tenant_id, "tenant"),
+        state: accepted ? "queued_for_node_pull" : "not_queued",
+        accepted,
+        owner_confirmed: ownerConfirmed,
+        execution_mode: runbook.execution_mode,
+        risk: runbook.risk,
+        preview,
+        payload: payload.payload && typeof payload.payload === "object" ? payload.payload : {},
+      };
+      dispatches.unshift(dispatch);
+      if (dispatches.length > 1000) dispatches.length = 1000;
+      if (node) {
+        appendNodeEvent(node, "runbook_dispatch", dispatch);
+      }
+      emitChange();
+      return dispatch;
     },
     dashboard(nodeId) {
       const node = nodes.get(sanitizeId(nodeId, "node"));
@@ -129,6 +240,7 @@ function createMemoryStorage(options = {}) {
         node,
         recent_events: node.events.slice(0, 50),
         evidence: evidence.filter((item) => item.node_id === node.node_id).slice(0, 50),
+        dispatches: dispatches.filter((item) => item.node_id === node.node_id).slice(0, 50),
       };
     },
     overview() {
@@ -137,6 +249,8 @@ function createMemoryStorage(options = {}) {
         nodes_total: allNodes.length,
         nodes_online: allNodes.filter((node) => node.status === "online").length,
         evidence_total: evidence.length,
+        dispatches_total: dispatches.length,
+        runbooks_total: RUNBOOK_CATALOG.length,
         nodes: allNodes
           .map((node) => ({
             node_id: node.node_id,
@@ -171,12 +285,14 @@ function createSuiteControlStorage() {
   const storage = createMemoryStorage({
     nodes: Array.isArray(initialState.nodes) ? initialState.nodes : [],
     evidence: Array.isArray(initialState.evidence) ? initialState.evidence : [],
+    dispatches: Array.isArray(initialState.dispatches) ? initialState.dispatches : [],
     onChange(state) {
       const tmpFile = `${stateFile}.tmp`;
       fs.writeFileSync(tmpFile, `${JSON.stringify({
         saved_at: nowIso(),
         nodes: state.nodes,
         evidence: state.evidence.slice(0, 1000),
+        dispatches: state.dispatches.slice(0, 1000),
       }, null, 2)}\n`);
       fs.renameSync(tmpFile, stateFile);
     },
@@ -258,6 +374,38 @@ export function createSuiteControlPlane(options = {}) {
       tenant_id: node.tenant_id,
       evidence_id: event.id,
       received_at: event.received_at,
+    });
+  });
+
+  app.get("/api/suite/runbooks", auth, (req, res) => {
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      runbooks: storage.runbookCatalog(),
+    });
+  });
+
+  app.post("/api/suite/runbooks/preview", auth, (req, res) => {
+    const preview = storage.runbookPreview(req.body || {});
+    if (!preview) return publicError(res, 404, "suite_runbook_not_found");
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      preview,
+    });
+  });
+
+  app.post("/api/suite/runbooks/dispatch", auth, (req, res) => {
+    const dispatch = storage.runbookDispatch(req.body || {});
+    if (!dispatch) return publicError(res, 404, "suite_runbook_not_found");
+    res.status(dispatch.accepted ? 202 : 409).json({
+      ok: dispatch.accepted,
+      accepted: dispatch.accepted,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      dispatch,
     });
   });
 
