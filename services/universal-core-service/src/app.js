@@ -37,7 +37,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.13-customer-profiling-guard";
+const SERVICE_VERSION = "0.3.14-root-owner-override";
 
 function nowIso() {
   return new Date().toISOString();

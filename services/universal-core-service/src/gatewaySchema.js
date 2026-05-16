@@ -23,7 +23,7 @@ export const AI_GATEWAY_VERDICT_SCHEMA = {
   type: "object",
   required: ["decision", "risk", "confidence", "executionAllowed", "requiresOwnerConfirmation"],
   properties: {
-    decision: { type: "string", enum: ["allow_advisory", "review", "block"] },
+    decision: { type: "string", enum: ["allow_advisory", "allow_controlled", "review", "block"] },
     decision_state: { type: "string", enum: ["ready", "attention", "blocked", "observe"] },
     risk: {
       type: "object",
