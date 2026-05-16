@@ -74,7 +74,11 @@ try {
 
   const runbooks = await request("/api/suite/runbooks", { headers });
   assert.equal(runbooks.response.status, 200);
-  assert.ok(runbooks.body.runbooks.length >= 4);
+  assert.ok(runbooks.body.runbooks.length >= 8);
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "customer_report"));
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "setup_site_suite"));
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "clone_waas_site"));
+  assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "claim_price_audit"));
 
   const preview = await request("/api/suite/runbooks/preview", {
     method: "POST",
@@ -113,6 +117,19 @@ try {
   assert.equal(dispatch.body.accepted, true);
   assert.equal(dispatch.body.dispatch.state, "queued_for_node_pull");
 
+  const customerReportDispatch = await request("/api/suite/runbooks/dispatch", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "customer_report",
+      node_id: "wp_test_node",
+      payload: { source: "suite_local_catalog_alignment" },
+    }),
+  });
+  assert.equal(customerReportDispatch.response.status, 202);
+  assert.equal(customerReportDispatch.body.accepted, true);
+  assert.equal(customerReportDispatch.body.dispatch.state, "queued_for_node_pull");
+
   const artifact = await request("/api/suite/runbooks/artifacts", {
     method: "POST",
     headers,
@@ -138,14 +155,14 @@ try {
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.body.dashboard.node.node_id, "wp_test_node");
   assert.equal(dashboard.body.dashboard.node.evidence_count, 1);
-  assert.equal(dashboard.body.dashboard.dispatches.length, 2);
+  assert.equal(dashboard.body.dashboard.dispatches.length, 3);
   assert.equal(dashboard.body.dashboard.runbook_artifacts.length, 1);
 
   const overview = await request("/api/suite/overview", { headers });
   assert.equal(overview.response.status, 200);
   assert.equal(overview.body.overview.nodes_total, 1);
   assert.equal(overview.body.overview.runbooks_total, runbooks.body.runbooks.length);
-  assert.equal(overview.body.overview.dispatches_total, 2);
+  assert.equal(overview.body.overview.dispatches_total, 3);
   assert.equal(overview.body.overview.runbook_artifacts_total, 1);
 
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-suite-control-"));

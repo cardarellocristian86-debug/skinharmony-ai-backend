@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const SERVICE_VERSION = "0.3.0-runbook-artifacts";
+const SERVICE_VERSION = "0.3.1-suite-runbook-alignment";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const RUNBOOK_CATALOG = [
   {
@@ -41,6 +41,42 @@ const RUNBOOK_CATALOG = [
     owner_confirmation_required: false,
     execution_mode: "proposal_only",
     description: "Controlla readiness bridge Smart Desk e produce prossime azioni senza inviare dati cliente raw.",
+  },
+  {
+    id: "clone_waas_site",
+    label: "Clone sito WaaS",
+    category: "provisioning",
+    risk: "medium",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Prepara il piano controllato per clone template WaaS senza creare o modificare siti.",
+  },
+  {
+    id: "setup_site_suite",
+    label: "Setup Suite cliente",
+    category: "configuration",
+    risk: "medium",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Prepara checklist e bozza setup Suite per cliente, senza scrivere configurazioni sul nodo.",
+  },
+  {
+    id: "claim_price_audit",
+    label: "Verifica claim/prezzi",
+    category: "governance",
+    risk: "medium",
+    owner_confirmation_required: true,
+    execution_mode: "proposal_only",
+    description: "Accetta il runbook Suite locale per verifica claim e prezzi, come richiesta controllata read-only.",
+  },
+  {
+    id: "customer_report",
+    label: "Report cliente",
+    category: "reporting",
+    risk: "low",
+    owner_confirmation_required: false,
+    execution_mode: "proposal_only",
+    description: "Accoda la generazione di un report cliente controllato usando solo summary e stato nodo.",
   },
 ];
 
