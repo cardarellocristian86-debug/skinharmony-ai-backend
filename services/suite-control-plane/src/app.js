@@ -2,8 +2,9 @@ import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.3.4-control-plane-readiness";
+const SERVICE_VERSION = "0.3.5-governance-runtime";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const RUNBOOK_CATALOG = [
   {
@@ -129,6 +130,10 @@ function sanitizeId(value, fallbackPrefix) {
   const raw = String(value || "").trim();
   const cleaned = raw.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120);
   return cleaned || `${fallbackPrefix}_${crypto.randomUUID()}`;
+}
+
+function isGovernanceSensitiveAction(action = {}) {
+  return Boolean(action?.scope?.sensitive_action) || SENSITIVE_ACTIONS.has(action?.action_type);
 }
 
 
@@ -662,6 +667,7 @@ function createUniversalCoreClient(options = {}) {
       consents: Array.isArray(payload.consents) ? payload.consents : [],
       customer_profile: payload.customer_profile || payload.customerProfile || {},
     }, tenantId),
+    actionMediation: (tenantId = defaultTenantId, payload = {}) => request("POST", "/v1/action-mediation/evaluate", payload, tenantId),
   };
 }
 
@@ -779,6 +785,19 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
+  app.post("/api/suite/governance/validate", auth, (req, res) => {
+    const manifest = req.body?.governance_manifest || req.body?.manifest || req.body || {};
+    const validation = validateGovernanceRequest(manifest);
+    res.status(validation.allowed ? 200 : 409).json({
+      ok: validation.allowed,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "suite_core_codex_governance_runtime",
+      execution_allowed: validation.allowed && validation.status === "allow",
+      validation,
+    });
+  });
+
   app.get("/api/suite/customer-intelligence/contract", auth, async (req, res) => {
     const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
     const result = await coreClient.customerIntelligenceContract(tenantId);
@@ -809,6 +828,48 @@ export function createSuiteControlPlane(options = {}) {
       tenant_id: tenantId,
       readiness: result.readiness,
       rule: result.rule,
+    });
+  });
+
+  app.post("/api/suite/core/action-mediation", auth, async (req, res) => {
+    const tenantId = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
+    const action = req.body?.action || req.body || {};
+    const governanceManifest = req.body?.governance_manifest || req.body?.manifest || null;
+
+    if (governanceManifest || isGovernanceSensitiveAction(action)) {
+      const validation = validateGovernanceRequest(governanceManifest || {});
+      if (!validation.allowed) {
+        return res.status(409).json({
+          ok: false,
+          service: "suite_control_plane",
+          version: SERVICE_VERSION,
+          mode: "suite_core_codex_governance_runtime",
+          execution_allowed: false,
+          error: "suite_governance_manifest_blocked",
+          message: "Governance manifest mancante o non valido per azione sensibile.",
+          validation,
+        });
+      }
+    }
+
+    const result = await coreClient.actionMediation(tenantId, {
+      action,
+      policy: req.body?.policy || {},
+      context: {
+        source: "suite_control_plane",
+        no_auto_execute: true,
+        governance_runtime_checked: Boolean(governanceManifest || isGovernanceSensitiveAction(action)),
+        ...(req.body?.context && typeof req.body.context === "object" ? req.body.context : {}),
+      },
+    });
+    res.status(result.http_status || (result.success ? 200 : 424)).json({
+      ok: result.success,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "core_action_mediation_proxy",
+      execution_allowed: false,
+      core: coreClient.status(),
+      result,
     });
   });
 

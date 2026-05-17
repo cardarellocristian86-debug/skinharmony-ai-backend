@@ -33,6 +33,18 @@ const mockCoreClient = {
       rule: "Readiness e solo valutazione: nessun invio automatico e nessuna modifica dati cliente.",
     };
   },
+  async actionMediation(tenantId, payload) {
+    return {
+      success: true,
+      http_status: 200,
+      tenant_id: tenantId,
+      decision: {
+        execution_allowed: false,
+        no_auto_execute: payload?.context?.no_auto_execute === true,
+        governance_runtime_checked: payload?.context?.governance_runtime_checked === true,
+      },
+    };
+  },
 };
 
 const { app } = createSuiteControlPlane({ coreClient: mockCoreClient });
@@ -49,6 +61,47 @@ async function request(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, options);
   const body = await response.json();
   return { response, body };
+}
+
+function validGovernanceManifest() {
+  return {
+    tenant_id: "tenant_demo",
+    action_type: "update",
+    target: {
+      type: "suite_control_plane",
+      id: "action_mediation",
+      environment: "production",
+      primary_only: true,
+    },
+    scope: {
+      sensitive_action: true,
+      write_action: true,
+    },
+    core: {
+      decision: "allow_controlled",
+      decision_id: "decision_test",
+      audit_id: "audit_test",
+      execution_allowed: true,
+      requires_owner_confirmation: false,
+    },
+    branches: {
+      results: {
+        change_impact: { status: "allow" },
+        rollback_guard: { status: "allow" },
+      },
+    },
+    write_safety: {
+      backup_id: "backup_test",
+      diff_id: "diff_test",
+      rollback_plan_id: "rollback_test",
+      write_safety_manifest_id: "manifest_test",
+      scope: {
+        cross_page: false,
+        cross_plugin: false,
+        cross_tenant: false,
+      },
+    },
+  };
 }
 
 try {
@@ -167,6 +220,46 @@ try {
   assert.equal(customerReadiness.response.status, 200);
   assert.equal(customerReadiness.body.readiness.can_send_automatically, false);
   assert.equal(customerReadiness.body.readiness.next_step, "prepare_draft_for_operator_confirmation");
+
+  const governanceValidation = await request("/api/suite/governance/validate", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ governance_manifest: validGovernanceManifest() }),
+  });
+  assert.equal(governanceValidation.response.status, 200);
+  assert.equal(governanceValidation.body.execution_allowed, true);
+  assert.equal(governanceValidation.body.validation.status, "allow");
+
+  const blockedActionMediation = await request("/api/suite/core/action-mediation", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      tenant_id: "tenant_demo",
+      action: {
+        action_type: "update",
+        scope: { sensitive_action: true },
+        target: { type: "wordpress_page", id: "page_1504", environment: "production" },
+      },
+    }),
+  });
+  assert.equal(blockedActionMediation.response.status, 409);
+  assert.equal(blockedActionMediation.body.error, "suite_governance_manifest_blocked");
+
+  const allowedActionMediation = await request("/api/suite/core/action-mediation", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      tenant_id: "tenant_demo",
+      action: {
+        action_type: "update",
+        target: { type: "suite_control_plane", id: "action_mediation", environment: "production" },
+      },
+      governance_manifest: validGovernanceManifest(),
+    }),
+  });
+  assert.equal(allowedActionMediation.response.status, 200);
+  assert.equal(allowedActionMediation.body.ok, true);
+  assert.equal(allowedActionMediation.body.result.decision.governance_runtime_checked, true);
 
   const preview = await request("/api/suite/runbooks/preview", {
     method: "POST",

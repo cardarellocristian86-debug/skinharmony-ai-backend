@@ -28,6 +28,8 @@ POST /api/suite/evidence
 GET  /api/suite/runbooks
 GET  /api/suite/customer-intelligence/contract
 POST /api/suite/customer-intelligence/readiness
+POST /api/suite/governance/validate
+POST /api/suite/core/action-mediation
 POST /api/suite/runbooks/preview
 POST /api/suite/runbooks/dispatch
 POST /api/suite/runbooks/artifacts
@@ -41,6 +43,8 @@ GET  /api/suite/nodes/:nodeId/dashboard
 
 - `suite_provider_track`: nodi WordPress/Suite, provisioning, update, runbook, evidence e audit;
 - `smartdesk_gold_track`: Smart Desk Gold, Customer Intelligence, consenso, marketing governato e journey controllati.
+
+`/api/suite/governance/validate` valida il manifest Suite/Core/Codex prima di azioni sensibili. `/api/suite/core/action-mediation` blocca `deploy`, `release`, `publish`, `update`, scritture produzione, pricing, claim, cross-tenant e automazioni Codex se il manifest governance manca o non passa.
 
 Tutti gli endpoint `/api/suite/*` richiedono:
 
