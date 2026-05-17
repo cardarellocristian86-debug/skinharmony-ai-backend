@@ -34,6 +34,17 @@ import { branchObservabilityRoiGuard } from "./branch-observability-roi-guard.js
 import { branchLegalPrivacyComplianceGuard } from "./branch-legal-privacy-compliance-guard.js";
 import { branchAgentOrchestrationGuard } from "./branch-agent-orchestration-guard.js";
 import { branchRuntimeDeploymentScalingGuard } from "./branch-runtime-deployment-scaling-guard.js";
+import { branchConsentLedgerGuard } from "./branch-consent-ledger-guard.js";
+import { branchEventTaxonomyGuard } from "./branch-event-taxonomy-guard.js";
+import { branchCustomer360Guard } from "./branch-customer-360-guard.js";
+import { branchJourneyOrchestrationGuard } from "./branch-journey-orchestration-guard.js";
+import { branchBillingContractGuard } from "./branch-billing-contract-guard.js";
+import { branchSupportSuccessGuard } from "./branch-support-success-guard.js";
+import { branchBeautyValueChainGuard } from "./branch-beauty-value-chain-guard.js";
+import { branchBrandDistributorNetworkGuard } from "./branch-brand-distributor-network-guard.js";
+import { branchProductInventoryGuard } from "./branch-product-inventory-guard.js";
+import { branchSmartDeskOperationsGuard } from "./branch-smartdesk-operations-guard.js";
+import { branchBeautyProtocolGuard } from "./branch-beauty-protocol-guard.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -72,6 +83,17 @@ const BRANCHES = [
   branchLegalPrivacyComplianceGuard,
   branchAgentOrchestrationGuard,
   branchRuntimeDeploymentScalingGuard,
+  branchConsentLedgerGuard,
+  branchEventTaxonomyGuard,
+  branchCustomer360Guard,
+  branchJourneyOrchestrationGuard,
+  branchBillingContractGuard,
+  branchSupportSuccessGuard,
+  branchBeautyValueChainGuard,
+  branchBrandDistributorNetworkGuard,
+  branchProductInventoryGuard,
+  branchSmartDeskOperationsGuard,
+  branchBeautyProtocolGuard,
 ];
 
 const CODEX_GUARD_BRANCHES = [
@@ -99,6 +121,10 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
   "paid_ads_guard",
   "lifecycle_crm_guard",
   "customer_behavior_analysis",
+  "customer_360_guard",
+  "consent_ledger_guard",
+  "event_taxonomy_guard",
+  "journey_orchestration_guard",
   "segmentation_offer_guard",
   "funnel_conversion_guard",
   "email_recall_guard",
@@ -111,6 +137,11 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
 ];
 
 export const BRANCH_GROUPS = Object.freeze({
+  customer_intelligence: {
+    label: "Customer Intelligence",
+    description: "Profilo cliente/account, consensi, eventi, Customer 360, journey, lifecycle e next best action controllata.",
+    branches: ["consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard", "customer_behavior_analysis", "lifecycle_crm_guard", "journey_orchestration_guard", "email_recall_guard"],
+  },
   content_intelligence: {
     label: "Content Intelligence",
     description: "Marketing, claim, traduzione, correzione testo, fonti e publish safety.",
@@ -145,7 +176,17 @@ export const BRANCH_GROUPS = Object.freeze({
   business_governance: {
     label: "Business Governance",
     description: "CRM, filiera, listini, pricing, strategia, offerte, contratti e governance commerciale.",
-    branches: ["suite_governance", "beauty_market", "business_strategy", "codex_business_guard", "commerce_fulfillment_guard", "legal_privacy_compliance_guard", "observability_roi_guard", "lifecycle_crm_guard", "segmentation_offer_guard", "customer_behavior_analysis"],
+    branches: ["suite_governance", "beauty_market", "business_strategy", "codex_business_guard", "commerce_fulfillment_guard", "billing_contract_guard", "support_success_guard", "legal_privacy_compliance_guard", "observability_roi_guard", "lifecycle_crm_guard", "segmentation_offer_guard", "customer_behavior_analysis", "customer_360_guard"],
+  },
+  network_value_chain: {
+    label: "Network Value Chain",
+    description: "Filiera, brand/distributori, margini, territori, prodotti riservati, magazzino prodotti e privacy commerciale.",
+    branches: ["beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "segmentation_offer_guard", "commerce_fulfillment_guard", "billing_contract_guard", "legal_privacy_compliance_guard"],
+  },
+  smartdesk_vertical: {
+    label: "Smart Desk Vertical",
+    description: "Operativita centro, AI Gold, protocolli, agenda, cassa, magazzino, marketing e conferma operatore.",
+    branches: ["smartdesk_operations_guard", "beauty_protocol_guard", "consent_ledger_guard", "customer_360_guard", "product_inventory_guard", "support_success_guard"],
   },
   security_defense: {
     label: "Security / Defensive Intelligence",
@@ -167,12 +208,12 @@ export const BRANCH_GROUPS = Object.freeze({
 export const BRANCH_PACKAGES = Object.freeze({
   starter: ["front_desk_base"],
   base: ["front_desk_base"],
-  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "ramo_testo"],
-  silver: ["front_desk_base", "operations_silver"],
-  gold: ["front_desk_base", "operations_silver", "executive_gold"],
-  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy"],
-  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy"],
-  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", ...CODEX_GUARD_BRANCHES],
+  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
+  silver: ["front_desk_base", "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
+  gold: ["front_desk_base", "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
+  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
+  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
+  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", ...CODEX_GUARD_BRANCHES],
   codex_guard: CODEX_GUARD_BRANCHES,
 });
 

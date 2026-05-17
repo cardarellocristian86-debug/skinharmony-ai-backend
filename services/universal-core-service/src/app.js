@@ -1334,6 +1334,213 @@ function buildBranchPayload(branch, payload = {}) {
         data_completeness: dataCompleteness,
       },
     };
+  } else if (branch === "consent_ledger_guard") {
+    const channels = normalizeList(data.channels || data.allowed_channels || data.channel, 20);
+    const consentSource = textValue(data.consent_source || data.source);
+    const revoked = data.revoked === true || data.opt_out === true;
+    const profiling = data.profiling === true || data.behavioral_marketing === true;
+    const autoContact = data.auto_contact === true || data.auto_send === true || data.send_now === true;
+    const hasConsent = data.consent === true || data.marketing_consent === true || data.privacy_consent === true;
+    addSignal("consent_state", "Consenso canale disponibile", hasConsent && !revoked ? 8 : 92, "consent_governance", ["consent"]);
+    addSignal("consent_source", "Fonte consenso tracciata", consentSource ? 10 : 72, "consent_governance", ["audit"]);
+    addSignal("channel_scope", "Canale consentito e separato", channels.length ? 12 : 58, "consent_governance", ["channel"]);
+    addSignal("profiling_basis", "Base consenso profilazione", !profiling || hasConsent ? 12 : 88, "privacy", ["profiling"]);
+    branchOutput = {
+      consent_mode: "ledger_required_before_contact",
+      channels,
+      can_contact: hasConsent && !revoked && channels.length > 0,
+      owner_review_required: revoked || autoContact || profiling,
+      blocked_if: { missing_consent: !hasConsent, revoked, missing_source: !consentSource, auto_contact_without_consent: autoContact && (!hasConsent || revoked) },
+    };
+  } else if (branch === "event_taxonomy_guard") {
+    const eventType = textValue(data.event_type || data.type);
+    const source = textValue(data.source || data.system);
+    const timestamp = textValue(data.timestamp || data.created_at || data.occurred_at);
+    const subject = textValue(data.subject_id || data.customer_id || data.account_id);
+    const tenantScope = textValue(data.tenant_id || payload.tenant_id);
+    const idempotencyKey = textValue(data.idempotency_key || data.event_id);
+    const crossTenant = data.cross_tenant === true || data.mixed_tenant === true;
+    addSignal("event_shape", "Tipo evento e soggetto", eventType && subject ? 10 : 82, "event_taxonomy", ["shape"]);
+    addSignal("event_source", "Fonte e timestamp", source && timestamp ? 10 : 74, "event_taxonomy", ["source"]);
+    addSignal("event_idempotency", "Idempotenza webhook/sync", idempotencyKey ? 12 : 56, "event_taxonomy", ["idempotency"]);
+    addSignal("tenant_scope", "Evento nello stesso tenant", crossTenant || !tenantScope ? 94 : 8, "tenant", ["scope"]);
+    branchOutput = {
+      event_mode: "normalized_event_contract",
+      event_type: eventType,
+      source,
+      subject_id: subject,
+      ready_for_ingest: Boolean(eventType && source && timestamp && subject && !crossTenant),
+      blocked_if: { missing_event_type: !eventType, missing_source: !source, missing_timestamp: !timestamp, cross_tenant_event: crossTenant },
+    };
+  } else if (branch === "customer_360_guard") {
+    const identityMatch = data.identity_match === true || data.customer_id || data.account_id;
+    const hasHistory = data.has_history === true || Number(data.history_events ?? data.event_count ?? 0) > 0;
+    const hasConsent = data.marketing_consent === true || data.consent === true;
+    const hasOrders = data.has_orders === true || Number(data.order_count ?? 0) > 0;
+    const crossScope = data.cross_scope === true || data.cross_tenant === true;
+    const autoAction = data.auto_action === true || data.auto_send === true;
+    addSignal("identity_match", "Identita cliente/account collegata", identityMatch ? 10 : 82, "customer_360", ["identity"]);
+    addSignal("history_depth", "Storico cliente disponibile", hasHistory ? 14 : 68, "customer_360", ["history"]);
+    addSignal("consent_context", "Consenso visibile in scheda", hasConsent ? 12 : 54, "consent_governance", ["consent"]);
+    addSignal("scope_safety", "Vista nel perimetro tenant/brand", crossScope ? 96 : 8, "tenant", ["scope"]);
+    branchOutput = {
+      customer_360_mode: "single_operational_profile",
+      ready_for_next_action: Boolean(identityMatch && hasHistory && !crossScope),
+      owner_review_required: crossScope || autoAction,
+      blocked_if: { missing_identity: !identityMatch, missing_history: !hasHistory, cross_scope: crossScope, auto_action_without_review: autoAction, missing_consent: !hasConsent },
+      visible_sections: ["identity", "history", "orders", "consent", "support", "licenses", "next_action"].filter((section) => section !== "orders" || hasOrders),
+    };
+  } else if (branch === "journey_orchestration_guard") {
+    const trigger = textValue(data.trigger || data.event_type);
+    const goal = textValue(data.goal || data.journey_goal);
+    const channel = textValue(data.channel || data.preferred_channel);
+    const consent = data.consent === true || data.marketing_consent === true;
+    const ownerApproved = data.owner_approved === true || data.owner_confirmed === true;
+    const autoExecute = data.auto_execute === true || data.auto_send === true || data.send_now === true;
+    const rollbackReady = data.rollback_ready === true || data.cancel_step_ready === true;
+    addSignal("journey_contract", "Trigger, obiettivo e canale", trigger && goal && channel ? 10 : 80, "journey_orchestration", ["contract"]);
+    addSignal("consent_gate", "Consenso per journey", consent ? 10 : 88, "privacy", ["consent"]);
+    addSignal("execution_control", "Esecuzione confermata e reversibile", autoExecute && !ownerApproved ? 96 : rollbackReady ? 14 : 52, "automation", ["execution"]);
+    branchOutput = {
+      journey_mode: "draft_review_then_execute",
+      trigger,
+      goal,
+      channel,
+      can_prepare: Boolean(trigger && goal),
+      execution_allowed: false,
+      owner_review_required: true,
+      blocked_if: { missing_consent: !consent, missing_trigger: !trigger, auto_execute_without_owner: autoExecute && !ownerApproved, missing_rollback: autoExecute && !rollbackReady },
+    };
+  } else if (branch === "billing_contract_guard") {
+    const plan = textValue(data.plan || data.tier);
+    const commercialEvent = data.payment_confirmed === true || data.contract_signed === true || data.trial_active === true || data.owner_override === true;
+    const officialPrice = data.official_price === true || data.price_source === "official" || data.price_source === "contract";
+    const expiry = textValue(data.expires_at || data.renewal_at);
+    const keyLimit = Number(data.api_key_limit ?? data.seat_limit ?? data.smartdesk_seats ?? 0);
+    const activate = data.activate_module === true || data.generate_key === true || data.provision_node === true;
+    addSignal("commercial_event", "Evento commerciale valido", commercialEvent ? 8 : 92, "billing_contract", ["commercial"]);
+    addSignal("price_source", "Prezzo/condizione ufficiale", officialPrice ? 10 : 80, "billing_contract", ["price"]);
+    addSignal("expiry_policy", "Scadenza o rinnovo definito", expiry ? 12 : 56, "billing_contract", ["renewal"]);
+    addSignal("limit_policy", "Limiti seat/API configurati", keyLimit > 0 ? 12 : 48, "billing_contract", ["limits"]);
+    branchOutput = {
+      billing_mode: "commercial_event_before_activation",
+      plan,
+      key_limit: keyLimit,
+      can_activate: Boolean(commercialEvent && officialPrice && (!activate || keyLimit > 0)),
+      owner_review_required: activate,
+      blocked_if: { missing_commercial_event: !commercialEvent, invented_terms: !officialPrice, missing_limits_for_key_generation: activate && keyLimit <= 0 },
+    };
+  } else if (branch === "support_success_guard") {
+    const ticketType = textValue(data.ticket_type || data.type || data.category);
+    const blocked = data.blocked === true || data.customer_blocked === true;
+    const renewalDays = Number(data.renewal_days ?? data.days_to_renewal ?? 999);
+    const hasOwner = Boolean(textValue(data.owner || data.assignee || data.support_owner));
+    const promisedSla = data.promise_sla === true || data.uncontracted_sla === true;
+    const evidence = data.evidence_ready === true || data.logs_attached === true || data.context_ready === true;
+    addSignal("support_impact", "Impatto supporto/onboarding", blocked ? 88 : renewalDays <= 30 ? 64 : 22, "support_success", ["impact"]);
+    addSignal("ownership", "Owner support assegnato", hasOwner ? 10 : 70, "support_success", ["owner"]);
+    addSignal("evidence", "Prove/log per chiusura", evidence ? 12 : 58, "support_success", ["evidence"]);
+    addSignal("sla_integrity", "SLA non promesso fuori contratto", promisedSla ? 90 : 8, "support_success", ["sla"]);
+    branchOutput = {
+      support_mode: "success_priority_queue",
+      ticket_type: ticketType,
+      priority: blocked ? "high" : renewalDays <= 30 ? "medium" : "normal",
+      owner_review_required: promisedSla || blocked,
+      blocked_if: { promised_uncontracted_sla: promisedSla, close_without_evidence: data.close_ticket === true && !evidence, missing_owner: !hasOwner },
+    };
+  } else if (branch === "beauty_value_chain_guard") {
+    const factoryCost = Number(data.factory_cost ?? data.C ?? 0);
+    const listPrice = Number(data.list_price ?? data.L ?? 0);
+    const distributorPrice = Number(data.distributor_price ?? data.PD ?? 0);
+    const operatorPrice = Number(data.operator_price ?? data.PE ?? 0);
+    const leakMargin = data.show_upstream_margin_to_downstream === true || data.leak_margin === true;
+    const mandatoryPrice = data.mandatory_resale_price === true || data.price_imposed === true;
+    const breaksChain = Boolean(distributorPrice && operatorPrice && operatorPrice <= distributorPrice);
+    addSignal("chain_data", "Costo/listino/prezzi filiera presenti", [factoryCost, listPrice, distributorPrice, operatorPrice].filter((value) => value > 0).length >= 3 ? 16 : 74, "beauty_value_chain", ["pricing"]);
+    addSignal("margin_chain", "Margine passaggio successivo sostenibile", breaksChain ? 92 : 18, "pricing", ["margin"]);
+    addSignal("legal_positioning", "Prezzo finale non imposto", mandatoryPrice ? 96 : 8, "legal_privacy_compliance", ["pricing"]);
+    addSignal("visibility_scope", "Margini riservati protetti", leakMargin ? 94 : 8, "tenant", ["scope"]);
+    branchOutput = {
+      value_chain_mode: "advisory_margin_guard",
+      snapshot_required: true,
+      owner_review_required: breaksChain || mandatoryPrice || leakMargin,
+      blocked_if: { margin_chain_break: breaksChain, mandatory_resale_price: mandatoryPrice, upstream_margin_leak: leakMargin },
+    };
+  } else if (branch === "brand_distributor_network_guard") {
+    const role = textValue(data.role || data.node_role);
+    const brandScope = textValue(data.brand_scope || payload.brand_scope);
+    const distributorId = textValue(data.distributor_id);
+    const multiBrand = data.multi_brand === true;
+    const crossBrand = data.cross_brand_data === true || data.scan_unowned_brand === true;
+    const territory = textValue(data.territory || data.area || data.country);
+    addSignal("node_identity", "Ruolo e brand scope nodo", role && brandScope ? 10 : 78, "network_governance", ["identity"]);
+    addSignal("distributor_relation", "Relazione distributore/territorio", distributorId || territory ? 18 : 56, "network_governance", ["relation"]);
+    addSignal("brand_scope_safety", "Dati brand isolati", crossBrand ? 96 : multiBrand ? 38 : 8, "tenant", ["brand_scope"]);
+    branchOutput = {
+      network_mode: "brand_scoped_relation_graph",
+      role,
+      brand_scope: brandScope,
+      distributor_id: distributorId,
+      owner_review_required: crossBrand,
+      blocked_if: { missing_brand_scope: !brandScope, cross_brand_data_leak: crossBrand, unscoped_multi_brand: multiBrand && !brandScope },
+    };
+  } else if (branch === "product_inventory_guard") {
+    const sku = textValue(data.sku || data.barcode || data.product_id);
+    const quantity = Number(data.quantity ?? data.stock ?? 0);
+    const movementType = textValue(data.movement_type || data.causal || data.event_type);
+    const source = textValue(data.source || data.order_id || data.operator_id);
+    const sellUnavailable = data.sell_unavailable === true || data.allow_backorder === true;
+    const backorderPolicy = data.backorder_policy === true || data.order_on_request === true;
+    const decrement = data.stock_decrement === true || movementType === "decrement";
+    addSignal("sku_identity", "SKU/barcode/prodotto identificato", sku ? 10 : 82, "product_inventory", ["sku"]);
+    addSignal("movement_trace", "Movimento stock tracciato", movementType && source ? 12 : 70, "product_inventory", ["movement"]);
+    addSignal("stock_policy", "Disponibilita o backorder governato", quantity > 0 || !sellUnavailable || backorderPolicy ? 14 : 88, "commerce_fulfillment", ["stock"]);
+    branchOutput = {
+      inventory_mode: "audited_stock_movement",
+      sku,
+      quantity: Number.isFinite(quantity) ? quantity : 0,
+      owner_review_required: decrement || sellUnavailable,
+      blocked_if: { missing_sku: !sku, decrement_without_source: decrement && !source, sell_unavailable_without_policy: sellUnavailable && !backorderPolicy && quantity <= 0 },
+    };
+  } else if (branch === "smartdesk_operations_guard") {
+    const module = textValue(data.module || data.area);
+    const plan = textValue(data.plan || data.tier);
+    const operatorConfirmed = data.operator_confirmed === true || data.owner_confirmed === true;
+    const aiChangesNumbers = data.ai_changes_numbers === true || data.correct_real_data === true;
+    const autoSend = data.auto_send === true || data.send_now === true;
+    const medicalClaim = data.medical_claim === true || data.protocol_medical === true;
+    addSignal("module_scope", "Modulo e piano definiti", module && plan ? 12 : 60, "smartdesk_operations", ["plan"]);
+    addSignal("ai_boundary", "AI non corregge numeri reali", aiChangesNumbers ? 96 : 8, "smartdesk_operations", ["ai_gold"]);
+    addSignal("operator_confirmation", "Conferma operatore per azioni", operatorConfirmed ? 14 : 52, "smartdesk_operations", ["confirm"]);
+    addSignal("message_and_protocol_safety", "Messaggi/protocolli prudenti", autoSend || medicalClaim ? 94 : 8, "smartdesk_operations", ["safety"]);
+    branchOutput = {
+      smartdesk_mode: "operator_confirmed_actions",
+      module,
+      plan,
+      execution_allowed: false,
+      owner_review_required: true,
+      blocked_if: { ai_changes_real_numbers: aiChangesNumbers, auto_send_message: autoSend, medical_protocol_claim: medicalClaim, missing_operator_confirmation: !operatorConfirmed },
+    };
+  } else if (branch === "beauty_protocol_guard") {
+    const objective = textValue(data.objective || data.goal || data.client_need);
+    const area = textValue(data.area || data.zone);
+    const technologies = normalizeList(data.technologies || data.devices, 20);
+    const operatorConfirmed = data.operator_confirmed === true;
+    const medical = data.medical_diagnosis === true || data.therapy_claim === true || data.guaranteed_result === true;
+    const dataReady = Boolean(objective && area && technologies.length);
+    addSignal("protocol_brief", "Dati protocollo completi", dataReady ? 12 : 72, "beauty_protocol", ["brief"]);
+    addSignal("non_medical_boundary", "Confine non medicale rispettato", medical ? 98 : 8, "claim", ["protocol"]);
+    addSignal("operator_review", "Conferma operatore", operatorConfirmed ? 12 : 64, "beauty_protocol", ["confirm"]);
+    branchOutput = {
+      protocol_mode: "non_medical_draft",
+      objective,
+      area,
+      technologies,
+      draft_allowed: true,
+      execution_allowed: false,
+      owner_review_required: true,
+      blocked_if: { missing_brief: !dataReady, medical_or_guaranteed_claim: medical, missing_operator_confirmation: !operatorConfirmed },
+    };
   } else if (branch === "segmentation_offer_guard") {
     const segment = textValue(data.segment || data.customer_segment || data.audience);
     const pricePolicyReady = data.price_policy_ready === true || data.price_guard_ready === true;

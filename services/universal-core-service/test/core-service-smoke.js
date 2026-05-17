@@ -398,10 +398,24 @@ try {
   assert(branches.json.branches?.funnel_conversion_guard?.production_status === "advisory", "funnel conversion branch missing");
   assert(branches.json.branches?.email_recall_guard?.production_status === "advisory", "email recall branch missing");
   assert(branches.json.branches?.content_localization_guard?.production_status === "advisory", "content localization branch missing");
+  assert(branches.json.branches?.consent_ledger_guard?.production_status === "advisory", "consent ledger branch missing");
+  assert(branches.json.branches?.event_taxonomy_guard?.production_status === "advisory", "event taxonomy branch missing");
+  assert(branches.json.branches?.customer_360_guard?.production_status === "advisory", "customer 360 branch missing");
+  assert(branches.json.branches?.journey_orchestration_guard?.production_status === "advisory", "journey orchestration branch missing");
+  assert(branches.json.branches?.billing_contract_guard?.production_status === "advisory", "billing contract branch missing");
+  assert(branches.json.branches?.support_success_guard?.production_status === "advisory", "support success branch missing");
+  assert(branches.json.branches?.beauty_value_chain_guard?.production_status === "advisory", "beauty value chain branch missing");
+  assert(branches.json.branches?.brand_distributor_network_guard?.production_status === "advisory", "brand distributor network branch missing");
+  assert(branches.json.branches?.product_inventory_guard?.production_status === "advisory", "product inventory branch missing");
+  assert(branches.json.branches?.smartdesk_operations_guard?.production_status === "advisory", "smartdesk operations branch missing");
+  assert(branches.json.branches?.beauty_protocol_guard?.production_status === "test", "beauty protocol branch missing");
   assert(branches.json.groups?.content_intelligence?.branches?.includes("ramo_testo"), "content intelligence group missing ramo_testo");
   assert(branches.json.groups?.marketing_intelligence?.branches?.includes("paid_ads_guard"), "marketing intelligence group missing paid ads");
   assert(branches.json.groups?.marketing_intelligence?.branches?.includes("customer_behavior_analysis"), "marketing intelligence group missing behavior analysis");
   assert(branches.json.groups?.marketing_intelligence?.branches?.includes("segmentation_offer_guard"), "marketing intelligence group missing segmentation offer");
+  assert(branches.json.groups?.customer_intelligence?.branches?.includes("customer_360_guard"), "customer intelligence group missing customer 360");
+  assert(branches.json.groups?.network_value_chain?.branches?.includes("beauty_value_chain_guard"), "network value chain group missing value chain");
+  assert(branches.json.groups?.smartdesk_vertical?.branches?.includes("smartdesk_operations_guard"), "smartdesk vertical group missing operations");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("codex_wordpress_platform_guard"), "platform engineering group missing wordpress guard");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("runtime_deployment_scaling_guard"), "platform engineering group missing runtime guard");
   assert(branches.json.groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group missing site factory guard");
@@ -437,6 +451,8 @@ try {
   assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("paid_ads_guard"), "marketing group did not select paid ads");
   assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("email_recall_guard"), "marketing group did not select email recall");
   assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("customer_behavior_analysis"), "marketing group did not select customer behavior");
+  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("consent_ledger_guard"), "marketing group did not select consent ledger");
+  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("journey_orchestration_guard"), "marketing group did not select journey orchestration");
   mark("branches_authorized_group_marketing", true, authorizedMarketingGroup.json.branch_package);
 
   const codexContext = await api(base, "POST", "/v1/codex/context", {
@@ -1189,6 +1205,188 @@ try {
   mark("branch_customer_behavior_privacy_risk", true, {
     owner_review_required: behaviorPrivacyRiskBranch.json.branch_output.owner_review_required,
     blocked_if: behaviorPrivacyRiskBranch.json.branch_output.blocked_if,
+  });
+
+  const consentLedgerBranch = await api(base, "POST", "/v1/branches/consent_ledger_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      consent: false,
+      revoked: true,
+      channel: "email",
+      consent_source: "",
+      auto_send: true,
+    },
+  }, connectorKey);
+  assert(consentLedgerBranch.status === 200 && consentLedgerBranch.json.branch_output?.blocked_if?.missing_consent === true, "consent ledger missing consent not detected");
+  assert(consentLedgerBranch.json.branch_output?.blocked_if?.revoked === true, "consent ledger revocation not detected");
+  mark("branch_consent_ledger_guard", true, {
+    can_contact: consentLedgerBranch.json.branch_output.can_contact,
+    blocked_if: consentLedgerBranch.json.branch_output.blocked_if,
+  });
+
+  const eventTaxonomyBranch = await api(base, "POST", "/v1/branches/event_taxonomy_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      event_type: "appointment.completed",
+      subject_id: "client_demo",
+      source: "smartdesk",
+      timestamp: "2026-05-16T12:00:00Z",
+      idempotency_key: "evt_demo_1",
+      cross_tenant: false,
+    },
+  }, connectorKey);
+  assert(eventTaxonomyBranch.status === 200 && eventTaxonomyBranch.json.branch_output?.ready_for_ingest === true, "event taxonomy ready ingest failed");
+  mark("branch_event_taxonomy_guard", true, {
+    event_type: eventTaxonomyBranch.json.branch_output.event_type,
+    ready_for_ingest: eventTaxonomyBranch.json.branch_output.ready_for_ingest,
+  });
+
+  const customer360Branch = await api(base, "POST", "/v1/branches/customer_360_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      customer_id: "client_demo",
+      has_history: true,
+      marketing_consent: true,
+      order_count: 4,
+      cross_scope: false,
+    },
+  }, connectorKey);
+  assert(customer360Branch.status === 200 && customer360Branch.json.branch_output?.ready_for_next_action === true, "customer 360 ready failed");
+  mark("branch_customer_360_guard", true, {
+    sections: customer360Branch.json.branch_output.visible_sections,
+  });
+
+  const journeyBranch = await api(base, "POST", "/v1/branches/journey_orchestration_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      trigger: "customer_at_risk",
+      goal: "manual_recall",
+      channel: "email",
+      consent: false,
+      auto_send: true,
+      owner_approved: false,
+    },
+  }, connectorKey);
+  assert(journeyBranch.status === 200 && journeyBranch.json.branch_output?.blocked_if?.missing_consent === true, "journey missing consent not detected");
+  assert(journeyBranch.json.branch_output?.blocked_if?.auto_execute_without_owner === true, "journey auto execute not detected");
+  mark("branch_journey_orchestration_guard", true, {
+    blocked_if: journeyBranch.json.branch_output.blocked_if,
+  });
+
+  const billingBranch = await api(base, "POST", "/v1/branches/billing_contract_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      plan: "network",
+      generate_key: true,
+      payment_confirmed: false,
+      price_source: "invented",
+      api_key_limit: 0,
+    },
+  }, connectorKey);
+  assert(billingBranch.status === 200 && billingBranch.json.branch_output?.blocked_if?.missing_commercial_event === true, "billing missing commercial event not detected");
+  assert(billingBranch.json.branch_output?.blocked_if?.missing_limits_for_key_generation === true, "billing missing key limits not detected");
+  mark("branch_billing_contract_guard", true, {
+    can_activate: billingBranch.json.branch_output.can_activate,
+    blocked_if: billingBranch.json.branch_output.blocked_if,
+  });
+
+  const supportBranch = await api(base, "POST", "/v1/branches/support_success_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      ticket_type: "onboarding",
+      blocked: true,
+      renewal_days: 12,
+      close_ticket: true,
+      evidence_ready: false,
+      promise_sla: true,
+    },
+  }, connectorKey);
+  assert(supportBranch.status === 200 && supportBranch.json.branch_output?.blocked_if?.promised_uncontracted_sla === true, "support SLA risk not detected");
+  assert(supportBranch.json.branch_output?.blocked_if?.close_without_evidence === true, "support close without evidence not detected");
+  mark("branch_support_success_guard", true, {
+    priority: supportBranch.json.branch_output.priority,
+    blocked_if: supportBranch.json.branch_output.blocked_if,
+  });
+
+  const valueChainBranch = await api(base, "POST", "/v1/branches/beauty_value_chain_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      factory_cost: 10,
+      list_price: 100,
+      distributor_price: 30,
+      operator_price: 25,
+      mandatory_resale_price: true,
+      leak_margin: true,
+    },
+  }, connectorKey);
+  assert(valueChainBranch.status === 200 && valueChainBranch.json.branch_output?.blocked_if?.margin_chain_break === true, "value chain margin break not detected");
+  assert(valueChainBranch.json.branch_output?.blocked_if?.mandatory_resale_price === true, "value chain mandatory price not detected");
+  mark("branch_beauty_value_chain_guard", true, {
+    blocked_if: valueChainBranch.json.branch_output.blocked_if,
+  });
+
+  const networkBranch = await api(base, "POST", "/v1/branches/brand_distributor_network_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      role: "distributor",
+      brand_scope: "brand_a",
+      distributor_id: "dist_1",
+      multi_brand: true,
+      cross_brand_data: true,
+    },
+  }, connectorKey);
+  assert(networkBranch.status === 200 && networkBranch.json.branch_output?.blocked_if?.cross_brand_data_leak === true, "network cross brand leak not detected");
+  mark("branch_brand_distributor_network_guard", true, {
+    blocked_if: networkBranch.json.branch_output.blocked_if,
+  });
+
+  const inventoryBranch = await api(base, "POST", "/v1/branches/product_inventory_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      sku: "SKU-001",
+      stock: 0,
+      movement_type: "decrement",
+      source: "",
+      sell_unavailable: true,
+      backorder_policy: false,
+    },
+  }, connectorKey);
+  assert(inventoryBranch.status === 200 && inventoryBranch.json.branch_output?.blocked_if?.decrement_without_source === true, "inventory decrement source not detected");
+  assert(inventoryBranch.json.branch_output?.blocked_if?.sell_unavailable_without_policy === true, "inventory unavailable sale not detected");
+  mark("branch_product_inventory_guard", true, {
+    blocked_if: inventoryBranch.json.branch_output.blocked_if,
+  });
+
+  const smartdeskBranch = await api(base, "POST", "/v1/branches/smartdesk_operations_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      module: "ai_gold",
+      plan: "gold",
+      operator_confirmed: false,
+      ai_changes_numbers: true,
+      auto_send: true,
+    },
+  }, connectorKey);
+  assert(smartdeskBranch.status === 200 && smartdeskBranch.json.branch_output?.blocked_if?.ai_changes_real_numbers === true, "smartdesk AI number boundary not detected");
+  assert(smartdeskBranch.json.branch_output?.blocked_if?.auto_send_message === true, "smartdesk auto send not detected");
+  mark("branch_smartdesk_operations_guard", true, {
+    blocked_if: smartdeskBranch.json.branch_output.blocked_if,
+  });
+
+  const beautyProtocolBranch = await api(base, "POST", "/v1/branches/beauty_protocol_guard/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      objective: "migliorare esperienza trattamento",
+      area: "viso",
+      technologies: ["radiofrequenza"],
+      operator_confirmed: false,
+      guaranteed_result: true,
+    },
+  }, connectorKey);
+  assert(beautyProtocolBranch.status === 200 && beautyProtocolBranch.json.branch_output?.blocked_if?.medical_or_guaranteed_claim === true, "beauty protocol guaranteed claim not detected");
+  assert(beautyProtocolBranch.json.branch_output?.blocked_if?.missing_operator_confirmation === true, "beauty protocol operator confirmation not detected");
+  mark("branch_beauty_protocol_guard", true, {
+    blocked_if: beautyProtocolBranch.json.branch_output.blocked_if,
   });
 
   const offerBranch = await api(base, "POST", "/v1/branches/segmentation_offer_guard/analyze", {
