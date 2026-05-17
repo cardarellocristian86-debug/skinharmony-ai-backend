@@ -991,7 +991,9 @@ try {
   assert(codexB2BWorkflow.json.verdict?.decision_state === "blocked", "B2B workflow state should be blocked");
   assert(codexB2BWorkflow.json.verdict?.risk?.band === "high", "B2B workflow risk should be high");
   assert(codexB2BWorkflow.json.verdict?.executionAllowed === false, "B2B workflow execution should be false");
-  assert(codexB2BWorkflow.json.verdict?.action_mediation?.state === "block", "B2B workflow mediation should block");
+  assert(codexB2BWorkflow.json.verdict?.action_mediation?.state === "hard_block", "B2B workflow mediation should hard block");
+  assert(codexB2BWorkflow.json.verdict?.action_mediation?.owner_confirmation_can_override === false, "B2B workflow hard block should not be owner-overridable");
+  assert(codexB2BWorkflow.json.verdict?.action_mediation?.safe_variant?.id === "read_only_evidence_first", "B2B workflow safe variant missing");
   assert(codexB2BWorkflow.json.verdict?.policyFlags?.agnosticWorkflowRisk === true, "B2B workflow agnostic flag missing");
   mark("codex_core_b2b_workflow_macro_guard", true, {
     decision: codexB2BWorkflow.json.verdict.decision,
@@ -1043,8 +1045,10 @@ try {
     }, regulatedKey);
     assert(result.status === 200, `${scenario.name} gateway failed`);
     if (scenario.expectBlock) {
-      assert(result.json.verdict?.decision === "block", `${scenario.name} expected block`);
+      assert(result.json.verdict?.decision === "review", `${scenario.name} expected review/rewrite`);
       assert(result.json.verdict?.policyFlags?.forbiddenClaimDetected === true, `${scenario.name} policy flag missing`);
+      assert(result.json.verdict?.action_mediation?.state === "rewrite_required", `${scenario.name} rewrite mediation missing`);
+      assert(result.json.verdict?.action_mediation?.safe_variant?.id === "rewrite_claim_safe", `${scenario.name} safe rewrite missing`);
     } else {
       assert(result.json.verdict?.decision !== "block", `${scenario.name} should not block`);
     }

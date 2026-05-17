@@ -24,10 +24,12 @@ export const AI_GATEWAY_ADAPTERS = new Set([
 export const ACTION_MEDIATION_STATES = new Set([
   "allow",
   "rewrite",
+  "rewrite_required",
   "confirm",
   "defer",
   "sandbox",
   "block",
+  "hard_block",
   "rollback_required",
 ]);
 
@@ -207,7 +209,6 @@ function nonOverridableReasons({ payload = {}, policyWarnings = [], agnosticWork
   ].join(" ").toLowerCase();
   const reasons = [];
   if (agnosticWorkflowRisk.triggered) reasons.push("agnostic_sensitive_workflow_flag_detected");
-  if (policyWarnings.length) reasons.push("tenant_policy_forbidden_content");
   if (/cross[-_\s]?tenant/.test(scanText)) reasons.push("cross_tenant_requires_dedicated_policy");
   if (/(password|secret|private key|api key|token)/.test(scanText) && /(print|echo|log|exfiltrate|export|share|show)/.test(scanText)) {
     reasons.push("secret_exposure_not_overridable");
@@ -342,7 +343,100 @@ function requiresRollbackPlan(payload = {}, action = {}, warnings = []) {
   return touchesRuntime && !mentionsRollback && risky;
 }
 
-function businessExplanation({ verdictBase = {}, mode = "advisory", action = {}, warnings = [], tenantPolicy = {}, selectedVariant = null, mediationState = "defer" }) {
+function inferBlockProfile({ payload = {}, action = {}, policyWarnings = [], agnosticWorkflowRisk = {}, forcedBlocked = false, warnings = [] }) {
+  const body = [
+    action.type,
+    action.label,
+    payload.user_request,
+    payload.llm_output,
+    payload.output,
+    flattenForScan(payload.context),
+    flattenForScan(payload.runtime_state),
+  ].join(" ").toLowerCase();
+  const destructiveTokens = [
+    "delete permanently",
+    "eliminazione permanente",
+    "drop table",
+    "git reset --hard",
+    "rm -rf",
+    "git clean",
+    "bypass_audit",
+    "bypass audit",
+    "hot_swap",
+    "hot swap",
+    "override_threshold",
+    "offshore",
+    "ledger",
+    "cross_border",
+    "cross-border",
+    "cross_tenant",
+    "cross-tenant",
+    "tenant_scope_denied",
+  ];
+  const hasDestructiveToken = destructiveTokens.some((token) => body.includes(token));
+  const actionType = text(action.type).toLowerCase();
+  const isHard =
+    forcedBlocked ||
+    agnosticWorkflowRisk.triggered === true ||
+    hasDestructiveToken ||
+    ["delete", "payment_change"].includes(actionType);
+
+  if (isHard) {
+    return {
+      type: "hard_block_non_overridable",
+      owner_confirmation_can_override: false,
+      safe_next_step: "stop_and_redesign_as_read_only_or_sandboxed_workflow",
+      safe_variant: {
+        id: "read_only_evidence_first",
+        label: "Blocca esecuzione e prepara solo evidence/read-only review",
+        scope: "read_only",
+        limits: ["no_execution", "no_production_write", "no_cross_tenant", "no_bypass"],
+      },
+    };
+  }
+
+  if (policyWarnings.length > 0) {
+    return {
+      type: "correctable_policy_violation",
+      owner_confirmation_can_override: false,
+      safe_next_step: "rewrite_content_then_review_again",
+      safe_variant: {
+        id: "rewrite_claim_safe",
+        label: "Riscrivi eliminando claim o termini vietati, poi rilancia Core",
+        scope: "content_rewrite",
+        limits: ["no_publish_until_rechecked", "keep_original_in_audit"],
+      },
+    };
+  }
+
+  if (warnings.some((warning) => String(warning).includes("owner_confirmation_required"))) {
+    return {
+      type: "owner_confirmable_sensitive_action",
+      owner_confirmation_can_override: true,
+      safe_next_step: "request_owner_confirmation_with_scope_limits",
+      safe_variant: {
+        id: "owner_confirmed_micro_step",
+        label: "Procedi solo come micro-blocco confermato e tracciato",
+        scope: "owner_confirmed_local_or_staged",
+        limits: ["audit_required", "rollback_or_revert_path_required", "no_scope_expansion"],
+      },
+    };
+  }
+
+  return {
+    type: "correctable_risk",
+    owner_confirmation_can_override: true,
+    safe_next_step: "split_into_smaller_audited_step",
+    safe_variant: {
+      id: "micro_block_with_audit",
+      label: "Dividi in micro-blocco, test e audit prima di procedere",
+      scope: "controlled_change",
+      limits: ["small_scope", "test_required", "audit_required"],
+    },
+  };
+}
+
+function businessExplanation({ verdictBase = {}, mode = "advisory", action = {}, warnings = [], tenantPolicy = {}, selectedVariant = null, mediationState = "defer", mediation = null }) {
   const uniqueWarnings = [...new Set(warnings)].slice(0, 8);
   const actionName = text(action.label || action.type || "azione richiesta", "azione richiesta");
   const riskBand = verdictBase.risk?.band || "medium";
@@ -362,6 +456,14 @@ function businessExplanation({ verdictBase = {}, mode = "advisory", action = {},
       why: `Core ha rilevato elementi da correggere prima della pubblicazione o dell'uso operativo.`,
       safe_alternative: "Usare la variante riscritta e mantenere la bozza originale in audit.",
       owner_message: "Conferma owner consigliata se il contenuto impatta clienti, prezzi o claim.",
+    },
+    rewrite_required: {
+      summary: "Azione non eseguibile cosi com'e: Core propone una variante sicura.",
+      why: `Core ha trovato un rischio correggibile su "${actionName}".`,
+      safe_alternative: mediation?.safe_variant?.label || "Riscrivere o ridurre il perimetro, poi rilanciare il gate.",
+      owner_message: mediation?.owner_confirmation_can_override
+        ? "Owner puo confermare solo dopo aver applicato la variante sicura."
+        : "La conferma owner non basta: prima va corretta la richiesta.",
     },
     confirm: {
       summary: "Azione sensibile: serve conferma owner prima di procedere.",
@@ -388,6 +490,12 @@ function businessExplanation({ verdictBase = {}, mode = "advisory", action = {},
       why: uniqueWarnings.length ? `Motivi principali: ${uniqueWarnings.join(", ")}.` : "Core ha rilevato un blocco deterministico.",
       safe_alternative: "Preparare una variante meno rischiosa o passare da workflow manuale controllato.",
       owner_message: "Non procedere senza nuova valutazione Core.",
+    },
+    hard_block: {
+      summary: "Azione bloccata in modo non superabile: rischio distruttivo reale.",
+      why: uniqueWarnings.length ? `Motivi principali: ${uniqueWarnings.join(", ")}.` : "Core ha rilevato un rischio non correggibile con semplice conferma.",
+      safe_alternative: mediation?.safe_variant?.label || "Convertire il lavoro in review read-only, sandbox o nuovo piano non distruttivo.",
+      owner_message: "La conferma owner non sblocca questa forma: serve una richiesta ridisegnata.",
     },
     rollback_required: {
       summary: "Azione possibile solo con rollback documentato.",
@@ -419,16 +527,23 @@ function actionMediation({ payload = {}, mode = "advisory", action = {}, contrac
   const runtime = contextualRuntime(payload);
   const runtimeStatus = text(runtime.status || runtime.health || runtime.state).toLowerCase();
   const hardBlocked = forcedBlocked || (!ownerControlledAllow && (contract.state === "blocked" || contract.control_level === "blocked"));
+  const blockProfile = inferBlockProfile({ payload, action, policyWarnings, agnosticWorkflowRisk, forcedBlocked, warnings });
 
   let state = "defer";
-  if (hardBlocked) {
-    state = "block";
+  if (blockProfile.type === "hard_block_non_overridable") {
+    state = "hard_block";
+  } else if (policyWarnings.length) {
+    state = "rewrite_required";
   } else if (ownerControlledAllow && executionAllowed) {
     state = "allow";
   } else if (ownerControlledAllow && requiresRollbackPlan(payload, action, warnings)) {
     state = "rollback_required";
   } else if (ownerControlledAllow) {
     state = "sandbox";
+  } else if (hardBlocked && blockProfile.type === "owner_confirmable_sensitive_action") {
+    state = "confirm";
+  } else if (hardBlocked) {
+    state = "rewrite_required";
   } else if (requiresRollbackPlan(payload, action, warnings)) {
     state = "rollback_required";
   } else if (mode === "rewrite" && policyWarnings.length) {
@@ -448,18 +563,25 @@ function actionMediation({ payload = {}, mode = "advisory", action = {}, contrac
   return {
     state,
     execution_allowed: state === "allow" && executionAllowed,
-    owner_confirmation_required: ownerControlledAllow ? false : (["confirm", "rewrite", "rollback_required"].includes(state) || requiresOwnerConfirmation),
+    owner_confirmation_required: ownerControlledAllow ? false : (["confirm", "rewrite", "rewrite_required", "rollback_required"].includes(state) || requiresOwnerConfirmation),
     sandbox_required: state === "sandbox",
     rollback_required: state === "rollback_required",
-    rewrite_allowed: state === "rewrite",
-    blocked: state === "block",
+    rewrite_allowed: ["rewrite", "rewrite_required"].includes(state),
+    blocked: ["block", "hard_block"].includes(state),
+    hard_block: state === "hard_block",
+    owner_confirmation_can_override: blockProfile.owner_confirmation_can_override,
+    block_reason_type: blockProfile.type,
+    safe_next_step: blockProfile.safe_next_step,
+    safe_variant: blockProfile.safe_variant,
     next_step:
       state === "allow" ? "execute_with_audit" :
       state === "rewrite" ? "rewrite_then_review" :
+      state === "rewrite_required" ? blockProfile.safe_next_step :
       state === "confirm" ? "request_owner_confirmation" :
       state === "defer" ? "collect_missing_context" :
       state === "sandbox" ? "run_in_sandbox_first" :
       state === "rollback_required" ? "add_rollback_plan" :
+      state === "hard_block" ? "hard_block_redesign_required" :
       "stop_and_redesign",
     recommended_variant: selectedVariant
       ? { id: selectedVariant.id, label: selectedVariant.label, score: selectedVariant.score }
@@ -804,8 +926,8 @@ export function buildAiGatewayVerdict({
   const explanation = businessExplanation({
     verdictBase: {
       risk: {
-        band: forcedBlocked ? "high" : contract.risk_band,
-        score: forcedBlocked ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
+        band: mediation.state === "hard_block" ? "high" : contract.risk_band,
+        score: mediation.state === "hard_block" ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
       },
     },
     mode,
@@ -814,30 +936,33 @@ export function buildAiGatewayVerdict({
     tenantPolicy,
     selectedVariant,
     mediationState: mediation.state,
+    mediation,
   });
+  const hardBlockedFinal = mediation.state === "hard_block";
+  const rewriteRequired = mediation.state === "rewrite_required";
   return {
     schema_version: AI_GATEWAY_SCHEMA_VERSION,
     tenant_id: tenantId,
     key_id: keyRecord?.key_id || null,
     adapter,
     mode,
-    decision_state: hardBlocked
+    decision_state: hardBlockedFinal
       ? "blocked"
       : ownerControlledAllow
         ? "ready"
-        : contract.control_level === "confirm"
+        : (rewriteRequired || contract.control_level === "confirm" || contract.state === "blocked")
             ? "attention"
             : "ready",
-    decision: hardBlocked
+    decision: hardBlockedFinal
       ? "block"
       : ownerControlledAllow
         ? "allow_controlled"
-        : contract.control_level === "confirm"
+        : (rewriteRequired || contract.control_level === "confirm" || contract.state === "blocked")
         ? "review"
         : "allow_advisory",
     risk: {
-      band: forcedBlocked ? "high" : contract.risk_band,
-      score: forcedBlocked ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
+      band: hardBlockedFinal ? "high" : contract.risk_band,
+      score: hardBlockedFinal ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
       reasons: [...new Set(warnings)].slice(0, 30),
     },
     confidence: contract.confidence,
@@ -860,10 +985,13 @@ export function buildAiGatewayVerdict({
       priceAnomaly: action.type.toLowerCase() === "pricing",
       agnosticWorkflowRisk: agnosticWorkflowRisk.triggered,
       agnosticWorkflowFlags: agnosticWorkflowRisk.hits.map((hit) => hit.id),
+      ownerConfirmationCanOverride: mediation.owner_confirmation_can_override,
+      hardBlockNonOverridable: mediation.hard_block === true,
+      safeRewriteAvailable: mediation.rewrite_allowed === true,
     },
-    executionAllowed: forcedBlocked ? false : executionAllowed,
+    executionAllowed: hardBlockedFinal ? false : executionAllowed,
     recommendedVariant: baseRecommendedVariant,
-    requiresOwnerConfirmation: forcedBlocked ? false : requiresOwnerConfirmation,
+    requiresOwnerConfirmation: hardBlockedFinal ? false : requiresOwnerConfirmation,
     action_mediation: mediation,
     explainability: explanation,
     commercial_explanation: explanation.summary,
