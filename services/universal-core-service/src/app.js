@@ -41,7 +41,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.15-customer-intelligence-contract";
+const SERVICE_VERSION = "0.3.16-change-impact-orchestration";
 
 function nowIso() {
   return new Date().toISOString();
@@ -2119,6 +2119,104 @@ function buildBranchPayload(branch, payload = {}) {
       publish_safe_advisory: issues.every((issue) => issue.type !== "claim_risk" && issue.type !== "publish_safety" && issue.severity !== "blocker") && !unsupportedProof && !mixedLanguage,
       rule: "Ramo Testo produce review e suggested action; non salva, non pubblica e non corregge automaticamente.",
     };
+  } else if (branch === "change_impact_orchestration") {
+    const changeType = textValue(data.change_type || data.action_type || data.type, "code_change");
+    const targetSystem = textValue(data.target_system || data.system || data.target, "unknown");
+    const affectedSurfaces = arrayValue(data.affected_surfaces || data.surfaces || data.modules, 50);
+    const changedFiles = arrayValue(data.changed_files || data.files, 100);
+    const declaredTests = arrayValue(data.tests_declared || data.tests || data.verification, 50);
+    const declaredDocs = arrayValue(data.docs_declared || data.docs || data.documentation, 50);
+    const hasRollbackPlan = data.rollback_plan === true || Boolean(textValue(data.rollback_plan_text || data.rollback));
+    const ownerConfirmed = data.owner_confirmation === true || data.owner_confirmed === true;
+    const touchesUi = affectedSurfaces.some((item) => /ui|panel|dashboard|card|frontend|wordpress_admin/i.test(item)) || changedFiles.some((item) => /\.(tsx?|jsx?|css|php)$/i.test(item) && /admin|view|page|component|suite/i.test(item));
+    const touchesRest = affectedSurfaces.some((item) => /rest|api|endpoint|route|payload|schema/i.test(item)) || changedFiles.some((item) => /src\/app|api|route|controller|rest/i.test(item));
+    const touchesSnapshot = affectedSurfaces.some((item) => /snapshot|registry|manual|state/i.test(item));
+    const touchesRelease = affectedSurfaces.some((item) => /zip|version|release|manifest|render|health|package/i.test(item)) || /release|version|zip|render/i.test(changeType);
+    const touchesTenant = affectedSurfaces.some((item) => /tenant|scope|key|permission|policy|role|plan|license/i.test(item));
+    const touchesConnector = affectedSurfaces.some((item) => /connector|codex|smart.?desk|suite|mcp|sdk|webhook/i.test(item));
+    const touchesData = affectedSurfaces.some((item) => /data|customer|client|order|payment|lead|consent/i.test(item));
+    const requiredActions = new Set(["record_core_audit", "declare_affected_surfaces"]);
+    const testsRequired = new Set(["smoke_test"]);
+    const docsRequired = new Set();
+    const blockedUntil = new Set();
+
+    if (!affectedSurfaces.length) blockedUntil.add("affected_surfaces_declared");
+    if (touchesUi) {
+      requiredActions.add("update_ui_contract");
+      requiredActions.add("verify_rest_snapshot_pairing");
+      testsRequired.add("ui_smoke_or_panel_preflight");
+      docsRequired.add("manual_how_to_use");
+    }
+    if (touchesRest) {
+      requiredActions.add("verify_api_contract");
+      testsRequired.add("endpoint_contract_test");
+      blockedUntil.add("connector_contract_review");
+    }
+    if (touchesSnapshot) {
+      requiredActions.add("update_snapshot_map");
+      docsRequired.add("map_snapshot");
+      testsRequired.add("snapshot_readiness_check");
+    }
+    if (touchesRelease) {
+      requiredActions.add("prepare_versioned_artifact");
+      requiredActions.add("verify_health_after_publish");
+      testsRequired.add("package_preflight");
+      blockedUntil.add("rollback_plan");
+    }
+    if (touchesTenant) {
+      requiredActions.add("verify_tenant_policy");
+      requiredActions.add("verify_key_scope");
+      testsRequired.add("permission_scope_test");
+      blockedUntil.add("owner_confirmation");
+    }
+    if (touchesConnector) {
+      requiredActions.add("verify_connector_payload");
+      requiredActions.add("run_connector_doctor");
+      testsRequired.add("connector_doctor");
+    }
+    if (touchesData) {
+      requiredActions.add("verify_data_isolation");
+      requiredActions.add("verify_consent_or_scope");
+      blockedUntil.add("tenant_scope_check");
+    }
+    if (!declaredTests.length) blockedUntil.add("tests_declared");
+    if (!hasRollbackPlan && (touchesRelease || touchesRest || touchesTenant || touchesData)) blockedUntil.add("rollback_plan");
+    if (!ownerConfirmed && (touchesRelease || touchesTenant || touchesData)) blockedUntil.add("owner_confirmation");
+    if (docsRequired.size && !declaredDocs.length) blockedUntil.add("docs_impact_declared");
+
+    const impactScore = Math.min(100, affectedSurfaces.length * 7 + changedFiles.length * 2 + blockedUntil.size * 10 + (touchesTenant ? 15 : 0) + (touchesData ? 15 : 0) + (touchesRelease ? 12 : 0));
+    const readinessScore = clampScore(100 - impactScore + declaredTests.length * 5 + declaredDocs.length * 4 + (hasRollbackPlan ? 10 : 0) + (ownerConfirmed ? 8 : 0), 50);
+    addSignal("cascade_impact", "Ampiezza impatto a cascata", impactScore, "change_impact", ["cascade"]);
+    addSignal("readiness", "Readiness modifica controllata", readinessScore, "change_impact", ["readiness"]);
+    addSignal("blocked_until", "Blocchi prima dell'esecuzione", Math.min(100, blockedUntil.size * 18), "governance", ["blockers"]);
+    branchOutput = {
+      mode: "impact_plan_only",
+      change_type: changeType,
+      target_system: targetSystem,
+      affected_surfaces: affectedSurfaces,
+      subbranches_used: [
+        "dependency_impact_scan",
+        "compatibility_guard",
+        "documentation_impact",
+        "test_impact",
+        "release_impact",
+        "tenant_policy_impact",
+        "connector_contract_impact",
+        "rollback_impact",
+        "audit_evidence_impact",
+      ],
+      required_actions: [...requiredActions],
+      tests_required: [...testsRequired],
+      docs_required: [...docsRequired],
+      blocked_until: [...blockedUntil],
+      release_required: touchesRelease,
+      rollback_required: touchesRelease || touchesRest || touchesTenant || touchesData,
+      owner_confirmation_required: touchesRelease || touchesTenant || touchesData,
+      audit_required: true,
+      execution_allowed: false,
+      nyra_explanation_contract: "Spiegare in linguaggio umano cosa cambia, perche serve, cosa blocca e quale primo passo sblocca il lavoro.",
+      rule: "Questo ramo non esegue modifiche: produce il piano di impatto che Codex deve rispettare prima di implementare.",
+    };
   } else if (branch === "nyra_finance_beauty_test") {
     const beta = clampScore(data.beauty_market_correlation ?? data.correlation_score ?? 40);
     const volatility = clampScore(data.volatility ?? data.market_volatility ?? 50);
@@ -3231,6 +3329,14 @@ export function createUniversalCoreService(options = {}) {
         ...result.automation_plan,
         execution_allowed: false,
         next_step: "Preparare runbook/evidence e chiedere conferma owner prima di ogni scrittura reale.",
+      },
+      core_branch_diagnostics: {
+        ...(result.core_branch_diagnostics || {}),
+        branch_router_used: true,
+        actual_selected_branches: branchContext.selected_branches,
+        actual_denied_branches: branchContext.denied_branches,
+        actual_selected_groups: branchContext.selected_groups,
+        actual_denied_groups: branchContext.denied_groups,
       },
     };
     audit.append("core_nira_bridge_evaluated", {

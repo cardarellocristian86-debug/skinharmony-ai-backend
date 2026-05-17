@@ -391,6 +391,7 @@ try {
   assert(branches.json.branches?.legal_privacy_compliance_guard?.production_status === "advisory", "legal privacy branch missing");
   assert(branches.json.branches?.agent_orchestration_guard?.production_status === "advisory", "agent orchestration branch missing");
   assert(branches.json.branches?.runtime_deployment_scaling_guard?.production_status === "advisory", "runtime deployment branch missing");
+  assert(branches.json.branches?.change_impact_orchestration?.subbranches?.includes("rollback_impact"), "change impact orchestration branch missing");
   assert(branches.json.branches?.paid_ads_guard?.production_status === "advisory", "paid ads guard branch missing");
   assert(branches.json.branches?.lifecycle_crm_guard?.production_status === "advisory", "lifecycle CRM guard branch missing");
   assert(branches.json.branches?.customer_behavior_analysis?.production_status === "advisory", "customer behavior branch missing");
@@ -418,10 +419,12 @@ try {
   assert(branches.json.groups?.smartdesk_vertical?.branches?.includes("smartdesk_operations_guard"), "smartdesk vertical group missing operations");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("codex_wordpress_platform_guard"), "platform engineering group missing wordpress guard");
   assert(branches.json.groups?.platform_engineering?.branches?.includes("runtime_deployment_scaling_guard"), "platform engineering group missing runtime guard");
+  assert(branches.json.groups?.platform_engineering?.branches?.includes("change_impact_orchestration"), "platform engineering group missing change impact");
   assert(branches.json.groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group missing site factory guard");
   assert(branches.json.groups?.business_governance?.branches?.includes("commerce_fulfillment_guard"), "business governance group missing commerce guard");
   assert(branches.json.groups?.security_defense?.branches?.includes("legal_privacy_compliance_guard"), "security defense group missing legal guard");
   assert(branches.json.groups?.automation_control?.branches?.includes("agent_orchestration_guard"), "automation control group missing agent guard");
+  assert(branches.json.groups?.automation_control?.branches?.includes("change_impact_orchestration"), "automation control group missing change impact");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), groups: Object.keys(branches.json.groups), tenant_package: branches.json.tenant_package });
@@ -1620,6 +1623,28 @@ try {
   mark("branch_nyra_finance_test", true, {
     mode: financeTestBranch.json.guardrail.mode,
     production_connected: financeTestBranch.json.branch_output.production_connected,
+  });
+
+  const changeImpactBranch = await api(base, "POST", "/v1/branches/change_impact_orchestration/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      change_type: "suite_plugin_feature",
+      target_system: "wordpress_suite",
+      affected_surfaces: ["wordpress_admin_ui", "rest_api", "snapshot", "manuals", "zip_release", "codex_connector", "tenant_policy"],
+      changed_files: ["wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php"],
+      tests_declared: ["suite_plugin_smoke", "zip_preflight"],
+      docs_declared: ["manual_how_to_use"],
+      rollback_plan: true,
+      owner_confirmation: true,
+    },
+  }, codexKey);
+  assert(changeImpactBranch.status === 200 && changeImpactBranch.json.branch_output?.subbranches_used?.includes("connector_contract_impact"), "change impact branch failed");
+  assert(changeImpactBranch.json.branch_output?.required_actions?.includes("run_connector_doctor"), "change impact connector action missing");
+  assert(changeImpactBranch.json.branch_output?.rollback_required === true, "change impact rollback requirement missing");
+  mark("branch_change_impact_orchestration", true, {
+    required_actions: changeImpactBranch.json.branch_output.required_actions,
+    tests_required: changeImpactBranch.json.branch_output.tests_required,
+    blocked_until: changeImpactBranch.json.branch_output.blocked_until,
   });
 
   const snapshotWrite = await api(base, "POST", "/v1/snapshot", {

@@ -45,6 +45,7 @@ import { branchBrandDistributorNetworkGuard } from "./branch-brand-distributor-n
 import { branchProductInventoryGuard } from "./branch-product-inventory-guard.js";
 import { branchSmartDeskOperationsGuard } from "./branch-smartdesk-operations-guard.js";
 import { branchBeautyProtocolGuard } from "./branch-beauty-protocol-guard.js";
+import { branchChangeImpactOrchestration } from "./branch-change-impact-orchestration.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -94,6 +95,7 @@ const BRANCHES = [
   branchProductInventoryGuard,
   branchSmartDeskOperationsGuard,
   branchBeautyProtocolGuard,
+  branchChangeImpactOrchestration,
 ];
 
 const CODEX_GUARD_BRANCHES = [
@@ -114,6 +116,7 @@ const CODEX_GUARD_BRANCHES = [
   "legal_privacy_compliance_guard",
   "agent_orchestration_guard",
   "runtime_deployment_scaling_guard",
+  "change_impact_orchestration",
 ];
 
 const MARKETING_INTELLIGENCE_BRANCHES = [
@@ -166,6 +169,7 @@ export const BRANCH_GROUPS = Object.freeze({
       "data_integration_orchestration",
       "observability_roi_guard",
       "runtime_deployment_scaling_guard",
+      "change_impact_orchestration",
     ],
   },
   site_factory: {
@@ -196,7 +200,7 @@ export const BRANCH_GROUPS = Object.freeze({
   automation_control: {
     label: "Automation Control",
     description: "Codex, agenti, runbook, audit, action mediation, deploy e ROI delle automazioni.",
-    branches: ["agent_orchestration_guard", "observability_roi_guard", "runtime_deployment_scaling_guard", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
+    branches: ["agent_orchestration_guard", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
   },
   nyra_interpretation: {
     label: "Nyra Interpretation Layer",
@@ -212,7 +216,7 @@ export const BRANCH_PACKAGES = Object.freeze({
   silver: ["front_desk_base", "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
   gold: ["front_desk_base", "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
   network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
-  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
+  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
   internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", ...CODEX_GUARD_BRANCHES],
   codex_guard: CODEX_GUARD_BRANCHES,
 });
@@ -246,6 +250,7 @@ export function deterministicBranchRegistry() {
         tier: branch.tier,
         production_status: branch.production_status,
         description: branch.description,
+        subbranches: branch.subbranches || [],
         file: branch.file,
       },
     ]),
