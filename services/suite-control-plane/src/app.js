@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const SERVICE_VERSION = "0.3.3-ecosystem-tracks";
+const SERVICE_VERSION = "0.3.4-control-plane-readiness";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const RUNBOOK_CATALOG = [
   {
@@ -129,6 +129,67 @@ function sanitizeId(value, fallbackPrefix) {
   const raw = String(value || "").trim();
   const cleaned = raw.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120);
   return cleaned || `${fallbackPrefix}_${crypto.randomUUID()}`;
+}
+
+
+function uniqueValues(values) {
+  return [...new Set(values.map(String).map((item) => item.trim()).filter(Boolean))];
+}
+
+function nodeReadiness(node) {
+  const capabilities = Array.isArray(node?.latest_heartbeat?.capabilities) ? node.latest_heartbeat.capabilities : [];
+  const validation = node?.latest_snapshot?.validation || {};
+  const controlPlane = node?.latest_snapshot?.control_plane || {};
+  const checks = {
+    heartbeat: Boolean(node?.latest_heartbeat),
+    snapshot: Boolean(node?.latest_snapshot),
+    evidence: Number(node?.evidence_count || 0) > 0,
+    change_impact_contract: Boolean(node?.latest_snapshot?.change_impact_orchestration),
+    manifest_integrity: validation.manifest_integrity_ready === true,
+    runbook_receiver: capabilities.includes("runbook_receiver") || controlPlane.runbook_receiver_ready === true,
+    core_bridge: capabilities.includes("control_plane") || controlPlane.core_bridge_ready === true,
+  };
+  const missing = Object.entries(checks)
+    .filter(([, ready]) => !ready)
+    .map(([key]) => key);
+  const criticalIssues = Array.isArray(validation.critical_issues)
+    ? validation.critical_issues.map(String).filter(Boolean)
+    : [];
+
+  return {
+    status: criticalIssues.length ? "blocked" : missing.length ? "warning" : "ready",
+    score: Math.round((Object.values(checks).filter(Boolean).length / Object.keys(checks).length) * 100),
+    checks,
+    missing,
+    critical_issues: criticalIssues,
+    next_actions: [
+      ...(checks.heartbeat ? [] : ["send_node_heartbeat"]),
+      ...(checks.snapshot ? [] : ["send_node_snapshot"]),
+      ...(checks.change_impact_contract ? [] : ["attach_change_impact_contract"]),
+      ...(checks.manifest_integrity ? [] : ["verify_release_manifest_integrity"]),
+      ...(checks.runbook_receiver ? [] : ["enable_runbook_receiver_capability"]),
+      ...(checks.core_bridge ? [] : ["verify_core_bridge_capability"]),
+      ...(checks.evidence ? [] : ["write_first_core_evidence"]),
+    ],
+  };
+}
+
+function summarizeEvidence(events = []) {
+  const byType = {};
+  const byDecision = {};
+  const byRisk = {};
+  for (const event of events) {
+    byType[event.evidence_type] = (byType[event.evidence_type] || 0) + 1;
+    if (event.decision) byDecision[event.decision] = (byDecision[event.decision] || 0) + 1;
+    if (event.risk) byRisk[event.risk] = (byRisk[event.risk] || 0) + 1;
+  }
+  return {
+    total: events.length,
+    by_type: byType,
+    by_decision: byDecision,
+    by_risk: byRisk,
+    latest: events.slice(0, 10),
+  };
 }
 
 function getRunbook(runbookId) {
@@ -289,7 +350,7 @@ function createMemoryStorage(options = {}) {
         site_url: payload.site_url || null,
         capabilities: Array.isArray(payload.capabilities) ? payload.capabilities.map(String) : [],
         health: payload.health && typeof payload.health === "object" ? payload.health : {},
-      };
+      },
       appendNodeEvent(node, "heartbeat", node.latest_heartbeat);
       emitChange();
       return node;
@@ -303,6 +364,7 @@ function createMemoryStorage(options = {}) {
         summary: payload.summary && typeof payload.summary === "object" ? payload.summary : {},
         control_plane: payload.control_plane && typeof payload.control_plane === "object" ? payload.control_plane : {},
         validation: payload.validation && typeof payload.validation === "object" ? payload.validation : {},
+        change_impact_orchestration: payload.change_impact_orchestration && typeof payload.change_impact_orchestration === "object" ? payload.change_impact_orchestration : null,
       };
       appendNodeEvent(node, "snapshot", node.latest_snapshot);
       emitChange();
@@ -426,6 +488,69 @@ function createMemoryStorage(options = {}) {
           .sort((a, b) => String(b.last_seen_at || "").localeCompare(String(a.last_seen_at || ""))),
       };
     },
+    tenantDashboard(tenantId) {
+      const tenantKey = sanitizeId(tenantId, "tenant");
+      const tenantNodes = Array.from(nodes.values()).filter((node) => node.tenant_id === tenantKey);
+      const tenantEvidence = evidence.filter((item) => item.tenant_id === tenantKey);
+      const readiness = tenantNodes.map((node) => ({
+        node_id: node.node_id,
+        tenant_id: node.tenant_id,
+        status: node.status,
+        runtime_mode: node.runtime_mode,
+        topology: node.topology,
+        last_seen_at: node.last_seen_at,
+        heartbeat_count: node.heartbeat_count,
+        snapshot_count: node.snapshot_count,
+        evidence_count: node.evidence_count,
+        runbook_artifact_count: node.runbook_artifact_count || 0,
+        readiness: nodeReadiness(node),
+      }));
+      const blocked = readiness.filter((item) => item.readiness.status === "blocked").length;
+      const warnings = readiness.filter((item) => item.readiness.status === "warning").length;
+      const ready = readiness.filter((item) => item.readiness.status === "ready").length;
+      return {
+        tenant_id: tenantKey,
+        generated_at: nowIso(),
+        nodes_total: tenantNodes.length,
+        nodes_online: tenantNodes.filter((node) => node.status === "online").length,
+        readiness_status: blocked ? "blocked" : warnings || !tenantNodes.length ? "warning" : "ready",
+        readiness_summary: {
+          ready,
+          warning: warnings,
+          blocked,
+          average_score: readiness.length
+            ? Math.round(readiness.reduce((sum, item) => sum + item.readiness.score, 0) / readiness.length)
+            : 0,
+        },
+        next_actions: uniqueValues(readiness.flatMap((item) => item.readiness.next_actions)),
+        nodes: readiness.sort((a, b) => String(b.last_seen_at || "").localeCompare(String(a.last_seen_at || ""))),
+        evidence: summarizeEvidence(tenantEvidence),
+      };
+    },
+    controlPlaneDashboard() {
+      const tenantIds = uniqueValues(Array.from(nodes.values()).map((node) => node.tenant_id));
+      const tenants = tenantIds.map((tenantId) => this.tenantDashboard(tenantId));
+      const blocked = tenants.filter((tenant) => tenant.readiness_status === "blocked").length;
+      const warnings = tenants.filter((tenant) => tenant.readiness_status === "warning").length;
+      const ready = tenants.filter((tenant) => tenant.readiness_status === "ready").length;
+      return {
+        generated_at: nowIso(),
+        mode: "control_plane_first",
+        execution_allowed: false,
+        positioning: "Suite Control Plane read-only: stato tenant, nodi, Core bridge, evidence e readiness senza esecuzione automatica.",
+        totals: {
+          tenants: tenants.length,
+          nodes: Array.from(nodes.values()).length,
+          evidence: evidence.length,
+          ready,
+          warning: warnings,
+          blocked,
+        },
+        next_actions: uniqueValues(tenants.flatMap((tenant) => tenant.next_actions)),
+        tenants,
+      };
+    }
+
   };
 }
 
@@ -566,6 +691,36 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       overview: storage.overview(),
+    });
+  });
+
+
+  app.get("/api/suite/control-plane/dashboard", auth, (req, res) => {
+    const dashboard = storage.controlPlaneDashboard();
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      dashboard: {
+        ...dashboard,
+        tenants: dashboard.tenants.map((tenant) => ({
+          ...tenant,
+          core_bridge: coreClient.status(),
+        })),
+      },
+    });
+  });
+
+  app.get("/api/suite/tenants/:tenantId/dashboard", auth, (req, res) => {
+    const dashboard = storage.tenantDashboard(req.params.tenantId);
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      dashboard: {
+        ...dashboard,
+        core_bridge: coreClient.status(),
+      },
     });
   });
 

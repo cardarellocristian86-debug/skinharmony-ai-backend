@@ -20,6 +20,8 @@ Il plugin resta UI locale + receiver controllato. Universal Core resta il gate d
 GET  /health
 GET  /api/suite/overview
 GET  /api/suite/ecosystem/tracks
+GET  /api/suite/control-plane/dashboard
+GET  /api/suite/tenants/:tenantId/dashboard
 POST /api/suite/nodes/heartbeat
 POST /api/suite/nodes/snapshot
 POST /api/suite/evidence
@@ -32,6 +34,8 @@ POST /api/suite/runbooks/artifacts
 GET  /api/suite/nodes/:nodeId/runbook-artifacts
 GET  /api/suite/nodes/:nodeId/dashboard
 ```
+
+`/api/suite/control-plane/dashboard` e `/api/suite/tenants/:tenantId/dashboard` sono viste read-only per chiudere la slice `control_plane_first`: stato tenant, nodi, readiness, bridge Core, evidence e prossime azioni. Non eseguono automazioni e non modificano chiavi, tenant o produzione.
 
 `/api/suite/ecosystem/tracks` tiene separati i due binari del prodotto:
 

@@ -83,6 +83,14 @@ try {
       tenant_id: "tenant_demo",
       summary: { plugin_version: "5.1.12", runtime_mode: "shared_render" },
       validation: { manifest_integrity_ready: true },
+      change_impact_orchestration: {
+        schema_version: "skinharmony_change_impact_contract_v1",
+        enabled: true,
+        core_branch: "change_impact_orchestration",
+        automation_level: "assisted_owner_confirm",
+        required_actions_count: 9,
+        tests_required_count: 6,
+      },
     }),
   });
   assert.equal(snapshot.response.status, 200);
@@ -102,6 +110,24 @@ try {
   });
   assert.equal(evidence.response.status, 200);
   assert.match(evidence.body.evidence_id, /^evidence_/);
+
+  const controlPlaneDashboard = await request("/api/suite/control-plane/dashboard", { headers });
+  assert.equal(controlPlaneDashboard.response.status, 200);
+  assert.equal(controlPlaneDashboard.body.dashboard.execution_allowed, false);
+  assert.equal(controlPlaneDashboard.body.dashboard.totals.tenants, 1);
+  assert.equal(controlPlaneDashboard.body.dashboard.totals.nodes, 1);
+  assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].tenant_id, "tenant_demo");
+  assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].core_bridge.configured, true);
+  assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].readiness_status, "ready");
+  assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].readiness_summary.average_score, 100);
+
+  const tenantDashboard = await request("/api/suite/tenants/tenant_demo/dashboard", { headers });
+  assert.equal(tenantDashboard.response.status, 200);
+  assert.equal(tenantDashboard.body.dashboard.tenant_id, "tenant_demo");
+  assert.equal(tenantDashboard.body.dashboard.core_bridge.configured, true);
+  assert.equal(tenantDashboard.body.dashboard.evidence.total, 1);
+  assert.equal(tenantDashboard.body.dashboard.evidence.by_type.core_gate, 1);
+  assert.equal(tenantDashboard.body.dashboard.nodes[0].readiness.status, "ready");
 
   const runbooks = await request("/api/suite/runbooks", { headers });
   assert.equal(runbooks.response.status, 200);
