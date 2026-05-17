@@ -1414,6 +1414,17 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
+app.get("/api/ai-gold/change-impact-contract", requirePlan("gold"), (req, res) => {
+  sendCoreliaSafe(res, () => ({
+    enabled: false,
+    source: "corelia_fallback",
+    mode: "read_only_domino_guard",
+    executionAllowed: false,
+    ownerConfirmationRequired: true,
+    message: "Contratto effetto domino non disponibile nel fallback."
+  }), () => service.getChangeImpactContract(req.session));
+});
+
 app.get("/api/ai-gold/customer-intelligence", requirePlan("gold"), async (req, res) => {
   try {
     const payload = service.buildCustomerIntelligenceCorePayload(req.session);

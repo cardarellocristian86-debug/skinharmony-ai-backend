@@ -70,6 +70,44 @@ const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
+const CHANGE_IMPACT_CONTRACT = Object.freeze({
+  schemaVersion: "skinharmony_change_impact_contract_v1",
+  enabled: true,
+  source: "suite_5_1_41_change_impact_orchestration",
+  coreBranch: "change_impact_orchestration",
+  mode: "read_only_domino_guard",
+  automationLevel: "assisted_owner_confirm",
+  ownerConfirmationRequired: true,
+  executionAllowed: false,
+  rollbackRequired: true,
+  smartDeskSurface: "ai_gold",
+  requiredScope: "impact_review",
+  requiredActions: Object.freeze([
+    "read_current_state",
+    "classify_affected_surfaces",
+    "check_plan_permissions",
+    "check_core_branches",
+    "check_suite_connector_contract",
+    "check_smartdesk_gold_contract",
+    "prepare_tests",
+    "prepare_rollback",
+    "wait_owner_confirmation"
+  ]),
+  testsRequired: Object.freeze([
+    "node --check smartdesk-live/server.js",
+    "node --check smartdesk-live/src/DesktopMirrorService.js",
+    "node --check smartdesk-live/public/assets/gold-bridge.js",
+    "curl /api/ai-gold/capabilities",
+    "curl /api/ai-gold/decision-context",
+    "curl /api/ai-gold/change-impact-contract"
+  ]),
+  blockedUntil: Object.freeze([
+    "core_or_owner_confirms_sensitive_change",
+    "affected_services_are_identified",
+    "rollback_path_is_known",
+    "tests_are_defined"
+  ])
+});
 
 const ANALYTICS_BLOCKS = {
   CLIENTS_QUALITY: "clientsQuality",
@@ -10644,12 +10682,14 @@ class DesktopMirrorService {
       decisionMatrixVersion: "universal_core_decision_matrix_v1",
       engineName: "Universal Core",
       runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
+      changeImpactContract: this.getChangeImpactContract(session),
       progressiveIntelligence,
       features: {
         hasDecisionMatrix: goldEnabled,
         hasRiskModel: silverCoreEnabled,
         hasCoreSignals: silverCoreEnabled,
         hasCoreReadOnlyPriorities: silverCoreEnabled,
+        hasChangeImpactGuard: true,
         hasEconomicEngine: goldEnabled && hasFeature("margin_analysis"),
         hasSimulation: goldEnabled && hasFeature("forecast_scenarios"),
         hasLearning: goldEnabled && progressiveIntelligence?.activationLevel >= 3,
@@ -10691,6 +10731,20 @@ class DesktopMirrorService {
           blockedFeatures: progressiveIntelligence?.blockedFeatures || []
         }
       }
+    };
+  }
+
+  getChangeImpactContract(session = null) {
+    this.assertCanOperate(session);
+    const plan = this.getPlanLevel(session);
+    return {
+      ...CHANGE_IMPACT_CONTRACT,
+      currentPlan: plan,
+      generatedAt: nowIso(),
+      requiredActionsCount: CHANGE_IMPACT_CONTRACT.requiredActions.length,
+      testsRequiredCount: CHANGE_IMPACT_CONTRACT.testsRequired.length,
+      readableSummary: "Prima di una modifica sensibile Smart Desk legge impatto, superfici coinvolte, test e rollback. L'esecuzione resta bloccata finche owner/Core non confermano.",
+      smartDeskRule: "AI Gold puo suggerire e spiegare l'effetto domino, ma non esegue modifiche automatiche."
     };
   }
 
@@ -11073,6 +11127,7 @@ class DesktopMirrorService {
         primaryPromoted: shadowValidated.promoted,
         primaryReason: shadowValidated.reason
       },
+      changeImpactContract: this.getChangeImpactContract(session),
       lastUpdate: snapshot.generatedAt || nowIso(),
       decisionMatrixVersion: capabilities.decisionMatrixVersion,
       goldEngineVersion: snapshot.goldEngine?.engineVersion || capabilities.goldEngineVersion,

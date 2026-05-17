@@ -291,6 +291,15 @@
     return "Rischio bassa";
   }
 
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   function removePanel() {
     const existing = document.getElementById(PANEL_ID);
     if (existing) existing.remove();
@@ -428,6 +437,7 @@
     const readiness = customerIntelligence?.readiness || null;
     const localSummary = customerIntelligence?.localSummary || {};
     const customerSchema = customerContract?.schema_version || "";
+    const changeImpact = context?.changeImpactContract || capabilities?.changeImpactContract || null;
     const nextStep = readiness?.next_step || "waiting_for_core";
     const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
 
@@ -470,7 +480,18 @@
         ${blocked.length ? `
           <div class="gold-bridge-item">
             <div class="gold-bridge-item-title">Blocked actions</div>
-            <div class="gold-bridge-item-subtitle">${blocked.join(" · ")}</div>
+            <div class="gold-bridge-item-subtitle">${blocked.map((item) => escapeHtml(item.label || item.domain || item)).join(" · ")}</div>
+          </div>
+        ` : ""}
+        ${changeImpact?.enabled ? `
+          <div class="gold-bridge-item">
+            <div class="gold-bridge-item-title">Effetto domino attivo</div>
+            <div class="gold-bridge-item-subtitle">
+              Branch ${escapeHtml(changeImpact.coreBranch || "change_impact_orchestration")} ·
+              ${Number(changeImpact.requiredActionsCount || changeImpact.requiredActions?.length || 0)} controlli ·
+              ${Number(changeImpact.testsRequiredCount || changeImpact.testsRequired?.length || 0)} test ·
+              conferma owner richiesta
+            </div>
           </div>
         ` : ""}
         ${customerSchema ? `
