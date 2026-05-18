@@ -632,7 +632,7 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/", (_req, res) => {
-  res.sendFile(path.join(publicDir, "preview-shell", "index.html"));
+  res.sendFile(path.join(publicDir, "index.html"));
 });
 
 app.get("/legacy-live", (_req, res) => {
