@@ -249,9 +249,135 @@ function inventoryMovementLabel(type) {
   return t("inventoryView.movementLoad");
 }
 
+function goldPreviewFallback() {
+  const dashboard = state.dashboard || {};
+  const marketingQueue = goldMarketingQueue();
+  const cashAlerts = cashdeskClosedSessionsToVerify().length;
+  const waiting = Number(dashboard.summary?.waiting || 0);
+  const alerts = Array.isArray(dashboard.alerts) ? dashboard.alerts : [];
+
+  let primaryAction = {
+    label: t("aiGoldView.monitorCenter"),
+    action: "MONITOR",
+    domain: "center",
+    score: 0.38
+  };
+  let explanationShort = t("aiGoldView.needMoreData");
+  let risk = { score: 0.28, band: "low" };
+
+  if (cashAlerts > 0) {
+    primaryAction = {
+      label: currentLanguage() === "en" ? "Verify daily cash flow" : "Verifica la cassa del giorno",
+      action: "VERIFY_CASHDESK",
+      domain: "cashdesk",
+      score: 0.82
+    };
+    explanationShort = currentLanguage() === "en"
+      ? "There are completed sessions without an evident linked payment in the selected day."
+      : "Ci sono sedute chiuse senza un pagamento evidente collegato nella giornata selezionata.";
+    risk = { score: 0.74, band: "medium" };
+  } else if (marketingQueue.length > 0) {
+    primaryAction = {
+      label: currentLanguage() === "en" ? "Review the recall queue" : "Rivedi la coda recall",
+      action: "REVIEW_RECALL_QUEUE",
+      domain: "growth",
+      score: 0.76
+    };
+    explanationShort = currentLanguage() === "en"
+      ? "There are clients with consent and operational recall priority ready for review."
+      : "Ci sono clienti con consenso e priorita recall operativa pronti da rivedere.";
+    risk = { score: 0.56, band: "medium" };
+  } else if (waiting > 0) {
+    primaryAction = {
+      label: currentLanguage() === "en" ? "Reorder agenda confirmations" : "Riordina le conferme agenda",
+      action: "CHECK_AGENDA_CONFIRMATIONS",
+      domain: "operations",
+      score: 0.64
+    };
+    explanationShort = currentLanguage() === "en"
+      ? "There are open confirmations in the current operational reading."
+      : "Ci sono conferme aperte nella lettura operativa corrente.";
+    risk = { score: 0.44, band: "medium" };
+  } else if (alerts.length > 0) {
+    primaryAction = {
+      label: currentLanguage() === "en" ? "Review center alerts" : "Rivedi gli alert del centro",
+      action: "REVIEW_CENTER_ALERTS",
+      domain: "profitability",
+      score: 0.58
+    };
+    explanationShort = String(alerts[0] || t("aiGoldView.needMoreData"));
+    risk = { score: 0.41, band: "medium" };
+  } else {
+    explanationShort = currentLanguage() === "en"
+      ? "Preview mode: Gold is reading the current center signals without using protected Gold endpoints."
+      : "Modalita preview: Gold legge i segnali correnti del centro senza usare gli endpoint Gold protetti.";
+  }
+
+  const secondaryActions = [
+    marketingQueue.length > 0 ? {
+      label: currentLanguage() === "en" ? "Open clients to review recall" : "Apri clienti per rivedere i recall",
+      domain: "clients",
+      action: "OPEN_CLIENTS_RECALL",
+      score: 0.67
+    } : null,
+    waiting > 0 ? {
+      label: currentLanguage() === "en" ? "Open agenda" : "Apri agenda",
+      domain: "operations",
+      action: "OPEN_AGENDA",
+      score: 0.61
+    } : null,
+    cashAlerts > 0 ? {
+      label: currentLanguage() === "en" ? "Open cash desk" : "Apri cassa",
+      domain: "cashdesk",
+      action: "OPEN_CASHDESK",
+      score: 0.72
+    } : null
+  ].filter(Boolean);
+
+  return {
+    capabilities: {
+      ok: true,
+      plan: "gold",
+      aiGoldEnabled: true,
+      canSuggestActions: true,
+      canExecuteAction: false,
+      requiresConfirmation: true,
+      blocked: false,
+      primaryAction,
+      secondaryActions,
+      blockedActions: [],
+      risk,
+      confidence: 0.62,
+      previewMode: true
+    },
+    context: {
+      source: "preview_gold_fallback",
+      plan: "gold",
+      stateVersion: "preview_fallback_v1",
+      updatedAt: new Date().toISOString(),
+      primaryAction,
+      secondaryActions,
+      blockedActions: [],
+      explanationShort,
+      confidence: 0.62,
+      risk,
+      signals: {
+        openConfirmations: waiting,
+        recallQueue: marketingQueue.length,
+        cashSessionsToVerify: cashAlerts,
+        alerts: alerts.length
+      },
+      snapshots: {
+        business: dashboard
+      }
+    }
+  };
+}
+
 function renderAiGoldPriority() {
-  const context = state.goldDecisionContext;
-  const capabilities = state.goldCapabilities;
+  const fallback = goldPreviewFallback();
+  const context = state.goldDecisionContext || fallback.context;
+  const capabilities = state.goldCapabilities || fallback.capabilities;
   if (!context || !capabilities) {
     return `
       <section class="card">
@@ -316,8 +442,9 @@ function renderAiGoldPriority() {
 }
 
 function renderAiGoldRoom() {
-  const context = state.goldDecisionContext;
-  const capabilities = state.goldCapabilities;
+  const fallback = goldPreviewFallback();
+  const context = state.goldDecisionContext || fallback.context;
+  const capabilities = state.goldCapabilities || fallback.capabilities;
   if (!context || !capabilities) {
     return `
       <section class="card">
@@ -346,6 +473,7 @@ function renderAiGoldRoom() {
           </div>
           <div class="hero-badges">
             <div class="module-pill active">${t("aiGoldView.roleBadge")}</div>
+            ${capabilities.previewMode ? `<div class="module-pill">${currentLanguage() === "en" ? "Preview mode" : "Modalita preview"}</div>` : ""}
             <button class="sh-button secondary-btn" data-view-link="dashboard" type="button">${t("aiGoldView.backToDashboard")}</button>
           </div>
         </div>
