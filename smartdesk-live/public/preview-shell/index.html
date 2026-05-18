@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Smart Desk Web</title>
+    <meta name="theme-color" content="#69D3F0">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icons/smartdesk-icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css?v=20260518-preview-shell">
+    <style>
+      #open-assistant,
+      #assistant-drawer {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="web-shell">
+      <header class="topbar web-topbar">
+        <div class="topbar-main">
+          <div class="topbar-brandline">
+            <div class="brand-mark">SH</div>
+            <div>
+              <h1 id="center-name" class="page-title">Ecosistema Center</h1>
+              <p id="center-subtitle" class="page-subtitle">Advanced Aesthetic Systems · shell web allineata alla desktop</p>
+            </div>
+          </div>
+          <nav class="topbar-nav" aria-label="Navigazione">
+            <button class="sh-button active-btn" data-view="ecosystem" type="button">Ecosistema</button>
+            <button class="sh-button secondary-btn" data-view="dashboard" type="button">Dashboard</button>
+            <button class="sh-button secondary-btn" data-view="ai-gold" type="button">AI Gold</button>
+            <button class="sh-button secondary-btn" data-view="marketing" type="button">Marketing</button>
+            <button class="sh-button secondary-btn" data-view="appointments" type="button">Agenda</button>
+            <button class="sh-button secondary-btn" data-view="cashdesk" type="button">Cassa</button>
+            <button class="sh-button secondary-btn" data-view="inventory" type="button">Magazzino</button>
+            <button class="sh-button secondary-btn" data-view="profitability" type="button">Redditivita</button>
+            <button class="sh-button secondary-btn" data-view="reports" type="button">Report</button>
+            <button class="sh-button secondary-btn" data-view="clients" type="button">Clienti</button>
+            <button class="sh-button secondary-btn" data-view="services" type="button">Servizi</button>
+            <button class="sh-button secondary-btn" data-view="protocols" type="button">Protocolli</button>
+            <button class="sh-button secondary-btn" data-view="settings" type="button">Impostazioni</button>
+          </nav>
+        </div>
+        <div class="row gap-8">
+          <label class="topbar-language-picker">
+            <span id="language-label">Lingua</span>
+            <select id="language-select" class="sh-input topbar-language-select">
+              <option value="it">Italiano</option>
+              <option value="en">English</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+            </select>
+          </label>
+          <div class="user-pill">Web shell</div>
+          <button id="open-assistant" class="sh-button secondary-btn" type="button">AI Assistant</button>
+          <button id="quick-appointment" class="sh-button" type="button">Nuova sessione</button>
+        </div>
+      </header>
+
+      <main class="content-area">
+        <section id="feedback" class="action-feedback hidden"></section>
+        <div id="app-view" class="stack"></div>
+      </main>
+    </div>
+
+    <aside id="assistant-drawer" class="assistant-drawer hidden">
+      <div class="card">
+        <div class="row between mb-16">
+          <div class="section-title">AI Assistant</div>
+          <button id="close-assistant" class="sh-button secondary-btn" type="button">Chiudi</button>
+        </div>
+        <div class="settings-note mb-16">Assistente operativo collegato al gestionale reale. Legge solo dati presenti e non inventa.</div>
+        <div id="assistant-brief" class="list"></div>
+        <form id="assistant-form" class="stack mt-16">
+          <input id="assistant-question" class="sh-input" type="text" placeholder="Scrivi una domanda operativa..." autocomplete="off">
+          <button class="sh-button" type="submit">Invia</button>
+        </form>
+        <div id="assistant-response" class="consultation-box mt-16 hidden"></div>
+      </div>
+    </aside>
+
+    <dialog id="entity-dialog" class="web-dialog">
+      <form id="entity-form" class="stack">
+        <div class="row between mb-16">
+          <div id="dialog-title" class="section-title">Nuovo elemento</div>
+          <button id="dialog-close" class="sh-button secondary-btn" type="button">Chiudi</button>
+        </div>
+        <div id="dialog-fields" class="stack"></div>
+        <div class="row gap-8">
+          <button class="sh-button" type="submit">Salva</button>
+          <button id="dialog-cancel" class="sh-button secondary-btn" type="button">Annulla</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="./app.js?v=20260518-preview-shell"></script>
+  </body>
+</html>

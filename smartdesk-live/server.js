@@ -599,6 +599,7 @@ setInterval(() => {
 
 app.use("/assets", express.static(path.join(publicDir, "assets")));
 app.use("/exports", express.static(path.join(publicDir, "exports")));
+app.use("/web-preview", express.static(path.join(publicDir, "preview-shell")));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "skinharmony-smartdesk-live" });
@@ -632,6 +633,10 @@ app.get("/api/health", (req, res) => {
 
 app.get("/fleet-intelligence", (_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
+});
+
+app.get("/web-preview", (_req, res) => {
+  res.redirect(302, "/web-preview/");
 });
 
 app.post("/api/auth/login", loginRateLimit, (req, res) => {

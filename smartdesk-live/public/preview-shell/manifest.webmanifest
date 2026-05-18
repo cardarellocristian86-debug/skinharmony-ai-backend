@@ -1,0 +1,17 @@
+{
+  "name": "SkinHarmony Smart Desk",
+  "short_name": "Smart Desk",
+  "description": "Gestionale beauty premium per hair, barber, beauty center e centri estetici.",
+  "start_url": "/web-preview/",
+  "display": "standalone",
+  "background_color": "#f4fbff",
+  "theme_color": "#58b7e7",
+  "icons": [
+    {
+      "src": "./icons/smartdesk-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
