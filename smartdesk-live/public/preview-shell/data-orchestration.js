@@ -54,6 +54,34 @@ export function createDataOrchestrator(deps) {
     };
   }
 
+  function applyPreviewRuntimeMeta(runtimeMeta = {}) {
+    if (!isPreviewShell()) return runtimeMeta;
+    const subscription = runtimeMeta.subscription || {};
+    const permissions = runtimeMeta.permissions || {};
+    const session = runtimeMeta.session || {};
+    return {
+      ...runtimeMeta,
+      session: {
+        state: session.state || "active",
+        role: session.role || "admin_centro",
+        confirmationMode: session.confirmationMode || "required_for_sensitive_actions",
+        note: session.note || "Le azioni sensibili richiedono conferma."
+      },
+      subscription: {
+        ...subscription,
+        plan: "gold",
+        tier: "gold",
+        centerType: subscription.centerType || "Advanced Aesthetic Systems",
+        activeModules: Math.max(Number(subscription.activeModules || 0), 8)
+      },
+      permissions: {
+        canEditCenter: permissions.canEditCenter !== false,
+        canEditOperationalData: permissions.canEditOperationalData !== false,
+        canExecuteSensitiveActionsWithoutConfirmation: false
+      }
+    };
+  }
+
   function buildCenterFallback(settings = {}) {
     return {
       name: settings.centerName || settings.businessName || "Ecosistema Center",
@@ -128,10 +156,10 @@ export function createDataOrchestrator(deps) {
     settings: async () => applyPreviewSettings(await readJson("/api/settings", {})),
     runtimeMeta: async () => {
       const runtimePayload = await readJson("/api/runtime-meta", null);
-      if (runtimePayload && typeof runtimePayload === "object") return runtimePayload;
+      if (runtimePayload && typeof runtimePayload === "object") return applyPreviewRuntimeMeta(runtimePayload);
       const session = await readJson("/api/auth/session", {});
       const settings = applyPreviewSettings(state.settings || await readJson("/api/settings", {}));
-      return buildRuntimeMetaFallback(settings || {}, session || {});
+      return applyPreviewRuntimeMeta(buildRuntimeMetaFallback(settings || {}, session || {}));
     },
     dashboard: async () => safeJsonFetch(`${API_SERVER_URL}/api/dashboard/stats`, "/api/dashboard/stats").catch(() => null),
     report: async () => safeJsonFetch(`${API_SERVER_URL}/api/reports/operational`, "/api/reports/operational").catch(() => null),
