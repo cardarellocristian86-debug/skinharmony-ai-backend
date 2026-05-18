@@ -27,6 +27,33 @@ export function createDataOrchestrator(deps) {
     }
   }
 
+  function isPreviewShell() {
+    return typeof window !== "undefined" && String(window.location?.pathname || "").startsWith("/web-preview");
+  }
+
+  function applyPreviewSettings(settings = {}) {
+    if (!isPreviewShell()) return settings;
+    return {
+      ...settings,
+      centerName: settings.centerName || settings.businessName || "Ecosistema Center",
+      centerType: settings.centerType || "Advanced Aesthetic Systems",
+      businessModel: settings.businessModel || settings.businessType || "esthetic",
+      subscriptionPlan: "gold",
+      appLanguage: settings.appLanguage || "it",
+      enableMarketing: true,
+      enableTreatments: true,
+      enableCashdesk: true,
+      enableProtocolsHub: true,
+      inventoryBaseEnabled: true,
+      profitabilityEnabled: true,
+      operatorReportsEnabled: true,
+      aiActionsEnabled: true,
+      shiftsBaseEnabled: true,
+      shiftsTemplatesEnabled: true,
+      shiftsClockEnabled: true
+    };
+  }
+
   function buildCenterFallback(settings = {}) {
     return {
       name: settings.centerName || settings.businessName || "Ecosistema Center",
@@ -40,7 +67,8 @@ export function createDataOrchestrator(deps) {
   }
 
   function buildRuntimeMetaFallback(settings = {}, session = {}) {
-    const plan = String(session.subscriptionPlan || session.plan || settings.subscriptionPlan || "gold").toLowerCase();
+    const preview = isPreviewShell();
+    const plan = String(preview ? "gold" : session.subscriptionPlan || session.plan || settings.subscriptionPlan || "gold").toLowerCase();
     const activeModules = [
       settings.enableMarketing,
       settings.enableTreatments,
@@ -66,7 +94,7 @@ export function createDataOrchestrator(deps) {
         tier: plan,
         state: session.paymentStatus || "configured",
         centerType: settings.centerType || "Advanced Aesthetic Systems",
-        activeModules
+        activeModules: preview ? Math.max(activeModules, 8) : activeModules
       },
       permissions: {
         canEditCenter: true,
@@ -94,15 +122,15 @@ export function createDataOrchestrator(deps) {
     center: async () => {
       const centerPayload = await readJson("/api/center", null);
       if (centerPayload && typeof centerPayload === "object") return centerPayload;
-      const settings = state.settings || await readJson("/api/settings", {});
+      const settings = applyPreviewSettings(state.settings || await readJson("/api/settings", {}));
       return buildCenterFallback(settings || {});
     },
-    settings: async () => readJson("/api/settings", {}),
+    settings: async () => applyPreviewSettings(await readJson("/api/settings", {})),
     runtimeMeta: async () => {
       const runtimePayload = await readJson("/api/runtime-meta", null);
       if (runtimePayload && typeof runtimePayload === "object") return runtimePayload;
       const session = await readJson("/api/auth/session", {});
-      const settings = state.settings || await readJson("/api/settings", {});
+      const settings = applyPreviewSettings(state.settings || await readJson("/api/settings", {}));
       return buildRuntimeMetaFallback(settings || {}, session || {});
     },
     dashboard: async () => safeJsonFetch(`${API_SERVER_URL}/api/dashboard/stats`, "/api/dashboard/stats").catch(() => null),
