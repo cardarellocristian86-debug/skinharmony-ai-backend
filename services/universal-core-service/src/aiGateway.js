@@ -116,71 +116,6 @@ function requestedAction(payload = {}) {
   };
 }
 
-function ownerConfirmation(payload = {}, keyRecord = null) {
-  const context = typeof payload.context === "object" && payload.context ? payload.context : {};
-  const roleScope = contextualRoleScope(payload);
-  const raw = typeof payload.owner_confirmation === "object" && payload.owner_confirmation
-    ? payload.owner_confirmation
-    : {};
-  const confirmationText = text(
-    raw.confirmation_text
-    || raw.text
-    || payload.owner_confirmation_text
-    || context.owner_confirmation_text
-    || "",
-  );
-  const ownerId = text(
-    raw.owner_id
-    || payload.owner_id
-    || context.owner_id
-    || roleScope.actor_id
-    || keyRecord?.metadata?.owner_id
-    || "",
-  ).toLowerCase();
-  const ownerRole = text(
-    raw.owner_role
-    || payload.owner_role
-    || context.owner_role
-    || roleScope.role
-    || roleScope.actor_role
-    || keyRecord?.metadata?.owner_role
-    || "",
-  ).toLowerCase();
-  const received = Boolean(
-    payload.owner_confirmed === true
-    || payload.owner_confirmation_received === true
-    || raw.received === true
-    || raw.owner_confirmed === true
-    || context.owner_confirmed === true
-    || context.owner_confirmation_received === true
-  );
-  const rootOwnerIds = new Set([
-    "cristian",
-    "cristian_cardarello",
-    "cristiancardarello",
-    "cardarellocristian86",
-    "cardarellocristian86-debug",
-  ]);
-  const rootOwnerRoles = new Set(["root_owner", "owner_root", "founder_owner", "system_owner"]);
-  const textConfirms = /confermo|autorizzo|approve|approved|procedi|owner approved|root owner/i.test(confirmationText);
-  const verified = received && (
-    raw.verified === true
-    || context.owner_verified === true
-    || rootOwnerRoles.has(ownerRole)
-    || rootOwnerIds.has(ownerId)
-    || keyRecord?.metadata?.owner_override_enabled === true
-  ) && (confirmationText ? textConfirms : true);
-
-  return {
-    received,
-    verified,
-    owner_id: ownerId || null,
-    owner_role: ownerRole || null,
-    confirmation_text_present: Boolean(confirmationText),
-    confirmation_timestamp: text(raw.confirmation_timestamp || context.owner_confirmation_timestamp || payload.owner_confirmation_timestamp || nowIso()),
-  };
-}
-
 function riskFromText(value = "") {
   const body = text(value).toLowerCase();
   if (!body) return { score: 25, warnings: ["llm_output_missing"] };
@@ -195,28 +130,6 @@ function riskFromText(value = "") {
       ...mediumHits.map((item) => `action_output:${item}`),
     ],
   };
-}
-
-function nonOverridableReasons({ payload = {}, policyWarnings = [], agnosticWorkflowRisk = {}, outputRisk = {}, action = {} }) {
-  const scanText = [
-    action.type,
-    action.label,
-    payload.user_request,
-    payload.llm_output,
-    payload.output,
-    flattenForScan(payload.context),
-    flattenForScan(payload.requested_action),
-  ].join(" ").toLowerCase();
-  const reasons = [];
-  if (agnosticWorkflowRisk.triggered) reasons.push("agnostic_sensitive_workflow_flag_detected");
-  if (/cross[-_\s]?tenant/.test(scanText)) reasons.push("cross_tenant_requires_dedicated_policy");
-  if (/(password|secret|private key|api key|token)/.test(scanText) && /(print|echo|log|exfiltrate|export|share|show)/.test(scanText)) {
-    reasons.push("secret_exposure_not_overridable");
-  }
-  if (String(action.type || "").toLowerCase().includes("payment") && !/settlement_policy_ready|payment_policy_ready/.test(scanText)) {
-    reasons.push("payment_action_without_policy_not_overridable");
-  }
-  return [...new Set(reasons)];
 }
 
 function flattenForScan(value) {
@@ -326,6 +239,84 @@ function policyWarningsFromText(tenantPolicy = {}, value = "") {
     .filter(Boolean)
     .filter((claim) => body.includes(claim))
     .map((claim) => `tenant_forbidden_claim:${claim}`);
+}
+
+function truthyFlag(value) {
+  if (value === true) return true;
+  if (typeof value === "number") return value === 1;
+  const normalized = text(value).toLowerCase();
+  return ["1", "true", "yes", "si", "sì", "on"].includes(normalized);
+}
+
+function collectClaimCorrectionItems(value) {
+  if (!value || typeof value !== "object") return [];
+  const items = [];
+  const candidates = [
+    value.items,
+    value.hits,
+    value.matches,
+    value.corrections,
+    value.claims,
+  ];
+  candidates.forEach((candidate) => {
+    if (Array.isArray(candidate)) items.push(...candidate);
+  });
+  if (value.original || value.source_text || value.claim || value.term) items.push(value);
+  return items
+    .map((item) => {
+      if (typeof item === "string") return { original: item };
+      if (!item || typeof item !== "object") return null;
+      return {
+        original: item.original || item.source_text || item.claim || item.term || item.match || "",
+        suggested: item.suggested || item.suggestion || item.replacement || item.corrected || "",
+        severity: item.severity || item.status || "",
+      };
+    })
+    .filter(Boolean);
+}
+
+function policyWarningsFromStructuredClaims(payload = {}) {
+  const context = typeof payload.context === "object" && payload.context ? payload.context : {};
+  const warnings = [];
+  const sources = [payload, context];
+
+  if (sources.some((source) => truthyFlag(source?.forbidden_claim_detected) || truthyFlag(source?.forbiddenClaimDetected))) {
+    warnings.push("client_forbidden_claim_detected");
+  }
+
+  const correctionSources = [
+    payload.claim_corrections,
+    payload.claimCorrections,
+    context.claim_corrections,
+    context.claimCorrections,
+  ].filter(Boolean);
+
+  correctionSources.forEach((corrections) => {
+    if (truthyFlag(corrections.review_required) || truthyFlag(corrections.requires_review)) {
+      warnings.push("client_claim_review_required");
+    }
+    if (truthyFlag(corrections.hard_block_required) || truthyFlag(corrections.block_required)) {
+      warnings.push("client_claim_hard_block_required");
+    }
+    collectClaimCorrectionItems(corrections).forEach((item) => {
+      const phrase = text(item.original).toLowerCase();
+      if (phrase) warnings.push(`client_forbidden_claim:${phrase}`);
+    });
+  });
+
+  sources.forEach((source) => {
+    const forbiddenClaims = Array.isArray(source?.forbidden_claims)
+      ? source.forbidden_claims
+      : Array.isArray(source?.forbiddenClaims)
+        ? source.forbiddenClaims
+        : [];
+    forbiddenClaims
+      .map((claim) => text(claim).toLowerCase())
+      .filter(Boolean)
+      .forEach((claim) => warnings.push(`client_forbidden_claim:${claim}`));
+  });
+
+  return [...new Set(warnings)].slice(0, 30);
 }
 
 function requiresRollbackPlan(payload = {}, action = {}, warnings = []) {
@@ -520,26 +511,19 @@ function businessExplanation({ verdictBase = {}, mode = "advisory", action = {},
   };
 }
 
-function actionMediation({ payload = {}, mode = "advisory", action = {}, contract = {}, coreOutput = {}, warnings = [], policyWarnings = [], agnosticWorkflowRisk = {}, selectedVariant = null, forcedBlocked = false, executionAllowed = false, requiresOwnerConfirmation = false, ownerControlledAllow = false }) {
+function actionMediation({ payload = {}, mode = "advisory", action = {}, contract = {}, coreOutput = {}, warnings = [], policyWarnings = [], agnosticWorkflowRisk = {}, selectedVariant = null, forcedBlocked = false, executionAllowed = false, requiresOwnerConfirmation = false }) {
   const missing = Array.isArray(coreOutput.data_quality?.missing_fields)
     ? coreOutput.data_quality.missing_fields
     : [];
   const runtime = contextualRuntime(payload);
   const runtimeStatus = text(runtime.status || runtime.health || runtime.state).toLowerCase();
-  const hardBlocked = forcedBlocked || (!ownerControlledAllow && (contract.state === "blocked" || contract.control_level === "blocked"));
+  const hardBlocked = forcedBlocked || contract.state === "blocked" || contract.control_level === "blocked";
   const blockProfile = inferBlockProfile({ payload, action, policyWarnings, agnosticWorkflowRisk, forcedBlocked, warnings });
-
   let state = "defer";
   if (blockProfile.type === "hard_block_non_overridable") {
     state = "hard_block";
   } else if (policyWarnings.length) {
     state = "rewrite_required";
-  } else if (ownerControlledAllow && executionAllowed) {
-    state = "allow";
-  } else if (ownerControlledAllow && requiresRollbackPlan(payload, action, warnings)) {
-    state = "rollback_required";
-  } else if (ownerControlledAllow) {
-    state = "sandbox";
   } else if (hardBlocked && blockProfile.type === "owner_confirmable_sensitive_action") {
     state = "confirm";
   } else if (hardBlocked) {
@@ -563,7 +547,7 @@ function actionMediation({ payload = {}, mode = "advisory", action = {}, contrac
   return {
     state,
     execution_allowed: state === "allow" && executionAllowed,
-    owner_confirmation_required: ownerControlledAllow ? false : (["confirm", "rewrite", "rewrite_required", "rollback_required"].includes(state) || requiresOwnerConfirmation),
+    owner_confirmation_required: ["confirm", "rewrite", "rewrite_required", "rollback_required"].includes(state) || requiresOwnerConfirmation,
     sandbox_required: state === "sandbox",
     rollback_required: state === "rollback_required",
     rewrite_allowed: ["rewrite", "rewrite_required"].includes(state),
@@ -661,8 +645,10 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
   const roleScope = contextualRoleScope(payload);
   const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier);
   const outputRisk = riskFromText(payload.llm_output || payload.output || "");
-  const policyWarnings = policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || "");
-  const owner = ownerConfirmation(payload, keyRecord);
+  const policyWarnings = [
+    ...policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || ""),
+    ...policyWarningsFromStructuredClaims(payload),
+  ].filter((warning, index, all) => all.indexOf(warning) === index);
   const flow = pressureScore(contextualFlowPressure(payload));
   const actionType = action.type.toLowerCase();
   const sensitive = action.sensitive || action.publish_intent || SENSITIVE_ACTIONS.has(actionType);
@@ -799,12 +785,12 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
     },
     constraints: {
       allow_automation: Boolean(
-        owner.verified === true &&
+        payload.owner_confirmed === true &&
         mode === "execution_orchestration" &&
         hasScope(keyRecord, SCOPES.AUTOMATION_CODEX)
       ),
       require_confirmation: true,
-      max_control_level: owner.verified === true && mode === "execution_orchestration" ? "execute_allowed" : "confirm",
+      max_control_level: payload.owner_confirmed === true && mode === "execution_orchestration" ? "confirm" : "confirm",
       blocked_actions: arrayValue(payload.constraints?.blocked_actions),
       blocked_action_rules: [
         ...(Array.isArray(payload.constraints?.blocked_action_rules) ? payload.constraints.blocked_action_rules : []),
@@ -816,7 +802,7 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
               blocks_execution: mode === "hard-gating",
             }]
           : []),
-        ...(sensitive && owner.verified !== true
+        ...(sensitive && payload.owner_confirmed !== true
           ? [{
               action_id: `action:${action.type}`,
               reason_code: "sensitive_action_requires_owner_confirmation",
@@ -851,17 +837,12 @@ export function buildAiGatewayVerdict({
   const mode = normalizeMode(payload.mode || payload.gateway_mode);
   const action = requestedAction(payload);
   const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier);
-  const policyWarnings = policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || "");
+  const policyWarnings = [
+    ...policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || ""),
+    ...policyWarningsFromStructuredClaims(payload),
+  ].filter((warning, index, all) => all.indexOf(warning) === index);
   const selectedVariant = rankGatewayVariants(payload.variants);
   const agnosticWorkflowRisk = detectAgnosticWorkflowRisk(payload);
-  const owner = ownerConfirmation(payload, keyRecord);
-  const nonOverridable = nonOverridableReasons({
-    payload,
-    policyWarnings,
-    agnosticWorkflowRisk,
-    outputRisk: riskFromText(payload.llm_output || payload.output || ""),
-    action,
-  });
   const contract = normalizeDecisionContract(coreOutput, {
     action_type: action.type,
     publish_intent: action.publish_intent,
@@ -869,38 +850,30 @@ export function buildAiGatewayVerdict({
   });
   const sensitive = action.sensitive || action.publish_intent || SENSITIVE_ACTIONS.has(action.type.toLowerCase());
   const executionAllowed = Boolean(
-    owner.verified === true &&
-    nonOverridable.length === 0 &&
-    (mode === "execution_orchestration" || mode === "hard-gating") &&
+    mode === "execution_orchestration" &&
+    payload.owner_confirmed === true &&
     contract.control_level !== "blocked" &&
     contract.state !== "blocked" &&
     hasScope(keyRecord, SCOPES.AUTOMATION_CODEX)
   );
   const requiresOwnerConfirmation = Boolean(
-    nonOverridable.length === 0 &&
-    owner.verified !== true &&
-    (sensitive ||
-      mode === "hard-gating" ||
-      mode === "execution_orchestration" ||
-      contract.control_level === "confirm" ||
-      contract.control_level === "blocked")
+    sensitive ||
+    mode === "hard-gating" ||
+    mode === "execution_orchestration" ||
+    contract.control_level === "confirm" ||
+    contract.control_level === "blocked"
   );
   const outputRisk = riskFromText(payload.llm_output || payload.output || "");
   const warnings = [
     ...outputRisk.warnings,
     ...policyWarnings,
     ...agnosticWorkflowRisk.warnings,
-    ...nonOverridable,
     ...(contract.blocked_reasons || []),
-    ...(requiresOwnerConfirmation && !owner.verified ? ["owner_confirmation_required"] : []),
-    ...(owner.received && !owner.verified ? ["owner_confirmation_received_but_not_verified"] : []),
-    ...(owner.verified ? ["owner_confirmation_verified"] : []),
+    ...(requiresOwnerConfirmation && !payload.owner_confirmed ? ["owner_confirmation_required"] : []),
     ...(tenantPolicy.source === "default_policy" ? ["generic_tenant_policy_loaded"] : []),
   ];
 
-  const forcedBlocked = nonOverridable.length > 0;
-  const ownerControlledAllow = owner.verified && !forcedBlocked;
-  const hardBlocked = forcedBlocked || (!ownerControlledAllow && contract.state === "blocked");
+  const forcedBlocked = agnosticWorkflowRisk.triggered;
   const baseRecommendedVariant = selectedVariant
     ? { id: selectedVariant.id, label: selectedVariant.label, score: selectedVariant.score }
     : {
@@ -921,13 +894,12 @@ export function buildAiGatewayVerdict({
     forcedBlocked,
     executionAllowed,
     requiresOwnerConfirmation,
-    ownerControlledAllow,
   });
   const explanation = businessExplanation({
     verdictBase: {
       risk: {
-        band: mediation.state === "hard_block" ? "high" : contract.risk_band,
-        score: mediation.state === "hard_block" ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
+        band: forcedBlocked ? "high" : contract.risk_band,
+        score: forcedBlocked ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
       },
     },
     mode,
@@ -938,7 +910,7 @@ export function buildAiGatewayVerdict({
     mediationState: mediation.state,
     mediation,
   });
-  const hardBlockedFinal = mediation.state === "hard_block";
+  const hardBlocked = mediation.state === "hard_block";
   const rewriteRequired = mediation.state === "rewrite_required";
   return {
     schema_version: AI_GATEWAY_SCHEMA_VERSION,
@@ -946,23 +918,15 @@ export function buildAiGatewayVerdict({
     key_id: keyRecord?.key_id || null,
     adapter,
     mode,
-    decision_state: hardBlockedFinal
-      ? "blocked"
-      : ownerControlledAllow
-        ? "ready"
-        : (rewriteRequired || contract.control_level === "confirm" || contract.state === "blocked")
-            ? "attention"
-            : "ready",
-    decision: hardBlockedFinal
+    decision_state: hardBlocked ? "blocked" : (rewriteRequired || contract.control_level === "confirm" || contract.state === "blocked") ? "attention" : "ready",
+    decision: hardBlocked
       ? "block"
-      : ownerControlledAllow
-        ? "allow_controlled"
-        : (rewriteRequired || contract.control_level === "confirm" || contract.state === "blocked")
+      : (rewriteRequired || contract.control_level === "confirm" || contract.state === "blocked")
         ? "review"
         : "allow_advisory",
     risk: {
-      band: hardBlockedFinal ? "high" : contract.risk_band,
-      score: hardBlockedFinal ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
+      band: hardBlocked ? "high" : contract.risk_band,
+      score: hardBlocked ? Math.max(90, coreOutput.risk?.score ?? 0) : coreOutput.risk?.score ?? null,
       reasons: [...new Set(warnings)].slice(0, 30),
     },
     confidence: contract.confidence,
@@ -971,11 +935,6 @@ export function buildAiGatewayVerdict({
       readOnlyDefault: true,
       destructiveAutomation: false,
       ownerConfirmationForSensitiveActions: true,
-      ownerConfirmationReceived: owner.received,
-      ownerConfirmationVerified: owner.verified,
-      ownerRole: owner.owner_role,
-      nonOverridableBlock: forcedBlocked,
-      nonOverridableReasons: nonOverridable,
       tenantPolicy: tenantPolicy.source,
       flowCoreAware: true,
       nyraInterpretationLayer: true,
@@ -989,15 +948,14 @@ export function buildAiGatewayVerdict({
       hardBlockNonOverridable: mediation.hard_block === true,
       safeRewriteAvailable: mediation.rewrite_allowed === true,
     },
-    executionAllowed: hardBlockedFinal ? false : executionAllowed,
+    executionAllowed: hardBlocked ? false : executionAllowed,
     recommendedVariant: baseRecommendedVariant,
-    requiresOwnerConfirmation: hardBlockedFinal ? false : requiresOwnerConfirmation,
+    requiresOwnerConfirmation: hardBlocked ? true : requiresOwnerConfirmation,
     action_mediation: mediation,
     explainability: explanation,
     commercial_explanation: explanation.summary,
     final_output: text(payload.llm_output || payload.output || ""),
     audit_id: `audit_${crypto.randomUUID()}`,
-    owner_confirmation: owner,
     decision_contract: contract,
     tenant_policy: tenantPolicy,
     core_output: coreOutput,

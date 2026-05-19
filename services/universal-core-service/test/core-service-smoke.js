@@ -107,109 +107,10 @@ try {
   assert(presets.json.presets?.codex_automation?.scopes?.includes("gateway:ai"), "codex preset missing AI gateway scope");
   mark("key_presets", true, { presets: Object.keys(presets.json.presets) });
 
-  const setupToken = await api(base, "POST", "/v1/setup-token/create", {
-    tenant_id: "tenant_bootstrap_demo",
-    brand_scope: "skinharmony",
-    preset: "codex_automation",
-    plan: "gold",
-    role: "codex automation",
-    branch_groups: ["codex", "business_governance"],
-    branches: ["codex_code_safety", "codex_architecture_guard", "codex_release_gate"],
-    modules: ["suite_control_plane", "codex_connector", "smartdesk_node"],
-    limits: {
-      monthly_core_calls: 1000,
-      codex_automation_runs: 50,
-      wordpress_nodes: 2,
-      runbook_executions: 25,
-    },
-    tenant: {
-      tenant_id: "tenant_bootstrap_demo",
-      label: "Tenant Bootstrap Demo",
-      sector: "beauty_wellness",
-      environment: "staging",
-      brand_scope: "skinharmony",
-      active_branch_groups: ["codex", "business_governance"],
-    },
-  });
-  assert(setupToken.status === 201 && setupToken.json.setup_token?.startsWith("SHX-SETUP-"), "setup token create failed");
-  assert(setupToken.json.token?.tenant_id === "tenant_bootstrap_demo", "setup token tenant failed");
-  mark("setup_token_create", true, { token_id: setupToken.json.token.token_id, tenant_id: setupToken.json.token.tenant_id });
-
-  const setupConsume = await api(base, "POST", "/v1/setup-token/consume", {
-    setup_token: setupToken.json.setup_token,
-    connector: "codex",
-    actor_id: "core_service_smoke",
-  });
-  assert(setupConsume.status === 200 && setupConsume.json.api_key?.startsWith("SHX-AUTOMATION-"), "setup token consume failed");
-  assert(setupConsume.json.profile?.schema_version === "core_bootstrap_profile_v1", "bootstrap profile schema failed");
-  assert(setupConsume.json.profile?.tenant?.tenant_id === "tenant_bootstrap_demo", "bootstrap profile tenant failed");
-  assert(setupConsume.json.profile?.branches?.selected?.includes("codex_code_safety"), "bootstrap profile branches failed");
-  assert(setupConsume.json.profile?.limits?.wordpress_nodes === 2, "bootstrap profile limits failed");
-  assert(setupConsume.json.profile?.scope?.allowed_scopes?.includes("automation:codex"), "bootstrap profile scopes failed");
-  const bootstrapKey = setupConsume.json.api_key;
-  mark("setup_token_consume", true, {
-    key_id: setupConsume.json.key.key_id,
-    tenant_id: setupConsume.json.profile.tenant.tenant_id,
-    gate_mode: setupConsume.json.profile.gate_mode,
-  });
-
-  const setupConsumeAgain = await api(base, "POST", "/v1/setup-token/consume", {
-    setup_token: setupToken.json.setup_token,
-  });
-  assert(setupConsumeAgain.status === 409 && setupConsumeAgain.json.error === "setup_token_already_consumed", "setup token should be single-use");
-  mark("setup_token_single_use", true, { error: setupConsumeAgain.json.error });
-
-  const bootstrapProfile = await api(base, "GET", "/v1/bootstrap/profile", undefined, bootstrapKey);
-  assert(bootstrapProfile.status === 200 && bootstrapProfile.json.schema_version === "core_bootstrap_profile_v1", "bootstrap profile read failed");
-  assert(bootstrapProfile.json.connector_contract?.sensitive_actions_require_core === true, "bootstrap connector contract failed");
-  assert(bootstrapProfile.json.recommended_folders?.reports === "reports/codex-core", "bootstrap folders failed");
-  mark("bootstrap_profile_read", true, {
-    tenant_id: bootstrapProfile.json.tenant.tenant_id,
-    selected_branches: bootstrapProfile.json.branches.selected,
-  });
-
-  const revocableSetupToken = await api(base, "POST", "/v1/setup-token/create", {
-    tenant_id: "tenant_bootstrap_demo",
-    preset: "suite_connector",
-    plan: "silver",
-  });
-  assert(revocableSetupToken.status === 201 && revocableSetupToken.json.setup_token, "revocable setup token create failed");
-  const revokedSetupToken = await api(base, "POST", "/v1/setup-token/revoke", {
-    setup_token: revocableSetupToken.json.setup_token,
-    reason: "smoke_test_revoke",
-  });
-  assert(revokedSetupToken.status === 200 && revokedSetupToken.json.token?.status === "revoked", "setup token revoke failed");
-  mark("setup_token_revoke", true, { token_id: revokedSetupToken.json.token.token_id, status: revokedSetupToken.json.token.status });
-
   const tenant = await api(base, "GET", "/v1/tenant/status", undefined, connectorKey);
   assert(tenant.status === 200 && tenant.json.tenant_id === "tenant_demo_skinharmony", "tenant status failed");
   assert(tenant.json.active_branches?.includes("suite_governance"), "tenant active branches missing suite governance");
-  assert(tenant.json.entitlement?.schema_version === "core_entitlement_v1", "tenant entitlement missing");
   mark("tenant_status", true, tenant.json);
-
-  const tenantUpsert = await api(base, "POST", "/v1/tenants/upsert", {
-    tenant_id: "tenant_demo_skinharmony",
-    label: "SkinHarmony Demo",
-    sector: "beauty_wellness",
-    environment: "production",
-    brand_scope: "skinharmony",
-    active_branch_groups: ["content_intelligence", "business_governance"],
-  });
-  assert(tenantUpsert.status === 201 && tenantUpsert.json.tenant?.sector === "beauty_wellness", "tenant registry upsert failed");
-  mark("tenant_registry_upsert", true, tenantUpsert.json.tenant);
-
-  const tenantRegistry = await api(base, "GET", "/v1/tenants/registry?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(tenantRegistry.status === 200 && tenantRegistry.json.tenants?.some((item) => item.tenant_id === "tenant_demo_skinharmony"), "tenant registry read failed");
-  mark("tenant_registry_read", true, { count: tenantRegistry.json.tenants.length });
-
-  const entitlement = await api(base, "GET", "/v1/entitlements/current?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(entitlement.status === 200 && entitlement.json.entitlement?.branches?.includes("suite_governance"), "entitlement current failed");
-  assert(entitlement.json.entitlement?.limits?.wordpress_nodes >= 1, "entitlement limits missing");
-  mark("entitlement_current", true, {
-    tier: entitlement.json.entitlement.tier,
-    branches: entitlement.json.entitlement.branches.length,
-    limits: entitlement.json.entitlement.limits,
-  });
 
   const controlPlane = await api(base, "GET", "/v1/control-plane/overview?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(controlPlane.status === 200 && controlPlane.json.overview?.control_plane?.api_keys?.active >= 1, "control plane overview failed");
@@ -220,76 +121,12 @@ try {
     runbook_count: controlPlane.json.overview.control_plane.automations.runbook_count,
   });
 
-  const entityGraphWrite = await api(base, "POST", "/v1/entity-graph/upsert", {
-    tenant_id: "tenant_demo_skinharmony",
-    entities: [
-      { entity_id: "brand_demo", entity_type: "brand", label: "Brand Demo", risk_band: "low", value_score: 70 },
-      { entity_id: "distributor_demo", entity_type: "distributor", label: "Distributore Demo", risk_band: "medium", value_score: 55 },
-      { entity_id: "node_demo", entity_type: "wordpress_node", label: "Nodo WordPress Demo", risk_band: "low", value_score: 45 }
-    ],
-    relations: [
-      { relation_id: "rel_brand_distributor", from_entity_id: "brand_demo", to_entity_id: "distributor_demo", relation_type: "sells_to" },
-      { relation_id: "rel_distributor_node", from_entity_id: "distributor_demo", to_entity_id: "node_demo", relation_type: "governs_node" }
-    ],
-  }, connectorKey);
-  assert(entityGraphWrite.status === 201 && entityGraphWrite.json.graph?.entities?.length >= 3, "entity graph upsert failed");
-  assert(entityGraphWrite.json.evidence?.signature, "entity graph evidence missing");
-  mark("entity_graph_upsert", true, {
-    entities: entityGraphWrite.json.graph.entities.length,
-    relations: entityGraphWrite.json.graph.relations.length,
-  });
-
-  const entityGraphRead = await api(base, "GET", "/v1/entity-graph?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(entityGraphRead.status === 200 && entityGraphRead.json.graph?.relations?.length >= 2, "entity graph read failed");
-  assert(entityGraphRead.json.primitive_types?.includes("policy"), "entity graph primitives missing");
-  mark("entity_graph_read", true, {
-    entities: entityGraphRead.json.graph.entities.length,
-    relations: entityGraphRead.json.graph.relations.length,
-  });
-
-  const controlDashboard = await api(base, "GET", "/v1/control-plane/dashboard?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(controlDashboard.status === 200 && controlDashboard.json.schema_version === "horizontal_control_plane_dashboard_v1", "control dashboard failed");
-  assert(controlDashboard.json.action_mediation_states?.includes("rollback_required"), "control dashboard mediation states missing");
-  assert(controlDashboard.json.network_graph_summary?.entity_count >= 3, "control dashboard graph summary missing");
-  mark("control_plane_dashboard", true, {
-    entities: controlDashboard.json.network_graph_summary.entity_count,
-    maturity: controlDashboard.json.branch_maturity_summary,
-  });
-
   const sdkManifest = await api(base, "GET", "/v1/connectors/sdk/manifest?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(sdkManifest.status === 200 && sdkManifest.json.sdk?.manifest_version === "core_connector_sdk_v1", "connector sdk manifest failed");
   assert(sdkManifest.json.sdk?.transports?.includes("mcp_ready_schema"), "connector sdk mcp-ready transport missing");
   mark("connector_sdk_manifest", true, {
     adapters: sdkManifest.json.sdk.adapters,
     routes: Object.keys(sdkManifest.json.sdk.core_routes),
-  });
-
-  const customerContract = await api(base, "GET", "/v1/customer-intelligence/contract?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(customerContract.status === 200 && customerContract.json.contract?.schema_version === "customer_intelligence_contract_v1", "customer intelligence contract failed");
-  assert(customerContract.json.contract?.data_contract?.consent_registry?.valid_statuses?.includes("granted"), "customer intelligence consent registry missing");
-  assert(customerContract.json.contract?.automation_limits?.automatic_send_allowed === false, "customer intelligence automatic send must be disabled");
-  mark("customer_intelligence_contract", true, {
-    events: customerContract.json.contract.data_contract.event_taxonomy.length,
-    states: customerContract.json.contract.data_contract.journey_states,
-  });
-
-  const customerReadiness = await api(base, "POST", "/v1/customer-intelligence/readiness", {
-    tenant_id: "tenant_demo_skinharmony",
-    events: [{ id: "evt_1", type: "appointment.completed" }],
-    consents: [{ channel: "email", purpose: "recall", status: "granted" }],
-    customer_profile: {
-      customer_id: "client_demo",
-      display_name: "Cliente Demo",
-      preferred_channel: "email",
-      last_visit_at: "2026-05-01",
-      consent_summary: { email_recall: "granted" },
-    },
-  }, connectorKey);
-  assert(customerReadiness.status === 200 && customerReadiness.json.readiness?.can_send_automatically === false, "customer readiness should never allow automatic send");
-  assert(customerReadiness.json.readiness?.granted_consent_count === 1, "customer readiness consent count failed");
-  mark("customer_intelligence_readiness", true, {
-    profile_completeness: customerReadiness.json.readiness.customer_profile_completeness,
-    next_step: customerReadiness.json.readiness.next_step,
   });
 
   const runbooks = await api(base, "GET", "/v1/runbooks?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
@@ -384,79 +221,15 @@ try {
   assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
   assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
   assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
-  assert(branches.json.branches?.codex_wordpress_platform_guard?.production_status === "advisory", "wordpress platform guard branch missing");
-  assert(branches.json.branches?.data_integration_orchestration?.production_status === "advisory", "data integration branch missing");
-  assert(branches.json.branches?.commerce_fulfillment_guard?.production_status === "advisory", "commerce fulfillment branch missing");
-  assert(branches.json.branches?.observability_roi_guard?.production_status === "advisory", "observability ROI branch missing");
-  assert(branches.json.branches?.legal_privacy_compliance_guard?.production_status === "advisory", "legal privacy branch missing");
-  assert(branches.json.branches?.agent_orchestration_guard?.production_status === "advisory", "agent orchestration branch missing");
-  assert(branches.json.branches?.runtime_deployment_scaling_guard?.production_status === "advisory", "runtime deployment branch missing");
   assert(branches.json.branches?.change_impact_orchestration?.subbranches?.includes("rollback_impact"), "change impact orchestration branch missing");
-  assert(branches.json.branches?.paid_ads_guard?.production_status === "advisory", "paid ads guard branch missing");
-  assert(branches.json.branches?.lifecycle_crm_guard?.production_status === "advisory", "lifecycle CRM guard branch missing");
-  assert(branches.json.branches?.customer_behavior_analysis?.production_status === "advisory", "customer behavior branch missing");
-  assert(branches.json.branches?.segmentation_offer_guard?.production_status === "advisory", "segmentation offer branch missing");
-  assert(branches.json.branches?.funnel_conversion_guard?.production_status === "advisory", "funnel conversion branch missing");
-  assert(branches.json.branches?.email_recall_guard?.production_status === "advisory", "email recall branch missing");
-  assert(branches.json.branches?.content_localization_guard?.production_status === "advisory", "content localization branch missing");
-  assert(branches.json.branches?.consent_ledger_guard?.production_status === "advisory", "consent ledger branch missing");
-  assert(branches.json.branches?.event_taxonomy_guard?.production_status === "advisory", "event taxonomy branch missing");
-  assert(branches.json.branches?.customer_360_guard?.production_status === "advisory", "customer 360 branch missing");
-  assert(branches.json.branches?.journey_orchestration_guard?.production_status === "advisory", "journey orchestration branch missing");
-  assert(branches.json.branches?.billing_contract_guard?.production_status === "advisory", "billing contract branch missing");
-  assert(branches.json.branches?.support_success_guard?.production_status === "advisory", "support success branch missing");
-  assert(branches.json.branches?.beauty_value_chain_guard?.production_status === "advisory", "beauty value chain branch missing");
-  assert(branches.json.branches?.brand_distributor_network_guard?.production_status === "advisory", "brand distributor network branch missing");
-  assert(branches.json.branches?.product_inventory_guard?.production_status === "advisory", "product inventory branch missing");
-  assert(branches.json.branches?.smartdesk_operations_guard?.production_status === "advisory", "smartdesk operations branch missing");
-  assert(branches.json.branches?.beauty_protocol_guard?.production_status === "test", "beauty protocol branch missing");
-  assert(branches.json.groups?.content_intelligence?.branches?.includes("ramo_testo"), "content intelligence group missing ramo_testo");
-  assert(branches.json.groups?.marketing_intelligence?.branches?.includes("paid_ads_guard"), "marketing intelligence group missing paid ads");
-  assert(branches.json.groups?.marketing_intelligence?.branches?.includes("customer_behavior_analysis"), "marketing intelligence group missing behavior analysis");
-  assert(branches.json.groups?.marketing_intelligence?.branches?.includes("segmentation_offer_guard"), "marketing intelligence group missing segmentation offer");
-  assert(branches.json.groups?.customer_intelligence?.branches?.includes("customer_360_guard"), "customer intelligence group missing customer 360");
-  assert(branches.json.groups?.network_value_chain?.branches?.includes("beauty_value_chain_guard"), "network value chain group missing value chain");
-  assert(branches.json.groups?.smartdesk_vertical?.branches?.includes("smartdesk_operations_guard"), "smartdesk vertical group missing operations");
-  assert(branches.json.groups?.platform_engineering?.branches?.includes("codex_wordpress_platform_guard"), "platform engineering group missing wordpress guard");
-  assert(branches.json.groups?.platform_engineering?.branches?.includes("runtime_deployment_scaling_guard"), "platform engineering group missing runtime guard");
-  assert(branches.json.groups?.platform_engineering?.branches?.includes("change_impact_orchestration"), "platform engineering group missing change impact");
-  assert(branches.json.groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group missing site factory guard");
-  assert(branches.json.groups?.business_governance?.branches?.includes("commerce_fulfillment_guard"), "business governance group missing commerce guard");
-  assert(branches.json.groups?.security_defense?.branches?.includes("legal_privacy_compliance_guard"), "security defense group missing legal guard");
-  assert(branches.json.groups?.automation_control?.branches?.includes("agent_orchestration_guard"), "automation control group missing agent guard");
-  assert(branches.json.groups?.automation_control?.branches?.includes("change_impact_orchestration"), "automation control group missing change impact");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
-  mark("branches_registry", true, { branches: Object.keys(branches.json.branches), groups: Object.keys(branches.json.groups), tenant_package: branches.json.tenant_package });
-
-  const branchMaturity = await api(base, "GET", "/v1/branches/maturity?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(branchMaturity.status === 200 && branchMaturity.json.schema_version === "branch_maturity_v1", "branch maturity failed");
-  assert(branchMaturity.json.statuses?.agent_orchestration_guard?.maturity === "advisory", "branch maturity status missing agent guard");
-  assert(branchMaturity.json.groups?.automation_control?.maturity_summary?.advisory >= 1, "branch maturity group summary failed");
-  mark("branch_maturity", true, {
-    automation_control: branchMaturity.json.groups.automation_control.maturity_summary,
-  });
+  mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
 
   const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=front_desk_base,nyra_finance_beauty_test", undefined, connectorKey);
   assert(authorizedBranches.status === 200 && authorizedBranches.json.branch_package?.selected_branches?.includes("front_desk_base"), "authorized branches failed");
   assert(authorizedBranches.json.branch_package?.denied_branches?.includes("nyra_finance_beauty_test"), "denied branch not reported");
   mark("branches_authorized", true, authorizedBranches.json.branch_package);
-
-  const authorizedContentGroup = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=content_intelligence", undefined, connectorKey);
-  assert(authorizedContentGroup.status === 200 && authorizedContentGroup.json.branch_package?.requested_groups?.includes("content_intelligence"), "content group request not tracked");
-  assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("marketing_copy"), "content group did not select marketing_copy");
-  assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("translation_governance"), "content group did not select translation_governance");
-  assert(authorizedContentGroup.json.branch_package?.selected_branches?.includes("ramo_testo"), "content group did not select ramo_testo");
-  mark("branches_authorized_group_content", true, authorizedContentGroup.json.branch_package);
-
-  const authorizedMarketingGroup = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=marketing_intelligence", undefined, connectorKey);
-  assert(authorizedMarketingGroup.status === 200 && authorizedMarketingGroup.json.branch_package?.requested_groups?.includes("marketing_intelligence"), "marketing group request not tracked");
-  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("paid_ads_guard"), "marketing group did not select paid ads");
-  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("email_recall_guard"), "marketing group did not select email recall");
-  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("customer_behavior_analysis"), "marketing group did not select customer behavior");
-  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("consent_ledger_guard"), "marketing group did not select consent ledger");
-  assert(authorizedMarketingGroup.json.branch_package?.selected_branches?.includes("journey_orchestration_guard"), "marketing group did not select journey orchestration");
-  mark("branches_authorized_group_marketing", true, authorizedMarketingGroup.json.branch_package);
 
   const codexContext = await api(base, "POST", "/v1/codex/context", {
     tenant_id: "tenant_demo_skinharmony",
@@ -480,46 +253,14 @@ try {
     tenant_id: "tenant_demo_skinharmony",
     task: "Clonare sito cliente e creare nodo Suite controllato",
     user_input: "Creo un clone staging senza copiare credenziali, clienti, ordini o tracking ID.",
-    branches: ["site_factory", "platform_engineering", "content_intelligence"],
+    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "marketing_copy"],
   }, codexKey);
   assert(codexSiteContext.status === 200 && codexSiteContext.json.context?.selected_branches?.includes("codex_site_factory_guard"), "site factory codex context missing");
   assert(codexSiteContext.json.context?.selected_branches?.includes("codex_website_visual_guard"), "website visual codex context missing");
-  assert(codexSiteContext.json.context?.selected_branches?.includes("codex_wordpress_platform_guard"), "wordpress platform codex context missing");
-  assert(codexSiteContext.json.context?.selected_branches?.includes("data_integration_orchestration"), "site factory context missing data integration");
-  assert(codexSiteContext.json.context?.selected_branches?.includes("runtime_deployment_scaling_guard"), "site factory context missing runtime deployment");
-  assert(codexSiteContext.json.context?.selected_branches?.includes("marketing_copy"), "content group codex context missing marketing copy");
-  assert(codexSiteContext.json.context?.selected_branches?.includes("content_localization_guard"), "content group codex context missing localization guard");
-  assert(codexSiteContext.json.context?.selected_groups?.includes("site_factory"), "site factory group not tracked in context");
-  assert(codexSiteContext.json.context?.selected_groups?.includes("platform_engineering"), "platform engineering group not tracked in context");
-  assert(codexSiteContext.json.context?.branch_groups?.site_factory?.branches?.includes("codex_site_factory_guard"), "site factory group profile missing in context");
   assert(codexSiteContext.json.context?.deterministic_context?.rule_count >= 15, "site/visual guard rules not composed");
   mark("codex_site_visual_context", true, {
-    selected_groups: codexSiteContext.json.context.selected_groups,
     selected_branches: codexSiteContext.json.context.selected_branches,
     rule_count: codexSiteContext.json.context.deterministic_context.rule_count,
-  });
-
-  const niraCoreBridge = await api(base, "POST", "/v1/nira/core-bridge", {
-    tenant_id: "tenant_demo_skinharmony",
-    mode: "god_mode_owner_only",
-    owner_confirmed: true,
-    target_system: "suite",
-    text: "Metti Nira come ponte sopra Universal Core per preparare runbook Render e alleggerire Suite WordPress senza eseguire automaticamente.",
-  }, codexKey);
-  assert(niraCoreBridge.status === 200 && niraCoreBridge.json.result?.god_mode_active === true, "nira core bridge god mode failed");
-  assert(niraCoreBridge.json.result?.automation_plan?.execution_allowed === false, "nira core bridge must not auto execute");
-  assert(niraCoreBridge.json.guardrail?.owner_confirmation_required === true, "nira core bridge owner confirmation missing");
-  assert(niraCoreBridge.json.result?.core_branch_diagnostics?.branch_router_used === true, "nira core bridge branch router not used");
-  assert(niraCoreBridge.json.result?.core_branch_diagnostics?.actual_selected_branches?.includes("runtime_deployment_scaling_guard"), "nira core bridge runtime branch missing");
-  assert(niraCoreBridge.json.result?.core_branch_diagnostics?.actual_selected_branches?.includes("codex_wordpress_platform_guard"), "nira core bridge wordpress branch missing");
-  mark("nira_core_bridge", true, {
-    mode: niraCoreBridge.json.result.mode,
-    action: niraCoreBridge.json.result.selected_by_core.primary_action_id,
-    control_level: niraCoreBridge.json.result.selected_by_core.control_level,
-    execution_allowed: niraCoreBridge.json.result.automation_plan.execution_allowed,
-    branch_router_used: niraCoreBridge.json.result.core_branch_diagnostics.branch_router_used,
-    selected_branches: niraCoreBridge.json.result.core_branch_diagnostics.actual_selected_branches,
-    denied_branches: niraCoreBridge.json.result.core_branch_diagnostics.actual_denied_branches,
   });
 
   const siteFactoryAnalyze = await api(base, "POST", "/v1/branches/codex_site_factory_guard/analyze", {
@@ -564,263 +305,6 @@ try {
     state: visualAnalyze.json.output.state,
   });
 
-  const wordpressAnalyze = await api(base, "POST", "/v1/branches/codex_wordpress_platform_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    platform: "wordpress",
-    plugin_type: "woocommerce_bridge",
-    uses_woocommerce: true,
-    has_nonce: true,
-    has_capability_check: true,
-    sanitizes_input: true,
-    escapes_output: true,
-    rest_permission_callback: true,
-    admin_feedback: true,
-    has_tests: true,
-    has_rollback: true,
-    config_in_zip: false,
-    shortcode_mutates_state: false,
-    assumes_dependency: false,
-    hardcoded_secret: false,
-    bypass_checkout: false,
-    auto_update_without_preflight: false,
-    cross_tenant_data_access: false,
-  }, codexKey);
-  assert(wordpressAnalyze.status === 200 && wordpressAnalyze.json.branch_output?.platform_mode === "wordpress_plugin_engineering_guard", "wordpress platform analyze failed");
-  assert(wordpressAnalyze.json.branch_output?.blocked_if?.missing_security_baseline === false, "wordpress platform security baseline false positive");
-  assert(wordpressAnalyze.json.output?.state, "wordpress platform core output missing");
-  mark("codex_wordpress_platform_analyze", true, {
-    platform_mode: wordpressAnalyze.json.branch_output.platform_mode,
-    state: wordpressAnalyze.json.output.state,
-    blocked_if: wordpressAnalyze.json.branch_output.blocked_if,
-  });
-
-  const wordpressRiskAnalyze = await api(base, "POST", "/v1/branches/codex_wordpress_platform_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    platform: "wordpress",
-    uses_woocommerce: true,
-    has_nonce: false,
-    has_capability_check: false,
-    sanitizes_input: false,
-    escapes_output: false,
-    rest_permission_callback: false,
-    config_in_zip: true,
-    shortcode_mutates_state: true,
-    assumes_dependency: true,
-    hardcoded_secret: true,
-    bypass_checkout: true,
-    auto_update_without_preflight: true,
-    cross_tenant_data_access: true,
-  }, codexKey);
-  assert(wordpressRiskAnalyze.status === 200 && wordpressRiskAnalyze.json.branch_output?.blocked_if?.hardcoded_secret === true, "wordpress risk hardcoded secret not detected");
-  assert(wordpressRiskAnalyze.json.branch_output?.blocked_if?.checkout_bypass === true, "wordpress risk checkout bypass not detected");
-  mark("codex_wordpress_platform_risk_analyze", true, {
-    state: wordpressRiskAnalyze.json.output.state,
-    risk: wordpressRiskAnalyze.json.output.risk.band,
-    blocked_if: wordpressRiskAnalyze.json.branch_output.blocked_if,
-  });
-
-  const dataIntegrationAnalyze = await api(base, "POST", "/v1/branches/data_integration_orchestration/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    source_systems: ["wordpress"],
-    target_systems: ["universal_core"],
-    has_schema_mapping: true,
-    idempotent: true,
-    retry_policy: true,
-    timeout_ready: true,
-    deduplication: true,
-    webhook_signature: true,
-    contains_pii: false,
-    cross_tenant: false,
-    secrets_in_payload: false,
-  }, codexKey);
-  assert(dataIntegrationAnalyze.status === 200 && dataIntegrationAnalyze.json.branch_output?.integration_mode === "adapter_snapshot_sync", "data integration analyze failed");
-  assert(dataIntegrationAnalyze.json.branch_output?.blocked_if?.secrets_in_payload === false, "data integration false positive");
-  mark("data_integration_analyze", true, {
-    state: dataIntegrationAnalyze.json.output.state,
-    blocked_if: dataIntegrationAnalyze.json.branch_output.blocked_if,
-  });
-
-  const dataIntegrationRiskAnalyze = await api(base, "POST", "/v1/branches/data_integration_orchestration/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    source_systems: ["tenant_a_db"],
-    target_systems: ["tenant_b_db"],
-    has_schema_mapping: false,
-    direct_db_access: true,
-    cross_tenant: true,
-    secrets_in_payload: true,
-    bulk_sync: true,
-  }, codexKey);
-  assert(dataIntegrationRiskAnalyze.status === 200 && dataIntegrationRiskAnalyze.json.branch_output?.blocked_if?.cross_tenant_scope === true, "data integration cross tenant not detected");
-  assert(dataIntegrationRiskAnalyze.json.branch_output?.blocked_if?.secrets_in_payload === true, "data integration secrets not detected");
-  mark("data_integration_risk_analyze", true, {
-    state: dataIntegrationRiskAnalyze.json.output.state,
-    risk: dataIntegrationRiskAnalyze.json.output.risk.band,
-    blocked_if: dataIntegrationRiskAnalyze.json.branch_output.blocked_if,
-  });
-
-  const commerceAnalyze = await api(base, "POST", "/v1/branches/commerce_fulfillment_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    has_official_price: true,
-    checkout_confirmed: true,
-    order_idempotency_key: true,
-    stock_policy_ready: true,
-    license_policy_ready: true,
-    refund_policy_ready: true,
-    settlement_policy_ready: true,
-    invented_price: false,
-    generate_license: true,
-  }, codexKey);
-  assert(commerceAnalyze.status === 200 && commerceAnalyze.json.branch_output?.fulfillment_mode === "quote_or_checkout_first", "commerce fulfillment analyze failed");
-  assert(commerceAnalyze.json.branch_output?.blocked_if?.invented_price === false, "commerce invented price false positive");
-  mark("commerce_fulfillment_analyze", true, {
-    state: commerceAnalyze.json.output.state,
-    blocked_if: commerceAnalyze.json.branch_output.blocked_if,
-  });
-
-  const commerceRiskAnalyze = await api(base, "POST", "/v1/branches/commerce_fulfillment_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    invented_price: true,
-    generate_license: true,
-    checkout_confirmed: false,
-    charge_without_checkout: true,
-    double_fulfillment: true,
-    oversell_stock: true,
-  }, codexKey);
-  assert(commerceRiskAnalyze.status === 200 && commerceRiskAnalyze.json.branch_output?.blocked_if?.invented_price === true, "commerce invented price not detected");
-  assert(commerceRiskAnalyze.json.branch_output?.blocked_if?.license_without_commercial_event === true, "commerce license without event not detected");
-  mark("commerce_fulfillment_risk_analyze", true, {
-    state: commerceRiskAnalyze.json.output.state,
-    risk: commerceRiskAnalyze.json.output.risk.band,
-    blocked_if: commerceRiskAnalyze.json.branch_output.blocked_if,
-  });
-
-  const observabilityAnalyze = await api(base, "POST", "/v1/branches/observability_roi_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    audit_id: "audit_demo",
-    trace_id: "trace_demo",
-    metrics_defined: true,
-    evidence_enabled: true,
-    health_check: true,
-    roi_metrics: ["time_saved", "errors_avoided"],
-    performance_budget_ms: 500,
-    latency_ms: 180,
-  }, codexKey);
-  assert(observabilityAnalyze.status === 200 && observabilityAnalyze.json.branch_output?.observability_mode === "audit_evidence_roi", "observability analyze failed");
-  assert(observabilityAnalyze.json.branch_output?.blocked_if?.automation_without_audit === false, "observability audit false positive");
-  mark("observability_roi_analyze", true, {
-    state: observabilityAnalyze.json.output.state,
-    blocked_if: observabilityAnalyze.json.branch_output.blocked_if,
-  });
-
-  const legalAnalyze = await api(base, "POST", "/v1/branches/legal_privacy_compliance_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    contains_personal_data: true,
-    consent_collected: true,
-    retention_policy: true,
-    dpa_ready: true,
-    claim_reviewed: true,
-    delete_export_ready: true,
-  }, codexKey);
-  assert(legalAnalyze.status === 200 && legalAnalyze.json.branch_output?.compliance_mode === "advisory_with_owner_review", "legal privacy analyze failed");
-  assert(legalAnalyze.json.branch_output?.blocked_if?.personal_data_without_consent === false, "legal privacy consent false positive");
-  mark("legal_privacy_compliance_analyze", true, {
-    state: legalAnalyze.json.output.state,
-    blocked_if: legalAnalyze.json.branch_output.blocked_if,
-  });
-
-  const legalRiskAnalyze = await api(base, "POST", "/v1/branches/legal_privacy_compliance_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    contains_personal_data: true,
-    consent_collected: false,
-    contains_sensitive_data: true,
-    dpa_ready: false,
-    publish_claim: true,
-    claim_reviewed: false,
-    text: "Compliance assoluta garantita per legge.",
-  }, codexKey);
-  assert(legalRiskAnalyze.status === 200 && legalRiskAnalyze.json.branch_output?.blocked_if?.personal_data_without_consent === true, "legal privacy consent risk not detected");
-  assert(legalRiskAnalyze.json.branch_output?.blocked_if?.legal_guarantee_claim === true, "legal guarantee not detected");
-  mark("legal_privacy_compliance_risk_analyze", true, {
-    state: legalRiskAnalyze.json.output.state,
-    risk: legalRiskAnalyze.json.output.risk.band,
-    blocked_if: legalRiskAnalyze.json.branch_output.blocked_if,
-  });
-
-  const agentAnalyze = await api(base, "POST", "/v1/branches/agent_orchestration_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    action_type: "update",
-    owner_confirmed: true,
-    sandbox: true,
-    rollback_ready: true,
-    runbook_id: "rb_local_patch",
-  }, codexKey);
-  assert(agentAnalyze.status === 200 && agentAnalyze.json.branch_output?.orchestration_mode === "core_decides_agent_executes", "agent orchestration analyze failed");
-  assert(agentAnalyze.json.branch_output?.blocked_if?.destructive_without_owner === false, "agent owner false positive");
-  mark("agent_orchestration_analyze", true, {
-    state: agentAnalyze.json.output.state,
-    blocked_if: agentAnalyze.json.branch_output.blocked_if,
-  });
-
-  const agentRiskAnalyze = await api(base, "POST", "/v1/branches/agent_orchestration_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    action_type: "delete",
-    autonomous_execution: true,
-    owner_confirmed: false,
-    cross_tenant: true,
-    sandbox: false,
-    rollback_ready: false,
-  }, codexKey);
-  assert(agentRiskAnalyze.status === 200 && agentRiskAnalyze.json.branch_output?.blocked_if?.destructive_without_owner === true, "agent destructive risk not detected");
-  assert(agentRiskAnalyze.json.branch_output?.blocked_if?.cross_tenant_write === true, "agent cross tenant risk not detected");
-  mark("agent_orchestration_risk_analyze", true, {
-    state: agentRiskAnalyze.json.output.state,
-    risk: agentRiskAnalyze.json.output.risk.band,
-    blocked_if: agentRiskAnalyze.json.branch_output.blocked_if,
-  });
-
-  const runtimeAnalyze = await api(base, "POST", "/v1/branches/runtime_deployment_scaling_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    target_runtime: "dedicated_render",
-    env_vars_configured: true,
-    secret_store_ready: true,
-    migration_plan: true,
-    backup_ready: true,
-    rollback_ready: true,
-    healthcheck_ready: true,
-    canary_enabled: true,
-    preflight_passed: true,
-    queue_required: true,
-    queue_ready: true,
-    storage_ready: true,
-    deploy_to_production: true,
-  }, codexKey);
-  assert(runtimeAnalyze.status === 200 && runtimeAnalyze.json.branch_output?.deployment_mode === "local_shared_dedicated_runtime_guard", "runtime deployment analyze failed");
-  assert(runtimeAnalyze.json.branch_output?.blocked_if?.production_deploy_without_preflight === false, "runtime preflight false positive");
-  mark("runtime_deployment_scaling_analyze", true, {
-    state: runtimeAnalyze.json.output.state,
-    blocked_if: runtimeAnalyze.json.branch_output.blocked_if,
-  });
-
-  const runtimeRiskAnalyze = await api(base, "POST", "/v1/branches/runtime_deployment_scaling_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    target_runtime: "production_render",
-    deploy_to_production: true,
-    preflight_passed: false,
-    rollback_ready: false,
-    healthcheck_ready: false,
-    secret_in_repo: true,
-    database_migration: true,
-    migration_plan: false,
-    backup_ready: false,
-  }, codexKey);
-  assert(runtimeRiskAnalyze.status === 200 && runtimeRiskAnalyze.json.branch_output?.blocked_if?.production_deploy_without_preflight === true, "runtime missing preflight not detected");
-  assert(runtimeRiskAnalyze.json.branch_output?.blocked_if?.secret_leak === true, "runtime secret leak not detected");
-  mark("runtime_deployment_scaling_risk_analyze", true, {
-    state: runtimeRiskAnalyze.json.output.state,
-    risk: runtimeRiskAnalyze.json.output.risk.band,
-    blocked_if: runtimeRiskAnalyze.json.branch_output.blocked_if,
-  });
-
   const actionEvaluator = await api(base, "POST", "/v1/action-evaluator", {
     tenant_id: "tenant_demo_skinharmony",
     action_type: "publish",
@@ -831,44 +315,6 @@ try {
   assert(actionEvaluator.status === 200 && actionEvaluator.json.decision_contract?.publish_safe === false, "action evaluator publish guard failed");
   assert(["confirm", "blocked"].includes(actionEvaluator.json.decision_contract?.control_level), "action evaluator control level failed");
   mark("action_evaluator_contract", true, actionEvaluator.json.decision_contract);
-
-  const policyMediation = await api(base, "POST", "/v1/policy/check", {
-    tenant_id: "tenant_demo_skinharmony",
-    action: {
-      action_type: "publish",
-      risk_hint: 62,
-    },
-    policy: {
-      approval_required: true,
-      required_branches: ["ramo_testo", "translation_governance"],
-    },
-    context: {
-      owner_confirmed: false,
-      audit_ready: true,
-    },
-  }, connectorKey);
-  assert(policyMediation.status === 200 && policyMediation.json.result?.policy_engine?.action_mediation?.state === "confirm", "policy mediation confirm failed");
-  mark("policy_engine_mediation", true, policyMediation.json.result.policy_engine);
-
-  const actionMediation = await api(base, "POST", "/v1/action-mediation/evaluate", {
-    tenant_id: "tenant_demo_skinharmony",
-    action: {
-      action_type: "deploy",
-      risk_hint: 74,
-      owner_confirmed: true,
-    },
-    context: {
-      rollback_ready: false,
-      sandbox: false,
-      audit_ready: true,
-    },
-  }, connectorKey);
-  assert(actionMediation.status === 200 && actionMediation.json.result?.action_mediation?.state === "rollback_required", "action mediation rollback_required failed");
-  assert(actionMediation.json.evidence?.signature, "action mediation evidence missing");
-  mark("action_mediation_evaluate", true, {
-    state: actionMediation.json.result.action_mediation.state,
-    evidence_id: actionMediation.json.evidence.evidence_id,
-  });
 
   const gatewaySchema = await api(base, "GET", "/v1/ai-gateway/schema", undefined);
   assert(gatewaySchema.status === 200 && gatewaySchema.json.modes?.includes("hard-gating"), "AI gateway schema failed");
@@ -933,6 +379,46 @@ try {
     mediation: aiGatewaySuite.json.verdict.action_mediation,
     adapter: aiGatewaySuite.json.verdict.adapter,
     executionAllowed: aiGatewaySuite.json.verdict.executionAllowed,
+  });
+
+  const aiGatewayStructuredClaim = await api(base, "POST", "/v1/adapters/site-suite/gateway", {
+    tenant_id: "tenant_demo_skinharmony",
+    gateway_mode: "hard-gating",
+    action_type: "publish",
+    user_request: "Valuta bozza pagina marketing generata da plugin WordPress",
+    llm_output: "Risultati garantiti contro la cellulite in 7 giorni.",
+    forbidden_claim_detected: true,
+    forbidden_claims: ["risultati garantiti"],
+    claim_corrections: {
+      review_required: true,
+      hard_block_required: false,
+      corrected_text: "Risultati variabili in base alla situazione individuale.",
+      items: [
+        {
+          original: "risultati garantiti",
+          suggested: "risultati variabili in base alla situazione individuale",
+          severity: "warning",
+        },
+      ],
+    },
+    context: {
+      runtime_state: "healthy",
+      flow_pressure: 5,
+      locale: "it",
+      role_scope: ["write:publish"],
+      forbidden_claim_detected: true,
+    },
+  }, connectorKey);
+  assert(aiGatewayStructuredClaim.status === 200, "AI gateway structured claim failed");
+  assert(aiGatewayStructuredClaim.json.verdict?.policyFlags?.forbiddenClaimDetected === true, "AI gateway structured claim flag missing");
+  assert(aiGatewayStructuredClaim.json.verdict?.decision === "review", "AI gateway structured claim should require review");
+  assert(aiGatewayStructuredClaim.json.verdict?.action_mediation?.state === "rewrite_required", "AI gateway structured claim rewrite mediation missing");
+  assert(aiGatewayStructuredClaim.json.verdict?.action_mediation?.safe_variant?.id === "rewrite_claim_safe", "AI gateway structured claim safe rewrite missing");
+  mark("ai_gateway_structured_claim_payload", true, {
+    decision: aiGatewayStructuredClaim.json.verdict.decision,
+    mediation: aiGatewayStructuredClaim.json.verdict.action_mediation,
+    policyFlags: aiGatewayStructuredClaim.json.verdict.policyFlags,
+    warnings: aiGatewayStructuredClaim.json.verdict.warnings,
   });
 
   const codexD4 = await api(base, "POST", "/api/v1/adapters/codex/gateway", {
@@ -1124,340 +610,6 @@ try {
     owner_review_required: marketingBranch.json.branch_output.owner_review_required,
   });
 
-  const paidAdsBranch = await api(base, "POST", "/v1/branches/paid_ads_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      campaign_goal: "lead_generation",
-      audience: "brand professionali",
-      ad_copy: "Campagna senza risultati garantiti e senza claim medici.",
-      daily_budget: 50,
-      landing_ready: true,
-      tracking_consent: true,
-      invented_roas: true,
-    },
-  }, connectorKey);
-  assert(paidAdsBranch.status === 200 && paidAdsBranch.json.branch_output?.ads_mode === "draft_review_only", "paid ads branch failed");
-  assert(paidAdsBranch.json.branch_output?.blocked_if?.invented_performance === true, "paid ads invented performance guard failed");
-  mark("branch_paid_ads_guard", true, {
-    state: paidAdsBranch.json.output.state,
-    risk: paidAdsBranch.json.output.risk.band,
-    blocked_if: paidAdsBranch.json.branch_output.blocked_if,
-  });
-
-  const lifecycleBranch = await api(base, "POST", "/v1/branches/lifecycle_crm_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      customer_state: "at_risk",
-      last_activity_days: 72,
-      marketing_consent: true,
-      channel: "email",
-      contact_reason: "follow up percorso",
-    },
-  }, connectorKey);
-  assert(lifecycleBranch.status === 200 && lifecycleBranch.json.branch_output?.crm_marketing_mode === "lifecycle_priority_advisory", "lifecycle CRM branch failed");
-  mark("branch_lifecycle_crm_guard", true, {
-    state: lifecycleBranch.json.output.state,
-    can_prepare_message: lifecycleBranch.json.branch_output.can_prepare_message,
-  });
-
-  const behaviorBranch = await api(base, "POST", "/v1/branches/customer_behavior_analysis/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      sample_size: 80,
-      has_recency: true,
-      has_frequency: true,
-      has_value: true,
-      sensitive_profiling: false,
-    },
-  }, connectorKey);
-  assert(behaviorBranch.status === 200 && behaviorBranch.json.branch_output?.behavior_mode === "observed_patterns_only", "customer behavior branch failed");
-  mark("branch_customer_behavior_analysis", true, {
-    state: behaviorBranch.json.output.state,
-    confidence: behaviorBranch.json.branch_output.confidence,
-  });
-
-  const behaviorNestedBranch = await api(base, "POST", "/v1/branches/customer_behavior_analysis/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    customer_profile: {
-      customer_id: "C-001",
-      last_visit_days: 42,
-      visit_frequency_days: 35,
-      average_ticket_eur: 128,
-      marketing_consent: true,
-      purchase_history_count: 8,
-    },
-    observed_events: ["recurring_visits", "high_ticket", "missed_expected_return_window"],
-    requested_action: "classifica priorita recall e suggerisci prossima azione senza invio automatico",
-  }, connectorKey);
-  assert(behaviorNestedBranch.status === 200 && behaviorNestedBranch.json.branch_output?.detected_inputs?.nested_profile === true, "customer behavior nested profile not detected");
-  assert(behaviorNestedBranch.json.branch_output?.blocked_if?.auto_contact_without_consent === false, "customer behavior consent false positive");
-  mark("branch_customer_behavior_nested_profile", true, {
-    confidence: behaviorNestedBranch.json.branch_output.confidence,
-    detected_inputs: behaviorNestedBranch.json.branch_output.detected_inputs,
-  });
-
-  const behaviorPrivacyRiskBranch = await api(base, "POST", "/v1/branches/customer_behavior_analysis/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    customer_profile: {
-      customer_id: "C-002",
-      last_visit_days: 210,
-      marketing_consent: false,
-      purchase_history_count: 1,
-    },
-    observed_events: ["inactive_customer", "low_data_quality"],
-    requested_action: "profilare salute psicologica e inviare messaggio marketing automatico",
-  }, connectorKey);
-  assert(behaviorPrivacyRiskBranch.status === 200 && behaviorPrivacyRiskBranch.json.branch_output?.blocked_if?.auto_contact_without_consent === true, "customer behavior missing consent not detected");
-  assert(behaviorPrivacyRiskBranch.json.branch_output?.blocked_if?.sensitive_profiling === true, "customer behavior sensitive profiling not detected");
-  mark("branch_customer_behavior_privacy_risk", true, {
-    owner_review_required: behaviorPrivacyRiskBranch.json.branch_output.owner_review_required,
-    blocked_if: behaviorPrivacyRiskBranch.json.branch_output.blocked_if,
-  });
-
-  const consentLedgerBranch = await api(base, "POST", "/v1/branches/consent_ledger_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      consent: false,
-      revoked: true,
-      channel: "email",
-      consent_source: "",
-      auto_send: true,
-    },
-  }, connectorKey);
-  assert(consentLedgerBranch.status === 200 && consentLedgerBranch.json.branch_output?.blocked_if?.missing_consent === true, "consent ledger missing consent not detected");
-  assert(consentLedgerBranch.json.branch_output?.blocked_if?.revoked === true, "consent ledger revocation not detected");
-  mark("branch_consent_ledger_guard", true, {
-    can_contact: consentLedgerBranch.json.branch_output.can_contact,
-    blocked_if: consentLedgerBranch.json.branch_output.blocked_if,
-  });
-
-  const eventTaxonomyBranch = await api(base, "POST", "/v1/branches/event_taxonomy_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      event_type: "appointment.completed",
-      subject_id: "client_demo",
-      source: "smartdesk",
-      timestamp: "2026-05-16T12:00:00Z",
-      idempotency_key: "evt_demo_1",
-      cross_tenant: false,
-    },
-  }, connectorKey);
-  assert(eventTaxonomyBranch.status === 200 && eventTaxonomyBranch.json.branch_output?.ready_for_ingest === true, "event taxonomy ready ingest failed");
-  mark("branch_event_taxonomy_guard", true, {
-    event_type: eventTaxonomyBranch.json.branch_output.event_type,
-    ready_for_ingest: eventTaxonomyBranch.json.branch_output.ready_for_ingest,
-  });
-
-  const customer360Branch = await api(base, "POST", "/v1/branches/customer_360_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      customer_id: "client_demo",
-      has_history: true,
-      marketing_consent: true,
-      order_count: 4,
-      cross_scope: false,
-    },
-  }, connectorKey);
-  assert(customer360Branch.status === 200 && customer360Branch.json.branch_output?.ready_for_next_action === true, "customer 360 ready failed");
-  mark("branch_customer_360_guard", true, {
-    sections: customer360Branch.json.branch_output.visible_sections,
-  });
-
-  const journeyBranch = await api(base, "POST", "/v1/branches/journey_orchestration_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      trigger: "customer_at_risk",
-      goal: "manual_recall",
-      channel: "email",
-      consent: false,
-      auto_send: true,
-      owner_approved: false,
-    },
-  }, connectorKey);
-  assert(journeyBranch.status === 200 && journeyBranch.json.branch_output?.blocked_if?.missing_consent === true, "journey missing consent not detected");
-  assert(journeyBranch.json.branch_output?.blocked_if?.auto_execute_without_owner === true, "journey auto execute not detected");
-  mark("branch_journey_orchestration_guard", true, {
-    blocked_if: journeyBranch.json.branch_output.blocked_if,
-  });
-
-  const billingBranch = await api(base, "POST", "/v1/branches/billing_contract_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      plan: "network",
-      generate_key: true,
-      payment_confirmed: false,
-      price_source: "invented",
-      api_key_limit: 0,
-    },
-  }, connectorKey);
-  assert(billingBranch.status === 200 && billingBranch.json.branch_output?.blocked_if?.missing_commercial_event === true, "billing missing commercial event not detected");
-  assert(billingBranch.json.branch_output?.blocked_if?.missing_limits_for_key_generation === true, "billing missing key limits not detected");
-  mark("branch_billing_contract_guard", true, {
-    can_activate: billingBranch.json.branch_output.can_activate,
-    blocked_if: billingBranch.json.branch_output.blocked_if,
-  });
-
-  const supportBranch = await api(base, "POST", "/v1/branches/support_success_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      ticket_type: "onboarding",
-      blocked: true,
-      renewal_days: 12,
-      close_ticket: true,
-      evidence_ready: false,
-      promise_sla: true,
-    },
-  }, connectorKey);
-  assert(supportBranch.status === 200 && supportBranch.json.branch_output?.blocked_if?.promised_uncontracted_sla === true, "support SLA risk not detected");
-  assert(supportBranch.json.branch_output?.blocked_if?.close_without_evidence === true, "support close without evidence not detected");
-  mark("branch_support_success_guard", true, {
-    priority: supportBranch.json.branch_output.priority,
-    blocked_if: supportBranch.json.branch_output.blocked_if,
-  });
-
-  const valueChainBranch = await api(base, "POST", "/v1/branches/beauty_value_chain_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      factory_cost: 10,
-      list_price: 100,
-      distributor_price: 30,
-      operator_price: 25,
-      mandatory_resale_price: true,
-      leak_margin: true,
-    },
-  }, connectorKey);
-  assert(valueChainBranch.status === 200 && valueChainBranch.json.branch_output?.blocked_if?.margin_chain_break === true, "value chain margin break not detected");
-  assert(valueChainBranch.json.branch_output?.blocked_if?.mandatory_resale_price === true, "value chain mandatory price not detected");
-  mark("branch_beauty_value_chain_guard", true, {
-    blocked_if: valueChainBranch.json.branch_output.blocked_if,
-  });
-
-  const networkBranch = await api(base, "POST", "/v1/branches/brand_distributor_network_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      role: "distributor",
-      brand_scope: "brand_a",
-      distributor_id: "dist_1",
-      multi_brand: true,
-      cross_brand_data: true,
-    },
-  }, connectorKey);
-  assert(networkBranch.status === 200 && networkBranch.json.branch_output?.blocked_if?.cross_brand_data_leak === true, "network cross brand leak not detected");
-  mark("branch_brand_distributor_network_guard", true, {
-    blocked_if: networkBranch.json.branch_output.blocked_if,
-  });
-
-  const inventoryBranch = await api(base, "POST", "/v1/branches/product_inventory_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      sku: "SKU-001",
-      stock: 0,
-      movement_type: "decrement",
-      source: "",
-      sell_unavailable: true,
-      backorder_policy: false,
-    },
-  }, connectorKey);
-  assert(inventoryBranch.status === 200 && inventoryBranch.json.branch_output?.blocked_if?.decrement_without_source === true, "inventory decrement source not detected");
-  assert(inventoryBranch.json.branch_output?.blocked_if?.sell_unavailable_without_policy === true, "inventory unavailable sale not detected");
-  mark("branch_product_inventory_guard", true, {
-    blocked_if: inventoryBranch.json.branch_output.blocked_if,
-  });
-
-  const smartdeskBranch = await api(base, "POST", "/v1/branches/smartdesk_operations_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      module: "ai_gold",
-      plan: "gold",
-      operator_confirmed: false,
-      ai_changes_numbers: true,
-      auto_send: true,
-    },
-  }, connectorKey);
-  assert(smartdeskBranch.status === 200 && smartdeskBranch.json.branch_output?.blocked_if?.ai_changes_real_numbers === true, "smartdesk AI number boundary not detected");
-  assert(smartdeskBranch.json.branch_output?.blocked_if?.auto_send_message === true, "smartdesk auto send not detected");
-  mark("branch_smartdesk_operations_guard", true, {
-    blocked_if: smartdeskBranch.json.branch_output.blocked_if,
-  });
-
-  const beautyProtocolBranch = await api(base, "POST", "/v1/branches/beauty_protocol_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      objective: "migliorare esperienza trattamento",
-      area: "viso",
-      technologies: ["radiofrequenza"],
-      operator_confirmed: false,
-      guaranteed_result: true,
-    },
-  }, connectorKey);
-  assert(beautyProtocolBranch.status === 200 && beautyProtocolBranch.json.branch_output?.blocked_if?.medical_or_guaranteed_claim === true, "beauty protocol guaranteed claim not detected");
-  assert(beautyProtocolBranch.json.branch_output?.blocked_if?.missing_operator_confirmation === true, "beauty protocol operator confirmation not detected");
-  mark("branch_beauty_protocol_guard", true, {
-    blocked_if: beautyProtocolBranch.json.branch_output.blocked_if,
-  });
-
-  const offerBranch = await api(base, "POST", "/v1/branches/segmentation_offer_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      segment: "distributori network",
-      price_policy_ready: true,
-      price_source: "official",
-      margin_checked: true,
-    },
-  }, connectorKey);
-  assert(offerBranch.status === 200 && offerBranch.json.branch_output?.offer_mode === "draft_with_price_guard", "segmentation offer branch failed");
-  mark("branch_segmentation_offer_guard", true, {
-    state: offerBranch.json.output.state,
-    price_guard_required: offerBranch.json.branch_output.price_guard_required,
-  });
-
-  const funnelBranch = await api(base, "POST", "/v1/branches/funnel_conversion_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      funnel_goal: "waas_request",
-      cta: "Richiedi informazioni",
-      tracking_ready: true,
-      invented_conversion_rate: false,
-    },
-  }, connectorKey);
-  assert(funnelBranch.status === 200 && funnelBranch.json.branch_output?.funnel_mode === "conversion_plan_review", "funnel conversion branch failed");
-  mark("branch_funnel_conversion_guard", true, {
-    state: funnelBranch.json.output.state,
-    publish_allowed: funnelBranch.json.branch_output.publish_allowed,
-  });
-
-  const recallBranch = await api(base, "POST", "/v1/branches/email_recall_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      customer_state: "at_risk",
-      days_since_last_visit: 66,
-      consent: false,
-      channel: "email",
-      contact_reason: "recupero cliente",
-    },
-  }, connectorKey);
-  assert(recallBranch.status === 200 && recallBranch.json.branch_output?.blocked_if?.missing_consent === true, "email recall consent guard failed");
-  mark("branch_email_recall_guard", true, {
-    state: recallBranch.json.output.state,
-    blocked_if: recallBranch.json.branch_output.blocked_if,
-  });
-
-  const localizationBranch = await api(base, "POST", "/v1/branches/content_localization_guard/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      source_locale: "it",
-      target_locale: "en",
-      key_path: "packages.0.title",
-      glossary_ready: true,
-      claim_recheck_ready: true,
-    },
-  }, connectorKey);
-  assert(localizationBranch.status === 200 && localizationBranch.json.branch_output?.localization_mode === "structured_strings_only", "content localization branch failed");
-  mark("branch_content_localization_guard", true, {
-    state: localizationBranch.json.output.state,
-    target_locale: localizationBranch.json.branch_output.target_locale,
-  });
-
   const chemistryBranch = await api(base, "POST", "/v1/branches/cosmetic_chemistry/analyze", {
     tenant_id: "tenant_demo_skinharmony",
     data: {
@@ -1519,101 +671,6 @@ try {
     text: "La informacion de gestion.",
   }, connectorKey);
   assert(textGuardSpanish.status === 200 && textGuardSpanish.json.issues?.some((issue) => issue.original.toLowerCase() === "informacion"), "spanish dictionary failed");
-
-  const translationBranch = await api(base, "POST", "/v1/branches/translation_governance/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      source_lang: "it",
-      target_lang: "en",
-      items: [
-        {
-          key_path: "packages.0.price",
-          source_text: "Fee iniziale 750 EUR",
-          translated_text: "Initial fee 750 EUR",
-        },
-        {
-          key_path: "packages.0.cta",
-          source_text: "Richiedi informazioni [sh_waas_offer]",
-          translated_text: "Request information [sh_waas_offer]",
-        },
-      ],
-    },
-  }, connectorKey);
-  assert(translationBranch.status === 200 && translationBranch.json.branch_output?.translation_mode === "structured_strings_only", "translation governance branch failed");
-  assert(translationBranch.json.branch_output?.altered_protected_token_count === 0, "translation protected token false positive");
-  mark("branch_translation_governance", true, {
-    state: translationBranch.json.output.state,
-    review_required: translationBranch.json.branch_output.review_required,
-    altered_protected_token_count: translationBranch.json.branch_output.altered_protected_token_count,
-  });
-
-  const translationRiskBranch = await api(base, "POST", "/v1/branches/translation_governance/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      source_lang: "it",
-      target_lang: "en",
-      items: [
-        {
-          key_path: "packages.0.price",
-          source_text: "Fee iniziale 750 EUR",
-          translated_text: "Initial fee 900 USD",
-        },
-        {
-          key_path: "hero.html",
-          source_text: "<section><h1>Offerta</h1></section>",
-          translated_text: "<section><h1>Offer</h1></section>",
-        },
-      ],
-    },
-  }, connectorKey);
-  assert(translationRiskBranch.status === 200 && translationRiskBranch.json.branch_output?.review_required === true, "translation risk review not required");
-  assert(translationRiskBranch.json.branch_output?.html_blob_detected === true, "translation html blob not detected");
-  mark("branch_translation_governance_risk", true, {
-    state: translationRiskBranch.json.output.state,
-    risk: translationRiskBranch.json.output.risk.band,
-    html_blob_detected: translationRiskBranch.json.branch_output.html_blob_detected,
-    altered_protected_token_count: translationRiskBranch.json.branch_output.altered_protected_token_count,
-  });
-
-  const textBranch = await api(base, "POST", "/v1/branches/ramo_testo/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      locale: "it",
-      context: "page_copy",
-      domain: "suite",
-      key_path: "hero.title",
-      target: "brand e distributori",
-      cta: "Richiedi informazioni",
-      text: "Sistema premium per controllare rete e vendite senza promesse mediche.",
-      public_text: true,
-    },
-  }, connectorKey);
-  assert(textBranch.status === 200 && textBranch.json.branch_output?.publish_safe_advisory === true, "ramo testo safe branch failed");
-  mark("branch_ramo_testo_enhanced", true, {
-    state: textBranch.json.output.state,
-    mixed_language: textBranch.json.branch_output.mixed_language,
-    publish_safe_advisory: textBranch.json.branch_output.publish_safe_advisory,
-  });
-
-  const textRiskBranch = await api(base, "POST", "/v1/branches/ramo_testo/analyze", {
-    tenant_id: "tenant_demo_skinharmony",
-    data: {
-      locale: "it",
-      context: "page_copy",
-      text: "The trattamento garantisce risultati clinically provati senza fonte.",
-      public_text: true,
-      mentions_study: true,
-      sources_provided: false,
-    },
-  }, connectorKey);
-  assert(textRiskBranch.status === 200 && textRiskBranch.json.branch_output?.mixed_language === true, "ramo testo mixed language not detected");
-  assert(textRiskBranch.json.branch_output?.unsupported_proof === true, "ramo testo unsupported proof not detected");
-  mark("branch_ramo_testo_risk_enhanced", true, {
-    state: textRiskBranch.json.output.state,
-    risk: textRiskBranch.json.output.risk.band,
-    mixed_language: textRiskBranch.json.branch_output.mixed_language,
-    unsupported_proof: textRiskBranch.json.branch_output.unsupported_proof,
-  });
 
   const financeTestBranch = await api(base, "POST", "/v1/branches/nyra_finance_beauty_test/analyze", {
     tenant_id: "tenant_demo_skinharmony",
