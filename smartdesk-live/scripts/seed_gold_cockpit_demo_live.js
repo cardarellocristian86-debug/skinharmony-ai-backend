@@ -10,6 +10,7 @@ const DEMO_CENTER_NAME = String(process.env.SMARTDESK_DEMO_CENTER_NAME || "SkinH
 const APPLY = process.argv.includes("--apply");
 const RESET = process.argv.includes("--reset-center");
 const LIVE_CONFIRM = process.argv.includes("--i-understand-live");
+const INTERNAL_RENDER_JOB = process.argv.includes("--internal-render-job");
 
 function cents(euro) {
   return Math.round(Number(euro || 0) * 100);
@@ -136,7 +137,13 @@ async function main() {
     return;
   }
   if (!RESET || !LIVE_CONFIRM || !ADMIN_PASSWORD || !DEMO_PASSWORD) {
-    throw new Error("Live apply requires --apply --reset-center --i-understand-live and SMARTDESK_ADMIN_PASSWORD/SMARTDESK_DEMO_PASSWORD.");
+    if (!INTERNAL_RENDER_JOB) {
+      throw new Error("Live apply requires --apply --reset-center --i-understand-live and SMARTDESK_ADMIN_PASSWORD/SMARTDESK_DEMO_PASSWORD.");
+    }
+  }
+  if (INTERNAL_RENDER_JOB) {
+    await runInternalRenderJob(data);
+    return;
   }
 
   const adminToken = await login(ADMIN_USERNAME, ADMIN_PASSWORD);
@@ -295,6 +302,180 @@ async function main() {
       staff: createdStaff.length,
       services: createdServices.length,
       clients: createdClients.length,
+      appointments: appointmentCount,
+      payments: paymentCount,
+      treatments: treatmentCount,
+      protocols: 3
+    },
+    rebuild: {
+      success: rebuild.success,
+      rawCounts: rebuild.rawCounts,
+      valid: rebuild.valid
+    },
+    cockpit: {
+      version: cockpit.cockpitVersion,
+      summary: cockpit.summary,
+      sections: Array.isArray(cockpit.sections) ? cockpit.sections.map((section) => ({ key: section.key, status: section.status, items: section.items?.length || 0 })) : []
+    }
+  }, null, 2));
+}
+
+async function flushPersistence(adapter) {
+  if (!adapter?.writeChains) return;
+  await Promise.allSettled(Array.from(adapter.writeChains.values()));
+  if (adapter.pool?.end) await adapter.pool.end();
+}
+
+async function runInternalRenderJob(data) {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("--internal-render-job requires DATABASE_URL inside Render.");
+  }
+  const { DesktopMirrorService } = require("../src/DesktopMirrorService");
+  const { PostgresPersistenceAdapter } = require("../src/PostgresPersistenceAdapter");
+  const adapter = new PostgresPersistenceAdapter(process.env.DATABASE_URL);
+  const service = new DesktopMirrorService({ persistenceAdapter: adapter });
+  await service.init();
+
+  const adminSession = {
+    username: "render_internal_seed_job",
+    role: "superadmin",
+    centerId: "center_admin",
+    centerName: "SkinHarmony Admin",
+    subscriptionPlan: "gold",
+    accessState: "active"
+  };
+  const demoSession = {
+    username: DEMO_USERNAME,
+    role: "owner",
+    centerId: DEMO_CENTER_ID,
+    centerName: DEMO_CENTER_NAME,
+    subscriptionPlan: "gold",
+    accessState: "active"
+  };
+
+  const existingDemoUsers = service.usersRepository
+    .list()
+    .filter((user) =>
+      String(user.username || "").toLowerCase() === DEMO_USERNAME.toLowerCase()
+      || String(user.centerId || "") === DEMO_CENTER_ID
+    );
+  for (const user of existingDemoUsers) {
+    service.usersRepository.delete(user.id);
+  }
+
+  const reset = service.resetCenterOperationalData({
+    centerId: DEMO_CENTER_ID,
+    confirm: `RESET-${DEMO_CENTER_ID}`
+  }, adminSession);
+
+  const demoPassword = DEMO_PASSWORD || `DemoGold-${Date.now()}`;
+  const demoUser = service.createAccessUser({
+    username: DEMO_USERNAME,
+    password: demoPassword,
+    role: "owner",
+    centerId: DEMO_CENTER_ID,
+    centerName: DEMO_CENTER_NAME,
+    planType: "active",
+    accountStatus: "active",
+    paymentStatus: "paid",
+    subscriptionPlan: "gold",
+    businessModel: "esthetic",
+    ownerName: "Demo SkinHarmony",
+    contactEmail: "demo.gold@demo.skinharmony.local"
+  }, adminSession);
+
+  service.saveSettings({
+    centerName: DEMO_CENTER_NAME,
+    businessModel: "esthetic",
+    enableMarketing: true,
+    enableCashdesk: true,
+    enableTreatments: true,
+    enableProtocolsHub: true,
+    inventoryBaseEnabled: true,
+    inventoryMovementsEnabled: true,
+    inventoryAlertsEnabled: true,
+    profitabilityEnabled: true,
+    profitabilityOperatorCostEnabled: true,
+    profitabilityTechnologyAnalysisEnabled: true
+  }, demoSession);
+
+  const createdStaff = data.staff.map((item) => service.saveStaff(item, demoSession));
+  const createdServices = data.services.map((item) => service.saveService(item, demoSession));
+  const createdClients = data.clients.map((item) => service.saveClient(item, demoSession));
+  const createdInventory = data.inventory.map((item) => service.saveInventoryItem(item, demoSession));
+
+  let appointmentCount = 0;
+  let paymentCount = 0;
+  let treatmentCount = 0;
+  for (let month = 4; month >= 0; month -= 1) {
+    for (let index = 0; index < createdClients.length; index += 1) {
+      if ((index + month) % 3 === 0 && month < 4) continue;
+      const client = createdClients[index];
+      const serviceItem = createdServices[(index + month) % createdServices.length];
+      const operator = createdStaff[(index + month) % createdStaff.length];
+      const daysOffset = -((month * 28) + ((index * 3) % 21));
+      const amountCents = Number(serviceItem.priceCents || 0) + (index % 4 === 0 ? cents(25) : 0);
+      const appointment = service.saveAppointment({
+        clientId: client.id,
+        clientName: client.name,
+        staffId: operator.id,
+        staffName: operator.name,
+        serviceId: serviceItem.id,
+        serviceName: serviceItem.name,
+        startAt: iso(daysOffset, 9 + (index % 7), index % 2 ? 30 : 0),
+        durationMin: serviceItem.durationMin,
+        status: daysOffset < -2 ? "completed" : "confirmed",
+        notes: "SHGOLD_DEMO seduta demo Gold per cockpit, continuita e redditivita.",
+        idempotencyKey: `shgold-demo-app-${month}-${index + 1}`
+      }, demoSession);
+      appointmentCount += 1;
+      if (daysOffset < -2) {
+        service.createPayment({
+          clientId: client.id,
+          appointmentId: appointment.id,
+          amountCents,
+          method: index % 2 ? "card" : "cash",
+          createdAt: iso(daysOffset, 12),
+          note: "SHGOLD_DEMO pagamento demo Gold.",
+          idempotencyKey: `shgold-demo-pay-${month}-${index + 1}`
+        }, demoSession);
+        paymentCount += 1;
+        service.createTreatment({
+          clientId: client.id,
+          title: `${serviceItem.name} - follow-up demo`,
+          note: "SHGOLD_DEMO trattamento demo: follow-up consigliato, nessun claim medico."
+        }, demoSession);
+        treatmentCount += 1;
+      }
+    }
+  }
+  for (const client of createdClients.slice(0, 3)) {
+    service.saveProtocol({
+      clientId: client.id,
+      title: `Percorso demo Gold - ${client.name}`,
+      objective: "Continuita cliente, recall e controllo risultati non medico.",
+      area: "beauty",
+      sessionsCount: 4,
+      notes: "SHGOLD_DEMO protocollo dimostrativo controllato."
+    }, demoSession);
+  }
+
+  const rebuild = service.rebuildGoldStateForTenant({ username: DEMO_USERNAME }, adminSession);
+  const cockpit = service.getAiGoldCockpit({}, demoSession);
+  await flushPersistence(adapter);
+
+  console.log(JSON.stringify({
+    success: true,
+    mode: "internal-render-job",
+    demoUsername: DEMO_USERNAME,
+    demoCenterId: DEMO_CENTER_ID,
+    demoUserId: demoUser.id,
+    reset,
+    created: {
+      staff: createdStaff.length,
+      services: createdServices.length,
+      clients: createdClients.length,
+      inventory: createdInventory.length,
       appointments: appointmentCount,
       payments: paymentCount,
       treatments: treatmentCount,
