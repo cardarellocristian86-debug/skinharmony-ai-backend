@@ -12779,6 +12779,240 @@ class DesktopMirrorService {
     return localizeDecisionCenterPayload(payload, this.getRuntimeLanguage(session));
   }
 
+  getAiGoldCockpit(options = {}, session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        requiredPlan: "gold",
+        currentPlan: this.getPlanLevel(session),
+        message: "Cockpit Gold disponibile solo con piano Gold.",
+        sections: []
+      };
+    }
+
+    const startDate = String(options.startDate || "");
+    const endDate = String(options.endDate || "");
+    const period = { startDate, endDate };
+    const snapshot = this.getBusinessSnapshot(period, session);
+    const decisionContext = this.getGoldDecisionContext(period, session);
+    const decisionCenter = this.getAiGoldDecisionCenter(period, session);
+    const progressive = this.getProgressiveIntelligenceStatus(session);
+    const dataQuality = snapshot.dataQuality || {};
+    const centerHealth = snapshot.report?.centerHealth || {};
+    const profitability = snapshot.profitability || {};
+    const marketing = snapshot.marketing || {};
+    const inventory = snapshot.inventory || {};
+    const primaryAction = decisionContext.primaryAction || null;
+    const priorityClients = Array.isArray(marketing.priorityClients)
+      ? marketing.priorityClients
+      : Array.isArray(marketing.suggestions)
+        ? marketing.suggestions
+        : [];
+    const profitabilitySuggestions = Array.isArray(profitability.suggestions) ? profitability.suggestions : [];
+    const servicesMissingCosts = Number(dataQuality.metrics?.servicesMissingCosts || 0);
+    const operatorsMissingHourlyCost = Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0);
+    const profitabilityBlockedForConfig = servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0;
+    const forecastStatus = progressive?.oracleStatus || {};
+    const forecastAllowed = Boolean(progressive?.forecastAllowed || forecastStatus.forecastAllowed);
+    const enabledFeatures = Array.isArray(progressive?.enabledFeatures) ? progressive.enabledFeatures : [];
+    const blockedFeatures = Array.isArray(progressive?.blockedFeatures) ? progressive.blockedFeatures : [];
+    const primaryLooksLikeStaleCostSetup = !profitabilityBlockedForConfig
+      && /completa\s+costi|costo\s+orario|configurazione\s+costi/i.test(String(primaryAction?.suggestedAction || primaryAction?.explanationShort || ""));
+    const resolvedPrimaryLabel = primaryLooksLikeStaleCostSetup
+      ? "Crescita e controllo centro"
+      : primaryAction?.label || "Priorità operativa";
+    const resolvedPrimaryValue = primaryLooksLikeStaleCostSetup
+      ? "Il centro demo ha dati economici leggibili: parti da clienti prioritari, continuità agenda e controllo marginalità."
+      : primaryAction?.explanationShort || primaryAction?.suggestedAction || "Gold sta leggendo il centro senza forzare azioni.";
+    const resolvedPrimaryAction = primaryLooksLikeStaleCostSetup
+      ? "apri cockpit e lavora la prima priorità"
+      : primaryAction?.suggestedAction || "leggi priorità";
+
+    const sections = [
+      {
+        key: "executive",
+        title: "Cockpit Gold",
+        status: primaryAction ? "ready" : "monitor",
+        items: [
+          {
+            id: "gold-primary-action",
+            label: resolvedPrimaryLabel,
+            value: resolvedPrimaryValue,
+            action: resolvedPrimaryAction,
+            target: primaryAction?.target || primaryAction?.domain || "dashboard",
+            requiresOperatorConfirmation: true,
+            confidence: Number(primaryAction?.confidence || decisionContext.globalConfidence || 0),
+            risk: Number(primaryAction?.risk || decisionContext.systemRisk || 0)
+          },
+          {
+            id: "gold-rule",
+            label: "Regola operativa",
+            value: "Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare. L'operatore conferma ogni azione.",
+            action: "mantieni conferma operatore",
+            target: "ai-gold"
+          }
+        ]
+      },
+      {
+        key: "center_health",
+        title: "Stato centro",
+        status: centerHealth.status || "unknown",
+        items: [
+          {
+            id: "health-main",
+            label: centerHealth.statusLabel || "Stato non ancora classificato",
+            value: centerHealth.reason || "La lettura centro dipende da fatturato, operatori, agenda e continuità clienti.",
+            action: centerHealth.action || "controlla dashboard",
+            target: "dashboard",
+            metrics: {
+              monthlyRevenueCents: Number(centerHealth.monthlyRevenueCents || 0),
+              revenuePerOperatorCents: Number(centerHealth.revenuePerOperatorCents || 0),
+              saturationPercent: Number(centerHealth.saturationPercent || 0),
+              continuityPercent: Number(centerHealth.continuityPercent || 0)
+            }
+          }
+        ]
+      },
+      {
+        key: "growth",
+        title: "Crescita clienti",
+        status: priorityClients.length ? "action_queue" : "monitor",
+        items: priorityClients.slice(0, 5).map((client, index) => ({
+          id: `growth-${client.clientId || index + 1}`,
+          label: client.name || "Cliente da leggere",
+          value: client.clearReason || client.conclusion || client.contactClassLabel || "Cliente ordinato dal motore marketing Gold.",
+          action: client.operatingDecision || client.recommendedAction || "prepara contatto",
+          target: "marketing",
+          clientId: client.clientId || "",
+          consentRequired: !client.marketingConsent,
+          impactCents: Number(client.referenceValueCents || client.estimatedRecallValueCents || 0)
+        }))
+      },
+      {
+        key: "economic_control",
+        title: "Controllo economico",
+        status: profitabilityBlockedForConfig ? "configuration_required" : "readable",
+        items: profitabilityBlockedForConfig
+          ? [{
+              id: "profitability-config",
+              label: "Redditività da configurare",
+              value: `Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori prima di usare la lettura economica come guida forte.`,
+              action: "completa configurazione costi",
+              target: "services"
+            }]
+          : (profitabilitySuggestions.length ? profitabilitySuggestions.slice(0, 5).map((item) => ({
+              id: `profit-${item.id || item.name}`,
+              label: item.name || "Servizio",
+              value: item.clearConclusion || item.suggestion || "Lettura economica Gold.",
+              action: item.operatingAction || item.nextAction || "controlla redditività",
+              target: "profitability",
+              revenueCents: Number(item.revenueCents || 0),
+              profitCents: Number(item.profitCents || 0),
+              marginPercent: Number(item.marginPercent || 0)
+            })) : [{
+              id: "profitability-summary",
+              label: "Redditività leggibile",
+              value: "Costi principali presenti: Gold può leggere margini e controllo economico senza trasformarlo in promessa di risultato.",
+              action: "apri redditività e controlla servizi benchmark",
+              target: "profitability",
+              revenueCents: Number(profitability.summary?.revenueCents || profitability.summary?.totalRevenueCents || 0),
+              profitCents: Number(profitability.summary?.profitCents || profitability.summary?.totalProfitCents || 0),
+              marginPercent: Number(profitability.summary?.marginPercent || 0)
+            }])
+      },
+      {
+        key: "forecast_readiness",
+        title: "Previsione prudenziale",
+        status: forecastAllowed ? "available" : "not_ready",
+        items: [
+          {
+            id: "forecast-status",
+            label: forecastAllowed ? "Forecast prudenziale disponibile" : "Forecast non ancora maturo",
+            value: forecastAllowed
+              ? "Il centro ha dati sufficienti per scenari condizionati e prudenti."
+              : "Gold non produce previsioni forti finché storico, costi, stabilità e affidabilità economica non sono sufficienti.",
+            action: forecastAllowed ? "leggi scenari" : "aumenta qualità dati e storico",
+            target: "ai-gold",
+            level: progressive?.activation?.code || progressive?.levelCode || "",
+            enabledFeatures: enabledFeatures.map((item) => item.key || item).filter(Boolean).slice(0, 8),
+            blockedFeatures: blockedFeatures.map((item) => ({
+              key: item.key || "",
+              label: item.label || "",
+              reason: item.reason || ""
+            })).slice(0, 8)
+          }
+        ]
+      },
+      {
+        key: "evidence",
+        title: "Prove e sorgenti",
+        status: "read_only",
+        items: [
+          {
+            id: "source-snapshot",
+            label: "Business snapshot",
+            value: snapshot.sourceLayer || "business_snapshot",
+            endpoint: "/api/business-snapshot"
+          },
+          {
+            id: "source-decision-context",
+            label: "Decision context",
+            value: decisionContext.sourceLayer || "gold_decision_context",
+            endpoint: "/api/ai-gold/decision-context"
+          },
+          {
+            id: "source-decision-center",
+            label: "Decision center",
+            value: decisionCenter.sourceLayer || "gold_decision_center",
+            endpoint: "/api/ai-gold/decision-center"
+          },
+          {
+            id: "source-inventory",
+            label: "Magazzino",
+            value: `${Number(inventory.totalItems || inventory.summary?.totalItems || 0)} articoli letti`,
+            endpoint: "/api/inventory/overview"
+          }
+        ]
+      }
+    ].map((section) => ({
+      ...section,
+      items: Array.isArray(section.items) ? section.items : []
+    }));
+
+    return {
+      goldEnabled: true,
+      cockpitVersion: "gold_cockpit_v1",
+      sourceLayer: "smartdesk_gold_cockpit",
+      generatedAt: nowIso(),
+      period: snapshot.period || period,
+      tenant: {
+        centerId: this.getCenterId(session),
+        plan: this.getPlanLevel(session)
+      },
+      summary: {
+        centerStatus: centerHealth.status || "",
+        centerStatusLabel: centerHealth.statusLabel || "",
+        primaryAction: resolvedPrimaryAction || resolvedPrimaryLabel || "",
+        totalPriorityClients: priorityClients.length,
+        profitabilityBlockedForConfig,
+        forecastAllowed,
+        dataQualityScore: Number(dataQuality.score || 0),
+        decisionConfidence: Number(decisionContext.globalConfidence || 0),
+        systemRisk: Number(decisionContext.systemRisk || 0)
+      },
+      guardrails: {
+        readOnly: true,
+        automaticExecutionAllowed: false,
+        operatorConfirmationRequired: true,
+        medicalClaimsAllowed: false,
+        pricingMutationAllowed: false,
+        rule: "Cockpit Gold legge e ordina. Non invia messaggi, non modifica prezzi, non pubblica e non corregge dati senza operatore."
+      },
+      sections
+    };
+  }
+
   buildAiGoldProfitabilityFromOverview(overview = {}, session = null) {
     const services = Array.isArray(overview.services) ? overview.services : [];
     const suggestions = services.map((service) => {

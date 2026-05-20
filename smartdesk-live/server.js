@@ -1389,6 +1389,24 @@ app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
+app.get("/api/ai-gold/cockpit", requirePlan("gold"), (req, res) => {
+  sendCoreliaSafe(res, () => ({
+    goldEnabled: false,
+    cockpitVersion: "gold_cockpit_v1",
+    sourceLayer: "corelia_fallback",
+    summary: {},
+    guardrails: {
+      readOnly: true,
+      automaticExecutionAllowed: false,
+      operatorConfirmationRequired: true
+    },
+    sections: []
+  }), () => service.getAiGoldCockpit({
+    startDate: req.query.startDate || "",
+    endDate: req.query.endDate || ""
+  }, req.session));
+});
+
 app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,

@@ -1,38 +1,29 @@
 [
   {
-    "id": "center_admin_staff_3",
+    "id": "gold-op-1",
     "centerId": "center_admin",
-    "name": "Responsabile",
-    "colorTag": "#d7b3ff",
-    "role": "",
-    "shift": "",
-    "targetProgress": 0,
-    "active": 1,
-    "createdAt": "2026-04-07T21:05:40.466Z",
-    "centerName": "Privilege Parrucchieri"
+    "name": "Elena Rossi",
+    "role": "Senior specialist",
+    "hourlyCostCents": 2400,
+    "active": true,
+    "createdAt": "2025-11-20T09:00:00.000Z"
   },
   {
-    "id": "center_admin_staff_2",
+    "id": "gold-op-2",
     "centerId": "center_admin",
-    "name": "Operatore 2",
-    "colorTag": "#8fd9c8",
-    "role": "",
-    "shift": "",
-    "targetProgress": 0,
-    "active": 1,
-    "createdAt": "2026-04-07T21:05:40.466Z",
-    "centerName": "Privilege Parrucchieri"
+    "name": "Marta Bianchi",
+    "role": "Beauty operator",
+    "hourlyCostCents": 1900,
+    "active": true,
+    "createdAt": "2025-11-20T09:00:00.000Z"
   },
   {
-    "id": "center_admin_staff_1",
+    "id": "gold-op-3",
     "centerId": "center_admin",
-    "name": "Operatore 1",
-    "colorTag": "#6db7ff",
-    "role": "",
-    "shift": "",
-    "targetProgress": 0,
-    "active": 1,
-    "createdAt": "2026-04-07T21:05:40.466Z",
-    "centerName": "Privilege Parrucchieri"
+    "name": "Giulia Neri",
+    "role": "Reception e recall",
+    "hourlyCostCents": 1700,
+    "active": true,
+    "createdAt": "2025-11-20T09:00:00.000Z"
   }
 ]

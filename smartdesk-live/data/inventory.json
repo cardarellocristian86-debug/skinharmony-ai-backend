@@ -1,1 +1,35 @@
-[]
+[
+  {
+    "id": "gold-stock-1",
+    "centerId": "center_admin",
+    "name": "Siero Reset Barrier",
+    "category": "cabina",
+    "quantity": 4,
+    "minQuantity": 6,
+    "costCents": 1800,
+    "retailPriceCents": 4900,
+    "active": true
+  },
+  {
+    "id": "gold-stock-2",
+    "centerId": "center_admin",
+    "name": "Maschera O3 Glow",
+    "category": "cabina",
+    "quantity": 12,
+    "minQuantity": 5,
+    "costCents": 900,
+    "retailPriceCents": 2900,
+    "active": true
+  },
+  {
+    "id": "gold-stock-3",
+    "centerId": "center_admin",
+    "name": "Crema Home Care Premium",
+    "category": "rivendita",
+    "quantity": 7,
+    "minQuantity": 8,
+    "costCents": 2200,
+    "retailPriceCents": 6500,
+    "active": true
+  }
+]

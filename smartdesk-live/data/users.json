@@ -2,7 +2,7 @@
   {
     "id": "809e1324-cbee-473b-8384-a094f3714ef7",
     "username": "cristian",
-    "passwordHash": "scrypt:0f1823164b903302d10ce5fe83989768:1528774b88a96d0b6d5c6c25ae35db6f6da575c3613188ef750434793a65181f9747b4b010e9fb797bc0fbc9922686a0e344ee70a1dfe0ef76012a267787189c",
+    "passwordHash": "scrypt:3cbbc9253be50fefa4fc4d9d9e0eb045:8a6a86cf32b7442c73d11a17309cb6a312be95bbbf3d5a6e51c907dfff7af51e96354a0ab3d39dd360d1e35b2a7842939513a83381388a9650f85df5f7ea3b86",
     "role": "superadmin",
     "active": true,
     "centerId": "center_admin",
@@ -12,6 +12,15 @@
     "accountStatus": "active",
     "paymentStatus": "paid",
     "activatedAt": "2026-04-12T13:55:21.805Z",
-    "updatedAt": "2026-04-24T11:12:46.369Z"
+    "updatedAt": "2026-05-20T12:35:18.271Z",
+    "subscriptionPlan": "gold",
+    "requestedSubscriptionPlan": "",
+    "subscriptionChangeRequestedAt": "",
+    "subscriptionChangeStatus": "",
+    "accessState": "active",
+    "trialDays": 7,
+    "trialStartsAt": "",
+    "trialEndsAt": "",
+    "trialRemainingDays": 0
   }
 ]

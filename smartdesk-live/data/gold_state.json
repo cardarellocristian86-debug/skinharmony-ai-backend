@@ -1,1 +1,1459 @@
-[]
+[
+  {
+    "id": "gold_state:center_admin",
+    "version": "corelia_state_v1",
+    "centerId": "center_admin",
+    "centerName": "SkinHarmony Demo Gold",
+    "updatedAt": "2026-05-19T19:10:19.869Z",
+    "lastEvent": {
+      "type": "rebuild_after_gold_onboarding",
+      "at": "2026-05-19T19:10:19.869Z",
+      "reason": "demo_gold_cockpit_seed_test",
+      "importId": "",
+      "previousEventSeq": 0
+    },
+    "eventSeq": 109,
+    "components": {
+      "Rev": 457500,
+      "U": 0,
+      "Sat": 0.041666666666666664,
+      "Act": 12,
+      "Cont": 1,
+      "Ticket": 10640,
+      "Prod": 0.05555555555555555,
+      "DQ": 0.8500000000000001,
+      "CostConf": 0.23255813953488372,
+      "Margin": 0.7087,
+      "Conf": 0.7119738372093024
+    },
+    "counters": {
+      "revenueTotalCents": 457500,
+      "paymentCount": 43,
+      "unlinkedPayments": 0,
+      "todayAppointments": 1,
+      "appointmentSlots": 24,
+      "clientsTotal": 12,
+      "activeClients": 12,
+      "clientsWithContact": 12,
+      "servicesTotal": 4,
+      "servicesWithPrice": 4,
+      "servicesWithCost": 3,
+      "staffActive": 3,
+      "staffTotal": 3,
+      "inventoryTotal": 3,
+      "lowStock": 2,
+      "marginTotal": 0.7086513661202186,
+      "marginSamples": 1,
+      "profitabilityRevenueCents": 457500,
+      "profitabilityCostCents": 133292,
+      "profitabilityProfitCents": 324208,
+      "profitabilitySamples": 43,
+      "profitabilityReal": 0,
+      "profitabilityStandard": 10,
+      "profitabilityEstimated": 33,
+      "profitabilityIncomplete": 0
+    },
+    "dirty": {
+      "components": [],
+      "snapshots": [],
+      "signals": []
+    },
+    "snapshots": {
+      "business": {
+        "type": "business_snapshot",
+        "source": "gold_state",
+        "revenueCents": 457500,
+        "unlinkedPayments": 0,
+        "agendaSaturation": 0.041666666666666664,
+        "activeClients": 12,
+        "clientContinuity": 1,
+        "averageTicketCents": 10640,
+        "productivity": 0.05555555555555555,
+        "dataQuality": 0.8500000000000001,
+        "confidence": 0.7119738372093024,
+        "status": "centro_monitorato"
+      },
+      "profitability": {
+        "type": "profitability_snapshot",
+        "source": "gold_state",
+        "revenueCents": 457500,
+        "coreRevenueCents": 457500,
+        "coreCostCents": 133292,
+        "coreProfitCents": 324208,
+        "averageMargin": 0.7087,
+        "costConfidence": 0.23255813953488372,
+        "economicConfidence": 0.7119738372093024,
+        "profitabilityConfidence": 0.23255813953488372,
+        "confidenceLabel": "bassa",
+        "coreSamples": 43,
+        "confidenceBreakdown": {
+          "real": 0,
+          "standard": 10,
+          "estimated": 33,
+          "incomplete": 0
+        },
+        "mathCore": "profitability_core_v1",
+        "status": "margine_da_verificare"
+      },
+      "report": {
+        "type": "report_snapshot",
+        "source": "gold_state",
+        "revenueCents": 457500,
+        "averageTicketCents": 10640,
+        "productivity": 0.05555555555555555,
+        "agendaSaturation": 0.041666666666666664,
+        "continuity": 1,
+        "dataQuality": 0.8500000000000001,
+        "unlinkedPayments": 0
+      }
+    },
+    "signals": {
+      "operationalRisk": 0.0670833333333333,
+      "centerBelowThreshold": 0.32251895994832036,
+      "opportunity": 0.884789534883721,
+      "cashAnomaly": 0,
+      "marginAnomaly": 0.422093023255814,
+      "dataReliability": 0.7119738372093024,
+      "productivitySignal": 0.05555555555555555
+    },
+    "decision": {
+      "source": "gold_state",
+      "domain": "growth",
+      "score": 0.8848,
+      "weightedScore": 0.8083,
+      "action": "ACT_NOW",
+      "primaryAction": {
+        "domain": "growth",
+        "action": "ACT_NOW",
+        "label": "Volume presente, completa costi per sbloccare redditivita",
+        "actionabilityScore": 1
+      },
+      "secondaryActions": [
+        {
+          "domain": "profitability",
+          "score": 0.4221,
+          "weightedScore": 0.2938,
+          "actionabilityScore": 0.7619,
+          "label": "Verifica marginalita e costi"
+        },
+        {
+          "domain": "data_quality",
+          "score": 0.288,
+          "weightedScore": 0.1895,
+          "actionabilityScore": 0.72,
+          "label": "Completa qualita dati"
+        }
+      ],
+      "blockedActions": [],
+      "explanationShort": "Il centro lavora, ma Gold evita letture economiche forti finche i costi servizi restano incompleti.",
+      "updatedAt": "2026-05-19T19:10:19.869Z",
+      "temporalStability": {
+        "stable": true,
+        "candidateCount": 0,
+        "requiredCycles": 2
+      }
+    },
+    "decisionStability": {
+      "acceptedKey": "growth:ACT_NOW",
+      "candidateKey": "",
+      "candidateCount": 0,
+      "minPersistenceCycles": 2,
+      "switchedAt": "2026-05-19T19:10:19.903Z"
+    },
+    "cashParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "cash_core_v1",
+      "mathAdapter": "cash_policy_adapter_v1",
+      "horizon": {
+        "startDate": "2026-01-09",
+        "endDate": "2026-05-19",
+        "mode": "all_observed_data"
+      },
+      "legacySnapshot": {
+        "source": "gold_state_legacy_cash",
+        "recordedCashCents": 457500,
+        "reconciledCashCents": 457500,
+        "operationalRevenueCents": 430000,
+        "unlinkedPaymentCount": 0,
+        "unlinkedCashCents": 0,
+        "gapCents": -27500,
+        "overdueCents": null,
+        "sourceFlags": [
+          "legacy_cash:recorded_cash_used_as_cash_equivalent",
+          "legacy_cash:no_overdue_metric"
+        ]
+      },
+      "coreSnapshot": {
+        "billedDueCents": 434500,
+        "reconciledCashCents": 457500,
+        "recordedCashCents": 457500,
+        "unlinkedCashCents": 0,
+        "ambiguousCashCents": 0,
+        "overdueCents": 0,
+        "openResidualCents": 4500,
+        "gapCents": -23000,
+        "collectionRatio": 1.052934407364787,
+        "reconciliationRatio": 1,
+        "ambiguityRatio": 0,
+        "overdueRatio": 0,
+        "confidence": "REAL",
+        "confidenceScore": 1,
+        "confidenceBreakdown": {
+          "reconciliationRatio": 1,
+          "ambiguityRatio": 0,
+          "dataCompleteness": 1,
+          "legacyFriction": 0,
+          "weights": {
+            "reconciliationRatio": 0.35,
+            "inverseAmbiguityRatio": 0.25,
+            "dataCompleteness": 0.25,
+            "inverseLegacyFriction": 0.15
+          }
+        },
+        "sourceFlags": [
+          "cash_ledger:simulated_allocations",
+          "cash_ledger:no_persistence"
+        ]
+      },
+      "comparableSnapshot": {
+        "mathAdapter": "cash_policy_adapter_v1",
+        "billedDueCents": 430000,
+        "reconciledCashCents": 457500,
+        "recordedCashCents": 457500,
+        "unlinkedCashCents": 0,
+        "ambiguousCashCents": 0,
+        "overdueCents": null,
+        "openResidualCents": 0,
+        "gapCents": -27500,
+        "collectionRatio": 1.063953488372093,
+        "reconciliationRatio": 1,
+        "ambiguityRatio": 0,
+        "overdueRatio": null,
+        "confidence": "REAL",
+        "confidenceScore": 1,
+        "confidenceBreakdown": {
+          "reconciliationRatio": 1,
+          "ambiguityRatio": 0,
+          "dataCompleteness": 1,
+          "legacyFriction": 0,
+          "weights": {
+            "reconciliationRatio": 0.35,
+            "inverseAmbiguityRatio": 0.25,
+            "dataCompleteness": 0.25,
+            "inverseLegacyFriction": 0.15
+          }
+        },
+        "sourceFlags": [
+          "cash_policy_adapter:legacy_comparable_projection",
+          "cash_policy_adapter:status_policy_legacy_completed_ready_checkout",
+          "cash_policy_adapter:overdue_excluded_from_agreement",
+          "cash_policy_adapter:recorded_cash_used_as_cash_equivalent"
+        ],
+        "policyBreakdown": {
+          "legacyBilledDueStatuses": [
+            "completed",
+            "ready_checkout"
+          ],
+          "operationalExcludedStatuses": [
+            "cancelled",
+            "no_show",
+            "deleted"
+          ],
+          "futureOpenDueCents": 4500,
+          "operationalOverdueCents": 0,
+          "ambiguousCashExcludedFromComparableUnlinkedCents": 0,
+          "comparableObligationCount": 43,
+          "totalObligationCount": 44,
+          "legacyComparableUnlinkedPaymentCount": 0,
+          "ambiguousPaymentCount": 0
+        }
+      },
+      "policyAdapter": {
+        "mathAdapter": "cash_policy_adapter_v1",
+        "policyDeltas": {
+          "billedDueCents": 4500,
+          "reconciledCashCents": 0,
+          "unlinkedCashCents": 0,
+          "gapCents": 4500,
+          "overdueCents": 0
+        },
+        "excludedFromAgreement": {
+          "overdueCents": {
+            "value": 0,
+            "reason": "legacy_has_no_real_overdue_metric"
+          },
+          "futureOpenDueCents": {
+            "value": 4500,
+            "reason": "legacy_billed_due_counts_completed_ready_checkout_only"
+          }
+        },
+        "policyFlags": [
+          "legacy_status_policy:completed_ready_checkout",
+          "operational_status_policy:all_non_cancelled",
+          "overdue:operational_only",
+          "service_shape:preserve_core_operational_snapshot"
+        ],
+        "explanations": [
+          {
+            "code": "STATUS_POLICY_MISMATCH",
+            "amountCents": 4500,
+            "explanation": "CashCore operativo include obbligazioni aperte/non cancellate che il legacy non conta in billed due."
+          }
+        ]
+      },
+      "diffSnapshot": {
+        "comparableMetrics": [
+          "billedDue",
+          "reconciledCash",
+          "unlinkedCash",
+          "gap"
+        ],
+        "deltas": {
+          "billedDueDeltaCents": 0,
+          "reconciledCashDeltaCents": 0,
+          "unlinkedCashDeltaCents": 0,
+          "gapDeltaCents": 0
+        },
+        "relativeErrors": {
+          "billedDueError": 0,
+          "reconciledCashError": 0,
+          "unlinkedCashError": 0,
+          "gapError": 0
+        },
+        "agreementScore": 1,
+        "agreementBand": "ALIGNED",
+        "warnings": [],
+        "excludedFromAgreement": {
+          "overdueCents": {
+            "reason": "legacy_has_no_real_overdue_metric",
+            "sourceFlag": "cash_policy_adapter:overdue_excluded_from_agreement"
+          }
+        },
+        "sourceFlags": [
+          "compare:adapter_billed_due_vs_legacy_operational_revenue",
+          "compare:core_recorded_cash_vs_legacy_recorded_cash",
+          "compare:adapter_missing_link_unlinked_vs_legacy_unlinked",
+          "compare:adapter_gap_vs_legacy_operational_gap",
+          "cash_policy_adapter:overdue_excluded_from_agreement"
+        ]
+      },
+      "sourceFlags": [
+        "cash_parallel:shadow_only",
+        "cash_parallel:no_primary_switch",
+        "cash_parallel:no_allocation_persistence",
+        "cash_parallel:agreement_uses_policy_adapter_comparable_snapshot",
+        "compare:adapter_billed_due_vs_legacy_operational_revenue",
+        "compare:core_recorded_cash_vs_legacy_recorded_cash",
+        "compare:adapter_missing_link_unlinked_vs_legacy_unlinked",
+        "compare:adapter_gap_vs_legacy_operational_gap",
+        "cash_policy_adapter:overdue_excluded_from_agreement"
+      ],
+      "updatedAt": "2026-05-19T19:10:19.900Z"
+    },
+    "cashSelection": {
+      "mode": "controlled_switch",
+      "primarySource": "core",
+      "previousSource": "legacy",
+      "shadowSource": "legacy",
+      "switchEligible": true,
+      "reliabilityScore": 1,
+      "agreementScore": 1,
+      "agreementBand": "ALIGNED",
+      "coreConfidence": "REAL",
+      "coreConfidenceScore": 1,
+      "dataCompleteness": 1,
+      "reconciliationRatio": 1,
+      "ambiguityRatio": 0,
+      "thresholds": {
+        "agreementScore": 0.85,
+        "coreConfidenceScore": 0.8,
+        "dataCompleteness": 0.75,
+        "reconciliationRatio": 0.8,
+        "ambiguityRatio": 0.2,
+        "hysteresisOn": 0.85,
+        "hysteresisOff": 0.7
+      },
+      "switchReason": "eligible_reliability_above_on_threshold",
+      "fallbackReason": ""
+    },
+    "cashPrimarySnapshot": {
+      "mathCore": "cash_core_v1",
+      "sourceUsed": "core",
+      "billedDueCents": 434500,
+      "reconciledCashCents": 457500,
+      "recordedCashCents": 457500,
+      "unlinkedCashCents": 0,
+      "ambiguousCashCents": 0,
+      "overdueCents": 0,
+      "openResidualCents": 4500,
+      "gapCents": -23000,
+      "collectionRatio": 1.052934407364787,
+      "reconciliationRatio": 1,
+      "ambiguityRatio": 0,
+      "overdueRatio": 0,
+      "confidence": "REAL",
+      "confidenceScore": 1,
+      "sourceFlags": [
+        "cash_primary_candidate:core",
+        "cash_ledger:simulated_allocations",
+        "cash_ledger:no_persistence"
+      ]
+    },
+    "cashShadowSnapshot": {
+      "mathCore": "legacy_cash",
+      "sourceUsed": "legacy",
+      "billedDueCents": 430000,
+      "reconciledCashCents": 457500,
+      "recordedCashCents": 457500,
+      "unlinkedCashCents": 0,
+      "ambiguousCashCents": 0,
+      "overdueCents": 0,
+      "openResidualCents": 0,
+      "gapCents": -27500,
+      "collectionRatio": 1.063953488372093,
+      "reconciliationRatio": 1,
+      "ambiguityRatio": 0,
+      "overdueRatio": 0,
+      "confidence": "ESTIMATED",
+      "confidenceScore": 0.65,
+      "sourceFlags": [
+        "cash_primary_candidate:legacy",
+        "legacy_cash:recorded_cash_used_as_cash_equivalent",
+        "legacy_cash:no_overdue_metric"
+      ]
+    },
+    "dataQualityParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "data_quality_core_v1",
+      "mathAdapter": "dq_policy_adapter_v1",
+      "horizon": {
+        "startDate": "",
+        "endDate": ""
+      },
+      "legacySnapshot": {
+        "source": "legacy",
+        "score": 0.93,
+        "band": "REAL",
+        "crmQuality": 1,
+        "appointmentQuality": 1,
+        "paymentQuality": 0.9767441860465116,
+        "costQuality": 0.75,
+        "linkQuality": null,
+        "consistencyQuality": null,
+        "temporalQuality": null,
+        "dataQualityScore": 0.93,
+        "gate": {
+          "aiGoldEligible": true,
+          "decisionEligible": true,
+          "forecastEligible": false,
+          "profitabilityReliable": true,
+          "cashReliable": true,
+          "marketingReliable": true,
+          "reportReliable": true
+        },
+        "sourceFlags": [
+          "legacy:data_quality_penalty_model"
+        ]
+      },
+      "coreSnapshot": {
+        "source": "core",
+        "score": 0.9052,
+        "band": "REAL",
+        "crmQuality": 1,
+        "appointmentQuality": 1,
+        "paymentQuality": 1,
+        "costQuality": 0.7369,
+        "linkQuality": 1,
+        "consistencyQuality": 0.8045,
+        "temporalQuality": 0.7738,
+        "dataQualityScore": 0.9052,
+        "gate": {
+          "aiGoldEligible": true,
+          "decisionEligible": true,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": true,
+          "marketingReliable": true,
+          "reportReliable": true
+        },
+        "sourceFlags": []
+      },
+      "operationalSnapshot": {
+        "source": "core",
+        "score": 0.9052,
+        "band": "REAL",
+        "crmQuality": 1,
+        "appointmentQuality": 1,
+        "paymentQuality": 1,
+        "costQuality": 0.7369,
+        "linkQuality": 1,
+        "consistencyQuality": 0.8045,
+        "temporalQuality": 0.7738,
+        "dataQualityScore": 0.9052,
+        "gate": {
+          "aiGoldEligible": true,
+          "decisionEligible": true,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": true,
+          "marketingReliable": true,
+          "reportReliable": true
+        },
+        "sourceFlags": []
+      },
+      "comparableSnapshot": {
+        "source": "core_policy_adapter",
+        "score": 0.9315,
+        "band": "REAL",
+        "crmQuality": 1,
+        "appointmentQuality": 1,
+        "paymentQuality": 0.9767,
+        "costQuality": 0.75,
+        "linkQuality": null,
+        "consistencyQuality": null,
+        "temporalQuality": null,
+        "dataQualityScore": 0.9315,
+        "gate": {
+          "aiGoldEligible": true,
+          "decisionEligible": true,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": true,
+          "marketingReliable": true,
+          "reportReliable": true
+        },
+        "sourceFlags": [
+          "dq_policy_adapter:legacy_comparable_projection",
+          "dq_policy_adapter:link_consistency_temporal_excluded"
+        ],
+        "legacyPolicyBlocks": {
+          "clientsBlock": {
+            "totalRecords": 12,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutContact": {
+                "totalRecords": 12,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutPhone": {
+                "totalRecords": 12,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutEmail": {
+                "totalRecords": 12,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutLastVisit": {
+                "totalRecords": 12,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "servicesBlock": {
+            "totalRecords": 4,
+            "missingCount": 1,
+            "issueRate": 0.25,
+            "quality": 0.75,
+            "penalty": 3.5,
+            "checks": {
+              "withoutPrice": {
+                "totalRecords": 4,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutCost": {
+                "totalRecords": 4,
+                "missingCount": 1,
+                "issueRate": 0.25,
+                "penalty": 3.5
+              },
+              "withoutDuration": {
+                "totalRecords": 4,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutCategory": {
+                "totalRecords": 4,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "paymentsBlock": {
+            "totalRecords": 43,
+            "missingCount": 1,
+            "issueRate": 0.0233,
+            "quality": 0.9767,
+            "penalty": 0.35,
+            "checks": {
+              "completedWithoutPayment": {
+                "totalRecords": 43,
+                "missingCount": 1,
+                "issueRate": 0.0233,
+                "penalty": 0.35
+              },
+              "unlinkedPayments": {
+                "totalRecords": 43,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutMethod": {
+                "totalRecords": 43,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "appointmentsBlock": {
+            "totalRecords": 44,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutClient": {
+                "totalRecords": 44,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutService": {
+                "totalRecords": 44,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutOperator": {
+                "totalRecords": 44,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "completedWithMissingFinalData": {
+                "totalRecords": 43,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "operatorsBlock": {
+            "totalRecords": 3,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutHourlyCost": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutRole": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutServices": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "inventoryBlock": {
+            "totalRecords": 3,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutCost": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutStock": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "productServiceLinksWithoutUsage": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "profitabilityBlock": {
+            "totalRecords": 4,
+            "missingCount": 1,
+            "issueRate": 0.25,
+            "quality": 0.75,
+            "penalty": 3,
+            "checks": {
+              "soldServicesWithoutCost": {
+                "totalRecords": 4,
+                "missingCount": 1,
+                "issueRate": 0.25,
+                "penalty": 3
+              },
+              "technologiesWithoutCost": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "lowMarginServices": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "totalPenalty": 6.85,
+          "score": 0.9315000000000001
+        }
+      },
+      "rawDiffSnapshot": {
+        "comparableMetrics": [
+          "dataQualityScore",
+          "paymentQuality",
+          "costQuality",
+          "crmQuality",
+          "appointmentQuality"
+        ],
+        "deltas": {
+          "dataQualityScore": -0.0248,
+          "paymentQuality": 0.0233,
+          "costQuality": -0.0131,
+          "crmQuality": 0,
+          "appointmentQuality": 0
+        },
+        "relativeErrors": {
+          "dataQualityScore": 0.0248,
+          "paymentQuality": 0.0233,
+          "costQuality": 0.0131,
+          "crmQuality": 0,
+          "appointmentQuality": 0
+        },
+        "agreementScore": 0.9839,
+        "agreementBand": "ALIGNED",
+        "warnings": [],
+        "weightsUsed": {
+          "dataQualityScore": 0.375,
+          "paymentQuality": 0.1875,
+          "costQuality": 0.1875,
+          "crmQuality": 0.125,
+          "appointmentQuality": 0.125
+        }
+      },
+      "diffSnapshot": {
+        "comparableMetrics": [
+          "dataQualityScore",
+          "paymentQuality",
+          "costQuality",
+          "crmQuality",
+          "appointmentQuality"
+        ],
+        "deltas": {
+          "dataQualityScore": 0.0015,
+          "paymentQuality": 0,
+          "costQuality": 0,
+          "crmQuality": 0,
+          "appointmentQuality": 0
+        },
+        "relativeErrors": {
+          "dataQualityScore": 0.0015,
+          "paymentQuality": 0,
+          "costQuality": 0,
+          "crmQuality": 0,
+          "appointmentQuality": 0
+        },
+        "agreementScore": 0.9994,
+        "agreementBand": "ALIGNED",
+        "warnings": [],
+        "weightsUsed": {
+          "dataQualityScore": 0.375,
+          "paymentQuality": 0.1875,
+          "costQuality": 0.1875,
+          "crmQuality": 0.125,
+          "appointmentQuality": 0.125
+        }
+      },
+      "agreementScore": 0.9994,
+      "agreementBand": "ALIGNED",
+      "rawAgreementScore": 0.9839,
+      "rawAgreementBand": "ALIGNED",
+      "policyAdapter": {
+        "mathAdapter": "dq_policy_adapter_v1",
+        "policyDeltas": {
+          "dataQualityScore": 0.0263,
+          "crmQuality": 0,
+          "appointmentQuality": 0,
+          "paymentQuality": -0.0233,
+          "costQuality": 0.0131
+        },
+        "excludedFromAgreement": [
+          "linkQuality",
+          "consistencyQuality",
+          "temporalQuality"
+        ],
+        "policyFlags": [
+          "legacy_crm_penalty_projection",
+          "legacy_appointment_penalty_projection",
+          "legacy_payment_penalty_projection",
+          "legacy_cost_fallback_projection"
+        ],
+        "policyNotes": [
+          {
+            "policy": "CRM",
+            "explanation": "La vista comparabile replica le penalità legacy senza contatto, telefono, email e lastVisit. Il core operativo resta più granulare su email, telefono, nome, unicità e duplicati."
+          },
+          {
+            "policy": "APPOINTMENT",
+            "explanation": "La vista comparabile replica i controlli legacy su cliente, servizio, operatore e final data dei completati. Il core operativo mantiene controlli formali su date, status e ricavo."
+          },
+          {
+            "policy": "PAYMENT",
+            "explanation": "La vista comparabile replica la severità legacy su appuntamenti completati senza pagamento, pagamenti non collegati e metodo assente."
+          },
+          {
+            "policy": "COST",
+            "explanation": "La vista comparabile considera sufficienti anche fallback stimati legacy dove getDataQuality li considera completi; il core operativo mantiene lettura rigorosa."
+          },
+          {
+            "policy": "EXCLUDED",
+            "explanation": "Q_link, Q_cons e Q_temp restano nel core operativo ma sono esclusi dall'accordo comparabile perché il legacy non espone metriche omogenee."
+          }
+        ]
+      },
+      "sourceFlags": [
+        "legacy:data_quality_penalty_model",
+        "dq_policy_adapter:legacy_comparable_projection",
+        "dq_policy_adapter:link_consistency_temporal_excluded"
+      ]
+    },
+    "marketingParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "marketing_core_v1",
+      "horizon": {
+        "startDate": "2025-05-19",
+        "endDate": "2026-05-19",
+        "mode": "last_365_days_marketing_shadow"
+      },
+      "legacySnapshot": {
+        "source": "legacy",
+        "readiness": null,
+        "averageOpportunity": 0.84,
+        "averageChurnRisk": null,
+        "averageContactability": null,
+        "averageSpamPressure": null,
+        "clients": 12,
+        "eligibleClients": 1,
+        "contactableClients": 1,
+        "suppressedClients": 11,
+        "eligibleRatio": 0.08333333333333333,
+        "contactableRatio": 0.08333333333333333,
+        "suppressedRatio": 0.9166666666666666,
+        "topCandidates": [
+          {
+            "clientId": "gold-cli-10",
+            "clientName": "Federica Marchetti",
+            "opportunityScore": 0.84,
+            "actionBand": "",
+            "status": "to_approve",
+            "contactable": true,
+            "sourceFlags": [
+              "legacy:gold_marketing_action_state"
+            ]
+          }
+        ],
+        "sourceFlags": [
+          "legacy:gold_marketing_action_state",
+          "legacy:readiness_not_available"
+        ]
+      },
+      "coreSnapshot": {
+        "source": "core",
+        "readiness": 0.9583,
+        "averageOpportunity": 0.4553,
+        "averageChurnRisk": 0.1454,
+        "averageContactability": 0.89,
+        "averageSpamPressure": 0,
+        "clients": 12,
+        "eligibleClients": 0,
+        "contactableClients": 10,
+        "suppressedClients": 2,
+        "eligibleRatio": 0,
+        "contactableRatio": 0.8333333333333334,
+        "suppressedRatio": 0.16666666666666666,
+        "topCandidates": [
+          {
+            "clientId": "gold-cli-7",
+            "clientName": "Irene Ricci",
+            "opportunityScore": 0.4861,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-1",
+            "clientName": "Laura Conti",
+            "opportunityScore": 0.4824,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-6",
+            "clientName": "Valentina Costa",
+            "opportunityScore": 0.4814,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-3",
+            "clientName": "Beatrice Villa",
+            "opportunityScore": 0.4781,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [
+              "TIMING_NOT_READY"
+            ],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-10",
+            "clientName": "Federica Marchetti",
+            "opportunityScore": 0.4669,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-5",
+            "clientName": "Chiara Longo",
+            "opportunityScore": 0.4624,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-12",
+            "clientName": "Martina Leone",
+            "opportunityScore": 0.4555,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-2",
+            "clientName": "Sara Ferri",
+            "opportunityScore": 0.4551,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [
+              "TIMING_NOT_READY"
+            ],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-11",
+            "clientName": "Alice Fontana",
+            "opportunityScore": 0.45,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [
+              "TIMING_NOT_READY"
+            ],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-4",
+            "clientName": "Monica Greco",
+            "opportunityScore": 0.4317,
+            "actionBand": "STOP",
+            "contactability": 0.64,
+            "spamPressure": 0,
+            "reasonCodes": [
+              "NO_VALID_CONSENT"
+            ],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-9",
+            "clientName": "Silvia Romano",
+            "opportunityScore": 0.4216,
+            "actionBand": "STOP",
+            "contactability": 0.64,
+            "spamPressure": 0,
+            "reasonCodes": [
+              "NO_VALID_CONSENT",
+              "TIMING_NOT_READY"
+            ],
+            "sourceFlags": []
+          },
+          {
+            "clientId": "gold-cli-8",
+            "clientName": "Paola Riva",
+            "opportunityScore": 0.3923,
+            "actionBand": "MONITOR",
+            "contactability": 0.94,
+            "spamPressure": 0,
+            "reasonCodes": [
+              "TIMING_NOT_READY"
+            ],
+            "sourceFlags": []
+          }
+        ],
+        "sourceFlags": [
+          "marketing_core:marketing_history_missing_or_empty",
+          "marketing_core:schedule_gap_not_available"
+        ]
+      },
+      "diffSnapshot": {
+        "comparableMetrics": [
+          "eligibleRatio",
+          "contactableRatio",
+          "suppressedRatio",
+          "averageOpportunity",
+          "top3Overlap"
+        ],
+        "deltas": {
+          "eligibleRatio": -0.0833,
+          "contactableRatio": 0.75,
+          "suppressedRatio": -0.75,
+          "averageOpportunity": -0.3847
+        },
+        "relativeErrors": {
+          "eligibleRatio": 0.0833,
+          "contactableRatio": 0.75,
+          "suppressedRatio": 0.75,
+          "averageOpportunity": 0.3847
+        },
+        "top3Overlap": 0,
+        "agreementScore": 0.381,
+        "agreementBand": "DRIFT",
+        "warnings": [
+          "MARKETING_CONTACTABLE_DRIFT",
+          "MARKETING_SUPPRESSED_DRIFT",
+          "MARKETING_OPPORTUNITY_DRIFT",
+          "MARKETING_TOPK_DRIFT"
+        ],
+        "weightsUsed": {
+          "eligibleRatio": 0.1875,
+          "contactableRatio": 0.1875,
+          "suppressedRatio": 0.1875,
+          "averageOpportunity": 0.1875,
+          "top3Overlap": 0.25
+        }
+      },
+      "agreementScore": 0.381,
+      "agreementBand": "DRIFT",
+      "sourceFlags": [
+        "marketing_parallel:shadow_only",
+        "marketing_parallel:no_primary_switch",
+        "marketing_parallel:no_message_send",
+        "legacy:gold_marketing_action_state",
+        "legacy:readiness_not_available",
+        "marketing_core:marketing_history_missing_or_empty",
+        "marketing_core:schedule_gap_not_available"
+      ]
+    },
+    "graph": {
+      "eventToState": {
+        "appointment_created": [
+          "Sat",
+          "Prod"
+        ],
+        "appointment_updated": [
+          "Sat",
+          "Prod",
+          "DQ"
+        ],
+        "appointment_deleted": [
+          "Sat",
+          "Prod"
+        ],
+        "client_created": [
+          "Act",
+          "Cont",
+          "DQ"
+        ],
+        "client_updated": [
+          "Act",
+          "Cont",
+          "DQ"
+        ],
+        "client_deleted": [
+          "Act",
+          "Cont",
+          "DQ"
+        ],
+        "payment_created": [
+          "Rev",
+          "U",
+          "Ticket",
+          "Conf"
+        ],
+        "payment_updated": [
+          "Rev",
+          "U",
+          "Ticket",
+          "Conf"
+        ],
+        "service_created": [
+          "CostConf",
+          "Margin",
+          "DQ"
+        ],
+        "service_updated": [
+          "CostConf",
+          "Margin",
+          "DQ"
+        ],
+        "service_deleted": [
+          "CostConf",
+          "Margin",
+          "DQ"
+        ],
+        "staff_created": [
+          "Prod"
+        ],
+        "staff_updated": [
+          "Prod"
+        ],
+        "staff_deleted": [
+          "Prod"
+        ],
+        "inventory_created": [
+          "DQ"
+        ],
+        "inventory_updated": [
+          "DQ"
+        ],
+        "inventory_deleted": [
+          "DQ"
+        ]
+      },
+      "stateToSnapshot": {
+        "Rev": [
+          "business",
+          "profitability",
+          "report"
+        ],
+        "U": [
+          "business",
+          "report"
+        ],
+        "Sat": [
+          "business",
+          "report"
+        ],
+        "Act": [
+          "business",
+          "report"
+        ],
+        "Cont": [
+          "business",
+          "report"
+        ],
+        "Ticket": [
+          "business",
+          "profitability",
+          "report"
+        ],
+        "Prod": [
+          "business",
+          "report"
+        ],
+        "DQ": [
+          "business",
+          "profitability",
+          "report"
+        ],
+        "CostConf": [
+          "profitability"
+        ],
+        "Margin": [
+          "profitability"
+        ],
+        "Conf": [
+          "business",
+          "profitability"
+        ]
+      },
+      "snapshotToSignal": {
+        "business": [
+          "operationalRisk",
+          "centerBelowThreshold",
+          "opportunity"
+        ],
+        "profitability": [
+          "marginAnomaly",
+          "dataReliability"
+        ],
+        "report": [
+          "cashAnomaly",
+          "productivitySignal"
+        ]
+      }
+    },
+    "metadata": {
+      "version": "gold_state_rebuild_v1",
+      "rebuiltAt": "2026-05-19T19:10:19.869Z",
+      "rebuiltFromRaw": true,
+      "rebuildMode": "gold_onboarding_reconciliation",
+      "reason": "demo_gold_cockpit_seed_test",
+      "importId": "",
+      "previousEventSeq": 0,
+      "rawCounts": {
+        "clients": 12,
+        "appointments": 44,
+        "payments": 43,
+        "services": 4,
+        "staff": 3,
+        "inventory": 3
+      },
+      "valid": true,
+      "validation": {
+        "valid": true,
+        "metrics": [
+          {
+            "metric": "Rev",
+            "raw": 457500,
+            "state": 457500,
+            "diff": 0,
+            "tolerance": 0,
+            "ok": true
+          },
+          {
+            "metric": "U",
+            "raw": 0,
+            "state": 0,
+            "diff": 0,
+            "tolerance": 0,
+            "ok": true
+          },
+          {
+            "metric": "Sat",
+            "raw": 0.041666666666666664,
+            "state": 0.041666666666666664,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          },
+          {
+            "metric": "Act",
+            "raw": 12,
+            "state": 12,
+            "diff": 0,
+            "tolerance": 0,
+            "ok": true
+          },
+          {
+            "metric": "Cont",
+            "raw": 1,
+            "state": 1,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          },
+          {
+            "metric": "Ticket",
+            "raw": 10640,
+            "state": 10640,
+            "diff": 0,
+            "tolerance": 1,
+            "ok": true
+          },
+          {
+            "metric": "Prod",
+            "raw": 0.05555555555555555,
+            "state": 0.05555555555555555,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          },
+          {
+            "metric": "DQ",
+            "raw": 0.8500000000000001,
+            "state": 0.8500000000000001,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          },
+          {
+            "metric": "CostConf",
+            "raw": 0.23255813953488372,
+            "state": 0.23255813953488372,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          },
+          {
+            "metric": "Margin",
+            "raw": 0.7087,
+            "state": 0.7087,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          },
+          {
+            "metric": "Conf",
+            "raw": 0.7119738372093024,
+            "state": 0.7119738372093024,
+            "diff": 0,
+            "tolerance": 0.0001,
+            "ok": true
+          }
+        ],
+        "diffSummary": {}
+      }
+    },
+    "marketingActions": {
+      "source": "gold_decision_engine",
+      "sourceEndpoint": "/api/ai-gold/state",
+      "generatedAt": "2026-05-19T19:10:19.892Z",
+      "actions": [
+        {
+          "id": "gold-action-gold-cli-10",
+          "virtual": true,
+          "generatedByGold": true,
+          "source": "gold_decision_engine",
+          "sourceEndpoint": "/api/ai-gold/state",
+          "clientId": "gold-cli-10",
+          "clientName": "Federica Marchetti",
+          "name": "Federica Marchetti",
+          "phone": "+39333100010",
+          "type": "recall",
+          "status": "to_approve",
+          "statusLabel": "da approvare",
+          "priority": "media",
+          "priorityLabel": "Attenzione",
+          "risk": "basso",
+          "riskLabel": "Presidio",
+          "isImmediateRisk": false,
+          "highValueOpportunity": true,
+          "contactable": true,
+          "inCooldown": false,
+          "hasMarketingConsent": true,
+          "pattern": "cliente in calo",
+          "segment": "recupero_soft",
+          "reason": "Richiamo personalizzato per recuperare continuita cliente.",
+          "motive": "Richiamo personalizzato per recuperare continuita cliente.",
+          "operatingDecision": "contattare entro 3 giorni",
+          "clearReason": "cliente fuori ritmo",
+          "safeAction": "Proponi un appuntamento semplice legato a Percorso Corpo Method.",
+          "upsellAction": "Abbina spingere servizio premium coerente con lo storico cliente.",
+          "conclusion": "Federica Marchetti va recuperata entro 3 giorni.",
+          "urgencyReason": "Routine 14 gg, oggi fuori di 20 gg: recupero soft.",
+          "recommendedAction": "Invia un messaggio breve, naturale e proponi uno slot leggero.",
+          "estimatedValueCents": 12000,
+          "referenceValueCents": 12000,
+          "valueSource": "ticket_medio_reale",
+          "valueLabel": "Riferimento economico: ticket medio reale 120,00 €.",
+          "lossIfIgnoredCents": 0,
+          "suggestedMessage": "Ciao Federica, siamo nel momento giusto per mantenere il risultato. Ti propongo un controllo personalizzato in salone per mantenere bene il risultato. Se vuoi, ti tengo uno spazio comodo questa settimana.",
+          "message": "Ciao Federica, siamo nel momento giusto per mantenere il risultato. Ti propongo un controllo personalizzato in salone per mantenere bene il risultato. Se vuoi, ti tengo uno spazio comodo questa settimana.",
+          "responseProbabilityPercent": 66,
+          "economicConvenienceLabel": "buona convenienza",
+          "finalPriorityLabel": "Contatto consigliato",
+          "relationState": "non_contattato",
+          "daysSinceLastMarketingContact": null,
+          "goldDecision": {
+            "entityType": "marketing",
+            "score": 0.84,
+            "scorePercent": 84,
+            "raw": 1.66,
+            "axes": {
+              "need": 0.714,
+              "value": 0.603,
+              "urgency": 0.8,
+              "coherence": 0.665,
+              "friction": 0
+            },
+            "weights": {
+              "need": 1.1,
+              "value": 1,
+              "urgency": 0.8,
+              "coherence": 1.1,
+              "friction": 1.45,
+              "bias": -1.1
+            },
+            "priorityBand": "alta",
+            "priorityLabel": "Priorità alta",
+            "explanation": "Routine 14 gg, fuori di 20 gg: recupero soft.",
+            "suggestedAction": "agire ora"
+          },
+          "generatedAt": "2026-05-19T19:10:19.892Z",
+          "updatedAt": "2026-05-19T19:10:19.892Z"
+        }
+      ],
+      "counters": {
+        "clientsAtRiskToday": 0,
+        "totalActions": 1,
+        "approvedActions": 0,
+        "callableApproved": 0,
+        "highValueOpportunities": 1,
+        "toApprove": 1,
+        "discarded": 0
+      },
+      "debug": {
+        "clientsAnalyzed": 12,
+        "excludedByFilter": 11,
+        "nonContactable": 0,
+        "inCooldown": 0,
+        "generatedActions": 1
+      },
+      "semantics": {
+        "critical": "opportunita_ad_alto_valore",
+        "risk": "cliente_che_puo_perdersi",
+        "marketingActions": "opportunita_generate_da_ai"
+      }
+    }
+  }
+]
