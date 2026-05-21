@@ -56,6 +56,12 @@ function isoInMonth(monthOffsetFromNow, visitIndex, hourSeed = 9) {
   return date.toISOString();
 }
 
+function addMinutesIso(value, minutes) {
+  const date = new Date(value);
+  date.setMinutes(date.getMinutes() + Number(minutes || 0));
+  return date.toISOString();
+}
+
 function buildStaff() {
   const hourlyCostCents = Math.round(EMPLOYEE_MONTHLY_SALARY_CENTS / 160);
   return [
@@ -261,46 +267,72 @@ async function runInternalRenderJob() {
       const operator = staff[(visitIndex + oldestIndex) % staff.length];
       const startAt = isoInMonth(monthOffsetFromNow, visitIndex, 8 + (visitIndex % 4));
       const amountCents = Number(serviceItem.priceCents || 0);
-      const appointment = service.saveAppointment({
+      const appointment = {
+        id: `appt_hybrid24m_${oldestIndex}_${visitIndex}`,
+        idempotencyKey: `hybrid24m:app:${oldestIndex}:${visitIndex}`,
+        centerId: DEMO_CENTER_ID,
+        centerName: DEMO_CENTER_NAME,
         clientId: client.id,
         clientName: client.name,
+        walkInName: "",
+        walkInPhone: "",
         staffId: operator.id,
         staffName: operator.name,
         serviceId: serviceItem.id,
+        serviceIds: [serviceItem.id],
         serviceName: serviceItem.name,
+        resourceId: "",
+        resourceName: "",
         startAt,
-        durationMin: serviceItem.durationMin,
+        endAt: addMinutesIso(startAt, serviceItem.durationMin),
         status: "completed",
         notes: `SHGOLD_24M_HYBRID ${serviceItem.category}. Rate tecnologie: 48 mesi x 700 euro per radiofrequenza e laser.`,
-        idempotencyKey: `hybrid24m:app:${oldestIndex}:${visitIndex}`
-      }, demoSession);
+        durationMin: serviceItem.durationMin,
+        locked: 0,
+        createdAt: startAt,
+        updatedAt: startAt
+      };
+      service.appointmentsRepository.create(appointment);
       appointmentCount += 1;
-      service.createPayment({
+      service.paymentsRepository.create({
+        id: `pay_hybrid24m_${oldestIndex}_${visitIndex}`,
+        idempotencyKey: `hybrid24m:pay:${oldestIndex}:${visitIndex}`,
+        centerId: DEMO_CENTER_ID,
+        centerName: DEMO_CENTER_NAME,
         clientId: client.id,
+        walkInName: "",
         appointmentId: appointment.id,
         amountCents,
         method: visitIndex % 5 === 0 ? "cash" : "card",
         createdAt: startAt,
+        description: `SHGOLD_24M_HYBRID incasso servizio ${serviceItem.name}.`,
         note: `SHGOLD_24M_HYBRID incasso servizio ${serviceItem.name}.`,
-        idempotencyKey: `hybrid24m:pay:${oldestIndex}:${visitIndex}`
-      }, demoSession);
+      });
       paymentCount += 1;
       if (visitIndex % 8 === 0) {
-        service.createTreatment({
+        service.treatmentsRepository.create({
+          id: `treat_hybrid24m_${oldestIndex}_${visitIndex}`,
+          centerId: DEMO_CENTER_ID,
+          centerName: DEMO_CENTER_NAME,
           clientId: client.id,
           title: `${serviceItem.name} - storico demo`,
-          note: "SHGOLD_24M_HYBRID trattamento storico; output non medico, conferma operatore richiesta."
-        }, demoSession);
+          note: "SHGOLD_24M_HYBRID trattamento storico; output non medico, conferma operatore richiesta.",
+          createdAt: startAt
+        });
         treatmentCount += 1;
       }
       const linkedCabin = cabinItems[(visitIndex + oldestIndex) % cabinItems.length];
       if (linkedCabin && visitIndex % 3 === 0) {
-        service.createInventoryMovement({
+        service.inventoryMovementsRepository.create({
+          id: `move_hybrid24m_internal_${oldestIndex}_${visitIndex}`,
+          centerId: DEMO_CENTER_ID,
+          centerName: DEMO_CENTER_NAME,
           itemId: linkedCabin.id,
           type: "internal_use",
           quantity: 0.08 + ((visitIndex % 3) * 0.04),
-          note: `SHGOLD_24M_HYBRID uso interno per ${serviceItem.name}.`
-        }, demoSession);
+          note: `SHGOLD_24M_HYBRID uso interno per ${serviceItem.name}.`,
+          createdAt: startAt
+        });
         movementCount += 1;
       }
       monthRevenue += amountCents;
@@ -315,20 +347,30 @@ async function runInternalRenderJob() {
       const retail = retailItems[(saleIndex + oldestIndex) % retailItems.length];
       const client = clients[(oldestIndex * 19 + saleIndex * 17) % clients.length];
       const createdAt = isoInMonth(monthOffsetFromNow, 300 + saleIndex, 15);
-      service.createPayment({
+      service.paymentsRepository.create({
+        id: `pay_hybrid24m_retail_${oldestIndex}_${saleIndex}`,
+        idempotencyKey: `hybrid24m:retail-pay:${oldestIndex}:${saleIndex}`,
+        centerId: DEMO_CENTER_ID,
+        centerName: DEMO_CENTER_NAME,
         clientId: client.id,
+        walkInName: "",
+        appointmentId: "",
         amountCents: Number(retail.retailPriceCents || retail.salePriceCents || 0),
         method: saleIndex % 4 === 0 ? "cash" : "card",
         createdAt,
+        description: `SHGOLD_24M_HYBRID rivendita ${retail.name}; acquisto simulato a sconto 40%, vendita retail piena.`,
         note: `SHGOLD_24M_HYBRID rivendita ${retail.name}; acquisto simulato a sconto 40%, vendita retail piena.`,
-        idempotencyKey: `hybrid24m:retail-pay:${oldestIndex}:${saleIndex}`
-      }, demoSession);
-      service.createInventoryMovement({
+      });
+      service.inventoryMovementsRepository.create({
+        id: `move_hybrid24m_sale_${oldestIndex}_${saleIndex}`,
+        centerId: DEMO_CENTER_ID,
+        centerName: DEMO_CENTER_NAME,
         itemId: retail.id,
         type: "sale",
         quantity: 1,
-        note: `SHGOLD_24M_HYBRID vendita rivendita ${retail.name}.`
-      }, demoSession);
+        note: `SHGOLD_24M_HYBRID vendita rivendita ${retail.name}.`,
+        createdAt
+      });
       retailRevenue += Number(retail.retailPriceCents || retail.salePriceCents || 0);
       retailPaymentCount += 1;
       movementCount += 1;
