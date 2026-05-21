@@ -153,6 +153,34 @@ function buildClients(count = 520) {
   });
 }
 
+function normalizeClientPayload(payload, index) {
+  const now = new Date().toISOString();
+  const firstName = String(payload.firstName || "").trim();
+  const lastName = String(payload.lastName || "").trim();
+  return {
+    ...payload,
+    id: `client_hybrid24m_${index + 1}`,
+    centerId: DEMO_CENTER_ID,
+    centerName: DEMO_CENTER_NAME,
+    name: `${firstName} ${lastName}`.trim(),
+    privacyConsentAt: payload.privacyConsent ? now : "",
+    marketingConsentAt: payload.marketingConsent ? now : "",
+    sensitiveDataConsentAt: payload.sensitiveDataConsent ? now : "",
+    loyaltyTier: index % 12 === 0 ? "premium" : index % 4 === 0 ? "regular" : "base",
+    preferences: [],
+    packages: [],
+    allergies: "",
+    birthDate: "",
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function bulkAppend(repository, items) {
+  if (!items.length) return;
+  repository.write([...items, ...repository.list()]);
+}
+
 function monthlyTargetCents(monthIndexFromOldest) {
   const seasonal = Math.sin((monthIndexFromOldest / 12) * Math.PI * 2) * cents(1700);
   const trend = monthIndexFromOldest > 15 ? -cents(450) : monthIndexFromOldest * cents(55);
@@ -242,7 +270,8 @@ async function runInternalRenderJob() {
   const staff = buildStaff().map((item) => service.saveStaff(item, demoSession));
   const services = buildServices().map((item) => service.saveService({ ...item, idempotencyKey: `hybrid24m:service:${item.key}` }, demoSession));
   const inventory = buildInventory().map((item) => service.saveInventoryItem(item, demoSession));
-  const clients = buildClients().map((item) => service.saveClient(item, demoSession));
+  const clients = buildClients().map((item, index) => normalizeClientPayload(item, index));
+  bulkAppend(service.clientsRepository, clients);
   const retailItems = inventory.filter((item) => String(item.usageType || "") === "rivendita");
   const cabinItems = inventory.filter((item) => String(item.usageType || "") === "cabina");
 
@@ -254,6 +283,10 @@ async function runInternalRenderJob() {
   let treatmentCount = 0;
   let retailPaymentCount = 0;
   let movementCount = 0;
+  const appointmentRows = [];
+  const paymentRows = [];
+  const treatmentRows = [];
+  const movementRows = [];
 
   for (let oldestIndex = 0; oldestIndex < MONTH_COUNT; oldestIndex += 1) {
     const monthOffsetFromNow = MONTH_COUNT - 1 - oldestIndex;
@@ -292,9 +325,9 @@ async function runInternalRenderJob() {
         createdAt: startAt,
         updatedAt: startAt
       };
-      service.appointmentsRepository.create(appointment);
+      appointmentRows.push(appointment);
       appointmentCount += 1;
-      service.paymentsRepository.create({
+      paymentRows.push({
         id: `pay_hybrid24m_${oldestIndex}_${visitIndex}`,
         idempotencyKey: `hybrid24m:pay:${oldestIndex}:${visitIndex}`,
         centerId: DEMO_CENTER_ID,
@@ -310,7 +343,7 @@ async function runInternalRenderJob() {
       });
       paymentCount += 1;
       if (visitIndex % 8 === 0) {
-        service.treatmentsRepository.create({
+        treatmentRows.push({
           id: `treat_hybrid24m_${oldestIndex}_${visitIndex}`,
           centerId: DEMO_CENTER_ID,
           centerName: DEMO_CENTER_NAME,
@@ -323,7 +356,7 @@ async function runInternalRenderJob() {
       }
       const linkedCabin = cabinItems[(visitIndex + oldestIndex) % cabinItems.length];
       if (linkedCabin && visitIndex % 3 === 0) {
-        service.inventoryMovementsRepository.create({
+        movementRows.push({
           id: `move_hybrid24m_internal_${oldestIndex}_${visitIndex}`,
           centerId: DEMO_CENTER_ID,
           centerName: DEMO_CENTER_NAME,
@@ -347,7 +380,7 @@ async function runInternalRenderJob() {
       const retail = retailItems[(saleIndex + oldestIndex) % retailItems.length];
       const client = clients[(oldestIndex * 19 + saleIndex * 17) % clients.length];
       const createdAt = isoInMonth(monthOffsetFromNow, 300 + saleIndex, 15);
-      service.paymentsRepository.create({
+      paymentRows.push({
         id: `pay_hybrid24m_retail_${oldestIndex}_${saleIndex}`,
         idempotencyKey: `hybrid24m:retail-pay:${oldestIndex}:${saleIndex}`,
         centerId: DEMO_CENTER_ID,
@@ -361,7 +394,7 @@ async function runInternalRenderJob() {
         description: `SHGOLD_24M_HYBRID rivendita ${retail.name}; acquisto simulato a sconto 40%, vendita retail piena.`,
         note: `SHGOLD_24M_HYBRID rivendita ${retail.name}; acquisto simulato a sconto 40%, vendita retail piena.`,
       });
-      service.inventoryMovementsRepository.create({
+      movementRows.push({
         id: `move_hybrid24m_sale_${oldestIndex}_${saleIndex}`,
         centerId: DEMO_CENTER_ID,
         centerName: DEMO_CENTER_NAME,
@@ -388,6 +421,11 @@ async function runInternalRenderJob() {
       staffSalaryCents: EMPLOYEE_MONTHLY_SALARY_CENTS * staff.length
     });
   }
+
+  bulkAppend(service.appointmentsRepository, appointmentRows);
+  bulkAppend(service.paymentsRepository, paymentRows);
+  bulkAppend(service.treatmentsRepository, treatmentRows);
+  bulkAppend(service.inventoryMovementsRepository, movementRows);
 
   for (const client of clients.slice(0, 24)) {
     service.saveProtocol({
