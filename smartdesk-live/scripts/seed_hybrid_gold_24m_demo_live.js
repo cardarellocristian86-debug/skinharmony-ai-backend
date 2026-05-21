@@ -204,8 +204,9 @@ function buildSeededGoldState(monthly, created, totals) {
   const estimatedCost = Math.round(totalRevenue * 0.72);
   const estimatedProfit = totalRevenue - estimatedCost;
   const margin = totalRevenue > 0 ? Number((estimatedProfit / totalRevenue).toFixed(4)) : 0;
-  const confidence = 0.78;
-  const costConfidence = 0.74;
+  const confidence = 0.95;
+  const costConfidence = 0.93;
+  const dataQuality = 0.96;
   const monthlyTrend = monthly.map((item, index) => ({
     monthIndex: index + 1,
     revenueCents: item.totalRevenueCents,
@@ -237,7 +238,7 @@ function buildSeededGoldState(monthly, created, totals) {
       Cont: 0.63,
       Ticket: totalVisits ? Math.round(totalRevenue / totalVisits) : 0,
       Prod: 0.64,
-      DQ: 0.82,
+      DQ: dataQuality,
       CostConf: costConfidence,
       Margin: margin,
       Conf: confidence
@@ -282,10 +283,20 @@ function buildSeededGoldState(monthly, created, totals) {
         clientContinuity: 0.63,
         averageTicketCents: totalVisits ? Math.round(totalRevenue / totalVisits) : 0,
         productivity: 0.64,
-        dataQuality: 0.82,
+        dataQuality,
         confidence,
         status: "centro_monitorato",
-        monthlyTrend
+        monthlyTrend,
+        dataQualityBreakdown: {
+          consents: 0.96,
+          serviceCosts: 1,
+          operatorCosts: 1,
+          technologyCosts: 1,
+          retailSplit: 0.96,
+          monthlyTrend: 1,
+          aggregationPenalty: 0.04,
+          note: "Demo compressa: storico mensile e costi completi, con una piccola penalita per incassi aggregati."
+        }
       },
       profitability: {
         type: "profitability_snapshot",
@@ -298,12 +309,12 @@ function buildSeededGoldState(monthly, created, totals) {
         costConfidence,
         economicConfidence: confidence,
         profitabilityConfidence: Math.min(costConfidence, confidence),
-        confidenceLabel: "media",
+        confidenceLabel: "alta",
         coreSamples: totalVisits,
         confidenceBreakdown: {
-          real: Math.round(totalVisits * 0.55),
-          standard: Math.round(totalVisits * 0.35),
-          estimated: Math.round(totalVisits * 0.1),
+          real: Math.round(totalVisits * 0.7),
+          standard: Math.round(totalVisits * 0.25),
+          estimated: Math.round(totalVisits * 0.05),
           incomplete: 0
         },
         mathCore: "seed_hybrid_gold_24m_snapshot",
@@ -318,9 +329,18 @@ function buildSeededGoldState(monthly, created, totals) {
         productivity: 0.64,
         agendaSaturation: 0.58,
         continuity: 0.63,
-        dataQuality: 0.82,
+        dataQuality,
         unlinkedPayments: 0,
-        monthlyTrend
+        monthlyTrend,
+        dataQualityBreakdown: {
+          consents: 0.96,
+          serviceCosts: 1,
+          operatorCosts: 1,
+          technologyCosts: 1,
+          retailSplit: 0.96,
+          monthlyTrend: 1,
+          aggregationPenalty: 0.04
+        }
       }
     },
     signals: {
@@ -329,7 +349,7 @@ function buildSeededGoldState(monthly, created, totals) {
       opportunity: 0.72,
       cashAnomaly: 0,
       marginAnomaly: margin < 0.1 ? 0.78 : 0.48,
-      dataReliability: confidence,
+      dataReliability: dataQuality,
       productivitySignal: 0.64
     },
     decision: {
