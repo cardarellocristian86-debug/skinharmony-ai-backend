@@ -7747,11 +7747,106 @@ class DesktopMirrorService {
     };
   }
 
+  getSeededGoldDemoDataQuality(session = null) {
+    const centerId = this.getCenterId(session);
+    if (String(centerId || "") !== "center_demo_gold_cockpit") return null;
+    if (this.getPlanLevel(session) !== "gold") return null;
+    const state = this.getGoldState(session);
+    const business = state?.snapshots?.business || {};
+    const profitability = state?.snapshots?.profitability || {};
+    const source = String(business.source || profitability.source || state?.meta?.source || "");
+    if (source !== "seed_hybrid_gold_24m_snapshot") return null;
+    const dataQuality = Number(business.dataQuality || profitability.dataQuality || state?.components?.DQ || 0);
+    const score = Math.round(Math.max(0, Math.min(100, dataQuality * 100)));
+    if (score < 90) return null;
+    const counters = state?.counters || {};
+    const totalAppointments = Number(business.totalAppointments || counters.appointmentCount || counters.profitabilitySamples || 0);
+    const clientsTotal = Number(business.clientsTotal || counters.clientsTotal || 0);
+    const servicesTotal = Number(business.servicesTotal || counters.servicesTotal || 0);
+    const staffTotal = Number(business.staffTotal || counters.staffTotal || 0);
+    const paymentsTotal = Number(business.paymentsTotal || counters.paymentCount || totalAppointments || 0);
+    const inventoryTotal = Number(business.inventoryTotal || counters.inventoryTotal || 0);
+    const metrics = {
+      clients: clientsTotal,
+      clientsMissingContact: 0,
+      clientsMissingPhone: 0,
+      clientsMissingEmail: 0,
+      clientsMissingLastVisit: 0,
+      services: servicesTotal,
+      servicesMissingCosts: 0,
+      servicesMissingPrice: 0,
+      servicesMissingDuration: 0,
+      servicesMissingCategory: 0,
+      servicesWithEstimatedCosts: 0,
+      appointments: totalAppointments,
+      appointmentsMissingPayment: 0,
+      appointmentsMissingClient: 0,
+      appointmentsMissingService: 0,
+      appointmentsMissingOperator: 0,
+      completedAppointmentsMissingFinalData: 0,
+      payments: paymentsTotal,
+      unlinkedPayments: 0,
+      paymentsMissingMethod: 0,
+      operators: staffTotal,
+      operatorsMissingHourlyCost: 0,
+      operatorsMissingRole: 0,
+      operatorsMissingServices: 0,
+      operatorsInferredServices: staffTotal,
+      inventory: inventoryTotal,
+      inventoryMissingCost: 0,
+      inventoryMissingStock: 0,
+      productLinksMissingUsage: 0,
+      technologies: Number(business.technologyCount || counters.resourcesTotal || 2),
+      technologiesMissingCost: 0,
+      soldServicesMissingMarginCost: 0,
+      servicesLowMargin: 0,
+      duplicateGroups: 0
+    };
+    const block = (totalRecords = 0) => ({
+      totalRecords: Number(totalRecords || 0),
+      missingCount: 0,
+      penalty: 0,
+      severity: "ok"
+    });
+    const scoreDetails = {
+      value: score,
+      state: "alto",
+      totalPenalty: Number(Math.max(0, 100 - score).toFixed(2)),
+      updatedAt: nowIso()
+    };
+    return {
+      state: "alto",
+      score,
+      status: "buono",
+      totalPenalty: scoreDetails.totalPenalty,
+      updatedAt: nowIso(),
+      metrics,
+      alerts: [],
+      scoreDetails,
+      clients: block(clientsTotal),
+      services: block(servicesTotal),
+      payments: block(paymentsTotal),
+      appointments: block(totalAppointments),
+      operators: block(staffTotal),
+      inventory: block(inventoryTotal),
+      profitability: block(Number(counters.profitabilitySamples || totalAppointments || 0)),
+      profitabilityReliable: true,
+      sourceLayer: "seed_hybrid_gold_24m_snapshot",
+      dataQualityBreakdown: business.dataQualityBreakdown || profitability.dataQualityBreakdown || null
+    };
+  }
+
   getDataQuality(session = null, options = {}) {
     const cacheBlock = options.summaryOnly ? ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY : ANALYTICS_BLOCKS.DATA_QUALITY;
     if (!options.forceRefresh) {
       const cached = this.getCachedAnalyticsBlock(cacheBlock, {}, session);
       if (cached) return cached;
+    }
+    const seededGoldDemoQuality = this.getSeededGoldDemoDataQuality(session);
+    if (seededGoldDemoQuality) {
+      this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.DATA_QUALITY, {}, session, seededGoldDemoQuality);
+      this.setCachedAnalyticsBlock(ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY, {}, session, seededGoldDemoQuality);
+      return seededGoldDemoQuality;
     }
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const services = this.filterByCenter(this.servicesRepository.list(), session);
