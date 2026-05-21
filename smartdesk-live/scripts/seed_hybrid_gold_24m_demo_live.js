@@ -182,6 +182,188 @@ function bulkAppend(repository, items) {
   repository.write([...items, ...repository.list()]);
 }
 
+function upsertById(repository, entity) {
+  const items = repository.list();
+  const index = items.findIndex((item) => String(item.id || "") === String(entity.id || ""));
+  if (index >= 0) {
+    items[index] = entity;
+  } else {
+    items.unshift(entity);
+  }
+  repository.write(items);
+}
+
+function buildSeededGoldState(monthly, created, totals) {
+  const now = new Date().toISOString();
+  const last = monthly[monthly.length - 1] || {};
+  const lastRevenue = Number(last.totalRevenueCents || 0);
+  const totalRevenue = Number(totals.revenueCents || 0);
+  const totalVisits = Number(totals.visits || 0);
+  const paymentCount = created.servicePayments + created.retailPayments;
+  const estimatedCost = Math.round(totalRevenue * 0.72);
+  const estimatedProfit = totalRevenue - estimatedCost;
+  const margin = totalRevenue > 0 ? Number((estimatedProfit / totalRevenue).toFixed(4)) : 0;
+  const confidence = 0.78;
+  const costConfidence = 0.74;
+  const monthlyTrend = monthly.map((item, index) => ({
+    monthIndex: index + 1,
+    revenueCents: item.totalRevenueCents,
+    serviceRevenueCents: item.serviceRevenueCents,
+    retailRevenueCents: item.retailRevenueCents,
+    visits: item.actualVisits,
+    staffSalaryCents: item.staffSalaryCents,
+    technologyRateCents: item.technologyRateCents
+  }));
+  return {
+    id: `gold_state:${DEMO_CENTER_ID}`,
+    version: "corelia_state_v1",
+    centerId: DEMO_CENTER_ID,
+    centerName: DEMO_CENTER_NAME,
+    updatedAt: now,
+    lastEvent: {
+      type: "seed_hybrid_gold_24m_snapshot",
+      at: now,
+      reason: "hybrid_gold_24m_demo_seed",
+      importId: "",
+      previousEventSeq: 0
+    },
+    eventSeq: totalVisits + paymentCount,
+    components: {
+      Rev: totalRevenue,
+      U: 0,
+      Sat: 0.58,
+      Act: 520,
+      Cont: 0.63,
+      Ticket: totalVisits ? Math.round(totalRevenue / totalVisits) : 0,
+      Prod: 0.64,
+      DQ: 0.82,
+      CostConf: costConfidence,
+      Margin: margin,
+      Conf: confidence
+    },
+    counters: {
+      revenueTotalCents: totalRevenue,
+      paymentCount,
+      unlinkedPayments: 0,
+      todayAppointments: 0,
+      appointmentSlots: 72,
+      clientsTotal: 520,
+      activeClients: 420,
+      clientsWithContact: 520,
+      servicesTotal: 15,
+      servicesWithPrice: 15,
+      servicesWithCost: 15,
+      staffActive: 3,
+      staffTotal: 3,
+      inventoryTotal: 10,
+      lowStock: 3,
+      marginTotal: margin,
+      marginSamples: totalVisits,
+      profitabilityRevenueCents: totalRevenue,
+      profitabilityCostCents: estimatedCost,
+      profitabilityProfitCents: estimatedProfit,
+      profitabilitySamples: totalVisits,
+      profitabilityReal: Math.round(totalVisits * 0.55),
+      profitabilityStandard: Math.round(totalVisits * 0.35),
+      profitabilityEstimated: Math.round(totalVisits * 0.1),
+      profitabilityIncomplete: 0
+    },
+    dirty: { components: [], snapshots: [], signals: [] },
+    snapshots: {
+      business: {
+        type: "business_snapshot",
+        source: "seed_hybrid_gold_24m_snapshot",
+        revenueCents: totalRevenue,
+        monthlyRevenueCents: lastRevenue,
+        unlinkedPayments: 0,
+        agendaSaturation: 0.58,
+        activeClients: 420,
+        clientContinuity: 0.63,
+        averageTicketCents: totalVisits ? Math.round(totalRevenue / totalVisits) : 0,
+        productivity: 0.64,
+        dataQuality: 0.82,
+        confidence,
+        status: "centro_monitorato",
+        monthlyTrend
+      },
+      profitability: {
+        type: "profitability_snapshot",
+        source: "seed_hybrid_gold_24m_snapshot",
+        revenueCents: totalRevenue,
+        coreRevenueCents: totalRevenue,
+        coreCostCents: estimatedCost,
+        coreProfitCents: estimatedProfit,
+        averageMargin: margin,
+        costConfidence,
+        economicConfidence: confidence,
+        profitabilityConfidence: Math.min(costConfidence, confidence),
+        confidenceLabel: "media",
+        coreSamples: totalVisits,
+        confidenceBreakdown: {
+          real: Math.round(totalVisits * 0.55),
+          standard: Math.round(totalVisits * 0.35),
+          estimated: Math.round(totalVisits * 0.1),
+          incomplete: 0
+        },
+        mathCore: "seed_hybrid_gold_24m_snapshot",
+        status: margin < 0.08 ? "margine_sotto_soglia" : "margine_da_verificare",
+        monthlyTrend
+      },
+      report: {
+        type: "report_snapshot",
+        source: "seed_hybrid_gold_24m_snapshot",
+        revenueCents: totalRevenue,
+        averageTicketCents: totalVisits ? Math.round(totalRevenue / totalVisits) : 0,
+        productivity: 0.64,
+        agendaSaturation: 0.58,
+        continuity: 0.63,
+        dataQuality: 0.82,
+        unlinkedPayments: 0,
+        monthlyTrend
+      }
+    },
+    signals: {
+      operationalRisk: 0.42,
+      centerBelowThreshold: 0.34,
+      opportunity: 0.72,
+      cashAnomaly: 0,
+      marginAnomaly: margin < 0.1 ? 0.78 : 0.48,
+      dataReliability: confidence,
+      productivitySignal: 0.64
+    },
+    decision: {
+      source: "seed_hybrid_gold_24m_snapshot",
+      domain: margin < 0.1 ? "profitability" : "growth",
+      score: margin < 0.1 ? 0.78 : 0.72,
+      weightedScore: margin < 0.1 ? 0.7 : 0.66,
+      action: "ACT_NOW",
+      primaryAction: {
+        domain: margin < 0.1 ? "profitability" : "growth",
+        action: "ACT_NOW",
+        label: margin < 0.1 ? "Tecnologie e margini da correggere" : "Volume buono, ottimizza margini e retail",
+        actionabilityScore: 1
+      },
+      secondaryActions: [
+        { domain: "marketing", score: 0.68, weightedScore: 0.61, actionabilityScore: 0.9, label: "Riattiva clienti ricorrenti e pacchetti" },
+        { domain: "inventory", score: 0.54, weightedScore: 0.48, actionabilityScore: 0.8, label: "Controlla rivendita e uso interno Revlon" }
+      ],
+      blockedActions: [],
+      explanationShort: margin < 0.1
+        ? "Il centro ha volume, ma radiofrequenza e laser pesano sui margini: Gold deve guidare pacchetti e correzioni operative."
+        : "Il centro ha storico e volume: Gold deve spingere continuita, retail e servizi sostenibili.",
+      updatedAt: now,
+      temporalStability: { stable: true, candidateCount: 3, requiredCycles: 2 }
+    },
+    decisionStability: {
+      acceptedKey: margin < 0.1 ? "profitability:ACT_NOW" : "growth:ACT_NOW",
+      candidateKey: "",
+      candidateCount: 0,
+      minPersistenceCycles: 2,
+      switchedAt: now
+    }
+  };
+}
+
 function monthlyTargetCents(monthIndexFromOldest) {
   const seasonal = Math.sin((monthIndexFromOldest / 12) * Math.PI * 2) * cents(1700);
   const trend = monthIndexFromOldest > 15 ? -cents(450) : monthIndexFromOldest * cents(55);
@@ -440,8 +622,28 @@ async function runInternalRenderJob() {
     }, demoSession);
   }
 
+  const createdSummary = {
+    staff: staff.length,
+    services: services.length,
+    clients: clients.length,
+    inventory: inventory.length,
+    appointments: appointmentCount,
+    servicePayments: paymentCount,
+    retailPayments: retailPaymentCount,
+    treatments: treatmentCount,
+    protocols: 24,
+    inventoryMovements: movementCount
+  };
+  const totals = monthly.reduce((acc, item) => ({
+    visits: acc.visits + item.actualVisits,
+    revenueCents: acc.revenueCents + item.totalRevenueCents,
+    serviceRevenueCents: acc.serviceRevenueCents + item.serviceRevenueCents,
+    retailRevenueCents: acc.retailRevenueCents + item.retailRevenueCents
+  }), { visits: 0, revenueCents: 0, serviceRevenueCents: 0, retailRevenueCents: 0 });
+  const seededGoldState = buildSeededGoldState(monthly, createdSummary, totals);
+  upsertById(service.goldStateRepository, seededGoldState);
   const rebuild = SKIP_REBUILD
-    ? { skipped: true, reason: "seed_only_bulk_load" }
+    ? { skipped: true, reason: "seeded_gold_state_snapshot_written" }
     : service.rebuildGoldStateForTenant({ username: DEMO_USERNAME }, adminSession);
   const cockpit = SKIP_REBUILD
     ? { skipped: true, summary: {}, sections: [] }
@@ -450,13 +652,6 @@ async function runInternalRenderJob() {
     ? { skipped: true, totals: {}, confidence: {}, centerHealth: {} }
     : service.getProfitabilityOverview({}, demoSession);
   await flushPersistence(adapter);
-
-  const totals = monthly.reduce((acc, item) => ({
-    visits: acc.visits + item.actualVisits,
-    revenueCents: acc.revenueCents + item.totalRevenueCents,
-    serviceRevenueCents: acc.serviceRevenueCents + item.serviceRevenueCents,
-    retailRevenueCents: acc.retailRevenueCents + item.retailRevenueCents
-  }), { visits: 0, revenueCents: 0, serviceRevenueCents: 0, retailRevenueCents: 0 });
 
   console.log(JSON.stringify({
     success: true,
@@ -478,18 +673,7 @@ async function runInternalRenderJob() {
       retailPurchaseDiscount: "40%"
     },
     rebuildSkipped: SKIP_REBUILD,
-    created: {
-      staff: staff.length,
-      services: services.length,
-      clients: clients.length,
-      inventory: inventory.length,
-      appointments: appointmentCount,
-      servicePayments: paymentCount,
-      retailPayments: retailPaymentCount,
-      treatments: treatmentCount,
-      protocols: 24,
-      inventoryMovements: movementCount
-    },
+    created: createdSummary,
     totals,
     rebuild: {
       success: rebuild.success,
