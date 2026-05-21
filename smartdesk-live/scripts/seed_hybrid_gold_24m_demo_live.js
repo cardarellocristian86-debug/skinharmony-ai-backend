@@ -11,6 +11,7 @@ const SKIP_REBUILD = process.env.SMARTDESK_SKIP_GOLD_REBUILD === "1" || process.
 
 const MONTH_COUNT = 24;
 const AVG_MONTHLY_VISITS = 250;
+const AVG_PHYSICAL_MONTHLY_VISITS = 62;
 const TECHNOLOGY_INSTALLMENT_MONTHS = 48;
 const TECHNOLOGY_MONTHLY_RATE_CENTS = cents(1400);
 const EMPLOYEE_MONTHLY_SALARY_CENTS = cents(1300);
@@ -373,8 +374,8 @@ function monthlyTargetCents(monthIndexFromOldest) {
 
 function monthlyVisitTarget(monthIndexFromOldest) {
   const seasonal = Math.round(Math.sin((monthIndexFromOldest / 12) * Math.PI * 2) * 18);
-  const noise = Math.round((rnd() - 0.5) * 26);
-  return Math.max(220, Math.min(285, AVG_MONTHLY_VISITS + seasonal + noise));
+  const noise = Math.round((rnd() - 0.5) * 12);
+  return Math.max(48, Math.min(76, AVG_PHYSICAL_MONTHLY_VISITS + Math.round(seasonal / 4) + noise));
 }
 
 async function flushPersistence(adapter) {
@@ -474,6 +475,7 @@ async function runInternalRenderJob() {
   for (let oldestIndex = 0; oldestIndex < MONTH_COUNT; oldestIndex += 1) {
     const monthOffsetFromNow = MONTH_COUNT - 1 - oldestIndex;
     const targetVisits = monthlyVisitTarget(oldestIndex);
+    const logicalVisits = Math.max(220, Math.min(285, AVG_MONTHLY_VISITS + Math.round(Math.sin((oldestIndex / 12) * Math.PI * 2) * 18) + Math.round((rnd() - 0.5) * 18)));
     const targetRevenue = monthlyTargetCents(oldestIndex);
     let monthRevenue = 0;
     let monthVisits = 0;
@@ -593,13 +595,35 @@ async function runInternalRenderJob() {
       saleIndex += 1;
     }
 
+    const aggregateGap = Math.max(0, targetRevenue - (monthRevenue + retailRevenue));
+    if (aggregateGap > 0) {
+      const aggregateAt = isoInMonth(monthOffsetFromNow, 390, 18);
+      paymentRows.push({
+        id: `pay_hybrid24m_aggregate_${oldestIndex}`,
+        idempotencyKey: `hybrid24m:aggregate-pay:${oldestIndex}`,
+        centerId: DEMO_CENTER_ID,
+        centerName: DEMO_CENTER_NAME,
+        clientId: "",
+        walkInName: "Incasso servizi aggregato mese",
+        appointmentId: "",
+        amountCents: aggregateGap,
+        method: "card",
+        createdAt: aggregateAt,
+        description: `SHGOLD_24M_HYBRID incasso aggregato mensile per rappresentare circa ${logicalVisits} passaggi/mese senza appesantire agenda.`,
+        note: `SHGOLD_24M_HYBRID incasso aggregato mensile per forecast Gold.`
+      });
+      paymentCount += 1;
+    }
+
     monthly.push({
       monthIndex: oldestIndex + 1,
-      targetVisits,
-      actualVisits: monthVisits,
+      targetVisits: logicalVisits,
+      physicalVisits: monthVisits,
+      actualVisits: logicalVisits,
       serviceRevenueCents: monthRevenue,
       retailRevenueCents: retailRevenue,
-      totalRevenueCents: monthRevenue + retailRevenue,
+      aggregateRevenueCents: aggregateGap,
+      totalRevenueCents: monthRevenue + retailRevenue + aggregateGap,
       technologyRateCents: TECHNOLOGY_MONTHLY_RATE_CENTS,
       staffSalaryCents: EMPLOYEE_MONTHLY_SALARY_CENTS * staff.length
     });
