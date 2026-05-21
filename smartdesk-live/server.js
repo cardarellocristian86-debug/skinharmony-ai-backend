@@ -1407,7 +1407,7 @@ app.get("/api/ai-gold/cockpit", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
-app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1421,14 +1421,14 @@ app.get("/api/ai-gold/capabilities", requirePlan("gold"), (req, res) => {
   }), () => service.getGoldCapabilities(req.session));
 });
 
-app.get("/api/ai-gold/progressive-intelligence", requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/progressive-intelligence", requirePlan("silver"), (req, res) => {
   res.json(service.getProgressiveIntelligenceStatus(req.session, {
     force: req.query.force === "1",
     reason: req.query.force === "1" ? "api_force_refresh" : "api_read"
   }));
 });
 
-app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/decision-context", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1445,7 +1445,7 @@ app.get("/api/ai-gold/decision-context", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
-app.get("/api/ai-gold/change-impact-contract", requirePlan("gold"), (req, res) => {
+app.get("/api/ai-gold/change-impact-contract", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     enabled: false,
     source: "corelia_fallback",
@@ -1503,7 +1503,7 @@ app.get("/api/ai-gold/state/signals", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({}), () => service.getGoldState(req.session).signals || {});
 });
 
-app.get("/api/corelia/capabilities", requirePlan("gold"), (req, res) => {
+app.get("/api/corelia/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
@@ -1512,7 +1512,7 @@ app.get("/api/corelia/capabilities", requirePlan("gold"), (req, res) => {
   }), () => service.getGoldCapabilities(req.session));
 });
 
-app.get("/api/corelia/decision-context", requirePlan("gold"), (req, res) => {
+app.get("/api/corelia/decision-context", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
