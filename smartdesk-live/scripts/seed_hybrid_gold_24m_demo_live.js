@@ -7,6 +7,7 @@ const DEMO_CENTER_NAME = String(process.env.SMARTDESK_DEMO_CENTER_NAME || "SkinH
 const APPLY = process.argv.includes("--apply");
 const LIVE_CONFIRM = process.argv.includes("--i-understand-live");
 const INTERNAL_RENDER_JOB = process.argv.includes("--internal-render-job");
+const SKIP_REBUILD = process.env.SMARTDESK_SKIP_GOLD_REBUILD === "1" || process.argv.includes("--skip-gold-rebuild");
 
 const MONTH_COUNT = 24;
 const AVG_MONTHLY_VISITS = 250;
@@ -439,9 +440,15 @@ async function runInternalRenderJob() {
     }, demoSession);
   }
 
-  const rebuild = service.rebuildGoldStateForTenant({ username: DEMO_USERNAME }, adminSession);
-  const cockpit = service.getAiGoldCockpit({}, demoSession);
-  const profitability = service.getProfitabilityOverview({}, demoSession);
+  const rebuild = SKIP_REBUILD
+    ? { skipped: true, reason: "seed_only_bulk_load" }
+    : service.rebuildGoldStateForTenant({ username: DEMO_USERNAME }, adminSession);
+  const cockpit = SKIP_REBUILD
+    ? { skipped: true, summary: {}, sections: [] }
+    : service.getAiGoldCockpit({}, demoSession);
+  const profitability = SKIP_REBUILD
+    ? { skipped: true, totals: {}, confidence: {}, centerHealth: {} }
+    : service.getProfitabilityOverview({}, demoSession);
   await flushPersistence(adapter);
 
   const totals = monthly.reduce((acc, item) => ({
@@ -470,6 +477,7 @@ async function runInternalRenderJob() {
       technologyInstallments: "radiofrequenza + laser, 48 rate, 700 euro/mese ciascuna",
       retailPurchaseDiscount: "40%"
     },
+    rebuildSkipped: SKIP_REBUILD,
     created: {
       staff: staff.length,
       services: services.length,
@@ -525,10 +533,11 @@ async function main() {
         internalRenderJobOnlyForApply: true,
         noPublicEndpoint: true,
         noKeys: true,
-        noRealTenantWrites: true,
-        demoGoldTenantOnly: true
-      }
-    }, null, 2));
+      noRealTenantWrites: true,
+      demoGoldTenantOnly: true,
+      skipGoldRebuild: SKIP_REBUILD
+    }
+  }, null, 2));
     return;
   }
   if (!LIVE_CONFIRM || !INTERNAL_RENDER_JOB) {
