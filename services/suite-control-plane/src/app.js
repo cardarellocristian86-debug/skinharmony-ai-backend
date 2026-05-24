@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.3.8-google-connect-human-ui";
+const SERVICE_VERSION = "0.3.9-google-provider-config";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -21,6 +21,12 @@ const GOOGLE_CONNECTOR_REQUIRED_TENANT_FIELDS = [
   "google_user_authorized",
   "ads_customer_id",
   "ga4_property_id",
+];
+const GOOGLE_PROVIDER_CONFIG_FIELDS = [
+  "client_id",
+  "client_secret",
+  "developer_token",
+  "redirect_uri",
 ];
 const RUNBOOK_CATALOG = [
   {
@@ -314,14 +320,61 @@ function buildEcosystemTracks(overview, runbooks, coreStatus) {
   };
 }
 
-function buildGoogleConnectorContract() {
+function normalizeGoogleProviderConfig(input = {}, previous = {}) {
+  const next = { ...(previous && typeof previous === "object" ? previous : {}) };
+  for (const field of GOOGLE_PROVIDER_CONFIG_FIELDS) {
+    if (hasRuntimeValue(input[field])) {
+      next[field] = String(input[field]).trim();
+    }
+  }
+  next.updated_at = nowIso();
+  return next;
+}
+
+function maskSecretValue(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.length <= 8) return "***";
+  return `${raw.slice(0, 4)}***${raw.slice(-4)}`;
+}
+
+function maskGoogleProviderConfig(config = {}) {
+  return {
+    client_id_present: hasRuntimeValue(config.client_id),
+    client_secret_present: hasRuntimeValue(config.client_secret),
+    developer_token_present: hasRuntimeValue(config.developer_token),
+    redirect_uri_present: hasRuntimeValue(config.redirect_uri),
+    client_id_masked: maskSecretValue(config.client_id),
+    redirect_uri: hasRuntimeValue(config.redirect_uri) ? String(config.redirect_uri) : "",
+    updated_at: config.updated_at || "",
+  };
+}
+
+function resolveGoogleProviderConfig(storedConfig = {}) {
   const publicBaseUrl = normalizeBaseUrl(process.env.SUITE_CONTROL_PLANE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
-  const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI || (publicBaseUrl ? `${publicBaseUrl}/api/suite/integrations/google/oauth/callback` : "");
+  return {
+    client_id: process.env.GOOGLE_CLIENT_ID || storedConfig.client_id || "",
+    client_secret: process.env.GOOGLE_CLIENT_SECRET || storedConfig.client_secret || "",
+    developer_token: process.env.GOOGLE_ADS_DEVELOPER_TOKEN || storedConfig.developer_token || "",
+    redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI || storedConfig.redirect_uri || (publicBaseUrl ? `${publicBaseUrl}/api/suite/integrations/google/oauth/callback` : ""),
+    updated_at: storedConfig.updated_at || "",
+  };
+}
+
+function buildGoogleConnectorContract(storedProviderConfig = {}) {
+  const resolvedProviderConfig = resolveGoogleProviderConfig(storedProviderConfig);
+  const publicBaseUrl = normalizeBaseUrl(process.env.SUITE_CONTROL_PLANE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
+  const redirectUri = resolvedProviderConfig.redirect_uri || (publicBaseUrl ? `${publicBaseUrl}/api/suite/integrations/google/oauth/callback` : "");
   const provider = {
-    client_id_configured: Boolean(process.env.GOOGLE_CLIENT_ID),
-    client_secret_configured: Boolean(process.env.GOOGLE_CLIENT_SECRET),
-    developer_token_configured: Boolean(process.env.GOOGLE_ADS_DEVELOPER_TOKEN),
+    client_id_configured: hasRuntimeValue(resolvedProviderConfig.client_id),
+    client_secret_configured: hasRuntimeValue(resolvedProviderConfig.client_secret),
+    developer_token_configured: hasRuntimeValue(resolvedProviderConfig.developer_token),
     redirect_uri: redirectUri,
+    source: process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_SECRET || process.env.GOOGLE_ADS_DEVELOPER_TOKEN
+      ? "render_environment"
+      : (hasRuntimeValue(storedProviderConfig.client_id) || hasRuntimeValue(storedProviderConfig.client_secret) || hasRuntimeValue(storedProviderConfig.developer_token)
+        ? "suite_provider_config"
+        : "not_configured"),
   };
   const missingProviderFields = [
     ...(provider.client_id_configured ? [] : ["client_id"]),
@@ -398,13 +451,13 @@ function buildGoogleConnectorContract() {
       "business_governance",
     ],
     next_action: missingProviderFields.length
-      ? "Configurare credenziali provider Google su Render; il cliente vedra comunque il flusso semplice Collega Google."
+      ? "Configurare credenziali provider Google dal pannello Suite Provider o da Render; il cliente vedra comunque il flusso semplice Collega Google."
       : "Abilitare OAuth reale e selezione account/proprieta per tenant.",
   };
 }
 
-function buildGoogleConnectorStatus(tenantId = "") {
-  const contract = buildGoogleConnectorContract();
+function buildGoogleConnectorStatus(tenantId = "", storedProviderConfig = {}) {
+  const contract = buildGoogleConnectorContract(storedProviderConfig);
   const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
   const simulatedAuthorized = String(process.env.GOOGLE_CONNECTOR_DEMO_CONNECTED || "").toLowerCase() === "true";
   const adsCustomerId = process.env.GOOGLE_ADS_CUSTOMER_ID || "";
@@ -435,6 +488,7 @@ function buildGoogleConnectorStatus(tenantId = "") {
       ? "Google collegato. Suite puo leggere campagne e Analytics; Core decide priorita e azioni consigliate."
       : "Google non collegato. Il cliente clicca Collega Google, accede e autorizza SkinHarmony.",
     missing_provider_fields: contract.missing_provider_fields,
+    provider_config: maskGoogleProviderConfig(resolveGoogleProviderConfig(storedProviderConfig)),
     contract,
   };
 }
@@ -558,10 +612,13 @@ function createMemoryStorage(options = {}) {
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
   const dispatches = Array.isArray(options.dispatches) ? options.dispatches : [];
   const artifacts = Array.isArray(options.artifacts) ? options.artifacts : [];
+  let googleProviderConfig = options.googleProviderConfig && typeof options.googleProviderConfig === "object"
+    ? options.googleProviderConfig
+    : {};
   const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
 
   function emitChange() {
-    onChange({ nodes: Array.from(nodes.values()), evidence, dispatches, artifacts });
+    onChange({ nodes: Array.from(nodes.values()), evidence, dispatches, artifacts, googleProviderConfig });
   }
 
   function getOrCreateNode(nodeId, tenantId = "unknown") {
@@ -658,6 +715,37 @@ function createMemoryStorage(options = {}) {
     },
     runbookCatalog() {
       return RUNBOOK_CATALOG;
+    },
+    googleProviderConfig() {
+      return googleProviderConfig;
+    },
+    googleProviderConfigMasked() {
+      return maskGoogleProviderConfig(resolveGoogleProviderConfig(googleProviderConfig));
+    },
+    saveGoogleProviderConfig(payload = {}) {
+      const next = normalizeGoogleProviderConfig(payload, googleProviderConfig);
+      googleProviderConfig = next;
+      const event = {
+        id: `google_provider_config_${crypto.randomUUID()}`,
+        received_at: nowIso(),
+        evidence_type: "google_provider_config_saved",
+        decision: "provider_config_updated",
+        risk: "medium",
+        audit_id: null,
+        payload: {
+          provider_config: maskGoogleProviderConfig(resolveGoogleProviderConfig(next)),
+          source: "suite_provider_panel",
+        },
+      };
+      evidence.unshift(event);
+      if (evidence.length > 1000) evidence.length = 1000;
+      emitChange();
+      return {
+        saved: true,
+        saved_at: next.updated_at,
+        provider_config: maskGoogleProviderConfig(resolveGoogleProviderConfig(next)),
+        evidence_id: event.id,
+      };
     },
     runbookPreview(payload) {
       const runbook = getRunbook(payload.runbook_id);
@@ -826,12 +914,12 @@ function createSuiteControlStorage() {
 
   fs.mkdirSync(storageRoot, { recursive: true });
   const stateFile = path.join(storageRoot, "suite-control-state.json");
-  let initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [] };
+  let initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [], google_provider_config: {} };
   if (fs.existsSync(stateFile)) {
     try {
       initialState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     } catch {
-      initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [] };
+      initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [], google_provider_config: {} };
     }
   }
 
@@ -840,6 +928,7 @@ function createSuiteControlStorage() {
     evidence: Array.isArray(initialState.evidence) ? initialState.evidence : [],
     dispatches: Array.isArray(initialState.dispatches) ? initialState.dispatches : [],
     artifacts: Array.isArray(initialState.artifacts) ? initialState.artifacts : [],
+    googleProviderConfig: initialState.google_provider_config && typeof initialState.google_provider_config === "object" ? initialState.google_provider_config : {},
     onChange(state) {
       const tmpFile = `${stateFile}.tmp`;
       fs.writeFileSync(tmpFile, `${JSON.stringify({
@@ -848,6 +937,7 @@ function createSuiteControlStorage() {
         evidence: state.evidence.slice(0, 1000),
         dispatches: state.dispatches.slice(0, 1000),
         artifacts: state.artifacts.slice(0, 1000),
+        google_provider_config: state.googleProviderConfig || {},
       }, null, 2)}\n`);
       fs.renameSync(tmpFile, stateFile);
     },
@@ -1052,13 +1142,55 @@ export function createSuiteControlPlane(options = {}) {
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
-      google: buildGoogleConnectorStatus(tenantId),
+      google: buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig()),
+    });
+  });
+
+  app.get("/api/suite/integrations/google/provider-config", auth, (req, res) => {
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      provider_config: storage.googleProviderConfigMasked(),
+      required_fields: GOOGLE_PROVIDER_CONFIG_FIELDS,
+      message: "Configurazione provider salvata lato Suite Control Plane. I segreti non vengono restituiti.",
+    });
+  });
+
+  app.post("/api/suite/integrations/google/provider-config", auth, (req, res) => {
+    const provider = req.body?.provider && typeof req.body.provider === "object" ? req.body.provider : req.body || {};
+    const validation = validateGoogleConnectorSetup({
+      provider,
+      tenant: {
+        tenant_id: "provider_config",
+        google_user_authorized: true,
+        ads_customer_id: "provider_setup",
+        ga4_property_id: "provider_setup",
+      },
+    });
+    if (!validation.allowed) {
+      return res.status(409).json({
+        ok: false,
+        service: "suite_control_plane",
+        version: SERVICE_VERSION,
+        error: "google_provider_config_invalid",
+        validation,
+      });
+    }
+    const saved = storage.saveGoogleProviderConfig(provider);
+    return res.status(201).json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "google_provider_config_saved",
+      execution_allowed: false,
+      ...saved,
     });
   });
 
   app.get("/api/suite/integrations/google/connect", (req, res) => {
     const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
-    const status = buildGoogleConnectorStatus(tenantId);
+    const status = buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig());
     const payload = {
       ok: true,
       service: "suite_control_plane",
@@ -1073,7 +1205,7 @@ export function createSuiteControlPlane(options = {}) {
       execution_allowed: false,
       next_action: status.provider_ready
         ? "Implementare exchange OAuth reale e selezione account/proprieta."
-        : "Configurare Google Client ID, Client Secret, Developer Token e Redirect URI su Render.",
+        : "Configurare Google Client ID, Client Secret, Developer Token e Redirect URI dal pannello Suite Provider.",
     };
     const acceptsHtml = String(req.get("accept") || "").includes("text/html");
     if (acceptsHtml) {
@@ -1090,7 +1222,7 @@ export function createSuiteControlPlane(options = {}) {
       version: SERVICE_VERSION,
       mode: "google_connector_setup_validation",
       validation,
-      contract: buildGoogleConnectorContract(),
+      contract: buildGoogleConnectorContract(storage.googleProviderConfig()),
     });
   });
 

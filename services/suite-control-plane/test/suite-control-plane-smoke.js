@@ -205,6 +205,32 @@ try {
   assert.equal(googleStatus.response.status, 200);
   assert.equal(googleStatus.body.google.capability.can_change_budget, false);
   assert.equal(googleStatus.body.google.contract.safety_policy.no_campaign_creation, true);
+  assert.equal(googleStatus.body.google.provider_ready, false);
+
+  const googleProviderConfig = await request("/api/suite/integrations/google/provider-config", { headers });
+  assert.equal(googleProviderConfig.response.status, 200);
+  assert.equal(googleProviderConfig.body.provider_config.client_id_present, false);
+
+  const savedGoogleProviderConfig = await request("/api/suite/integrations/google/provider-config", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      provider: {
+        client_id: "client-id-provider",
+        client_secret: "client-secret-provider",
+        developer_token: "developer-token-provider",
+        redirect_uri: "https://suite-control-plane.onrender.com/api/suite/integrations/google/oauth/callback",
+      },
+    }),
+  });
+  assert.equal(savedGoogleProviderConfig.response.status, 201);
+  assert.equal(savedGoogleProviderConfig.body.provider_config.client_id_present, true);
+  assert.equal(savedGoogleProviderConfig.body.provider_config.client_secret_present, true);
+
+  const googleStatusAfterProviderConfig = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
+  assert.equal(googleStatusAfterProviderConfig.response.status, 200);
+  assert.equal(googleStatusAfterProviderConfig.body.google.provider_ready, true);
+  assert.equal(googleStatusAfterProviderConfig.body.google.contract.provider.source, "suite_provider_config");
 
   const googleConnect = await request("/api/suite/integrations/google/connect?tenant_id=tenant_demo", { headers });
   assert.equal(googleConnect.response.status, 200);
