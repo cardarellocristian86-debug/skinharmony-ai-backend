@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.3.6-governance-google-connector";
+const SERVICE_VERSION = "0.3.7-google-connect-public-readonly";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -973,7 +973,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/integrations/google/connect", auth, (req, res) => {
+  app.get("/api/suite/integrations/google/connect", (req, res) => {
     const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
     const status = buildGoogleConnectorStatus(tenantId);
     res.json({

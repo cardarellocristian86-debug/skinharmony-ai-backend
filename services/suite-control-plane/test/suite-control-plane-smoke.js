@@ -211,6 +211,11 @@ try {
   assert.equal(googleConnect.body.execution_allowed, false);
   assert.match(googleConnect.body.customer_action, /Collega Google/);
 
+  const publicGoogleConnect = await request("/api/suite/integrations/google/connect?tenant_id=tenant_demo");
+  assert.equal(publicGoogleConnect.response.status, 200);
+  assert.equal(publicGoogleConnect.body.execution_allowed, false);
+  assert.match(publicGoogleConnect.body.customer_action, /Collega Google/);
+
   const googleValidation = await request("/api/suite/integrations/google/validate", {
     method: "POST",
     headers,
