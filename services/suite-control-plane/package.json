@@ -1,6 +1,6 @@
 {
   "name": "@skinharmony/suite-control-plane",
-  "version": "0.3.7-google-connect-public-readonly",
+  "version": "0.3.8-google-connect-human-ui",
   "private": true,
   "type": "module",
   "scripts": {

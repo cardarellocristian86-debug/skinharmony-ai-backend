@@ -216,6 +216,14 @@ try {
   assert.equal(publicGoogleConnect.body.execution_allowed, false);
   assert.match(publicGoogleConnect.body.customer_action, /Collega Google/);
 
+  const publicGoogleConnectHtmlResponse = await fetch(`${baseUrl}/api/suite/integrations/google/connect?tenant_id=tenant_demo`, {
+    headers: { accept: "text/html" },
+  });
+  const publicGoogleConnectHtml = await publicGoogleConnectHtmlResponse.text();
+  assert.equal(publicGoogleConnectHtmlResponse.status, 200);
+  assert.match(publicGoogleConnectHtml, /Google Connector/);
+  assert.match(publicGoogleConnectHtml, /Nessuna campagna/);
+
   const googleValidation = await request("/api/suite/integrations/google/validate", {
     method: "POST",
     headers,

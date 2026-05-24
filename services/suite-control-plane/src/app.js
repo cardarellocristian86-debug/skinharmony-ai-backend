@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.3.7-google-connect-public-readonly";
+const SERVICE_VERSION = "0.3.8-google-connect-human-ui";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -468,6 +468,89 @@ function validateGoogleConnectorSetup(input = {}) {
     warnings,
     execution_allowed: false,
   };
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderGoogleConnectPage(payload) {
+  const missing = Array.isArray(payload.missing_provider_fields) ? payload.missing_provider_fields : [];
+  const chips = missing.length
+    ? missing.map((field) => `<span>${escapeHtml(field)}</span>`).join("")
+    : "<span>provider_ready</span>";
+  const stateLabel = payload.provider_ready ? "Pronto per OAuth" : "Setup provider richiesto";
+  const stateClass = payload.provider_ready ? "ok" : "wait";
+
+  return `<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkinHarmony Google Connector</title>
+  <style>
+    body{margin:0;background:#f6f8fb;color:#172033;font-family:Inter,Arial,sans-serif}
+    main{min-height:100vh;display:grid;place-items:center;padding:32px}
+    .panel{width:min(920px,100%);background:#fff;border:1px solid #dbe7f3;border-radius:18px;box-shadow:0 24px 80px rgba(23,32,51,.10);overflow:hidden}
+    .head{padding:34px 38px;background:linear-gradient(135deg,#eef9fd,#ffffff 55%,#f6f0ff)}
+    .kicker{font-size:12px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:#4b82bd}
+    h1{margin:12px 0 10px;font-size:34px;line-height:1.05}
+    p{margin:0;color:#5b6b80;font-size:16px;line-height:1.55}
+    .body{padding:30px 38px;display:grid;gap:22px}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+    .card{border:1px solid #dbe7f3;border-radius:14px;padding:18px;background:#fbfdff}
+    .label{display:block;color:#728197;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.12em;margin-bottom:8px}
+    .value{font-size:20px;font-weight:800;color:#1d365c}
+    .value.ok{color:#257d55}.value.wait{color:#af6b00}
+    .chips{display:flex;gap:8px;flex-wrap:wrap}
+    .chips span{border:1px solid #cfe0f2;border-radius:999px;padding:8px 10px;background:#fff;color:#42566f;font-size:13px;font-weight:700}
+    .notice{border:1px solid #f2d7a8;background:#fff8ea;border-radius:14px;padding:18px;color:#65470d}
+    .rules{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+    .rules li{padding:10px 12px;border:1px solid #dbe7f3;border-radius:12px;background:#fff}
+    .foot{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:20px 38px;background:#f8fbfe;border-top:1px solid #dbe7f3}
+    code{background:#eef3f8;border-radius:8px;padding:4px 7px}
+    @media(max-width:760px){.grid{grid-template-columns:1fr}.head,.body,.foot{padding-left:22px;padding-right:22px}.foot{display:block}h1{font-size:28px}}
+  </style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <div class="head">
+      <div class="kicker">SkinHarmony Suite Control Plane</div>
+      <h1>Google Connector</h1>
+      <p>${escapeHtml(payload.customer_action)}</p>
+    </div>
+    <div class="body">
+      <div class="grid">
+        <div class="card"><span class="label">Tenant</span><div class="value">${escapeHtml(payload.tenant_id)}</div></div>
+        <div class="card"><span class="label">Stato</span><div class="value ${stateClass}">${stateLabel}</div></div>
+        <div class="card"><span class="label">Esecuzione</span><div class="value wait">Solo setup</div></div>
+      </div>
+      <div class="notice">${escapeHtml(payload.next_action)}</div>
+      <div>
+        <span class="label">Campi provider mancanti</span>
+        <div class="chips">${chips}</div>
+      </div>
+      <ul class="rules">
+        <li>Nessuna API key Google viene chiesta al cliente.</li>
+        <li>Nessuna campagna, budget o keyword viene modificata automaticamente.</li>
+        <li>Le metriche verranno lette solo dopo OAuth e consenso.</li>
+        <li>Core decide priorita e azioni consigliate; l owner conferma le azioni sensibili.</li>
+      </ul>
+    </div>
+    <div class="foot">
+      <span>Versione <code>${escapeHtml(payload.version)}</code></span>
+      <span>Endpoint read-only</span>
+    </div>
+  </section>
+</main>
+</body>
+</html>`;
 }
 
 function createMemoryStorage(options = {}) {
@@ -976,7 +1059,7 @@ export function createSuiteControlPlane(options = {}) {
   app.get("/api/suite/integrations/google/connect", (req, res) => {
     const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
     const status = buildGoogleConnectorStatus(tenantId);
-    res.json({
+    const payload = {
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
@@ -991,7 +1074,12 @@ export function createSuiteControlPlane(options = {}) {
       next_action: status.provider_ready
         ? "Implementare exchange OAuth reale e selezione account/proprieta."
         : "Configurare Google Client ID, Client Secret, Developer Token e Redirect URI su Render.",
-    });
+    };
+    const acceptsHtml = String(req.get("accept") || "").includes("text/html");
+    if (acceptsHtml) {
+      return res.type("html").send(renderGoogleConnectPage(payload));
+    }
+    return res.json(payload);
   });
 
   app.post("/api/suite/integrations/google/validate", auth, (req, res) => {
