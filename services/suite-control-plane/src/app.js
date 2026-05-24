@@ -4,8 +4,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.3.5-governance-runtime";
+const SERVICE_VERSION = "0.3.6-governance-google-connector";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
+const GOOGLE_CONNECTOR_SCOPES = [
+  "google_ads.readonly",
+  "analytics.readonly",
+];
+const GOOGLE_CONNECTOR_REQUIRED_PROVIDER_FIELDS = [
+  "client_id",
+  "client_secret",
+  "developer_token",
+  "redirect_uri",
+];
+const GOOGLE_CONNECTOR_REQUIRED_TENANT_FIELDS = [
+  "tenant_id",
+  "google_user_authorized",
+  "ads_customer_id",
+  "ga4_property_id",
+];
 const RUNBOOK_CATALOG = [
   {
     id: "site_clone_readiness",
@@ -120,6 +136,12 @@ function readSecret(req) {
 
 function publicError(res, status, code, message = code) {
   return res.status(status).json({ ok: false, error: code, message });
+}
+
+function hasRuntimeValue(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return String(value ?? "").trim() !== "";
 }
 
 function normalizeBaseUrl(value = "") {
@@ -289,6 +311,162 @@ function buildEcosystemTracks(overview, runbooks, coreStatus) {
         "preparare Customer 360 e journey controllato come runbook",
       ],
     },
+  };
+}
+
+function buildGoogleConnectorContract() {
+  const publicBaseUrl = normalizeBaseUrl(process.env.SUITE_CONTROL_PLANE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
+  const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI || (publicBaseUrl ? `${publicBaseUrl}/api/suite/integrations/google/oauth/callback` : "");
+  const provider = {
+    client_id_configured: Boolean(process.env.GOOGLE_CLIENT_ID),
+    client_secret_configured: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+    developer_token_configured: Boolean(process.env.GOOGLE_ADS_DEVELOPER_TOKEN),
+    redirect_uri: redirectUri,
+  };
+  const missingProviderFields = [
+    ...(provider.client_id_configured ? [] : ["client_id"]),
+    ...(provider.client_secret_configured ? [] : ["client_secret"]),
+    ...(provider.developer_token_configured ? [] : ["developer_token"]),
+    ...(provider.redirect_uri ? [] : ["redirect_uri"]),
+  ];
+
+  return {
+    schema_version: "suite_google_connector_contract_v1",
+    service_version: SERVICE_VERSION,
+    mode: "oauth_ready_no_campaign_mutation",
+    render_routes: {
+      status: "/api/suite/integrations/google/status",
+      connect: "/api/suite/integrations/google/connect",
+      validate: "/api/suite/integrations/google/validate",
+      callback: "/api/suite/integrations/google/oauth/callback",
+    },
+    provider,
+    provider_ready: missingProviderFields.length === 0,
+    missing_provider_fields: missingProviderFields,
+    required_provider_fields: GOOGLE_CONNECTOR_REQUIRED_PROVIDER_FIELDS,
+    required_tenant_fields: GOOGLE_CONNECTOR_REQUIRED_TENANT_FIELDS,
+    customer_flow: [
+      "click_connect_google",
+      "google_login",
+      "owner_or_tenant_admin_consent",
+      "select_google_ads_customer",
+      "select_ga4_property",
+      "suite_reads_metrics",
+      "core_ranks_actions",
+    ],
+    data_contract: {
+      reads: [
+        "campaign_name",
+        "campaign_status",
+        "cost",
+        "clicks",
+        "impressions",
+        "conversions",
+        "cost_per_lead",
+        "ga4_sessions",
+        "ga4_events",
+        "landing_page_path",
+      ],
+      writes: [],
+      normalized_output: {
+        campaign_id: "string",
+        source: "google_ads",
+        landing_page_path: "string",
+        spend: "number",
+        clicks: "number",
+        leads: "number",
+        conversion_rate: "number",
+        core_recommended_action: "hold|review|scale|pause|fix_page",
+      },
+    },
+    safety_policy: {
+      no_campaign_creation: true,
+      no_budget_change: true,
+      no_keyword_mutation: true,
+      no_auto_publish: true,
+      owner_confirmation_required_for_any_write: true,
+      core_required_for_scale_or_pause: true,
+      suite_is_ui_only: true,
+    },
+    scopes: GOOGLE_CONNECTOR_SCOPES,
+    branches: [
+      "paid_ads_guard",
+      "funnel_conversion_guard",
+      "customer_behavior_analysis",
+      "claim_guard",
+      "pricing_guard",
+      "business_governance",
+    ],
+    next_action: missingProviderFields.length
+      ? "Configurare credenziali provider Google su Render; il cliente vedra comunque il flusso semplice Collega Google."
+      : "Abilitare OAuth reale e selezione account/proprieta per tenant.",
+  };
+}
+
+function buildGoogleConnectorStatus(tenantId = "") {
+  const contract = buildGoogleConnectorContract();
+  const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
+  const simulatedAuthorized = String(process.env.GOOGLE_CONNECTOR_DEMO_CONNECTED || "").toLowerCase() === "true";
+  const adsCustomerId = process.env.GOOGLE_ADS_CUSTOMER_ID || "";
+  const ga4PropertyId = process.env.GA4_PROPERTY_ID || "";
+  const tenantConnected = simulatedAuthorized && Boolean(adsCustomerId || ga4PropertyId);
+
+  return {
+    ok: true,
+    schema_version: "suite_google_connector_status_v1",
+    service_version: SERVICE_VERSION,
+    tenant_id: tenantKey,
+    mode: contract.mode,
+    provider_ready: contract.provider_ready,
+    connected: tenantConnected,
+    state: tenantConnected ? "connected_demo" : (contract.provider_ready ? "ready_to_connect" : "provider_setup_required"),
+    connect_url: `/api/suite/integrations/google/connect?tenant_id=${encodeURIComponent(tenantKey)}`,
+    selected_accounts: {
+      google_ads_customer_id_present: Boolean(adsCustomerId),
+      ga4_property_id_present: Boolean(ga4PropertyId),
+    },
+    capability: {
+      can_read_google_ads: tenantConnected && Boolean(adsCustomerId),
+      can_read_ga4: tenantConnected && Boolean(ga4PropertyId),
+      can_change_campaigns: false,
+      can_change_budget: false,
+    },
+    owner_visible_copy: tenantConnected
+      ? "Google collegato. Suite puo leggere campagne e Analytics; Core decide priorita e azioni consigliate."
+      : "Google non collegato. Il cliente clicca Collega Google, accede e autorizza SkinHarmony.",
+    missing_provider_fields: contract.missing_provider_fields,
+    contract,
+  };
+}
+
+function validateGoogleConnectorSetup(input = {}) {
+  const errors = [];
+  const warnings = [];
+  const provider = input?.provider && typeof input.provider === "object" ? input.provider : {};
+  const tenant = input?.tenant && typeof input.tenant === "object" ? input.tenant : {};
+
+  for (const field of GOOGLE_CONNECTOR_REQUIRED_PROVIDER_FIELDS) {
+    if (!hasRuntimeValue(provider[field])) {
+      errors.push({ code: "google_provider_field_missing", field: `provider.${field}` });
+    }
+  }
+  for (const field of GOOGLE_CONNECTOR_REQUIRED_TENANT_FIELDS) {
+    if (!hasRuntimeValue(tenant[field])) {
+      warnings.push({ code: "google_tenant_field_missing", field: `tenant.${field}` });
+    }
+  }
+  if (input?.campaign_write_enabled === true || input?.budget_write_enabled === true) {
+    errors.push({ code: "google_ads_write_not_allowed", field: "campaign_write_enabled" });
+  }
+
+  const allowed = errors.length === 0;
+  return {
+    schema: "suite_google_connector_validation_v1",
+    allowed,
+    status: allowed ? (warnings.length ? "review" : "allow") : "block",
+    errors,
+    warnings,
+    execution_allowed: false,
   };
 }
 
@@ -782,6 +960,49 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       runbooks: storage.runbookCatalog(),
+    });
+  });
+
+  app.get("/api/suite/integrations/google/status", auth, (req, res) => {
+    const tenantId = req.query.tenant_id || req.get("x-sh-tenant-id") || "";
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      google: buildGoogleConnectorStatus(tenantId),
+    });
+  });
+
+  app.get("/api/suite/integrations/google/connect", auth, (req, res) => {
+    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const status = buildGoogleConnectorStatus(tenantId);
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "google_oauth_connect_placeholder",
+      tenant_id: tenantId,
+      customer_action: "Il cliente clicca Collega Google, fa login e autorizza SkinHarmony. Nessuna API key viene chiesta al cliente.",
+      provider_ready: status.provider_ready,
+      oauth_start_ready: status.provider_ready,
+      oauth_url: status.provider_ready ? `/api/suite/integrations/google/oauth/start?tenant_id=${encodeURIComponent(tenantId)}` : "",
+      missing_provider_fields: status.missing_provider_fields,
+      execution_allowed: false,
+      next_action: status.provider_ready
+        ? "Implementare exchange OAuth reale e selezione account/proprieta."
+        : "Configurare Google Client ID, Client Secret, Developer Token e Redirect URI su Render.",
+    });
+  });
+
+  app.post("/api/suite/integrations/google/validate", auth, (req, res) => {
+    const validation = validateGoogleConnectorSetup(req.body || {});
+    res.status(validation.allowed ? 200 : 409).json({
+      ok: validation.allowed,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "google_connector_setup_validation",
+      validation,
+      contract: buildGoogleConnectorContract(),
     });
   });
 

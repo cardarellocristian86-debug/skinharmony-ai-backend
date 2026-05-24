@@ -1,6 +1,6 @@
 {
   "name": "@skinharmony/suite-control-plane",
-  "version": "0.3.5-governance-runtime",
+  "version": "0.3.6-governance-google-connector",
   "private": true,
   "type": "module",
   "scripts": {

@@ -201,6 +201,54 @@ try {
   assert.ok(tracks.body.tracks.smartdesk_gold_track.runbooks.some((runbook) => runbook.id === "smartdesk_gold_customer_intelligence_sync"));
   assert.ok(tracks.body.tracks.smartdesk_gold_track.guardrails.includes("nessun invio automatico"));
 
+  const googleStatus = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
+  assert.equal(googleStatus.response.status, 200);
+  assert.equal(googleStatus.body.google.capability.can_change_budget, false);
+  assert.equal(googleStatus.body.google.contract.safety_policy.no_campaign_creation, true);
+
+  const googleConnect = await request("/api/suite/integrations/google/connect?tenant_id=tenant_demo", { headers });
+  assert.equal(googleConnect.response.status, 200);
+  assert.equal(googleConnect.body.execution_allowed, false);
+  assert.match(googleConnect.body.customer_action, /Collega Google/);
+
+  const googleValidation = await request("/api/suite/integrations/google/validate", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      provider: {
+        client_id: "client-id",
+        client_secret: "client-secret",
+        developer_token: "developer-token",
+        redirect_uri: "https://suite-control-plane.onrender.com/api/suite/integrations/google/oauth/callback",
+      },
+      tenant: {
+        tenant_id: "tenant_demo",
+        google_user_authorized: true,
+        ads_customer_id: "1234567890",
+        ga4_property_id: "properties/123",
+      },
+    }),
+  });
+  assert.equal(googleValidation.response.status, 200);
+  assert.equal(googleValidation.body.validation.allowed, true);
+  assert.equal(googleValidation.body.validation.execution_allowed, false);
+
+  const blockedGoogleValidation = await request("/api/suite/integrations/google/validate", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      provider: {
+        client_id: "client-id",
+        client_secret: "client-secret",
+        developer_token: "developer-token",
+        redirect_uri: "https://suite-control-plane.onrender.com/api/suite/integrations/google/oauth/callback",
+      },
+      campaign_write_enabled: true,
+    }),
+  });
+  assert.equal(blockedGoogleValidation.response.status, 409);
+  assert.equal(blockedGoogleValidation.body.validation.allowed, false);
+
   const customerContract = await request("/api/suite/customer-intelligence/contract?tenant_id=tenant_demo", { headers });
   assert.equal(customerContract.response.status, 200);
   assert.equal(customerContract.body.source, "universal_core");

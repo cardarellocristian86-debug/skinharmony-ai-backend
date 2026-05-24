@@ -28,6 +28,9 @@ POST /api/suite/evidence
 GET  /api/suite/runbooks
 GET  /api/suite/customer-intelligence/contract
 POST /api/suite/customer-intelligence/readiness
+GET  /api/suite/integrations/google/status
+GET  /api/suite/integrations/google/connect
+POST /api/suite/integrations/google/validate
 POST /api/suite/governance/validate
 POST /api/suite/core/action-mediation
 POST /api/suite/runbooks/preview
@@ -45,6 +48,12 @@ GET  /api/suite/nodes/:nodeId/dashboard
 - `smartdesk_gold_track`: Smart Desk Gold, Customer Intelligence, consenso, marketing governato e journey controllati.
 
 `/api/suite/governance/validate` valida il manifest Suite/Core/Codex prima di azioni sensibili. `/api/suite/core/action-mediation` blocca `deploy`, `release`, `publish`, `update`, scritture produzione, pricing, claim, cross-tenant e automazioni Codex se il manifest governance manca o non passa.
+
+`/api/suite/integrations/google/*` prepara il connettore Google Ads/Analytics
+con flusso semplice per il cliente: click su `Collega Google`, login Google,
+consenso OAuth, scelta account Ads/proprieta GA4 e lettura metriche. Il servizio
+non crea campagne, non cambia budget, non modifica keyword e non pubblica
+azioni.
 
 Tutti gli endpoint `/api/suite/*` richiedono:
 
@@ -65,6 +74,15 @@ Variabili minime:
 ```text
 NODE_ENV=production
 SUITE_CONTROL_PLANE_API_KEY=<chiave lunga scoped>
+```
+
+Variabili Google opzionali:
+
+```text
+GOOGLE_CLIENT_ID=<oauth client id>
+GOOGLE_CLIENT_SECRET=<oauth client secret>
+GOOGLE_ADS_DEVELOPER_TOKEN=<developer token>
+GOOGLE_OAUTH_REDIRECT_URI=https://<servizio>/api/suite/integrations/google/oauth/callback
 ```
 
 Per leggere il contratto Customer Intelligence da Universal Core:
