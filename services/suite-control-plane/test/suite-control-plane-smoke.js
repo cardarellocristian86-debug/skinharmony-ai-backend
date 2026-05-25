@@ -47,7 +47,7 @@ const mockCoreClient = {
   },
 };
 
-const { app } = createSuiteControlPlane({ coreClient: mockCoreClient });
+const { app, storage } = createSuiteControlPlane({ coreClient: mockCoreClient });
 const server = app.listen(0);
 await new Promise((resolve) => server.once("listening", resolve));
 const port = server.address().port;
@@ -241,6 +241,13 @@ try {
   assert.equal(publicGoogleConnect.response.status, 200);
   assert.equal(publicGoogleConnect.body.execution_allowed, false);
   assert.match(publicGoogleConnect.body.customer_action, /Collega Google/);
+  assert.equal(publicGoogleConnect.body.oauth_start_ready, true);
+
+  const googleOAuthStart = await request("/api/suite/integrations/google/oauth/start?tenant_id=tenant_demo&format=json");
+  assert.equal(googleOAuthStart.response.status, 200);
+  assert.match(googleOAuthStart.body.redirect_url, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth/);
+  assert.match(googleOAuthStart.body.redirect_url, /access_type=offline/);
+  assert.doesNotMatch(JSON.stringify(googleOAuthStart.body), /client-secret-provider/);
 
   const publicGoogleConnectHtmlResponse = await fetch(`${baseUrl}/api/suite/integrations/google/connect?tenant_id=tenant_demo`, {
     headers: { accept: "text/html" },
@@ -287,6 +294,46 @@ try {
   });
   assert.equal(blockedGoogleValidation.response.status, 409);
   assert.equal(blockedGoogleValidation.body.validation.allowed, false);
+
+  const maskedGoogleConnection = storage.saveGoogleTenantConnection("tenant_demo", {
+    connected: true,
+    authorized_at: new Date().toISOString(),
+    token: {
+      access_token: "access-token-private",
+      refresh_token: "refresh-token-private",
+      token_type: "Bearer",
+      scope: "https://www.googleapis.com/auth/adwords https://www.googleapis.com/auth/analytics.readonly",
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+    },
+    available_accounts: {
+      google_ads_customers: ["1234567890"],
+      ga4_properties: [{ property: "properties/123", display_name: "GA4 demo", parent_account: "accounts/1" }],
+    },
+  });
+  assert.equal(maskedGoogleConnection.connected, true);
+  assert.equal(maskedGoogleConnection.token.access_token_present, true);
+  assert.doesNotMatch(JSON.stringify(maskedGoogleConnection), /access-token-private/);
+
+  const googleStatusConnected = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
+  assert.equal(googleStatusConnected.response.status, 200);
+  assert.equal(googleStatusConnected.body.google.connected, true);
+  assert.equal(googleStatusConnected.body.google.state, "authorized_needs_account_selection");
+  assert.doesNotMatch(JSON.stringify(googleStatusConnected.body), /refresh-token-private/);
+
+  const selectedGoogleAccounts = await request("/api/suite/integrations/google/accounts/select", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      tenant_id: "tenant_demo",
+      google_ads_customer_id: "1234567890",
+      ga4_property_id: "properties/123",
+    }),
+  });
+  assert.equal(selectedGoogleAccounts.response.status, 200);
+  assert.equal(selectedGoogleAccounts.body.google.state, "connected");
+  assert.equal(selectedGoogleAccounts.body.google.capability.can_read_google_ads, true);
+  assert.equal(selectedGoogleAccounts.body.google.capability.can_read_ga4, true);
+  assert.doesNotMatch(JSON.stringify(selectedGoogleAccounts.body), /access-token-private/);
 
   const customerContract = await request("/api/suite/customer-intelligence/contract?tenant_id=tenant_demo", { headers });
   assert.equal(customerContract.response.status, 200);

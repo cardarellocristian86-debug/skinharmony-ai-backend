@@ -4,11 +4,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.3.9-google-provider-config";
+const SERVICE_VERSION = "0.4.0-google-oauth-tenant-connect";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
   "analytics.readonly",
+];
+const GOOGLE_OAUTH_SCOPES = [
+  "https://www.googleapis.com/auth/adwords",
+  "https://www.googleapis.com/auth/analytics.readonly",
 ];
 const GOOGLE_CONNECTOR_REQUIRED_PROVIDER_FIELDS = [
   "client_id",
@@ -158,6 +162,10 @@ function sanitizeId(value, fallbackPrefix) {
   const raw = String(value || "").trim();
   const cleaned = raw.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120);
   return cleaned || `${fallbackPrefix}_${crypto.randomUUID()}`;
+}
+
+function sanitizeGoogleAccountValue(value = "") {
+  return String(value || "").trim().replace(/[^a-zA-Z0-9_.:/-]/g, "_").slice(0, 160);
 }
 
 function isGovernanceSensitiveAction(action = {}) {
@@ -350,6 +358,170 @@ function maskGoogleProviderConfig(config = {}) {
   };
 }
 
+function addSecondsIso(seconds = 0) {
+  return new Date(Date.now() + Number(seconds || 0) * 1000).toISOString();
+}
+
+function isIsoAfterNow(value = "") {
+  const time = Date.parse(String(value || ""));
+  return Number.isFinite(time) && time > Date.now() + 30000;
+}
+
+function buildGoogleOAuthState(tenantId = "") {
+  return `${sanitizeId(tenantId || "tenant_demo", "tenant")}.${crypto.randomBytes(24).toString("base64url")}`;
+}
+
+function maskGoogleTenantConnection(connection = {}) {
+  const selected = connection.selected_accounts && typeof connection.selected_accounts === "object"
+    ? connection.selected_accounts
+    : {};
+  const token = connection.token && typeof connection.token === "object" ? connection.token : {};
+  return {
+    tenant_id: sanitizeId(connection.tenant_id || "tenant_demo", "tenant"),
+    connected: connection.connected === true,
+    authorized_at: connection.authorized_at || "",
+    updated_at: connection.updated_at || "",
+    token: {
+      access_token_present: hasRuntimeValue(token.access_token),
+      refresh_token_present: hasRuntimeValue(token.refresh_token),
+      token_type: token.token_type || "",
+      scope: token.scope || "",
+      expires_at: token.expires_at || "",
+    },
+    selected_accounts: {
+      google_ads_customer_id: selected.google_ads_customer_id || "",
+      ga4_property_id: selected.ga4_property_id || "",
+    },
+    available_accounts: {
+      google_ads_customers: Array.isArray(connection.available_accounts?.google_ads_customers)
+        ? connection.available_accounts.google_ads_customers
+        : [],
+      ga4_properties: Array.isArray(connection.available_accounts?.ga4_properties)
+        ? connection.available_accounts.ga4_properties
+        : [],
+    },
+    last_error: connection.last_error || "",
+  };
+}
+
+function normalizeGoogleTokenResponse(tokenResponse = {}) {
+  const expiresIn = Number(tokenResponse.expires_in || 0);
+  return {
+    access_token: String(tokenResponse.access_token || ""),
+    refresh_token: String(tokenResponse.refresh_token || ""),
+    token_type: String(tokenResponse.token_type || ""),
+    scope: String(tokenResponse.scope || ""),
+    expires_at: expiresIn > 0 ? addSecondsIso(expiresIn) : "",
+  };
+}
+
+async function exchangeGoogleOAuthCode(providerConfig = {}, code = "") {
+  const body = new URLSearchParams({
+    code: String(code || ""),
+    client_id: String(providerConfig.client_id || ""),
+    client_secret: String(providerConfig.client_secret || ""),
+    redirect_uri: String(providerConfig.redirect_uri || ""),
+    grant_type: "authorization_code",
+  });
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: json.error || "google_token_exchange_failed",
+      error_description: json.error_description || "",
+    };
+  }
+  return { ok: true, token: normalizeGoogleTokenResponse(json) };
+}
+
+async function refreshGoogleAccessToken(providerConfig = {}, connection = {}) {
+  const token = connection.token && typeof connection.token === "object" ? connection.token : {};
+  if (hasRuntimeValue(token.access_token) && isIsoAfterNow(token.expires_at)) {
+    return { ok: true, token, refreshed: false };
+  }
+  if (!hasRuntimeValue(token.refresh_token)) {
+    return { ok: false, error: "google_refresh_token_missing" };
+  }
+  const body = new URLSearchParams({
+    client_id: String(providerConfig.client_id || ""),
+    client_secret: String(providerConfig.client_secret || ""),
+    refresh_token: String(token.refresh_token || ""),
+    grant_type: "refresh_token",
+  });
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { ok: false, status: response.status, error: json.error || "google_token_refresh_failed" };
+  }
+  return {
+    ok: true,
+    refreshed: true,
+    token: {
+      ...token,
+      ...normalizeGoogleTokenResponse(json),
+      refresh_token: token.refresh_token,
+    },
+  };
+}
+
+async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
+  const access = await refreshGoogleAccessToken(providerConfig, connection);
+  if (!access.ok) {
+    return { ok: false, token: connection.token || {}, accounts: { google_ads_customers: [], ga4_properties: [] }, error: access.error };
+  }
+  const headers = { authorization: `Bearer ${access.token.access_token}` };
+  const adsHeaders = {
+    ...headers,
+    "developer-token": String(providerConfig.developer_token || ""),
+  };
+  const accounts = { google_ads_customers: [], ga4_properties: [] };
+  const errors = [];
+
+  try {
+    const response = await fetch("https://googleads.googleapis.com/v17/customers:listAccessibleCustomers", { headers: adsHeaders });
+    const json = await response.json().catch(() => ({}));
+    if (response.ok && Array.isArray(json.resourceNames)) {
+      accounts.google_ads_customers = json.resourceNames.map((name) => String(name).replace(/^customers\//, ""));
+    } else {
+      errors.push("google_ads_customers_unavailable");
+    }
+  } catch {
+    errors.push("google_ads_customers_unavailable");
+  }
+
+  try {
+    const response = await fetch("https://analyticsadmin.googleapis.com/v1beta/accountSummaries", { headers });
+    const json = await response.json().catch(() => ({}));
+    if (response.ok && Array.isArray(json.accountSummaries)) {
+      accounts.ga4_properties = json.accountSummaries.flatMap((account) => (
+        Array.isArray(account.propertySummaries)
+          ? account.propertySummaries.map((property) => ({
+            property: String(property.property || ""),
+            display_name: String(property.displayName || ""),
+            parent_account: String(account.account || ""),
+          }))
+          : []
+      )).filter((property) => property.property);
+    } else {
+      errors.push("ga4_properties_unavailable");
+    }
+  } catch {
+    errors.push("ga4_properties_unavailable");
+  }
+
+  return { ok: errors.length === 0, token: access.token, accounts, errors, refreshed: access.refreshed };
+}
+
 function resolveGoogleProviderConfig(storedConfig = {}) {
   const publicBaseUrl = normalizeBaseUrl(process.env.SUITE_CONTROL_PLANE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
   return {
@@ -456,13 +628,20 @@ function buildGoogleConnectorContract(storedProviderConfig = {}) {
   };
 }
 
-function buildGoogleConnectorStatus(tenantId = "", storedProviderConfig = {}) {
+function buildGoogleConnectorStatus(tenantId = "", storedProviderConfig = {}, tenantConnection = {}) {
   const contract = buildGoogleConnectorContract(storedProviderConfig);
   const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
   const simulatedAuthorized = String(process.env.GOOGLE_CONNECTOR_DEMO_CONNECTED || "").toLowerCase() === "true";
   const adsCustomerId = process.env.GOOGLE_ADS_CUSTOMER_ID || "";
   const ga4PropertyId = process.env.GA4_PROPERTY_ID || "";
-  const tenantConnected = simulatedAuthorized && Boolean(adsCustomerId || ga4PropertyId);
+  const maskedConnection = maskGoogleTenantConnection({
+    tenant_id: tenantKey,
+    ...(tenantConnection && typeof tenantConnection === "object" ? tenantConnection : {}),
+  });
+  const selectedAdsCustomerId = maskedConnection.selected_accounts.google_ads_customer_id || adsCustomerId;
+  const selectedGa4PropertyId = maskedConnection.selected_accounts.ga4_property_id || ga4PropertyId;
+  const tenantConnected = maskedConnection.connected || (simulatedAuthorized && Boolean(adsCustomerId || ga4PropertyId));
+  const hasSelection = Boolean(selectedAdsCustomerId || selectedGa4PropertyId);
 
   return {
     ok: true,
@@ -472,15 +651,19 @@ function buildGoogleConnectorStatus(tenantId = "", storedProviderConfig = {}) {
     mode: contract.mode,
     provider_ready: contract.provider_ready,
     connected: tenantConnected,
-    state: tenantConnected ? "connected_demo" : (contract.provider_ready ? "ready_to_connect" : "provider_setup_required"),
+    state: tenantConnected
+      ? (hasSelection ? "connected" : "authorized_needs_account_selection")
+      : (contract.provider_ready ? "ready_to_connect" : "provider_setup_required"),
     connect_url: `/api/suite/integrations/google/connect?tenant_id=${encodeURIComponent(tenantKey)}`,
     selected_accounts: {
-      google_ads_customer_id_present: Boolean(adsCustomerId),
-      ga4_property_id_present: Boolean(ga4PropertyId),
+      google_ads_customer_id_present: Boolean(selectedAdsCustomerId),
+      ga4_property_id_present: Boolean(selectedGa4PropertyId),
+      google_ads_customer_id: selectedAdsCustomerId,
+      ga4_property_id: selectedGa4PropertyId,
     },
     capability: {
-      can_read_google_ads: tenantConnected && Boolean(adsCustomerId),
-      can_read_ga4: tenantConnected && Boolean(ga4PropertyId),
+      can_read_google_ads: tenantConnected && Boolean(selectedAdsCustomerId),
+      can_read_ga4: tenantConnected && Boolean(selectedGa4PropertyId),
       can_change_campaigns: false,
       can_change_budget: false,
     },
@@ -489,6 +672,7 @@ function buildGoogleConnectorStatus(tenantId = "", storedProviderConfig = {}) {
       : "Google non collegato. Il cliente clicca Collega Google, accede e autorizza SkinHarmony.",
     missing_provider_fields: contract.missing_provider_fields,
     provider_config: maskGoogleProviderConfig(resolveGoogleProviderConfig(storedProviderConfig)),
+    tenant_connection: maskedConnection,
     contract,
   };
 }
@@ -538,8 +722,11 @@ function renderGoogleConnectPage(payload) {
   const chips = missing.length
     ? missing.map((field) => `<span>${escapeHtml(field)}</span>`).join("")
     : "<span>provider_ready</span>";
-  const stateLabel = payload.provider_ready ? "Pronto per OAuth" : "Setup provider richiesto";
-  const stateClass = payload.provider_ready ? "ok" : "wait";
+  const stateLabel = payload.connected ? "Collegato" : (payload.provider_ready ? "Pronto per OAuth" : "Setup provider richiesto");
+  const stateClass = payload.connected || payload.provider_ready ? "ok" : "wait";
+  const cta = payload.oauth_url && !payload.connected
+    ? `<p><a class="button" href="${escapeHtml(payload.oauth_url)}">Collega Google</a></p>`
+    : "";
 
   return `<!doctype html>
 <html lang="it">
@@ -564,6 +751,7 @@ function renderGoogleConnectPage(payload) {
     .chips{display:flex;gap:8px;flex-wrap:wrap}
     .chips span{border:1px solid #cfe0f2;border-radius:999px;padding:8px 10px;background:#fff;color:#42566f;font-size:13px;font-weight:700}
     .notice{border:1px solid #f2d7a8;background:#fff8ea;border-radius:14px;padding:18px;color:#65470d}
+    .button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:10px;background:#1d365c;color:#fff;text-decoration:none;font-weight:800;margin-top:14px}
     .rules{display:grid;gap:8px;margin:0;padding:0;list-style:none}
     .rules li{padding:10px 12px;border:1px solid #dbe7f3;border-radius:12px;background:#fff}
     .foot{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:20px 38px;background:#f8fbfe;border-top:1px solid #dbe7f3}
@@ -585,7 +773,7 @@ function renderGoogleConnectPage(payload) {
         <div class="card"><span class="label">Stato</span><div class="value ${stateClass}">${stateLabel}</div></div>
         <div class="card"><span class="label">Esecuzione</span><div class="value wait">Solo setup</div></div>
       </div>
-      <div class="notice">${escapeHtml(payload.next_action)}</div>
+      <div class="notice">${escapeHtml(payload.next_action)}${cta}</div>
       <div>
         <span class="label">Campi provider mancanti</span>
         <div class="chips">${chips}</div>
@@ -612,13 +800,31 @@ function createMemoryStorage(options = {}) {
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
   const dispatches = Array.isArray(options.dispatches) ? options.dispatches : [];
   const artifacts = Array.isArray(options.artifacts) ? options.artifacts : [];
+  const googleTenantConnections = new Map(Object.entries(
+    options.googleTenantConnections && typeof options.googleTenantConnections === "object"
+      ? options.googleTenantConnections
+      : {},
+  ));
+  const googleOAuthStates = new Map(Object.entries(
+    options.googleOAuthStates && typeof options.googleOAuthStates === "object"
+      ? options.googleOAuthStates
+      : {},
+  ));
   let googleProviderConfig = options.googleProviderConfig && typeof options.googleProviderConfig === "object"
     ? options.googleProviderConfig
     : {};
   const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
 
   function emitChange() {
-    onChange({ nodes: Array.from(nodes.values()), evidence, dispatches, artifacts, googleProviderConfig });
+    onChange({
+      nodes: Array.from(nodes.values()),
+      evidence,
+      dispatches,
+      artifacts,
+      googleProviderConfig,
+      googleTenantConnections: Object.fromEntries(googleTenantConnections),
+      googleOAuthStates: Object.fromEntries(googleOAuthStates),
+    });
   }
 
   function getOrCreateNode(nodeId, tenantId = "unknown") {
@@ -746,6 +952,85 @@ function createMemoryStorage(options = {}) {
         provider_config: maskGoogleProviderConfig(resolveGoogleProviderConfig(next)),
         evidence_id: event.id,
       };
+    },
+    createGoogleOAuthState(tenantId, payload = {}) {
+      const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
+      const state = buildGoogleOAuthState(tenantKey);
+      googleOAuthStates.set(state, {
+        state,
+        tenant_id: tenantKey,
+        created_at: nowIso(),
+        expires_at: addSecondsIso(600),
+        payload: payload && typeof payload === "object" ? payload : {},
+      });
+      emitChange();
+      return googleOAuthStates.get(state);
+    },
+    consumeGoogleOAuthState(state) {
+      const key = String(state || "");
+      const record = googleOAuthStates.get(key);
+      if (!record) return null;
+      googleOAuthStates.delete(key);
+      emitChange();
+      if (!isIsoAfterNow(record.expires_at)) {
+        return null;
+      }
+      return record;
+    },
+    googleTenantConnection(tenantId) {
+      const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
+      return googleTenantConnections.get(tenantKey) || null;
+    },
+    saveGoogleTenantConnection(tenantId, payload = {}) {
+      const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
+      const previous = googleTenantConnections.get(tenantKey) || {};
+      const token = payload.token && typeof payload.token === "object" ? payload.token : previous.token || {};
+      const selectedAccounts = payload.selected_accounts && typeof payload.selected_accounts === "object"
+        ? payload.selected_accounts
+        : previous.selected_accounts || {};
+      const availableAccounts = payload.available_accounts && typeof payload.available_accounts === "object"
+        ? payload.available_accounts
+        : previous.available_accounts || {};
+      const connection = {
+        ...previous,
+        tenant_id: tenantKey,
+        connected: payload.connected !== undefined ? payload.connected === true : previous.connected === true,
+        authorized_at: payload.authorized_at || previous.authorized_at || nowIso(),
+        updated_at: nowIso(),
+        token,
+        selected_accounts: selectedAccounts,
+        available_accounts: availableAccounts,
+        last_error: payload.last_error || "",
+      };
+      googleTenantConnections.set(tenantKey, connection);
+      const event = {
+        id: `google_tenant_connection_${crypto.randomUUID()}`,
+        received_at: nowIso(),
+        evidence_type: "google_tenant_connection_saved",
+        tenant_id: tenantKey,
+        decision: "tenant_google_connected",
+        risk: "medium",
+        audit_id: null,
+        payload: maskGoogleTenantConnection(connection),
+      };
+      evidence.unshift(event);
+      if (evidence.length > 1000) evidence.length = 1000;
+      emitChange();
+      return maskGoogleTenantConnection(connection);
+    },
+    selectGoogleAccounts(tenantId, selection = {}) {
+      const tenantKey = sanitizeId(tenantId || "tenant_demo", "tenant");
+      const previous = googleTenantConnections.get(tenantKey);
+      if (!previous) return null;
+      const adsCustomerId = String(selection.google_ads_customer_id || selection.ads_customer_id || previous.selected_accounts?.google_ads_customer_id || "").trim();
+      const ga4PropertyId = String(selection.ga4_property_id || selection.property_id || previous.selected_accounts?.ga4_property_id || "").trim();
+      return this.saveGoogleTenantConnection(tenantKey, {
+        ...previous,
+        selected_accounts: {
+          google_ads_customer_id: sanitizeGoogleAccountValue(adsCustomerId),
+          ga4_property_id: sanitizeGoogleAccountValue(ga4PropertyId),
+        },
+      });
     },
     runbookPreview(payload) {
       const runbook = getRunbook(payload.runbook_id);
@@ -914,12 +1199,28 @@ function createSuiteControlStorage() {
 
   fs.mkdirSync(storageRoot, { recursive: true });
   const stateFile = path.join(storageRoot, "suite-control-state.json");
-  let initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [], google_provider_config: {} };
+  let initialState = {
+    nodes: [],
+    evidence: [],
+    dispatches: [],
+    artifacts: [],
+    google_provider_config: {},
+    google_tenant_connections: {},
+    google_oauth_states: {},
+  };
   if (fs.existsSync(stateFile)) {
     try {
       initialState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     } catch {
-      initialState = { nodes: [], evidence: [], dispatches: [], artifacts: [], google_provider_config: {} };
+      initialState = {
+        nodes: [],
+        evidence: [],
+        dispatches: [],
+        artifacts: [],
+        google_provider_config: {},
+        google_tenant_connections: {},
+        google_oauth_states: {},
+      };
     }
   }
 
@@ -929,6 +1230,8 @@ function createSuiteControlStorage() {
     dispatches: Array.isArray(initialState.dispatches) ? initialState.dispatches : [],
     artifacts: Array.isArray(initialState.artifacts) ? initialState.artifacts : [],
     googleProviderConfig: initialState.google_provider_config && typeof initialState.google_provider_config === "object" ? initialState.google_provider_config : {},
+    googleTenantConnections: initialState.google_tenant_connections && typeof initialState.google_tenant_connections === "object" ? initialState.google_tenant_connections : {},
+    googleOAuthStates: initialState.google_oauth_states && typeof initialState.google_oauth_states === "object" ? initialState.google_oauth_states : {},
     onChange(state) {
       const tmpFile = `${stateFile}.tmp`;
       fs.writeFileSync(tmpFile, `${JSON.stringify({
@@ -938,6 +1241,8 @@ function createSuiteControlStorage() {
         dispatches: state.dispatches.slice(0, 1000),
         artifacts: state.artifacts.slice(0, 1000),
         google_provider_config: state.googleProviderConfig || {},
+        google_tenant_connections: state.googleTenantConnections || {},
+        google_oauth_states: state.googleOAuthStates || {},
       }, null, 2)}\n`);
       fs.renameSync(tmpFile, stateFile);
     },
@@ -1142,7 +1447,7 @@ export function createSuiteControlPlane(options = {}) {
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
-      google: buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig()),
+      google: buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId)),
     });
   });
 
@@ -1190,21 +1495,23 @@ export function createSuiteControlPlane(options = {}) {
 
   app.get("/api/suite/integrations/google/connect", (req, res) => {
     const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
-    const status = buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig());
+    const status = buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId));
     const payload = {
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
-      mode: "google_oauth_connect_placeholder",
+      mode: "google_oauth_connect",
       tenant_id: tenantId,
       customer_action: "Il cliente clicca Collega Google, fa login e autorizza SkinHarmony. Nessuna API key viene chiesta al cliente.",
       provider_ready: status.provider_ready,
+      connected: status.connected,
+      state: status.state,
       oauth_start_ready: status.provider_ready,
       oauth_url: status.provider_ready ? `/api/suite/integrations/google/oauth/start?tenant_id=${encodeURIComponent(tenantId)}` : "",
       missing_provider_fields: status.missing_provider_fields,
       execution_allowed: false,
       next_action: status.provider_ready
-        ? "Implementare exchange OAuth reale e selezione account/proprieta."
+        ? (status.connected ? "Google autorizzato. Selezionare account Google Ads e proprieta GA4 dal pannello protetto." : "Cliccare Collega Google per avviare OAuth reale.")
         : "Configurare Google Client ID, Client Secret, Developer Token e Redirect URI dal pannello Suite Provider.",
     };
     const acceptsHtml = String(req.get("accept") || "").includes("text/html");
@@ -1212,6 +1519,160 @@ export function createSuiteControlPlane(options = {}) {
       return res.type("html").send(renderGoogleConnectPage(payload));
     }
     return res.json(payload);
+  });
+
+  app.get("/api/suite/integrations/google/oauth/start", (req, res) => {
+    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const provider = resolveGoogleProviderConfig(storage.googleProviderConfig());
+    const status = buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId));
+    if (!status.provider_ready) {
+      return publicError(res, 409, "google_provider_not_ready", "Configurazione provider Google incompleta.");
+    }
+    const stateRecord = storage.createGoogleOAuthState(tenantId, {
+      source: "google_oauth_start",
+      user_agent: String(req.get("user-agent") || "").slice(0, 180),
+    });
+    const oauthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    oauthUrl.searchParams.set("client_id", provider.client_id);
+    oauthUrl.searchParams.set("redirect_uri", provider.redirect_uri);
+    oauthUrl.searchParams.set("response_type", "code");
+    oauthUrl.searchParams.set("scope", GOOGLE_OAUTH_SCOPES.join(" "));
+    oauthUrl.searchParams.set("access_type", "offline");
+    oauthUrl.searchParams.set("prompt", "consent");
+    oauthUrl.searchParams.set("include_granted_scopes", "true");
+    oauthUrl.searchParams.set("state", stateRecord.state);
+
+    if (req.query.format === "json") {
+      return res.json({
+        ok: true,
+        service: "suite_control_plane",
+        version: SERVICE_VERSION,
+        tenant_id: tenantId,
+        redirect_url: oauthUrl.toString(),
+        expires_at: stateRecord.expires_at,
+      });
+    }
+    return res.redirect(302, oauthUrl.toString());
+  });
+
+  app.get("/api/suite/integrations/google/oauth/callback", async (req, res) => {
+    const stateRecord = storage.consumeGoogleOAuthState(req.query.state);
+    const wantsJson = String(req.get("accept") || "").includes("application/json") || req.query.format === "json";
+    if (!stateRecord) {
+      const payload = { ok: false, error: "google_oauth_state_invalid_or_expired" };
+      return wantsJson ? res.status(400).json(payload) : res.status(400).type("html").send(renderGoogleConnectPage({
+        ...payload,
+        version: SERVICE_VERSION,
+        tenant_id: "unknown",
+        customer_action: "OAuth Google non completato: sessione scaduta o non valida.",
+        provider_ready: true,
+        connected: false,
+        missing_provider_fields: [],
+        next_action: "Tornare in Suite e riavviare Collega Google.",
+      }));
+    }
+    if (req.query.error) {
+      const payload = { ok: false, error: "google_oauth_denied", google_error: String(req.query.error || "") };
+      return wantsJson ? res.status(400).json(payload) : res.status(400).type("html").send(renderGoogleConnectPage({
+        ...payload,
+        version: SERVICE_VERSION,
+        tenant_id: stateRecord.tenant_id,
+        customer_action: "OAuth Google non autorizzato.",
+        provider_ready: true,
+        connected: false,
+        missing_provider_fields: [],
+        next_action: "Autorizzare l accesso Google per collegare Ads e Analytics.",
+      }));
+    }
+    const provider = resolveGoogleProviderConfig(storage.googleProviderConfig());
+    const exchange = await exchangeGoogleOAuthCode(provider, req.query.code);
+    if (!exchange.ok) {
+      const payload = { ok: false, error: exchange.error || "google_token_exchange_failed" };
+      return wantsJson ? res.status(502).json(payload) : res.status(502).type("html").send(renderGoogleConnectPage({
+        ...payload,
+        version: SERVICE_VERSION,
+        tenant_id: stateRecord.tenant_id,
+        customer_action: "OAuth Google ricevuto, ma lo scambio token non e riuscito.",
+        provider_ready: true,
+        connected: false,
+        missing_provider_fields: [],
+        next_action: "Verificare redirect URI e credenziali provider Google, poi riprovare.",
+      }));
+    }
+    const connection = {
+      connected: true,
+      authorized_at: nowIso(),
+      token: exchange.token,
+      selected_accounts: {},
+      available_accounts: { google_ads_customers: [], ga4_properties: [] },
+    };
+    const accountOptions = await fetchGoogleAccountOptions(provider, connection);
+    const saved = storage.saveGoogleTenantConnection(stateRecord.tenant_id, {
+      ...connection,
+      token: accountOptions.token || connection.token,
+      available_accounts: accountOptions.accounts || connection.available_accounts,
+      last_error: accountOptions.ok ? "" : uniqueValues(accountOptions.errors || [accountOptions.error]).join(","),
+    });
+    const payload = {
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "google_oauth_callback_completed",
+      tenant_id: stateRecord.tenant_id,
+      connection: saved,
+      execution_allowed: false,
+      next_action: "Selezionare account Google Ads e proprieta GA4 dal pannello protetto.",
+    };
+    return wantsJson ? res.status(201).json(payload) : res.type("html").send(renderGoogleConnectPage({
+      ...payload,
+      customer_action: "Google autorizzato per SkinHarmony Suite.",
+      provider_ready: true,
+      connected: true,
+      missing_provider_fields: [],
+    }));
+  });
+
+  app.get("/api/suite/integrations/google/accounts", auth, async (req, res) => {
+    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const connection = storage.googleTenantConnection(tenantId);
+    if (!connection || connection.connected !== true) {
+      return publicError(res, 409, "google_tenant_not_connected", "Tenant Google non ancora collegato.");
+    }
+    const provider = resolveGoogleProviderConfig(storage.googleProviderConfig());
+    const accountOptions = await fetchGoogleAccountOptions(provider, connection);
+    const saved = storage.saveGoogleTenantConnection(tenantId, {
+      ...connection,
+      token: accountOptions.token || connection.token,
+      available_accounts: accountOptions.accounts || connection.available_accounts,
+      last_error: accountOptions.ok ? "" : uniqueValues(accountOptions.errors || [accountOptions.error]).join(","),
+    });
+    return res.status(accountOptions.ok ? 200 : 207).json({
+      ok: accountOptions.ok,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      tenant_id: tenantId,
+      accounts: saved.available_accounts,
+      connection: saved,
+      errors: accountOptions.errors || (accountOptions.error ? [accountOptions.error] : []),
+    });
+  });
+
+  app.post("/api/suite/integrations/google/accounts/select", auth, (req, res) => {
+    const tenantId = sanitizeId(req.body?.tenant_id || req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const saved = storage.selectGoogleAccounts(tenantId, req.body || {});
+    if (!saved) {
+      return publicError(res, 409, "google_tenant_not_connected", "Tenant Google non ancora collegato.");
+    }
+    return res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "google_accounts_selected",
+      tenant_id: tenantId,
+      connection: saved,
+      google: buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId)),
+      execution_allowed: false,
+    });
   });
 
   app.post("/api/suite/integrations/google/validate", auth, (req, res) => {
