@@ -435,6 +435,11 @@ function safeGoogleExceptionDiagnostic(source, error) {
   };
 }
 
+function googleAdsApiVersion() {
+  const configured = String(process.env.GOOGLE_ADS_API_VERSION || "v24").trim();
+  return /^v\d+$/.test(configured) ? configured : "v24";
+}
+
 function normalizeGoogleTokenResponse(tokenResponse = {}) {
   const expiresIn = Number(tokenResponse.expires_in || 0);
   return {
@@ -531,7 +536,7 @@ async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
   const diagnostics = [];
 
   try {
-    const response = await fetch("https://googleads.googleapis.com/v17/customers:listAccessibleCustomers", { headers: adsHeaders });
+    const response = await fetch(`https://googleads.googleapis.com/${googleAdsApiVersion()}/customers:listAccessibleCustomers`, { headers: adsHeaders });
     const json = await response.json().catch(() => ({}));
     if (response.ok && Array.isArray(json.resourceNames)) {
       accounts.google_ads_customers = json.resourceNames.map((name) => String(name).replace(/^customers\//, ""));
