@@ -440,6 +440,322 @@ function googleAdsApiVersion() {
   return /^v\d+$/.test(configured) ? configured : "v24";
 }
 
+function toFiniteNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function roundNumber(value, precision = 2) {
+  const factor = 10 ** precision;
+  return Math.round(toFiniteNumber(value) * factor) / factor;
+}
+
+function dateLabels(days = 30) {
+  const count = Math.max(7, Math.min(90, Number(days || 30)));
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(Date.now() - (count - index - 1) * 86400000);
+    return date.toISOString().slice(0, 10);
+  });
+}
+
+function googleDateRange(days = 30) {
+  const count = Math.max(7, Math.min(90, Number(days || 30)));
+  if (count <= 7) return "LAST_7_DAYS";
+  if (count <= 30) return "LAST_30_DAYS";
+  return "LAST_90_DAYS";
+}
+
+async function googleJsonRequest(url, options = {}, source = "google_api") {
+  try {
+    const response = await fetch(url, options);
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, status: response.status, body: json, diagnostic: safeGoogleApiDiagnostic(source, response, json) };
+    }
+    return { ok: true, status: response.status, body: json };
+  } catch (error) {
+    return { ok: false, status: 0, body: {}, diagnostic: safeGoogleExceptionDiagnostic(source, error) };
+  }
+}
+
+async function fetchGoogleAdsFunnel(providerConfig = {}, token = {}, customerId = "", days = 30) {
+  const query = `
+    SELECT
+      segments.date,
+      campaign.id,
+      campaign.name,
+      campaign.status,
+      metrics.impressions,
+      metrics.clicks,
+      metrics.cost_micros,
+      metrics.conversions
+    FROM campaign
+    WHERE segments.date DURING ${googleDateRange(days)}
+    ORDER BY segments.date
+  `;
+  const request = await googleJsonRequest(
+    `https://googleads.googleapis.com/${googleAdsApiVersion()}/customers/${encodeURIComponent(customerId)}/googleAds:searchStream`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.access_token}`,
+        "developer-token": String(providerConfig.developer_token || ""),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ query }),
+    },
+    "google_ads_funnel",
+  );
+  if (!request.ok) {
+    return { ok: false, rows: [], summary: {}, campaigns: [], daily: {}, diagnostics: [request.diagnostic].filter(Boolean) };
+  }
+
+  const batches = Array.isArray(request.body) ? request.body : [request.body];
+  const rows = batches.flatMap((batch) => Array.isArray(batch.results) ? batch.results : []);
+  const daily = {};
+  const campaigns = {};
+  const summary = { impressions: 0, clicks: 0, cost: 0, conversions: 0 };
+
+  for (const row of rows) {
+    const date = String(row?.segments?.date || "");
+    const campaignId = String(row?.campaign?.id || "");
+    const campaignName = String(row?.campaign?.name || campaignId || "Campagna");
+    const metrics = row?.metrics || {};
+    const impressions = toFiniteNumber(metrics.impressions);
+    const clicks = toFiniteNumber(metrics.clicks);
+    const cost = toFiniteNumber(metrics.costMicros) / 1000000;
+    const conversions = toFiniteNumber(metrics.conversions);
+
+    if (!daily[date]) daily[date] = { date, impressions: 0, clicks: 0, cost: 0, conversions: 0 };
+    daily[date].impressions += impressions;
+    daily[date].clicks += clicks;
+    daily[date].cost += cost;
+    daily[date].conversions += conversions;
+
+    if (!campaigns[campaignId]) {
+      campaigns[campaignId] = { id: campaignId, name: campaignName, status: String(row?.campaign?.status || ""), impressions: 0, clicks: 0, cost: 0, conversions: 0 };
+    }
+    campaigns[campaignId].impressions += impressions;
+    campaigns[campaignId].clicks += clicks;
+    campaigns[campaignId].cost += cost;
+    campaigns[campaignId].conversions += conversions;
+
+    summary.impressions += impressions;
+    summary.clicks += clicks;
+    summary.cost += cost;
+    summary.conversions += conversions;
+  }
+
+  summary.ctr = summary.impressions > 0 ? roundNumber((summary.clicks / summary.impressions) * 100, 2) : 0;
+  summary.cpc = summary.clicks > 0 ? roundNumber(summary.cost / summary.clicks, 2) : 0;
+  summary.conversion_rate = summary.clicks > 0 ? roundNumber((summary.conversions / summary.clicks) * 100, 2) : 0;
+
+  return {
+    ok: true,
+    rows_count: rows.length,
+    summary: {
+      impressions: Math.round(summary.impressions),
+      clicks: Math.round(summary.clicks),
+      cost: roundNumber(summary.cost, 2),
+      conversions: roundNumber(summary.conversions, 2),
+      ctr: summary.ctr,
+      cpc: summary.cpc,
+      conversion_rate: summary.conversion_rate,
+    },
+    campaigns: Object.values(campaigns).map((campaign) => ({
+      ...campaign,
+      impressions: Math.round(campaign.impressions),
+      clicks: Math.round(campaign.clicks),
+      cost: roundNumber(campaign.cost, 2),
+      conversions: roundNumber(campaign.conversions, 2),
+      ctr: campaign.impressions > 0 ? roundNumber((campaign.clicks / campaign.impressions) * 100, 2) : 0,
+      cpc: campaign.clicks > 0 ? roundNumber(campaign.cost / campaign.clicks, 2) : 0,
+    })).sort((a, b) => b.cost - a.cost).slice(0, 12),
+    daily,
+    diagnostics: [],
+  };
+}
+
+async function fetchGa4Funnel(token = {}, propertyId = "", days = 30) {
+  const propertyPath = String(propertyId || "").replace(/^properties\//, "");
+  const baseBody = {
+    dateRanges: [{ startDate: `${Math.max(7, Math.min(90, Number(days || 30)))}daysAgo`, endDate: "today" }],
+    dimensions: [{ name: "date" }],
+    metrics: [
+      { name: "sessions" },
+      { name: "totalUsers" },
+      { name: "screenPageViews" },
+      { name: "eventCount" },
+    ],
+  };
+  const dailyRequest = await googleJsonRequest(
+    `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(propertyPath)}:runReport`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token.access_token}`, "content-type": "application/json" },
+      body: JSON.stringify(baseBody),
+    },
+    "ga4_daily_funnel",
+  );
+  if (!dailyRequest.ok) {
+    return { ok: false, summary: {}, daily: {}, top_pages: [], top_sources: [], diagnostics: [dailyRequest.diagnostic].filter(Boolean) };
+  }
+
+  const summary = { sessions: 0, users: 0, page_views: 0, event_count: 0 };
+  const daily = {};
+  for (const row of dailyRequest.body.rows || []) {
+    const rawDate = String(row.dimensionValues?.[0]?.value || "");
+    const date = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : rawDate;
+    const values = row.metricValues || [];
+    const item = {
+      date,
+      sessions: toFiniteNumber(values[0]?.value),
+      users: toFiniteNumber(values[1]?.value),
+      page_views: toFiniteNumber(values[2]?.value),
+      event_count: toFiniteNumber(values[3]?.value),
+    };
+    daily[date] = item;
+    summary.sessions += item.sessions;
+    summary.users += item.users;
+    summary.page_views += item.page_views;
+    summary.event_count += item.event_count;
+  }
+
+  const pageRequest = await googleJsonRequest(
+    `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(propertyPath)}:runReport`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token.access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        dateRanges: baseBody.dateRanges,
+        dimensions: [{ name: "pagePath" }],
+        metrics: [{ name: "screenPageViews" }, { name: "eventCount" }],
+        limit: 10,
+        orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
+      }),
+    },
+    "ga4_pages_funnel",
+  );
+
+  const sourceRequest = await googleJsonRequest(
+    `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(propertyPath)}:runReport`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token.access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        dateRanges: baseBody.dateRanges,
+        dimensions: [{ name: "sessionSourceMedium" }],
+        metrics: [{ name: "sessions" }, { name: "eventCount" }],
+        limit: 10,
+        orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      }),
+    },
+    "ga4_sources_funnel",
+  );
+
+  const diagnostics = [pageRequest.diagnostic, sourceRequest.diagnostic].filter(Boolean);
+  return {
+    ok: true,
+    summary: {
+      sessions: Math.round(summary.sessions),
+      users: Math.round(summary.users),
+      page_views: Math.round(summary.page_views),
+      event_count: Math.round(summary.event_count),
+      pages_per_session: summary.sessions > 0 ? roundNumber(summary.page_views / summary.sessions, 2) : 0,
+      events_per_session: summary.sessions > 0 ? roundNumber(summary.event_count / summary.sessions, 2) : 0,
+    },
+    daily,
+    top_pages: (pageRequest.body?.rows || []).map((row) => ({
+      path: String(row.dimensionValues?.[0]?.value || ""),
+      page_views: Math.round(toFiniteNumber(row.metricValues?.[0]?.value)),
+      event_count: Math.round(toFiniteNumber(row.metricValues?.[1]?.value)),
+    })).filter((row) => row.path),
+    top_sources: (sourceRequest.body?.rows || []).map((row) => ({
+      source_medium: String(row.dimensionValues?.[0]?.value || ""),
+      sessions: Math.round(toFiniteNumber(row.metricValues?.[0]?.value)),
+      event_count: Math.round(toFiniteNumber(row.metricValues?.[1]?.value)),
+    })).filter((row) => row.source_medium),
+    diagnostics,
+  };
+}
+
+function buildGoogleFunnelDiagnosis(ads = {}, ga4 = {}) {
+  const adsSummary = ads.summary || {};
+  const ga4Summary = ga4.summary || {};
+  const findings = [];
+  const actions = [];
+
+  if (!ads.ok) {
+    findings.push({ severity: "warning", area: "ads", message: "Google Ads non e leggibile in questo momento." });
+    actions.push("Verificare token, developer token e permessi account Ads prima di giudicare le campagne.");
+  }
+  if (!ga4.ok) {
+    findings.push({ severity: "warning", area: "ga4", message: "GA4 non e leggibile in questo momento." });
+    actions.push("Verificare Analytics Data API e accesso alla proprieta GA4 prima di valutare comportamento sito.");
+  }
+  if (adsSummary.impressions > 0 && adsSummary.ctr < 1) {
+    findings.push({ severity: "attention", area: "annuncio", message: "Le impressioni ci sono, ma il CTR e basso: il messaggio o il target potrebbero non agganciare abbastanza." });
+    actions.push("Controllare headline, query e coerenza promessa-annuncio prima di aumentare budget.");
+  }
+  if (adsSummary.clicks > 0 && ga4Summary.sessions === 0) {
+    findings.push({ severity: "critical", area: "tracking", message: "Ads registra clic, ma GA4 non registra sessioni collegate nel periodo: possibile problema di tracciamento o attribuzione." });
+    actions.push("Verificare tag GA4, consenso cookie e landing page prima di leggere il funnel come affidabile.");
+  }
+  if (adsSummary.clicks > 0 && adsSummary.conversions === 0) {
+    findings.push({ severity: "attention", area: "conversione", message: "Ci sono clic ma nessuna conversione Ads rilevata: il collo puo essere tracking conversioni, pagina o offerta." });
+    actions.push("Controllare evento lead/form e conversion action Google Ads prima di scalare.");
+  }
+  if (ga4Summary.sessions > 0 && ga4Summary.pages_per_session < 1.25) {
+    findings.push({ severity: "attention", area: "landing", message: "Le pagine per sessione sono basse: il traffico potrebbe non approfondire dopo l arrivo." });
+    actions.push("Rivedere above-the-fold, CTA e continuita tra annuncio e pagina.");
+  }
+  if (!findings.length) {
+    findings.push({ severity: "ok", area: "funnel", message: "Il funnel e leggibile: Ads e GA4 restituiscono dati utilizzabili per diagnosi operativa." });
+    actions.push("Monitorare campagne e pagine migliori, poi decidere eventuale ottimizzazione solo su dati stabili.");
+  }
+
+  return {
+    status: findings.some((item) => item.severity === "critical") ? "critical" : (findings.some((item) => item.severity === "attention" || item.severity === "warning") ? "needs_attention" : "readable"),
+    principle: "Google/GA4 dicono cosa succede; Core ordina le priorita; Nyra traduce in azioni operative da confermare.",
+    findings,
+    recommended_actions: uniqueValues(actions),
+    do_not_do: [
+      "Non aumentare budget se conversion tracking o GA4 non sono affidabili.",
+      "Non modificare campagne automaticamente dal connector.",
+      "Non attribuire qualita lead se il lead non e collegato a fonte/campagna.",
+    ],
+  };
+}
+
+function buildGoogleFunnelCharts(days, ads = {}, ga4 = {}) {
+  const labels = dateLabels(days);
+  const adsDaily = ads.daily || {};
+  const ga4Daily = ga4.daily || {};
+  const adsSummary = ads.summary || {};
+  const ga4Summary = ga4.summary || {};
+  return {
+    daily: {
+      labels,
+      impressions: labels.map((date) => Math.round(toFiniteNumber(adsDaily[date]?.impressions))),
+      clicks: labels.map((date) => Math.round(toFiniteNumber(adsDaily[date]?.clicks))),
+      cost: labels.map((date) => roundNumber(adsDaily[date]?.cost || 0, 2)),
+      sessions: labels.map((date) => Math.round(toFiniteNumber(ga4Daily[date]?.sessions))),
+      page_views: labels.map((date) => Math.round(toFiniteNumber(ga4Daily[date]?.page_views))),
+      events: labels.map((date) => Math.round(toFiniteNumber(ga4Daily[date]?.event_count))),
+    },
+    funnel_steps: [
+      { label: "Impressioni", value: Math.round(toFiniteNumber(adsSummary.impressions)) },
+      { label: "Clic", value: Math.round(toFiniteNumber(adsSummary.clicks)) },
+      { label: "Sessioni sito", value: Math.round(toFiniteNumber(ga4Summary.sessions)) },
+      { label: "Eventi sito", value: Math.round(toFiniteNumber(ga4Summary.event_count)) },
+      { label: "Conversioni Ads", value: roundNumber(adsSummary.conversions || 0, 2) },
+    ],
+    campaign_cost: (ads.campaigns || []).map((campaign) => ({ label: campaign.name, value: campaign.cost })),
+    top_pages: (ga4.top_pages || []).map((page) => ({ label: page.path, value: page.page_views })),
+    top_sources: (ga4.top_sources || []).map((source) => ({ label: source.source_medium, value: source.sessions })),
+  };
+}
+
 function normalizeGoogleTokenResponse(tokenResponse = {}) {
   const expiresIn = Number(tokenResponse.expires_in || 0);
   return {
@@ -1731,6 +2047,81 @@ export function createSuiteControlPlane(options = {}) {
       connection: saved,
       google: buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId)),
       execution_allowed: false,
+    });
+  });
+
+  app.get("/api/suite/integrations/google/funnel/overview", auth, async (req, res) => {
+    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const days = Math.max(7, Math.min(90, Number(req.query.days || 30)));
+    const connection = storage.googleTenantConnection(tenantId);
+    if (!connection || connection.connected !== true) {
+      return publicError(res, 409, "google_tenant_not_connected", "Tenant Google non ancora collegato.");
+    }
+    const selected = connection.selected_accounts && typeof connection.selected_accounts === "object" ? connection.selected_accounts : {};
+    const adsCustomerId = sanitizeGoogleAccountValue(selected.google_ads_customer_id || "");
+    const ga4PropertyId = sanitizeGoogleAccountValue(selected.ga4_property_id || "");
+    if (!adsCustomerId && !ga4PropertyId) {
+      return publicError(res, 409, "google_accounts_not_selected", "Selezionare almeno account Google Ads o proprieta GA4.");
+    }
+
+    const provider = resolveGoogleProviderConfig(storage.googleProviderConfig());
+    const access = await refreshGoogleAccessToken(provider, connection);
+    if (!access.ok) {
+      return res.status(502).json({
+        ok: false,
+        service: "suite_control_plane",
+        version: SERVICE_VERSION,
+        tenant_id: tenantId,
+        error: access.error || "google_token_refresh_failed",
+        diagnostics: access.diagnostics || [],
+      });
+    }
+
+    const ads = adsCustomerId
+      ? await fetchGoogleAdsFunnel(provider, access.token, adsCustomerId, days)
+      : { ok: false, skipped: true, summary: {}, campaigns: [], daily: {}, diagnostics: [] };
+    const ga4 = ga4PropertyId
+      ? await fetchGa4Funnel(access.token, ga4PropertyId, days)
+      : { ok: false, skipped: true, summary: {}, daily: {}, top_pages: [], top_sources: [], diagnostics: [] };
+    const diagnosis = buildGoogleFunnelDiagnosis(ads, ga4);
+    const charts = buildGoogleFunnelCharts(days, ads, ga4);
+
+    storage.saveGoogleTenantConnection(tenantId, {
+      ...connection,
+      token: access.token,
+      last_error: ads.ok || ga4.ok ? "" : "google_funnel_unavailable",
+      last_diagnostics: [...(ads.diagnostics || []), ...(ga4.diagnostics || [])],
+    });
+
+    return res.status(ads.ok || ga4.ok ? 200 : 207).json({
+      ok: ads.ok || ga4.ok,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      schema_version: "suite_google_funnel_overview_v1",
+      mode: "read_only_marketing_funnel_intelligence",
+      tenant_id: tenantId,
+      generated_at: nowIso(),
+      period: { days, google_ads_range: googleDateRange(days), ga4_start_date: `${days}daysAgo`, ga4_end_date: "today" },
+      selected_accounts: {
+        google_ads_customer_id: adsCustomerId,
+        ga4_property_id: ga4PropertyId,
+      },
+      summary: {
+        ads: ads.summary || {},
+        ga4: ga4.summary || {},
+      },
+      campaigns: ads.campaigns || [],
+      top_pages: ga4.top_pages || [],
+      top_sources: ga4.top_sources || [],
+      charts,
+      diagnosis,
+      diagnostics: [...(ads.diagnostics || []), ...(ga4.diagnostics || [])],
+      safety_policy: {
+        read_only: true,
+        automatic_campaign_changes: false,
+        automatic_budget_changes: false,
+        owner_confirmation_required_for_actions: true,
+      },
     });
   });
 
