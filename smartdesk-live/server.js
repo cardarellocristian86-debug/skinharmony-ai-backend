@@ -1690,6 +1690,18 @@ app.get("/api/ai-gold/whatsapp/status", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldWhatsappStatus(req.session, whatsappService));
 });
 
+app.post("/api/ai-gold/whatsapp/test-twilio", requirePlan("gold"), async (req, res) => {
+  try {
+    res.json(await service.testGoldWhatsappTwilioCredentials(req.body || {}, req.session, whatsappService));
+  } catch (error) {
+    res.status(400).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "Test Twilio non riuscito",
+      settings: error && typeof error === "object" ? error.publicSettings || null : null
+    });
+  }
+});
+
 app.post("/api/ai-gold/whatsapp/preview", requirePlan("gold"), (req, res) => {
   try {
     res.json(service.previewGoldWhatsappAction(req.body || {}, req.session, whatsappService));
@@ -1812,7 +1824,7 @@ app.get("/api/data-quality", (req, res) => {
 });
 
 app.get("/api/settings", (req, res) => {
-  res.json(service.getSettings(req.session));
+  res.json(service.getPublicSettings(req.session));
 });
 
 app.put("/api/settings", (req, res) => {

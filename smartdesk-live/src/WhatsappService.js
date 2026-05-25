@@ -16,6 +16,19 @@ class WhatsappService {
     return Boolean(this.accountSid && this.authToken && this.from);
   }
 
+  resolveConfig(overrides = {}) {
+    return {
+      accountSid: String(overrides.accountSid || this.accountSid || "").trim(),
+      authToken: String(overrides.authToken || this.authToken || "").trim(),
+      from: String(overrides.from || this.from || "").trim()
+    };
+  }
+
+  isConfiguredWith(overrides = {}) {
+    const config = this.resolveConfig(overrides);
+    return Boolean(config.accountSid && config.authToken && config.from);
+  }
+
   normalizePhone(phone = "") {
     const cleaned = String(phone || "").replace(/[^\d+]/g, "");
     if (!cleaned) return "";
@@ -43,9 +56,59 @@ class WhatsappService {
     return this.templateSids[String(templateKey || "")] || "";
   }
 
-  async sendMessage({ to, body, templateKey = "", contentVariables = {} }) {
+  async testCredentials(overrides = {}) {
+    const config = this.resolveConfig(overrides);
+    if (!config.accountSid || !config.authToken || !config.from) {
+      return {
+        ok: false,
+        reason: "missing_credentials",
+        message: "Account SID, Auth Token e mittente WhatsApp sono obbligatori."
+      };
+    }
+    if (!/^AC[a-zA-Z0-9]{32}$/.test(config.accountSid)) {
+      return {
+        ok: false,
+        reason: "invalid_account_sid",
+        message: "Account SID Twilio non valido."
+      };
+    }
+    if (!String(config.from || "").startsWith("whatsapp:")) {
+      return {
+        ok: false,
+        reason: "invalid_sender",
+        message: "Il mittente deve essere nel formato whatsapp:+393..."
+      };
+    }
+    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.accountSid)}.json`, {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${config.accountSid}:${config.authToken}`).toString("base64")}`
+      }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: payload.code ? `twilio_${payload.code}` : "twilio_auth_failed",
+        message: payload.message || "Twilio non ha accettato le credenziali.",
+        raw: payload
+      };
+    }
+    return {
+      ok: true,
+      status: String(payload.status || "active"),
+      message: "Credenziali Twilio valide. Verifica anche che il mittente sia un WhatsApp Sender approvato.",
+      raw: {
+        sid: payload.sid || "",
+        status: payload.status || "",
+        type: payload.type || ""
+      }
+    };
+  }
+
+  async sendMessage({ to, body, templateKey = "", contentVariables = {}, credentials = null }) {
+    const config = this.resolveConfig(credentials || {});
     const normalizedTo = this.normalizePhone(to);
-    if (!this.isConfigured()) {
+    if (!this.isConfiguredWith(config)) {
       return {
         ok: false,
         fallbackRequired: true,
@@ -73,7 +136,7 @@ class WhatsappService {
     }
 
     const form = new URLSearchParams();
-    form.set("From", this.from);
+    form.set("From", config.from);
     form.set("To", normalizedTo);
     if (contentSid) {
       form.set("ContentSid", contentSid);
@@ -82,10 +145,10 @@ class WhatsappService {
       form.set("Body", text);
     }
 
-    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(this.accountSid)}/Messages.json`, {
+    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.accountSid)}/Messages.json`, {
       method: "POST",
       headers: {
-        Authorization: `Basic ${Buffer.from(`${this.accountSid}:${this.authToken}`).toString("base64")}`,
+        Authorization: `Basic ${Buffer.from(`${config.accountSid}:${config.authToken}`).toString("base64")}`,
         "Content-Type": "application/x-www-form-urlencoded"
       },
       body: form

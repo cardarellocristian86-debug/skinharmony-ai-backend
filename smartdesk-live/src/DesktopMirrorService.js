@@ -434,7 +434,15 @@ const defaultSettings = {
   whatsappMode: "silver_redirect",
   whatsappProvider: "twilio",
   whatsappTemplatesReady: false,
-  whatsappWebhookReady: false
+  whatsappWebhookReady: false,
+  whatsappTwilioAccountSid: "",
+  whatsappTwilioAuthToken: "",
+  whatsappTwilioAuthTokenConfigured: false,
+  whatsappTwilioFrom: "",
+  whatsappTwilioConnectedAt: "",
+  whatsappTwilioLastTestAt: "",
+  whatsappTwilioLastTestStatus: "",
+  whatsappTwilioLastTestMessage: ""
 };
 
 const DEFAULT_STAFF = [
@@ -5631,6 +5639,19 @@ class DesktopMirrorService {
     return { ...defaultSettings, ...(store[centerId] || {}), centerId };
   }
 
+  maskPublicSettings(settings = {}) {
+    const tokenConfigured = Boolean(String(settings.whatsappTwilioAuthToken || "").trim());
+    return {
+      ...settings,
+      whatsappTwilioAuthToken: "",
+      whatsappTwilioAuthTokenConfigured: Boolean(settings.whatsappTwilioAuthTokenConfigured || tokenConfigured)
+    };
+  }
+
+  getPublicSettings(session = null) {
+    return this.maskPublicSettings(this.getSettings(session));
+  }
+
   getRuntimeLanguage(session = null) {
     const settings = this.getSettings(session);
     return String(settings.appLanguage || "it").toLowerCase() === "en" ? "en" : "it";
@@ -5639,10 +5660,25 @@ class DesktopMirrorService {
   saveSettings(payload = {}, session = null) {
     const store = this.readSettingsStore();
     const centerId = this.getCenterId(session);
-    const next = { ...this.getSettings(session), ...payload, centerId, updatedAt: nowIso() };
+    const current = this.getSettings(session);
+    const incoming = { ...payload };
+    if (Object.prototype.hasOwnProperty.call(incoming, "whatsappTwilioAuthToken")) {
+      const token = String(incoming.whatsappTwilioAuthToken || "").trim();
+      if (!token || token === "********" || token === "••••••••") {
+        incoming.whatsappTwilioAuthToken = current.whatsappTwilioAuthToken || "";
+      } else {
+        incoming.whatsappTwilioAuthTokenConfigured = true;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(incoming, "whatsappTwilioFrom")) {
+      const from = String(incoming.whatsappTwilioFrom || "").trim();
+      incoming.whatsappTwilioFrom = from && !from.startsWith("whatsapp:") ? `whatsapp:${from}` : from;
+    }
+    const next = { ...current, ...incoming, centerId, updatedAt: nowIso() };
+    next.whatsappTwilioAuthTokenConfigured = Boolean(next.whatsappTwilioAuthTokenConfigured || String(next.whatsappTwilioAuthToken || "").trim());
     store[centerId] = next;
     this.settingsRepository.write(store);
-    return next;
+    return this.maskPublicSettings(next);
   }
 
   resetSettings(session = null) {
@@ -5651,7 +5687,7 @@ class DesktopMirrorService {
     const next = { ...defaultSettings, centerId, centerName: this.getCenterName(session), updatedAt: nowIso() };
     store[centerId] = next;
     this.settingsRepository.write(store);
-    return next;
+    return this.maskPublicSettings(next);
   }
 
   buildSession(user, token = crypto.randomUUID(), extra = {}) {
@@ -9976,6 +10012,56 @@ class DesktopMirrorService {
     return updated;
   }
 
+  getTenantWhatsappCredentials(session = null) {
+    const settings = this.getSettings(session);
+    const accountSid = String(settings.whatsappTwilioAccountSid || "").trim();
+    const authToken = String(settings.whatsappTwilioAuthToken || "").trim();
+    const from = String(settings.whatsappTwilioFrom || "").trim();
+    if (!accountSid || !authToken || !from) return null;
+    return { accountSid, authToken, from };
+  }
+
+  isTenantWhatsappConfigured(session = null, whatsappService = null) {
+    const credentials = this.getTenantWhatsappCredentials(session);
+    return Boolean(credentials && whatsappService?.isConfiguredWith?.(credentials));
+  }
+
+  async testGoldWhatsappTwilioCredentials(payload = {}, session = null, whatsappService = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      throw new Error("WhatsApp Twilio disponibile solo con piano Gold.");
+    }
+    const current = this.getSettings(session);
+    const credentials = {
+      accountSid: String(payload.accountSid || current.whatsappTwilioAccountSid || "").trim(),
+      authToken: String(payload.authToken || current.whatsappTwilioAuthToken || "").trim(),
+      from: String(payload.from || current.whatsappTwilioFrom || "").trim()
+    };
+    const result = await whatsappService?.testCredentials?.(credentials);
+    const next = this.saveSettings({
+      whatsappProvider: "twilio_own_account",
+      whatsappTwilioAccountSid: credentials.accountSid,
+      whatsappTwilioAuthToken: credentials.authToken || current.whatsappTwilioAuthToken || "",
+      whatsappTwilioFrom: credentials.from,
+      whatsappTwilioLastTestAt: nowIso(),
+      whatsappTwilioLastTestStatus: result?.ok ? "ok" : "error",
+      whatsappTwilioLastTestMessage: result?.message || "Test Twilio completato.",
+      whatsappGoldMode: result?.ok ? "active" : "error",
+      whatsappMode: result?.ok ? "gold_active" : "gold_error",
+      whatsappWebhookReady: false
+    }, session);
+    if (!result?.ok) {
+      const error = new Error(result?.message || "Test Twilio non riuscito.");
+      error.publicSettings = next;
+      throw error;
+    }
+    return {
+      ok: true,
+      message: result.message,
+      settings: next
+    };
+  }
+
   getGoldWhatsappStatus(session = null, whatsappService = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
@@ -9989,10 +10075,25 @@ class DesktopMirrorService {
     const messages = this.filterByCenter(this.whatsappMessagesRepository.list(), session)
       .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime())
       .slice(0, 50);
+    const settings = this.getSettings(session);
+    const tenantConfigured = this.isTenantWhatsappConfigured(session, whatsappService);
+    const platformConfigured = Boolean(whatsappService?.isConfigured?.());
+    const enabled = tenantConfigured || platformConfigured;
     return {
       goldEnabled: true,
-      enabled: Boolean(whatsappService?.isConfigured?.()),
-      fallback: whatsappService?.isConfigured?.() ? "" : "copy",
+      enabled,
+      provider: tenantConfigured ? "twilio_own_account" : platformConfigured ? "twilio_platform" : "manual_copy",
+      fallback: enabled ? "" : "copy",
+      ownAccountConfigured: tenantConfigured,
+      platformConfigured,
+      twilio: {
+        accountSidPresent: Boolean(settings.whatsappTwilioAccountSid),
+        authTokenPresent: Boolean(settings.whatsappTwilioAuthToken),
+        from: settings.whatsappTwilioFrom || "",
+        lastTestAt: settings.whatsappTwilioLastTestAt || "",
+        lastTestStatus: settings.whatsappTwilioLastTestStatus || "",
+        lastTestMessage: settings.whatsappTwilioLastTestMessage || ""
+      },
       costPerMessageEur: GOLD_WHATSAPP_MESSAGE_COST_EUR,
       templates: ["recupero_soft", "recupero_attivo", "mantenimento", "riattivazione_cliente_perso", "reminder_appuntamento"],
       messages
@@ -10167,9 +10268,9 @@ class DesktopMirrorService {
     if (!result.client) return result;
     return {
       goldEnabled: this.hasGoldIntelligence(session),
-      apiConfigured: Boolean(whatsappService?.isConfigured?.()),
+      apiConfigured: this.isTenantWhatsappConfigured(session, whatsappService) || Boolean(whatsappService?.isConfigured?.()),
       allowed: result.allowed,
-      fallback: result.fallback || (whatsappService?.isConfigured?.() ? "" : "copy"),
+      fallback: result.fallback || (this.isTenantWhatsappConfigured(session, whatsappService) || whatsappService?.isConfigured?.() ? "" : "copy"),
       reason: result.reason,
       blockMessage: result.message,
       cliente: {
@@ -10285,7 +10386,8 @@ class DesktopMirrorService {
       to: eligibility.whatsapp.phone,
       body: eligibility.whatsapp.message,
       templateKey: eligibility.template.key,
-      contentVariables: eligibility.templateVariables
+      contentVariables: eligibility.templateVariables,
+      credentials: this.getTenantWhatsappCredentials(session)
     });
     if (!sendResult?.ok) {
       const record = this.whatsappMessagesRepository.create({
