@@ -5999,6 +5999,12 @@ class DesktopMirrorService {
     }
     const current = this.usersRepository.findById(userId);
     if (!current) throw new Error("Utente non trovato");
+    const normalizedCurrent = this.normalizeUserAccount(current);
+    const wantsSuspension = payload.suspend === true || payload.active === false || String(payload.accountStatus || "").toLowerCase() === "suspended";
+    const isPayingAccount = normalizedCurrent.planType === "active" || normalizedCurrent.paymentStatus === "paid";
+    if (isPayingAccount && wantsSuspension) {
+      throw new Error("Utente pagante: sospensione automatica bloccata. Usa solo assistenza/supporto o procedura owner-confirmed fuori dal pannello operativo.");
+    }
     const now = nowIso();
     const next = this.usersRepository.update(userId, (user) => {
       const merged = {
