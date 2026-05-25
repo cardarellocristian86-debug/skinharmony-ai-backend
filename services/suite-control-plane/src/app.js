@@ -32,6 +32,7 @@ const GOOGLE_PROVIDER_CONFIG_FIELDS = [
   "developer_token",
   "redirect_uri",
 ];
+const GOOGLE_OAUTH_CLIENT_ID = "1062915832418-t1i2r823u06ohuri3efhi5l92bm7oc4f.apps.googleusercontent.com";
 const RUNBOOK_CATALOG = [
   {
     id: "site_clone_readiness",
@@ -525,7 +526,7 @@ async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
 function resolveGoogleProviderConfig(storedConfig = {}) {
   const publicBaseUrl = normalizeBaseUrl(process.env.SUITE_CONTROL_PLANE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
   return {
-    client_id: process.env.GOOGLE_CLIENT_ID || storedConfig.client_id || "",
+    client_id: GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || storedConfig.client_id || "",
     client_secret: process.env.GOOGLE_CLIENT_SECRET || storedConfig.client_secret || "",
     developer_token: process.env.GOOGLE_ADS_DEVELOPER_TOKEN || storedConfig.developer_token || "",
     redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI || storedConfig.redirect_uri || (publicBaseUrl ? `${publicBaseUrl}/api/suite/integrations/google/oauth/callback` : ""),

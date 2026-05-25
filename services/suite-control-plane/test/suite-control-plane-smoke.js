@@ -209,7 +209,7 @@ try {
 
   const googleProviderConfig = await request("/api/suite/integrations/google/provider-config", { headers });
   assert.equal(googleProviderConfig.response.status, 200);
-  assert.equal(googleProviderConfig.body.provider_config.client_id_present, false);
+  assert.equal(googleProviderConfig.body.provider_config.client_id_present, true);
 
   const savedGoogleProviderConfig = await request("/api/suite/integrations/google/provider-config", {
     method: "POST",
