@@ -377,6 +377,7 @@ function maskGoogleTenantConnection(connection = {}) {
     ? connection.selected_accounts
     : {};
   const token = connection.token && typeof connection.token === "object" ? connection.token : {};
+  const diagnostics = Array.isArray(connection.last_diagnostics) ? connection.last_diagnostics : [];
   return {
     tenant_id: sanitizeId(connection.tenant_id || "tenant_demo", "tenant"),
     connected: connection.connected === true,
@@ -402,6 +403,35 @@ function maskGoogleTenantConnection(connection = {}) {
         : [],
     },
     last_error: connection.last_error || "",
+    last_diagnostics: diagnostics.slice(0, 6),
+  };
+}
+
+function safeGoogleApiDiagnostic(source, response = {}, payload = {}) {
+  const googleError = payload && typeof payload.error === "object" ? payload.error : {};
+  const details = Array.isArray(googleError.details) ? googleError.details : [];
+  const message = String(googleError.message || payload?.error_description || payload?.error || "").slice(0, 260);
+  return {
+    source: sanitizeId(source || "google_api", "google_api"),
+    http_status: Number(response.status || googleError.code || 0),
+    google_status: String(googleError.status || ""),
+    google_code: Number(googleError.code || response.status || 0),
+    message,
+    detail_types: details
+      .map((detail) => String(detail?.["@type"] || detail?.type || ""))
+      .filter(Boolean)
+      .slice(0, 6),
+  };
+}
+
+function safeGoogleExceptionDiagnostic(source, error) {
+  return {
+    source: sanitizeId(source || "google_api", "google_api"),
+    http_status: 0,
+    google_status: "NETWORK_OR_RUNTIME_ERROR",
+    google_code: 0,
+    message: String(error?.message || "request_failed").slice(0, 180),
+    detail_types: [],
   };
 }
 
@@ -462,7 +492,12 @@ async function refreshGoogleAccessToken(providerConfig = {}, connection = {}) {
   });
   const json = await response.json().catch(() => ({}));
   if (!response.ok) {
-    return { ok: false, status: response.status, error: json.error || "google_token_refresh_failed" };
+    return {
+      ok: false,
+      status: response.status,
+      error: json.error || "google_token_refresh_failed",
+      diagnostics: [safeGoogleApiDiagnostic("google_token_refresh", response, json)],
+    };
   }
   return {
     ok: true,
@@ -478,7 +513,13 @@ async function refreshGoogleAccessToken(providerConfig = {}, connection = {}) {
 async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
   const access = await refreshGoogleAccessToken(providerConfig, connection);
   if (!access.ok) {
-    return { ok: false, token: connection.token || {}, accounts: { google_ads_customers: [], ga4_properties: [] }, error: access.error };
+    return {
+      ok: false,
+      token: connection.token || {},
+      accounts: { google_ads_customers: [], ga4_properties: [] },
+      error: access.error,
+      diagnostics: access.diagnostics || [],
+    };
   }
   const headers = { authorization: `Bearer ${access.token.access_token}` };
   const adsHeaders = {
@@ -487,6 +528,7 @@ async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
   };
   const accounts = { google_ads_customers: [], ga4_properties: [] };
   const errors = [];
+  const diagnostics = [];
 
   try {
     const response = await fetch("https://googleads.googleapis.com/v17/customers:listAccessibleCustomers", { headers: adsHeaders });
@@ -495,9 +537,11 @@ async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
       accounts.google_ads_customers = json.resourceNames.map((name) => String(name).replace(/^customers\//, ""));
     } else {
       errors.push("google_ads_customers_unavailable");
+      diagnostics.push(safeGoogleApiDiagnostic("google_ads_customers", response, json));
     }
-  } catch {
+  } catch (error) {
     errors.push("google_ads_customers_unavailable");
+    diagnostics.push(safeGoogleExceptionDiagnostic("google_ads_customers", error));
   }
 
   try {
@@ -515,12 +559,14 @@ async function fetchGoogleAccountOptions(providerConfig = {}, connection = {}) {
       )).filter((property) => property.property);
     } else {
       errors.push("ga4_properties_unavailable");
+      diagnostics.push(safeGoogleApiDiagnostic("ga4_properties", response, json));
     }
-  } catch {
+  } catch (error) {
     errors.push("ga4_properties_unavailable");
+    diagnostics.push(safeGoogleExceptionDiagnostic("ga4_properties", error));
   }
 
-  return { ok: errors.length === 0, token: access.token, accounts, errors, refreshed: access.refreshed };
+  return { ok: errors.length === 0, token: access.token, accounts, errors, diagnostics, refreshed: access.refreshed };
 }
 
 function resolveGoogleProviderConfig(storedConfig = {}) {
@@ -1002,6 +1048,7 @@ function createMemoryStorage(options = {}) {
         selected_accounts: selectedAccounts,
         available_accounts: availableAccounts,
         last_error: payload.last_error || "",
+        last_diagnostics: Array.isArray(payload.last_diagnostics) ? payload.last_diagnostics.slice(0, 6) : [],
       };
       googleTenantConnections.set(tenantKey, connection);
       const event = {
@@ -1613,6 +1660,7 @@ export function createSuiteControlPlane(options = {}) {
       token: accountOptions.token || connection.token,
       available_accounts: accountOptions.accounts || connection.available_accounts,
       last_error: accountOptions.ok ? "" : uniqueValues(accountOptions.errors || [accountOptions.error]).join(","),
+      last_diagnostics: accountOptions.diagnostics || [],
     });
     const payload = {
       ok: true,
@@ -1646,6 +1694,7 @@ export function createSuiteControlPlane(options = {}) {
       token: accountOptions.token || connection.token,
       available_accounts: accountOptions.accounts || connection.available_accounts,
       last_error: accountOptions.ok ? "" : uniqueValues(accountOptions.errors || [accountOptions.error]).join(","),
+      last_diagnostics: accountOptions.diagnostics || [],
     });
     return res.status(accountOptions.ok ? 200 : 207).json({
       ok: accountOptions.ok,
@@ -1655,6 +1704,7 @@ export function createSuiteControlPlane(options = {}) {
       accounts: saved.available_accounts,
       connection: saved,
       errors: accountOptions.errors || (accountOptions.error ? [accountOptions.error] : []),
+      diagnostics: accountOptions.diagnostics || [],
     });
   });
 

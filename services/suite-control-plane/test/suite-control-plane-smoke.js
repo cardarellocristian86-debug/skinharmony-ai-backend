@@ -309,9 +309,18 @@ try {
       google_ads_customers: ["1234567890"],
       ga4_properties: [{ property: "properties/123", display_name: "GA4 demo", parent_account: "accounts/1" }],
     },
+    last_diagnostics: [{
+      source: "google_ads_customers",
+      http_status: 403,
+      google_status: "PERMISSION_DENIED",
+      google_code: 403,
+      message: "Request had insufficient authentication scopes.",
+      detail_types: [],
+    }],
   });
   assert.equal(maskedGoogleConnection.connected, true);
   assert.equal(maskedGoogleConnection.token.access_token_present, true);
+  assert.equal(maskedGoogleConnection.last_diagnostics[0].google_status, "PERMISSION_DENIED");
   assert.doesNotMatch(JSON.stringify(maskedGoogleConnection), /access-token-private/);
 
   const googleStatusConnected = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
