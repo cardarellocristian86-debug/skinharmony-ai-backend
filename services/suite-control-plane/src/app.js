@@ -1621,6 +1621,7 @@ export function createSuiteControlPlane(options = {}) {
         provider_ready: true,
         connected: false,
         missing_provider_fields: [],
+        oauth_url: "/api/suite/integrations/google/connect?tenant_id=tenant_demo",
         next_action: "Tornare in Suite e riavviare Collega Google.",
       }));
     }
@@ -1634,6 +1635,7 @@ export function createSuiteControlPlane(options = {}) {
         provider_ready: true,
         connected: false,
         missing_provider_fields: [],
+        oauth_url: `/api/suite/integrations/google/oauth/start?tenant_id=${encodeURIComponent(stateRecord.tenant_id)}`,
         next_action: "Autorizzare l accesso Google per collegare Ads e Analytics.",
       }));
     }
@@ -1649,6 +1651,7 @@ export function createSuiteControlPlane(options = {}) {
         provider_ready: true,
         connected: false,
         missing_provider_fields: [],
+        oauth_url: `/api/suite/integrations/google/oauth/start?tenant_id=${encodeURIComponent(stateRecord.tenant_id)}`,
         next_action: "Verificare redirect URI e credenziali provider Google, poi riprovare.",
       }));
     }
