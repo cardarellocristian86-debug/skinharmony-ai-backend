@@ -1,6 +1,6 @@
 {
   "name": "@skinharmony/suite-control-plane",
-  "version": "0.4.0-google-oauth-tenant-connect",
+  "version": "0.4.1-runtime-map-ready",
   "private": true,
   "type": "module",
   "scripts": {

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.0-google-oauth-tenant-connect";
+const SERVICE_VERSION = "0.4.1-runtime-map-ready";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -25,6 +25,19 @@ const GOOGLE_CONNECTOR_REQUIRED_TENANT_FIELDS = [
   "google_user_authorized",
   "ads_customer_id",
   "ga4_property_id",
+];
+const SUITE_RUNTIME_WORDPRESS_KEEPS = [
+  { area: "ui_suite", label: "UI Suite", rule: "WordPress resta pannello cliente, contenuti e WooCommerce." },
+  { area: "template_registry", label: "Template, tecnologie e card", rule: "Dati runtime modificabili e persistenti nel sito; esportabili in JSON." },
+  { area: "crm_inventory_base", label: "CRM e magazzino base", rule: "Restano in WP finche manuali e leggeri; Render legge snapshot/eventi." },
+  { area: "checkout", label: "WooCommerce / checkout", rule: "Pagamento e ordine restano nel sito; Render non cattura pagamenti." },
+];
+const SUITE_RUNTIME_RENDER_MOVES = [
+  { area: "analytics_funnel", label: "Analytics WaaS e funnel", priority: "first", rule: "Sessioni, eventi, Ads, conversioni e report crescono fuori dal plugin." },
+  { area: "event_spine", label: "Event Spine", priority: "first", rule: "Page view, click, CTA, form, carrello e checkout diventano eventi tenant-scoped." },
+  { area: "core_insight", label: "Core Insight e report", priority: "first", rule: "Diagnosi e azioni consigliate devono essere auditabili e non pesare su WordPress." },
+  { area: "google_sync", label: "Google Ads / GA4 sync", priority: "first", rule: "Token, refresh e letture periodiche vivono su Render." },
+  { area: "crm_inventory_scoring", label: "CRM/magazzino scoring", priority: "later", rule: "Si sposta quando servono storico, AI, multi-sede o Smart Desk condiviso." },
 ];
 const GOOGLE_PROVIDER_CONFIG_FIELDS = [
   "client_id",
@@ -901,6 +914,51 @@ function resolveGoogleProviderConfig(storedConfig = {}) {
   };
 }
 
+function buildSuiteRuntimeMapContract() {
+  return {
+    schema_version: "suite_runtime_map_contract_v1",
+    service_version: SERVICE_VERSION,
+    mode: "read_only_runtime_map",
+    positioning: "WordPress Site Suite resta pannello cliente e nodo sito; Render Suite Control Plane diventa Data Engine per eventi, analytics, Core insight, code e multi-tenant.",
+    render_routes: {
+      contract: "/api/suite/runtime-map/contract",
+      control_plane_dashboard: "/api/suite/control-plane/dashboard",
+      tenant_dashboard: "/api/suite/tenants/:tenantId/dashboard",
+      node_heartbeat: "/api/suite/nodes/heartbeat",
+      node_snapshot: "/api/suite/nodes/snapshot",
+      evidence: "/api/suite/evidence",
+    },
+    wordpress_keeps: SUITE_RUNTIME_WORDPRESS_KEEPS,
+    render_moves: SUITE_RUNTIME_RENDER_MOVES,
+    available_now: [
+      "control_plane_dashboard",
+      "tenant_dashboard",
+      "node_heartbeat",
+      "node_snapshot",
+      "evidence_ledger",
+      "core_bridge_status",
+      "google_connector_contract",
+      "runtime_map_contract",
+    ],
+    first_real_migration: {
+      id: "analytics_event_spine",
+      label: "Analytics WaaS + Event Spine + Core Insight",
+      wordpress_role: "raccoglie eventi leggeri e mostra UI",
+      render_role: "ordina eventi, conserva storico tenant-scoped, prepara dataset Core",
+      core_role: "legge dataset e produce diagnosi/priorita/azioni da confermare",
+      execution_allowed: false,
+    },
+    safety_policy: {
+      no_customer_data_in_code: true,
+      no_cross_tenant_read: true,
+      no_automatic_checkout: true,
+      no_automatic_campaign_write: true,
+      owner_confirmation_required_for_actions: true,
+      scoped_key_required: true,
+    },
+  };
+}
+
 function buildGoogleConnectorContract(storedProviderConfig = {}) {
   const resolvedProviderConfig = resolveGoogleProviderConfig(storedProviderConfig);
   const publicBaseUrl = normalizeBaseUrl(process.env.SUITE_CONTROL_PLANE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "");
@@ -1752,6 +1810,15 @@ export function createSuiteControlPlane(options = {}) {
         ...dashboard,
         core_bridge: coreClient.status(),
       },
+    });
+  });
+
+  app.get("/api/suite/runtime-map/contract", auth, (req, res) => {
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      contract: buildSuiteRuntimeMapContract(),
     });
   });
 
