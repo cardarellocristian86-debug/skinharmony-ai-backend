@@ -5307,6 +5307,71 @@ function executeWorldPaperStep(body = {}) {
         return { ok: true, action: "paper_profit_learning_probe", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
       }
     }
+    if (
+      learning?.learning_state === "benchmark_catchup_learning" &&
+      row &&
+      history &&
+      isNewSymbol &&
+      !isPenalizedSymbol &&
+      !isPenalizedClass &&
+      !recentBlockers.symbols.has(String(row.symbol || "").toUpperCase()) &&
+      Number(row.edge_score || 0) >= 75 &&
+      Number(row.risk_score || 0) <= 28 &&
+      Number(history.knowledge_score || 0) >= 28 &&
+      !["high_volatility_convex", "duration_risk"].includes(String(history.behavior || ""))
+    ) {
+      const catchupMaxAllocation = 0.012;
+      const probeBudget = Math.min(
+        Number(portfolio.cash_eur || 0),
+        Number(treasury.paperCashAvailableEur || 0),
+        capital * Math.min(maxAllocation, catchupMaxAllocation)
+      );
+      if (probeBudget >= 100) {
+        const entryPrice = Number(row.last_price || 0) * (1 + slippageRate);
+        const fee = probeBudget * feeRate;
+        const netBudget = probeBudget - fee;
+        const quantity = entryPrice > 0 ? netBudget / entryPrice : 0;
+        const marketValue = quantity * Number(row.last_price || 0);
+        const position = {
+          symbol: row.symbol,
+          name: row.name,
+          class: row.class,
+          region: row.region,
+          quantity: Number(quantity.toFixed(8)),
+          entry_price: Number(entryPrice.toFixed(6)),
+          last_price: Number(row.last_price || 0),
+          cost_basis_eur: Number(probeBudget.toFixed(2)),
+          market_value_eur: Number(marketValue.toFixed(2)),
+          pnl_eur: Number((marketValue - probeBudget).toFixed(2)),
+          pnl_pct: probeBudget > 0 ? Number((((marketValue / probeBudget) - 1) * 100).toFixed(4)) : 0,
+          opened_at: now,
+          gear: riskBudget.gear,
+          profile: riskBudget.profile,
+          max_allocation: Math.min(maxAllocation, catchupMaxAllocation),
+          last_action: row.action,
+          multiverse_thesis: row.multiverse_thesis || null,
+          reason: `${row.reason}; benchmark catch-up micro-probe ${history.behavior || "studied asset"}`
+        };
+        portfolio.cash_eur = Number((Number(portfolio.cash_eur || 0) - probeBudget).toFixed(2));
+        portfolio.positions.push(position);
+        portfolio.trades.unshift({
+          at: now,
+          type: "benchmark_catchup_probe",
+          symbol: row.symbol,
+          gear: riskBudget.gear,
+          profile: riskBudget.profile,
+          budget_eur: Number(probeBudget.toFixed(2)),
+          fee_eur: Number(fee.toFixed(2)),
+          slippage_pct: Number((slippageRate * 100).toFixed(2)),
+          price: position.entry_price,
+          reason: `benchmark catch-up: QQQ corre e Nyra e troppo cash. Apro micro-probe paper su ${row.symbol} per edge/rischio puliti (${Number(row.edge_score || 0).toFixed(1)} edge / ${Number(row.risk_score || 0).toFixed(1)} rischio), senza ordini reali.`
+        });
+        portfolio.updated_at = now;
+        writeJson(nyraWorldPaperPortfolioPath, portfolio);
+        const policy = buildWorldPaperLearningPolicy(portfolio);
+        return { ok: true, action: "benchmark_catchup_probe", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
+      }
+    }
     portfolio.trades.unshift({
       at: now,
       type: "learning_pause",
