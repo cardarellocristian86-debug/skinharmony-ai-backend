@@ -4396,6 +4396,17 @@ function buildWorldPaperLearningPolicy(portfolio) {
   const diversification = worldPaperDiversificationState(portfolio);
   const recentTradeCount = trades.filter((trade) => minutesSinceIso(trade.at) <= 360).length;
   const profitProtection = buildWorldPaperProfitProtection(portfolio, summary);
+  const investedPct = Number(summary.capital_eur || 0) > 0
+    ? (Number(summary.invested_eur || 0) / Number(summary.capital_eur || 1)) * 100
+    : 0;
+  const cashPct = Number(summary.capital_eur || 0) > 0
+    ? (Number(summary.cash_eur || 0) / Number(summary.capital_eur || 1)) * 100
+    : 0;
+  const benchmarkCatchupRequired =
+    Number(summary.alpha_vs_qqq_pct || 0) <= -1 &&
+    investedPct < 8 &&
+    cashPct >= 70 &&
+    Number(summary.pnl_pct || 0) >= -0.2;
   const reviewSoftGuard =
     recentReviewTrades.length >= 5 &&
     recentReviewNetPnlEur < 0 &&
@@ -4409,7 +4420,8 @@ function buildWorldPaperLearningPolicy(portfolio) {
     Number(summary.pnl_pct || 0) < 0;
   const feeBleedHardGuard =
     Number(summary.alpha_vs_qqq_pct || 0) < -1 &&
-    Number(summary.trades_count || 0) >= 80;
+    Number(summary.trades_count || 0) >= 80 &&
+    !benchmarkCatchupRequired;
   const rawPauseSignal = allPositionsLosing && summary.pnl_eur < -40;
   const deepProtectionSignal = rawPauseSignal && summary.pnl_pct <= -3;
   const elasticLearning = rawPauseSignal && !deepProtectionSignal;
@@ -4427,6 +4439,8 @@ function buildWorldPaperLearningPolicy(portfolio) {
     hardProfitDefenseGuard;
   const learningState = hardProfitDefenseGuard
     ? "profit_lock_recovery"
+    : benchmarkCatchupRequired
+      ? "benchmark_catchup_learning"
     : feeBleedHardGuard
     ? "anti_fee_bleed_recovery"
     : repeatedErrorGuard
@@ -4469,6 +4483,9 @@ function buildWorldPaperLearningPolicy(portfolio) {
       fees_total_eur: summary.fees_total_eur,
       fee_drag_pct: summary.fee_drag_pct,
       alpha_vs_qqq_pct: summary.alpha_vs_qqq_pct,
+      invested_pct: Number(investedPct.toFixed(4)),
+      cash_pct: Number(cashPct.toFixed(4)),
+      benchmark_catchup_required: benchmarkCatchupRequired,
       fee_bleed_guard: feeBleedGuard,
       fee_bleed_hard_guard: feeBleedHardGuard,
       review_soft_guard: reviewSoftGuard,
@@ -4503,11 +4520,12 @@ function buildWorldPaperLearningPolicy(portfolio) {
       benchmark_relative_guard_active: profitProtection.benchmarkRelativeGuard,
       max_giveback_guard_active: profitProtection.maxGivebackGuard,
       hard_profit_defense_guard_active: hardProfitDefenseGuard,
-      benchmark_recovery_required: feeBleedGuard,
+      benchmark_recovery_required: feeBleedGuard || benchmarkCatchupRequired,
       diversification_required: true,
       diversification_rule: "Non concentrare la palestra su una sola famiglia: se una classe e gia piena o perdente, il prossimo probe deve cercare una classe diversa con edge/rischio puliti.",
       conviction_rule: "Se la tesi probabilistica e valida, Nyra deve darle tempo: niente chiusure nervose dei winner e niente micro-probe che regalano fee. Se la tesi non supera i costi, osserva.",
-      anti_robinhood_rule: "Se Nyra perde contro QQQ e aumenta i trade, non sta imparando: sta trasferendo capitale alle fee. In quel caso stop nuove entrate deboli, hold ragionato e solo tesi ad alta convinzione.",
+      anti_robinhood_rule: "Se Nyra perde contro QQQ per churn negativo, deve smettere di regalare fee. Se invece e verde ma troppo cash, deve recuperare esposizione con probe disciplinati e diversificati.",
+      benchmark_catchup_rule: "Quando QQQ corre e Nyra resta quasi tutta liquida, il rischio principale e immobilismo: non bloccare tutto, aumenta esposizione paper solo su edge pulito, rischio basso e classi diversificate.",
       profit_lock_rule: "Quando Nyra ha gia generato profitto, quel profitto va difeso: il sistema non puo restituire troppo del picco fatto solo per inseguire nuove prove. Prima protegge il vantaggio, poi attacca.",
       benchmark_guard_rule: "Essere sopra zero non basta: se Nyra e verde ma resta sotto QQQ, la priorita diventa difendere i winner e bloccare le entrate marginali fino a recupero di disciplina.",
       review_rule: "Ogni blocco di 20 trade chiusi va letto come una review: se Nyra perde nello stesso simbolo o nella stessa classe piu volte, la prossima entrata su quel contesto deve diventare piu dura o essere bloccata.",
@@ -4522,7 +4540,9 @@ function buildWorldPaperLearningPolicy(portfolio) {
         recent_window_size: recentReviewTrades.length,
         recent_window_net_pnl_eur: Number(recentReviewNetPnlEur.toFixed(2))
       },
-      max_new_position_multiplier: hardProfitDefenseGuard
+      max_new_position_multiplier: benchmarkCatchupRequired
+        ? Math.max(maxNewPositionMultiplier, 0.6)
+        : hardProfitDefenseGuard
         ? Math.min(maxNewPositionMultiplier, 0.12)
         : profitDefenseGuard
           ? Math.min(maxNewPositionMultiplier, 0.18)
@@ -4531,12 +4551,14 @@ function buildWorldPaperLearningPolicy(portfolio) {
             : reviewSoftGuard
               ? Math.min(maxNewPositionMultiplier, 0.3)
               : maxNewPositionMultiplier,
-      min_edge_for_new_entry: hardProfitDefenseGuard ? 84 : profitDefenseGuard ? 80 : feeBleedHardGuard ? 82 : repeatedErrorGuard ? 80 : feeBleedGuard ? 76 : reviewSoftGuard ? 70 : deepProtectionSignal ? 72 : elasticLearning ? 62 : 55,
-      max_risk_for_new_entry: hardProfitDefenseGuard ? 32 : profitDefenseGuard ? 36 : feeBleedHardGuard ? 34 : repeatedErrorGuard ? 38 : feeBleedGuard ? 42 : reviewSoftGuard ? 48 : deepProtectionSignal ? 42 : elasticLearning ? 55 : 65,
+      min_edge_for_new_entry: hardProfitDefenseGuard ? 84 : profitDefenseGuard ? 80 : feeBleedHardGuard ? 82 : repeatedErrorGuard ? 80 : feeBleedGuard ? 76 : benchmarkCatchupRequired ? 68 : reviewSoftGuard ? 70 : deepProtectionSignal ? 72 : elasticLearning ? 62 : 55,
+      max_risk_for_new_entry: hardProfitDefenseGuard ? 32 : profitDefenseGuard ? 36 : feeBleedHardGuard ? 34 : repeatedErrorGuard ? 38 : feeBleedGuard ? 42 : benchmarkCatchupRequired ? 46 : reviewSoftGuard ? 48 : deepProtectionSignal ? 42 : elasticLearning ? 55 : 65,
       reason: hardProfitDefenseGuard
         ? `Profit lock duro: Nyra aveva costruito fino a ${profitProtection.peakProfitEur.toFixed(2)} EUR sopra il capitale iniziale e ne ha restituiti ${profitProtection.givebackEur.toFixed(2)} EUR. Finche non recupera disciplina contro benchmark, blocca quasi tutte le nuove entrate e difende il vantaggio rimasto.`
         : profitDefenseGuard
           ? `Profit lock attivo: Nyra aveva toccato ${profitProtection.peakProfitEur.toFixed(2)} EUR sopra il capitale iniziale e ora ha dato indietro ${profitProtection.givebackEur.toFixed(2)} EUR. Prima protegge il profitto e tiene i winner validi, poi torna ad aprire nuovi test.`
+        : benchmarkCatchupRequired
+        ? `Benchmark catch-up: Nyra e positiva ma troppo liquida (${investedPct.toFixed(2)}% investito) mentre QQQ corre. Deve recuperare esposizione paper con probe selettivi, diversificati e senza inseguire trade deboli.`
         : feeBleedHardGuard
         ? "Anti Robin Hood attivo: Nyra e sotto QQQ e ha troppi trade. Blocca nuove aperture, smette di regalare fee e lavora su hold/tesi forti."
         : repeatedErrorGuard
