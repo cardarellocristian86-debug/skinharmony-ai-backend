@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.1-runtime-map-ready";
+const SERVICE_VERSION = "0.4.2-event-spine-ready";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -244,6 +244,108 @@ function summarizeEvidence(events = []) {
     by_decision: byDecision,
     by_risk: byRisk,
     latest: events.slice(0, 10),
+  };
+}
+
+function sanitizeSiteEvent(payload = {}) {
+  const eventType = sanitizeId(payload.event_type || "page_view", "event").slice(0, 60);
+  const allowed = new Set(["page_view", "cta_click", "form_submit", "engaged_visit"]);
+  return {
+    id: `site_event_${crypto.randomUUID()}`,
+    received_at: nowIso(),
+    schema_version: "suite_site_event_v1",
+    tenant_id: sanitizeId(payload.tenant_id, "tenant"),
+    node_id: sanitizeId(payload.node_id, "node"),
+    source: sanitizeId(payload.source || "wordpress_site_suite", "source"),
+    suite_version: String(payload.suite_version || "").slice(0, 40),
+    site_url: normalizeBaseUrl(payload.site_url || ""),
+    event_type: allowed.has(eventType) ? eventType : "page_view",
+    event_label: String(payload.event_label || "none").replace(/\s+/g, " ").trim().slice(0, 100) || "none",
+    target_url: String(payload.target_url || "none").replace(/\s+/g, " ").trim().slice(0, 180) || "none",
+    session_hash: String(payload.session_hash || "").replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 80),
+    path: String(payload.path || "home").replace(/[^\w./:-]/g, "_").slice(0, 180) || "home",
+    referrer: String(payload.referrer || "direct").replace(/\s+/g, " ").trim().slice(0, 120) || "direct",
+    utm_source: sanitizeId(payload.utm_source || "none", "none").slice(0, 80),
+    utm_medium: sanitizeId(payload.utm_medium || "none", "none").slice(0, 80),
+    utm_campaign: String(payload.utm_campaign || "none").replace(/\s+/g, " ").trim().slice(0, 140) || "none",
+    browser_language: String(payload.browser_language || "unknown").replace(/\s+/g, " ").trim().slice(0, 40),
+    browser_timezone: String(payload.browser_timezone || "unknown").replace(/\s+/g, " ").trim().slice(0, 80),
+    estimated_country: String(payload.estimated_country || "non stimato").replace(/\s+/g, " ").trim().slice(0, 80),
+    elapsed_seconds: Math.max(0, Math.min(3600, Number(payload.elapsed_seconds || 0))),
+    scroll_depth: Math.max(0, Math.min(100, Number(payload.scroll_depth || 0))),
+    event_day: String(payload.event_day || "").replace(/[^0-9-]/g, "").slice(0, 10),
+    privacy: {
+      ip_address_sent: false,
+      raw_session_id_sent: false,
+      personal_data_payload: false,
+    },
+  };
+}
+
+function incrementBucket(bucket, key) {
+  const value = String(key || "unknown").trim() || "unknown";
+  bucket[value] = (bucket[value] || 0) + 1;
+}
+
+function topBucket(bucket, limit = 20) {
+  return Object.fromEntries(
+    Object.entries(bucket)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit),
+  );
+}
+
+function summarizeSiteEvents(events = [], days = 30) {
+  const period = Math.max(1, Number(days || 30));
+  const cutoff = Date.now() - period * 24 * 60 * 60 * 1000;
+  const filtered = events.filter((event) => {
+    const ts = Date.parse(event.received_at || "");
+    return Number.isFinite(ts) && ts >= cutoff;
+  });
+  const byType = {};
+  const byPath = {};
+  const byReferrer = {};
+  const byUtmSource = {};
+  const byTarget = {};
+  const byLabel = {};
+  const daily = {};
+  const sessions = new Set();
+  let engaged = 0;
+
+  for (const event of filtered) {
+    incrementBucket(byType, event.event_type);
+    incrementBucket(byPath, event.path);
+    incrementBucket(byReferrer, event.referrer);
+    incrementBucket(byUtmSource, event.utm_source);
+    if (event.target_url && event.target_url !== "none") incrementBucket(byTarget, event.target_url);
+    if (event.event_label && event.event_label !== "none") incrementBucket(byLabel, event.event_label);
+    incrementBucket(daily, event.event_day || String(event.received_at || "").slice(0, 10));
+    if (event.session_hash) sessions.add(event.session_hash);
+    if (event.event_type === "engaged_visit") engaged += 1;
+  }
+
+  const pageViews = byType.page_view || 0;
+  return {
+    schema_version: "suite_site_event_summary_v1",
+    generated_at: nowIso(),
+    period_days: period,
+    events_total: filtered.length,
+    page_views: pageViews,
+    unique_sessions: sessions.size,
+    engaged_visits: engaged,
+    engagement_rate_pct: pageViews > 0 ? Math.round((engaged / pageViews) * 1000) / 10 : 0,
+    by_event_type: topBucket(byType),
+    by_path: topBucket(byPath),
+    by_referrer: topBucket(byReferrer),
+    by_utm_source: topBucket(byUtmSource),
+    by_target: topBucket(byTarget),
+    by_event_label: topBucket(byLabel),
+    daily: topBucket(daily, 45),
+    privacy: {
+      aggregate_only: true,
+      raw_ip_stored: false,
+      raw_session_id_stored: false,
+    },
   };
 }
 
@@ -1224,6 +1326,7 @@ function renderGoogleConnectPage(payload) {
 function createMemoryStorage(options = {}) {
   const nodes = new Map((options.nodes || []).map((node) => [node.node_id, node]));
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
+  const siteEvents = Array.isArray(options.siteEvents) ? options.siteEvents : [];
   const dispatches = Array.isArray(options.dispatches) ? options.dispatches : [];
   const artifacts = Array.isArray(options.artifacts) ? options.artifacts : [];
   const googleTenantConnections = new Map(Object.entries(
@@ -1245,6 +1348,7 @@ function createMemoryStorage(options = {}) {
     onChange({
       nodes: Array.from(nodes.values()),
       evidence,
+      siteEvents,
       dispatches,
       artifacts,
       googleProviderConfig,
@@ -1344,6 +1448,27 @@ function createMemoryStorage(options = {}) {
       appendNodeEvent(node, "evidence", event);
       emitChange();
       return { node, event };
+    },
+    siteEvent(payload) {
+      const event = sanitizeSiteEvent(payload);
+      const node = getOrCreateNode(event.node_id, event.tenant_id);
+      event.node_id = node.node_id;
+      event.tenant_id = node.tenant_id;
+      siteEvents.unshift(event);
+      if (siteEvents.length > 5000) siteEvents.length = 5000;
+      node.last_seen_at = event.received_at;
+      appendNodeEvent(node, "site_event", {
+        id: event.id,
+        received_at: event.received_at,
+        event_type: event.event_type,
+        path: event.path,
+      });
+      emitChange();
+      return { node, event };
+    },
+    siteEventsSummary(tenantId, days = 30) {
+      const tenantKey = sanitizeId(tenantId, "tenant");
+      return summarizeSiteEvents(siteEvents.filter((event) => event.tenant_id === tenantKey), days);
     },
     runbookCatalog() {
       return RUNBOOK_CATALOG;
@@ -1579,6 +1704,7 @@ function createMemoryStorage(options = {}) {
         generated_at: nowIso(),
         nodes_total: tenantNodes.length,
         nodes_online: tenantNodes.filter((node) => node.status === "online").length,
+        site_events: this.siteEventsSummary(tenantKey, 30),
         readiness_status: blocked ? "blocked" : warnings || !tenantNodes.length ? "warning" : "ready",
         readiness_summary: {
           ready,
@@ -1629,6 +1755,7 @@ function createSuiteControlStorage() {
   let initialState = {
     nodes: [],
     evidence: [],
+    site_events: [],
     dispatches: [],
     artifacts: [],
     google_provider_config: {},
@@ -1642,6 +1769,7 @@ function createSuiteControlStorage() {
       initialState = {
         nodes: [],
         evidence: [],
+        site_events: [],
         dispatches: [],
         artifacts: [],
         google_provider_config: {},
@@ -1654,6 +1782,7 @@ function createSuiteControlStorage() {
   const storage = createMemoryStorage({
     nodes: Array.isArray(initialState.nodes) ? initialState.nodes : [],
     evidence: Array.isArray(initialState.evidence) ? initialState.evidence : [],
+    siteEvents: Array.isArray(initialState.site_events) ? initialState.site_events : [],
     dispatches: Array.isArray(initialState.dispatches) ? initialState.dispatches : [],
     artifacts: Array.isArray(initialState.artifacts) ? initialState.artifacts : [],
     googleProviderConfig: initialState.google_provider_config && typeof initialState.google_provider_config === "object" ? initialState.google_provider_config : {},
@@ -1665,6 +1794,7 @@ function createSuiteControlStorage() {
         saved_at: nowIso(),
         nodes: state.nodes,
         evidence: state.evidence.slice(0, 1000),
+        site_events: state.siteEvents.slice(0, 5000),
         dispatches: state.dispatches.slice(0, 1000),
         artifacts: state.artifacts.slice(0, 1000),
         google_provider_config: state.googleProviderConfig || {},
@@ -1865,6 +1995,33 @@ export function createSuiteControlPlane(options = {}) {
       tenant_id: node.tenant_id,
       evidence_id: event.id,
       received_at: event.received_at,
+    });
+  });
+
+  app.post("/api/suite/events/ingest", auth, (req, res) => {
+    const { node, event } = storage.siteEvent(req.body || {});
+    res.json({
+      ok: true,
+      accepted: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      tenant_id: node.tenant_id,
+      node_id: node.node_id,
+      event_id: event.id,
+      event_type: event.event_type,
+      received_at: event.received_at,
+      privacy: event.privacy,
+    });
+  });
+
+  app.get("/api/suite/tenants/:tenantId/events/summary", auth, (req, res) => {
+    const days = Math.max(1, Math.min(90, Number(req.query.days || 30)));
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      tenant_id: sanitizeId(req.params.tenantId, "tenant"),
+      summary: storage.siteEventsSummary(req.params.tenantId, days),
     });
   });
 
