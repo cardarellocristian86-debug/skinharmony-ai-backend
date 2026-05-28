@@ -466,6 +466,18 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function economicConfigGapText(servicesMissingCosts = 0, operatorsMissingHourlyCost = 0, mode = "complete") {
+  const parts = [];
+  const servicesCount = Number(servicesMissingCosts || 0);
+  const operatorsCount = Number(operatorsMissingHourlyCost || 0);
+  if (servicesCount > 0) parts.push(`${servicesCount} costi servizio`);
+  if (operatorsCount > 0) parts.push(`${operatorsCount} costi orari operatori`);
+  const gap = parts.join(" e ") || "configurazione economica";
+  if (mode === "missing") return gap;
+  if (mode === "action") return `completa ${gap}`;
+  return `Completa ${gap}`;
+}
+
 function localizeServerText(value, language = "it") {
   if (language !== "en") return value;
   return String(value || "")
@@ -6782,6 +6794,7 @@ class DesktopMirrorService {
     }
     const before = this.findByIdInCenter(this.staffRepository, payload.id, session);
     const updated = this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
     this.applyGoldStateEvent("staff_updated", { before, after: updated }, session);
     return updated;
   }
@@ -6789,7 +6802,10 @@ class DesktopMirrorService {
   deleteStaff(id, session = null) {
     const before = this.findByIdInCenter(this.staffRepository, id, session);
     const result = this.deleteInCenter(this.staffRepository, id, session);
-    if (result?.success) this.applyGoldStateEvent("staff_deleted", { before }, session);
+    if (result?.success) {
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
+      this.applyGoldStateEvent("staff_deleted", { before }, session);
+    }
     return result;
   }
 
@@ -11275,9 +11291,9 @@ class DesktopMirrorService {
         entityId: "profitability-config-block",
         label: "Volume presente, completa costi per sbloccare redditivita",
         action: "ACT_NOW",
-        suggestedAction: "apri servizi e operatori, poi completa costi e costo orario",
-        explanationShort: `Il centro lavora gia, ma la redditivita resta bloccata finche completi ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`,
-        explanationLong: `Non e un giudizio negativo sul centro. Volume, pagamenti e storico sono presenti, ma Gold evita letture economiche forti finche la configurazione economica non e completa. Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori per sbloccare redditivita e priorita economiche affidabili.`,
+        suggestedAction: `apri servizi e operatori, poi ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}`,
+        explanationShort: `Il centro lavora gia, ma la redditivita resta bloccata finche ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}.`,
+        explanationLong: `Non e un giudizio negativo sul centro. Volume, pagamenti e storico sono presenti, ma Gold evita letture economiche forti finche la configurazione economica non e completa. ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost)} per sbloccare redditivita e priorita economiche affidabili.`,
         target: "profitability",
         universalCoreShadow: buildUniversalCoreShadow({
           action: "ACT_NOW",
@@ -12630,10 +12646,10 @@ class DesktopMirrorService {
           area: item.domain,
           conclusion: "Configurazione economica incompleta",
           reason: "Il centro ha segnali operativi reali, ma questa lettura non va usata come giudizio sul business finché costi servizi e costi orari non sono completi.",
-          details: `Completa ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari operatori.`,
+          details: `${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0))}.`,
           impactCents: 0,
           riskCents: 0,
-          action: "completa costi servizi e operatori",
+          action: economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0), "action"),
           button: "Apri servizi",
           target: "services"
         };
@@ -12694,7 +12710,7 @@ class DesktopMirrorService {
                       ? "Mantieni il ritmo e controlla solo i punti deboli."
                       : "Il centro regge: lavora su margini e crescita selettiva.",
             details: centerHealthNotRepresentative
-              ? `Completa ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari operatori prima di usare questo blocco come lettura di stato.`
+              ? `${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0))} prima di usare questo blocco come lettura di stato.`
               : profitabilityBlockedForConfig
                 ? `${centerHealth.reason} · costi servizio mancanti ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} · costi orari mancanti ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)}`
                 : `${centerHealth.reason} · fatturato/operatore ${euro(centerHealth.revenuePerOperatorCents)} al mese · saturazione ${centerHealth.saturationPercent}% · continuità ${centerHealth.continuityPercent}%`,
@@ -12776,7 +12792,7 @@ class DesktopMirrorService {
               ? "Non leggere questo come giudizio sul centro: prima va completata la configurazione economica."
               : marginAlert.status === "LOSS" ? "Controlla subito prezzo, durata e consumo prodotto." : "Margine migliorabile: correggi prima di spingere il servizio.",
             details: profitabilityBlockedForConfig
-              ? `Volume presente, ma i costi non sono completi. Mancano ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari.`
+              ? `Volume presente, ma i costi non sono completi. Mancano ${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0), "missing")}.`
               : `Incasso medio ${euro(Number(marginAlert.averageRevenueCents || 0))} · costo medio ${euro(Number(marginAlert.averageCostCents || 0))} · margine ${marginAlert.marginPercent}%`,
             impactCents: Number(marginAlert.economicGapCents || 0),
             riskCents: Number(marginAlert.economicGapCents || 0),
@@ -12898,11 +12914,11 @@ class DesktopMirrorService {
               ? "Il centro lavora, ma i margini sarebbero fraintendibili finché costi servizi e costi orari restano incompleti."
               : "La lettura economica può essere usata come supporto operativo.",
             details: profitabilityBlockedForConfig
-              ? `Completa ${Number(dataQuality.metrics?.servicesMissingCosts || 0)} costi servizio e ${Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0)} costi orari operatori.`
+              ? `${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0))}.`
               : "Configurazione economica sufficiente per letture Gold più forti.",
             impactCents: 0,
             riskCents: 0,
-            action: profitabilityBlockedForConfig ? "completa costi servizi e operatori" : "controlla margini e opportunita",
+            action: profitabilityBlockedForConfig ? economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0), "action") : "controlla margini e opportunita",
             button: "Apri servizi",
             target: "services"
           },
@@ -13100,7 +13116,7 @@ class DesktopMirrorService {
           ? [{
               id: "profitability-config",
               label: "Redditività da configurare",
-              value: `Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori prima di usare la lettura economica come guida forte.`,
+              value: `${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost)} prima di usare la lettura economica come guida forte.`,
               action: "completa configurazione costi",
               target: "services"
             }]
@@ -13376,7 +13392,7 @@ class DesktopMirrorService {
         alerts: [{
           level: "warning",
           title: "Redditività da configurare: configurazione economica incompleta",
-          body: `La redditivita non e leggibile finche non completi ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`,
+          body: `La redditivita non e leggibile finche non ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}.`,
           serviceId: "profitability-config-block"
         }],
         suggestions: [{
@@ -13397,7 +13413,7 @@ class DesktopMirrorService {
           economicGapCents: 0,
           clearConclusion: "lettura economica non ancora affidabile",
           operatingAction: "completa configurazione costi",
-          nextAction: `Completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori prima di usare questa lettura come guida economica.`,
+          nextAction: `${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost)} prima di usare questa lettura come guida economica.`,
           status: "CONFIG_REQUIRED",
           suggestion: "La redditivita resta prudente finche la configurazione economica non e completa."
         }]

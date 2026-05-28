@@ -29,6 +29,18 @@ function uniqueStrings(values = []) {
   return Array.from(new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean)));
 }
 
+function economicConfigGapText(servicesMissingCosts = 0, operatorsMissingHourlyCost = 0, mode = "complete") {
+  const parts = [];
+  const servicesCount = Number(servicesMissingCosts || 0);
+  const operatorsCount = Number(operatorsMissingHourlyCost || 0);
+  if (servicesCount > 0) parts.push(`${servicesCount} costi servizio`);
+  if (operatorsCount > 0) parts.push(`${operatorsCount} costi orari operatori`);
+  const gap = parts.join(" e ") || "configurazione economica";
+  if (mode === "missing") return gap;
+  if (mode === "action") return `completa ${gap}`;
+  return `Completa ${gap}`;
+}
+
 function resolveUiReadingBand(v7 = {}, actionBand = "MONITOR") {
   const conflictIndex = Number(v7.conflictIndex || 0);
   const irreversibleMass = Number(v7.irreversibleMass || 0);
@@ -627,9 +639,9 @@ class CoreliaBridge {
         ]);
         reasons = uniqueStrings([
           "Il centro può lavorare bene anche se la configurazione economica non è completa",
-          `Gold evita margini forti finché mancano ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.`
+          `Gold evita margini forti finché mancano ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "missing")}.`
         ]);
-        recommendedNextStep = `apri servizi e operatori e completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori`;
+        recommendedNextStep = `apri servizi e operatori e ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}`;
       } else {
         primarySignal = alert?.title || suggestion?.name || "Redditività da monitorare";
         secondarySignals = uniqueStrings([
@@ -782,7 +794,7 @@ class CoreliaBridge {
           .map((item) => item.explanationShort || item.label || item.domain))
       ]);
       primaryAction = profitabilityBlockedForConfig && (String(primaryActionCandidate.domain || "") === "profitability" || String(primaryActionCandidate.domain || "") === "economic")
-        ? `completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori`
+        ? economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")
         : lowMaturity
           ? "completa agenda, cassa e anagrafica prima di aspettarti letture più profonde"
           : firstAction || "verifica la priorità principale";
@@ -803,7 +815,7 @@ class CoreliaBridge {
         fragileDataArea ? `area dati fragile: ${fragileDataArea}` : ""
       ]);
       reasons = uniqueStrings([
-        profitabilityBlockedForConfig ? `Il centro lavora già, ma Gold evita priorità economiche forti finché mancano ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori.` : "",
+        profitabilityBlockedForConfig ? `Il centro lavora già, ma Gold evita priorità economiche forti finché mancano ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "missing")}.` : "",
         lowMaturity ? progressiveMessage : "",
         lowMaturity ? "Corelia qui deve restare prudente: descrive il centro ma non forza priorità artificiali" : "",
         shadowDecision === "block" ? "Il governor shadow legge questa priorità come bloccata, quindi la risposta resta descrittiva e non esecutiva." : "",
@@ -818,7 +830,7 @@ class CoreliaBridge {
         state.goldState?.decision?.explanationShort || ""
       ]);
       recommendedNextStep = profitabilityBlockedForConfig && (String(primaryActionCandidate.domain || "") === "profitability" || String(primaryActionCandidate.domain || "") === "economic")
-        ? `apri servizi e operatori e completa ${servicesMissingCosts} costi servizio e ${operatorsMissingHourlyCost} costi orari operatori`
+        ? `apri servizi e operatori e ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}`
         : lowMaturity
           ? "chiudi i dati base del centro e poi rileggi AI Gold"
           : shadowDecision === "block"
