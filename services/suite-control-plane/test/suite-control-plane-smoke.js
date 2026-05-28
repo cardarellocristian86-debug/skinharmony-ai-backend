@@ -243,6 +243,45 @@ try {
   assert.ok(actionPlan.body.action_plan.next_actions.every((item) => item.do_this));
   assert.ok(actionPlan.body.action_plan.rules.some((rule) => rule.includes("non modifica")));
 
+  const commerceSnapshot = await request("/api/suite/commerce/snapshot", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      node_id: "wp_test_node",
+      tenant_id: "tenant_demo",
+      suite_version: "5.2.88",
+      snapshot: {
+        schema_version: "suite_commerce_snapshot_v1",
+        source: "wordpress_site_suite",
+        summary: {
+          crm_contacts: 2,
+          crm_companies: 1,
+          product_items: 8,
+          technology_items: 3,
+          orders_count: 1,
+          order_value: 129,
+          open_leads: 1,
+          active_licenses: 1,
+        },
+        sections: [
+          { key: "crm", status: "ready", count: 2 },
+          { key: "inventory", status: "ready", count: 11 },
+        ],
+      },
+    }),
+  });
+  assert.equal(commerceSnapshot.response.status, 200);
+  assert.equal(commerceSnapshot.body.accepted, true);
+  assert.equal(commerceSnapshot.body.execution_allowed, false);
+  assert.equal(commerceSnapshot.body.privacy.raw_customer_records_stored, false);
+
+  const commerceSummary = await request("/api/suite/tenants/tenant_demo/commerce/summary", { headers });
+  assert.equal(commerceSummary.response.status, 200);
+  assert.equal(commerceSummary.body.summary.mode, "read_only_summary");
+  assert.equal(commerceSummary.body.summary.readiness, "ready");
+  assert.equal(commerceSummary.body.summary.totals.crm_contacts, 2);
+  assert.equal(commerceSummary.body.summary.policy.no_payment_capture, true);
+
   const controlPlaneDashboard = await request("/api/suite/control-plane/dashboard", { headers });
   assert.equal(controlPlaneDashboard.response.status, 200);
   assert.equal(controlPlaneDashboard.body.dashboard.execution_allowed, false);

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.4-analytics-action-plan-ready";
+const SERVICE_VERSION = "0.4.5-commerce-snapshot-ready";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -536,6 +536,90 @@ function buildAnalyticsActionPlan(summary = {}) {
       "Prima si verifica tracking e percorso; poi si decide cosa cambiare.",
       "Ogni azione richiede conferma owner o operatore.",
     ],
+  };
+}
+
+function sanitizeCommerceSnapshot(payload = {}) {
+  const snapshot = payload.snapshot && typeof payload.snapshot === "object"
+    ? payload.snapshot
+    : payload.commerce_snapshot && typeof payload.commerce_snapshot === "object"
+      ? payload.commerce_snapshot
+      : payload;
+  const tenantId = sanitizeId(payload.tenant_id || snapshot.tenant_id || "unknown", "tenant");
+  const nodeId = sanitizeId(payload.node_id || snapshot.node_id || `${tenantId}_wordpress`, "node");
+  const summary = snapshot.summary && typeof snapshot.summary === "object" ? snapshot.summary : {};
+  const sections = Array.isArray(snapshot.sections) ? snapshot.sections : [];
+  return {
+    id: `commerce_snapshot_${crypto.randomUUID()}`,
+    received_at: nowIso(),
+    schema_version: String(snapshot.schema_version || "suite_commerce_snapshot_v1"),
+    tenant_id: tenantId,
+    node_id: nodeId,
+    source: String(snapshot.source || payload.source || "wordpress_site_suite").slice(0, 80),
+    suite_version: String(snapshot.suite_version || payload.suite_version || "").slice(0, 40),
+    mode: "read_only_summary",
+    execution_allowed: false,
+    owner_confirmation_required: true,
+    summary: {
+      crm_contacts: Math.max(0, Number(summary.crm_contacts || summary.contacts || 0) || 0),
+      crm_companies: Math.max(0, Number(summary.crm_companies || summary.companies || 0) || 0),
+      product_items: Math.max(0, Number(summary.product_items || summary.products || 0) || 0),
+      technology_items: Math.max(0, Number(summary.technology_items || summary.technologies || 0) || 0),
+      orders_count: Math.max(0, Number(summary.orders_count || summary.orders || 0) || 0),
+      order_value: Math.max(0, Number(summary.order_value || 0) || 0),
+      open_leads: Math.max(0, Number(summary.open_leads || 0) || 0),
+      active_licenses: Math.max(0, Number(summary.active_licenses || 0) || 0),
+    },
+    sections: sections.slice(0, 30).map((section) => ({
+      key: sanitizeId(section?.key || section?.id || "section", "section"),
+      status: sanitizeId(section?.status || "unknown", "status"),
+      count: Math.max(0, Number(section?.count || 0) || 0),
+    })),
+    privacy: {
+      aggregate_only: true,
+      raw_customer_records_stored: false,
+      personal_data_payload: false,
+    },
+  };
+}
+
+function summarizeCommerceSnapshots(snapshots = []) {
+  const latest = snapshots[0] || null;
+  const totals = {
+    snapshots: snapshots.length,
+    crm_contacts: latest?.summary?.crm_contacts || 0,
+    crm_companies: latest?.summary?.crm_companies || 0,
+    product_items: latest?.summary?.product_items || 0,
+    technology_items: latest?.summary?.technology_items || 0,
+    orders_count: latest?.summary?.orders_count || 0,
+    order_value: latest?.summary?.order_value || 0,
+    open_leads: latest?.summary?.open_leads || 0,
+    active_licenses: latest?.summary?.active_licenses || 0,
+  };
+  const readiness = latest
+    ? (totals.crm_contacts || totals.product_items || totals.technology_items || totals.orders_count ? "ready" : "empty")
+    : "missing";
+  return {
+    schema_version: "suite_commerce_summary_v1",
+    generated_at: nowIso(),
+    mode: "read_only_summary",
+    readiness,
+    execution_allowed: false,
+    owner_confirmation_required: true,
+    totals,
+    latest,
+    next_actions: readiness === "missing"
+      ? ["send_first_commerce_snapshot"]
+      : readiness === "empty"
+        ? ["populate_crm_inventory_or_orders_before_scoring"]
+        : ["keep_wordpress_as_ui_and_use_render_for_history_scoring"],
+    policy: {
+      wordpress_keeps_ui_and_checkout: true,
+      render_reads_aggregate_snapshot: true,
+      no_payment_capture: true,
+      no_stock_mutation: true,
+      no_customer_records_in_code: true,
+    },
   };
 }
 
@@ -1517,6 +1601,7 @@ function createMemoryStorage(options = {}) {
   const nodes = new Map((options.nodes || []).map((node) => [node.node_id, node]));
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
   const siteEvents = Array.isArray(options.siteEvents) ? options.siteEvents : [];
+  const commerceSnapshots = Array.isArray(options.commerceSnapshots) ? options.commerceSnapshots : [];
   const dispatches = Array.isArray(options.dispatches) ? options.dispatches : [];
   const artifacts = Array.isArray(options.artifacts) ? options.artifacts : [];
   const googleTenantConnections = new Map(Object.entries(
@@ -1539,6 +1624,7 @@ function createMemoryStorage(options = {}) {
       nodes: Array.from(nodes.values()),
       evidence,
       siteEvents,
+      commerceSnapshots,
       dispatches,
       artifacts,
       googleProviderConfig,
@@ -1659,6 +1745,28 @@ function createMemoryStorage(options = {}) {
     siteEventsSummary(tenantId, days = 30) {
       const tenantKey = sanitizeId(tenantId, "tenant");
       return summarizeSiteEvents(siteEvents.filter((event) => event.tenant_id === tenantKey), days);
+    },
+    commerceSnapshot(payload) {
+      const snapshot = sanitizeCommerceSnapshot(payload);
+      const node = getOrCreateNode(snapshot.node_id, snapshot.tenant_id);
+      snapshot.node_id = node.node_id;
+      snapshot.tenant_id = node.tenant_id;
+      commerceSnapshots.unshift(snapshot);
+      if (commerceSnapshots.length > 1000) commerceSnapshots.length = 1000;
+      node.last_seen_at = snapshot.received_at;
+      node.commerce_snapshot_count = (node.commerce_snapshot_count || 0) + 1;
+      node.latest_commerce_snapshot = snapshot;
+      appendNodeEvent(node, "commerce_snapshot", {
+        id: snapshot.id,
+        received_at: snapshot.received_at,
+        summary: snapshot.summary,
+      });
+      emitChange();
+      return { node, snapshot };
+    },
+    commerceSummary(tenantId) {
+      const tenantKey = sanitizeId(tenantId, "tenant");
+      return summarizeCommerceSnapshots(commerceSnapshots.filter((snapshot) => snapshot.tenant_id === tenantKey));
     },
     runbookCatalog() {
       return RUNBOOK_CATALOG;
@@ -1884,6 +1992,7 @@ function createMemoryStorage(options = {}) {
         snapshot_count: node.snapshot_count,
         evidence_count: node.evidence_count,
         runbook_artifact_count: node.runbook_artifact_count || 0,
+        commerce_snapshot_count: node.commerce_snapshot_count || 0,
         readiness: nodeReadiness(node),
       }));
       const blocked = readiness.filter((item) => item.readiness.status === "blocked").length;
@@ -1895,6 +2004,7 @@ function createMemoryStorage(options = {}) {
         nodes_total: tenantNodes.length,
         nodes_online: tenantNodes.filter((node) => node.status === "online").length,
         site_events: this.siteEventsSummary(tenantKey, 30),
+        commerce: this.commerceSummary(tenantKey),
         readiness_status: blocked ? "blocked" : warnings || !tenantNodes.length ? "warning" : "ready",
         readiness_summary: {
           ready,
@@ -1946,6 +2056,7 @@ function createSuiteControlStorage() {
     nodes: [],
     evidence: [],
     site_events: [],
+    commerce_snapshots: [],
     dispatches: [],
     artifacts: [],
     google_provider_config: {},
@@ -1960,6 +2071,7 @@ function createSuiteControlStorage() {
         nodes: [],
         evidence: [],
         site_events: [],
+        commerce_snapshots: [],
         dispatches: [],
         artifacts: [],
         google_provider_config: {},
@@ -1973,6 +2085,7 @@ function createSuiteControlStorage() {
     nodes: Array.isArray(initialState.nodes) ? initialState.nodes : [],
     evidence: Array.isArray(initialState.evidence) ? initialState.evidence : [],
     siteEvents: Array.isArray(initialState.site_events) ? initialState.site_events : [],
+    commerceSnapshots: Array.isArray(initialState.commerce_snapshots) ? initialState.commerce_snapshots : [],
     dispatches: Array.isArray(initialState.dispatches) ? initialState.dispatches : [],
     artifacts: Array.isArray(initialState.artifacts) ? initialState.artifacts : [],
     googleProviderConfig: initialState.google_provider_config && typeof initialState.google_provider_config === "object" ? initialState.google_provider_config : {},
@@ -1985,6 +2098,7 @@ function createSuiteControlStorage() {
         nodes: state.nodes,
         evidence: state.evidence.slice(0, 1000),
         site_events: state.siteEvents.slice(0, 5000),
+        commerce_snapshots: state.commerceSnapshots.slice(0, 1000),
         dispatches: state.dispatches.slice(0, 1000),
         artifacts: state.artifacts.slice(0, 1000),
         google_provider_config: state.googleProviderConfig || {},
@@ -2224,6 +2338,33 @@ export function createSuiteControlPlane(options = {}) {
       version: SERVICE_VERSION,
       tenant_id: sanitizeId(req.params.tenantId, "tenant"),
       action_plan: buildAnalyticsActionPlan(summary),
+    });
+  });
+
+  app.post("/api/suite/commerce/snapshot", auth, (req, res) => {
+    const { node, snapshot } = storage.commerceSnapshot(req.body || {});
+    res.json({
+      ok: true,
+      accepted: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "commerce_snapshot_receiver",
+      execution_allowed: false,
+      tenant_id: node.tenant_id,
+      node_id: node.node_id,
+      snapshot_id: snapshot.id,
+      received_at: snapshot.received_at,
+      privacy: snapshot.privacy,
+    });
+  });
+
+  app.get("/api/suite/tenants/:tenantId/commerce/summary", auth, (req, res) => {
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      tenant_id: sanitizeId(req.params.tenantId, "tenant"),
+      summary: storage.commerceSummary(req.params.tenantId),
     });
   });
 

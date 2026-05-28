@@ -25,6 +25,11 @@ GET  /api/suite/tenants/:tenantId/dashboard
 POST /api/suite/nodes/heartbeat
 POST /api/suite/nodes/snapshot
 POST /api/suite/evidence
+POST /api/suite/events/ingest
+GET  /api/suite/tenants/:tenantId/events/summary
+GET  /api/suite/tenants/:tenantId/analytics/action-plan
+POST /api/suite/commerce/snapshot
+GET  /api/suite/tenants/:tenantId/commerce/summary
 GET  /api/suite/runbooks
 GET  /api/suite/customer-intelligence/contract
 POST /api/suite/customer-intelligence/readiness
@@ -48,6 +53,15 @@ GET  /api/suite/nodes/:nodeId/dashboard
 - `smartdesk_gold_track`: Smart Desk Gold, Customer Intelligence, consenso, marketing governato e journey controllati.
 
 `/api/suite/governance/validate` valida il manifest Suite/Core/Codex prima di azioni sensibili. `/api/suite/core/action-mediation` blocca `deploy`, `release`, `publish`, `update`, scritture produzione, pricing, claim, cross-tenant e automazioni Codex se il manifest governance manca o non passa.
+
+`/api/suite/events/ingest`, `/events/summary` e `/analytics/action-plan`
+spostano Analytics WaaS su Render: WordPress raccoglie eventi leggeri, Render
+conserva storico tenant-scoped e genera raccomandazioni read-only.
+
+`/api/suite/commerce/snapshot` e `/commerce/summary` sono il secondo blocco di
+estrazione: WordPress invia solo un riepilogo aggregato di CRM, magazzino,
+ordini, licenze e lead. Render conserva storico e readiness, senza salvare
+record cliente grezzi, catturare pagamenti o modificare stock.
 
 `/api/suite/integrations/google/*` prepara il connettore Google Ads/Analytics
 con flusso semplice per il cliente: click su `Collega Google`, login Google,
