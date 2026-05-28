@@ -13255,40 +13255,41 @@ class DesktopMirrorService {
     const services = Array.isArray(overview.services) ? overview.services : [];
     const suggestions = services.map((service) => {
       const status = String(service.status || "HEALTHY");
-      const suggestion = status === "CONFIG_REQUIRED"
-        ? "Volume presente, ma la redditivita non e leggibile finche non completi costi servizio e costi orari."
-        : status === "LOSS"
-        ? "Verifica prezzo, durata, costo operatore e consumo prodotti: il servizio rischia di lavorare in perdita."
-        : status === "LOW_MARGIN"
-          ? "Margine basso: controlla durata reale e prodotti usati prima di spingere il servizio."
-          : "Servizio sano: puoi mantenerlo o usarlo come riferimento commerciale.";
       const executions = Number(service.executions || 0);
       const averageRevenueCents = Number(service.averageRevenueCents || 0);
       const averageCostCents = Number(service.averageCostCents || 0);
+      const marginPercent = Number(service.marginPercent || 0);
+      const suggestion = status === "CONFIG_REQUIRED"
+        ? "Mancano dati economici: completa prezzo, durata, prodotti o tecnologie usate e costo orario operatore."
+        : status === "LOSS"
+        ? `Questo servizio perde margine: incassa in media ${euro(averageRevenueCents)} e costa circa ${euro(averageCostCents)}.`
+        : status === "LOW_MARGIN"
+          ? `Margine basso: ${executions} esecuzioni nel periodo e margine ${marginPercent}%. Controlla costi e frequenza prima di promuoverlo.`
+          : "Servizio sotto controllo: puoi mantenerlo o usarlo come riferimento per offerte sostenibili.";
       const nextAction = status === "CONFIG_REQUIRED"
-        ? "Completa costi servizi e costo orario operatori prima di usare questa lettura come guida economica."
+        ? "Apri il servizio e completa i campi mancanti. Se usa una tecnologia, collega la tecnologia e indica quante volte viene usata."
         : status === "LOSS"
-        ? "Controlla il dato nel modulo servizi: prezzo, durata reale e consumo prodotto."
+        ? "Apri questo servizio: controlla prezzo, durata, costo operatore, prodotti e tecnologie collegate. Poi salva e rilegge i margini."
         : status === "LOW_MARGIN"
-          ? "Verifica costi inseriti e valuta se il servizio va spinto o corretto."
-          : "Usalo come servizio benchmark per costruire offerte sostenibili.";
+          ? "Se il costo nasce da una tecnologia con rata o costo mensile, serve più frequenza, prezzo corretto o una promozione mirata."
+          : "Usalo come servizio di riferimento per costruire pacchetti sostenibili.";
       const clearConclusion = status === "CONFIG_REQUIRED"
-        ? "lettura economica non ancora affidabile"
+        ? "mancano dati per leggere il margine"
         : status === "LOSS"
-        ? "stai perdendo soldi"
+        ? "semaforo rosso: servizio in perdita"
         : status === "LOW_MARGIN"
-          ? "margine migliorabile"
-          : "stai guadagnando bene";
+          ? "semaforo giallo: margine basso"
+          : "semaforo verde: margine sano";
       const economicGapCents = status === "LOSS"
         ? Math.abs(Number(service.profitCents || 0))
         : 0;
       const operatingAction = status === "CONFIG_REQUIRED"
-        ? "completa configurazione costi"
+        ? "completa i costi mancanti"
         : status === "LOSS"
-        ? "verifica prezzo, costo e durata nel servizio"
+        ? "correggi prezzo, durata o costi collegati"
         : status === "LOW_MARGIN"
-          ? "controlla costo prodotto e durata reale"
-          : "spingi questo servizio";
+          ? "aumenta frequenza, prezzo o promozione"
+          : "mantieni il servizio";
       return {
         id: service.id,
         name: service.name || "Servizio",
@@ -13299,7 +13300,7 @@ class DesktopMirrorService {
         laborCostCents: Number(service.laborCostCents || 0),
         materialCostCents: Number(service.materialCostCents || 0),
         technologyCostCents: Number(service.technologyCostCents || 0),
-        marginPercent: Number(service.marginPercent || 0),
+        marginPercent,
         averageRevenueCents,
         averageCostCents,
         confidence: service.confidence || overview.meta?.confidence || "",
@@ -13410,13 +13411,13 @@ class DesktopMirrorService {
         ...profitability,
         alerts: [{
           level: "warning",
-          title: "Redditività da configurare: configurazione economica incompleta",
-          body: `La redditivita non e leggibile finche non ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}.`,
+          title: "Completa i costi prima di leggere i margini",
+          body: `Mancano costi nei servizi o negli operatori. Completa questi campi e poi rilegge il margine.`,
           serviceId: "profitability-config-block"
         }],
         suggestions: [{
           id: "profitability-config-block",
-          name: "Redditività da configurare",
+          name: "Costi da completare",
           executions: Number(profitability.summary?.executions || 0),
           revenueCents: Number(profitability.summary?.revenueCents || 0),
           costCents: Number(profitability.summary?.costCents || 0),
@@ -13430,11 +13431,11 @@ class DesktopMirrorService {
           confidence: "bassa",
           sourceFlags: ["config_required"],
           economicGapCents: 0,
-          clearConclusion: "lettura economica non ancora affidabile",
-          operatingAction: "completa configurazione costi",
-          nextAction: `${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost)} prima di usare questa lettura come guida economica.`,
+          clearConclusion: "semaforo giallo: mancano costi",
+          operatingAction: "completa i costi mancanti",
+          nextAction: `${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost)}. Apri il campo indicato, inserisci il costo e salva.`,
           status: "CONFIG_REQUIRED",
-          suggestion: "La redditivita resta prudente finche la configurazione economica non e completa."
+          suggestion: "Il margine diventa leggibile solo quando prezzo, durata, prodotti/tecnologie e costo operatore sono completi."
         }]
       };
       if (this.getRuntimeLanguage(session) !== "en") return payload;
