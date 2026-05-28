@@ -6937,8 +6937,25 @@ class DesktopMirrorService {
     const totalCostCents = assertRange(payload.totalCostCents || 0, "Costo totale tecnologia", { min: 0, max: 100000000 });
     const durationMonths = assertRange(payload.durationMonths || 0, "Durata ammortamento tecnologia", { min: 0, max: 600 });
     const estimatedMonthlyUses = assertRange(payload.estimatedMonthlyUses || 0, "Utilizzi mensili tecnologia", { min: 0, max: 1000000 });
-    const monthlyCostCents = durationMonths > 0 ? Math.round(totalCostCents / durationMonths) : assertRange(payload.monthlyCostCents || 0, "Costo mensile tecnologia", { min: 0, max: 100000000 });
+    const createdAt = payload.createdAt || nowIso();
+    const fallbackStartDate = String(createdAt || nowIso()).slice(0, 10);
+    const rawInstallmentStartDate = cleanText(payload.installmentStartDate || payload.financingStartDate || payload.purchaseDate || fallbackStartDate, fallbackStartDate, 20);
+    const installmentStartDate = /^\d{4}-\d{2}-\d{2}$/.test(rawInstallmentStartDate) ? rawInstallmentStartDate : fallbackStartDate;
+    const installmentDate = new Date(`${installmentStartDate}T00:00:00.000Z`);
+    const now = new Date();
+    const elapsedInstallmentMonths = Number.isNaN(installmentDate.getTime())
+      ? 0
+      : Math.max(0, ((now.getUTCFullYear() - installmentDate.getUTCFullYear()) * 12) + now.getUTCMonth() - installmentDate.getUTCMonth());
+    const remainingInstallmentMonths = durationMonths > 0 ? Math.max(0, durationMonths - elapsedInstallmentMonths) : 0;
+    const baseMonthlyCostCents = durationMonths > 0 ? Math.round(totalCostCents / durationMonths) : assertRange(payload.monthlyCostCents || 0, "Costo mensile tecnologia", { min: 0, max: 100000000 });
+    const monthlyCostCents = durationMonths > 0 ? (remainingInstallmentMonths > 0 ? baseMonthlyCostCents : 0) : baseMonthlyCostCents;
     const costPerUseCents = estimatedMonthlyUses > 0 ? Math.round(monthlyCostCents / estimatedMonthlyUses) : assertRange(payload.costPerUseCents || 0, "Costo uso tecnologia", { min: 0, max: 100000000 });
+    const installmentEndDate = (() => {
+      if (!durationMonths || Number.isNaN(installmentDate.getTime())) return "";
+      const end = new Date(installmentDate);
+      end.setUTCMonth(end.getUTCMonth() + durationMonths);
+      return end.toISOString().slice(0, 10);
+    })();
     const entity = {
       id: payload.id || makeId("resource"),
       idempotencyKey: idempotencyKey(payload),
@@ -6948,12 +6965,17 @@ class DesktopMirrorService {
       type: cleanText(payload.type || "room", "room", 60),
       totalCostCents,
       durationMonths,
+      installmentStartDate,
+      installmentEndDate,
+      elapsedInstallmentMonths,
+      remainingInstallmentMonths,
+      baseMonthlyCostCents,
       estimatedMonthlyUses,
       monthlyCostCents,
       costPerUseCents,
       active: payload.active !== false,
       updatedAt: nowIso(),
-      createdAt: payload.createdAt || nowIso()
+      createdAt
     };
     if (!payload.id) {
       this.resourcesRepository.create(entity);
