@@ -12644,14 +12644,19 @@ class DesktopMirrorService {
           id: `gold-engine-${item.domain}-${item.entityId}`,
           level: "warning",
           area: item.domain,
-          conclusion: "Configurazione economica incompleta",
-          reason: "Il centro ha segnali operativi reali, ma questa lettura non va usata come giudizio sul business finché costi servizi e costi orari non sono completi.",
+          conclusion: "Completa i costi prima di leggere i margini",
+          reason: "Il centro sta lavorando, ma senza costi completi Gold non può dirti se un servizio conviene davvero.",
           details: `${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0))}.`,
           impactCents: 0,
           riskCents: 0,
           action: economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0), "action"),
-          button: "Apri servizi",
-          target: "services"
+          button: Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0 && Number(dataQuality.metrics?.servicesMissingCosts || 0) <= 0
+            ? "Completa costi operatori"
+            : "Completa costi servizi",
+          target: "services",
+          targetFocus: Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0 && Number(dataQuality.metrics?.servicesMissingCosts || 0) <= 0
+            ? "staff-costs"
+            : "service-costs"
         };
       }
       return {
@@ -12908,19 +12913,26 @@ class DesktopMirrorService {
             level: profitabilityBlockedForConfig ? "warning" : "info",
             area: "redditività",
             conclusion: profitabilityBlockedForConfig
-              ? "Redditività non ancora leggibile"
-              : "Redditività pronta per lettura operativa",
+              ? "Completa i costi per leggere i margini"
+              : "Margini pronti da controllare",
             reason: profitabilityBlockedForConfig
-              ? "Il centro lavora, ma i margini sarebbero fraintendibili finché costi servizi e costi orari restano incompleti."
-              : "La lettura economica può essere usata come supporto operativo.",
+              ? "Mancano valori economici di base. Senza quei dati Gold rischia di darti una lettura sbagliata."
+              : "Ora puoi usare i numeri per capire quali servizi convengono, quali assorbono tempo e dove correggere.",
             details: profitabilityBlockedForConfig
               ? `${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0))}.`
-              : "Configurazione economica sufficiente per letture Gold più forti.",
+              : "Prezzi, costi e operatori sono abbastanza completi per una prima lettura utile.",
             impactCents: 0,
             riskCents: 0,
-            action: profitabilityBlockedForConfig ? economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0), "action") : "controlla margini e opportunita",
-            button: "Apri servizi",
-            target: "services"
+            action: profitabilityBlockedForConfig
+              ? "Completa prima i campi mancanti, poi torna qui a leggere i margini."
+              : "Apri redditività e controlla quali servizi meritano più attenzione.",
+            button: profitabilityBlockedForConfig
+              ? (Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0 && Number(dataQuality.metrics?.servicesMissingCosts || 0) <= 0 ? "Completa costi operatori" : "Completa costi servizi")
+              : "Apri redditività",
+            target: profitabilityBlockedForConfig ? "services" : "profitability",
+            targetFocus: profitabilityBlockedForConfig
+              ? (Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0 && Number(dataQuality.metrics?.servicesMissingCosts || 0) <= 0 ? "staff-costs" : "service-costs")
+              : ""
           },
           {
             id: "action-marketing",
@@ -12928,33 +12940,40 @@ class DesktopMirrorService {
             area: "marketing",
             conclusion: marketing.suggestions?.length
               ? `${marketing.suggestions.length} clienti da leggere con priorità`
-              : "Marketing prudente: nessun contatto promosso oggi",
+              : "Nessun cliente da contattare oggi",
             reason: marketing.suggestions?.length
-              ? "Parti dai clienti più urgenti e prepara messaggi mirati."
-              : "Con le regole attuali Gold non ha trovato recall abbastanza sicuri da promuovere oggi.",
+              ? "Parti dai clienti più urgenti: il sistema ti prepara il lavoro, ma sei tu a confermare il messaggio."
+              : "Gold non forza messaggi quando mancano consenso, storico utile o segnali abbastanza chiari.",
             details: marketing.suggestions?.length
-              ? "Gold ordina recall, rischio operativo e riferimenti economici reali già presenti prima di far partire il messaggio."
-              : "Questo non significa che il marketing non funzioni: oggi mancano contatti utili o segnali abbastanza solidi per spingere un’azione.",
+              ? "Apri la lista, controlla il motivo del recall e usa il messaggio solo se ti torna."
+              : "Non è un errore: oggi è meglio non spingere contatti deboli. Controlla consensi e storico se vuoi aumentare la qualità dei recall.",
             impactCents: 0,
             riskCents: 0,
-            action: marketing.suggestions?.length ? "lavora la lista recall" : "rivedi contatti, consensi e storico",
-            button: "Genera azioni",
-            target: "autopilot"
+            action: marketing.suggestions?.length ? "Apri i recall, approva solo i messaggi utili e segna quelli fatti." : "Controlla che i clienti abbiano telefono, consenso e storico visite.",
+            button: marketing.suggestions?.length ? "Prepara messaggi" : "Controlla clienti e consensi",
+            target: marketing.suggestions?.length ? "autopilot" : "clients"
           },
           {
             id: "action-data",
             level: dataQuality.status === "basso" ? "warning" : "info",
             area: "qualità dati",
-            conclusion: `Qualità dati ${dataQuality.score}%`,
-            reason: dataQuality.status === "basso" ? "Correggi i dati che bloccano letture affidabili." : "Mantieni puliti cassa, clienti e servizi.",
+            conclusion: dataQuality.status === "basso" ? "Dati da sistemare" : `Dati ordinati ${dataQuality.score}%`,
+            reason: dataQuality.status === "basso" ? "Alcuni dati impediscono a Gold di leggere bene il centro." : "I dati principali sono leggibili. Tieni puliti clienti, cassa e servizi.",
             details: profitabilityBlockedForConfig
-              ? `${Number(dataQuality.metrics?.servicesMissingCosts || 0)} servizi senza costi configurati`
-              : dataQuality.alerts?.[0] || "Dati sufficienti per lettura operativa.",
+              ? `${economicConfigGapText(Number(dataQuality.metrics?.servicesMissingCosts || 0), Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0))}.`
+              : dataQuality.alerts?.[0] || "Non ci sono blocchi evidenti sui dati principali.",
             impactCents: 0,
             riskCents: 0,
-            action: "correggi dati sporchi quando rallentano l'analisi",
-            button: "Apri clienti",
-            target: "clients"
+            action: profitabilityBlockedForConfig
+              ? "Completa i costi mancanti: è il primo dato che serve per leggere redditività e margini."
+              : "Apri clienti solo se devi pulire schede, contatti o duplicati.",
+            button: profitabilityBlockedForConfig
+              ? (Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0 && Number(dataQuality.metrics?.servicesMissingCosts || 0) <= 0 ? "Completa costi operatori" : "Completa costi servizi")
+              : "Apri clienti",
+            target: profitabilityBlockedForConfig ? "services" : "clients",
+            targetFocus: profitabilityBlockedForConfig
+              ? (Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0) > 0 && Number(dataQuality.metrics?.servicesMissingCosts || 0) <= 0 ? "staff-costs" : "service-costs")
+              : ""
           }
         ]
       }
