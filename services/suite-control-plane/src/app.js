@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.3-clean-analytics-ready";
+const SERVICE_VERSION = "0.4.4-analytics-action-plan-ready";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -379,6 +379,163 @@ function summarizeSiteEvents(events = [], days = 30) {
       raw_ip_stored: false,
       raw_session_id_stored: false,
     },
+  };
+}
+
+function firstBucketKey(bucket = {}) {
+  return Object.keys(bucket || {})[0] || "";
+}
+
+function buildAnalyticsActionPlan(summary = {}) {
+  const eventTypes = summary.by_event_type || {};
+  const clickIntel = summary.click_intelligence || {};
+  const topPath = firstBucketKey(summary.by_path);
+  const topSource = firstBucketKey(summary.by_referrer) || firstBucketKey(summary.by_utm_source) || "non chiara";
+  const pageViews = Number(summary.page_views || 0);
+  const ctaClicks = Number(eventTypes.cta_click || 0);
+  const formSubmits = Number(eventTypes.form_submit || 0);
+  const scrollEvents = Number(eventTypes.scroll_depth || 0);
+  const activeSeconds = Number(summary.active_seconds_total || 0);
+  const uniqueSessions = Number(summary.unique_sessions || 0);
+  const ctaRate = pageViews > 0 ? roundNumber((ctaClicks / pageViews) * 100, 1) : 0;
+  const formRate = pageViews > 0 ? roundNumber((formSubmits / pageViews) * 100, 1) : 0;
+  const avgActiveSeconds = Number(summary.avg_active_seconds_per_session || 0);
+  const topClickKind = firstBucketKey(clickIntel.by_kind);
+  const topClickSection = firstBucketKey(clickIntel.by_section);
+  const topActivePath = firstBucketKey(clickIntel.active_seconds_by_path);
+  const topScroll = firstBucketKey(clickIntel.scroll_milestones);
+  const actions = [];
+
+  if (pageViews === 0) {
+    actions.push({
+      id: "tracking_no_visits",
+      priority: "alta",
+      area: "tracking",
+      title: "Prima verifica: il sito non sta ancora arrivando a Render",
+      what_happens: "Render non vede visite nel periodo selezionato.",
+      why_it_matters: "Senza visite su Render, la diagnosi non puo distinguere traffico reale, test e problemi della pagina.",
+      do_this: "Genera una visita pubblica non loggata e controlla che WordPress inoltri gli eventi al Control Plane.",
+      check_success: "Render deve mostrare almeno una visita e una pagina nella sintesi eventi.",
+      avoid: "Non giudicare Ads, pagina o checkout finche il tracciamento non e verificato.",
+      evidence: { page_views: pageViews, events_total: Number(summary.events_total || 0) },
+    });
+  }
+
+  if (pageViews > 0 && ctaClicks === 0) {
+    actions.push({
+      id: "no_primary_clicks",
+      priority: "alta",
+      area: "pagina",
+      title: "Le persone arrivano ma non cliccano l'azione principale",
+      what_happens: `La pagina piu vista e ${topPath || "non chiara"}, ma Render non vede click utili.`,
+      why_it_matters: "Se non parte il click verso richiesta, form, carrello o contatto, il traffico resta solo visita.",
+      do_this: "Metti l'azione principale visibile nel primo schermo, usa un testo diretto e riduci le alternative vicine.",
+      check_success: "Il tasso click deve salire almeno sopra il 2-3% sulle pagine piu viste.",
+      avoid: "Non aggiungere altro testo lungo prima di chiarire cosa deve fare il visitatore.",
+      evidence: { page_views: pageViews, cta_clicks: ctaClicks, top_path: topPath },
+    });
+  }
+
+  if (ctaClicks > 0 && formSubmits === 0) {
+    actions.push({
+      id: "clicks_without_leads",
+      priority: "alta",
+      area: "percorso",
+      title: "I click ci sono, ma non diventano richieste",
+      what_happens: `Render vede ${ctaClicks} click, ma nessuna richiesta completata.`,
+      why_it_matters: "Il problema probabile e dopo il click: form, checkout, chiarezza dell'offerta o troppi passaggi.",
+      do_this: "Apri il percorso dal pulsante piu cliccato e fai un test completo fino a richiesta o checkout.",
+      check_success: "Deve comparire almeno un invio form, lead o checkout test partendo dalla stessa pagina.",
+      avoid: "Non aumentare budget Ads finche il passaggio click -> richiesta non e provato.",
+      evidence: { cta_clicks: ctaClicks, form_submits: formSubmits, top_click_kind: topClickKind, top_click_section: topClickSection },
+    });
+  }
+
+  if (pageViews > 20 && avgActiveSeconds > 0 && avgActiveSeconds < 12) {
+    actions.push({
+      id: "low_attention_time",
+      priority: "media",
+      area: "lettura",
+      title: "Le visite durano poco",
+      what_happens: `Tempo attivo medio: ${avgActiveSeconds}s per sessione.`,
+      why_it_matters: "Se il valore e basso, molte persone non leggono abbastanza per capire offerta e prova.",
+      do_this: "Rendi il primo blocco piu concreto: cosa vendi, per chi, beneficio immediato e una prova visiva o numerica.",
+      check_success: "Tempo attivo medio sopra 20s sulle pagine principali e click piu coerenti.",
+      avoid: "Non misurare solo la permanenza grezza: usa tempo attivo, scroll e click insieme.",
+      evidence: { avg_active_seconds_per_session: avgActiveSeconds, active_seconds_total: activeSeconds, top_active_path: topActivePath },
+    });
+  }
+
+  if (pageViews > 20 && scrollEvents === 0) {
+    actions.push({
+      id: "scroll_not_detected",
+      priority: "media",
+      area: "lettura",
+      title: "Manca il segnale di lettura della pagina",
+      what_happens: "Render non vede soglie di scroll nel periodo.",
+      why_it_matters: "Senza scroll non sappiamo se gli utenti leggono o si fermano al primo schermo.",
+      do_this: "Verifica che il tracker Suite invii scroll 25/50/75/100 e poi testa una visita pubblica.",
+      check_success: "La sintesi deve mostrare almeno una soglia scroll per le pagine piu viste.",
+      avoid: "Non concludere che il copy non funziona se prima manca il dato di lettura.",
+      evidence: { scroll_depth_events: scrollEvents, top_scroll: topScroll },
+    });
+  }
+
+  if (formSubmits > 0 && formRate < 3) {
+    actions.push({
+      id: "lead_rate_low",
+      priority: "media",
+      area: "conversione",
+      title: "Le richieste arrivano, ma il tasso e ancora prudente",
+      what_happens: `Tasso richiesta stimato: ${formRate}%.`,
+      why_it_matters: "Il sito non e fermo, ma puo perdere utenti tra promessa, prova e modulo.",
+      do_this: "Crea una landing dedicata alla fonte migliore e testa un solo invito all'azione.",
+      check_success: "Richieste sopra 3% su 30 giorni o su campagna dedicata.",
+      avoid: "Non cambiare dieci sezioni insieme: una modifica alla volta rende il dato leggibile.",
+      evidence: { form_submits: formSubmits, form_rate_pct: formRate, top_source: topSource },
+    });
+  }
+
+  if (!actions.length) {
+    actions.push({
+      id: "monitor_stable",
+      priority: "bassa",
+      area: "monitoraggio",
+      title: "Il percorso e leggibile, ora serve confronto nel tempo",
+      what_happens: "Render vede visite, click e richieste in modo coerente.",
+      why_it_matters: "Quando il tracciamento e stabile, le decisioni possono passare da correzione a ottimizzazione.",
+      do_this: "Mantieni il tracciamento e confronta pagina, fonte e azione ogni 7 giorni.",
+      check_success: "Trend stabile o in crescita su click, richieste e tempo attivo.",
+      avoid: "Non fare grandi redesign se i dati stanno migliorando.",
+      evidence: { page_views: pageViews, cta_rate_pct: ctaRate, form_rate_pct: formRate, unique_sessions: uniqueSessions },
+    });
+  }
+
+  return {
+    schema_version: "suite_analytics_action_plan_v1",
+    generated_at: nowIso(),
+    period_days: Number(summary.period_days || 30),
+    source: "suite_control_plane_render",
+    mode: "read_only_recommendations",
+    headline: actions[0]?.title || "Piano operativo analytics",
+    summary_metrics: {
+      page_views: pageViews,
+      unique_sessions: uniqueSessions,
+      events_total: Number(summary.events_total || 0),
+      cta_clicks: ctaClicks,
+      form_submits: formSubmits,
+      cta_rate_pct: ctaRate,
+      form_rate_pct: formRate,
+      avg_active_seconds_per_session: avgActiveSeconds,
+      top_path: topPath,
+      top_source: topSource,
+    },
+    next_actions: actions.slice(0, 6),
+    rules: [
+      "Render legge eventi aggregati e non modifica pagine, budget, form o checkout.",
+      "Prima si verifica tracking e percorso; poi si decide cosa cambiare.",
+      "Ogni azione richiede conferma owner o operatore.",
+    ],
   };
 }
 
@@ -2055,6 +2212,18 @@ export function createSuiteControlPlane(options = {}) {
       version: SERVICE_VERSION,
       tenant_id: sanitizeId(req.params.tenantId, "tenant"),
       summary: storage.siteEventsSummary(req.params.tenantId, days),
+    });
+  });
+
+  app.get("/api/suite/tenants/:tenantId/analytics/action-plan", auth, (req, res) => {
+    const days = Math.max(1, Math.min(90, Number(req.query.days || 30)));
+    const summary = storage.siteEventsSummary(req.params.tenantId, days);
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      tenant_id: sanitizeId(req.params.tenantId, "tenant"),
+      action_plan: buildAnalyticsActionPlan(summary),
     });
   });
 

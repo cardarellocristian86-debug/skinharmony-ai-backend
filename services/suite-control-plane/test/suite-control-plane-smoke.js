@@ -233,6 +233,16 @@ try {
   assert.equal(eventSummary.body.summary.click_intelligence.scroll_milestones["/skinharmony-smart-desk-2/ | 75%"], 1);
   assert.equal(eventSummary.body.summary.click_intelligence.active_seconds_by_path["/skinharmony-smart-desk-2/"], 10);
 
+  const actionPlan = await request("/api/suite/tenants/tenant_demo/analytics/action-plan?days=30", { headers });
+  assert.equal(actionPlan.response.status, 200);
+  assert.equal(actionPlan.body.action_plan.schema_version, "suite_analytics_action_plan_v1");
+  assert.equal(actionPlan.body.action_plan.source, "suite_control_plane_render");
+  assert.equal(actionPlan.body.action_plan.mode, "read_only_recommendations");
+  assert.equal(actionPlan.body.action_plan.summary_metrics.cta_clicks, 1);
+  assert.ok(actionPlan.body.action_plan.next_actions.some((item) => item.id === "clicks_without_leads"));
+  assert.ok(actionPlan.body.action_plan.next_actions.every((item) => item.do_this));
+  assert.ok(actionPlan.body.action_plan.rules.some((rule) => rule.includes("non modifica")));
+
   const controlPlaneDashboard = await request("/api/suite/control-plane/dashboard", { headers });
   assert.equal(controlPlaneDashboard.response.status, 200);
   assert.equal(controlPlaneDashboard.body.dashboard.execution_allowed, false);
