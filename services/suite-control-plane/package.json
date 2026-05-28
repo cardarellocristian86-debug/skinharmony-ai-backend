@@ -1,6 +1,6 @@
 {
   "name": "@skinharmony/suite-control-plane",
-  "version": "0.4.2-event-spine-ready",
+  "version": "0.4.3-clean-analytics-ready",
   "private": true,
   "type": "module",
   "scripts": {

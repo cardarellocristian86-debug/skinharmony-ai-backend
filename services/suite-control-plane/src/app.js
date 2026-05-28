@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.2-event-spine-ready";
+const SERVICE_VERSION = "0.4.3-clean-analytics-ready";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -249,7 +249,7 @@ function summarizeEvidence(events = []) {
 
 function sanitizeSiteEvent(payload = {}) {
   const eventType = sanitizeId(payload.event_type || "page_view", "event").slice(0, 60);
-  const allowed = new Set(["page_view", "cta_click", "form_submit", "engaged_visit"]);
+  const allowed = new Set(["page_view", "cta_click", "form_submit", "engaged_visit", "scroll_depth", "active_time_ping"]);
   return {
     id: `site_event_${crypto.randomUUID()}`,
     received_at: nowIso(),
@@ -261,6 +261,8 @@ function sanitizeSiteEvent(payload = {}) {
     site_url: normalizeBaseUrl(payload.site_url || ""),
     event_type: allowed.has(eventType) ? eventType : "page_view",
     event_label: String(payload.event_label || "none").replace(/\s+/g, " ").trim().slice(0, 100) || "none",
+    event_section: sanitizeId(payload.event_section || "body", "body").slice(0, 100),
+    click_kind: sanitizeId(payload.click_kind || "altro", "altro").slice(0, 60),
     target_url: String(payload.target_url || "none").replace(/\s+/g, " ").trim().slice(0, 180) || "none",
     session_hash: String(payload.session_hash || "").replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 80),
     path: String(payload.path || "home").replace(/[^\w./:-]/g, "_").slice(0, 180) || "home",
@@ -308,9 +310,16 @@ function summarizeSiteEvents(events = [], days = 30) {
   const byUtmSource = {};
   const byTarget = {};
   const byLabel = {};
+  const byClickKind = {};
+  const byClickSection = {};
+  const byClickDetail = {};
+  const bySourcePathClick = {};
+  const byScrollMilestone = {};
+  const activeSecondsByPath = {};
   const daily = {};
   const sessions = new Set();
   let engaged = 0;
+  let activeSecondsTotal = 0;
 
   for (const event of filtered) {
     incrementBucket(byType, event.event_type);
@@ -319,6 +328,20 @@ function summarizeSiteEvents(events = [], days = 30) {
     incrementBucket(byUtmSource, event.utm_source);
     if (event.target_url && event.target_url !== "none") incrementBucket(byTarget, event.target_url);
     if (event.event_label && event.event_label !== "none") incrementBucket(byLabel, event.event_label);
+    if (event.event_type === "cta_click") {
+      incrementBucket(byClickKind, event.click_kind || "altro");
+      incrementBucket(byClickSection, event.event_section || "body");
+      incrementBucket(byClickDetail, `${event.path} | ${event.event_section || "body"} | ${event.click_kind || "altro"} | ${event.event_label || "none"}`);
+      incrementBucket(bySourcePathClick, `${event.utm_source && event.utm_source !== "none" ? event.utm_source : event.referrer} | ${event.path} | ${event.click_kind || "altro"}`);
+    }
+    if (event.event_type === "scroll_depth") {
+      incrementBucket(byScrollMilestone, `${event.path} | ${event.event_label || `${event.scroll_depth}%`}`);
+    }
+    if (event.event_type === "active_time_ping") {
+      const seconds = Math.max(0, Math.min(60, Number(event.elapsed_seconds || 0)));
+      activeSecondsTotal += seconds;
+      activeSecondsByPath[event.path] = (activeSecondsByPath[event.path] || 0) + seconds;
+    }
     incrementBucket(daily, event.event_day || String(event.received_at || "").slice(0, 10));
     if (event.session_hash) sessions.add(event.session_hash);
     if (event.event_type === "engaged_visit") engaged += 1;
@@ -334,12 +357,22 @@ function summarizeSiteEvents(events = [], days = 30) {
     unique_sessions: sessions.size,
     engaged_visits: engaged,
     engagement_rate_pct: pageViews > 0 ? Math.round((engaged / pageViews) * 1000) / 10 : 0,
+    active_seconds_total: Math.round(activeSecondsTotal),
+    avg_active_seconds_per_session: sessions.size > 0 ? Math.round((activeSecondsTotal / sessions.size) * 10) / 10 : 0,
     by_event_type: topBucket(byType),
     by_path: topBucket(byPath),
     by_referrer: topBucket(byReferrer),
     by_utm_source: topBucket(byUtmSource),
     by_target: topBucket(byTarget),
     by_event_label: topBucket(byLabel),
+    click_intelligence: {
+      by_kind: topBucket(byClickKind),
+      by_section: topBucket(byClickSection),
+      by_detail: topBucket(byClickDetail),
+      by_source_path: topBucket(bySourcePathClick),
+      scroll_milestones: topBucket(byScrollMilestone),
+      active_seconds_by_path: topBucket(activeSecondsByPath),
+    },
     daily: topBucket(daily, 45),
     privacy: {
       aggregate_only: true,

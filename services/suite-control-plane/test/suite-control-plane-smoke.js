@@ -164,6 +164,75 @@ try {
   assert.equal(evidence.response.status, 200);
   assert.match(evidence.body.evidence_id, /^evidence_/);
 
+  const siteClick = await request("/api/suite/events/ingest", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      node_id: "wp_test_node",
+      tenant_id: "tenant_demo",
+      source: "wordpress_site_suite",
+      suite_version: "5.2.82",
+      event_type: "cta_click",
+      event_label: "Richiedi informazioni",
+      event_section: "hero",
+      click_kind: "richiesta",
+      target_url: "https://example.test/contatti",
+      path: "/skinharmony-smart-desk-2/",
+      referrer: "direct",
+      utm_source: "google",
+      session_hash: "session_demo",
+      event_day: "2026-05-28",
+    }),
+  });
+  assert.equal(siteClick.response.status, 200);
+  assert.equal(siteClick.body.event_type, "cta_click");
+
+  const siteScroll = await request("/api/suite/events/ingest", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      node_id: "wp_test_node",
+      tenant_id: "tenant_demo",
+      event_type: "scroll_depth",
+      event_label: "75%",
+      event_section: "page",
+      path: "/skinharmony-smart-desk-2/",
+      scroll_depth: 75,
+      session_hash: "session_demo",
+      event_day: "2026-05-28",
+    }),
+  });
+  assert.equal(siteScroll.response.status, 200);
+  assert.equal(siteScroll.body.event_type, "scroll_depth");
+
+  const siteActiveTime = await request("/api/suite/events/ingest", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      node_id: "wp_test_node",
+      tenant_id: "tenant_demo",
+      event_type: "active_time_ping",
+      event_label: "active_10s",
+      event_section: "page",
+      path: "/skinharmony-smart-desk-2/",
+      elapsed_seconds: 10,
+      session_hash: "session_demo",
+      event_day: "2026-05-28",
+    }),
+  });
+  assert.equal(siteActiveTime.response.status, 200);
+  assert.equal(siteActiveTime.body.event_type, "active_time_ping");
+
+  const eventSummary = await request("/api/suite/tenants/tenant_demo/events/summary?days=30", { headers });
+  assert.equal(eventSummary.response.status, 200);
+  assert.equal(eventSummary.body.summary.by_event_type.cta_click, 1);
+  assert.equal(eventSummary.body.summary.by_event_type.scroll_depth, 1);
+  assert.equal(eventSummary.body.summary.by_event_type.active_time_ping, 1);
+  assert.equal(eventSummary.body.summary.click_intelligence.by_kind.richiesta, 1);
+  assert.equal(eventSummary.body.summary.click_intelligence.by_section.hero, 1);
+  assert.equal(eventSummary.body.summary.click_intelligence.scroll_milestones["/skinharmony-smart-desk-2/ | 75%"], 1);
+  assert.equal(eventSummary.body.summary.click_intelligence.active_seconds_by_path["/skinharmony-smart-desk-2/"], 10);
+
   const controlPlaneDashboard = await request("/api/suite/control-plane/dashboard", { headers });
   assert.equal(controlPlaneDashboard.response.status, 200);
   assert.equal(controlPlaneDashboard.body.dashboard.execution_allowed, false);
