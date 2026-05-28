@@ -6636,6 +6636,16 @@ class DesktopMirrorService {
     const endAt = payload.endAt || addMinutes(startAt, durationMin);
     const centerId = this.getCenterId(session);
     const centerName = this.getCenterName(session);
+    const productSales = Array.isArray(payload.productSales)
+      ? payload.productSales
+        .map((item) => ({
+          itemId: String(item.itemId || ""),
+          name: cleanText(item.name || "", "", 160),
+          quantity: assertRange(item.quantity || 1, "Quantità prodotto appuntamento", { min: 1, max: 100000 }),
+          salePriceCents: assertRange(item.salePriceCents || 0, "Prezzo prodotto appuntamento", { min: 0, max: 100000000 })
+        }))
+        .filter((item) => item.itemId)
+      : [];
     const entity = {
       id: payload.id || makeId("appt"),
       idempotencyKey: idempotencyKey(payload),
@@ -6650,6 +6660,7 @@ class DesktopMirrorService {
       serviceId: String(payload.serviceId || ""),
       serviceIds: Array.isArray(payload.serviceIds) ? payload.serviceIds : (payload.serviceId ? [String(payload.serviceId)] : []),
       serviceName: cleanText(payload.serviceName || payload.service || "", "", 160),
+      productSales,
       resourceId: String(payload.resourceId || ""),
       resourceName: cleanText(payload.resourceName || payload.room || "", "", 120),
       startAt,
@@ -7060,6 +7071,10 @@ class DesktopMirrorService {
       itemId: String(payload.itemId || ""),
       type: cleanText(payload.type || "manual", "manual", 40),
       quantity,
+      paymentId: String(payload.paymentId || ""),
+      appointmentId: String(payload.appointmentId || ""),
+      salePriceCents: assertRange(payload.salePriceCents || 0, "Prezzo movimento", { min: 0, max: 100000000 }),
+      lineTotalCents: assertRange(payload.lineTotalCents || 0, "Totale movimento", { min: 0, max: 100000000 }),
       note: cleanText(payload.note || "", "", 500),
       createdAt: nowIso()
     };
@@ -8422,6 +8437,25 @@ class DesktopMirrorService {
     assertValid(Boolean(payload.clientId || walkInName || payload.appointmentId), "Cliente o appuntamento pagamento obbligatorio");
     const createdAt = payload.createdAt || nowIso();
     assertDateTime(createdAt, "Data pagamento");
+    const serviceLines = Array.isArray(payload.serviceLines)
+      ? payload.serviceLines.map((line) => ({
+        serviceId: String(line.serviceId || ""),
+        name: cleanText(line.name || "", "", 160),
+        listPriceCents: assertRange(line.listPriceCents || 0, "Prezzo listino servizio", { min: 0, max: 100000000 }),
+        salePriceCents: assertRange(line.salePriceCents || 0, "Prezzo servizio incassato", { min: 0, max: 100000000 })
+      })).filter((line) => line.serviceId || line.name)
+      : [];
+    const productSales = Array.isArray(payload.productSales)
+      ? payload.productSales.map((line) => ({
+        itemId: String(line.itemId || ""),
+        name: cleanText(line.name || "", "", 160),
+        quantity: assertRange(line.quantity || 1, "Quantità prodotto venduto", { min: 1, max: 100000 }),
+        salePriceCents: assertRange(line.salePriceCents || 0, "Prezzo prodotto venduto", { min: 0, max: 100000000 })
+      })).filter((line) => line.itemId)
+      : [];
+    productSales.forEach((line) => {
+      assertValid(Boolean(this.findByIdInCenter(this.inventoryRepository, line.itemId, session)), "Prodotto carrello non trovato in magazzino");
+    });
     const payment = {
       id: makeId("pay"),
       idempotencyKey: idempotencyKey(payload),
@@ -8434,9 +8468,23 @@ class DesktopMirrorService {
       method: cleanText(payload.method || "cash", "cash", 40),
       description: cleanText(payload.description || payload.note || "", "", 1000),
       note: cleanText(payload.note || payload.description || "", "", 1000),
+      serviceLines,
+      productSales,
       createdAt
     };
     this.paymentsRepository.create(payment);
+    productSales.forEach((line) => {
+      this.createInventoryMovement({
+        itemId: line.itemId,
+        type: "sale",
+        quantity: line.quantity,
+        paymentId: payment.id,
+        appointmentId: payment.appointmentId,
+        salePriceCents: line.salePriceCents,
+        lineTotalCents: line.salePriceCents * line.quantity,
+        note: `Vendita checkout: ${line.name || line.itemId}`
+      }, session);
+    });
     this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.paymentsRepository));
     this.applyGoldStateEvent("payment_created", { after: payment }, session);
     return payment;
