@@ -19,6 +19,8 @@ const ACTIONS = [
   "open_settings",
   "search_client",
   "create_client",
+  "create_staff",
+  "create_staff_with_weekly_shift",
   "create_appointment",
   "create_shift",
   "create_note",
@@ -47,6 +49,8 @@ const ACTION_PERMISSIONS = {
   filter_appointments: "UI_NAVIGATION",
   filter_clients: "UI_NAVIGATION",
   create_client: "SAFE_ACTIONS",
+  create_staff: "SAFE_ACTIONS",
+  create_staff_with_weekly_shift: "SAFE_ACTIONS",
   create_appointment: "SAFE_ACTIONS",
   create_shift: "SAFE_ACTIONS",
   create_note: "SAFE_ACTIONS",
@@ -101,12 +105,22 @@ const RESPONSE_SCHEMA = {
         clientName: { anyOf: [{ type: "string" }, { type: "null" }] },
         staffId: { anyOf: [{ type: "string" }, { type: "null" }] },
         staffName: { anyOf: [{ type: "string" }, { type: "null" }] },
+        role: { anyOf: [{ type: "string" }, { type: "null" }] },
+        colorTag: { anyOf: [{ type: "string" }, { type: "null" }] },
+        hourlyCostCents: { anyOf: [{ type: "number" }, { type: "null" }] },
+        weeklyShift: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+        weekdays: {
+          anyOf: [
+            { type: "array", items: { type: "number" } },
+            { type: "null" }
+          ]
+        },
         serviceId: { anyOf: [{ type: "string" }, { type: "null" }] },
         serviceName: { anyOf: [{ type: "string" }, { type: "null" }] },
         startTime: { anyOf: [{ type: "string" }, { type: "null" }] },
         endTime: { anyOf: [{ type: "string" }, { type: "null" }] }
       },
-      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "noContact", "walkInName", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note", "time", "durationMin", "clientName", "staffId", "staffName", "serviceId", "serviceName", "startTime", "endTime"]
+      required: ["query", "clientId", "operatorId", "section", "firstName", "lastName", "phone", "noContact", "walkInName", "email", "period", "startDate", "endDate", "date", "view", "status", "title", "note", "time", "durationMin", "clientName", "staffId", "staffName", "role", "colorTag", "hourlyCostCents", "weeklyShift", "weekdays", "serviceId", "serviceName", "startTime", "endTime"]
     },
     requiresConfirmation: { type: "boolean" }
   },
@@ -409,6 +423,14 @@ function buildConfirmationMessage(action, payload = {}, fallback = "Confermi il 
   if (action === "create_shift") {
     const staff = payload.staffName || "operatore";
     return `Ho preparato il turno per ${staff} il ${payload.date || "giorno indicato"} dalle ${payload.startTime || "--"} alle ${payload.endTime || "--"}. Confermi il salvataggio?`;
+  }
+  if (action === "create_staff") {
+    const staff = payload.staffName || "nuovo operatore";
+    return `Ho preparato l'operatore ${staff}. Confermi il salvataggio?`;
+  }
+  if (action === "create_staff_with_weekly_shift") {
+    const staff = payload.staffName || "nuovo operatore";
+    return `Ho preparato l'operatore ${staff} con turno settimanale dalle ${payload.startTime || "--"} alle ${payload.endTime || "--"}. Confermi il salvataggio?`;
   }
   return fallback;
 }
@@ -722,6 +744,39 @@ class AssistantService {
     };
   }
 
+  extractStaffDraft(message) {
+    const raw = String(message || "").trim();
+    const normalized = normalizeText(raw);
+    if (!/(aggiungi|crea|inserisci).*(operatore|operatrice|collaboratore|dipendente|staff)/.test(normalized)) return null;
+
+    const patterns = [
+      /(?:aggiungi|crea|inserisci)\s+(.+?)\s+come\s+(?:operatore|operatrice|collaboratore|dipendente|staff)\b/i,
+      /(?:aggiungi|crea|inserisci)\s+(?:operatore|operatrice|collaboratore|dipendente|staff)\s+(.+?)(?=\s+(?:e|con|dal|dalle|turno|orario)\b|$)/i
+    ];
+    const match = patterns.map((pattern) => raw.match(pattern)).find(Boolean);
+    if (!match) return null;
+
+    const staffName = String(match[1] || "")
+      .replace(/\b(e|con|turno|orario|settimanale|settimana|dal|dalle)\b.*$/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (staffName.length < 2) return null;
+
+    const times = parseShiftTimesFromText(raw);
+    const wantsWeeklyShift = /(turno|orario).*(settimanale|settimana|lunedi|lunedì|venerdi|venerdì|tutti i giorni)|(?:dalle|dal).*(?:alle).*/i.test(raw);
+    return {
+      staffName,
+      role: /parrucchier/i.test(raw) ? "Parrucchiere" : "Operatore",
+      colorTag: "#6db7ff",
+      hourlyCostCents: 0,
+      weeklyShift: wantsWeeklyShift,
+      weekdays: [1, 2, 3, 4, 5],
+      startTime: times[0] || "",
+      endTime: times[1] || "",
+      notes: "Creato da AI Gold dopo conferma operatore."
+    };
+  }
+
   buildSmartPriorityAnswer(context) {
     const plan = String(context.subscriptionPlan || "base").toLowerCase();
     if (plan !== "gold") {
@@ -842,10 +897,6 @@ class AssistantService {
       );
     }
 
-    if (/(come.*operatori|inser.*operatori|aggiung.*operatori|dove.*operatori)/.test(normalized)) {
-      return buildAnswer("Per inserire un operatore vai in Servizi > Operatori. Lì puoi aggiungere nome, colore e costo orario. Se vuoi posso aprire direttamente quella schermata.");
-    }
-
     if (/(report.*dipendent|resa dipendent|report operatore|performance operatore)/.test(normalized) && /(come|dove)/.test(normalized)) {
       return buildAnswer("Il report dipendenti è in Report business > Resa dipendenti. Da lì clicchi il nome dell’operatore e apri il suo report personale. Se vuoi posso aprire i report.");
     }
@@ -897,6 +948,38 @@ class AssistantService {
         ].join("\n"),
         clientDraft
       );
+    }
+
+    const staffDraft = this.extractStaffDraft(message);
+    if (staffDraft) {
+      if (staffDraft.weeklyShift && (!staffDraft.startTime || !staffDraft.endTime)) {
+        return buildAnswer(
+          [
+            `Ho capito che vuoi creare l'operatore ${staffDraft.staffName} con un turno settimanale.`,
+            "Mi manca l'orario completo. Scrivi ad esempio:",
+            `inserisci ${staffDraft.staffName} come operatore e crea turno settimanale dalle 9 alle 17.`
+          ].join("\n"),
+          staffDraft
+        );
+      }
+      if (staffDraft.weeklyShift) {
+        return buildAction(
+          `Ho preparato ${staffDraft.staffName} come operatore e il turno lunedì-venerdì dalle ${staffDraft.startTime} alle ${staffDraft.endTime}. Salvo solo dopo conferma.`,
+          "create_staff_with_weekly_shift",
+          staffDraft,
+          true
+        );
+      }
+      return buildAction(
+        `Ho preparato ${staffDraft.staffName} come operatore. Salvo solo dopo conferma.`,
+        "create_staff",
+        staffDraft,
+        true
+      );
+    }
+
+    if (/(come.*operatori|inser.*operatori|aggiung.*operatori|dove.*operatori)/.test(normalized)) {
+      return buildAnswer("Per inserire un operatore vai in Servizi > Operatori. Lì puoi aggiungere nome, colore e costo orario. Se vuoi posso aprire direttamente quella schermata.");
     }
 
     const appointmentDraft = this.extractAppointmentDraft(message, context, session);
@@ -1051,7 +1134,7 @@ class AssistantService {
       );
     }
 
-    if ((safe.action === "create_appointment" || safe.action === "create_shift" || safe.action === "create_client") && !hasAnyPayloadValue(safe.payload)) {
+    if ((safe.action === "create_appointment" || safe.action === "create_shift" || safe.action === "create_client" || safe.action === "create_staff" || safe.action === "create_staff_with_weekly_shift") && !hasAnyPayloadValue(safe.payload)) {
       return fallback;
     }
 
@@ -1071,6 +1154,23 @@ class AssistantService {
       if (!payload.staffId || !payload.date || !payload.startTime || !payload.endTime) {
         return buildAnswer(
           "Non salvo turni senza operatore, data, ora inizio e ora fine. Scrivi ad esempio: crea turno Anna domani dalle 9 alle 18.",
+          payload
+        );
+      }
+      safe.requiresConfirmation = true;
+    }
+
+    if (safe.action === "create_staff" || safe.action === "create_staff_with_weekly_shift") {
+      const payload = safe.payload || {};
+      if (!payload.staffName) {
+        return buildAnswer(
+          "Non salvo operatori senza nome. Scrivi ad esempio: inserisci Cristian Cardarello come operatore.",
+          payload
+        );
+      }
+      if (safe.action === "create_staff_with_weekly_shift" && (!payload.startTime || !payload.endTime)) {
+        return buildAnswer(
+          "Per creare anche il turno settimanale mi servono ora inizio e ora fine. Scrivi ad esempio: inserisci Cristian come operatore e crea turno settimanale dalle 9 alle 17.",
           payload
         );
       }
@@ -1118,9 +1218,11 @@ class AssistantService {
       "Per create_client richiedi conferma finale quando nome e telefono sono completi, oppure quando l'utente scrive esplicitamente senza telefono/senza contatto.",
       "Per create_appointment richiedi sempre conferma finale e usa solo cliente, operatore e servizio presenti nel contesto.",
       "Per create_shift richiedi sempre conferma finale e usa solo operatori presenti nel contesto.",
+      "Per create_staff e create_staff_with_weekly_shift richiedi sempre conferma finale; non salvare mai senza conferma dell'operatore.",
       "Puoi creare appuntamenti senza clientId solo se payload.walkInName e presente come cliente occasionale.",
       "Non creare appuntamenti senza clientId o walkInName, date e time.",
       "Non creare turni senza staffId, date, startTime ed endTime.",
+      "Non creare operatori senza staffName; per create_staff_with_weekly_shift servono startTime ed endTime.",
       "Se mancano dati obbligatori, non aprire schermate: spiega esattamente cosa manca e proponi un esempio di comando completo.",
       "Se il contesto contiene goldDecisionContext o goldCapabilities, trattali come fonte ufficiale per priorità, blocchi, rischio, confidence, WhatsApp e azioni consentite.",
       "Non duplicare logiche Gold: leggi primaryAction, secondaryActions, blockedActions, canExecute, risk, confidence, EV, NEU e trend se presenti.",
@@ -1162,7 +1264,7 @@ class AssistantService {
       const raw = data?.output_text || data?.output?.[0]?.content?.[0]?.text || "{}";
       const parsed = JSON.parse(raw);
       const sanitized = this.sanitizeResponse(parsed, context, localDecision);
-      if (localDecision.action && ["create_client", "create_appointment", "create_shift"].includes(localDecision.action)) {
+      if (localDecision.action && ["create_client", "create_appointment", "create_shift", "create_staff", "create_staff_with_weekly_shift"].includes(localDecision.action)) {
         const mergedPayload = { ...(localDecision.payload || {}) };
         const normalizedMessage = normalizeText(message);
         const candidateStaffName = String(sanitized.payload?.staffName || "").trim();
