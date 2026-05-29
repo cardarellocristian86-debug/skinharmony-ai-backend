@@ -194,6 +194,31 @@ function selectWarnings(coreliaOutput = {}) {
   return preferred.slice(0, 3);
 }
 
+function validateReply(coreliaOutput = {}, response = {}, coherence = {}) {
+  const reply = String(response.reply || "").trim();
+  const reasons = [];
+  if (reply.length < 24) reasons.push("reply_too_short");
+  if (/collo principale|mossa giusta|situazione da monitorare/i.test(reply) && !String(coreliaOutput.primarySignal || "").trim()) {
+    reasons.push("generic_reply_without_primary_signal");
+  }
+  if (coherence.ok === false) reasons.push("coherence_check_failed");
+  if (!String(coreliaOutput.primaryAction || coreliaOutput.recommendedNextStep || "").trim()) {
+    reasons.push("missing_action_anchor");
+  }
+  const score = Math.max(0, 100 - reasons.length * 28 - (reply.length < 48 ? 8 : 0));
+  return {
+    accepted: reasons.length === 0,
+    score,
+    reasons
+  };
+}
+
+function guardedRepair(coreliaOutput = {}) {
+  const primary = String(coreliaOutput.primarySignal || coreliaOutput.humanSummary || "Ho pochi dati affidabili per una risposta piena.").trim();
+  const action = String(coreliaOutput.primaryAction || coreliaOutput.recommendedNextStep || "verificare i dati prima di agire").trim();
+  return `${primary}. Prima mossa: ${action}. Non eseguo nulla senza conferma operatore.`;
+}
+
 class NyraDialogueAdapter {
   render(coreliaOutput, opts = {}) {
     const tone = determineTone(coreliaOutput);
@@ -213,18 +238,27 @@ class NyraDialogueAdapter {
       warnings
     };
     const coherence = coherenceCheck(coreliaOutput, response);
-    if (!coherence.ok) {
+    const validator = validateReply(coreliaOutput, response, coherence);
+    if (!validator.accepted) {
       return {
         identity: "nyra",
-        reply: String(coreliaOutput.humanSummary || coreliaOutput.primarySignal || "Situazione da monitorare."),
+        reply: guardedRepair(coreliaOutput),
+        reply_source: "guarded_repair",
+        validator,
         tone: tone === "direct" ? "consultative" : tone,
+        replyMode,
         compactSummary: String(coreliaOutput.humanSummary || ""),
         suggestedActions: [coreliaOutput.primaryAction].filter(Boolean),
         warnings,
         coherence
       };
     }
-    return { ...response, coherence };
+    return {
+      ...response,
+      reply_source: "validated",
+      validator,
+      coherence
+    };
   }
 }
 
@@ -232,6 +266,7 @@ module.exports = {
   NyraDialogueAdapter,
   determineTone,
   determineReplyMode,
+  validateReply,
   coherenceCheck,
   nyraGenerateReply
 };
