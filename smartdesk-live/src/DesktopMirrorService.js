@@ -687,6 +687,16 @@ function localizeOperationalReportPayload(report, language = "it") {
   };
 }
 
+function paymentMethodLabel(method = "") {
+  const normalized = String(method || "").toLowerCase();
+  if (["cash", "contanti", "contante"].includes(normalized)) return "Contanti";
+  if (["card", "bancomat", "pos", "carta"].includes(normalized)) return "Carta / POS";
+  if (["stripe", "nexi", "online"].includes(normalized)) return "Pagamento online";
+  if (["bank_transfer", "bonifico"].includes(normalized)) return "Bonifico";
+  if (["mixed", "misto"].includes(normalized)) return "Pagamento misto";
+  return normalized ? normalized.replace(/_/g, " ") : "Altro";
+}
+
 function localizeCenterHealthPayload(health, language = "it") {
   if (!health || language !== "en") return health;
   return {
@@ -3176,6 +3186,8 @@ class DesktopMirrorService {
       topOperators: [],
       topServices: [],
       lowServices: [],
+      topProducts: [],
+      paymentMethods: [],
       topClientsBySpend: [],
       frequentClients: [],
       inactiveClients: [],
@@ -3195,6 +3207,34 @@ class DesktopMirrorService {
     };
     this.logGoldStateEndpoint("report_operational", session, { source: "gold_state", ...validState });
     return result;
+  }
+
+  resolveReportDateRange(options = {}) {
+    const period = String(options.period || "day").toLowerCase();
+    const anchorDate = toDateOnly(options.anchorDate || nowIso());
+    let startDate = String(options.startDate || "");
+    let endDate = String(options.endDate || "");
+    if (startDate || endDate) {
+      startDate = toDateOnly(startDate || endDate || anchorDate);
+      endDate = toDateOnly(endDate || startDate || anchorDate);
+    } else if (period === "week") {
+      const range = getWeekWindow(anchorDate);
+      startDate = range.startDate;
+      endDate = range.endDate;
+    } else if (period === "month") {
+      const range = getMonthWindow(anchorDate);
+      startDate = range.startDate;
+      endDate = range.endDate;
+    } else {
+      startDate = anchorDate;
+      endDate = anchorDate;
+    }
+    if (startDate > endDate) {
+      const swap = startDate;
+      startDate = endDate;
+      endDate = swap;
+    }
+    return { period, anchorDate, startDate, endDate };
   }
 
   buildProfitabilityOverviewFromGoldState(options = {}, session = null) {
@@ -8295,30 +8335,7 @@ class DesktopMirrorService {
   }
 
   getPaymentsSummary(options = {}, session = null) {
-    const mode = String(options.period || "day");
-    const anchorDate = toDateOnly(options.anchorDate || nowIso());
-    let startDate = String(options.startDate || "");
-    let endDate = String(options.endDate || "");
-    if (mode === "custom") {
-      startDate = toDateOnly(startDate || anchorDate);
-      endDate = toDateOnly(endDate || startDate);
-    } else if (mode === "week") {
-      const range = getWeekWindow(anchorDate);
-      startDate = range.startDate;
-      endDate = range.endDate;
-    } else if (mode === "month") {
-      const range = getMonthWindow(anchorDate);
-      startDate = range.startDate;
-      endDate = range.endDate;
-    } else {
-      startDate = anchorDate;
-      endDate = anchorDate;
-    }
-    if (startDate > endDate) {
-      const swap = startDate;
-      startDate = endDate;
-      endDate = swap;
-    }
+    const { period: mode, startDate, endDate } = this.resolveReportDateRange(options);
 
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const clientNames = new Map(clients.map((client) => [
@@ -8720,14 +8737,7 @@ class DesktopMirrorService {
   }
 
   getOperationalReport(options = {}, session = null) {
-    const period = String(options.period || "day");
-    let startDate = toDateOnly(options.startDate || nowIso());
-    let endDate = toDateOnly(options.endDate || startDate);
-    if (startDate > endDate) {
-      const swap = startDate;
-      startDate = endDate;
-      endDate = swap;
-    }
+    const { period, startDate, endDate } = this.resolveReportDateRange(options);
     if (!options.forceRefresh) {
       const stateReport = this.buildOperationalReportFromGoldState({ ...options, period, startDate, endDate }, session);
       if (stateReport) return stateReport;
@@ -8768,8 +8778,37 @@ class DesktopMirrorService {
     const byDay = new Map();
     const byOperator = new Map();
     const byService = new Map();
+    const byProduct = new Map();
+    const byPaymentMethod = new Map();
     const byClientSpend = new Map();
     const byClientVisits = new Map();
+    payments.forEach((payment) => {
+      const method = String(payment.method || "cash").toLowerCase();
+      const methodRow = byPaymentMethod.get(method) || {
+        method,
+        label: paymentMethodLabel(method),
+        count: 0,
+        revenueCents: 0
+      };
+      methodRow.count += 1;
+      methodRow.revenueCents += Number(payment.amountCents || 0);
+      byPaymentMethod.set(method, methodRow);
+
+      (Array.isArray(payment.productSales) ? payment.productSales : []).forEach((line) => {
+        const itemId = String(line.itemId || line.name || "product");
+        const quantity = Number(line.quantity || 0);
+        const revenue = Math.round(Number(line.salePriceCents || 0) * quantity);
+        const productRow = byProduct.get(itemId) || {
+          itemId,
+          name: cleanText(line.name || "Prodotto", "Prodotto", 160),
+          quantity: 0,
+          revenueCents: 0
+        };
+        productRow.quantity += quantity;
+        productRow.revenueCents += revenue;
+        byProduct.set(itemId, productRow);
+      });
+    });
     appointments.forEach((appointment) => {
       const day = toDateOnly(appointment.startAt || appointment.createdAt);
       const revenueCents = revenueForAppointment(appointment);
@@ -8866,6 +8905,11 @@ class DesktopMirrorService {
       topOperators: Array.from(byOperator.values()).sort((a, b) => b.revenueCents - a.revenueCents).slice(0, 8),
       topServices: topServices.slice(0, 8),
       lowServices: topServices.slice().sort((a, b) => a.appointments - b.appointments).slice(0, 5),
+      topProducts: Array.from(byProduct.values())
+        .sort((a, b) => b.revenueCents - a.revenueCents || b.quantity - a.quantity)
+        .slice(0, 8),
+      paymentMethods: Array.from(byPaymentMethod.values())
+        .sort((a, b) => b.revenueCents - a.revenueCents || b.count - a.count),
       topClientsBySpend: Array.from(byClientSpend.values()).sort((a, b) => b.amountCents - a.amountCents).slice(0, 8),
       frequentClients: Array.from(byClientVisits.values()).sort((a, b) => b.visits - a.visits).slice(0, 8),
       inactiveClients,
@@ -9898,7 +9942,10 @@ class DesktopMirrorService {
         actions: []
       };
     }
-    const marketingActions = this.getGoldState(session).marketingActions || this.buildGoldMarketingActionState(session);
+    const validState = this.getValidGoldStateSnapshot("marketing", session);
+    const marketingActions = validState.valid && validState.state?.marketingActions
+      ? validState.state.marketingActions
+      : this.buildGoldMarketingActionState(session);
     const actions = (marketingActions.actions || [])
       .sort((a, b) => {
         const priorityRank = { alta: 3, media: 2, bassa: 1 };

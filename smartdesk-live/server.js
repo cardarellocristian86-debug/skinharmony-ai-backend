@@ -1010,7 +1010,7 @@ app.post("/api/assistant/chat", async (req, res) => {
   }
 });
 
-app.get("/api/reports/operational", requirePlan("silver"), (req, res) => {
+app.get("/api/reports/operational", (req, res) => {
   res.json(service.getOperationalReport({
     period: req.query.period || "day",
     startDate: req.query.startDate || "",
@@ -1019,7 +1019,7 @@ app.get("/api/reports/operational", requirePlan("silver"), (req, res) => {
   }, req.session));
 });
 
-app.get("/api/reports/export", requirePlan("silver"), (req, res) => {
+app.get("/api/reports/export", (req, res) => {
   res.json(service.exportOperationalReport({
     period: req.query.period || "day",
     startDate: req.query.startDate || "",
@@ -1027,11 +1027,11 @@ app.get("/api/reports/export", requirePlan("silver"), (req, res) => {
   }, req.query.format || "pdf", req.session));
 });
 
-app.get("/api/reports/open-exports", requirePlan("silver"), (_req, res) => {
+app.get("/api/reports/open-exports", (_req, res) => {
   res.json(service.openExportsFolder());
 });
 
-app.get("/api/reports/operator/:id", requirePlan("silver"), (req, res) => {
+app.get("/api/reports/operator/:id", (req, res) => {
   try {
     res.json(service.getOperatorReport(req.params.id, {
       period: req.query.period || "month",
@@ -1655,7 +1655,22 @@ app.post("/api/ai-gold/command", requirePlan("gold"), async (req, res) => {
 });
 
 app.get("/api/ai-gold/marketing/autopilot", requirePlan("gold"), (req, res) => {
-  res.json(service.getAiMarketingAutopilot(req.session));
+  sendCoreliaSafe(res, () => ({
+    goldEnabled: true,
+    generatedAt: new Date().toISOString(),
+    actions: [],
+    counters: {},
+    debug: {},
+    summary: {
+      total: 0,
+      pending: 0,
+      approved: 0,
+      done: 0,
+      archived: 0
+    },
+    sourceEndpoint: "/api/ai-gold/marketing/autopilot",
+    fallbackReason: "Marketing Autopilot non disponibile in questo momento."
+  }), () => service.getAiMarketingAutopilot(req.session));
 });
 
 app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async (req, res) => {
