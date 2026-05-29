@@ -7886,7 +7886,8 @@ class DesktopMirrorService {
     const centerId = this.getCenterId(session);
     if (String(centerId || "") !== "center_demo_gold_cockpit") return null;
     if (this.getPlanLevel(session) !== "gold") return null;
-    const state = this.getGoldState(session);
+    const recordId = this.getGoldStateRecordId(centerId);
+    const state = this.goldStateRepository.findById(recordId);
     const business = state?.snapshots?.business || {};
     const profitability = state?.snapshots?.profitability || {};
     const source = String(business.source || profitability.source || state?.meta?.source || "");
