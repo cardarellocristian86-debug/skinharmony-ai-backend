@@ -11367,7 +11367,10 @@ class DesktopMirrorService {
         capabilities
       };
     }
-    const snapshot = this.getBusinessSnapshot(options || {}, session);
+    const snapshotOptions = this.shouldBypassGoldStateForWindow(options || {}) && !options.forceWindow
+      ? {}
+      : (options || {});
+    const snapshot = this.getBusinessSnapshot(snapshotOptions, session);
     const dashboard = snapshot.goldEngine?.dashboard || {};
     const dataQuality = this.getDataQuality(session, { summaryOnly: true });
     const topSignals = (dashboard.items || []).map((item) => this.compactGoldDecisionForSmart(item, {
@@ -13150,10 +13153,26 @@ class DesktopMirrorService {
     const startDate = String(options.startDate || "");
     const endDate = String(options.endDate || "");
     const period = { startDate, endDate };
-    const snapshot = this.getBusinessSnapshot(period, session);
-    const decisionContext = this.getGoldDecisionContext(period, session);
-    const decisionCenter = this.getAiGoldDecisionCenter(period, session);
-    const progressive = this.getProgressiveIntelligenceStatus(session);
+    const snapshotPeriod = (startDate || endDate) && !options.forceWindow ? {} : period;
+    const snapshot = this.getBusinessSnapshot(snapshotPeriod, session);
+    const decisionContext = this.getGoldDecisionContext(snapshotPeriod, session);
+    const decisionCenter = this.getAiGoldDecisionCenter(snapshotPeriod, session);
+    const goldState = this.getGoldState(session);
+    const cachedProgressive = this.getSettings(session).progressiveIntelligenceStatus || null;
+    const progressive = this.shouldUseCachedProgressiveIntelligence(cachedProgressive, goldState)
+      ? { ...cachedProgressive, cached: true, source: "batch_cache" }
+      : {
+          forecastAllowed: false,
+          oracleStatus: { forecastAllowed: false },
+          enabledFeatures: [],
+          blockedFeatures: [{
+            key: "progressive_intelligence_cache",
+            label: "Lettura prudenziale in aggiornamento",
+            reason: "Il cockpit usa lo snapshot Gold corrente e non forza ricalcoli pesanti in apertura."
+          }],
+          activation: { code: "safe_read" },
+          source: "cockpit_lightweight_fallback"
+        };
     const dataQuality = snapshot.dataQuality || {};
     const centerHealth = snapshot.report?.centerHealth || {};
     const profitability = snapshot.profitability || {};
