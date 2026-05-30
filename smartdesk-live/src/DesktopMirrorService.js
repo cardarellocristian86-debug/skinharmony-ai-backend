@@ -11428,7 +11428,8 @@ class DesktopMirrorService {
         suggestedAction: `apri servizi e operatori, poi ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}`,
         explanationShort: `Il centro lavora gia, ma la redditivita resta bloccata finche ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost, "action")}.`,
         explanationLong: `Non e un giudizio negativo sul centro. Volume, pagamenti e storico sono presenti, ma Gold evita letture economiche forti finche la configurazione economica non e completa. ${economicConfigGapText(servicesMissingCosts, operatorsMissingHourlyCost)} per sbloccare redditivita e priorita economiche affidabili.`,
-        target: "profitability",
+        target: "services",
+        targetFocus: operatorsMissingHourlyCost > 0 && servicesMissingCosts <= 0 ? "staff-costs" : "service-costs",
         universalCoreShadow: buildUniversalCoreShadow({
           action: "ACT_NOW",
           band: "media",

@@ -320,10 +320,13 @@
   function routeForDomain(domain, fallback = "/ai-gold") {
     const value = String(domain || "").toLowerCase();
     if (value.includes("marketing") || value.includes("recall") || value.includes("customer")) return "/marketing";
+    if (value.includes("growth")) return "/marketing";
     if (value.includes("client")) return "/clients";
     if (value.includes("agenda") || value.includes("booking") || value.includes("appointment")) return "/appointments";
+    if (value.includes("operation")) return "/appointments";
     if (value.includes("cash") || value.includes("payment") || value.includes("checkout")) return "/cashdesk";
     if (value.includes("profit") || value.includes("margin") || value.includes("revenue")) return "/profitability";
+    if (value.includes("data_quality") || value.includes("quality")) return "/settings";
     if (value.includes("inventory") || value.includes("stock")) return "/inventory";
     if (value.includes("protocol") || value.includes("treatment")) return "/protocols";
     if (value.includes("staff") || value.includes("shift")) return "/shifts";
@@ -332,14 +335,30 @@
     return fallback;
   }
 
-  function routeForGoldAction(action, domain) {
-    const value = String(action || "").toLowerCase();
-    if (value.includes("marketing") || value.includes("recall") || value.includes("message")) return "/marketing";
-    if (value.includes("appointment") || value.includes("booking") || value.includes("agenda")) return "/appointments";
-    if (value.includes("cash") || value.includes("checkout") || value.includes("payment")) return "/cashdesk";
-    if (value.includes("profit") || value.includes("margin")) return "/profitability";
-    if (value.includes("stock") || value.includes("inventory")) return "/inventory";
+  function routeForGoldAction(action, domain, item = {}) {
+    const explicitTarget = normalizeRoute(item.route || item.targetRoute || item.href || item.target || "");
+    if (explicitTarget && explicitTarget !== "/dashboard") return explicitTarget === "/autopilot" ? "/marketing" : explicitTarget;
+    const value = [
+      action,
+      item.action,
+      item.label,
+      item.title,
+      item.suggestedAction,
+      item.explanationShort,
+      item.explanationLong,
+      item.reason,
+      item.button,
+      item.actionLabel
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (/costi|costo|prezzo|durata|servizi|service|operatori|staff|catalogo/.test(value) && /completa|configura|correggi|verifica|apri/.test(value)) return "/services";
+    if (value.includes("marketing") || value.includes("recall") || value.includes("message") || value.includes("messaggio") || value.includes("cliente da")) return "/marketing";
+    if (value.includes("client") || value.includes("telefono") || value.includes("email") || value.includes("consenso") || value.includes("contatto")) return "/clients";
+    if (value.includes("appointment") || value.includes("booking") || value.includes("agenda") || value.includes("appuntamento")) return "/appointments";
+    if (value.includes("cash") || value.includes("checkout") || value.includes("payment") || value.includes("cassa") || value.includes("pagament")) return "/cashdesk";
+    if (value.includes("stock") || value.includes("inventory") || value.includes("magazzino")) return "/inventory";
+    if (value.includes("protocol") || value.includes("trattament")) return "/protocols";
     if (value.includes("report")) return "/reports";
+    if (value.includes("profit") || value.includes("margin") || value.includes("redditiv") || value.includes("margini")) return "/profitability";
     return routeForDomain(domain, "/ai-gold");
   }
 
@@ -507,8 +526,8 @@
     const changeImpact = context?.changeImpactContract || capabilities?.changeImpactContract || null;
     const nextStep = readiness?.next_step || "waiting_for_core";
     const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
-    const primaryRoute = routeForGoldAction(primary?.action, primary?.domain);
-    const actionRoute = routeForGoldAction(primary?.action, primary?.domain);
+    const primaryRoute = routeForGoldAction(primary?.action, primary?.domain, primary || {});
+    const actionRoute = routeForGoldAction(primary?.suggestedAction || primary?.action, primary?.domain, primary || {});
     const explanationRoute = routeForDomain(primary?.domain, "/ai-gold");
 
     const panel = document.createElement("section");
@@ -542,7 +561,7 @@
           <div class="gold-bridge-item-subtitle">Domain: ${primary?.domain || "center"} · risk ${(Number(risk.score || 0)).toFixed(2)}</div>
         </div>
         ${secondary.slice(0, 3).map((item) => `
-          <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain)}" role="button" tabindex="0" aria-label="Apri priorita secondaria">
+          <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain, item)}" role="button" tabindex="0" aria-label="Apri priorita secondaria">
             <div class="gold-bridge-item-title">${item.label || item.domain || "Secondary priority"}</div>
             <div class="gold-bridge-item-subtitle">Domain: ${item.domain || "center"} · score ${(Number(item.score || 0)).toFixed(2)}</div>
           </div>
