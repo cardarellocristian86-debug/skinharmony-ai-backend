@@ -1608,14 +1608,6 @@ app.get("/api/fleet/oracle", requireSuperAdminFleet, (req, res) => {
 });
 
 app.post("/api/ai-gold/ask", requirePlan("gold"), async (req, res) => {
-  if (String(req.session?.role || "").toLowerCase() !== "superadmin") {
-    return res.status(403).json({
-      success: false,
-      code: "superadmin_only",
-      message: "La chat AI Gold è riservata al superadmin.",
-      nextAction: "Usa le priorità, il marketing e i moduli operativi già preparati dal sistema."
-    });
-  }
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: AI temporaneamente limitata, agenda e cassa restano operative"));
   }

@@ -8455,22 +8455,35 @@ class DesktopMirrorService {
     assertValid(Boolean(payload.clientId || walkInName || payload.appointmentId), "Cliente o appuntamento pagamento obbligatorio");
     const createdAt = payload.createdAt || nowIso();
     assertDateTime(createdAt, "Data pagamento");
-    const serviceLines = Array.isArray(payload.serviceLines)
-      ? payload.serviceLines.map((line) => ({
+    const mixedLines = Array.isArray(payload.lines) ? payload.lines : [];
+    const incomingServiceLines = Array.isArray(payload.serviceLines)
+      ? payload.serviceLines
+      : mixedLines.filter((line) => String(line.type || "").toLowerCase() === "service" || line.serviceId);
+    const incomingProductSales = Array.isArray(payload.productSales)
+      ? payload.productSales
+      : mixedLines.filter((line) => String(line.type || "").toLowerCase() === "product" || line.itemId || line.productId);
+    const serviceLines = incomingServiceLines.map((line) => {
+      const service = line.serviceId ? this.findByIdInCenter(this.servicesRepository, line.serviceId, session) : null;
+      const listPriceCents = line.listPriceCents ?? line.priceCents ?? service?.priceCents ?? 0;
+      const salePriceCents = line.salePriceCents ?? line.amountCents ?? listPriceCents;
+      return {
         serviceId: String(line.serviceId || ""),
-        name: cleanText(line.name || "", "", 160),
-        listPriceCents: assertRange(line.listPriceCents || 0, "Prezzo listino servizio", { min: 0, max: 100000000 }),
-        salePriceCents: assertRange(line.salePriceCents || 0, "Prezzo servizio incassato", { min: 0, max: 100000000 })
-      })).filter((line) => line.serviceId || line.name)
-      : [];
-    const productSales = Array.isArray(payload.productSales)
-      ? payload.productSales.map((line) => ({
-        itemId: String(line.itemId || ""),
-        name: cleanText(line.name || "", "", 160),
+        name: cleanText(line.name || line.serviceName || service?.name || "Servizio", "Servizio", 160),
+        listPriceCents: assertRange(listPriceCents || 0, "Prezzo listino servizio", { min: 0, max: 100000000 }),
+        salePriceCents: assertRange(salePriceCents || 0, "Prezzo servizio incassato", { min: 0, max: 100000000 })
+      };
+    }).filter((line) => line.serviceId || line.name);
+    const productSales = incomingProductSales.map((line) => {
+      const itemId = String(line.itemId || line.productId || "");
+      const item = itemId ? this.findByIdInCenter(this.inventoryRepository, itemId, session) : null;
+      const salePriceCents = line.salePriceCents ?? line.priceCents ?? item?.salePriceCents ?? 0;
+      return {
+        itemId,
+        name: cleanText(line.name || line.productName || item?.name || "Prodotto", "Prodotto", 160),
         quantity: assertRange(line.quantity || 1, "Quantità prodotto venduto", { min: 1, max: 100000 }),
-        salePriceCents: assertRange(line.salePriceCents || 0, "Prezzo prodotto venduto", { min: 0, max: 100000000 })
-      })).filter((line) => line.itemId)
-      : [];
+        salePriceCents: assertRange(salePriceCents || 0, "Prezzo prodotto venduto", { min: 0, max: 100000000 })
+      };
+    }).filter((line) => line.itemId);
     productSales.forEach((line) => {
       assertValid(Boolean(this.findByIdInCenter(this.inventoryRepository, line.itemId, session)), "Prodotto carrello non trovato in magazzino");
     });
