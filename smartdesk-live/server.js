@@ -1010,6 +1010,120 @@ app.post("/api/assistant/chat", async (req, res) => {
   }
 });
 
+app.get("/api/assistant/brief", (req, res) => {
+  const settings = service.getPublicSettings(req.session);
+  const dashboard = service.getDashboardStats({ period: "day" }, req.session);
+  res.json({
+    ok: true,
+    title: "Assistente operativo",
+    answer: "Leggo agenda, clienti, incassi, priorita e moduli attivi. Le azioni operative restano da confermare dall'operatore.",
+    centerName: settings.centerName || service.getCenterName(req.session),
+    centerType: settings.centerType || "",
+    language: settings.appLanguage || "it",
+    priority: dashboard?.priority || dashboard?.aiPriority || null,
+    generatedAt: new Date().toISOString()
+  });
+});
+
+app.post("/api/assistant/query", async (req, res) => {
+  try {
+    const question = String(req.body?.question || req.body?.message || "").trim();
+    const response = await assistantService.chat({ ...req.body, message: question, question }, req.session);
+    res.json({
+      ok: true,
+      title: response.title || "Risposta Smart Desk",
+      answer: response.answer || response.message || response.text || "",
+      actions: response.actions || response.suggestedActions || [],
+      raw: response
+    });
+  } catch (error) {
+    res.status(400).json({
+      ok: false,
+      title: "Assistente non disponibile",
+      answer: error instanceof Error ? error.message : "Impossibile usare l'assistente"
+    });
+  }
+});
+
+app.get("/api/center", (req, res) => {
+  const settings = service.getPublicSettings(req.session);
+  res.json({
+    id: service.getCenterId(req.session),
+    name: settings.centerName || service.getCenterName(req.session),
+    businessType: settings.businessModel || "",
+    centerType: settings.centerType || "",
+    email: settings.centerEmail || "",
+    phone: settings.centerPhone || "",
+    address: settings.centerAddress || "",
+    city: settings.centerCity || "",
+    province: settings.centerProvince || "",
+    postalCode: settings.centerPostalCode || "",
+    hours: `${settings.agendaStartHour || "08:00"}-${settings.agendaEndHour || "20:00"}`,
+    devices: [
+      settings.moduleSkinPro ? "Skin Pro" : "",
+      settings.moduleO3System ? "O3 System" : "",
+      settings.moduleTermosauna ? "Termosauna" : "",
+      settings.moduleExternalTech ? "Tecnologie esterne" : ""
+    ].filter(Boolean)
+  });
+});
+
+app.post("/api/center", (req, res) => {
+  const payload = req.body || {};
+  const updates = {
+    centerName: payload.name || payload.centerName,
+    businessModel: payload.businessType || payload.businessModel,
+    centerType: payload.centerType,
+    centerEmail: payload.email || payload.centerEmail,
+    centerPhone: payload.phone || payload.centerPhone,
+    centerAddress: payload.address || payload.centerAddress,
+    centerCity: payload.city || payload.centerCity,
+    centerProvince: payload.province || payload.centerProvince,
+    centerPostalCode: payload.postalCode || payload.centerPostalCode,
+    updatedFrom: "preview_shell_center_adapter"
+  };
+  res.json(service.saveSettings(Object.fromEntries(
+    Object.entries(updates).filter(([, value]) => value !== undefined && value !== "")
+  ), req.session));
+});
+
+app.get("/api/runtime-meta", (req, res) => {
+  const settings = service.getPublicSettings(req.session);
+  const plan = normalizedPlan(req.session);
+  res.json({
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    session: {
+      state: req.session?.accessState || "active",
+      role: req.session?.role || "admin_centro",
+      confirmationMode: "required_for_sensitive_actions",
+      supportMode: Boolean(req.session?.supportMode),
+      note: "Le azioni sensibili richiedono conferma."
+    },
+    subscription: {
+      plan,
+      tier: plan,
+      state: req.session?.paymentStatus || "configured",
+      centerType: settings.centerType || "",
+      activeModules: [
+        settings.enableMarketing,
+        settings.enableTreatments,
+        settings.enableCashdesk,
+        settings.enableProtocolsHub,
+        settings.inventoryBaseEnabled,
+        settings.profitabilityEnabled,
+        settings.operatorReportsEnabled,
+        settings.aiActionsEnabled
+      ].filter(Boolean).length
+    },
+    permissions: {
+      canEditCenter: true,
+      canEditOperationalData: true,
+      canExecuteSensitiveActionsWithoutConfirmation: false
+    }
+  });
+});
+
 app.get("/api/reports/operational", (req, res) => {
   res.json(service.getOperationalReport({
     period: req.query.period || "day",
@@ -1693,6 +1807,34 @@ app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (re
   }
 });
 
+app.get("/api/ai-gold/marketing/autopilot/learning", requirePlan("gold"), (req, res) => {
+  const autopilot = service.getAiMarketingAutopilot(req.session);
+  const actions = Array.isArray(autopilot.actions) ? autopilot.actions : [];
+  res.json({
+    ok: true,
+    status: "ready",
+    learning: {
+      totalActions: actions.length,
+      approved: actions.filter((item) => item.status === "approved").length,
+      done: actions.filter((item) => item.status === "done").length,
+      archived: actions.filter((item) => item.status === "archived").length,
+      lastGeneratedAt: autopilot.generatedAt || autopilot.updatedAt || null
+    },
+    note: "Marketing Autopilot legge dati reali e prepara azioni da approvare; non invia nulla senza conferma operatore."
+  });
+});
+
+app.post("/api/ai-gold/marketing/autopilot/learning/reset", requirePlan("gold"), (req, res) => {
+  const autopilot = service.getAiMarketingAutopilot(req.session);
+  res.json({
+    ok: true,
+    reset: "noop",
+    status: "ready",
+    actionsCount: Array.isArray(autopilot.actions) ? autopilot.actions.length : 0,
+    note: "Reset apprendimento registrato come operazione sicura: le azioni marketing restano in coda e vanno archiviate o completate dall'operatore."
+  });
+});
+
 app.get("/api/ai-gold/whatsapp/status", requirePlan("gold"), (req, res) => {
   res.json(service.getGoldWhatsappStatus(req.session, whatsappService));
 });
@@ -1784,6 +1926,19 @@ app.get("/api/payments", (req, res) => {
   res.json(service.listPayments(req.query.clientId, req.session));
 });
 
+app.get("/api/sales", (req, res) => {
+  res.json({
+    ok: true,
+    items: service.listPayments(req.query.clientId, req.session),
+    summary: service.getPaymentsSummary({
+      period: req.query.period || "day",
+      anchorDate: req.query.anchorDate || "",
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session)
+  });
+});
+
 app.get("/api/payments/summary", (req, res) => {
   res.json(service.getPaymentsSummary({
     period: req.query.period || "day",
@@ -1813,6 +1968,49 @@ app.post("/api/payments", (req, res) => {
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare il pagamento");
   }
+});
+
+app.post("/api/sales", (req, res) => {
+  try {
+    res.status(201).json(service.createPayment(req.body || {}, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile registrare la vendita");
+  }
+});
+
+app.get("/api/history", (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 200));
+  const payments = service.listPayments(req.query.clientId, req.session)
+    .slice(0, limit)
+    .map((item) => ({
+      id: item.id,
+      type: "payment",
+      date: item.date || item.createdAt || "",
+      title: item.description || item.serviceName || "Pagamento",
+      amount: item.amount || item.total || item.amountCents || item.totalCents || 0,
+      clientId: item.clientId || "",
+      source: "payments"
+    }));
+  const appointments = service.listAppointments(req.query.view || "month", req.query.anchorDate || new Date().toISOString(), false, req.session, {
+    status: req.query.status || "",
+    safeMode: isSafeModeActive()
+  })
+    .slice(0, limit)
+    .map((item) => ({
+      id: item.id,
+      type: "appointment",
+      date: item.startAt || item.start || item.startDate || item.date || "",
+      title: item.serviceName || item.title || "Appuntamento",
+      clientId: item.clientId || "",
+      status: item.status || "",
+      source: "appointments"
+    }));
+  res.json({
+    ok: true,
+    items: [...appointments, ...payments]
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+      .slice(0, limit)
+  });
 });
 
 app.post("/api/payments/:id/link", (req, res) => {

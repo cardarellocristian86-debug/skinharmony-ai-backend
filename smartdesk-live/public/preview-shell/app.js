@@ -1482,6 +1482,17 @@ function bindViewEvents() {
     });
   });
 
+  document.querySelectorAll('[data-action="open-settings-section"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      state.currentView = "settings";
+      state.settingsSection = button.dataset.section || "modules";
+      state.selectedAppointmentId = null;
+      state.selectedSlot = null;
+      state.fullScreenAgenda = false;
+      renderView();
+    });
+  });
+
   if (state.currentView === "appointments") {
     bindAgendaViewEvents({
       state,

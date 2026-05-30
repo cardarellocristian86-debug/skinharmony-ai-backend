@@ -2,10 +2,10 @@
 
 const fs = require("fs");
 const path = require("path");
-const { DesktopMirrorService } = require("../render-smartdesk-live/src/DesktopMirrorService");
-const { CoreliaBridge } = require("../render-smartdesk-live/src/corelia/CoreliaBridge");
-const { NyraDialogueAdapter } = require("../render-smartdesk-live/src/nyra/NyraDialogueAdapter");
-const { evaluateRouterVariants } = require("../render-smartdesk-live/src/corelia/CoreliaIntentRouter");
+const { DesktopMirrorService } = require("../src/DesktopMirrorService");
+const { CoreliaBridge } = require("../src/corelia/CoreliaBridge");
+const { NyraDialogueAdapter } = require("../src/nyra/NyraDialogueAdapter");
+const { evaluateRouterVariants } = require("../src/corelia/CoreliaIntentRouter");
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
