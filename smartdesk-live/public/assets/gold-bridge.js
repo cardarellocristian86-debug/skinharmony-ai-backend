@@ -70,6 +70,19 @@
         background: rgba(247,250,253,0.94);
         padding: 14px 16px;
       }
+      .gold-bridge-metric[data-gold-route],
+      .gold-bridge-item[data-gold-route],
+      .enterprise-bridge-card[data-enterprise-card-target] {
+        cursor: pointer;
+        transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+      }
+      .gold-bridge-metric[data-gold-route]:hover,
+      .gold-bridge-item[data-gold-route]:hover,
+      .enterprise-bridge-card[data-enterprise-card-target]:hover {
+        transform: translateY(-1px);
+        border-color: rgba(42,158,196,0.34);
+        box-shadow: 0 14px 28px rgba(31,134,170,0.08);
+      }
       .gold-bridge-label {
         font-size: 11px;
         font-weight: 800;
@@ -291,6 +304,60 @@
     return "Rischio bassa";
   }
 
+  function normalizeRoute(value) {
+    const route = String(value || "").trim();
+    if (!route) return "";
+    return route.startsWith("/") ? route : `/${route}`;
+  }
+
+  function navigateTo(route) {
+    const target = normalizeRoute(route);
+    if (!target || target === window.location.pathname) return;
+    history.pushState({}, "", target);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  function routeForDomain(domain, fallback = "/ai-gold") {
+    const value = String(domain || "").toLowerCase();
+    if (value.includes("marketing") || value.includes("recall") || value.includes("customer")) return "/marketing";
+    if (value.includes("client")) return "/clients";
+    if (value.includes("agenda") || value.includes("booking") || value.includes("appointment")) return "/appointments";
+    if (value.includes("cash") || value.includes("payment") || value.includes("checkout")) return "/cashdesk";
+    if (value.includes("profit") || value.includes("margin") || value.includes("revenue")) return "/profitability";
+    if (value.includes("inventory") || value.includes("stock")) return "/inventory";
+    if (value.includes("protocol") || value.includes("treatment")) return "/protocols";
+    if (value.includes("staff") || value.includes("shift")) return "/shifts";
+    if (value.includes("service") || value.includes("catalog")) return "/services";
+    if (value.includes("report")) return "/reports";
+    return fallback;
+  }
+
+  function routeForGoldAction(action, domain) {
+    const value = String(action || "").toLowerCase();
+    if (value.includes("marketing") || value.includes("recall") || value.includes("message")) return "/marketing";
+    if (value.includes("appointment") || value.includes("booking") || value.includes("agenda")) return "/appointments";
+    if (value.includes("cash") || value.includes("checkout") || value.includes("payment")) return "/cashdesk";
+    if (value.includes("profit") || value.includes("margin")) return "/profitability";
+    if (value.includes("stock") || value.includes("inventory")) return "/inventory";
+    if (value.includes("report")) return "/reports";
+    return routeForDomain(domain, "/ai-gold");
+  }
+
+  function bindBridgeNavigation(panel) {
+    panel.addEventListener("click", (event) => {
+      const target = event.target?.closest?.("[data-gold-route],[data-enterprise-card-target],[data-enterprise-nav]");
+      if (!target) return;
+      navigateTo(target.getAttribute("data-gold-route") || target.getAttribute("data-enterprise-card-target") || target.getAttribute("data-enterprise-nav"));
+    });
+    panel.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const target = event.target?.closest?.("[data-gold-route],[data-enterprise-card-target],[data-enterprise-nav]");
+      if (!target) return;
+      event.preventDefault();
+      navigateTo(target.getAttribute("data-gold-route") || target.getAttribute("data-enterprise-card-target") || target.getAttribute("data-enterprise-nav"));
+    });
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -440,6 +507,9 @@
     const changeImpact = context?.changeImpactContract || capabilities?.changeImpactContract || null;
     const nextStep = readiness?.next_step || "waiting_for_core";
     const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
+    const primaryRoute = routeForGoldAction(primary?.action, primary?.domain);
+    const actionRoute = routeForGoldAction(primary?.action, primary?.domain);
+    const explanationRoute = routeForDomain(primary?.domain, "/ai-gold");
 
     const panel = document.createElement("section");
     panel.id = PANEL_ID;
@@ -453,38 +523,38 @@
         <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
       </div>
       <div class="gold-bridge-grid">
-        <div class="gold-bridge-metric">
+        <div class="gold-bridge-metric" data-gold-route="${primaryRoute}" role="button" tabindex="0" aria-label="Apri modulo collegato alla priorita AI">
           <div class="gold-bridge-label">Today's priority</div>
           <div class="gold-bridge-value">${primary?.label || "Monitor the center"}</div>
         </div>
-        <div class="gold-bridge-metric">
+        <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="Apri AI Gold">
           <div class="gold-bridge-label">Confidence</div>
           <div class="gold-bridge-value">${Math.round(confidence * 100)}%</div>
         </div>
-        <div class="gold-bridge-metric">
+        <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="Apri azione suggerita da AI Gold">
           <div class="gold-bridge-label">Action</div>
           <div class="gold-bridge-value">${primary?.action || "MONITOR"}</div>
         </div>
       </div>
       <div class="gold-bridge-list">
-        <div class="gold-bridge-item">
+        <div class="gold-bridge-item" data-gold-route="${explanationRoute}" role="button" tabindex="0" aria-label="Apri dettaglio operativo collegato">
           <div class="gold-bridge-item-title">${context?.explanationShort || "No explanation available yet."}</div>
           <div class="gold-bridge-item-subtitle">Domain: ${primary?.domain || "center"} · risk ${(Number(risk.score || 0)).toFixed(2)}</div>
         </div>
         ${secondary.slice(0, 3).map((item) => `
-          <div class="gold-bridge-item">
+          <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain)}" role="button" tabindex="0" aria-label="Apri priorita secondaria">
             <div class="gold-bridge-item-title">${item.label || item.domain || "Secondary priority"}</div>
             <div class="gold-bridge-item-subtitle">Domain: ${item.domain || "center"} · score ${(Number(item.score || 0)).toFixed(2)}</div>
           </div>
         `).join("")}
         ${blocked.length ? `
-          <div class="gold-bridge-item">
+          <div class="gold-bridge-item" data-gold-route="/settings" role="button" tabindex="0" aria-label="Apri impostazioni per azioni bloccate">
             <div class="gold-bridge-item-title">Blocked actions</div>
             <div class="gold-bridge-item-subtitle">${blocked.map((item) => escapeHtml(item.label || item.domain || item)).join(" · ")}</div>
           </div>
         ` : ""}
         ${changeImpact?.enabled ? `
-          <div class="gold-bridge-item">
+          <div class="gold-bridge-item" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="Apri AI Gold per effetto domino">
             <div class="gold-bridge-item-title">Effetto domino attivo</div>
             <div class="gold-bridge-item-subtitle">
               Branch ${escapeHtml(changeImpact.coreBranch || "change_impact_orchestration")} ·
@@ -495,7 +565,7 @@
           </div>
         ` : ""}
         ${customerSchema ? `
-          <div class="gold-bridge-item">
+          <div class="gold-bridge-item" data-gold-route="/clients" role="button" tabindex="0" aria-label="Apri clienti collegati al Customer Intelligence Core">
             <div class="gold-bridge-item-title">Customer Intelligence Core</div>
             <div class="gold-bridge-item-subtitle">
               ${customerSchema} · clienti ${Number(localSummary.clients || 0)} · consensi ${Number(readiness?.granted_consent_count ?? localSummary.consents_registered ?? 0)} · invio automatico ${automaticSendAllowed ? "abilitato" : "bloccato"}
@@ -505,6 +575,7 @@
         ` : ""}
       </div>
     `;
+    bindBridgeNavigation(panel);
     return panel;
   }
 
@@ -648,23 +719,24 @@
         <div class="enterprise-bridge-pill">${activeModules} active modules</div>
       </div>
       <div class="enterprise-bridge-grid">
-        <div class="enterprise-bridge-card">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri impostazioni sessione">
           <div class="enterprise-bridge-card-title">Session</div>
           <div class="enterprise-bridge-card-value">${role || "owner"}</div>
           <div class="enterprise-bridge-card-copy">Sensitive actions remain confirmable: ${confirmationMode}.</div>
         </div>
-        <div class="enterprise-bridge-card">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri impostazioni moduli">
           <div class="enterprise-bridge-card-title">Gating</div>
           <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "profitability readable" : "profitability locked"}</div>
           <div class="enterprise-bridge-card-copy">When a module is not active, the UI must open a premium guide instead of leaving an empty state or a blunt error.</div>
         </div>
-        <div class="enterprise-bridge-card">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri prossima azione impostazioni">
           <div class="enterprise-bridge-card-title">Next move</div>
           <div class="enterprise-bridge-card-value">Review modules, session and copy consistency</div>
           <div class="enterprise-bridge-card-copy">If the center cannot act, the view must say where to go next: plan, settings or the correct role.</div>
         </div>
       </div>
     `;
+    bindBridgeNavigation(panel);
     return panel;
   }
 
@@ -692,23 +764,24 @@
         <div class="enterprise-bridge-pill">view ${activePeriod}</div>
       </div>
       <div class="enterprise-bridge-grid">
-        <div class="enterprise-bridge-card">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/reports" role="button" tabindex="0" aria-label="Apri report periodo attivo">
           <div class="enterprise-bridge-card-title">Active period</div>
           <div class="enterprise-bridge-card-value">${activePeriod}</div>
           <div class="enterprise-bridge-card-copy">The active selection must be readable immediately above numbers and lists.</div>
         </div>
-        <div class="enterprise-bridge-card">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/cashdesk" role="button" tabindex="0" aria-label="Apri cassa per verificare dati zero">
           <div class="enterprise-bridge-card-title">If data is zero</div>
           <div class="enterprise-bridge-card-value">it is not silence</div>
           <div class="enterprise-bridge-card-copy">The UI must explain whether activity, checkout or simply volume is missing in the selected period.</div>
         </div>
-        <div class="enterprise-bridge-card">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/appointments" role="button" tabindex="0" aria-label="Apri agenda per azione utile">
           <div class="enterprise-bridge-card-title">Useful action</div>
           <div class="enterprise-bridge-card-value">change view or verify closures</div>
           <div class="enterprise-bridge-card-copy">If the day is empty, try week or month; if everything is empty, check schedule, checkout and service-staff links.</div>
         </div>
       </div>
     `;
+    bindBridgeNavigation(panel);
     return panel;
   }
 
@@ -723,9 +796,9 @@
           { label: "Protocols", href: "/protocols" }
         ],
         cards: [
-          ["Catalog", "Keep price, duration and category aligned."],
-          ["Staff", "If staff is missing the shell must say it in a useful way."],
-          ["Resources", "Technologies and rooms should be read as operational constraints."]
+          ["Catalog", "Keep price, duration and category aligned.", "/services"],
+          ["Staff", "If staff is missing the shell must say it in a useful way.", "/services"],
+          ["Resources", "Technologies and rooms should be read as operational constraints.", "/services"]
         ]
       },
       "/shifts": {
@@ -737,9 +810,9 @@
           { label: "Protocols", href: "/protocols" }
         ],
         cards: [
-          ["Calendar", "First see who works today and where gaps exist."],
-          ["Attendance", "Then confirmations and operational control."],
-          ["Templates", "Finally the center reusable patterns."]
+          ["Calendar", "First see who works today and where gaps exist.", "/shifts"],
+          ["Attendance", "Then confirmations and operational control.", "/shifts"],
+          ["Templates", "Finally the center reusable patterns.", "/shifts"]
         ]
       },
       "/protocols": {
@@ -751,9 +824,9 @@
           { label: "Shifts", href: "/shifts" }
         ],
         cards: [
-          ["Library", "First see what already exists and what is missing."],
-          ["Client", "Then history, sensitivity and area."],
-          ["AI draft", "Only after that come suggestion and operator confirmation."]
+          ["Library", "First see what already exists and what is missing.", "/protocols"],
+          ["Client", "Then history, sensitivity and area.", "/clients"],
+          ["AI draft", "Only after that come suggestion and operator confirmation.", "/ai-gold"]
         ]
       }
     }[route];
@@ -770,8 +843,8 @@
         <div class="enterprise-bridge-pill">enterprise ui</div>
       </div>
       <div class="enterprise-bridge-grid">
-        ${config.cards.map(([title, copy]) => `
-          <div class="enterprise-bridge-card">
+        ${config.cards.map(([title, copy, target]) => `
+          <div class="enterprise-bridge-card" data-enterprise-card-target="${target}" role="button" tabindex="0" aria-label="Apri ${title}">
             <div class="enterprise-bridge-card-title">${title}</div>
             <div class="enterprise-bridge-card-copy">${copy}</div>
           </div>
@@ -783,12 +856,7 @@
         `).join("")}
       </div>
     `;
-    panel.addEventListener("click", (event) => {
-      const href = event.target?.getAttribute?.("data-enterprise-nav");
-      if (!href) return;
-      history.pushState({}, "", href);
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
+    bindBridgeNavigation(panel);
     return panel;
   }
 
