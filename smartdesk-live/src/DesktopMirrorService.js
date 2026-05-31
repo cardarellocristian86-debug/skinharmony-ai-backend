@@ -1946,7 +1946,7 @@ function getTrialPaymentConfig() {
     configured: Boolean(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL),
     paymentUrl: String(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL || ""),
     label: "Pagamento con carta Nexi",
-    note: "Dopo la prova l'attivazione passa da pagamento con carta Nexi."
+    note: "Dopo la prova puoi attivare Base o Silver con carta Nexi. Gold resta in attivazione guidata."
   };
 }
 
@@ -5665,6 +5665,7 @@ class DesktopMirrorService {
   getTrialPublicConfig() {
     return {
       trialDays: DEFAULT_TRIAL_DAYS,
+      trialPlan: "silver",
       emailVerificationEnabled: isTrialEmailVerificationConfigured(),
       verificationWindowMinutes: DEFAULT_TRIAL_VERIFICATION_MINUTES,
       payment: getTrialPaymentConfig()
@@ -6314,6 +6315,7 @@ class DesktopMirrorService {
       contactEmail,
       contactPhone,
       businessModel,
+      subscriptionPlan: "silver",
       planType: "trial",
       trialDays,
       trialStartsAt: verificationRequestedAt,
@@ -6328,8 +6330,8 @@ class DesktopMirrorService {
     return {
       success: true,
       message: verificationEnabled
-        ? `Ti abbiamo inviato un codice email. Dopo la verifica, la prova gratuita durerà ${trialDays} giorni.`
-        : `Prova gratuita attivata per ${trialDays} giorni`,
+        ? `Ti abbiamo inviato un codice email. Dopo la verifica, la prova gratuita Silver durerà ${trialDays} giorni.`
+        : `Prova gratuita Silver attivata per ${trialDays} giorni`,
       credentials: {
         username: chosenUsername
       },
