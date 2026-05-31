@@ -14,4 +14,7 @@ export type NyraTextChatOutput = {
   risk: "low" | "medium" | "high";
   memoryUpdated: boolean;
   source: "command" | "nyra_core" | "text-branch-command" | "text-fallback" | "rich-core";
+  route?: unknown;
+  ui?: unknown;
+  core2Pipeline?: unknown;
 };

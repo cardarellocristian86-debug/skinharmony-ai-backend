@@ -92,6 +92,7 @@ export async function runNyraTextChatTurn(text: string, sessionId = "nyra-text-c
   });
 
   return {
+    ...(result as any),
     content: result.content,
     confidence: result.confidence,
     risk: result.risk,

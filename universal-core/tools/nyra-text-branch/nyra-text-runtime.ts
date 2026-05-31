@@ -8,6 +8,7 @@ import {
 } from "./nyra-text-sidecar-memory.ts";
 import { coerceRichPipelineToTextOutput, forceTextOnly } from "./nyra-text-output-guard.ts";
 import { runTextFallbackBrain } from "./nyra-text-fallback-brain.ts";
+import { buildNyraCore2RenderPipeline } from "../nyra-core2-pipeline.ts";
 import { runLocalTextOverride } from "./nyra-text-local-overrides.ts";
 import { routeTextDomain, type NyraTextRoute } from "./nyra-text-domain-router.ts";
 import { runBranchBridge } from "./nyra-text-branch-bridge.ts";
@@ -113,6 +114,11 @@ export async function runNyraTextBranch(partial: {
     memoryUpdated: boolean;
     sidecarMemory: Awaited<ReturnType<typeof readSidecarMemory>>;
   }): Promise<NyraTextOutput> {
+    const core2Pipeline = buildNyraCore2RenderPipeline({
+      text: input.text,
+      routePrimary: params.route.primary,
+    });
+    const coreNote = `Core2 ${core2Pipeline.winner.control_level} · V1 ${core2Pipeline.stages.v1.control_level} · V2 ${core2Pipeline.stages.v2.control_level} · V7 ${core2Pipeline.stages.v7.path_label}`;
     const routedOutput: NyraTextOutput = {
       ...params.output,
       route: params.output.route ?? {
@@ -124,8 +130,26 @@ export async function runNyraTextBranch(partial: {
         isolateFromPreviousContext: params.route.isolateFromPreviousContext,
         reason: params.route.reason,
       },
+      ui: {
+        ...(params.output.ui ?? {}),
+        badges: [...(params.output.ui?.badges ?? []), "core2-v1-v2-v7"],
+        notes: [
+          ...(params.output.ui?.notes ?? []),
+          coreNote,
+          core2Pipeline.winner.explanation,
+        ],
+        warning: [
+          ...(params.output.ui?.warning ?? []),
+          ...(core2Pipeline.input.target_environment === "production" ? ["Render/produzione protetti: serve fase separata confermata."] : []),
+        ],
+        action: [
+          ...(params.output.ui?.action ?? []),
+          core2Pipeline.winner.selected_action,
+        ],
+      },
       memoryUpdated: params.output.memoryUpdated || params.memoryUpdated,
-    };
+      core2Pipeline,
+    } as NyraTextOutput & { core2Pipeline: ReturnType<typeof buildNyraCore2RenderPipeline> };
 
     const weighted = applySidecarMemoryWeight({
       input,
