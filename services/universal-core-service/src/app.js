@@ -38,6 +38,7 @@ import {
   buildCustomerIntelligenceContract,
   summarizeCustomerIntelligenceReadiness,
 } from "./customerIntelligenceContract.js";
+import { selectSemanticCandidates } from "./semanticSelection.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -2997,6 +2998,43 @@ export function createUniversalCoreService(options = {}) {
         mode: "core_action_gate",
       },
     });
+  });
+
+  function handleSemanticSelection(req, res) {
+    const body = req.body || {};
+    const candidates = Array.isArray(body.candidates) ? body.candidates : [];
+    if (!candidates.length) {
+      return publicError(res, 400, "semantic_selection_candidates_missing", "Provide candidates array.");
+    }
+    const result = selectSemanticCandidates(candidates, {
+      tenant_id: req.tenantId,
+      target_language: body.target_language || body.locale || "it",
+      adapter: body.adapter || "generic",
+      intent: body.intent || "semantic_selection",
+      limit: Number(body.limit || 200),
+    });
+    audit.append("core_semantic_selection_run", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      adapter: body.adapter || "generic",
+      candidate_count: candidates.length,
+      summary: result.summary,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      schema_version: "semantic_selection_v1",
+      read_only: true,
+      result,
+    });
+  }
+
+  app.post("/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    return handleSemanticSelection(req, res);
+  });
+
+  app.post("/api/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    return handleSemanticSelection(req, res);
   });
 
   app.get("/v1/ai-gateway/schema", (req, res) => {

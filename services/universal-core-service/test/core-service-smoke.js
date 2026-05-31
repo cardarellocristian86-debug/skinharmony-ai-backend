@@ -196,6 +196,111 @@ try {
     action: decision.json.output.recommended_actions[0]?.label,
   });
 
+  const semanticSelection = await api(base, "POST", "/v1/semantic-selection", {
+    tenant_id: "tenant_demo_skinharmony",
+    adapter: "site_suite",
+    target_language: "it",
+    candidates: [
+      {
+        id: "visible-it-operational-reports",
+        source: "Operational reports",
+        semantic_context: {
+          target_language: "it",
+          language_branch: "it",
+          surface: "visible_text",
+          has_english_residue: true,
+        },
+      },
+      {
+        id: "css-card-class",
+        source: "card agenda-shell is-open",
+        semantic_context: {
+          target_language: "it",
+          language_branch: "unknown",
+          surface: "class_name",
+          has_english_residue: true,
+        },
+      },
+      {
+        id: "protected-ai-gold",
+        source: "AI Gold",
+        semantic_context: {
+          target_language: "it",
+          language_branch: "it",
+          surface: "visible_text",
+          has_english_residue: false,
+          protected_term: true,
+        },
+      },
+    ],
+  }, connectorKey);
+  assert(semanticSelection.status === 200 && semanticSelection.json.result?.engine === "semantic_selection_v2_v1_v0", "semantic selection failed");
+  assert(semanticSelection.json.result.summary.keep === 1, "semantic selection should keep visible residue");
+  assert(semanticSelection.json.result.summary.blocked === 1, "semantic selection should block technical noise");
+  assert(semanticSelection.json.result.summary.discard === 1, "semantic selection should discard protected term");
+  mark("semantic_selection", true, semanticSelection.json.result.summary);
+
+  async function assertSemanticSelectionForConnector(name, preset, adapter) {
+    const generatedConnector = await api(base, "POST", "/v1/keys/generate", {
+      tenant_id: "tenant_demo_skinharmony",
+      brand_scope: "skinharmony",
+      key_type: "connector",
+      preset,
+      label: `${name} semantic selection smoke`,
+    });
+    assert(generatedConnector.status === 201 && generatedConnector.json.key, `${name} semantic connector key failed`);
+    const response = await api(base, "POST", "/v1/semantic-selection", {
+      tenant_id: "tenant_demo_skinharmony",
+      adapter,
+      target_language: "it",
+      candidates: [
+        {
+          id: `${name}-visible-operational-reports`,
+          source: "Operational reports",
+          semantic_context: {
+            target_language: "it",
+            language_branch: "it",
+            surface: "visible_text",
+            has_english_residue: true,
+          },
+        },
+        {
+          id: `${name}-technical-token`,
+          source: "sh-card-grid sh-is-open",
+          semantic_context: {
+            target_language: "it",
+            language_branch: "unknown",
+            surface: "class_name",
+            has_english_residue: true,
+          },
+        },
+        {
+          id: `${name}-protected-brand`,
+          source: "SkinHarmony",
+          semantic_context: {
+            target_language: "it",
+            language_branch: "it",
+            surface: "visible_text",
+            protected_term: true,
+          },
+        },
+      ],
+    }, generatedConnector.json.key);
+    assert(response.status === 200 && response.json.result?.engine === "semantic_selection_v2_v1_v0", `${name} semantic selection endpoint failed`);
+    assert(response.json.result.summary.keep === 1, `${name} should keep visible language residue`);
+    assert(response.json.result.summary.blocked === 1, `${name} should block technical noise`);
+    assert(response.json.result.summary.discard === 1, `${name} should discard protected brand term`);
+    mark(`semantic_selection_${name}`, true, {
+      preset,
+      adapter,
+      ...response.json.result.summary,
+    });
+  }
+
+  await assertSemanticSelectionForConnector("suite", "suite_connector", "site_suite");
+  await assertSemanticSelectionForConnector("smartdesk", "smartdesk_connector", "smart_desk");
+  await assertSemanticSelectionForConnector("translator", "wordpress_connector", "skinharmony_core");
+
   const flowcore = await api(base, "POST", "/v1/flowcore/decision", {
     tenant_id: "tenant_demo_skinharmony",
     metrics: {

@@ -83,6 +83,22 @@ class UniversalCoreBridge {
     });
   }
 
+  async semanticSelection(payload = {}) {
+    const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+    return this.request("POST", "/v1/semantic-selection", {
+      tenant_id: this.tenantId,
+      brand_scope: this.brandScope,
+      adapter: cleanText(payload.adapter, "smart_desk", 80),
+      target_language: cleanText(payload.target_language || payload.targetLanguage, "it", 12),
+      candidates,
+      context: {
+        source: "smartdesk_live",
+        product: "smartdesk",
+        ...(payload.context || {})
+      }
+    });
+  }
+
   async branchAnalyze(branch, payload = {}) {
     return this.request("POST", `/v1/branches/${encodeURIComponent(branch)}/analyze`, {
       tenant_id: this.tenantId,
