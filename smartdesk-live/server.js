@@ -1665,7 +1665,7 @@ app.get("/api/ai-gold/onboarding/imports", requirePlan("gold"), (req, res) => {
   }
 });
 
-const GOLD_ONBOARDING_SYNC_RECORD_LIMIT = Number(process.env.GOLD_ONBOARDING_SYNC_RECORD_LIMIT || 1200);
+const GOLD_ONBOARDING_SYNC_RECORD_LIMIT = Number(process.env.GOLD_ONBOARDING_SYNC_RECORD_LIMIT || 200);
 
 function countGoldOnboardingRecords(record = {}) {
   const snapshots = record.snapshots || {};
