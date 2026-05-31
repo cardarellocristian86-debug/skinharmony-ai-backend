@@ -3706,15 +3706,19 @@ class DesktopMirrorService {
       reliabilityScore: Number(cashSelection?.reliabilityScore ?? signals.dataReliability ?? business.confidence ?? 0),
       ...decision.primaryAction
     });
+    const resolvedUiReading = (profitabilityConfigBlocked || commercialGuidance.setupRequired)
+      ? { key: "confirm", label: "Risposta da confermare" }
+      : uiReading;
     const payload = {
       goldEnabled: true,
       generatedAt: nowIso(),
       v7,
       summary: {
         totalInsights: manualSections.reduce((sum, section) => sum + section.items.length, 0),
-        uiReadingBand: uiReading.key,
-        uiReadingLabel: uiReading.label,
+        uiReadingBand: resolvedUiReading.key,
+        uiReadingLabel: resolvedUiReading.label,
         conflictIndex: v7.conflictIndex,
+        decisionConfidence: Number(signals.dataReliability ?? business.confidence ?? 0),
         centerHealth,
         modulesConnected: [
           "agenda",
@@ -13120,6 +13124,10 @@ class DesktopMirrorService {
       item.label
     ].filter(Boolean).join(" ").toLowerCase();
     if (rawTarget === "inventory" || rawTarget === "stock" || rawTarget === "magazzino") return { target: "inventory", targetFocus: String(item.targetFocus || "") };
+    if (rawTarget === "clients" || rawTarget === "client") return { target: "clients", targetFocus: item.clientId ? `client:${item.clientId}` : String(item.targetFocus || "") };
+    if ((rawTarget === "profit" || rawTarget === "profitability") && !/manca|mancanti|completa|configura|bloccata|bloccato/.test(text)) {
+      return { target: "profitability", targetFocus: String(item.targetFocus || "") };
+    }
     if (/costi|costo|prezzo|durata|servizi|service|operatori|staff|catalogo/.test(text)
       && /completa|configura|correggi|verifica|apri|manca|mancanti/.test(text)) {
       return {
@@ -13130,7 +13138,6 @@ class DesktopMirrorService {
       };
     }
     if (rawTarget === "autopilot") return { target: "marketing", targetFocus: "autopilot" };
-    if (rawTarget === "client") return { target: "clients", targetFocus: item.clientId ? `client:${item.clientId}` : "" };
     if (rawTarget === "cash") return { target: "cashdesk", targetFocus: "" };
     if (rawTarget === "profit" || rawTarget === "profitability") return { target: "profitability", targetFocus: "" };
     if (rawTarget === "agenda" || rawTarget === "appointments") return { target: "appointments", targetFocus: "" };
