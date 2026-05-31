@@ -330,8 +330,9 @@ function assistantLanguage(context = {}) {
 function localizeAssistantText(message, language) {
   if (language !== "en") return message;
   return String(message || "")
-    .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart reading aligned with the Universal Core Decision Engine.")
-    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Universal Core come motore decisionale:/g, "AI Gold operational reading on the available data, with Universal Core as the decision engine:")
+    .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart Desk reading: local data as evidence, Core/Nyra Render as primary source when available.")
+    .replace(/\bLettura Smart Desk: dati locali come evidenza, Core\/Nyra Render come fonte primaria quando disponibile\./g, "Smart Desk reading: local data as evidence, Core/Nyra Render as primary source when available.")
+    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Core\/Nyra Render come fonte primaria quando risponde:/g, "AI Gold operational reading on available data, with Core/Nyra Render as the primary source when it responds:")
     .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "On the Silver plan I can guide you through modules and reports, but I do not generate AI priorities.")
     .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "On the Base plan the Smart button stays operational, but it does not use AI priorities.")
     .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatic priorities and decision alerts are available on the Gold plan.")
@@ -365,8 +366,8 @@ function localizeAssistantText(message, language) {
     .replace(/\bFiltro l[’']agenda sul periodo richiesto\./g, "Filtering the schedule for the requested period.")
     .replace(/\bApro il form cliente\./g, "Opening the client form.")
     .replace(/\bAlert letti dal gestionale:?/gi, "Alerts read from the management system")
-    .replace(/\bNessuna priorità principale disponibile\./g, "No primary priority available.")
-    .replace(/\bNessuna azione secondaria prioritaria\./g, "No secondary priority action.")
+    .replace(/\bNessuna priorità principale disponibile\./g, "Next action: complete missing data and read the center again.")
+    .replace(/\bNessuna azione secondaria prioritaria\./g, "Check data, cashdesk, agenda and costs before looking for more actions.")
     .replace(/\bNessun blocco critico dal Gold Engine\./g, "No critical block from the Gold Engine.")
     .replace(/\bPosso accompagnarti all'azione, ma ogni esecuzione resta confermata dall'operatore\./g, "I can guide you to the action, but every execution is still confirmed by the operator.")
     .replace(/\bNon eseguo azioni dirette se Gold segnala rischio, frizione o confidence insufficiente\./g, "I do not execute direct actions when Gold signals risk, friction or insufficient confidence.")
@@ -815,12 +816,12 @@ class AssistantService {
     const blocked = Array.isArray(goldContext.blockedActions) ? goldContext.blockedActions : [];
     if (primary || secondary.length || blocked.length) {
       const lines = [
-        "Lettura Smart allineata a Universal Core Decision Engine.",
+        "Lettura Smart Desk: dati locali come evidenza, Core/Nyra Render come fonte primaria quando disponibile.",
         "",
         "Priorità principale:",
         primary
           ? `- ${primary.label || primary.domain}: ${primary.suggestedAction || primary.explanationShort || "azione da valutare"}`
-          : "- Nessuna priorità principale disponibile.",
+          : "- Prossima azione: completa i dati mancanti e rileggi il centro.",
         primary
           ? `  RAP_2 ${Math.round(Number(primary.RAP_2 || primary.priority || 0) * 100)}% · confidence ${Math.round(Number(primary.confidence || 0) * 100)}% · rischio ${Math.round(Number(primary.risk || 0) * 100)}%`
           : "",
@@ -828,7 +829,7 @@ class AssistantService {
         primary?.trend?.trendLabel ? `  Trend: ${primary.trend.trendLabel}` : "",
         "",
         "Azioni consigliate:",
-        ...(secondary.length ? secondary.slice(0, 3).map((item, index) => `${index + 1}. ${item.label || item.domain}: ${item.suggestedAction || item.explanationShort || "monitorare"}`) : ["1. Nessuna azione secondaria prioritaria."]),
+        ...(secondary.length ? secondary.slice(0, 3).map((item, index) => `${index + 1}. ${item.label || item.domain}: ${item.suggestedAction || item.explanationShort || "monitorare"}`) : ["1. Controlla dati, cassa, agenda e costi prima di cercare altre azioni."]),
         "",
         "Blocchi e verifiche:",
         ...(blocked.length ? blocked.slice(0, 3).map((item) => `- ${item.label || item.domain}: ${item.explanationShort || "verificare prima di agire"}`) : ["- Nessun blocco critico dal Gold Engine."]),
@@ -1361,13 +1362,13 @@ class AssistantService {
         : "Stato centro: dato non disponibile nello snapshot.",
       marketingCount
         ? `Marketing: ci sono ${marketingCount} clienti da valutare. Prima priorità: ${firstMarketing?.name || "cliente"} (${firstMarketing?.motive || "richiamo suggerito"}).`
-        : "Marketing: nessun cliente prioritario rilevato ora.",
+        : "Marketing: nessun cliente prioritario forte ora. Controlla consenso, telefono, ultima visita e storico servizi.",
       profitAlerts
         ? `Redditività: ci sono ${profitAlerts} alert. Primo controllo: ${firstAlert?.title || "servizio critico"}.`
-        : "Redditività: nessun alert critico rilevato sui dati configurati.",
+        : "Redditività: nessun alert critico sui dati configurati. Se mancano costi servizi/operatori, completa prima quelli.",
       lastDrop
         ? `Trend mensile: ${lastDrop.month} mostra un calo da controllare rispetto al mese precedente.`
-        : "Trend mensile: nessun calo importante rilevato nel periodo selezionato.",
+        : "Trend mensile: nessun calo forte rilevato. Prossimo controllo: cassa, agenda e continuità clienti.",
       "Non ho eseguito azioni automatiche. Conferma sempre tu eventuali contatti, modifiche o verifiche operative."
     ];
     if (question) {

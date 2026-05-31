@@ -1,7 +1,7 @@
 (function () {
   const SCRIPT_ID = "skinharmony-gold-bridge-style";
   const PANEL_ID = "skinharmony-gold-priority-bridge";
-  const ROUTES = new Set(["/", "/dashboard"]);
+  const ROUTES = new Set(["/", "/dashboard", "/ai-gold"]);
   const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
   const ENTERPRISE_SETTINGS_PANEL_ID = "skinharmony-enterprise-settings-bridge";
   const ENTERPRISE_REPORTS_PANEL_ID = "skinharmony-enterprise-reports-bridge";
@@ -24,6 +24,46 @@
         background: rgba(255,255,255,0.97);
         box-shadow: 0 20px 50px rgba(18,56,77,0.08);
         padding: 20px;
+      }
+      .gold-bridge-source {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: center;
+        margin-bottom: 14px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(79,182,214,0.24);
+        background: linear-gradient(180deg, rgba(239,250,254,0.96) 0%, rgba(255,255,255,0.96) 100%);
+      }
+      .gold-bridge-source-title {
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #1f86aa;
+        margin-bottom: 4px;
+      }
+      .gold-bridge-source-copy {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #4d6877;
+      }
+      .gold-bridge-source-status {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: rgba(50,181,118,0.12);
+        color: #1f7b4d;
+        font-size: 12px;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+      .gold-bridge-source-status.fallback {
+        background: rgba(243,179,54,0.16);
+        color: #8c5a12;
       }
       .gold-bridge-header {
         display: flex;
@@ -423,6 +463,54 @@
     return ROUTES.has(window.location.pathname || "/");
   }
 
+  function cleanDisplayText(value, fallback = "") {
+    const text = String(value || fallback || "").trim();
+    return text || fallback;
+  }
+
+  function sourceStatus(context = {}, capabilities = {}) {
+    const external = context?.externalAi || {};
+    const primary = Boolean(external.primary || context?.summary?.externalPrimary || context?.decisionAuthority === "core_nyra_render_primary");
+    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", "Smart Desk data fallback");
+    return {
+      primary,
+      provider,
+      label: primary ? "Fonte primaria" : "Fallback prudente",
+      title: primary ? "Core/Nyra Render in alto" : "Core/Nyra non pienamente disponibili",
+      copy: primary
+        ? "Smart Desk legge i dati del centro; Core Render decide la priorita; Nyra Render spiega cosa fare. OpenAI rifinisce solo la forma se disponibile."
+        : "Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.",
+      className: primary ? "" : "fallback"
+    };
+  }
+
+  function sanitizeGoldUiText(root = document.getElementById("root")) {
+    if (!root) return;
+    const replacements = new Map([
+      ["Universal Core Decision Engine", "AI Gold - Core/Nyra Render"],
+      ["Universal Core Read-only", "Core Render read-only"],
+      ["Core + Nyra + OpenAI", "AI Gold - Core/Nyra Render"],
+      ["Nessuna priorità urgente", "Cosa manca / cosa controllare"],
+      ["Nessuna priorita urgente", "Cosa manca / cosa controllare"],
+      ["Nessuna priorità principale disponibile.", "Prossima azione: completa i dati mancanti e rileggi il centro."],
+      ["Nessuna azione secondaria prioritaria.", "Controlla dati, cassa, agenda e costi prima di cercare altre azioni."],
+      ["Non ci sono priorità urgenti da mostrare.", "Non ci sono urgenze forti: controlla cosa manca e la prossima azione manuale."],
+      ["Gold continua a leggere il centro e riapparirà solo quando serve un'azione.", "Gold resta attivo: se mancano dati, mostra cosa completare; se i dati sono coerenti, indica la prossima verifica utile."],
+      ["Centro sotto controllo", "Centro letto da Smart Desk"],
+      ["AI priority alerts", "AI Gold - cosa fare ora"]
+    ]);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((node) => {
+      let text = node.nodeValue || "";
+      replacements.forEach((to, from) => {
+        if (text.includes(from)) text = text.split(from).join(to);
+      });
+      node.nodeValue = text;
+    });
+  }
+
   function buildAuthHeaders(base = {}) {
     const token = window.localStorage.getItem("skinharmony-web-token");
     return token
@@ -515,6 +603,8 @@
 
   function buildPanel(context, capabilities, customerIntelligence) {
     const primary = context?.primaryAction || capabilities?.primaryAction || null;
+    const source = sourceStatus(context, capabilities);
+    const summary = context?.summary || {};
     const secondary = Array.isArray(context?.secondaryActions) ? context.secondaryActions : [];
     const blocked = Array.isArray(context?.blockedActions) ? context.blockedActions : [];
     const confidence = Number(context?.confidence ?? capabilities?.confidence ?? 0);
@@ -526,39 +616,49 @@
     const changeImpact = context?.changeImpactContract || capabilities?.changeImpactContract || null;
     const nextStep = readiness?.next_step || "waiting_for_core";
     const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
-    const primaryRoute = routeForGoldAction(primary?.action, primary?.domain, primary || {});
-    const actionRoute = routeForGoldAction(primary?.suggestedAction || primary?.action, primary?.domain, primary || {});
+    const primaryText = cleanDisplayText(primary?.label || primary?.suggestedAction || summary.primaryActionLabel || summary.primaryAction, "Prossima azione: completa i dati mancanti e rileggi il centro");
+    const actionText = cleanDisplayText(primary?.suggestedAction || summary.firstExternalAction || primary?.action, "Controlla dati, cassa, agenda e costi");
+    const explanationText = cleanDisplayText(primary?.explanationShort || context?.explanationShort || summary.title, "Cosa manca: verifica dati economici, costi servizi/operatori, agenda e cassa prima della prossima decisione.");
+    const primaryRoute = routeForGoldAction(primary?.action || primaryText, primary?.domain, primary || {});
+    const actionRoute = routeForGoldAction(primary?.suggestedAction || primary?.action || actionText, primary?.domain, primary || {});
     const explanationRoute = routeForDomain(primary?.domain, "/ai-gold");
 
     const panel = document.createElement("section");
     panel.id = PANEL_ID;
     panel.className = "gold-bridge-panel";
     panel.innerHTML = `
+      <div class="gold-bridge-source">
+        <div>
+          <div class="gold-bridge-source-title">${source.title}</div>
+          <div class="gold-bridge-source-copy">${source.copy}</div>
+        </div>
+        <div class="gold-bridge-source-status ${source.className}">${source.label}</div>
+      </div>
       <div class="gold-bridge-header">
         <div>
-          <div class="gold-bridge-title">AI priority alerts</div>
-          <div class="gold-bridge-subtitle">The management system says what is happening. AI Gold says what to do.</div>
+          <div class="gold-bridge-title">AI Gold - cosa fare ora</div>
+          <div class="gold-bridge-subtitle">Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.</div>
         </div>
         <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
       </div>
       <div class="gold-bridge-grid">
         <div class="gold-bridge-metric" data-gold-route="${primaryRoute}" role="button" tabindex="0" aria-label="Apri modulo collegato alla priorita AI">
-          <div class="gold-bridge-label">Today's priority</div>
-          <div class="gold-bridge-value">${primary?.label || "Monitor the center"}</div>
+          <div class="gold-bridge-label">Prossima azione</div>
+          <div class="gold-bridge-value">${escapeHtml(primaryText)}</div>
         </div>
         <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="Apri AI Gold">
-          <div class="gold-bridge-label">Confidence</div>
-          <div class="gold-bridge-value">${Math.round(confidence * 100)}%</div>
+          <div class="gold-bridge-label">Fonte</div>
+          <div class="gold-bridge-value">${source.primary ? "Core/Nyra Render" : "Fallback dati"}</div>
         </div>
         <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="Apri azione suggerita da AI Gold">
-          <div class="gold-bridge-label">Action</div>
-          <div class="gold-bridge-value">${primary?.action || "MONITOR"}</div>
+          <div class="gold-bridge-label">Cosa controllare</div>
+          <div class="gold-bridge-value">${escapeHtml(actionText)}</div>
         </div>
       </div>
       <div class="gold-bridge-list">
         <div class="gold-bridge-item" data-gold-route="${explanationRoute}" role="button" tabindex="0" aria-label="Apri dettaglio operativo collegato">
-          <div class="gold-bridge-item-title">${context?.explanationShort || "No explanation available yet."}</div>
-          <div class="gold-bridge-item-subtitle">Domain: ${primary?.domain || "center"} · risk ${(Number(risk.score || 0)).toFixed(2)}</div>
+          <div class="gold-bridge-item-title">${escapeHtml(explanationText)}</div>
+          <div class="gold-bridge-item-subtitle">Dominio: ${primary?.domain || "centro"} · rischio ${(Number(risk.score || 0)).toFixed(2)} · provider ${escapeHtml(source.provider)}</div>
         </div>
         ${secondary.slice(0, 3).map((item) => `
           <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain, item)}" role="button" tabindex="0" aria-label="Apri priorita secondaria">
@@ -617,6 +717,7 @@
 
       const anchor = findAnchor();
       if (!anchor) return;
+      sanitizeGoldUiText();
       const panel = buildPanel(context, capabilities, customerIntelligence);
       const existing = document.getElementById(PANEL_ID);
       runWithMutationLock(() => {
@@ -627,6 +728,7 @@
         }
       });
     } catch (_error) {
+      sanitizeGoldUiText();
       if (!shouldRender()) {
         runWithMutationLock(() => removePanel());
       }
@@ -978,6 +1080,7 @@
 
   const observer = new MutationObserver(() => {
     if (mutationLockDepth > 0) return;
+    sanitizeGoldUiText();
     scheduleRender();
   });
 
