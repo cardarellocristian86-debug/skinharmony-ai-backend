@@ -471,11 +471,11 @@
   function sourceStatus(context = {}, capabilities = {}) {
     const external = context?.externalAi || {};
     const primary = Boolean(external.primary || context?.summary?.externalPrimary || context?.decisionAuthority === "core_nyra_render_primary");
-    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", "Smart Desk data fallback");
+    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", "Lettura dati Smart Desk");
     return {
       primary,
       provider,
-      label: primary ? "Fonte primaria" : "Fallback prudente",
+      label: primary ? "Fonte primaria" : "Lettura prudente",
       title: primary ? "Core/Nyra server in alto" : "Core/Nyra server non pienamente disponibili",
       copy: primary
         ? "Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile."
@@ -488,7 +488,9 @@
     if (!root) return;
     const replacements = new Map([
       ["Universal Core Decision Engine", "AI Gold - Core/Nyra server"],
-      ["Universal Core Read-only", "Core server read-only"],
+      ["Universal Core Read-only", "Core server sola lettura"],
+      ["Core server read-only", "Core server sola lettura"],
+      ["Customer Intelligence Core", "Lettura clienti Core"],
       ["Core + Nyra + OpenAI", "AI Gold - Core/Nyra server"],
       ["Core/Nyra Render", "Core/Nyra server"],
       ["Core Render", "Core server"],
@@ -665,13 +667,13 @@
         </div>
         ${secondary.slice(0, 3).map((item) => `
           <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain, item)}" role="button" tabindex="0" aria-label="Apri priorita secondaria">
-            <div class="gold-bridge-item-title">${item.label || item.domain || "Secondary priority"}</div>
-            <div class="gold-bridge-item-subtitle">Domain: ${item.domain || "center"} · score ${(Number(item.score || 0)).toFixed(2)}</div>
+            <div class="gold-bridge-item-title">${item.label || item.domain || "Priorita secondaria"}</div>
+            <div class="gold-bridge-item-subtitle">Dominio: ${item.domain || "centro"} · punteggio ${(Number(item.score || 0)).toFixed(2)}</div>
           </div>
         `).join("")}
         ${blocked.length ? `
           <div class="gold-bridge-item" data-gold-route="/settings" role="button" tabindex="0" aria-label="Apri impostazioni per azioni bloccate">
-            <div class="gold-bridge-item-title">Blocked actions</div>
+            <div class="gold-bridge-item-title">Azioni bloccate</div>
             <div class="gold-bridge-item-subtitle">${blocked.map((item) => escapeHtml(item.label || item.domain || item)).join(" · ")}</div>
           </div>
         ` : ""}
@@ -687,8 +689,8 @@
           </div>
         ` : ""}
         ${customerSchema ? `
-          <div class="gold-bridge-item" data-gold-route="/clients" role="button" tabindex="0" aria-label="Apri clienti collegati al Customer Intelligence Core">
-            <div class="gold-bridge-item-title">Customer Intelligence Core</div>
+          <div class="gold-bridge-item" data-gold-route="/clients" role="button" tabindex="0" aria-label="Apri clienti collegati alla lettura clienti Core">
+            <div class="gold-bridge-item-title">Lettura clienti Core</div>
             <div class="gold-bridge-item-subtitle">
               ${customerSchema} · clienti ${Number(localSummary.clients || 0)} · consensi ${Number(readiness?.granted_consent_count ?? localSummary.consents_registered ?? 0)} · invio automatico ${automaticSendAllowed ? "abilitato" : "bloccato"}
             </div>
@@ -837,26 +839,26 @@
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">Enterprise setup active</div>
-          <div class="enterprise-bridge-subtitle">The shell must explain what is active, what still needs confirmation and which next move makes sense now.</div>
+          <div class="enterprise-bridge-title">Configurazione Enterprise attiva</div>
+          <div class="enterprise-bridge-subtitle">La shell deve spiegare cosa e attivo, cosa richiede conferma e quale prossima mossa ha senso ora.</div>
         </div>
-        <div class="enterprise-bridge-pill">${activeModules} active modules</div>
+        <div class="enterprise-bridge-pill">${activeModules} moduli attivi</div>
       </div>
       <div class="enterprise-bridge-grid">
         <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri impostazioni sessione">
-          <div class="enterprise-bridge-card-title">Session</div>
+          <div class="enterprise-bridge-card-title">Sessione</div>
           <div class="enterprise-bridge-card-value">${role || "owner"}</div>
-          <div class="enterprise-bridge-card-copy">Sensitive actions remain confirmable: ${confirmationMode}.</div>
+          <div class="enterprise-bridge-card-copy">Le azioni sensibili restano confermabili: ${confirmationMode}.</div>
         </div>
         <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri impostazioni moduli">
-          <div class="enterprise-bridge-card-title">Gating</div>
-          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "profitability readable" : "profitability locked"}</div>
-          <div class="enterprise-bridge-card-copy">When a module is not active, the UI must open a premium guide instead of leaving an empty state or a blunt error.</div>
+          <div class="enterprise-bridge-card-title">Regole accesso</div>
+          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "redditivita leggibile" : "redditivita bloccata"}</div>
+          <div class="enterprise-bridge-card-copy">Quando un modulo non e attivo, la UI deve aprire una guida premium invece di lasciare uno stato vuoto o un errore secco.</div>
         </div>
         <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri prossima azione impostazioni">
-          <div class="enterprise-bridge-card-title">Next move</div>
-          <div class="enterprise-bridge-card-value">Review modules, session and copy consistency</div>
-          <div class="enterprise-bridge-card-copy">If the center cannot act, the view must say where to go next: plan, settings or the correct role.</div>
+          <div class="enterprise-bridge-card-title">Prossima mossa</div>
+          <div class="enterprise-bridge-card-value">Controlla moduli, sessione e coerenza testi</div>
+          <div class="enterprise-bridge-card-copy">Se il centro non puo agire, la vista deve indicare il prossimo passo: piano, impostazioni o ruolo corretto.</div>
         </div>
       </div>
     `;
@@ -882,26 +884,26 @@
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">Clearer report reading</div>
-          <div class="enterprise-bridge-subtitle">The selected state must remain visible even with zero data: day, week and month cannot look the same.</div>
+          <div class="enterprise-bridge-title">Lettura report piu chiara</div>
+          <div class="enterprise-bridge-subtitle">Lo stato selezionato deve restare visibile anche con dati a zero: giorno, settimana e mese non possono sembrare uguali.</div>
         </div>
-        <div class="enterprise-bridge-pill">view ${activePeriod}</div>
+        <div class="enterprise-bridge-pill">vista ${activePeriod}</div>
       </div>
       <div class="enterprise-bridge-grid">
         <div class="enterprise-bridge-card" data-enterprise-card-target="/reports" role="button" tabindex="0" aria-label="Apri report periodo attivo">
-          <div class="enterprise-bridge-card-title">Active period</div>
+          <div class="enterprise-bridge-card-title">Periodo attivo</div>
           <div class="enterprise-bridge-card-value">${activePeriod}</div>
-          <div class="enterprise-bridge-card-copy">The active selection must be readable immediately above numbers and lists.</div>
+          <div class="enterprise-bridge-card-copy">La selezione attiva deve essere leggibile subito sopra numeri e liste.</div>
         </div>
         <div class="enterprise-bridge-card" data-enterprise-card-target="/cashdesk" role="button" tabindex="0" aria-label="Apri cassa per verificare dati zero">
-          <div class="enterprise-bridge-card-title">If data is zero</div>
-          <div class="enterprise-bridge-card-value">it is not silence</div>
-          <div class="enterprise-bridge-card-copy">The UI must explain whether activity, checkout or simply volume is missing in the selected period.</div>
+          <div class="enterprise-bridge-card-title">Se i dati sono zero</div>
+          <div class="enterprise-bridge-card-value">non deve sembrare silenzio</div>
+          <div class="enterprise-bridge-card-copy">La UI deve spiegare se mancano attivita, cassa o semplicemente volume nel periodo selezionato.</div>
         </div>
         <div class="enterprise-bridge-card" data-enterprise-card-target="/appointments" role="button" tabindex="0" aria-label="Apri agenda per azione utile">
-          <div class="enterprise-bridge-card-title">Useful action</div>
-          <div class="enterprise-bridge-card-value">change view or verify closures</div>
-          <div class="enterprise-bridge-card-copy">If the day is empty, try week or month; if everything is empty, check schedule, checkout and service-staff links.</div>
+          <div class="enterprise-bridge-card-title">Azione utile</div>
+          <div class="enterprise-bridge-card-value">cambia vista o verifica chiusure</div>
+          <div class="enterprise-bridge-card-copy">Se il giorno e vuoto, prova settimana o mese; se e tutto vuoto, controlla agenda, cassa e collegamenti servizio-operatore.</div>
         </div>
       </div>
     `;
@@ -912,45 +914,45 @@
   function buildEnterpriseSurfacePanel(route) {
     const config = {
       "/services": {
-        title: "Services segmented more clearly",
-        subtitle: "Catalog, staff and resources should be read as different surfaces of the same system.",
+        title: "Servizi separati con piu chiarezza",
+        subtitle: "Catalogo, staff e risorse devono essere letti come superfici diverse dello stesso sistema.",
         actions: [
-          { label: "Catalog", href: "/services", active: true },
-          { label: "Shifts", href: "/shifts" },
-          { label: "Protocols", href: "/protocols" }
+          { label: "Catalogo", href: "/services", active: true },
+          { label: "Turni", href: "/shifts" },
+          { label: "Protocolli", href: "/protocols" }
         ],
         cards: [
-          ["Catalog", "Keep price, duration and category aligned.", "/services"],
-          ["Staff", "If staff is missing the shell must say it in a useful way.", "/services"],
-          ["Resources", "Technologies and rooms should be read as operational constraints.", "/services"]
+          ["Catalogo", "Tieni allineati prezzo, durata e categoria.", "/services"],
+          ["Staff", "Se manca lo staff, la shell deve dirlo in modo utile.", "/services"],
+          ["Risorse", "Tecnologie e stanze vanno lette come vincoli operativi.", "/services"]
         ]
       },
       "/shifts": {
-        title: "Shifts readable in blocks",
-        subtitle: "Calendar, attendance and templates should be separated more clearly in long screens.",
+        title: "Turni leggibili a blocchi",
+        subtitle: "Calendario, presenze e modelli devono essere separati meglio nelle schermate lunghe.",
         actions: [
-          { label: "Shifts", href: "/shifts", active: true },
-          { label: "Services", href: "/services" },
-          { label: "Protocols", href: "/protocols" }
+          { label: "Turni", href: "/shifts", active: true },
+          { label: "Servizi", href: "/services" },
+          { label: "Protocolli", href: "/protocols" }
         ],
         cards: [
-          ["Calendar", "First see who works today and where gaps exist.", "/shifts"],
-          ["Attendance", "Then confirmations and operational control.", "/shifts"],
-          ["Templates", "Finally the center reusable patterns.", "/shifts"]
+          ["Calendario", "Prima vedi chi lavora oggi e dove ci sono buchi.", "/shifts"],
+          ["Presenze", "Poi conferme e controllo operativo.", "/shifts"],
+          ["Modelli", "Infine gli schemi riutilizzabili del centro.", "/shifts"]
         ]
       },
       "/protocols": {
-        title: "Protocols with clearer layers",
-        subtitle: "Library, client record and AI draft should feel like three distinct layers, not one long page.",
+        title: "Protocolli con livelli piu chiari",
+        subtitle: "Libreria, scheda cliente e bozza AI devono sembrare tre livelli distinti, non una pagina unica lunghissima.",
         actions: [
-          { label: "Protocols", href: "/protocols", active: true },
-          { label: "Services", href: "/services" },
-          { label: "Shifts", href: "/shifts" }
+          { label: "Protocolli", href: "/protocols", active: true },
+          { label: "Servizi", href: "/services" },
+          { label: "Turni", href: "/shifts" }
         ],
         cards: [
-          ["Library", "First see what already exists and what is missing.", "/protocols"],
-          ["Client", "Then history, sensitivity and area.", "/clients"],
-          ["AI draft", "Only after that come suggestion and operator confirmation.", "/ai-gold"]
+          ["Libreria", "Prima vedi cosa esiste gia e cosa manca.", "/protocols"],
+          ["Cliente", "Poi storico, sensibilita e zona.", "/clients"],
+          ["Bozza AI", "Solo dopo arrivano suggerimento e conferma operatore.", "/ai-gold"]
         ]
       }
     }[route];

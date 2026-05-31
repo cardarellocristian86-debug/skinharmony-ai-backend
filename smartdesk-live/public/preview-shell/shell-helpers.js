@@ -85,7 +85,7 @@ export function createShellHelpers({
         <section class="card enterprise-banner">
           <div>
             <div class="section-title">${t("settingsView.sessionPermissions")}</div>
-            <div class="page-subtitle">${currentLanguage() === "en" ? "Session metadata not available. The shell continues, but the enterprise layer is not complete yet." : "Metadati sessione non disponibili. La shell continua ma il layer enterprise non e ancora completo."}</div>
+            <div class="page-subtitle">${currentLanguage() === "en" ? "Session metadata not available. The shell continues, but the enterprise layer is not complete yet." : "Metadati sessione non disponibili. La struttura continua, ma il livello Enterprise non e ancora completo."}</div>
           </div>
         </section>
       `;

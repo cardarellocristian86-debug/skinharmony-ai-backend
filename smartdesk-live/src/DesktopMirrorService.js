@@ -1056,7 +1056,7 @@ const GOLD_DECISION_WEIGHTS = Object.freeze({
   centro: { need: 1.1, value: 1.2, urgency: 0.8, coherence: 1.0, friction: 1.3, bias: -1.1 }
 });
 
-// Smart Desk Data Layer: lettura premium incrementale sopra i dati del gestionale; Core/Nyra Render restano esterni.
+// Smart Desk Data Layer: lettura premium incrementale sopra i dati del gestionale; Core/Nyra server restano esterni.
 // Non e' usato dal Core operativo Base/Silver e non sostituisce CRUD, agenda, cassa o report.
 function sigmoid(value) {
   return 1 / (1 + Math.exp(-Number(value || 0)));
@@ -1278,21 +1278,21 @@ function deriveUniversalCoreShadowDecision(risk = {}, validation = {}) {
   const impact = clamp01(risk.normalized?.impact || 0);
   const reversibility = clamp01(risk.normalized?.reversibility || 0);
   if (risk.band === "blocked") {
-    return { decision: "block", reason: "Risk score in blocked band" };
+    return { decision: "block", reason: "Rischio in fascia bloccata" };
   }
   if (status === "escalate") {
-    return { decision: "escalate", reason: "Validation escalation" };
+    return { decision: "escalate", reason: "Validazione da scalare" };
   }
   if (risk.band === "high" && impact > 0.7 && reversibility < 0.3) {
-    return { decision: "escalate", reason: "High risk with high impact and low reversibility" };
+    return { decision: "escalate", reason: "Rischio alto con impatto alto e bassa reversibilita" };
   }
   if (status === "fallback" || (risk.band === "high" && reversibility >= 0.3) || risk.should_fallback) {
-    return { decision: "fallback", reason: "Fallback triggered by risk or validation" };
+    return { decision: "fallback", reason: "Lettura prudente attivata da rischio o validazione" };
   }
   if (risk.should_retry || status === "retry") {
-    return { decision: "retry", reason: "Retry condition met" };
+    return { decision: "retry", reason: "Condizione di nuovo controllo presente" };
   }
-  return { decision: "allow", reason: "Risk acceptable and validation passed" };
+  return { decision: "allow", reason: "Rischio accettabile e validazione superata" };
 }
 
 function buildUniversalCoreShadow(decision = {}, context = {}) {
@@ -10766,7 +10766,7 @@ class DesktopMirrorService {
     if (!phone || phone.length < 7) blocks.push({ reason: "invalid_phone", message: "Numero cliente non valido." });
     if (!client.marketingConsent && !suggestion?.hasMarketingConsent) blocks.push({ reason: "missing_consent", message: "Consenso marketing non presente." });
     if (!["ACT_NOW", "SUGGEST"].includes(action)) blocks.push({ reason: "decision_not_actionable", message: "Decision Matrix non autorizza un invio ora." });
-    if (confidence < 0.5) blocks.push({ reason: "low_confidence", message: "Confidence sotto soglia: usare copia manuale o verificare." });
+    if (confidence < 0.5) blocks.push({ reason: "low_confidence", message: "Fiducia sotto soglia: usare copia manuale o verificare." });
     if (friction > 0.6) blocks.push({ reason: "high_friction", message: "Frizione alta: evitare invio diretto." });
     if (daysSinceLastMarketingContact !== null && Number(daysSinceLastMarketingContact) < 3) {
       blocks.push({ reason: "too_recent", message: "Cliente contattato da meno di 3 giorni." });
@@ -11418,7 +11418,7 @@ class DesktopMirrorService {
       version: "smartdesk_core_client_v1",
       goldEngineVersion: goldEnabled ? "external_core_nyra_openai_v1" : "external_universal_core_readonly_v1",
       decisionMatrixVersion: goldEnabled ? "external_core_nyra_decision_contract_v1" : "external_core_readonly_contract_v1",
-      engineName: goldEnabled ? "Core + Nyra + OpenAI esterni" : "Universal Core read-only",
+      engineName: goldEnabled ? "Core + Nyra + OpenAI esterni" : "Universal Core sola lettura",
       runtimeStack: goldEnabled
         ? ["SmartDeskDataSource", "UniversalCoreRender", "NyraRender", "OpenAIRefinement"]
         : ["SmartDeskDataSource", "UniversalCoreRenderReadOnly"],
@@ -11685,7 +11685,7 @@ class DesktopMirrorService {
     if (plan !== "gold") reasons.push("Piano non Gold");
     if (!["ACT_NOW", "SUGGEST"].includes(action)) reasons.push("Azione non eseguibile dal motore Gold");
     if (blocked) reasons.push("Azione bloccata dal Gold Engine");
-    if (confidence < 0.5) reasons.push("Confidence sotto soglia");
+    if (confidence < 0.5) reasons.push("Fiducia sotto soglia");
     if (risk > 0.6) reasons.push("Rischio sopra soglia");
     if (friction > 0.6) reasons.push("Frizione sopra soglia");
     if (blockedFeature) reasons.push(`PIAL: ${blockedFeature.label} bloccato (${blockedFeature.reason})`);
@@ -13008,7 +13008,7 @@ class DesktopMirrorService {
         cached: false,
         cacheTtlMs: SNAPSHOT_CACHE_TTL_MS,
         freshness: "fresh",
-        rule: "Smart Desk prepara dati indicizzati; Core/Nyra Render decidono e spiegano quando il bridge esterno e disponibile.",
+        rule: "Smart Desk prepara dati indicizzati; Core/Nyra server decidono e spiegano quando il bridge esterno e disponibile.",
         dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session)))
       },
       blockMeta: {
@@ -13879,19 +13879,19 @@ class DesktopMirrorService {
         items: [
           {
             id: "source-snapshot",
-            label: "Business snapshot",
+            label: "Snapshot gestionale",
             value: snapshot.sourceLayer || "business_snapshot",
             endpoint: "/api/business-snapshot"
           },
           {
             id: "source-decision-context",
-            label: "Decision context",
+            label: "Contesto decisionale",
             value: decisionContext.sourceLayer || "gold_decision_context",
             endpoint: "/api/ai-gold/decision-context"
           },
           {
             id: "source-decision-center",
-            label: "Decision center",
+            label: "Centro decisionale",
             value: decisionCenter.sourceLayer || "gold_decision_center",
             endpoint: "/api/ai-gold/decision-center"
           },

@@ -1598,7 +1598,7 @@ class AssistantService {
         payload
       };
       const question = mode === "silver"
-        ? "Leggi il centro in modalita Silver: controllo tecnico read-only, anomalie, dati mancanti e prima verifica manuale."
+        ? "Leggi il centro in modalita Silver: controllo tecnico in sola lettura, anomalie, dati mancanti e prima verifica manuale."
         : "Leggi AI Gold Smart Desk: stato centro, prima priorita, perche conta, dati mancanti e azione manuale da confermare.";
       const external = await this.externalAiGoldBridge.buildReadout({ mode, question, context, session });
       const coreRisk = external.coreOutput?.risk || external.core?.risk || {};
@@ -1619,7 +1619,7 @@ class AssistantService {
       const sections = Array.isArray(payload.sections) ? payload.sections.slice() : [];
       sections.unshift({
         key: `${mode}_external_readout`,
-        title: mode === "silver" ? "Core server read-only" : "AI Gold - Core/Nyra server",
+        title: mode === "silver" ? "Core server in sola lettura" : "AI Gold - Core/Nyra server",
         sourceLayer: external.sourceLayer,
         role: "primary_decision_readout",
         items: [externalItem],
