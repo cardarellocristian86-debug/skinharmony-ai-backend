@@ -12,6 +12,8 @@ export const branchExecGold = {
     "La salute del centro dipende prima da fatturato totale, fatturato per operatore, saturazione agenda e continuita clienti.",
     "Marketing Autopilot produce coda to_approve, mai invio automatico.",
     "Redditivita Gold segnala servizi critici, margini fragili e clienti/percorsi da recuperare, senza inventare costi mancanti.",
+    "Quando mancano dati economici o operativi, Gold deve trasformare il vuoto in checklist di completamento: modulo, campo, motivo e prossima verifica.",
+    "Gold deve parlare di redditivita, dipendenti, prodotti, clienti, agenda e continuita solo se i dati esistono o segnalarne l assenza.",
   ],
   guardrails: {
     destructive_automation: false,

@@ -13,6 +13,19 @@ const bridge = new ExternalAiGoldBridge({
       decision_contract: { confidence: 0.82 },
       risk: { band: "low", score: 18 },
       received: payload
+    }),
+    branchAnalyze: async (branch, payload) => ({
+      success: true,
+      ok: true,
+      branch,
+      profile: { label: branch, rules: ["regola Smart Desk"] },
+      branch_output: {
+        readout_mode: branch === "executive_gold" ? "executive_priority" : "readonly_operational_control",
+        next_actions: ["apri servizi e completa i costi"],
+        missing_data: ["costi servizio mancanti"],
+        receivedPlan: payload.data?.plan
+      },
+      output: { risk: { band: "low", score: 12 } }
     })
   }
 });
@@ -23,6 +36,8 @@ global.fetch = async (url, options = {}) => {
   const body = JSON.parse(options.body || "{}");
   assert(body.text.includes("AI Gold Smart Desk"));
   assert(body.text.includes("Smart Desk"));
+  assert(body.text.includes("core_branch_learning"));
+  assert(body.text.includes("executive_gold"));
   return {
     ok: true,
     status: 200,
@@ -55,6 +70,10 @@ global.fetch = async (url, options = {}) => {
     });
     assert.strictEqual(readout.provider, "universal_core_server_nyra_server");
     assert.strictEqual(readout.sourceLayer, "external_core_nyra_render");
+    assert(readout.requestedBranches.includes("executive_gold"));
+    assert(readout.requestedBranches.includes("smartdesk_operations_guard"));
+    assert(readout.branchAnalyses.some((item) => item.branch === "executive_gold"));
+    assert.strictEqual(readout.nyraAnswerAccepted, true);
     assert.strictEqual(readout.guardrails.smartDeskCalculatesNumbers, true);
     assert.strictEqual(readout.guardrails.coreDecides, true);
     assert.strictEqual(readout.guardrails.nyraExplains, true);

@@ -5,9 +5,11 @@ export const branchSmartDeskOperationsGuard = {
   label: "Smart Desk Operations Guard",
   domain: "smartdesk_operations",
   production_status: "advisory",
-  description: "Governa agenda, clienti, cassa, turni, protocolli, marketing e AI Gold dentro Smart Desk.",
+  description: "Governa agenda, clienti, cassa, turni, protocolli, marketing, differenza Silver/Gold e AI Gold dentro Smart Desk.",
   rules: [
     "Il gestionale/Core e la fonte dei numeri; AI Gold legge, interpreta e propone senza correggere dati reali.",
+    "Silver legge, ordina e segnala verifiche manuali; Gold decide la priorita operativa e prepara il lavoro confermabile.",
+    "Se i dati sono incompleti, l output principale non e 'nessuna priorita': e 'cosa manca, cosa controllare, prossima azione'.",
     "Azioni operative su agenda, cassa, clienti e marketing devono essere confermabili e dare feedback immediato.",
     "Base/Silver/Gold devono rispettare moduli e preview/upgrade senza blocchi brutali.",
     "Protocolli e analisi restano non medici e modificabili dall'operatore.",

@@ -1505,11 +1505,30 @@ function buildBranchPayload(branch, payload = {}) {
   } else if (branch === "smartdesk_operations_guard") {
     const module = textValue(data.module || data.area);
     const plan = textValue(data.plan || data.tier);
+    const sector = textValue(data.sector || data.center_type || data.industry, "beauty_center");
+    const dataQualityScore = clampScore(data.data_quality_score ?? data.data_quality?.score ?? 0);
+    const todayAppointments = Number(data.today_appointments ?? data.appointments_today ?? 0);
+    const servicesMissingCosts = Number(data.services_missing_costs ?? data.missing_service_costs ?? 0);
+    const clientsMissingContact = Number(data.clients_missing_contact ?? data.missing_client_contacts ?? 0);
+    const unlinkedPayments = Number(data.unlinked_payments ?? data.payments_unlinked ?? 0);
     const operatorConfirmed = data.operator_confirmed === true || data.owner_confirmed === true;
     const aiChangesNumbers = data.ai_changes_numbers === true || data.correct_real_data === true;
     const autoSend = data.auto_send === true || data.send_now === true;
     const medicalClaim = data.medical_claim === true || data.protocol_medical === true;
+    const missingData = [];
+    if (dataQualityScore > 0 && dataQualityScore < 75) missingData.push("affidabilita dati sotto soglia");
+    if (servicesMissingCosts > 0) missingData.push(`${servicesMissingCosts} costi servizio mancanti`);
+    if (clientsMissingContact > 0) missingData.push(`${clientsMissingContact} clienti senza contatto completo`);
+    if (unlinkedPayments > 0) missingData.push(`${unlinkedPayments} pagamenti da collegare`);
+    const nextActions = [];
+    if (servicesMissingCosts > 0) nextActions.push("apri servizi/operatori e completa i costi prima di leggere la redditivita");
+    if (unlinkedPayments > 0) nextActions.push("apri cassa e collega pagamenti/appuntamenti prima del report");
+    if (todayAppointments <= 2) nextActions.push("apri agenda e controlla slot scoperti o clienti da richiamare");
+    if (clientsMissingContact > 0) nextActions.push("apri clienti e completa telefono/consenso per recall manuale o Gold");
+    if (!nextActions.length) nextActions.push(plan === "gold" ? "leggi priorita Gold e scegli la prima azione da confermare" : "continua controllo manuale su agenda, cassa e report");
     addSignal("module_scope", "Modulo e piano definiti", module && plan ? 12 : 60, "smartdesk_operations", ["plan"]);
+    addSignal("plan_boundary", "Differenza Silver/Gold rispettata", plan === "gold" || plan === "silver" || plan === "base" ? 10 : 58, "smartdesk_operations", ["tier"]);
+    addSignal("data_completion", "Dati sufficienti per priorita utile", missingData.length ? 70 : 18, "smartdesk_operations", ["data_quality"]);
     addSignal("ai_boundary", "AI non corregge numeri reali", aiChangesNumbers ? 96 : 8, "smartdesk_operations", ["ai_gold"]);
     addSignal("operator_confirmation", "Conferma operatore per azioni", operatorConfirmed ? 14 : 52, "smartdesk_operations", ["confirm"]);
     addSignal("message_and_protocol_safety", "Messaggi/protocolli prudenti", autoSend || medicalClaim ? 94 : 8, "smartdesk_operations", ["safety"]);
@@ -1517,6 +1536,13 @@ function buildBranchPayload(branch, payload = {}) {
       smartdesk_mode: "operator_confirmed_actions",
       module,
       plan,
+      sector,
+      readout_mode: plan === "gold" ? "executive_priority" : plan === "silver" ? "readonly_operational_control" : "manual_assist",
+      missing_data: missingData,
+      next_actions: nextActions.slice(0, 4),
+      communication_contract: plan === "gold"
+        ? "dire cosa fare, perche conta, cosa manca e quale azione confermare"
+        : "mostrare cosa controllare e dove intervenire manualmente",
       execution_allowed: false,
       owner_review_required: true,
       blocked_if: { ai_changes_real_numbers: aiChangesNumbers, auto_send_message: autoSend, medical_protocol_claim: medicalClaim, missing_operator_confirmation: !operatorConfirmed },

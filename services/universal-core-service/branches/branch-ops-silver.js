@@ -8,6 +8,7 @@ export const branchOpsSilver = {
   description: "Regole operative Silver per turni, magazzino evoluto, report, redditivita base e protocolli AI limitati.",
   rules: [
     "Silver legge e organizza: non decide da solo e non invia comunicazioni automatiche.",
+    "Silver deve sembrare utile ma manuale: mostra cosa controllare e dove andare, senza linguaggio da responsabile AI Gold.",
     "Prioritizza colli operativi: agenda scoperta, stock basso, follow-up scaduti, incassi da verificare.",
     "Le analisi protocolli AI Silver sono limitate dal piano commerciale e devono restare confermabili dall'operatore.",
     "Segnala anomalie di stock, cassa o turni senza correggere automaticamente il dato sorgente.",
