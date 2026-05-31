@@ -3550,6 +3550,14 @@ class DesktopMirrorService {
     const missingServiceCosts = Math.max(0, servicesTotal - servicesWithCost);
     const cashPrimary = state.cashPrimarySnapshot || null;
     const cashSelection = state.cashSelection || null;
+    const commercialGuidance = this.buildAiGoldCommercialGuidance(session, {
+      state,
+      decision,
+      business,
+      profitability,
+      servicesTotal,
+      servicesWithCost
+    });
     const decisionScore = Number(decision.score || 0);
     const level = decision.action === "ACT_NOW" ? "critical" : decision.action === "SUGGEST" ? "warning" : "info";
     const centerHealth = {
@@ -3642,32 +3650,51 @@ class DesktopMirrorService {
       {
         key: "gold_engine",
         title: "Universal Core Decision Engine",
-        items: [primaryItem, ...secondaryItems].slice(0, 4)
+        items: [
+          commercialGuidance.primaryItem,
+          primaryItem,
+          ...secondaryItems
+        ].filter(Boolean).slice(0, 4)
       },
       {
         key: "daily",
         title: "Priorità del giorno",
-        items: [primaryItem, ...secondaryItems].filter((item) => item.area !== "profitability").slice(0, 4)
+        items: [
+          commercialGuidance.primaryItem,
+          commercialGuidance.clientItem,
+          primaryItem,
+          ...secondaryItems
+        ].filter((item) => item && item.area !== "profitability").slice(0, 4)
       },
       {
         key: "profitability",
         title: "Redditività prodotti e tecnologie",
-        items: [primaryItem, ...secondaryItems].filter((item) => item.area === "profitability").slice(0, 4)
+        items: [
+          commercialGuidance.profitabilityItem,
+          primaryItem,
+          ...secondaryItems
+        ].filter((item) => item && item.area === "profitability").slice(0, 4)
       },
       {
         key: "performance",
         title: "Performance centro",
-        items: []
+        items: [commercialGuidance.operatorItem].filter(Boolean)
       },
       {
         key: "hidden",
         title: "Opportunità nascoste",
-        items: [primaryItem, ...secondaryItems].filter((item) => item.area === "growth").slice(0, 4)
+        items: [
+          commercialGuidance.inventoryItem,
+          ...[primaryItem, ...secondaryItems].filter((item) => item.area === "growth")
+        ].filter(Boolean).slice(0, 4)
       },
       {
         key: "actions",
         title: "Azioni immediate",
-        items: blockedItems.length ? blockedItems : [primaryItem]
+        items: [
+          commercialGuidance.primaryItem,
+          ...(blockedItems.length ? blockedItems : [primaryItem])
+        ].filter(Boolean).slice(0, 4)
       }
     ];
     const manualSections = this.withGoldManualActions(sections);
@@ -3729,6 +3756,154 @@ class DesktopMirrorService {
       }
     };
     return localizeDecisionCenterPayload(payload, this.getRuntimeLanguage(session));
+  }
+
+  buildAiGoldCommercialGuidance(session = null, context = {}) {
+    const dataQuality = this.getDataQuality(session, { summaryOnly: true });
+    const settings = this.getSettings(session);
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const staff = this.filterByCenter(this.staffRepository.list(), session);
+    const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
+    const activeStaff = staff.filter((item) => item.active !== false && item.active !== 0);
+    const business = context.business || {};
+    const revenueCents = Number(business.revenueCents || payments.reduce((sum, item) => sum + Number(item.amountCents || 0), 0));
+    const servicesTotal = Number(context.servicesTotal || dataQuality.metrics?.services || 0);
+    const missingServiceCosts = Number(dataQuality.metrics?.servicesMissingCosts ?? Math.max(0, servicesTotal - Number(context.servicesWithCost || 0)));
+    const missingOperatorCosts = Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0);
+    const dataQualityScore = Number(dataQuality.score || Math.round(Number(business.dataQuality || 0) * 100) || 0);
+    const lowDataQuality = dataQualityScore > 0 && dataQualityScore < 75;
+    const noOperationalHistory = appointments.length === 0 || payments.length === 0 || clients.length === 0;
+    const setupRequired = lowDataQuality || missingServiceCosts > 0 || missingOperatorCosts > 0 || noOperationalHistory;
+    const centerName = settings.centerName || DEFAULT_CENTER_NAME;
+    const primaryItem = {
+      id: "gold-commercial-first-move",
+      level: setupRequired ? "warning" : "success",
+      area: "operativita",
+      conclusion: setupRequired ? "Prima priorità: rendere leggibile il centro" : "Piano operativo Gold pronto",
+      reason: setupRequired
+        ? `Gold non deve restare muto: per ${centerName} deve guidare il lavoro, ma prima segnala i dati che bloccano priorità affidabili.`
+        : "Il centro ha dati sufficienti per leggere priorità, margini, clienti e continuità operativa.",
+      details: setupRequired
+        ? [
+            dataQualityScore ? `affidabilità ${dataQualityScore}%` : "",
+            clients.length ? `${clients.length} clienti letti` : "clienti non ancora sufficienti",
+            appointments.length ? `${appointments.length} appuntamenti letti` : "agenda da popolare",
+            payments.length ? `${payments.length} incassi letti` : "cassa da popolare",
+            missingServiceCosts > 0 ? `${missingServiceCosts} costi servizio mancanti` : "",
+            missingOperatorCosts > 0 ? `${missingOperatorCosts} costi orari operatori mancanti` : ""
+          ].filter(Boolean).join(" · ")
+        : `${clients.length} clienti · ${appointments.length} appuntamenti · ${euro(revenueCents)} letti dal gestionale.`,
+      impactCents: revenueCents,
+      riskCents: 0,
+      action: setupRequired
+        ? "completa i dati minimi, poi usa Gold per priorità clienti, margini e operatori"
+        : "parti dalla prima priorità e conferma solo azioni manuali",
+      button: missingServiceCosts > 0 || missingOperatorCosts > 0 ? "Completa costi servizi" : noOperationalHistory ? "Apri agenda" : "Apri dashboard",
+      target: missingServiceCosts > 0 || missingOperatorCosts > 0 ? "services" : noOperationalHistory ? "appointments" : "dashboard",
+      targetFocus: missingOperatorCosts > 0 && missingServiceCosts <= 0 ? "staff-costs" : missingServiceCosts > 0 ? "service-costs" : ""
+    };
+
+    let marketing = null;
+    try {
+      marketing = this.getAiGoldMarketingSnapshot(session);
+    } catch (_error) {
+      marketing = null;
+    }
+    const priorityClients = Array.isArray(marketing?.priorityClients) ? marketing.priorityClients : [];
+    const contactableClients = clients.filter((item) => this.goldClientHasContact(item)).length;
+    const clientItem = priorityClients.length ? {
+      id: "gold-commercial-client-priority",
+      level: "critical",
+      area: "clienti",
+      conclusion: `${priorityClients.length} clienti da lavorare con priorità`,
+      reason: "Gold deve far partire dal cliente più utile, non da una lista generica.",
+      details: priorityClients.slice(0, 3).map((item) => item.name || item.customerName || "Cliente").join(" · "),
+      impactCents: priorityClients.reduce((sum, item) => sum + Number(item.referenceValueCents || item.estimatedRecallValueCents || 0), 0),
+      riskCents: 0,
+      action: "apri marketing, controlla il motivo e prepara il messaggio da confermare",
+      button: "Apri marketing",
+      target: "marketing"
+    } : {
+      id: "gold-commercial-client-profile",
+      level: clients.length ? "info" : "warning",
+      area: "clienti",
+      conclusion: clients.length ? "Profilazione clienti da rinforzare" : "Carica clienti reali per attivare recall",
+      reason: "Il valore Gold nasce quando legge frequenza, ultima visita, consenso e storico acquisti.",
+      details: `${clients.length} clienti · ${contactableClients} con contatto · ${priorityClients.length} recall prioritari pronti.`,
+      impactCents: 0,
+      riskCents: 0,
+      action: clients.length ? "controlla telefoni, consensi e storico visite" : "aggiungi o importa clienti prima di aspettarti marketing utile",
+      button: "Apri clienti",
+      target: "clients"
+    };
+
+    const profitabilityItem = {
+      id: "gold-commercial-profitability",
+      level: missingServiceCosts > 0 || missingOperatorCosts > 0 ? "warning" : "info",
+      area: "profitability",
+      conclusion: missingServiceCosts > 0 || missingOperatorCosts > 0 ? "Redditività bloccata dai dati costo" : "Redditività da usare come controllo operativo",
+      reason: missingServiceCosts > 0 || missingOperatorCosts > 0
+        ? "Senza costi servizi e costo orario operatori Gold non deve promettere margini: deve dirti esattamente cosa completare."
+        : "Gold deve indicare quali servizi convengono, quali assorbono tempo e quali non vanno spinti.",
+      details: missingServiceCosts > 0 || missingOperatorCosts > 0
+        ? `${economicConfigGapText(missingServiceCosts, missingOperatorCosts)}.`
+        : `${euro(revenueCents)} incassi letti · ${activeStaff.length || staff.length} operatori collegati.`,
+      impactCents: revenueCents,
+      riskCents: 0,
+      action: missingServiceCosts > 0 || missingOperatorCosts > 0
+        ? "completa costi servizi e operatori prima di leggere margini"
+        : "apri redditività e controlla servizi benchmark, servizi fragili e prodotti usati",
+      button: missingServiceCosts > 0 || missingOperatorCosts > 0 ? "Completa costi servizi" : "Apri redditività",
+      target: missingServiceCosts > 0 || missingOperatorCosts > 0 ? "services" : "profitability",
+      targetFocus: missingOperatorCosts > 0 && missingServiceCosts <= 0 ? "staff-costs" : missingServiceCosts > 0 ? "service-costs" : ""
+    };
+
+    const operatorRevenue = activeStaff.length ? Math.round(revenueCents / activeStaff.length) : 0;
+    const operatorItem = {
+      id: "gold-commercial-operators",
+      level: activeStaff.length ? "info" : "warning",
+      area: "operatori",
+      conclusion: activeStaff.length ? "Operatori da leggere per resa e saturazione" : "Aggiungi operatori reali",
+      reason: "Gold deve dire se il centro regge per persona: fatturato per operatore, agenda e continuità vengono prima dei dettagli di margine.",
+      details: `${activeStaff.length || staff.length} operatori · fatturato/operatore ${euro(operatorRevenue)} · costi orari mancanti ${missingOperatorCosts}.`,
+      impactCents: operatorRevenue,
+      riskCents: 0,
+      action: missingOperatorCosts > 0 ? "inserisci costo orario e turni prima di valutare resa" : "controlla turni, saturazione e servizi assegnati",
+      button: missingOperatorCosts > 0 ? "Completa costi operatori" : "Apri turni",
+      target: missingOperatorCosts > 0 ? "services" : "shifts",
+      targetFocus: missingOperatorCosts > 0 ? "staff-costs" : ""
+    };
+
+    const lowStock = inventory.find((item) => this.goldInventoryIsLow(item));
+    const inventoryItem = {
+      id: "gold-commercial-inventory",
+      level: lowStock ? "warning" : "info",
+      area: "magazzino",
+      conclusion: lowStock ? `${lowStock.name || "Prodotto"} sotto soglia` : "Prodotti da collegare ai servizi",
+      reason: lowStock
+        ? "Gold deve evitare stop operativi sui servizi venduti."
+        : "Per leggere margini veri, prodotti e consumi devono essere collegati ai servizi.",
+      details: lowStock
+        ? `Giacenza ${lowStock.quantity || 0}, soglia ${lowStock.minQuantity || 0}.`
+        : `${inventory.length} articoli letti. Collega consumi prodotto ai servizi principali.`,
+      impactCents: Number(lowStock?.costCents || 0),
+      riskCents: 0,
+      action: lowStock ? "verifica stock e riordino" : "collega prodotti ai servizi per margini reali",
+      button: "Apri magazzino",
+      target: "inventory"
+    };
+
+    return {
+      dataQualityScore,
+      setupRequired,
+      primaryItem,
+      clientItem,
+      profitabilityItem,
+      operatorItem,
+      inventoryItem
+    };
   }
 
   goldClamp01(value) {
@@ -11596,6 +11771,10 @@ class DesktopMirrorService {
     const servicesMissingCosts = Number(dataQuality.metrics?.servicesMissingCosts || 0);
     const operatorsMissingHourlyCost = Number(dataQuality.metrics?.operatorsMissingHourlyCost || 0);
     const profitabilityBlockedForConfig = servicesMissingCosts > 0 || operatorsMissingHourlyCost > 0;
+    const dataQualityScore = Number(dataQuality.score || 0);
+    const shouldPromoteReadiness = !profitabilityBlockedForConfig
+      && dataQualityScore > 0
+      && dataQualityScore < 75;
     const exposedPrimaryAction = profitabilityBlockedForConfig
       ? {
         ...(primaryAction || {}),
@@ -11622,6 +11801,32 @@ class DesktopMirrorService {
           dataQualityScore: Number(dataQuality.score || 0) / 100
         })
       }
+      : shouldPromoteReadiness
+        ? {
+          ...(primaryAction || {}),
+          domain: "data_quality",
+          entityId: "gold-readiness-profile",
+          label: "Prima completa il profilo operativo del centro",
+          action: "ACT_NOW",
+          suggestedAction: "apri clienti, servizi, agenda e cassa: completa i dati minimi che rendono Gold utile",
+          explanationShort: `Affidabilita analisi ${dataQualityScore}%: Gold deve guidarti, ma prima ti dice quali dati impediscono priorita forti.`,
+          explanationLong: `AI Gold non deve sembrare vuota quando i dati sono incompleti. Deve trasformare il vuoto in piano operativo: clienti profilati, servizi con costi, agenda reale, cassa collegata e operatori leggibili.`,
+          target: "clients",
+          targetFocus: "gold-readiness",
+          universalCoreShadow: buildUniversalCoreShadow({
+            action: "ACT_NOW",
+            band: "media",
+            blocked: false,
+            confidence: Math.max(0.45, dataQualityScore / 100),
+            risk: 0.24,
+            priority: 0.6,
+            RAP_2: 0.6,
+            phi: 0.6,
+            penaltyApplied: true
+          }, {
+            dataQualityScore: Number(dataQuality.score || 0) / 100
+          })
+        }
       : primaryAction;
     const alignedActions = partitionByUniversalCoreShadow(exposedPrimaryAction, secondaryActions, blockedActions);
     const shadowValidated = chooseShadowValidatedPrimary(exposedPrimaryAction, alignedActions.secondaryActions, {
@@ -12914,6 +13119,7 @@ class DesktopMirrorService {
       item.value,
       item.label
     ].filter(Boolean).join(" ").toLowerCase();
+    if (rawTarget === "inventory" || rawTarget === "stock" || rawTarget === "magazzino") return { target: "inventory", targetFocus: String(item.targetFocus || "") };
     if (/costi|costo|prezzo|durata|servizi|service|operatori|staff|catalogo/.test(text)
       && /completa|configura|correggi|verifica|apri|manca|mancanti/.test(text)) {
       return {
@@ -12928,7 +13134,6 @@ class DesktopMirrorService {
     if (rawTarget === "cash") return { target: "cashdesk", targetFocus: "" };
     if (rawTarget === "profit" || rawTarget === "profitability") return { target: "profitability", targetFocus: "" };
     if (rawTarget === "agenda" || rawTarget === "appointments") return { target: "appointments", targetFocus: "" };
-    if (rawTarget === "inventory" || rawTarget === "stock") return { target: "inventory", targetFocus: "" };
     if (rawTarget === "marketing" || /marketing|recall|messagg/.test(text)) return { target: "marketing", targetFocus: "" };
     if (rawTarget === "clients" || /telefono|email|consens|contatt/.test(text)) return { target: "clients", targetFocus: "" };
     if (rawTarget === "shifts" || rawTarget === "operators" || rawTarget === "operatori") return { target: "shifts", targetFocus: "" };
