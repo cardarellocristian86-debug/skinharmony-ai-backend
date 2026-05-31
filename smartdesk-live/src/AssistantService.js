@@ -330,9 +330,9 @@ function assistantLanguage(context = {}) {
 function localizeAssistantText(message, language) {
   if (language !== "en") return message;
   return String(message || "")
-    .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart Desk reading: local data as evidence, Core/Nyra Render as primary source when available.")
-    .replace(/\bLettura Smart Desk: dati locali come evidenza, Core\/Nyra Render come fonte primaria quando disponibile\./g, "Smart Desk reading: local data as evidence, Core/Nyra Render as primary source when available.")
-    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Core\/Nyra Render come fonte primaria quando risponde:/g, "AI Gold operational reading on available data, with Core/Nyra Render as the primary source when it responds:")
+    .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart Desk reading: local data as evidence, Core/Nyra server as primary source when available.")
+    .replace(/\bLettura Smart Desk: dati locali come evidenza, Core\/Nyra server come fonte primaria quando disponibile\./g, "Smart Desk reading: local data as evidence, Core/Nyra server as primary source when available.")
+    .replace(/\bLettura AI Gold operativa sui dati disponibili, con Core\/Nyra server come fonte primaria quando risponde:/g, "AI Gold operational reading on available data, with Core/Nyra server as the primary source when it responds:")
     .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "On the Silver plan I can guide you through modules and reports, but I do not generate AI priorities.")
     .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "On the Base plan the Smart button stays operational, but it does not use AI priorities.")
     .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatic priorities and decision alerts are available on the Gold plan.")
@@ -816,7 +816,7 @@ class AssistantService {
     const blocked = Array.isArray(goldContext.blockedActions) ? goldContext.blockedActions : [];
     if (primary || secondary.length || blocked.length) {
       const lines = [
-        "Lettura Smart Desk: dati locali come evidenza, Core/Nyra Render come fonte primaria quando disponibile.",
+        "Lettura Smart Desk: dati locali come evidenza, Core/Nyra server come fonte primaria quando disponibile.",
         "",
         "Priorità principale:",
         primary
@@ -1606,10 +1606,10 @@ class AssistantService {
         id: `${mode}-external-core-nyra-readout`,
         level: coreRisk.band === "high" || coreRisk.band === "blocked" ? "warning" : "info",
         area: mode === "silver" ? "controllo core" : "ai gold",
-        conclusion: mode === "silver" ? "Controllo Core Render" : "Lettura Core/Nyra Render",
+        conclusion: mode === "silver" ? "Controllo Core server" : "Lettura Core/Nyra server",
         reason: external.answer,
         details: external.guardrails?.coreDecides || external.guardrails?.nyraExplains
-          ? "Fonte esterna Render: Core decide, Nyra spiega. Smart Desk resta sorgente dati."
+          ? "Fonte esterna server: Core decide, Nyra spiega. Smart Desk resta sorgente dati."
           : "Bridge esterno non completo: mostrata lettura prudente senza azioni automatiche.",
         action: external.firstAction || "verifica manuale",
         button: mode === "silver" ? "Apri dashboard" : "Mostra cosa fare ora",
@@ -1619,7 +1619,7 @@ class AssistantService {
       const sections = Array.isArray(payload.sections) ? payload.sections.slice() : [];
       sections.unshift({
         key: `${mode}_external_readout`,
-        title: mode === "silver" ? "Core Render read-only" : "AI Gold - Core/Nyra Render",
+        title: mode === "silver" ? "Core server read-only" : "AI Gold - Core/Nyra server",
         sourceLayer: external.sourceLayer,
         role: "primary_decision_readout",
         items: [externalItem],
@@ -1637,7 +1637,7 @@ class AssistantService {
       };
       return {
         ...payload,
-        title: mode === "silver" ? "Silver - controllo Core Render" : "AI Gold - cosa fare ora",
+        title: mode === "silver" ? "Silver - controllo Core server" : "AI Gold - cosa fare ora",
         sourceLayer: external.sourceLayer,
         decisionAuthority: mode === "silver" ? "core_render_readonly" : "core_nyra_render_primary",
         smartDeskRole: "data_source_only",
@@ -1652,7 +1652,7 @@ class AssistantService {
           title: mode === "silver" ? "Silver legge il centro" : "AI Gold legge e decide la priorita",
           primaryAction: external.firstAction,
           primaryActionLabel: external.firstAction,
-          aiArchitecture: mode === "silver" ? "silver_core_render_readonly" : "gold_core_nyra_openai_external",
+          aiArchitecture: mode === "silver" ? "silver_core_server_readonly" : "gold_core_nyra_openai_external",
           externalProvider: external.provider,
           externalPrimary: true,
           firstExternalAction: external.firstAction,
@@ -1696,14 +1696,14 @@ class AssistantService {
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = language === "en"
       ? [
-        "You are AI Gold inside SkinHarmony Smart Desk. Universal Core Render is the primary decision gate; Nyra Render is the explanation layer. Smart Desk is only the data source.",
+        "You are AI Gold inside SkinHarmony Smart Desk. Universal Core server is the primary decision gate; Nyra server is the explanation layer. Smart Desk is only the data source.",
         "You are not a generic chatbot: you are an operational assistant for aesthetic, hair and hybrid centers.",
         "Use only the data present in the JSON context. If data is missing, say so clearly.",
         "Do not send messages, do not modify prices, do not change data and do not run automatic campaigns.",
         "Suggest concrete actions that the operator must confirm.",
         "When monthlyTrend is present, use it to read swings, drops, recoveries and operational instability.",
         "When goldDecisionContext is present, use it as the official source: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 and trend.",
-        "You also receive governedBaseline: this is the Core/Nyra Render governed reading. Refine voice and clarity, but do not change priorities, risks, blocks or the primary action.",
+        "You also receive governedBaseline: this is the Core/Nyra server governed reading. Refine voice and clarity, but do not change priorities, risks, blocks or the primary action.",
         "Do not bypass canExecute, blockedActions, high risk or low confidence. If Gold blocks, you must block or ask for verification.",
         "When goldCapabilities is present, use features and limits to understand what is active. If WhatsApp is not enabled, suggest only manual copy/fallback.",
         "Avoid medical or therapeutic claims and avoid guaranteed outcomes.",
@@ -1711,14 +1711,14 @@ class AssistantService {
         "Structure the answer as: Summary, Priorities, Suggested actions, Limits/missing data."
       ].join("\n")
       : [
-        "Sei AI Gold di SkinHarmony Smart Desk. Universal Core Render è il gate decisionale primario; Nyra Render è il layer di spiegazione. Smart Desk è solo sorgente dati.",
+        "Sei AI Gold di SkinHarmony Smart Desk. Universal Core server è il gate decisionale primario; Nyra server è il layer di spiegazione. Smart Desk è solo sorgente dati.",
         "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
         "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
         "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
         "Suggerisci azioni concrete che l'operatore deve confermare.",
         "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
         "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
-        "Ricevi anche governedBaseline: è la lettura Core/Nyra Render già governata. Devi rifinire voce e chiarezza, non cambiare priorità, rischio, blocchi o azione primaria.",
+        "Ricevi anche governedBaseline: è la lettura Core/Nyra server già governata. Devi rifinire voce e chiarezza, non cambiare priorità, rischio, blocchi o azione primaria.",
         "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
         "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
         "Evita claim medici, terapeutici o promesse di risultato.",
@@ -1746,7 +1746,7 @@ class AssistantService {
       const answer = data?.output_text || data?.output?.[0]?.content?.[0]?.text || this.buildAiGoldFallback(question, context);
       return {
         goldEnabled: true,
-        provider: "universal_core_render_nyra_render_openai",
+        provider: "universal_core_server_nyra_server_openai",
         answer: language === "en" ? localizeAssistantText(answer, language) : answer,
         actions: [],
         structured: governedBaseline.structured || null,

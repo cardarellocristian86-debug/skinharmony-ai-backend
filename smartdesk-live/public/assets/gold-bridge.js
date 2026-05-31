@@ -476,9 +476,9 @@
       primary,
       provider,
       label: primary ? "Fonte primaria" : "Fallback prudente",
-      title: primary ? "Core/Nyra Render in alto" : "Core/Nyra non pienamente disponibili",
+      title: primary ? "Core/Nyra server in alto" : "Core/Nyra server non pienamente disponibili",
       copy: primary
-        ? "Smart Desk legge i dati del centro; Core Render decide la priorita; Nyra Render spiega cosa fare. OpenAI rifinisce solo la forma se disponibile."
+        ? "Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile."
         : "Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.",
       className: primary ? "" : "fallback"
     };
@@ -487,9 +487,12 @@
   function sanitizeGoldUiText(root = document.getElementById("root")) {
     if (!root) return;
     const replacements = new Map([
-      ["Universal Core Decision Engine", "AI Gold - Core/Nyra Render"],
-      ["Universal Core Read-only", "Core Render read-only"],
-      ["Core + Nyra + OpenAI", "AI Gold - Core/Nyra Render"],
+      ["Universal Core Decision Engine", "AI Gold - Core/Nyra server"],
+      ["Universal Core Read-only", "Core server read-only"],
+      ["Core + Nyra + OpenAI", "AI Gold - Core/Nyra server"],
+      ["Core/Nyra Render", "Core/Nyra server"],
+      ["Core Render", "Core server"],
+      ["Nyra Render", "Nyra server"],
       ["Nessuna priorità urgente", "Cosa manca / cosa controllare"],
       ["Nessuna priorita urgente", "Cosa manca / cosa controllare"],
       ["Nessuna priorità principale disponibile.", "Prossima azione: completa i dati mancanti e rileggi il centro."],
@@ -648,7 +651,7 @@
         </div>
         <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="Apri AI Gold">
           <div class="gold-bridge-label">Fonte</div>
-          <div class="gold-bridge-value">${source.primary ? "Core/Nyra Render" : "Fallback dati"}</div>
+          <div class="gold-bridge-value">${source.primary ? "Core/Nyra server" : "Fallback dati"}</div>
         </div>
         <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="Apri azione suggerita da AI Gold">
           <div class="gold-bridge-label">Cosa controllare</div>

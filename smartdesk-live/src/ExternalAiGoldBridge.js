@@ -115,7 +115,7 @@ class ExternalAiGoldBridge {
 
   async callNyraTextChat({ text, sessionId }) {
     if (!this.isNyraConfigured()) {
-      return { success: false, code: "nyra_render_not_configured", message: "Nyra Render non configurata." };
+      return { success: false, code: "nyra_render_not_configured", message: "Nyra server non configurata." };
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -138,7 +138,7 @@ class ExternalAiGoldBridge {
         success: false,
         code: error?.name === "AbortError" ? "nyra_render_timeout" : "nyra_render_unreachable",
         providerUrl: this.nyraBaseUrl,
-        message: error instanceof Error ? error.message : "Nyra Render non raggiungibile."
+        message: error instanceof Error ? error.message : "Nyra server non raggiungibile."
       };
     } finally {
       clearTimeout(timer);
@@ -167,7 +167,7 @@ class ExternalAiGoldBridge {
     };
     const core = this.universalCoreBridge?.isConfigured?.()
       ? await this.universalCoreBridge.decision(corePayload)
-      : { success: false, code: "universal_core_not_configured", message: "Universal Core Render non configurato." };
+      : { success: false, code: "universal_core_not_configured", message: "Universal Core server non configurato." };
     const normalizedCore = normalizeCoreOutput(core);
     const nyraPrompt = this.buildNyraPrompt({ mode, question, context, core: normalizedCore.output });
     const nyra = await this.callNyraTextChat({
@@ -178,7 +178,7 @@ class ExternalAiGoldBridge {
     const content = cleanText(nyraResult.content || nyraResult.reply || "", "", 4000);
     return {
       success: Boolean(normalizedCore.ok || nyra.success),
-      provider: "universal_core_render_nyra_render",
+      provider: "universal_core_server_nyra_server",
       sourceLayer: "external_core_nyra_render",
       mode,
       answer: content || this.fallbackAnswer({ mode, context, core: normalizedCore, nyra }),
@@ -204,8 +204,8 @@ class ExternalAiGoldBridge {
     const action = firstAction(context);
     const missing = [];
     if (dataQuality && dataQuality < 75) missing.push(`affidabilita dati ${dataQuality}%`);
-    if (!core.success) missing.push("Core Render non disponibile");
-    if (!nyra.success) missing.push("Nyra Render non disponibile");
+    if (!core.success) missing.push("Core server non disponibile");
+    if (!nyra.success) missing.push("Nyra server non disponibile");
     if (mode === "silver") {
       return `Silver ha letto il centro in modalita controllo. Prima verifica: ${action}. ${missing.length ? `Limiti: ${missing.join(", ")}.` : "Nessuna azione automatica."}`;
     }

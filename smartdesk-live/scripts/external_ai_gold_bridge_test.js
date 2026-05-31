@@ -53,7 +53,7 @@ global.fetch = async (url, options = {}) => {
         }
       }
     });
-    assert.strictEqual(readout.provider, "universal_core_render_nyra_render");
+    assert.strictEqual(readout.provider, "universal_core_server_nyra_server");
     assert.strictEqual(readout.sourceLayer, "external_core_nyra_render");
     assert.strictEqual(readout.guardrails.smartDeskCalculatesNumbers, true);
     assert.strictEqual(readout.guardrails.coreDecides, true);
