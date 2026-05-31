@@ -11,6 +11,20 @@
   let settingsRenderTimers = [];
   let observerStarted = false;
   let mutationLockDepth = 0;
+  let uiLanguage = "it";
+
+  function normalizeLanguage(value) {
+    const language = String(value || "").toLowerCase().slice(0, 2);
+    return language === "en" ? "en" : "it";
+  }
+
+  function isEnglish() {
+    return uiLanguage === "en";
+  }
+
+  function copy(it, en) {
+    return isEnglish() ? en : it;
+  }
 
   function injectStyle() {
     if (document.getElementById(SCRIPT_ID)) return;
@@ -471,15 +485,15 @@
   function sourceStatus(context = {}, capabilities = {}) {
     const external = context?.externalAi || {};
     const primary = Boolean(external.primary || context?.summary?.externalPrimary || context?.decisionAuthority === "core_nyra_render_primary");
-    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", "Lettura dati Smart Desk");
+    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", copy("Lettura dati Smart Desk", "Smart Desk data reading"));
     return {
       primary,
       provider,
-      label: primary ? "Fonte primaria" : "Lettura prudente",
-      title: primary ? "Core/Nyra server in alto" : "Core/Nyra server non pienamente disponibili",
+      label: primary ? copy("Fonte primaria", "Primary source") : copy("Lettura prudente", "Careful reading"),
+      title: primary ? copy("Core/Nyra server in alto", "Core/Nyra server on top") : copy("Core/Nyra server non pienamente disponibili", "Core/Nyra server not fully available"),
       copy: primary
-        ? "Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile."
-        : "Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.",
+        ? copy("Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile.", "Smart Desk reads the center data; Core server decides the priority; Nyra server explains what to do. OpenAI only refines the wording when available.")
+        : copy("Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.", "Smart Desk is showing a careful reading from local data. Check missing data and retry the external reading."),
       className: primary ? "" : "fallback"
     };
   }
@@ -487,22 +501,22 @@
   function sanitizeGoldUiText(root = document.getElementById("root")) {
     if (!root) return;
     const replacements = new Map([
-      ["Universal Core Decision Engine", "AI Gold - Core/Nyra server"],
-      ["Universal Core Read-only", "Core server sola lettura"],
-      ["Core server read-only", "Core server sola lettura"],
-      ["Customer Intelligence Core", "Lettura clienti Core"],
-      ["Core + Nyra + OpenAI", "AI Gold - Core/Nyra server"],
-      ["Core/Nyra Render", "Core/Nyra server"],
-      ["Core Render", "Core server"],
-      ["Nyra Render", "Nyra server"],
-      ["Nessuna priorità urgente", "Cosa manca / cosa controllare"],
-      ["Nessuna priorita urgente", "Cosa manca / cosa controllare"],
-      ["Nessuna priorità principale disponibile.", "Prossima azione: completa i dati mancanti e rileggi il centro."],
-      ["Nessuna azione secondaria prioritaria.", "Controlla dati, cassa, agenda e costi prima di cercare altre azioni."],
-      ["Non ci sono priorità urgenti da mostrare.", "Non ci sono urgenze forti: controlla cosa manca e la prossima azione manuale."],
-      ["Gold continua a leggere il centro e riapparirà solo quando serve un'azione.", "Gold resta attivo: se mancano dati, mostra cosa completare; se i dati sono coerenti, indica la prossima verifica utile."],
-      ["Centro sotto controllo", "Centro letto da Smart Desk"],
-      ["AI priority alerts", "AI Gold - cosa fare ora"]
+      ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server")],
+      ["Universal Core Read-only", copy("Core server sola lettura", "Core server read-only")],
+      ["Core server read-only", copy("Core server sola lettura", "Core server read-only")],
+      ["Customer Intelligence Core", copy("Lettura clienti Core", "Core client reading")],
+      ["Core + Nyra + OpenAI", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server")],
+      ["Core/Nyra Render", copy("Core/Nyra server", "Core/Nyra server")],
+      ["Core Render", copy("Core server", "Core server")],
+      ["Nyra Render", copy("Nyra server", "Nyra server")],
+      ["Nessuna priorità urgente", copy("Cosa manca / cosa controllare", "What is missing / what to check")],
+      ["Nessuna priorita urgente", copy("Cosa manca / cosa controllare", "What is missing / what to check")],
+      ["Nessuna priorità principale disponibile.", copy("Prossima azione: completa i dati mancanti e rileggi il centro.", "Next action: complete missing data and read the center again.")],
+      ["Nessuna azione secondaria prioritaria.", copy("Controlla dati, cassa, agenda e costi prima di cercare altre azioni.", "Check data, cash desk, agenda and costs before looking for more actions.")],
+      ["Non ci sono priorità urgenti da mostrare.", copy("Non ci sono urgenze forti: controlla cosa manca e la prossima azione manuale.", "There are no strong urgent items: check what is missing and the next manual action.")],
+      ["Gold continua a leggere il centro e riapparirà solo quando serve un'azione.", copy("Gold resta attivo: se mancano dati, mostra cosa completare; se i dati sono coerenti, indica la prossima verifica utile.", "Gold stays active: if data is missing, it shows what to complete; if data is coherent, it points to the next useful check.")],
+      ["Centro sotto controllo", copy("Centro letto da Smart Desk", "Center read by Smart Desk")],
+      ["AI priority alerts", copy("AI Gold - cosa fare ora", "AI Gold - what to do now")]
     ]);
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
@@ -532,6 +546,16 @@
       throw new Error(String(response.status));
     }
     return response.json();
+  }
+
+  async function refreshUiLanguage(settingsPayload = null) {
+    try {
+      const settings = settingsPayload || await fetchJson("/api/settings");
+      uiLanguage = normalizeLanguage(settings?.appLanguage || document.documentElement.getAttribute("lang") || navigator.language);
+      document.documentElement.setAttribute("lang", uiLanguage);
+    } catch (_error) {
+      uiLanguage = normalizeLanguage(document.documentElement.getAttribute("lang") || navigator.language || "it");
+    }
   }
 
   async function postJson(url, payload) {
@@ -621,9 +645,9 @@
     const changeImpact = context?.changeImpactContract || capabilities?.changeImpactContract || null;
     const nextStep = readiness?.next_step || "waiting_for_core";
     const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
-    const primaryText = cleanDisplayText(primary?.label || primary?.suggestedAction || summary.primaryActionLabel || summary.primaryAction, "Prossima azione: completa i dati mancanti e rileggi il centro");
-    const actionText = cleanDisplayText(primary?.suggestedAction || summary.firstExternalAction || primary?.action, "Controlla dati, cassa, agenda e costi");
-    const explanationText = cleanDisplayText(primary?.explanationShort || context?.explanationShort || summary.title, "Cosa manca: verifica dati economici, costi servizi/operatori, agenda e cassa prima della prossima decisione.");
+    const primaryText = cleanDisplayText(primary?.label || primary?.suggestedAction || summary.primaryActionLabel || summary.primaryAction, copy("Prossima azione: completa i dati mancanti e rileggi il centro", "Next action: complete missing data and read the center again"));
+    const actionText = cleanDisplayText(primary?.suggestedAction || summary.firstExternalAction || primary?.action, copy("Controlla dati, cassa, agenda e costi", "Check data, cash desk, agenda and costs"));
+    const explanationText = cleanDisplayText(primary?.explanationShort || context?.explanationShort || summary.title, copy("Cosa manca: verifica dati economici, costi servizi/operatori, agenda e cassa prima della prossima decisione.", "What is missing: check economic data, service/operator costs, agenda and cash desk before the next decision."));
     const primaryRoute = routeForGoldAction(primary?.action || primaryText, primary?.domain, primary || {});
     const actionRoute = routeForGoldAction(primary?.suggestedAction || primary?.action || actionText, primary?.domain, primary || {});
     const explanationRoute = routeForDomain(primary?.domain, "/ai-gold");
@@ -641,60 +665,60 @@
       </div>
       <div class="gold-bridge-header">
         <div>
-          <div class="gold-bridge-title">AI Gold - cosa fare ora</div>
-          <div class="gold-bridge-subtitle">Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.</div>
+          <div class="gold-bridge-title">${copy("AI Gold - cosa fare ora", "AI Gold - what to do now")}</div>
+          <div class="gold-bridge-subtitle">${copy("Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.", "The management system says what is happening. AI Gold says what to do, what is missing and which control to open.")}</div>
         </div>
         <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
       </div>
       <div class="gold-bridge-grid">
-        <div class="gold-bridge-metric" data-gold-route="${primaryRoute}" role="button" tabindex="0" aria-label="Apri modulo collegato alla priorita AI">
-          <div class="gold-bridge-label">Prossima azione</div>
+        <div class="gold-bridge-metric" data-gold-route="${primaryRoute}" role="button" tabindex="0" aria-label="${copy("Apri modulo collegato alla priorita AI", "Open the module linked to the AI priority")}">
+          <div class="gold-bridge-label">${copy("Prossima azione", "Next action")}</div>
           <div class="gold-bridge-value">${escapeHtml(primaryText)}</div>
         </div>
-        <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="Apri AI Gold">
-          <div class="gold-bridge-label">Fonte</div>
-          <div class="gold-bridge-value">${source.primary ? "Core/Nyra server" : "Fallback dati"}</div>
+        <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="${copy("Apri AI Gold", "Open AI Gold")}">
+          <div class="gold-bridge-label">${copy("Fonte", "Source")}</div>
+          <div class="gold-bridge-value">${source.primary ? "Core/Nyra server" : copy("Fallback dati", "Data fallback")}</div>
         </div>
-        <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="Apri azione suggerita da AI Gold">
-          <div class="gold-bridge-label">Cosa controllare</div>
+        <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="${copy("Apri azione suggerita da AI Gold", "Open the action suggested by AI Gold")}">
+          <div class="gold-bridge-label">${copy("Cosa controllare", "What to check")}</div>
           <div class="gold-bridge-value">${escapeHtml(actionText)}</div>
         </div>
       </div>
       <div class="gold-bridge-list">
-        <div class="gold-bridge-item" data-gold-route="${explanationRoute}" role="button" tabindex="0" aria-label="Apri dettaglio operativo collegato">
+        <div class="gold-bridge-item" data-gold-route="${explanationRoute}" role="button" tabindex="0" aria-label="${copy("Apri dettaglio operativo collegato", "Open linked operational detail")}">
           <div class="gold-bridge-item-title">${escapeHtml(explanationText)}</div>
-          <div class="gold-bridge-item-subtitle">Dominio: ${primary?.domain || "centro"} · rischio ${(Number(risk.score || 0)).toFixed(2)} · provider ${escapeHtml(source.provider)}</div>
+          <div class="gold-bridge-item-subtitle">${copy("Dominio", "Domain")}: ${primary?.domain || copy("centro", "center")} · ${copy("rischio", "risk")} ${(Number(risk.score || 0)).toFixed(2)} · provider ${escapeHtml(source.provider)}</div>
         </div>
         ${secondary.slice(0, 3).map((item) => `
-          <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain, item)}" role="button" tabindex="0" aria-label="Apri priorita secondaria">
-            <div class="gold-bridge-item-title">${item.label || item.domain || "Priorita secondaria"}</div>
-            <div class="gold-bridge-item-subtitle">Dominio: ${item.domain || "centro"} · punteggio ${(Number(item.score || 0)).toFixed(2)}</div>
+          <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain, item)}" role="button" tabindex="0" aria-label="${copy("Apri priorita secondaria", "Open secondary priority")}">
+            <div class="gold-bridge-item-title">${item.label || item.domain || copy("Priorita secondaria", "Secondary priority")}</div>
+            <div class="gold-bridge-item-subtitle">${copy("Dominio", "Domain")}: ${item.domain || copy("centro", "center")} · ${copy("punteggio", "score")} ${(Number(item.score || 0)).toFixed(2)}</div>
           </div>
         `).join("")}
         ${blocked.length ? `
-          <div class="gold-bridge-item" data-gold-route="/settings" role="button" tabindex="0" aria-label="Apri impostazioni per azioni bloccate">
-            <div class="gold-bridge-item-title">Azioni bloccate</div>
+          <div class="gold-bridge-item" data-gold-route="/settings" role="button" tabindex="0" aria-label="${copy("Apri impostazioni per azioni bloccate", "Open settings for blocked actions")}">
+            <div class="gold-bridge-item-title">${copy("Azioni bloccate", "Blocked actions")}</div>
             <div class="gold-bridge-item-subtitle">${blocked.map((item) => escapeHtml(item.label || item.domain || item)).join(" · ")}</div>
           </div>
         ` : ""}
         ${changeImpact?.enabled ? `
-          <div class="gold-bridge-item" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="Apri AI Gold per effetto domino">
-            <div class="gold-bridge-item-title">Effetto domino attivo</div>
+          <div class="gold-bridge-item" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="${copy("Apri AI Gold per effetto domino", "Open AI Gold for domino effect")}">
+            <div class="gold-bridge-item-title">${copy("Effetto domino attivo", "Domino effect active")}</div>
             <div class="gold-bridge-item-subtitle">
               Branch ${escapeHtml(changeImpact.coreBranch || "change_impact_orchestration")} ·
-              ${Number(changeImpact.requiredActionsCount || changeImpact.requiredActions?.length || 0)} controlli ·
+              ${Number(changeImpact.requiredActionsCount || changeImpact.requiredActions?.length || 0)} ${copy("controlli", "checks")} ·
               ${Number(changeImpact.testsRequiredCount || changeImpact.testsRequired?.length || 0)} test ·
-              conferma owner richiesta
+              ${copy("conferma owner richiesta", "owner confirmation required")}
             </div>
           </div>
         ` : ""}
         ${customerSchema ? `
-          <div class="gold-bridge-item" data-gold-route="/clients" role="button" tabindex="0" aria-label="Apri clienti collegati alla lettura clienti Core">
-            <div class="gold-bridge-item-title">Lettura clienti Core</div>
+          <div class="gold-bridge-item" data-gold-route="/clients" role="button" tabindex="0" aria-label="${copy("Apri clienti collegati alla lettura clienti Core", "Open clients linked to Core client reading")}">
+            <div class="gold-bridge-item-title">${copy("Lettura clienti Core", "Core client reading")}</div>
             <div class="gold-bridge-item-subtitle">
-              ${customerSchema} · clienti ${Number(localSummary.clients || 0)} · consensi ${Number(readiness?.granted_consent_count ?? localSummary.consents_registered ?? 0)} · invio automatico ${automaticSendAllowed ? "abilitato" : "bloccato"}
+              ${customerSchema} · ${copy("clienti", "clients")} ${Number(localSummary.clients || 0)} · ${copy("consensi", "consents")} ${Number(readiness?.granted_consent_count ?? localSummary.consents_registered ?? 0)} · ${copy("invio automatico", "automatic sending")} ${automaticSendAllowed ? copy("abilitato", "enabled") : copy("bloccato", "blocked")}
             </div>
-            <div class="gold-bridge-item-subtitle">Prossima azione: ${nextStep}</div>
+            <div class="gold-bridge-item-subtitle">${copy("Prossima azione", "Next action")}: ${nextStep}</div>
           </div>
         ` : ""}
       </div>
@@ -713,6 +737,7 @@
     injectStyle();
 
     try {
+      await refreshUiLanguage();
       const [capabilities, context, customerIntelligence] = await Promise.all([
         fetchJson("/api/ai-gold/capabilities"),
         fetchJson("/api/ai-gold/decision-context"),
@@ -786,32 +811,32 @@
     panel.innerHTML = `
       <div class="admin-tools-header">
         <div>
-          <div class="admin-tools-title">Pulizia demo e test</div>
-          <div class="admin-tools-subtitle">Strumenti rapidi super admin per togliere tenant demo/test e ripulire il rumore operativo.</div>
+          <div class="admin-tools-title">${copy("Pulizia demo e test", "Demo and test cleanup")}</div>
+          <div class="admin-tools-subtitle">${copy("Strumenti rapidi super admin per togliere tenant demo/test e ripulire il rumore operativo.", "Quick super admin tools to remove demo/test tenants and clean operational noise.")}</div>
         </div>
         <div class="gold-bridge-pill">super admin</div>
       </div>
       <div class="admin-tools-actions">
-        <button type="button" class="admin-tools-button" data-admin-action="cleanup-demo-centers">Elimina demo/test tenant</button>
-        <button type="button" class="admin-tools-button secondary" data-admin-action="cleanup-test-prefix">Pulisci test STRESS_</button>
+        <button type="button" class="admin-tools-button" data-admin-action="cleanup-demo-centers">${copy("Elimina demo/test tenant", "Delete demo/test tenants")}</button>
+        <button type="button" class="admin-tools-button secondary" data-admin-action="cleanup-test-prefix">${copy("Pulisci test STRESS_", "Clean STRESS_ tests")}</button>
       </div>
-      <div class="admin-tools-status" data-admin-status>Pronto.</div>
+      <div class="admin-tools-status" data-admin-status>${copy("Pronto.", "Ready.")}</div>
     `;
     panel.addEventListener("click", async (event) => {
       const action = event.target?.getAttribute?.("data-admin-action");
       if (!action) return;
       const status = panel.querySelector("[data-admin-status]");
-      status.textContent = "Esecuzione...";
+      status.textContent = copy("Esecuzione...", "Running...");
       try {
         if (action === "cleanup-demo-centers") {
           const result = await postJson("/api/admin/cleanup-demo-centers", {});
-          status.textContent = `Centri rimossi: ${(result.removedCenters || []).join(", ") || "nessuno"}.`;
+          status.textContent = `${copy("Centri rimossi", "Centers removed")}: ${(result.removedCenters || []).join(", ") || copy("nessuno", "none")}.`;
         }
         if (action === "cleanup-test-prefix") {
           const result = await postJson("/api/admin/cleanup-test-data", { prefix: "STRESS_" });
-          status.textContent = `Cleanup STRESS_ completato.`;
+          status.textContent = copy("Cleanup STRESS_ completato.", "STRESS_ cleanup completed.");
           if (result?.deleted?.users || result?.deleted?.clients) {
-            status.textContent += ` Users ${result.deleted.users || 0}, clienti ${result.deleted.clients || 0}.`;
+            status.textContent += ` Users ${result.deleted.users || 0}, ${copy("clienti", "clients")} ${result.deleted.clients || 0}.`;
           }
         }
       } catch (error) {
@@ -839,26 +864,26 @@
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">Configurazione Enterprise attiva</div>
-          <div class="enterprise-bridge-subtitle">La shell deve spiegare cosa e attivo, cosa richiede conferma e quale prossima mossa ha senso ora.</div>
+          <div class="enterprise-bridge-title">${copy("Configurazione Enterprise attiva", "Active Enterprise configuration")}</div>
+          <div class="enterprise-bridge-subtitle">${copy("La shell deve spiegare cosa e attivo, cosa richiede conferma e quale prossima mossa ha senso ora.", "The shell must explain what is active, what requires confirmation and which next move makes sense now.")}</div>
         </div>
-        <div class="enterprise-bridge-pill">${activeModules} moduli attivi</div>
+        <div class="enterprise-bridge-pill">${activeModules} ${copy("moduli attivi", "active modules")}</div>
       </div>
       <div class="enterprise-bridge-grid">
-        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri impostazioni sessione">
-          <div class="enterprise-bridge-card-title">Sessione</div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri impostazioni sessione", "Open session settings")}">
+          <div class="enterprise-bridge-card-title">${copy("Sessione", "Session")}</div>
           <div class="enterprise-bridge-card-value">${role || "owner"}</div>
-          <div class="enterprise-bridge-card-copy">Le azioni sensibili restano confermabili: ${confirmationMode}.</div>
+          <div class="enterprise-bridge-card-copy">${copy("Le azioni sensibili restano confermabili", "Sensitive actions remain confirmable")}: ${confirmationMode}.</div>
         </div>
-        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri impostazioni moduli">
-          <div class="enterprise-bridge-card-title">Regole accesso</div>
-          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? "redditivita leggibile" : "redditivita bloccata"}</div>
-          <div class="enterprise-bridge-card-copy">Quando un modulo non e attivo, la UI deve aprire una guida premium invece di lasciare uno stato vuoto o un errore secco.</div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri impostazioni moduli", "Open module settings")}">
+          <div class="enterprise-bridge-card-title">${copy("Regole accesso", "Access rules")}</div>
+          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? copy("redditivita leggibile", "profitability readable") : copy("redditivita bloccata", "profitability blocked")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Quando un modulo non e attivo, la UI deve aprire una guida premium invece di lasciare uno stato vuoto o un errore secco.", "When a module is not active, the UI must open premium guidance instead of leaving an empty state or a dry error.")}</div>
         </div>
-        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="Apri prossima azione impostazioni">
-          <div class="enterprise-bridge-card-title">Prossima mossa</div>
-          <div class="enterprise-bridge-card-value">Controlla moduli, sessione e coerenza testi</div>
-          <div class="enterprise-bridge-card-copy">Se il centro non puo agire, la vista deve indicare il prossimo passo: piano, impostazioni o ruolo corretto.</div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri prossima azione impostazioni", "Open next settings action")}">
+          <div class="enterprise-bridge-card-title">${copy("Prossima mossa", "Next move")}</div>
+          <div class="enterprise-bridge-card-value">${copy("Controlla moduli, sessione e coerenza testi", "Check modules, session and copy coherence")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Se il centro non puo agire, la vista deve indicare il prossimo passo: piano, impostazioni o ruolo corretto.", "If the center cannot act, the view must indicate the next step: plan, settings or correct role.")}</div>
         </div>
       </div>
     `;
@@ -884,26 +909,26 @@
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">Lettura report piu chiara</div>
-          <div class="enterprise-bridge-subtitle">Lo stato selezionato deve restare visibile anche con dati a zero: giorno, settimana e mese non possono sembrare uguali.</div>
+          <div class="enterprise-bridge-title">${copy("Lettura report piu chiara", "Clearer report reading")}</div>
+          <div class="enterprise-bridge-subtitle">${copy("Lo stato selezionato deve restare visibile anche con dati a zero: giorno, settimana e mese non possono sembrare uguali.", "The selected state must remain visible even with zero data: day, week and month cannot look the same.")}</div>
         </div>
-        <div class="enterprise-bridge-pill">vista ${activePeriod}</div>
+        <div class="enterprise-bridge-pill">${copy("vista", "view")} ${activePeriod}</div>
       </div>
       <div class="enterprise-bridge-grid">
-        <div class="enterprise-bridge-card" data-enterprise-card-target="/reports" role="button" tabindex="0" aria-label="Apri report periodo attivo">
-          <div class="enterprise-bridge-card-title">Periodo attivo</div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/reports" role="button" tabindex="0" aria-label="${copy("Apri report periodo attivo", "Open active-period report")}">
+          <div class="enterprise-bridge-card-title">${copy("Periodo attivo", "Active period")}</div>
           <div class="enterprise-bridge-card-value">${activePeriod}</div>
-          <div class="enterprise-bridge-card-copy">La selezione attiva deve essere leggibile subito sopra numeri e liste.</div>
+          <div class="enterprise-bridge-card-copy">${copy("La selezione attiva deve essere leggibile subito sopra numeri e liste.", "The active selection must be readable immediately above numbers and lists.")}</div>
         </div>
-        <div class="enterprise-bridge-card" data-enterprise-card-target="/cashdesk" role="button" tabindex="0" aria-label="Apri cassa per verificare dati zero">
-          <div class="enterprise-bridge-card-title">Se i dati sono zero</div>
-          <div class="enterprise-bridge-card-value">non deve sembrare silenzio</div>
-          <div class="enterprise-bridge-card-copy">La UI deve spiegare se mancano attivita, cassa o semplicemente volume nel periodo selezionato.</div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/cashdesk" role="button" tabindex="0" aria-label="${copy("Apri cassa per verificare dati zero", "Open cash desk to verify zero data")}">
+          <div class="enterprise-bridge-card-title">${copy("Se i dati sono zero", "If data is zero")}</div>
+          <div class="enterprise-bridge-card-value">${copy("non deve sembrare silenzio", "it must not look silent")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("La UI deve spiegare se mancano attivita, cassa o semplicemente volume nel periodo selezionato.", "The UI must explain whether activity, cash desk data or simply volume is missing in the selected period.")}</div>
         </div>
-        <div class="enterprise-bridge-card" data-enterprise-card-target="/appointments" role="button" tabindex="0" aria-label="Apri agenda per azione utile">
-          <div class="enterprise-bridge-card-title">Azione utile</div>
-          <div class="enterprise-bridge-card-value">cambia vista o verifica chiusure</div>
-          <div class="enterprise-bridge-card-copy">Se il giorno e vuoto, prova settimana o mese; se e tutto vuoto, controlla agenda, cassa e collegamenti servizio-operatore.</div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/appointments" role="button" tabindex="0" aria-label="${copy("Apri agenda per azione utile", "Open agenda for useful action")}">
+          <div class="enterprise-bridge-card-title">${copy("Azione utile", "Useful action")}</div>
+          <div class="enterprise-bridge-card-value">${copy("cambia vista o verifica chiusure", "change view or verify closures")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Se il giorno e vuoto, prova settimana o mese; se e tutto vuoto, controlla agenda, cassa e collegamenti servizio-operatore.", "If the day is empty, try week or month; if everything is empty, check agenda, cash desk and service-operator links.")}</div>
         </div>
       </div>
     `;
@@ -914,45 +939,45 @@
   function buildEnterpriseSurfacePanel(route) {
     const config = {
       "/services": {
-        title: "Servizi separati con piu chiarezza",
-        subtitle: "Catalogo, staff e risorse devono essere letti come superfici diverse dello stesso sistema.",
+        title: copy("Servizi separati con piu chiarezza", "Services separated more clearly"),
+        subtitle: copy("Catalogo, staff e risorse devono essere letti come superfici diverse dello stesso sistema.", "Catalog, staff and resources must be read as different surfaces of the same system."),
         actions: [
-          { label: "Catalogo", href: "/services", active: true },
-          { label: "Turni", href: "/shifts" },
-          { label: "Protocolli", href: "/protocols" }
+          { label: copy("Catalogo", "Catalog"), href: "/services", active: true },
+          { label: copy("Turni", "Shifts"), href: "/shifts" },
+          { label: copy("Protocolli", "Protocols"), href: "/protocols" }
         ],
         cards: [
-          ["Catalogo", "Tieni allineati prezzo, durata e categoria.", "/services"],
-          ["Staff", "Se manca lo staff, la shell deve dirlo in modo utile.", "/services"],
-          ["Risorse", "Tecnologie e stanze vanno lette come vincoli operativi.", "/services"]
+          [copy("Catalogo", "Catalog"), copy("Tieni allineati prezzo, durata e categoria.", "Keep price, duration and category aligned."), "/services"],
+          ["Staff", copy("Se manca lo staff, la shell deve dirlo in modo utile.", "If staff is missing, the shell must say it usefully."), "/services"],
+          [copy("Risorse", "Resources"), copy("Tecnologie e stanze vanno lette come vincoli operativi.", "Technologies and rooms must be read as operational constraints."), "/services"]
         ]
       },
       "/shifts": {
-        title: "Turni leggibili a blocchi",
-        subtitle: "Calendario, presenze e modelli devono essere separati meglio nelle schermate lunghe.",
+        title: copy("Turni leggibili a blocchi", "Shifts readable by blocks"),
+        subtitle: copy("Calendario, presenze e modelli devono essere separati meglio nelle schermate lunghe.", "Calendar, attendance and templates must be better separated in long screens."),
         actions: [
-          { label: "Turni", href: "/shifts", active: true },
-          { label: "Servizi", href: "/services" },
-          { label: "Protocolli", href: "/protocols" }
+          { label: copy("Turni", "Shifts"), href: "/shifts", active: true },
+          { label: copy("Servizi", "Services"), href: "/services" },
+          { label: copy("Protocolli", "Protocols"), href: "/protocols" }
         ],
         cards: [
-          ["Calendario", "Prima vedi chi lavora oggi e dove ci sono buchi.", "/shifts"],
-          ["Presenze", "Poi conferme e controllo operativo.", "/shifts"],
-          ["Modelli", "Infine gli schemi riutilizzabili del centro.", "/shifts"]
+          [copy("Calendario", "Calendar"), copy("Prima vedi chi lavora oggi e dove ci sono buchi.", "First see who works today and where there are gaps."), "/shifts"],
+          [copy("Presenze", "Attendance"), copy("Poi conferme e controllo operativo.", "Then confirmations and operational control."), "/shifts"],
+          [copy("Modelli", "Templates"), copy("Infine gli schemi riutilizzabili del centro.", "Finally the reusable center patterns."), "/shifts"]
         ]
       },
       "/protocols": {
-        title: "Protocolli con livelli piu chiari",
-        subtitle: "Libreria, scheda cliente e bozza AI devono sembrare tre livelli distinti, non una pagina unica lunghissima.",
+        title: copy("Protocolli con livelli piu chiari", "Protocols with clearer levels"),
+        subtitle: copy("Libreria, scheda cliente e bozza AI devono sembrare tre livelli distinti, non una pagina unica lunghissima.", "Library, client profile and AI draft must feel like three distinct levels, not one very long page."),
         actions: [
-          { label: "Protocolli", href: "/protocols", active: true },
-          { label: "Servizi", href: "/services" },
-          { label: "Turni", href: "/shifts" }
+          { label: copy("Protocolli", "Protocols"), href: "/protocols", active: true },
+          { label: copy("Servizi", "Services"), href: "/services" },
+          { label: copy("Turni", "Shifts"), href: "/shifts" }
         ],
         cards: [
-          ["Libreria", "Prima vedi cosa esiste gia e cosa manca.", "/protocols"],
-          ["Cliente", "Poi storico, sensibilita e zona.", "/clients"],
-          ["Bozza AI", "Solo dopo arrivano suggerimento e conferma operatore.", "/ai-gold"]
+          [copy("Libreria", "Library"), copy("Prima vedi cosa esiste gia e cosa manca.", "First see what already exists and what is missing."), "/protocols"],
+          [copy("Cliente", "Client"), copy("Poi storico, sensibilita e zona.", "Then history, sensitivity and area."), "/clients"],
+          [copy("Bozza AI", "AI draft"), copy("Solo dopo arrivano suggerimento e conferma operatore.", "Only then come suggestion and operator confirmation."), "/ai-gold"]
         ]
       }
     }[route];
@@ -970,7 +995,7 @@
       </div>
       <div class="enterprise-bridge-grid">
         ${config.cards.map(([title, copy, target]) => `
-          <div class="enterprise-bridge-card" data-enterprise-card-target="${target}" role="button" tabindex="0" aria-label="Apri ${title}">
+          <div class="enterprise-bridge-card" data-enterprise-card-target="${target}" role="button" tabindex="0" aria-label="${copy("Apri", "Open")} ${title}">
             <div class="enterprise-bridge-card-title">${title}</div>
             <div class="enterprise-bridge-card-copy">${copy}</div>
           </div>
@@ -991,6 +1016,7 @@
       runWithMutationLock(() => removeSettingsPanel());
       return;
     }
+    await refreshUiLanguage();
     if (!(await isSuperAdminSession())) {
       runWithMutationLock(() => removeSettingsPanel());
       return;
@@ -1021,6 +1047,7 @@
           fetchJson("/api/auth/session"),
           fetchJson("/api/settings")
         ]);
+        await refreshUiLanguage(settings);
         const anchor = findSettingsAnchor();
         if (anchor) {
           const panel = buildEnterpriseSettingsPanel(session, settings);

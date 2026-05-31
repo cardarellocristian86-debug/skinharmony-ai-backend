@@ -50,7 +50,7 @@ export function renderAgendaView(deps) {
         <div class="agenda-desktop">
           <div class="agenda-grid" style="--agenda-columns:${staff.length};">
             <div class="agenda-time-col">
-              <div class="agenda-head">Orario</div>
+              <div class="agenda-head">${t("agendaView.schedule")}</div>
               ${hours.map((hour) => `<div class="agenda-time">${escapeHtml(hour)}</div>`).join("")}
             </div>
             ${heads}

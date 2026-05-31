@@ -1207,8 +1207,8 @@ function renderReports() {
   if (!moduleEnabled("reports")) {
     return renderLockedModule({
       title: t("reportsView.lockedTitle"),
-      reason: "Il modulo report non e attivo in questa configurazione.",
-      hint: "Per una lettura piu profonda del centro attiva il blocco report o redditivita dal piano coerente."
+      reason: t("reportsView.lockedReason"),
+      hint: t("reportsView.lockedHint")
     });
   }
   const operators = Array.isArray(report.operators) ? report.operators : [];
