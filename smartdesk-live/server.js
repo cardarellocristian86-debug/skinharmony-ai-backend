@@ -1485,40 +1485,52 @@ app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
   }, req.session));
 });
 
-app.get("/api/ai-gold/decision-center", requirePlan("gold"), (req, res) => {
-  sendCoreliaSafe(res, () => ({
-    goldEnabled: false,
-    title: "Corelia Decision Engine",
-    sections: [],
-    sourceLayer: "corelia_fallback"
-  }), () => service.getAiGoldDecisionCenter({
-    startDate: req.query.startDate || "",
-    endDate: req.query.endDate || "",
-    forceRefresh: !isSafeModeActive() && (
-      req.query.forceRefresh === "1"
-      || req.query.forceRefresh === "true"
-      || req.query.force === "1"
-      || req.query.force === "true"
-    )
-  }, req.session));
+app.get("/api/ai-gold/decision-center", requirePlan("gold"), async (req, res) => {
+  try {
+    const payload = service.getAiGoldDecisionCenter({
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || "",
+      forceRefresh: !isSafeModeActive() && (
+        req.query.forceRefresh === "1"
+        || req.query.forceRefresh === "true"
+        || req.query.force === "1"
+        || req.query.force === "true"
+      )
+    }, req.session);
+    res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, "gold"));
+  } catch (error) {
+    res.json({
+      goldEnabled: false,
+      title: "AI Gold",
+      sections: [],
+      sourceLayer: "external_core_nyra_fallback",
+      message: error instanceof Error ? error.message : "Decision Center Gold non disponibile"
+    });
+  }
 });
 
-app.get("/api/ai-gold/cockpit", requirePlan("gold"), (req, res) => {
-  sendCoreliaSafe(res, () => ({
-    goldEnabled: false,
-    cockpitVersion: "gold_cockpit_v1",
-    sourceLayer: "corelia_fallback",
-    summary: {},
-    guardrails: {
-      readOnly: true,
-      automaticExecutionAllowed: false,
-      operatorConfirmationRequired: true
-    },
-    sections: []
-  }), () => service.getAiGoldCockpit({
-    startDate: req.query.startDate || "",
-    endDate: req.query.endDate || ""
-  }, req.session));
+app.get("/api/ai-gold/cockpit", requirePlan("gold"), async (req, res) => {
+  try {
+    const payload = service.getAiGoldCockpit({
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session);
+    res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, "gold"));
+  } catch (error) {
+    res.json({
+      goldEnabled: false,
+      cockpitVersion: "gold_cockpit_v1",
+      sourceLayer: "external_core_nyra_fallback",
+      summary: {},
+      guardrails: {
+        readOnly: true,
+        automaticExecutionAllowed: false,
+        operatorConfirmationRequired: true
+      },
+      sections: [],
+      message: error instanceof Error ? error.message : "Cockpit Gold non disponibile"
+    });
+  }
 });
 
 app.get("/api/ai-gold/capabilities", requirePlan("silver"), (req, res) => {
@@ -1542,21 +1554,28 @@ app.get("/api/ai-gold/progressive-intelligence", requirePlan("silver"), (req, re
   }));
 });
 
-app.get("/api/ai-gold/decision-context", requirePlan("silver"), (req, res) => {
-  sendCoreliaSafe(res, () => ({
-    goldEnabled: false,
-    currentPlan: normalizedPlan(req.session),
-    primaryAction: null,
-    secondaryActions: [],
-    blockedActions: [],
-    topSignals: [],
-    globalConfidence: 0,
-    systemRisk: 0,
-    sourceLayer: "corelia_fallback"
-  }), () => service.getGoldDecisionContext({
-    startDate: req.query.startDate || "",
-    endDate: req.query.endDate || ""
-  }, req.session));
+app.get("/api/ai-gold/decision-context", requirePlan("silver"), async (req, res) => {
+  try {
+    const payload = service.getGoldDecisionContext({
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session);
+    const mode = normalizedPlan(req.session) === "silver" ? "silver" : "gold";
+    res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, mode));
+  } catch (error) {
+    res.json({
+      goldEnabled: false,
+      currentPlan: normalizedPlan(req.session),
+      primaryAction: null,
+      secondaryActions: [],
+      blockedActions: [],
+      topSignals: [],
+      globalConfidence: 0,
+      systemRisk: 0,
+      sourceLayer: "external_core_nyra_fallback",
+      message: error instanceof Error ? error.message : "Decision context non disponibile"
+    });
+  }
 });
 
 app.get("/api/ai-gold/change-impact-contract", requirePlan("silver"), (req, res) => {

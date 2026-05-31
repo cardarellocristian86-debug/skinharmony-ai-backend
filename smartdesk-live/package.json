@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "audit:gold": "node scripts/smartdesk_gold_product_audit.js"
+    "audit:gold": "node scripts/smartdesk_gold_product_audit.js",
+    "test:external-ai-gold": "node scripts/external_ai_gold_bridge_test.js"
   },
   "dependencies": {
     "express": "^5.2.1",

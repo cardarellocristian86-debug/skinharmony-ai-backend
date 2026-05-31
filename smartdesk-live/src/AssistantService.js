@@ -1,5 +1,6 @@
 const { CoreliaBridge } = require("./corelia/CoreliaBridge");
 const { NyraDialogueAdapter } = require("./nyra/NyraDialogueAdapter");
+const { ExternalAiGoldBridge } = require("./ExternalAiGoldBridge");
 
 const ACTIONS = [
   "open_dashboard",
@@ -453,6 +454,7 @@ class AssistantService {
     this.coreliaBridge = desktopMirror ? new CoreliaBridge(desktopMirror) : null;
     this.nyraDialogue = new NyraDialogueAdapter();
     this.universalCoreBridge = options.universalCoreBridge || null;
+    this.externalAiGoldBridge = options.externalAiGoldBridge || new ExternalAiGoldBridge({ universalCoreBridge: this.universalCoreBridge });
   }
 
   getAiProviderMode() {
@@ -1529,6 +1531,121 @@ class AssistantService {
     }
   }
 
+  buildAiGoldExternalContext(payload = {}, session = null) {
+    const snapshot = this.desktopMirror.getBusinessSnapshot
+      ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
+      : null;
+    const goldCapabilities = this.getGoldCapabilitiesSafe(session);
+    const goldDecisionContext = this.getGoldDecisionContextSafe(session);
+    const settings = this.getSettingsSafe(session);
+    const dashboard = this.getDashboardSafe(session);
+    if (snapshot?.snapshotAvailable) {
+      return { businessSnapshot: snapshot, goldCapabilities, goldDecisionContext, dashboard, settings };
+    }
+    return {
+      marketing: this.desktopMirror.getAiGoldMarketing(session),
+      profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
+      goldCapabilities,
+      goldDecisionContext,
+      dashboard,
+      settings
+    };
+  }
+
+  async buildAiGoldExternalResponse(payload = {}, session = null, context = null) {
+    const question = String(payload.question || payload.message || "").trim();
+    const external = await this.externalAiGoldBridge.buildReadout({
+      mode: "gold",
+      question,
+      context: context || this.buildAiGoldExternalContext(payload, session),
+      session
+    });
+    return {
+      goldEnabled: true,
+      provider: external.provider,
+      sourceLayer: external.sourceLayer,
+      answer: external.answer,
+      actions: [],
+      external,
+      structured: {
+        sourceLayer: external.sourceLayer,
+        primarySignal: external.answer,
+        primaryAction: external.firstAction,
+        recommendedNextStep: external.firstAction,
+        confidence: Number(external.core?.confidence || external.core?.decision_contract?.confidence || 0),
+        universalCore: external.core,
+        core2Pipeline: external.core2Pipeline
+      },
+      dialogue: {
+        identity: "nyra_render",
+        reply: external.answer,
+        ui: external.ui,
+        core2Pipeline: external.core2Pipeline
+      },
+      guardrails: external.guardrails
+    };
+  }
+
+  async enhanceGoldPayloadWithExternalReadout(payload = {}, session = null, mode = "gold") {
+    if (!payload || payload.goldEnabled === false) return payload;
+    try {
+      const context = {
+        businessSnapshot: this.desktopMirror.getBusinessSnapshot ? this.desktopMirror.getBusinessSnapshot({}, session) : null,
+        goldCapabilities: this.getGoldCapabilitiesSafe(session),
+        goldDecisionContext: this.getGoldDecisionContextSafe(session),
+        dashboard: this.getDashboardSafe(session),
+        payload
+      };
+      const question = mode === "silver"
+        ? "Leggi il centro in modalita Silver: controllo tecnico read-only, anomalie, dati mancanti e prima verifica manuale."
+        : "Leggi AI Gold Smart Desk: stato centro, prima priorita, perche conta, dati mancanti e azione manuale da confermare.";
+      const external = await this.externalAiGoldBridge.buildReadout({ mode, question, context, session });
+      const externalItem = {
+        id: `${mode}-external-core-nyra-readout`,
+        level: external.core?.risk?.band === "high" || external.core?.risk?.band === "blocked" ? "warning" : "info",
+        area: mode === "silver" ? "controllo core" : "ai gold",
+        conclusion: mode === "silver" ? "Controllo Universal Core" : "Lettura Core/Nyra esterna",
+        reason: external.answer,
+        details: external.guardrails?.coreDecides || external.guardrails?.nyraExplains
+          ? "Fonte esterna Render: Core decide, Nyra spiega. Smart Desk resta sorgente dati."
+          : "Bridge esterno non completo: mostrata lettura prudente senza azioni automatiche.",
+        action: external.firstAction || "verifica manuale",
+        button: mode === "silver" ? "Apri dashboard" : "Mostra cosa fare ora",
+        target: mode === "silver" ? "dashboard" : "ai-gold",
+        requiresOperatorConfirmation: mode !== "silver"
+      };
+      const sections = Array.isArray(payload.sections) ? payload.sections.slice() : [];
+      sections.unshift({
+        key: `${mode}_external_readout`,
+        title: mode === "silver" ? "Universal Core Read-only" : "Core + Nyra + OpenAI",
+        sourceLayer: external.sourceLayer,
+        items: [externalItem],
+        actions: []
+      });
+      return {
+        ...payload,
+        sourceLayer: `${payload.sourceLayer || mode}_external_core_nyra`,
+        externalAi: external,
+        summary: {
+          ...(payload.summary || {}),
+          aiArchitecture: mode === "silver" ? "silver_universal_core_readonly" : "gold_core_nyra_openai_external",
+          externalProvider: external.provider,
+          firstExternalAction: external.firstAction
+        },
+        sections
+      };
+    } catch (error) {
+      return {
+        ...payload,
+        externalAi: {
+          success: false,
+          provider: "external_core_nyra_error",
+          message: error instanceof Error ? error.message : "Bridge esterno non disponibile"
+        }
+      };
+    }
+  }
+
   async aiGoldAsk(payload = {}, session = null) {
     if (!this.desktopMirror?.hasGoldIntelligence?.(session)) {
       return {
@@ -1540,29 +1657,10 @@ class AssistantService {
     }
 
     const question = String(payload.question || payload.message || "").trim();
-    const snapshot = this.desktopMirror.getBusinessSnapshot
-      ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
-      : null;
-    const goldCapabilities = this.getGoldCapabilitiesSafe(session);
-    const goldDecisionContext = this.getGoldDecisionContextSafe(session);
-    const settings = this.getSettingsSafe(session);
-    const context = snapshot?.snapshotAvailable ? {
-      businessSnapshot: snapshot,
-      goldCapabilities,
-      goldDecisionContext,
-      dashboard: this.getDashboardSafe(session),
-      settings
-    } : {
-      marketing: this.desktopMirror.getAiGoldMarketing(session),
-      profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
-      goldCapabilities,
-      goldDecisionContext,
-      dashboard: this.getDashboardSafe(session),
-      settings
-    };
+    const context = this.buildAiGoldExternalContext(payload, session);
     const language = assistantLanguage(context);
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
-    const governedBaseline = await this.buildAiGoldCoreliaResponse(payload, session, context);
+    const governedBaseline = await this.buildAiGoldExternalResponse(payload, session, context);
 
     if (!this.shouldUseOpenAI()) {
       return governedBaseline;
@@ -1571,14 +1669,14 @@ class AssistantService {
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
     const instructions = language === "en"
       ? [
-        "You are AI Gold inside SkinHarmony Smart Desk. Universal Core is the primary decision gate when available; Corelia is the local fallback.",
+        "You are AI Gold inside SkinHarmony Smart Desk. Universal Core Render is the primary decision gate; Nyra Render is the explanation layer. Smart Desk is only the data source.",
         "You are not a generic chatbot: you are an operational assistant for aesthetic, hair and hybrid centers.",
         "Use only the data present in the JSON context. If data is missing, say so clearly.",
         "Do not send messages, do not modify prices, do not change data and do not run automatic campaigns.",
         "Suggest concrete actions that the operator must confirm.",
         "When monthlyTrend is present, use it to read swings, drops, recoveries and operational instability.",
         "When goldDecisionContext is present, use it as the official source: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 and trend.",
-        "You also receive governedBaseline: this is the Corelia/Nyra governed reading. Refine voice and clarity, but do not change priorities, risks, blocks or the primary action.",
+        "You also receive governedBaseline: this is the Core/Nyra Render governed reading. Refine voice and clarity, but do not change priorities, risks, blocks or the primary action.",
         "Do not bypass canExecute, blockedActions, high risk or low confidence. If Gold blocks, you must block or ask for verification.",
         "When goldCapabilities is present, use features and limits to understand what is active. If WhatsApp is not enabled, suggest only manual copy/fallback.",
         "Avoid medical or therapeutic claims and avoid guaranteed outcomes.",
@@ -1586,14 +1684,14 @@ class AssistantService {
         "Structure the answer as: Summary, Priorities, Suggested actions, Limits/missing data."
       ].join("\n")
       : [
-        "Sei AI Gold di SkinHarmony Smart Desk. Universal Core è il gate decisionale primario quando disponibile; Corelia è il fallback locale.",
+        "Sei AI Gold di SkinHarmony Smart Desk. Universal Core Render è il gate decisionale primario; Nyra Render è il layer di spiegazione. Smart Desk è solo sorgente dati.",
         "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
         "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
         "Non inviare messaggi, non modificare prezzi, non cambiare dati e non fare campagne automatiche.",
         "Suggerisci azioni concrete che l'operatore deve confermare.",
         "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
         "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
-        "Ricevi anche governedBaseline: è la lettura Corelia/Nyra già governata. Devi rifinire voce e chiarezza, non cambiare priorità, rischio, blocchi o azione primaria.",
+        "Ricevi anche governedBaseline: è la lettura Core/Nyra Render già governata. Devi rifinire voce e chiarezza, non cambiare priorità, rischio, blocchi o azione primaria.",
         "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
         "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
         "Evita claim medici, terapeutici o promesse di risultato.",
@@ -1621,12 +1719,14 @@ class AssistantService {
       const answer = data?.output_text || data?.output?.[0]?.content?.[0]?.text || this.buildAiGoldFallback(question, context);
       return {
         goldEnabled: true,
-        provider: "corelia_nyra_openai",
+        provider: "universal_core_render_nyra_render_openai",
         answer: language === "en" ? localizeAssistantText(answer, language) : answer,
         actions: [],
         structured: governedBaseline.structured || null,
         dialogue: governedBaseline.dialogue || null,
-        governedBaseline
+        governedBaseline,
+        external: governedBaseline.external || null,
+        guardrails: governedBaseline.guardrails || null
       };
     } catch {
       return governedBaseline;

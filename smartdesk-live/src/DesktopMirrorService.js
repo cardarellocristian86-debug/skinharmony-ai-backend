@@ -3649,7 +3649,7 @@ class DesktopMirrorService {
       },
       {
         key: "gold_engine",
-        title: "Universal Core Decision Engine",
+        title: "AI Gold - Core/Nyra esterni",
         items: [
           commercialGuidance.primaryItem,
           primaryItem,
@@ -11384,11 +11384,13 @@ class DesktopMirrorService {
       goldEnabled,
       silverCoreEnabled,
       currentPlan: plan,
-      version: "universal_core_enterprise_v1",
-      goldEngineVersion: "universal_core_phi_multi_domain_v1",
-      decisionMatrixVersion: "universal_core_decision_matrix_v1",
-      engineName: "Universal Core",
-      runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
+      version: "smartdesk_core_client_v1",
+      goldEngineVersion: goldEnabled ? "external_core_nyra_openai_v1" : "external_universal_core_readonly_v1",
+      decisionMatrixVersion: goldEnabled ? "external_core_nyra_decision_contract_v1" : "external_core_readonly_contract_v1",
+      engineName: goldEnabled ? "Core + Nyra + OpenAI esterni" : "Universal Core read-only",
+      runtimeStack: goldEnabled
+        ? ["SmartDeskDataSource", "UniversalCoreRender", "NyraRender", "OpenAIRefinement"]
+        : ["SmartDeskDataSource", "UniversalCoreRenderReadOnly"],
       changeImpactContract: this.getChangeImpactContract(session),
       progressiveIntelligence,
       features: {
@@ -11425,7 +11427,8 @@ class DesktopMirrorService {
           enabled: silverCoreEnabled && !goldEnabled,
           readOnly: true,
           canSuggestOperationalPriorities: silverCoreEnabled,
-          canExecuteActions: false
+          canExecuteActions: false,
+          externalCoreRequired: true
         },
         whatsapp: {
           requiresConsent: true,
@@ -13303,7 +13306,7 @@ class DesktopMirrorService {
         level: item.band === "alta" ? "critical" : item.band === "media" ? "warning" : item.band === "bassa" ? "info" : "success",
         area: item.domain,
         conclusion: item.explanationShort || item.output || "Segnale Gold",
-        reason: item.explanationLong || item.suggestedAction || "Priorità calcolata da Universal Core Decision Engine.",
+        reason: item.explanationLong || item.suggestedAction || "Priorità letta dai dati Smart Desk e governata dal layer esterno Core/Nyra.",
         details: `Necessità ${Math.round(Number(item.factors?.need || 0) * 100)} · Valore ${Math.round(Number(item.factors?.value || 0) * 100)} · Urgenza ${Math.round(Number(item.factors?.urgency || 0) * 100)} · Coerenza ${Math.round(Number(item.factors?.coherence || 0) * 100)} · Frizione ${Math.round(Number(item.factors?.friction || 0) * 100)}`,
         impactCents: Number(item.amountCents || item.revenueCents || 0),
         riskCents: 0,
@@ -13374,7 +13377,7 @@ class DesktopMirrorService {
       },
       {
         key: "gold_engine",
-        title: "Universal Core Decision Engine",
+        title: "AI Gold - Core/Nyra esterni",
         items: goldEnginePriorityItems
       },
       {
