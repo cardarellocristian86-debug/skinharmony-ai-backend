@@ -11851,6 +11851,10 @@ class DesktopMirrorService {
     }, {
       dataQualityScore: Number(dataQuality.score || 0) / 100
     });
+    const fallbackGlobalConfidenceRaw = Number(finalPrimaryAction?.universalCoreShadow?.confidence ?? finalPrimaryAction?.confidence ?? 0);
+    const fallbackSystemRiskRaw = Number(finalPrimaryAction?.universalCoreShadow?.risk ?? finalPrimaryAction?.risk ?? 0);
+    const fallbackGlobalConfidence = Number.isFinite(fallbackGlobalConfidenceRaw) ? fallbackGlobalConfidenceRaw : 0;
+    const fallbackSystemRisk = Number.isFinite(fallbackSystemRiskRaw) ? fallbackSystemRiskRaw : 0;
     return {
       goldEnabled: true,
       capabilities,
@@ -11860,8 +11864,8 @@ class DesktopMirrorService {
       blockedActions: alignedActions.blockedActions,
       topSignals,
       anomalies,
-      globalConfidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : 0,
-      systemRisk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : 0,
+      globalConfidence: confidenceValues.length ? Number(average(confidenceValues).toFixed(3)) : Number(fallbackGlobalConfidence.toFixed(3)),
+      systemRisk: riskValues.length ? Number(Math.max(...riskValues).toFixed(3)) : Number(fallbackSystemRisk.toFixed(3)),
       universalCoreShadow,
       universalCoreAlignment: {
         ...alignedActions.alignment,
