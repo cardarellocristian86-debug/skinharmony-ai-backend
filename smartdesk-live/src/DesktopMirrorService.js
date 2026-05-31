@@ -3645,7 +3645,8 @@ class DesktopMirrorService {
         items: blockedItems.length ? blockedItems : [primaryItem]
       }
     ];
-    const allDecisionItems = sections.flatMap((section) => section.items || []);
+    const manualSections = this.withGoldManualActions(sections);
+    const allDecisionItems = manualSections.flatMap((section) => section.items || []);
     const v7 = this.computeDecisionCenterV7(allDecisionItems);
     const uiReading = this.resolveDecisionCenterUiBand(v7, {
       action: decision.action || primaryItem.level,
@@ -3658,7 +3659,7 @@ class DesktopMirrorService {
       generatedAt: nowIso(),
       v7,
       summary: {
-        totalInsights: sections.reduce((sum, section) => sum + section.items.length, 0),
+        totalInsights: manualSections.reduce((sum, section) => sum + section.items.length, 0),
         uiReadingBand: uiReading.key,
         uiReadingLabel: uiReading.label,
         conflictIndex: v7.conflictIndex,
@@ -3692,7 +3693,7 @@ class DesktopMirrorService {
         protocols: 0,
         technologies: 0
       },
-      sections,
+      sections: manualSections,
       meta: {
         source: "gold_state",
         fallbackAvailable: true,
@@ -12721,6 +12722,113 @@ class DesktopMirrorService {
     return { key: "clear", label: "Risposta chiara" };
   }
 
+  normalizeGoldManualTarget(item = {}, fallback = "dashboard") {
+    const rawTarget = String(item.target || item.domain || fallback || "dashboard").toLowerCase();
+    const text = [
+      item.button,
+      item.action,
+      item.suggestedAction,
+      item.conclusion,
+      item.reason,
+      item.details,
+      item.value,
+      item.label
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (/costi|costo|prezzo|durata|servizi|service|operatori|staff|catalogo/.test(text)
+      && /completa|configura|correggi|verifica|apri|manca|mancanti/.test(text)) {
+      return {
+        target: "services",
+        targetFocus: /operatori|staff|costo orario/.test(text) && !/servizi|service|prodotti|tecnologie/.test(text)
+          ? "staff-costs"
+          : "service-costs"
+      };
+    }
+    if (rawTarget === "autopilot") return { target: "marketing", targetFocus: "autopilot" };
+    if (rawTarget === "client") return { target: "clients", targetFocus: item.clientId ? `client:${item.clientId}` : "" };
+    if (rawTarget === "cash") return { target: "cashdesk", targetFocus: "" };
+    if (rawTarget === "profit" || rawTarget === "profitability") return { target: "profitability", targetFocus: "" };
+    if (rawTarget === "agenda" || rawTarget === "appointments") return { target: "appointments", targetFocus: "" };
+    if (rawTarget === "inventory" || rawTarget === "stock") return { target: "inventory", targetFocus: "" };
+    if (rawTarget === "marketing" || /marketing|recall|messagg/.test(text)) return { target: "marketing", targetFocus: "" };
+    if (rawTarget === "clients" || /telefono|email|consens|contatt/.test(text)) return { target: "clients", targetFocus: "" };
+    if (rawTarget === "shifts" || rawTarget === "operators" || rawTarget === "operatori") return { target: "shifts", targetFocus: "" };
+    if (rawTarget === "protocols" || rawTarget === "treatments") return { target: "protocols", targetFocus: "" };
+    if (rawTarget === "dashboard" || rawTarget === "ai-gold") return { target: "dashboard", targetFocus: String(item.targetFocus || "") };
+    return { target: "dashboard", targetFocus: String(item.targetFocus || "") };
+  }
+
+  buildGoldManualActionsForSection(section = {}) {
+    const items = Array.isArray(section.items) ? section.items : [];
+    return items
+      .filter((item) => item && (item.button || item.action || item.target || item.suggestedAction || item.reason))
+      .slice(0, 4)
+      .map((item, index) => {
+        const route = item.manualActionMode && item.target
+          ? { target: item.target, targetFocus: item.targetFocus || "" }
+          : this.normalizeGoldManualTarget(item, section.key || "dashboard");
+        const label = this.getGoldManualActionLabel(item, route);
+        return {
+          id: `manual-${section.key || "gold"}-${item.id || index}`,
+          mode: "manual",
+          label,
+          title: item.conclusion || item.label || item.title || label,
+          reason: item.reason || item.value || item.details || "",
+          instruction: item.action || item.suggestedAction || item.nextAction || "Apri il modulo indicato, verifica i dati e salva manualmente.",
+          target: route.target,
+          targetFocus: item.targetFocus || route.targetFocus || "",
+          clientId: item.clientId || "",
+          staffId: item.staffId || "",
+          requiresOperatorConfirmation: true,
+          automaticExecutionAllowed: false
+        };
+      });
+  }
+
+  getGoldManualActionLabel(item = {}, route = {}) {
+    const defaultLabel = route.target === "services"
+      ? (route.targetFocus === "staff-costs" ? "Completa costi operatori" : "Completa costi servizi")
+      : route.target === "marketing" ? "Apri marketing"
+      : route.target === "clients" ? "Apri clienti"
+      : route.target === "cashdesk" ? "Apri cassa"
+      : route.target === "appointments" ? "Apri agenda"
+      : route.target === "inventory" ? "Apri magazzino"
+      : route.target === "profitability" ? "Apri redditività"
+      : route.target === "shifts" ? "Apri turni"
+      : route.target === "protocols" ? "Apri protocolli"
+      : "Apri dashboard";
+    const rawButton = String(item.button || item.actionLabel || "").trim();
+    if (!rawButton) return defaultLabel;
+    if (route.target === "services" && !/(servizi|servizio|operatori|costi|costo|configura|completa)/i.test(rawButton)) {
+      return defaultLabel;
+    }
+    return rawButton;
+  }
+
+  withGoldManualActions(sections = []) {
+    return (Array.isArray(sections) ? sections : []).map((section) => {
+      const rawItems = Array.isArray(section.items) ? section.items.slice(0, 4) : [];
+      const items = rawItems.map((item, index) => {
+        const route = this.normalizeGoldManualTarget(item, section.key || "dashboard");
+        const label = this.getGoldManualActionLabel(item, route);
+        return {
+          ...item,
+          button: label,
+          target: route.target,
+          targetFocus: item.targetFocus || route.targetFocus || "",
+          manualActionMode: true,
+          requiresOperatorConfirmation: item.requiresOperatorConfirmation !== false,
+          automaticExecutionAllowed: false,
+          manualActionId: `manual-${section.key || "gold"}-${item.id || index}`
+        };
+      });
+      return {
+        ...section,
+        items,
+        actions: this.buildGoldManualActionsForSection({ ...section, items })
+      };
+    });
+  }
+
   getAiGoldDecisionCenter(options = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
@@ -13116,7 +13224,8 @@ class DesktopMirrorService {
       ...section,
       items: section.items.slice(0, 4)
     }));
-    const totalInsights = sections.reduce((sum, section) => sum + section.items.length, 0);
+    const manualSections = this.withGoldManualActions(sections);
+    const totalInsights = manualSections.reduce((sum, section) => sum + section.items.length, 0);
     const payload = {
       goldEnabled: true,
       generatedAt: nowIso(),
@@ -13147,7 +13256,7 @@ class DesktopMirrorService {
         protocols: Number(snapshot.core?.protocols || 0),
         technologies: Number(snapshot.core?.technologies || 0)
       },
-      sections
+      sections: manualSections
     };
     return localizeDecisionCenterPayload(payload, this.getRuntimeLanguage(session));
   }
@@ -13218,7 +13327,7 @@ class DesktopMirrorService {
       ? "apri cockpit e lavora la prima priorità"
       : primaryAction?.suggestedAction || "leggi priorità";
 
-    const sections = [
+    const sections = this.withGoldManualActions([
       {
         key: "executive",
         title: "Cockpit Gold",
@@ -13367,7 +13476,7 @@ class DesktopMirrorService {
     ].map((section) => ({
       ...section,
       items: Array.isArray(section.items) ? section.items : []
-    }));
+    })));
 
     return {
       goldEnabled: true,
