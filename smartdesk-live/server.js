@@ -1665,12 +1665,35 @@ app.get("/api/ai-gold/onboarding/imports", requirePlan("gold"), (req, res) => {
   }
 });
 
+const GOLD_ONBOARDING_SYNC_RECORD_LIMIT = Number(process.env.GOLD_ONBOARDING_SYNC_RECORD_LIMIT || 1200);
+
+function countGoldOnboardingRecords(record = {}) {
+  const snapshots = record.snapshots || {};
+  return Object.values(snapshots).reduce((sum, block = {}) => (
+    sum
+    + Number(block.validRows?.length || 0)
+    + Number(block.reviewRows?.length || 0)
+  ), 0);
+}
+
 app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: analisi import Gold temporaneamente limitata"));
   }
   try {
-    res.json(service.analyzeGoldOnboardingImport(req.body || {}, req.session));
+    const analysis = service.analyzeGoldOnboardingImport(req.body || {}, req.session);
+    const recordCount = countGoldOnboardingRecords(analysis);
+    if (recordCount > GOLD_ONBOARDING_SYNC_RECORD_LIMIT) {
+      return res.status(413).json({
+        success: false,
+        code: "gold_onboarding_import_too_large",
+        message: `Import Gold troppo grande per conferma sincrona: ${recordCount} record. Dividi il file in blocchi fino a ${GOLD_ONBOARDING_SYNC_RECORD_LIMIT} record.`,
+        importId: analysis.importId,
+        recordCount,
+        limit: GOLD_ONBOARDING_SYNC_RECORD_LIMIT
+      });
+    }
+    res.json(analysis);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Impossibile analizzare i file";
     res.status(400).json({
@@ -1686,6 +1709,20 @@ app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
     return res.status(429).json(safeModePayload("Sistema sotto carico: import Gold temporaneamente limitato"));
   }
   try {
+    const imports = service.listGoldOnboardingImports(req.session) || [];
+    const importId = String(req.body?.importId || "");
+    const pendingImport = imports.find((item) => String(item.importId || item.id || "") === importId);
+    const recordCount = countGoldOnboardingRecords(pendingImport);
+    if (recordCount > GOLD_ONBOARDING_SYNC_RECORD_LIMIT) {
+      return res.status(413).json({
+        success: false,
+        code: "gold_onboarding_import_too_large",
+        message: `Import Gold troppo grande per conferma sincrona: ${recordCount} record. Dividi il file in blocchi fino a ${GOLD_ONBOARDING_SYNC_RECORD_LIMIT} record.`,
+        importId,
+        recordCount,
+        limit: GOLD_ONBOARDING_SYNC_RECORD_LIMIT
+      });
+    }
     res.json(service.confirmGoldOnboardingImport(req.body || {}, req.session));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Impossibile completare import Gold";
