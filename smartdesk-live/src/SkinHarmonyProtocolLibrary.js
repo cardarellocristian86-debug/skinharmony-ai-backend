@@ -18,7 +18,7 @@ const skinHarmonyProtocolLibrary = [
     needType: "luminosita",
     caseIntensity: "lieve",
     sessionsCount: 4,
-    frequency: "1 seduta ogni 7/10 giorni, review dopo la seconda seduta.",
+    frequency: "1 seduta ogni 7/10 giorni, verifica dopo la seconda seduta.",
     technologies: "Skin Pro",
     products: "Supporto cosmetico da scegliere in base alla scheda cliente e alla disponibilita del centro.",
     steps: [
@@ -39,7 +39,7 @@ const skinHarmonyProtocolLibrary = [
     needType: "tono",
     caseIntensity: "media",
     sessionsCount: 6,
-    frequency: "1 seduta a settimana, review dopo la terza seduta.",
+    frequency: "1 seduta a settimana, verifica dopo la terza seduta.",
     technologies: "Skin Pro, manualita professionale se disponibile",
     products: "Supporto cosmetico elasticizzante o nutriente se presente nel centro.",
     steps: [
@@ -60,7 +60,7 @@ const skinHarmonyProtocolLibrary = [
     needType: "texture",
     caseIntensity: "media",
     sessionsCount: 5,
-    frequency: "1 seduta ogni 10 giorni, review dopo la terza seduta.",
+    frequency: "1 seduta ogni 10 giorni, verifica dopo la terza seduta.",
     technologies: "Skin Pro",
     products: "Cosmetico lenitivo o riequilibrante secondo scheda cliente.",
     steps: [
@@ -123,7 +123,7 @@ const skinHarmonyProtocolLibrary = [
     needType: "ritenzione",
     caseIntensity: "media",
     sessionsCount: 6,
-    frequency: "1 seduta a settimana, review dopo la terza seduta.",
+    frequency: "1 seduta a settimana, verifica dopo la terza seduta.",
     technologies: "Termosauna, manualita se disponibile",
     products: "Supporto corpo se presente e coerente con scheda cliente.",
     steps: [
@@ -144,14 +144,14 @@ const skinHarmonyProtocolLibrary = [
     needType: "cellulite estetica",
     caseIntensity: "media",
     sessionsCount: 8,
-    frequency: "1 seduta a settimana, review dopo la quarta seduta.",
+    frequency: "1 seduta a settimana, verifica dopo la quarta seduta.",
     technologies: "Termosauna, tecnologia corpo disponibile",
     products: "Supporto cosmetico corpo se presente.",
     steps: [
       "1. Foto iniziale solo con consenso e luce coerente.",
       "2. Fase centrale su area dichiarata senza promesse.",
       "3. Supporto cosmetico o manuale se disponibile.",
-      "4. Review fotografica intermedia e aggiornamento percorso."
+      "4. Verifica fotografica intermedia e aggiornamento percorso."
     ].join("\n"),
     clientCommunication: "Lavoriamo sull'aspetto estetico della zona con un percorso misurabile e progressivo.",
     avoidClaims: safeAvoidClaims
@@ -172,7 +172,7 @@ const skinHarmonyProtocolLibrary = [
       "1. Definizione zona e obiettivo realistico.",
       "2. Seduta centrale con intensita progressiva.",
       "3. Registrazione risposta e comfort cliente.",
-      "4. Programmazione review dopo meta percorso."
+      "4. Programmazione verifica dopo meta percorso."
     ].join("\n"),
     clientCommunication: "Il lavoro e progressivo e punta alla qualita estetica della zona, con controllo a meta percorso.",
     avoidClaims: safeAvoidClaims
@@ -207,7 +207,7 @@ const skinHarmonyProtocolLibrary = [
     needType: "riequilibrio cute",
     caseIntensity: "media",
     sessionsCount: 4,
-    frequency: "1 seduta ogni 7/14 giorni, review dopo la seconda seduta.",
+    frequency: "1 seduta ogni 7/14 giorni, verifica dopo la seconda seduta.",
     technologies: "O3 System",
     products: "Prodotti cute professionali se presenti.",
     steps: [

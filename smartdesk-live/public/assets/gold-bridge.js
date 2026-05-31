@@ -1036,7 +1036,7 @@
       if (existing) runWithMutationLock(() => existing.remove());
     }
     if (isReportsRoute()) {
-      const anchor = findAnchorByText("Report operativi") || findAnchorByText("Operational reports");
+      const anchor = findAnchorByText("Report operativi");
       if (anchor) {
         const panel = buildEnterpriseReportsPanel();
         const existing = document.getElementById(ENTERPRISE_REPORTS_PANEL_ID);
