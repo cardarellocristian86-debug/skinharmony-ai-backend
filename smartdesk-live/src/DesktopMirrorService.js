@@ -3045,11 +3045,16 @@ class DesktopMirrorService {
     const saturationPercent = Math.round(Number(business.agendaSaturation || 0) * 100);
     const continuityPercent = Math.round(Number(business.clientContinuity || 0) * 100);
     const confidencePercent = Math.round(Number(business.confidence || 0) * 100);
-    const status = business.status === "centro_sotto_pressione"
+    const activeOperators = Math.max(1, Number(state.counters?.staffActive || state.counters?.staffTotal || 1));
+    const revenuePerOperatorCents = Math.round(revenueCents / activeOperators);
+    let status = business.status === "centro_sotto_pressione"
       ? "fragile"
       : business.status === "dato_da_verificare"
         ? "sotto_soglia"
         : "stabile";
+    if (saturationPercent < 15 || revenuePerOperatorCents < 250000) {
+      status = revenuePerOperatorCents <= 0 || saturationPercent <= 0 ? "sotto_soglia" : "fragile";
+    }
     return {
       source: "gold_state",
       status,
@@ -3060,14 +3065,16 @@ class DesktopMirrorService {
       thresholds: {},
       revenueCents,
       monthlyRevenueCents: revenueCents,
-      revenuePerOperatorCents: 0,
-      activeOperators: Number(state.counters?.staffActive || state.counters?.staffTotal || 0),
+      revenuePerOperatorCents,
+      activeOperators,
       appointments: Number(state.counters?.todayAppointments || 0),
       saturationPercent,
       activeClients: Number(business.activeClients || 0),
       returningClients: 0,
       continuityPercent,
-      reason: `Gold State: saturazione ${saturationPercent}%, continuità ${continuityPercent}%, confidenza ${confidencePercent}%.`,
+      reason: status === "stabile"
+        ? `Gold State: saturazione ${saturationPercent}%, continuità ${continuityPercent}%, confidenza ${confidencePercent}%.`
+        : `Lettura prudente: fatturato/operatore ${euro(revenuePerOperatorCents)}, saturazione ${saturationPercent}%, continuità ${continuityPercent}%.`,
       note: "Lettura da Gold State Layer con fallback raw disponibile."
     };
   }
@@ -3085,6 +3092,8 @@ class DesktopMirrorService {
   }
 
   buildDashboardStatsFromGoldState(options = {}, session = null) {
+    // Gold State is aggregate and event-driven; dashboard day/week/month must read dated raw data.
+    return null;
     if (this.shouldBypassGoldStateForWindow(options)) {
       return null;
     }
@@ -3149,6 +3158,8 @@ class DesktopMirrorService {
   }
 
   buildOperationalReportFromGoldState(options = {}, session = null) {
+    // Reports are dated accounting views; avoid mixing aggregate Gold State with period totals.
+    return null;
     if (this.shouldBypassGoldStateForWindow(options)) {
       return null;
     }
@@ -3263,24 +3274,27 @@ class DesktopMirrorService {
       : profitability.status === "margine_sotto_soglia"
         ? "LOW_MARGIN"
         : "HEALTHY";
+    const safeRevenueCents = profitabilityConfigBlocked ? 0 : revenueCents;
+    const safeCostCents = profitabilityConfigBlocked ? 0 : costCents;
+    const safeProfitCents = profitabilityConfigBlocked ? 0 : profitCents;
     const aggregateService = {
       id: "gold-state-profitability",
       name: profitabilityConfigBlocked ? "Redditività da configurare" : "Margine aggregato centro",
       executions: Number(state.counters?.marginSamples || state.counters?.paymentCount || 0),
-      revenueCents,
-      costCents,
-      profitCents,
-      averageRevenueCents: Number(state.components?.Ticket || 0),
-      averageCostCents: Number(state.components?.Ticket || 0) ? Math.round(Number(state.components.Ticket) * Math.max(0, 1 - marginRatio)) : 0,
-      marginPercent: Math.round(marginRatio * 100),
+      revenueCents: safeRevenueCents,
+      costCents: safeCostCents,
+      profitCents: safeProfitCents,
+      averageRevenueCents: profitabilityConfigBlocked ? 0 : Number(state.components?.Ticket || 0),
+      averageCostCents: !profitabilityConfigBlocked && Number(state.components?.Ticket || 0) ? Math.round(Number(state.components.Ticket) * Math.max(0, 1 - marginRatio)) : 0,
+      marginPercent: profitabilityConfigBlocked ? 0 : Math.round(marginRatio * 100),
       status
     };
     const result = {
       totals: {
         executions: aggregateService.executions,
-        revenueCents,
-        costCents,
-        profitCents
+        revenueCents: safeRevenueCents,
+        costCents: safeCostCents,
+        profitCents: safeProfitCents
       },
       confidence: {
         value: confidenceValue,
@@ -3300,11 +3314,15 @@ class DesktopMirrorService {
           : "Gold State segnala costo/confidenza non sufficienti per promuovere una lettura forte.",
         serviceId: aggregateService.id
       }],
-      revenueCents,
-      inventoryCostCents: costCents,
+      revenueCents: safeRevenueCents,
+      inventoryCostCents: safeCostCents,
       meta: {
         source: "gold_state",
         mathCore: profitability.mathCore || "gold_state_aggregate",
+        blockedForConfiguration: profitabilityConfigBlocked,
+        rawRevenueCents: revenueCents,
+        rawCostCents: costCents,
+        rawProfitCents: profitCents,
         confidenceBreakdown: profitability.confidenceBreakdown || {},
         eventSeq: validState.eventSeq,
         fallbackAvailable: true,
@@ -3903,7 +3921,7 @@ class DesktopMirrorService {
     const s = state.components || {};
     const c = state.counters || {};
     const hasOperationalData = Number(c.clientsTotal || 0) + Number(c.paymentCount || 0) + Number(c.todayAppointments || 0) + Number(c.servicesTotal || 0) > 0;
-    const hasFinancialData = Number(c.paymentCount || 0) > 0 || Number(c.revenueTotal || 0) > 0;
+    const hasFinancialData = Number(c.paymentCount || 0) > 0 || Number(c.revenueTotalCents || 0) > 0;
     const hasMarginData = Number(c.marginSamples || 0) > 0;
     const hasQualityData = Number(c.clientsTotal || 0) > 0 || Number(c.servicesTotal || 0) > 0 || Number(c.inventoryTotal || 0) > 0;
     const cashPrimary = state.cashPrimarySnapshot || null;
@@ -3942,7 +3960,7 @@ class DesktopMirrorService {
   buildGoldDecisionFromState(state = {}) {
     const signals = state.signals || this.buildGoldSignalsFromState(state);
     const counters = state.counters || {};
-    const hasAnyRevenue = Number(counters.revenueTotal || 0) > 0 || Number(counters.paymentCount || 0) > 0;
+    const hasAnyRevenue = Number(counters.revenueTotalCents || 0) > 0 || Number(counters.paymentCount || 0) > 0;
     const hasMarginData = Number(counters.marginSamples || 0) > 0;
     const hasSetupGaps = Number(counters.clientsWithContact || 0) < Number(counters.clientsTotal || 0)
       || Number(counters.servicesWithPrice || 0) < Number(counters.servicesTotal || 0);
@@ -12706,7 +12724,10 @@ class DesktopMirrorService {
     const action = String(primaryAction?.action || "").toUpperCase();
     const conflictIndex = Number(v7?.conflictIndex || 0);
     const irreversibleMass = Number(v7?.irreversibleMass || 0);
-    const confidence = normalizeScore(primaryAction?.confidence ?? primaryAction?.dataQuality ?? primaryAction?.reliabilityScore ?? 1);
+    const confidence = normalizeScore(primaryAction?.confidence ?? primaryAction?.dataQuality ?? primaryAction?.reliabilityScore ?? 0);
+    if (confidence <= 0.05) {
+      return { key: "verify", label: "Quadro da verificare" };
+    }
     if (action === "ACT_NOW" && confidence < 0.55) {
       return { key: "verify", label: "Quadro da verificare" };
     }

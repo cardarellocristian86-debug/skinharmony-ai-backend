@@ -7,6 +7,8 @@ const ACTIONS = [
   "open_clients",
   "open_client_form",
   "open_client_details",
+  "open_marketing",
+  "open_services",
   "open_inventory",
   "open_reports",
   "open_operator_report",
@@ -35,6 +37,8 @@ const ACTION_PERMISSIONS = {
   open_clients: "UI_NAVIGATION",
   open_client_form: "UI_NAVIGATION",
   open_client_details: "UI_NAVIGATION",
+  open_marketing: "UI_NAVIGATION",
+  open_services: "UI_NAVIGATION",
   open_inventory: "UI_NAVIGATION",
   open_reports: "UI_NAVIGATION",
   open_operator_report: "UI_NAVIGATION",
@@ -882,6 +886,25 @@ class AssistantService {
     ].join("\n");
   }
 
+  resolveSmartPriorityAction(context = {}) {
+    const primary = context.goldDecisionContext?.primaryAction || null;
+    const target = String(primary?.target || primary?.domain || "").toLowerCase();
+    if (target === "services" || target === "data_quality") return { action: "open_services", route: "/services" };
+    if (target === "marketing" || target === "growth" || target === "autopilot") return { action: "open_marketing", route: "/marketing" };
+    if (target === "cash" || target === "cashdesk") return { action: "open_cashdesk", route: "/cashdesk" };
+    if (target === "profitability" || target === "profit") return { action: "open_profitability", route: "/profitability" };
+    if (target === "agenda" || target === "appointments" || target === "operations") return { action: "open_agenda", route: "/appointments" };
+    if (target === "clients" || target === "client") return { action: "open_clients", route: "/clients" };
+    if (target === "inventory" || target === "stock") return { action: "open_inventory", route: "/inventory" };
+    if (target === "protocols" || target === "treatments") return { action: "open_protocols", route: "/protocols" };
+    const metrics = context.dataQuality?.metrics || {};
+    if (Number(metrics.servicesMissingCosts || 0) > 0) return { action: "open_services", route: "/services" };
+    if (Number(metrics.unlinkedPayments || 0) > 0 || Number(metrics.appointmentsMissingPayment || 0) > 0) return { action: "open_cashdesk", route: "/cashdesk" };
+    if (Number(context.dashboard?.inactiveClientsCount || 0) > 0) return { action: "open_marketing", route: "/marketing" };
+    if (Number(context.dashboard?.todayAppointments || 0) <= 2) return { action: "open_agenda", route: "/appointments" };
+    return { action: "open_dashboard", route: "/" };
+  }
+
   buildLocalDecision(message, context, session) {
     const normalized = normalizeText(message);
 
@@ -915,7 +938,11 @@ class AssistantService {
     }
 
     if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalized)) {
-      return buildAnswer(this.buildSmartPriorityAnswer(context));
+      const next = this.resolveSmartPriorityAction(context);
+      return buildAction(this.buildSmartPriorityAnswer(context), next.action, {
+        route: next.route,
+        source: "ai_gold_priority_manual_action"
+      });
     }
 
     if (/(libreria skinharmony|protocolli skinharmony|come uso.*protocolli|cosa manca.*protocolli)/.test(normalized)) {
