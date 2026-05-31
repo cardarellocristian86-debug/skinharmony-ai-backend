@@ -1588,7 +1588,7 @@ class AssistantService {
   }
 
   async enhanceGoldPayloadWithExternalReadout(payload = {}, session = null, mode = "gold") {
-    if (!payload || payload.goldEnabled === false) return payload;
+    if (!payload || (payload.goldEnabled === false && mode !== "silver")) return payload;
     try {
       const context = {
         businessSnapshot: this.desktopMirror.getBusinessSnapshot ? this.desktopMirror.getBusinessSnapshot({}, session) : null,
