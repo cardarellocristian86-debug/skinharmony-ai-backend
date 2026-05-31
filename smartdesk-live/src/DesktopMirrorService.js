@@ -482,6 +482,7 @@ function economicConfigGapText(servicesMissingCosts = 0, operatorsMissingHourlyC
 
 function localizeServerText(value, language = "it") {
   if (language !== "en") return value;
+  const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
   return String(value || "")
     .replace(/\bfatturato per operatore sotto soglia · agenda poco satura · continuità clienti bassa · pochi clienti attivi nel periodo\b/g, "revenue per operator below threshold · schedule fill is too low · client continuity is low · too few active clients in the period")
     .replace(/\bLa salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\.\b/g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
@@ -601,6 +602,17 @@ function localizeServerText(value, language = "it") {
     .replace(/\bQualità dati\b/g, "Data quality")
     .replace(/\bPrimo snapshot dashboard creato\. Le prossime aperture leggeranno il dato salvato\./g, "First dashboard snapshot created. The next openings will read the saved data.")
     .replace(/\bCompleta e incassa gli appuntamenti per attivare un report più preciso\./g, "Complete and check out appointments to activate a more accurate report.")
+    .replace(/\bDa richiamare\b/g, "To recall")
+    .replace(/\bA rischio\b/g, "At risk")
+    .replace(/\bPerso\b/g, "Lost")
+    .replace(/\bStorico\b/g, "Historic")
+    .replace(/\bIn linea\b/g, "On track")
+    .replace(/\b(\d+) clienti? senza telefono o email\b/g, counted("client without phone or email", "clients without phone or email"))
+    .replace(/\b(\d+) servizi? senza costi configurati\b/g, counted("service without configured costs", "services without configured costs"))
+    .replace(/\b(\d+) servizi? con costi stimati non collegat[io] a prodotti o tecnologie\b/g, counted("service with estimated costs not linked to products or technologies", "services with estimated costs not linked to products or technologies"))
+    .replace(/\b(\d+) appuntament[io] passat[io] senza pagamento collegato\b/g, counted("past appointment without a linked payment", "past appointments without a linked payment"))
+    .replace(/\b(\d+) pagament[io] da collegare\b/g, counted("payment to link", "payments to link"))
+    .replace(/\b(\d+) grupp[oi] di possibili duplicati cliente\b/g, counted("possible duplicate client group", "possible duplicate client groups"))
     .replace(/\bservizi con costi stimati non collegati a prodotti o tecnologie\b/g, "services with estimated costs not linked to products or technologies")
     .replace(/\bappuntamenti passati senza pagamento collegato\b/g, "past appointments without a linked payment")
     .replace(/\bfatturato per operatore sotto soglia\b/g, "revenue per operator below threshold")

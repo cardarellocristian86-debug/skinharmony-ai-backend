@@ -500,6 +500,7 @@
 
   function sanitizeGoldUiText(root = document.getElementById("root")) {
     if (!root) return;
+    const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
     const replacements = new Map([
       ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server")],
       ["Universal Core Read-only", copy("Core server sola lettura", "Core server read-only")],
@@ -518,6 +519,37 @@
       ["Centro sotto controllo", copy("Centro letto da Smart Desk", "Center read by Smart Desk")],
       ["AI priority alerts", copy("AI Gold - cosa fare ora", "AI Gold - what to do now")]
     ]);
+    const regexReplacements = isEnglish()
+      ? [
+        [/\bDa richiamare\b/g, "To recall"],
+        [/\bA rischio\b/g, "At risk"],
+        [/\bPerso\b/g, "Lost"],
+        [/\bStorico\b/g, "Historic"],
+        [/\bIn linea\b/g, "On track"],
+        [/\bApri Smart\b/g, "Open Smart"],
+        [/\b(\d+)\s+clienti? senza telefono o email\b/g, counted("client without phone or email", "clients without phone or email")],
+        [/\b(\d+)\s+servizi? senza costi configurati\b/g, counted("service without configured costs", "services without configured costs")],
+        [/\b(\d+)\s+servizi? con costi stimati non collegat[io] a prodotti o tecnologie\b/g, counted("service with estimated costs not linked to products or technologies", "services with estimated costs not linked to products or technologies")],
+        [/\b(\d+)\s+appuntament[io] passat[io] senza pagamento collegato\b/g, counted("past appointment without a linked payment", "past appointments without a linked payment")],
+        [/\b(\d+)\s+pagament[io] da collegare\b/g, counted("payment to link", "payments to link")],
+        [/\b(\d+)\s+grupp[oi] di possibili duplicati cliente\b/g, counted("possible duplicate client group", "possible duplicate client groups")],
+        [/\b(\d+)\s+possibil[ei] duplicat[oi]\b/g, counted("possible duplicate", "possible duplicates")]
+      ]
+      : [
+        [/\bTo recall\b/g, "Da richiamare"],
+        [/\bAt risk\b/g, "A rischio"],
+        [/\bLost\b/g, "Perso"],
+        [/\bHistoric\b/g, "Storico"],
+        [/\bOn track\b/g, "In linea"],
+        [/\bOpen Smart\b/g, "Apri Smart"],
+        [/\b(\d+)\s+clients? without phone or email\b/g, counted("cliente senza telefono o email", "clienti senza telefono o email")],
+        [/\b(\d+)\s+services? without configured costs\b/g, counted("servizio senza costi configurati", "servizi senza costi configurati")],
+        [/\b(\d+)\s+services? with estimated costs not linked to products or technologies\b/g, counted("servizio con costi stimati non collegato a prodotti o tecnologie", "servizi con costi stimati non collegati a prodotti o tecnologie")],
+        [/\b(\d+)\s+past appointments? without a linked payment\b/g, counted("appuntamento passato senza pagamento collegato", "appuntamenti passati senza pagamento collegato")],
+        [/\b(\d+)\s+payments? to link\b/g, counted("pagamento da collegare", "pagamenti da collegare")],
+        [/\b(\d+)\s+possible duplicate client groups?\b/g, counted("gruppo di possibili duplicati cliente", "gruppi di possibili duplicati cliente")],
+        [/\b(\d+)\s+possible duplicates?\b/g, counted("possibile duplicato", "possibili duplicati")]
+      ];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -525,6 +557,9 @@
       let text = node.nodeValue || "";
       replacements.forEach((to, from) => {
         if (text.includes(from)) text = text.split(from).join(to);
+      });
+      regexReplacements.forEach(([from, to]) => {
+        text = text.replace(from, to);
       });
       node.nodeValue = text;
     });
@@ -1132,6 +1167,12 @@
 
   window.addEventListener("popstate", scheduleRender);
   window.addEventListener("load", scheduleRender);
+  window.addEventListener("app-settings-updated", (event) => {
+    void refreshUiLanguage(event?.detail || null).then(() => {
+      sanitizeGoldUiText();
+      scheduleRender();
+    });
+  });
 
   function startObserver() {
     if (observerStarted) return;
