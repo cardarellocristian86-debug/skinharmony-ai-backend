@@ -5,7 +5,8 @@
   "description": "Deploy web + API per SkinHarmony Ecosistema Center",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "audit:gold": "node scripts/smartdesk_gold_product_audit.js"
   },
   "dependencies": {
     "express": "^5.2.1",

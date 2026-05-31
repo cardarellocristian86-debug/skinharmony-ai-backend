@@ -15,6 +15,8 @@ const { adaptCashSnapshotToLegacyComparable } = require("./core/cash/CashPolicyA
 const { computeDataQualitySnapshot } = require("./core/data-quality/DataQualityCore");
 const { adaptDataQualitySnapshotToLegacyComparable } = require("./core/data-quality/DQPolicyAdapter");
 const { computeMarketingSnapshot } = require("./core/marketing/MarketingCore");
+const { adaptAgendaSnapshotToLegacyComparable } = require("./core/agenda/AgendaPolicyAdapter");
+const { buildComparableDecisionSnapshot } = require("./core/decision/DecisionPolicyAdapter");
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
@@ -2411,6 +2413,8 @@ class DesktopMirrorService {
       cashShadowSnapshot: null,
       dataQualityParallel: null,
       marketingParallel: null,
+      agendaParallel: null,
+      decisionParallel: null,
       graph: {
         eventToState: {
           appointment_created: ["Sat", "Prod"],
@@ -2467,7 +2471,10 @@ class DesktopMirrorService {
         const bootstrapped = this.bootstrapGoldStateFromRepositories(existing, session);
         if (bootstrapped) return bootstrapped;
       }
-      if (!hasDirtyState) {
+      const missingDerivedGovernance = !existing.agendaParallel
+        || !existing.decisionParallel
+        || !existing.marketingParallel?.mathAdapter;
+      if (!hasDirtyState && !missingDerivedGovernance) {
         return existing;
       }
       return this.refreshGoldDerivedState(existing, session);
@@ -4963,6 +4970,7 @@ class DesktopMirrorService {
         mode: "shadow",
         status,
         mathCore: "marketing_core_v1",
+        mathAdapter: "marketing_policy_adapter_v1",
         horizon: coreRaw.horizon || {},
         legacySnapshot,
         coreSnapshot,
@@ -4987,6 +4995,7 @@ class DesktopMirrorService {
         mode: "shadow",
         status: "error",
         mathCore: "marketing_core_v1",
+        mathAdapter: "marketing_policy_adapter_v1",
         horizon: { startDate: "", endDate: "" },
         legacySnapshot: null,
         coreSnapshot: null,
@@ -5006,6 +5015,150 @@ class DesktopMirrorService {
     }
   }
 
+  buildAgendaParallelState(state = {}, session = null) {
+    const c = state.counters || {};
+    const saturation = this.goldClamp01(this.goldSafeDivide(c.todayAppointments, c.appointmentSlots || 24));
+    const pressure = saturation <= 0.15 ? 0.75 : saturation >= 0.75 ? 0.25 : 0.45;
+    const need = saturation <= 0.15 ? 0.82 : saturation < 0.45 ? 0.55 : 0.25;
+    const legacySnapshot = {
+      mathCore: "legacy_gold_state_agenda",
+      saturation,
+      pressure,
+      need,
+      band: need >= 0.70 ? "intervento_ora" : need >= 0.50 ? "attenzione" : "giornata_equilibrata",
+      counts: {
+        todayAppointments: Number(c.todayAppointments || 0),
+        appointmentSlots: Number(c.appointmentSlots || 0)
+      },
+      sourceFlags: ["agenda_parallel:legacy_gold_state_counter_view"]
+    };
+    const coreSnapshot = {
+      mathCore: "agenda_core_v1",
+      horizon: { mode: "today", generatedAt: nowIso() },
+      scores: {
+        saturation,
+        pressure,
+        fragility: this.goldClamp01(1 - Number(state.components?.Cont || 0)),
+        noShowRisk: 0,
+        slotValue: saturation <= 0.15 ? 0.85 : 0.35,
+        urgency: need,
+        readiness: Number(c.servicesTotal || 0) && Number(c.staffActive || 0) ? 0.85 : 0.35,
+        agendaScore: this.goldClamp01((saturation * 0.35) + (need * 0.45) + (pressure * 0.20))
+      },
+      band: need >= 0.70 ? "CRITICAL" : need >= 0.50 ? "WATCH" : "CALM",
+      counts: legacySnapshot.counts,
+      sourceFlags: ["agenda_parallel:core_shadow_from_gold_state_counters"]
+    };
+    const adapter = adaptAgendaSnapshotToLegacyComparable(coreSnapshot, legacySnapshot);
+    const comparable = adapter.comparableSnapshot || {};
+    const errors = [
+      Math.abs(Number(comparable.saturation || 0) - Number(legacySnapshot.saturation || 0)),
+      Math.abs(Number(comparable.pressure || 0) - Number(legacySnapshot.pressure || 0)),
+      Math.abs(Number(comparable.need || 0) - Number(legacySnapshot.need || 0))
+    ];
+    const averageError = errors.reduce((sum, value) => sum + value, 0) / Math.max(1, errors.length);
+    const agreementScore = this.goldRound(1 - this.goldClamp01(averageError), 4);
+    return {
+      mode: "shadow",
+      status: "ok",
+      mathCore: "agenda_core_v1",
+      mathAdapter: adapter.mathAdapter || "agenda_policy_adapter_v1",
+      legacySnapshot,
+      coreSnapshot,
+      comparableSnapshot: comparable,
+      diffSnapshot: {
+        agreementScore,
+        agreementBand: agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+        averageError: this.goldRound(averageError, 4),
+        policyDeltas: adapter.policyDeltas || null
+      },
+      agreementScore,
+      agreementBand: agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+      sourceFlags: [
+        "agenda_parallel:shadow_only",
+        "agenda_parallel:no_primary_switch",
+        ...(adapter.policyFlags || [])
+      ]
+    };
+  }
+
+  buildDecisionParallelState(state = {}, decision = null, session = null) {
+    const selected = decision || state.decision || this.buildGoldDecisionFromState(state);
+    const actionKey = String(selected?.domain || selected?.action || "decision");
+    const actionBand = String(selected?.action || "").toUpperCase() === "ACT_NOW"
+      ? "ACT_NOW"
+      : String(selected?.action || "").toUpperCase() === "VERIFY"
+        ? "VERIFY"
+        : String(selected?.action || "").toUpperCase() === "SUGGEST"
+          ? "SUGGEST"
+          : "MONITOR";
+    const confidence = this.goldClamp01(Number(selected?.confidence || state.signals?.dataReliability || 0));
+    const risk = this.goldClamp01(Number(selected?.risk || selected?.systemRisk || 0));
+    const priorityScore = this.goldClamp01(Number(selected?.priority || selected?.RAP_2 || selected?.EV || 0));
+    const legacyAction = {
+      actionKey,
+      domain: String(selected?.domain || "decision"),
+      label: selected?.label || selected?.explanationShort || "Decisione Gold",
+      priorityScore,
+      actionBand,
+      tone: actionBand === "ACT_NOW" ? "direct" : actionBand === "SUGGEST" || actionBand === "VERIFY" ? "consultative" : "soft",
+      eligible: actionBand !== "VERIFY" && actionBand !== "STOP",
+      confidence,
+      risk,
+      need: priorityScore
+    };
+    const legacySnapshot = {
+      mathCore: "legacy_gold_state_decision",
+      primaryAction: legacyAction,
+      secondaryActions: [],
+      blockedActions: actionBand === "VERIFY" ? [legacyAction] : [],
+      actions: [legacyAction],
+      summary: { topPriorityScore: priorityScore, averageConfidence: confidence, averageRisk: risk }
+    };
+    const operationalAction = {
+      ...legacyAction,
+      priorityScore: this.goldClamp01((priorityScore * 0.60) + (confidence * 0.25) + ((1 - risk) * 0.15)),
+      operationalSource: "decision_core_shadow_from_gold_state"
+    };
+    const coreSnapshot = {
+      mathCore: "decision_core_v1",
+      primaryAction: operationalAction,
+      secondaryActions: [],
+      blockedActions: actionBand === "VERIFY" ? [operationalAction] : [],
+      summary: { topPriorityScore: operationalAction.priorityScore, averageConfidence: confidence, averageRisk: risk },
+      actions: [operationalAction]
+    };
+    const comparable = buildComparableDecisionSnapshot(coreSnapshot, legacySnapshot, {
+      fragility: String(selected?.domain || "") === "data_quality" ? 0.75 : 0.35
+    });
+    const comparablePrimary = comparable.primaryAction || {};
+    const priorityDelta = Math.abs(Number(comparablePrimary.priorityScore || 0) - Number(legacyAction.priorityScore || 0));
+    const bandChanged = String(comparablePrimary.actionBand || "") !== String(legacyAction.actionBand || "");
+    const agreementScore = this.goldRound(this.goldClamp01(1 - priorityDelta - (bandChanged ? 0.20 : 0)), 4);
+    return {
+      mode: "shadow",
+      status: "ok",
+      mathCore: "decision_core_v1",
+      mathAdapter: "decision_policy_adapter_v1",
+      legacySnapshot,
+      coreSnapshot,
+      comparableSnapshot: comparable,
+      diffSnapshot: {
+        agreementScore,
+        agreementBand: agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+        priorityDelta: this.goldRound(priorityDelta, 4),
+        bandChanged
+      },
+      agreementScore,
+      agreementBand: agreementScore >= 0.90 ? "ALIGNED" : agreementScore >= 0.75 ? "WATCH" : "DRIFT",
+      sourceFlags: [
+        "decision_parallel:shadow_only",
+        "decision_parallel:no_primary_switch",
+        "decision_parallel:operator_confirmation_required"
+      ]
+    };
+  }
+
   refreshGoldDerivedState(state = {}, session = null) {
     const next = this.normalizeGoldStateComponents({ ...this.buildDefaultGoldState(state.centerId, state.centerName), ...state });
     const previousDecision = next.decision || null;
@@ -5019,7 +5172,7 @@ class DesktopMirrorService {
     next.marketingActions = !hasDirtyState && next.marketingActions
       ? next.marketingActions
       : this.buildGoldMarketingActionState(session);
-    next.marketingParallel = !hasDirtyState && next.marketingParallel
+    next.marketingParallel = !hasDirtyState && next.marketingParallel?.mathAdapter
       ? next.marketingParallel
       : this.buildMarketingParallelState(next, session);
     next.cashParallel = !hasDirtyState && next.cashParallel
@@ -5028,6 +5181,9 @@ class DesktopMirrorService {
     next.dataQualityParallel = !hasDirtyState && next.dataQualityParallel
       ? next.dataQualityParallel
       : this.buildDataQualityParallelState(next, session);
+    next.agendaParallel = !hasDirtyState && next.agendaParallel
+      ? next.agendaParallel
+      : this.buildAgendaParallelState(next, session);
     const cashSwitch = this.buildGoldCashControlledSwitch(next.cashParallel, state.cashSelection?.primarySource || next.cashSelection?.primarySource || "legacy");
     next.cashSelection = cashSwitch.cashSelection;
     next.cashPrimarySnapshot = cashSwitch.cashPrimarySnapshot;
@@ -5036,6 +5192,9 @@ class DesktopMirrorService {
     const stabilized = this.stabilizeGoldDecision(previousDecision, previousStability, this.buildGoldDecisionFromState(next));
     next.decision = stabilized.decision;
     next.decisionStability = stabilized.stability;
+    next.decisionParallel = !hasDirtyState && next.decisionParallel
+      ? next.decisionParallel
+      : this.buildDecisionParallelState(next, next.decision, session);
     return next;
   }
 

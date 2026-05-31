@@ -1562,9 +1562,10 @@ class AssistantService {
     };
     const language = assistantLanguage(context);
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+    const governedBaseline = await this.buildAiGoldCoreliaResponse(payload, session, context);
 
     if (!this.shouldUseOpenAI()) {
-      return await this.buildAiGoldCoreliaResponse(payload, session, context);
+      return governedBaseline;
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
@@ -1577,6 +1578,7 @@ class AssistantService {
         "Suggest concrete actions that the operator must confirm.",
         "When monthlyTrend is present, use it to read swings, drops, recoveries and operational instability.",
         "When goldDecisionContext is present, use it as the official source: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 and trend.",
+        "You also receive governedBaseline: this is the Corelia/Nyra governed reading. Refine voice and clarity, but do not change priorities, risks, blocks or the primary action.",
         "Do not bypass canExecute, blockedActions, high risk or low confidence. If Gold blocks, you must block or ask for verification.",
         "When goldCapabilities is present, use features and limits to understand what is active. If WhatsApp is not enabled, suggest only manual copy/fallback.",
         "Avoid medical or therapeutic claims and avoid guaranteed outcomes.",
@@ -1591,6 +1593,7 @@ class AssistantService {
         "Suggerisci azioni concrete che l'operatore deve confermare.",
         "Quando nel contesto trovi monthlyTrend, usa quei mesi per leggere oscillazioni, cali, riprese e instabilità operativa.",
         "Quando nel contesto trovi goldDecisionContext, usa quello come fonte ufficiale: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 e trend.",
+        "Ricevi anche governedBaseline: è la lettura Corelia/Nyra già governata. Devi rifinire voce e chiarezza, non cambiare priorità, rischio, blocchi o azione primaria.",
         "Non bypassare canExecute, blockedActions, risk alto o confidence bassa. Se Gold blocca, devi bloccare o chiedere verifica.",
         "Quando nel contesto trovi goldCapabilities, usa features e limits per sapere cosa è attivo. Se WhatsApp non è abilitato, proponi solo copia/fallback manuale.",
         "Evita claim medici, terapeutici o promesse di risultato.",
@@ -1609,7 +1612,7 @@ class AssistantService {
           model,
           input: [
             { role: "system", content: [{ type: "input_text", text: instructions }] },
-            { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context }) }] }
+            { role: "user", content: [{ type: "input_text", text: JSON.stringify({ question, context, governedBaseline }) }] }
           ]
         })
       });
@@ -1618,12 +1621,15 @@ class AssistantService {
       const answer = data?.output_text || data?.output?.[0]?.content?.[0]?.text || this.buildAiGoldFallback(question, context);
       return {
         goldEnabled: true,
-        provider: "openai",
+        provider: "corelia_nyra_openai",
         answer: language === "en" ? localizeAssistantText(answer, language) : answer,
-        actions: []
+        actions: [],
+        structured: governedBaseline.structured || null,
+        dialogue: governedBaseline.dialogue || null,
+        governedBaseline
       };
     } catch {
-      return await this.buildAiGoldCoreliaResponse(payload, session, context);
+      return governedBaseline;
     }
   }
 
