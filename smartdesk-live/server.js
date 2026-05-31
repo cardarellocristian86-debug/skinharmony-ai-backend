@@ -514,7 +514,7 @@ function sendCoreliaSafe(res, fallbackFactory, compute) {
     const fallback = typeof fallbackFactory === "function" ? fallbackFactory(error) : {};
     return res.status(200).json({
       success: false,
-      engineName: "Corelia",
+      engineName: "Smart Desk data fallback",
       runtimeStack: ["V0", "V2", "V7"],
       fallback: true,
       error: error instanceof Error ? error.message : "Corelia non disponibile",
@@ -1451,7 +1451,7 @@ app.get("/api/ai-gold/marketing", requirePlan("gold"), (req, res) => {
     goldEnabled: false,
     actions: [],
     summary: { total: 0, toApprove: 0 },
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getAiGoldMarketingSnapshot(req.session));
 });
 
@@ -1460,7 +1460,7 @@ app.get("/api/ai-gold/profitability", requirePlan("gold"), (req, res) => {
     goldEnabled: false,
     summary: null,
     services: [],
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getAiGoldProfitability({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1472,7 +1472,7 @@ app.get("/api/business-snapshot", requirePlan("gold"), (req, res) => {
     goldEnabled: false,
     generatedAt: new Date().toISOString(),
     goldEngine: null,
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getBusinessSnapshot({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || "",
@@ -1537,13 +1537,13 @@ app.get("/api/ai-gold/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
-    version: "corelia_enterprise_v1",
-    goldEngineVersion: "corelia_phi_multi_domain_v1",
-    decisionMatrixVersion: "corelia_decision_matrix_v1",
+    version: "smartdesk_data_fallback_v1",
+    goldEngineVersion: "external_core_nyra_openai_v1",
+    decisionMatrixVersion: "external_core_nyra_decision_contract_v1",
     features: {},
     limits: {},
     rules: {},
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getGoldCapabilities(req.session));
 });
 
@@ -1581,7 +1581,7 @@ app.get("/api/ai-gold/decision-context", requirePlan("silver"), async (req, res)
 app.get("/api/ai-gold/change-impact-contract", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     enabled: false,
-    source: "corelia_fallback",
+    source: "smartdesk_data_fallback",
     mode: "read_only_domino_guard",
     executionAllowed: false,
     ownerConfirmationRequired: true,
@@ -1624,7 +1624,7 @@ app.get("/api/ai-gold/state", requirePlan("gold"), (req, res) => {
     snapshots: {},
     signals: {},
     decision: null,
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getGoldState(req.session));
 });
 
@@ -1640,8 +1640,8 @@ app.get("/api/corelia/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
     currentPlan: normalizedPlan(req.session),
-    version: "corelia_enterprise_v1",
-    sourceLayer: "corelia_fallback"
+    version: "smartdesk_data_fallback_v1",
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getGoldCapabilities(req.session));
 });
 
@@ -1653,7 +1653,7 @@ app.get("/api/corelia/decision-context", requirePlan("silver"), (req, res) => {
     secondaryActions: [],
     blockedActions: [],
     topSignals: [],
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getGoldDecisionContext({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -1663,9 +1663,9 @@ app.get("/api/corelia/decision-context", requirePlan("silver"), (req, res) => {
 app.get("/api/corelia/decision-center", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
-    title: "Corelia Decision Engine",
+    title: "Smart Desk Data Fallback",
     sections: [],
-    sourceLayer: "corelia_fallback"
+    sourceLayer: "smartdesk_data_fallback"
   }), () => service.getAiGoldDecisionCenter({
     startDate: req.query.startDate || "",
     endDate: req.query.endDate || ""
@@ -2175,7 +2175,7 @@ async function bootstrap() {
     console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
     console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
     console.log(`[SmartDesk] Suite App Key Bridge: ${suiteAppKeyBridge.isConfigured() ? suiteAppKeyBridge.baseUrl : "non configurato"}`);
-    console.log(`[SmartDesk] Universal Core Bridge: ${universalCoreBridge.isConfigured() ? universalCoreBridge.baseUrl : "non configurato"}`);
+    console.log(`[SmartDesk] External Universal Core Bridge: ${universalCoreBridge.isConfigured() ? universalCoreBridge.baseUrl : "non configurato"}`);
   });
 }
 

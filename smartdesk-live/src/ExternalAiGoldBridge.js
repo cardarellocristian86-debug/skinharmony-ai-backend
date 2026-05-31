@@ -32,6 +32,22 @@ function firstAction(context = {}) {
   return cleanText(primary.suggestedAction || primary.label || primary.explanationShort || "leggi il centro e indica la prima azione manuale", "leggi il centro e indica la prima azione manuale", 260);
 }
 
+function normalizeCoreOutput(core = {}) {
+  const output = core?.output || core?.decision_contract || core?.decision || core || {};
+  const risk = output.risk || core.risk || {};
+  const confidence = cleanNumber(output.confidence ?? output.globalConfidence ?? core.confidence ?? 0, 0);
+  const action = output.primaryAction || output.recommended_action || output.recommendedAction || output.action || null;
+  return {
+    ok: Boolean(core.success || core.ok),
+    output,
+    confidence,
+    risk,
+    action,
+    controlLevel: output.control_level || output.controlLevel || output.control || "",
+    decision: output.decision || output.verdict || output.actionBand || ""
+  };
+}
+
 function buildSignals(context = {}, question = "") {
   const snapshot = context.businessSnapshot || {};
   const decisionContext = context.goldDecisionContext || context.decisionContext || {};
@@ -152,7 +168,8 @@ class ExternalAiGoldBridge {
     const core = this.universalCoreBridge?.isConfigured?.()
       ? await this.universalCoreBridge.decision(corePayload)
       : { success: false, code: "universal_core_not_configured", message: "Universal Core Render non configurato." };
-    const nyraPrompt = this.buildNyraPrompt({ mode, question, context, core });
+    const normalizedCore = normalizeCoreOutput(core);
+    const nyraPrompt = this.buildNyraPrompt({ mode, question, context, core: normalizedCore.output });
     const nyra = await this.callNyraTextChat({
       text: nyraPrompt,
       sessionId: `smartdesk-${mode}-${centerId}`
@@ -160,19 +177,20 @@ class ExternalAiGoldBridge {
     const nyraResult = nyra.result || {};
     const content = cleanText(nyraResult.content || nyraResult.reply || "", "", 4000);
     return {
-      success: Boolean(core.success || nyra.success),
+      success: Boolean(normalizedCore.ok || nyra.success),
       provider: "universal_core_render_nyra_render",
       sourceLayer: "external_core_nyra_render",
       mode,
-      answer: content || this.fallbackAnswer({ mode, context, core, nyra }),
-      firstAction: firstAction(context),
+      answer: content || this.fallbackAnswer({ mode, context, core: normalizedCore, nyra }),
+      firstAction: cleanText(normalizedCore.action?.suggestedAction || normalizedCore.action?.label || normalizedCore.action || firstAction(context), firstAction(context), 260),
       core,
+      coreOutput: normalizedCore,
       nyra,
       ui: nyraResult.ui || {},
       core2Pipeline: nyraResult.core2Pipeline || null,
       guardrails: {
         smartDeskCalculatesNumbers: true,
-        coreDecides: Boolean(core.success),
+        coreDecides: Boolean(normalizedCore.ok),
         nyraExplains: Boolean(nyra.success),
         openAiRefinesOnly: true,
         automaticExecutionAllowed: false,

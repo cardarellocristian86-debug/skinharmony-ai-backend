@@ -1056,7 +1056,7 @@ const GOLD_DECISION_WEIGHTS = Object.freeze({
   centro: { need: 1.1, value: 1.2, urgency: 0.8, coherence: 1.0, friction: 1.3, bias: -1.1 }
 });
 
-// Universal Core Decision Engine: layer premium sopra i dati del gestionale.
+// Smart Desk Data Layer: lettura premium incrementale sopra i dati del gestionale; Core/Nyra Render restano esterni.
 // Non e' usato dal Core operativo Base/Silver e non sostituisce CRUD, agenda, cassa o report.
 function sigmoid(value) {
   return 1 / (1 + Math.exp(-Number(value || 0)));
@@ -2309,6 +2309,34 @@ class DesktopMirrorService {
     ];
   }
 
+  invalidateDashboardSnapshotsForCenter(centerId = "", reason = "data_changed") {
+    const normalizedCenterId = String(centerId || DEFAULT_CENTER_ID);
+    this.dashboardSnapshotsRepository.list()
+      .filter((snapshot) => String(snapshot.centerId || "") === normalizedCenterId)
+      .forEach((snapshot) => {
+        this.dashboardSnapshotsRepository.delete(snapshot.id);
+      });
+    return { centerId: normalizedCenterId, reason };
+  }
+
+  shouldInvalidateDashboardForBlocks(blocks = []) {
+    const dashboardBlocks = new Set([
+      ANALYTICS_BLOCKS.DASHBOARD_STATS,
+      ANALYTICS_BLOCKS.OPERATIONAL_REPORT,
+      ANALYTICS_BLOCKS.CENTER_HEALTH,
+      ANALYTICS_BLOCKS.DATA_QUALITY,
+      ANALYTICS_BLOCKS.DATA_QUALITY_SUMMARY,
+      ANALYTICS_BLOCKS.MARKETING_RECALL,
+      ANALYTICS_BLOCKS.RECALL_PRIORITY,
+      ANALYTICS_BLOCKS.PROFITABILITY,
+      ANALYTICS_BLOCKS.PROFITABILITY_SUMMARY,
+      ANALYTICS_BLOCKS.PAYMENTS_QUALITY,
+      ANALYTICS_BLOCKS.APPOINTMENTS_QUALITY,
+      ANALYTICS_BLOCKS.CLIENTS_QUALITY
+    ]);
+    return (Array.isArray(blocks) ? blocks : [blocks]).some((block) => dashboardBlocks.has(block));
+  }
+
   invalidateBusinessSnapshot(centerId = "", blocks = []) {
     const dirtyBlocks = Array.isArray(blocks) && blocks.length ? blocks : [
       ANALYTICS_BLOCKS.DATA_QUALITY,
@@ -2332,6 +2360,9 @@ class DesktopMirrorService {
     }
     const normalizedCenterId = String(centerId || DEFAULT_CENTER_ID);
     this.markAnalyticsBlocksStale(normalizedCenterId, dirtyBlocks);
+    if (this.shouldInvalidateDashboardForBlocks(dirtyBlocks)) {
+      this.invalidateDashboardSnapshotsForCenter(normalizedCenterId, "dependent_data_changed");
+    }
     const prefix = `${normalizedCenterId}:`;
     Array.from(this.businessSnapshotCache.keys()).forEach((key) => {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
@@ -3063,7 +3094,7 @@ class DesktopMirrorService {
       status = revenuePerOperatorCents <= 0 || saturationPercent <= 0 ? "sotto_soglia" : "fragile";
     }
     return {
-      source: "gold_state",
+      source: "smartdesk_gold_state",
       status,
       statusLabel: status === "sotto_soglia" ? "da verificare" : status,
       level: status === "sotto_soglia" ? "warning" : status === "fragile" ? "warning" : "success",
@@ -3146,11 +3177,11 @@ class DesktopMirrorService {
         metrics: {
           unlinkedPayments: Number(business.unlinkedPayments || 0)
         },
-        sourceLayer: "gold_state"
+        sourceLayer: "smartdesk_gold_state"
       },
       dashboardCache: {
         cached: true,
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         generatedAt: state.updatedAt || nowIso(),
         ageMs: Math.max(0, Date.now() - new Date(state.updatedAt || nowIso()).getTime()),
         stale: false,
@@ -3160,7 +3191,7 @@ class DesktopMirrorService {
         eventSeq: validState.eventSeq
       }
     };
-    this.logGoldStateEndpoint("dashboard", session, { source: "gold_state", ...validState });
+    this.logGoldStateEndpoint("dashboard", session, { source: "smartdesk_gold_state", ...validState });
     return payload;
   }
 
@@ -3216,14 +3247,14 @@ class DesktopMirrorService {
         unlinkedCashCents > 0 ? `${euro(unlinkedCashCents)} da collegare o verificare.` : "Nessuna anomalia cassa aggregata nello stato."
       ],
       meta: {
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         cashSource: cashPrimary?.sourceUsed || "legacy",
         cashSelection,
         eventSeq: validState.eventSeq,
         fallbackAvailable: true
       }
     };
-    this.logGoldStateEndpoint("report_operational", session, { source: "gold_state", ...validState });
+    this.logGoldStateEndpoint("report_operational", session, { source: "smartdesk_gold_state", ...validState });
     return result;
   }
 
@@ -3324,7 +3355,7 @@ class DesktopMirrorService {
       revenueCents: safeRevenueCents,
       inventoryCostCents: safeCostCents,
       meta: {
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         mathCore: profitability.mathCore || "gold_state_aggregate",
         blockedForConfiguration: profitabilityConfigBlocked,
         rawRevenueCents: revenueCents,
@@ -3338,7 +3369,7 @@ class DesktopMirrorService {
         confidenceLabel: profitability.confidenceLabel || "bassa"
       }
     };
-    this.logGoldStateEndpoint("profitability_overview", session, { source: "gold_state", ...validState });
+    this.logGoldStateEndpoint("profitability_overview", session, { source: "smartdesk_gold_state", ...validState });
     return result;
   }
 
@@ -3377,7 +3408,7 @@ class DesktopMirrorService {
     const snapshot = {
       snapshotAvailable: true,
       snapshotVersion: "1.0",
-      sourceLayer: "gold_state",
+      sourceLayer: "smartdesk_gold_state",
       generatedAt: state.updatedAt || nowIso(),
       expiresAt: "",
       plan: this.getPlanLevel(session),
@@ -3391,7 +3422,7 @@ class DesktopMirrorService {
         freshness: "state",
         rule: "Gold State Layer primario con fallback raw disponibile.",
         dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session))),
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         eventSeq: validState.eventSeq
       },
       core: {
@@ -3430,7 +3461,7 @@ class DesktopMirrorService {
         },
         debug: marketingActions.debug || {},
         counters: marketingActions.counters || {},
-        sourceLayer: "gold_state"
+        sourceLayer: "smartdesk_gold_state"
       },
       profitability,
       inventory: {
@@ -3440,7 +3471,7 @@ class DesktopMirrorService {
           total: Number(state.counters?.inventoryTotal || 0),
           lowStock: Number(state.counters?.lowStock || 0)
         },
-        sourceLayer: "gold_state"
+        sourceLayer: "smartdesk_gold_state"
       },
       dataQuality: {
         summaryOnly: true,
@@ -3448,10 +3479,10 @@ class DesktopMirrorService {
         metrics: {
           unlinkedPayments: Number(business.unlinkedPayments || 0)
         },
-        sourceLayer: "gold_state"
+        sourceLayer: "smartdesk_gold_state"
       },
       economic: {
-        sourceLayer: "gold_state",
+        sourceLayer: "smartdesk_gold_state",
         operationalRevenueCents: Number(business.revenueCents || 0),
         cashRevenueCents: Number(business.revenueCents || 0),
         gapCents: 0,
@@ -3460,14 +3491,14 @@ class DesktopMirrorService {
         action: Number(business.unlinkedPayments || 0) > 0 ? "VERIFY" : "OK"
       },
       goldEngine: {
-        engineName: "Universal Core",
-        runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
+        engineName: "Smart Desk Data Layer",
+        runtimeStack: ["SmartDeskDataSource", "IncrementalIndexes", "DirtyBlocks", "SavedSnapshots"],
         engineLayer: "gold_decision_engine",
-        engineVersion: "universal_core_state_v1",
-        enterpriseLayer: "universal_core_enterprise_v1",
+        engineVersion: "smartdesk_gold_state_data_v1",
+        enterpriseLayer: "smartdesk_fallback_priority_v1",
         rule: "Gold legge Gold State Layer e mantiene fallback raw.",
         inventory: {
-          source: "gold_state",
+          source: "smartdesk_gold_state",
           summary: {
             total: Number(state.counters?.inventoryTotal || 0),
             lowStock: Number(state.counters?.lowStock || 0),
@@ -3475,7 +3506,7 @@ class DesktopMirrorService {
           }
         },
         operators: {
-          source: "gold_state",
+          source: "smartdesk_gold_state",
           items: operatorSignals,
           summary: {
             total: operatorSignals.length,
@@ -3485,7 +3516,7 @@ class DesktopMirrorService {
           }
         },
         dashboard: {
-          source: "gold_state",
+          source: "smartdesk_gold_state",
           items: [],
           primaryAction: state.decision?.primaryAction
             ? {
@@ -3527,7 +3558,7 @@ class DesktopMirrorService {
         topClient: null
       }
     };
-    this.logGoldStateEndpoint("business_snapshot", session, { source: "gold_state", ...validState });
+    this.logGoldStateEndpoint("business_snapshot", session, { source: "smartdesk_gold_state", ...validState });
     return snapshot;
   }
 
@@ -3561,7 +3592,7 @@ class DesktopMirrorService {
     const decisionScore = Number(decision.score || 0);
     const level = decision.action === "ACT_NOW" ? "critical" : decision.action === "SUGGEST" ? "warning" : "info";
     const centerHealth = {
-      source: "gold_state",
+      source: "smartdesk_gold_state",
       status: business.status === "centro_sotto_pressione" ? "fragile" : business.status === "dato_da_verificare" ? "sotto_soglia" : "stabile",
       statusLabel: business.status === "centro_sotto_pressione" ? "sotto pressione" : business.status === "dato_da_verificare" ? "da verificare" : "stabile",
       level: business.status === "dato_da_verificare" ? "warning" : business.status === "centro_sotto_pressione" ? "warning" : "success",
@@ -3735,7 +3766,7 @@ class DesktopMirrorService {
           "AI cliente"
         ],
         snapshot: {
-          sourceLayer: "gold_state",
+          sourceLayer: "smartdesk_gold_state",
           cached: true,
           generatedAt: state.updatedAt,
           expiresAt: ""
@@ -3751,7 +3782,7 @@ class DesktopMirrorService {
       },
       sections: manualSections,
       meta: {
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         fallbackAvailable: true,
         stateVersion: state.version,
         eventSeq: state.eventSeq,
@@ -4051,7 +4082,7 @@ class DesktopMirrorService {
     return {
       business: {
         type: "business_snapshot",
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         revenueCents: Number(s.Rev || 0),
         unlinkedPayments: Number(s.U || 0),
         agendaSaturation: Number(s.Sat || 0),
@@ -4065,7 +4096,7 @@ class DesktopMirrorService {
       },
       profitability: {
         type: "profitability_snapshot",
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         revenueCents: Number(s.Rev || 0),
         coreRevenueCents: Number(state.counters?.profitabilityRevenueCents || 0),
         coreCostCents: Number(state.counters?.profitabilityCostCents || 0),
@@ -4091,7 +4122,7 @@ class DesktopMirrorService {
       },
       report: {
         type: "report_snapshot",
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         revenueCents: Number(s.Rev || 0),
         averageTicketCents: Number(s.Ticket || 0),
         productivity: Number(s.Prod || 0),
@@ -4187,7 +4218,7 @@ class DesktopMirrorService {
       }
     }
     return {
-      source: "gold_state",
+      source: "smartdesk_gold_state",
       domain,
       score: this.goldRound(score),
       weightedScore: this.goldRound(weightedScore),
@@ -8136,7 +8167,7 @@ class DesktopMirrorService {
       if (validState.valid) {
         const expectedCount = Number(validState.snapshot?.unlinkedPayments || 0);
         if (expectedCount <= 0) {
-          this.logGoldStateEndpoint("payments_unlinked", session, { source: "gold_state", ...validState });
+          this.logGoldStateEndpoint("payments_unlinked", session, { source: "smartdesk_gold_state", ...validState });
           return [];
         }
         const items = this.filterByCenter(this.paymentsRepository.list(), session)
@@ -8152,9 +8183,9 @@ class DesktopMirrorService {
                 ? "missing_client"
                 : "missing_appointment",
             suggestions: [],
-            sourceLayer: "gold_state"
+            sourceLayer: "smartdesk_gold_state"
           }));
-        this.logGoldStateEndpoint("payments_unlinked", session, { source: "gold_state", ...validState });
+        this.logGoldStateEndpoint("payments_unlinked", session, { source: "smartdesk_gold_state", ...validState });
         return items;
       }
       this.logGoldStateEndpoint("payments_unlinked", session, { source: "raw_fallback", ...validState });
@@ -8967,8 +8998,6 @@ class DesktopMirrorService {
 
   getDashboardStats(options = {}, session = null) {
     const normalized = this.normalizeDashboardStatsOptions(options);
-    const stateDashboard = this.buildDashboardStatsFromGoldState(normalized, session);
-    if (stateDashboard) return stateDashboard;
     const snapshot = this.findDashboardSnapshot(normalized, session);
     if (snapshot?.payload) {
       return this.decorateDashboardSnapshot(snapshot, session);
@@ -8977,7 +9006,7 @@ class DesktopMirrorService {
     const saved = this.saveDashboardSnapshot(normalized, session, payload, { source: "bootstrap" });
     return this.decorateDashboardSnapshot(saved, session, {
       bootstrap: true,
-      message: "Primo snapshot dashboard creato. Le prossime aperture leggeranno il dato salvato."
+      message: "Snapshot dashboard creato. Le prossime aperture leggono il dato salvato finche un dato collegato cambia."
     });
   }
 
@@ -11348,7 +11377,7 @@ class DesktopMirrorService {
       debug: marketingActions.debug || {},
       counters: marketingActions.counters || {},
       semantics: marketingActions.semantics || {},
-      sourceLayer: "gold_state",
+      sourceLayer: "smartdesk_gold_state",
       sourceEndpoint: "/api/ai-gold/state"
     };
     return {
@@ -12979,12 +13008,12 @@ class DesktopMirrorService {
         cached: false,
         cacheTtlMs: SNAPSHOT_CACHE_TTL_MS,
         freshness: "fresh",
-        rule: "Universal Core comprime e ordina il campo, AI Gold lo espone in forma operativa.",
+        rule: "Smart Desk prepara dati indicizzati; Core/Nyra Render decidono e spiegano quando il bridge esterno e disponibile.",
         dirtyBlocks: Array.from(this.getDirtyBlockSet(this.getCenterId(session)))
       },
       blockMeta: {
         policyVersion: "2026-04-16-update-modes",
-        rule: "Live solo operativo immediato; event-driven per sintesi; timeout/batch per analisi pesanti; manuale per verifiche; Universal Core resta read-first.",
+        rule: "Live solo operativo immediato; event-driven per sintesi; timeout/batch per analisi pesanti; manuale per verifiche; Smart Desk resta read-first e incrementale.",
         modes: UPDATE_MODES,
         policies: ANALYTICS_UPDATE_POLICIES,
         realtime: Object.entries(ANALYTICS_UPDATE_POLICIES).filter(([, policy]) => policy.mode === UPDATE_MODES.REALTIME).map(([key]) => key),
@@ -13016,10 +13045,10 @@ class DesktopMirrorService {
       economic: economicReading,
       goldEngine: {
         engineLayer: "gold_decision_engine",
-        engineVersion: "universal_core_phi_multi_domain_v1",
-        enterpriseLayer: "universal_core_enterprise_v1",
-        engineName: "Universal Core",
-        runtimeStack: ["UniversalCoreAdapter", "V0", "V2", "V7"],
+        engineVersion: "smartdesk_gold_state_fallback_v1",
+        enterpriseLayer: "smartdesk_fallback_priority_v1",
+        engineName: "Smart Desk Data Layer",
+        runtimeStack: ["SmartDeskDataSource", "IncrementalIndexes", "DirtyBlocks", "SavedSnapshots"],
         enterpriseRule: "Gold Enterprise ordina con storico, rischio esplicito, valore atteso, costo opportunita, utilita netta, simulazione V1 e learning bayesiano sugli outcome.",
         temporalLayer: "gold_temporal_v1",
         temporalMode: "test_parallel",
@@ -13252,7 +13281,7 @@ class DesktopMirrorService {
         if (stateDecisionCenter) {
           console.log("[decision_center_source]", JSON.stringify({
             centerId: this.getCenterId(session),
-            source: "gold_state"
+            source: "smartdesk_gold_state"
           }));
           return stateDecisionCenter;
         }
@@ -14041,7 +14070,7 @@ class DesktopMirrorService {
     const stateOverview = this.buildProfitabilityOverviewFromGoldState(options, session);
     if (stateOverview) {
       this.logGoldStateEndpoint("ai_profitability", session, {
-        source: "gold_state",
+        source: "smartdesk_gold_state",
         valid: true,
         reason: "ok",
         eventSeq: stateOverview.meta?.eventSeq ?? null

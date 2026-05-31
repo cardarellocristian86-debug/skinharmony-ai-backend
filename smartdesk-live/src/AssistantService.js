@@ -1600,11 +1600,12 @@ class AssistantService {
         ? "Leggi il centro in modalita Silver: controllo tecnico read-only, anomalie, dati mancanti e prima verifica manuale."
         : "Leggi AI Gold Smart Desk: stato centro, prima priorita, perche conta, dati mancanti e azione manuale da confermare.";
       const external = await this.externalAiGoldBridge.buildReadout({ mode, question, context, session });
+      const coreRisk = external.coreOutput?.risk || external.core?.risk || {};
       const externalItem = {
         id: `${mode}-external-core-nyra-readout`,
-        level: external.core?.risk?.band === "high" || external.core?.risk?.band === "blocked" ? "warning" : "info",
+        level: coreRisk.band === "high" || coreRisk.band === "blocked" ? "warning" : "info",
         area: mode === "silver" ? "controllo core" : "ai gold",
-        conclusion: mode === "silver" ? "Controllo Universal Core" : "Lettura Core/Nyra esterna",
+        conclusion: mode === "silver" ? "Controllo Core Render" : "Lettura Core/Nyra Render",
         reason: external.answer,
         details: external.guardrails?.coreDecides || external.guardrails?.nyraExplains
           ? "Fonte esterna Render: Core decide, Nyra spiega. Smart Desk resta sorgente dati."
@@ -1617,20 +1618,45 @@ class AssistantService {
       const sections = Array.isArray(payload.sections) ? payload.sections.slice() : [];
       sections.unshift({
         key: `${mode}_external_readout`,
-        title: mode === "silver" ? "Universal Core Read-only" : "Core + Nyra + OpenAI",
+        title: mode === "silver" ? "Core Render read-only" : "AI Gold - Core/Nyra Render",
         sourceLayer: external.sourceLayer,
+        role: "primary_decision_readout",
         items: [externalItem],
         actions: []
       });
+      const externalPrimaryAction = {
+        ...(payload.primaryAction || {}),
+        label: external.firstAction || payload.primaryAction?.label || "Verifica il centro",
+        suggestedAction: external.firstAction || payload.primaryAction?.suggestedAction || "verifica manuale",
+        explanationShort: external.answer,
+        explanationLong: external.answer,
+        sourceLayer: external.sourceLayer,
+        sourceAuthority: mode === "silver" ? "core_render_readonly" : "core_nyra_render_primary",
+        requiresOperatorConfirmation: mode !== "silver"
+      };
       return {
         ...payload,
-        sourceLayer: `${payload.sourceLayer || mode}_external_core_nyra`,
-        externalAi: external,
+        title: mode === "silver" ? "Silver - controllo Core Render" : "AI Gold - cosa fare ora",
+        sourceLayer: external.sourceLayer,
+        decisionAuthority: mode === "silver" ? "core_render_readonly" : "core_nyra_render_primary",
+        smartDeskRole: "data_source_only",
+        externalAi: {
+          ...external,
+          primary: true,
+          smartDeskInternalFallback: payload.sourceLayer || "smartdesk_data_fallback"
+        },
+        primaryAction: externalPrimaryAction,
         summary: {
           ...(payload.summary || {}),
-          aiArchitecture: mode === "silver" ? "silver_universal_core_readonly" : "gold_core_nyra_openai_external",
+          title: mode === "silver" ? "Silver legge il centro" : "AI Gold legge e decide la priorita",
+          primaryAction: external.firstAction,
+          primaryActionLabel: external.firstAction,
+          aiArchitecture: mode === "silver" ? "silver_core_render_readonly" : "gold_core_nyra_openai_external",
           externalProvider: external.provider,
-          firstExternalAction: external.firstAction
+          externalPrimary: true,
+          firstExternalAction: external.firstAction,
+          smartDeskRole: "data_source_only",
+          localDecisionLayer: "fallback_only"
         },
         sections
       };
