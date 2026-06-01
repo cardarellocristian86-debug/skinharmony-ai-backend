@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.5-commerce-snapshot-ready";
+const SERVICE_VERSION = "0.4.6-nyra-suite-branches";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -46,6 +46,37 @@ const GOOGLE_PROVIDER_CONFIG_FIELDS = [
   "redirect_uri",
 ];
 const GOOGLE_OAUTH_CLIENT_ID = "1062915832418-t1i2r823u06ohuri3efhi5l92bm7oc4f.apps.googleusercontent.com";
+const NYRA_SUITE_BRANCH_MAP_PATH = path.resolve(process.cwd(), "config", "nyra-suite-branch-map.json");
+const DEFAULT_NYRA_SUITE_BRANCH_MAP = {
+  schema: "nyra_suite_branch_map_v1",
+  version: "2026-06-01",
+  mode: "read_only_owner_confirmed",
+  source: "suite-control-plane/default",
+  render_role: "reference_contract_for_suite_control_plane_and_core_bridge",
+  branch_keys: [
+    "analytics_insight",
+    "google_ads_ga4",
+    "marketing_recall",
+    "crm_sales",
+    "commerce_checkout",
+    "product_registry",
+    "technology_registry",
+    "pricing_margin",
+    "claim_content",
+    "license_waas",
+    "customer_success",
+    "render_operations",
+    "support_risk",
+    "visual_content",
+  ],
+  guardrails: {
+    execution_allowed: false,
+    owner_confirmation_required: true,
+    core_required_for_sensitive_actions: true,
+    nyra_read_only: true,
+    no_raw_customer_data_without_scoped_policy: true,
+  },
+};
 const RUNBOOK_CATALOG = [
   {
     id: "site_clone_readiness",
@@ -189,6 +220,32 @@ function isGovernanceSensitiveAction(action = {}) {
 
 function uniqueValues(values) {
   return [...new Set(values.map(String).map((item) => item.trim()).filter(Boolean))];
+}
+
+function loadNyraSuiteBranchMap() {
+  try {
+    if (fs.existsSync(NYRA_SUITE_BRANCH_MAP_PATH)) {
+      const parsed = JSON.parse(fs.readFileSync(NYRA_SUITE_BRANCH_MAP_PATH, "utf8"));
+      const branchKeys = Array.isArray(parsed.branch_keys)
+        ? parsed.branch_keys.map(String).filter(Boolean)
+        : DEFAULT_NYRA_SUITE_BRANCH_MAP.branch_keys;
+      return {
+        ...DEFAULT_NYRA_SUITE_BRANCH_MAP,
+        ...parsed,
+        branch_keys: uniqueValues(branchKeys),
+        guardrails: {
+          ...DEFAULT_NYRA_SUITE_BRANCH_MAP.guardrails,
+          ...(parsed.guardrails && typeof parsed.guardrails === "object" ? parsed.guardrails : {}),
+        },
+      };
+    }
+  } catch (error) {
+    return {
+      ...DEFAULT_NYRA_SUITE_BRANCH_MAP,
+      load_warning: error instanceof Error ? error.message : "nyra_suite_branch_map_load_failed",
+    };
+  }
+  return DEFAULT_NYRA_SUITE_BRANCH_MAP;
 }
 
 function nodeReadiness(node) {
@@ -2315,6 +2372,27 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       contract: buildSuiteRuntimeMapContract(),
+    });
+  });
+
+  app.get("/api/suite/nyra/branch-map", auth, (req, res) => {
+    const branchMap = loadNyraSuiteBranchMap();
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "nyra_suite_branch_map_read_only",
+      execution_allowed: false,
+      owner_confirmation_required: true,
+      branch_count: branchMap.branch_keys.length,
+      branch_keys: branchMap.branch_keys,
+      branch_map: branchMap,
+      safety_policy: {
+        no_auto_execute: true,
+        no_customer_raw_data_required: true,
+        core_required_for_sensitive_actions: true,
+        owner_confirmation_required_for_writes: true,
+      },
     });
   });
 

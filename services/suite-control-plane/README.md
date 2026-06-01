@@ -31,6 +31,7 @@ GET  /api/suite/tenants/:tenantId/analytics/action-plan
 POST /api/suite/commerce/snapshot
 GET  /api/suite/tenants/:tenantId/commerce/summary
 GET  /api/suite/runbooks
+GET  /api/suite/nyra/branch-map
 GET  /api/suite/customer-intelligence/contract
 POST /api/suite/customer-intelligence/readiness
 GET  /api/suite/integrations/google/status
@@ -62,6 +63,12 @@ conserva storico tenant-scoped e genera raccomandazioni read-only.
 estrazione: WordPress invia solo un riepilogo aggregato di CRM, magazzino,
 ordini, licenze e lead. Render conserva storico e readiness, senza salvare
 record cliente grezzi, catturare pagamenti o modificare stock.
+
+`/api/suite/nyra/branch-map` espone il contratto read-only dei rami Nyra/Suite:
+Analytics, Google Ads/GA4, Marketing, CRM, Commerce, registry, pricing, claim,
+licenze, Customer Success, Render operations, support risk e visual content. Il
+contratto serve a orientare Core/Nyra; non abilita esecuzione automatica e
+richiede conferma owner per qualsiasi scrittura.
 
 `/api/suite/integrations/google/*` prepara il connettore Google Ads/Analytics
 con flusso semplice per il cliente: click su `Collega Google`, login Google,

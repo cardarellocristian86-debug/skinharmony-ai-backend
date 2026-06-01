@@ -1,0 +1,40 @@
+{
+  "schema": "nyra_suite_branch_map_v1",
+  "version": "2026-06-01",
+  "mode": "read_only_owner_confirmed",
+  "source": "services/suite-control-plane/config/nyra-suite-branch-map.json",
+  "render_role": "reference_contract_for_suite_control_plane_and_core_bridge",
+  "branch_keys": [
+    "analytics_insight",
+    "google_ads_ga4",
+    "marketing_recall",
+    "crm_sales",
+    "commerce_checkout",
+    "product_registry",
+    "technology_registry",
+    "pricing_margin",
+    "claim_content",
+    "license_waas",
+    "customer_success",
+    "render_operations",
+    "support_risk",
+    "visual_content"
+  ],
+  "guardrails": {
+    "execution_allowed": false,
+    "owner_confirmation_required": true,
+    "core_required_for_sensitive_actions": true,
+    "nyra_read_only": true,
+    "no_raw_customer_data_without_scoped_policy": true
+  },
+  "bridge_payload_example": {
+    "tenant_id": "tenant_id",
+    "text": "Leggi Suite e spiega cosa fare",
+    "target_system": "suite",
+    "branches": ["analytics_insight", "google_ads_ga4", "crm_sales"],
+    "context": {
+      "source": "suite_control_plane",
+      "no_auto_execute": true
+    }
+  }
+}

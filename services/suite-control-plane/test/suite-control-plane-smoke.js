@@ -320,6 +320,16 @@ try {
   assert.ok(tracks.body.tracks.smartdesk_gold_track.runbooks.some((runbook) => runbook.id === "smartdesk_gold_customer_intelligence_sync"));
   assert.ok(tracks.body.tracks.smartdesk_gold_track.guardrails.includes("nessun invio automatico"));
 
+  const branchMap = await request("/api/suite/nyra/branch-map", { headers });
+  assert.equal(branchMap.response.status, 200);
+  assert.equal(branchMap.body.mode, "nyra_suite_branch_map_read_only");
+  assert.equal(branchMap.body.execution_allowed, false);
+  assert.equal(branchMap.body.owner_confirmation_required, true);
+  assert.equal(branchMap.body.branch_count, 14);
+  assert.ok(branchMap.body.branch_keys.includes("analytics_insight"));
+  assert.ok(branchMap.body.branch_keys.includes("crm_sales"));
+  assert.ok(branchMap.body.branch_keys.includes("render_operations"));
+
   const googleStatus = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
   assert.equal(googleStatus.response.status, 200);
   assert.equal(googleStatus.body.google.capability.can_change_budget, false);
