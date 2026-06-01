@@ -353,9 +353,9 @@
   }
 
   function riskLabel(band) {
-    if (band === "high") return "Rischio alta";
-    if (band === "medium") return "Rischio media";
-    return "Rischio bassa";
+    if (band === "high") return copy("Rischio alta", "High risk");
+    if (band === "medium") return copy("Rischio media", "Medium risk");
+    return copy("Rischio bassa", "Low risk");
   }
 
   function normalizeRoute(value) {
@@ -480,6 +480,77 @@
   function cleanDisplayText(value, fallback = "") {
     const text = String(value || fallback || "").trim();
     return text || fallback;
+  }
+
+  function localizeGeneratedText(value) {
+    const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
+    let text = String(value || "");
+    const replacements = isEnglish()
+      ? [
+        [/\bAI Gold ha letto il centro\./g, "AI Gold has read the center."],
+        [/\bPrima priorita:/g, "First priority:"],
+        [/\bPoi controlla:/g, "Then check:"],
+        [/\bOperatore:/g, "Operator:"],
+        [/\bSmart Desk non modifica dati:/g, "Smart Desk does not change data:"],
+        [/\bapri servizi e operatori, poi completa (\d+) costi servizio e (\d+) costi orari operatori\b/g, (_match, serviceCosts, hourlyCosts) => `open services and staff, then complete ${serviceCosts} ${Number(serviceCosts) === 1 ? "service cost" : "service costs"} and ${hourlyCosts} ${Number(hourlyCosts) === 1 ? "staff hourly cost" : "staff hourly costs"}`],
+        [/\bapri servizi\/operatori e completa i costi prima di leggere la redditivita\b/g, "open services/staff and complete costs before reading profitability"],
+        [/\bapri servizi\/operatori/g, "open services/staff"],
+        [/\bapri servizi e operatori/g, "open services and staff"],
+        [/\bpoi completa\b/g, "then complete"],
+        [/\bcompleta i costi prima di leggere la redditivita\b/g, "complete costs before reading profitability"],
+        [/\bcompleta costi prima di leggere la redditivita\b/g, "complete costs before reading profitability"],
+        [/\bcompleta configurazione costi\b/g, "complete cost setup"],
+        [/\bcompleta il dato o conferma l'azione manuale\b/g, "complete the missing data or confirm the manual action"],
+        [/\bconferma prima di eseguire\b/g, "confirm before executing"],
+        [/\bapri il modulo indicato\b/g, "open the indicated module"],
+        [/\bapri cassa\b/g, "open checkout"],
+        [/\bcollega pagamenti\/appuntamenti\b/g, "link payments/appointments"],
+        [/\s+e\s+link payments\/appointments\b/g, " and link payments/appointments"],
+        [/\s+e\s+complete costs before reading profitability\b/g, " and complete costs before reading profitability"],
+        [/\s+e\s+(\d+)\s+staff hourly costs?/g, (_match, count) => ` and ${count} ${Number(count) === 1 ? "staff hourly cost" : "staff hourly costs"}`],
+        [/\bprima del report\b/g, "before the report"],
+        [/\b(\d+)\s+costi servizio\b/g, counted("service cost", "service costs")],
+        [/\b(\d+)\s+costi orari operatori\b/g, counted("staff hourly cost", "staff hourly costs")],
+        [/\bcosti orari operatori\b/g, "staff hourly costs"],
+        [/\bcosti servizio\b/g, "service costs"],
+        [/\bservizio\b/g, "service"],
+        [/\bredditivita\b/g, "profitability"],
+        [/\bQualità dati\b/g, "Data quality"],
+        [/\bCliente occasionale\b/g, "Occasional client"],
+        [/\bDominio\b/g, "Domain"],
+        [/\brischio\b/g, "risk"],
+        [/\bpunteggio\b/g, "score"],
+        [/\bconferma owner richiesta\b/g, "owner confirmation required"]
+      ]
+      : [
+        [/\bAI Gold has read the center\./g, "AI Gold ha letto il centro."],
+        [/\bFirst priority:/g, "Prima priorita:"],
+        [/\bThen check:/g, "Poi controlla:"],
+        [/\bOperator:/g, "Operatore:"],
+        [/\bSmart Desk does not change data:/g, "Smart Desk non modifica dati:"],
+        [/\bopen services\/staff/g, "apri servizi/operatori"],
+        [/\bopen services and staff/g, "apri servizi e operatori"],
+        [/\bcomplete costs before reading profitability\b/g, "completa i costi prima di leggere la redditivita"],
+        [/\bcomplete cost setup\b/g, "completa configurazione costi"],
+        [/\bcomplete the missing data or confirm the manual action\b/g, "completa il dato o conferma l'azione manuale"],
+        [/\bconfirm before executing\b/g, "conferma prima di eseguire"],
+        [/\bopen the indicated module\b/g, "apri il modulo indicato"],
+        [/\bopen checkout\b/g, "apri cassa"],
+        [/\blink payments\/appointments\b/g, "collega pagamenti/appuntamenti"],
+        [/\bbefore the report\b/g, "prima del report"],
+        [/\bData quality\b/g, "Qualità dati"],
+        [/\bOccasional client\b/g, "Cliente occasionale"],
+        [/\bDomain\b/g, "Dominio"],
+        [/\brisk\b/g, "rischio"],
+        [/\bscore\b/g, "punteggio"],
+        [/\bowner confirmation required\b/g, "conferma owner richiesta"],
+        [/\b(\d+)\s+service costs?\b/g, counted("costi servizio", "costi servizio")],
+        [/\b(\d+)\s+staff hourly costs?\b/g, counted("costi orari operatori", "costi orari operatori")]
+      ];
+    replacements.forEach(([from, to]) => {
+      text = text.replace(from, to);
+    });
+    return text;
   }
 
   function sourceStatus(context = {}, capabilities = {}) {
@@ -680,9 +751,9 @@
     const changeImpact = context?.changeImpactContract || capabilities?.changeImpactContract || null;
     const nextStep = readiness?.next_step || "waiting_for_core";
     const automaticSendAllowed = Boolean(customerIntelligence?.automation?.automaticSendAllowed);
-    const primaryText = cleanDisplayText(primary?.label || primary?.suggestedAction || summary.primaryActionLabel || summary.primaryAction, copy("Prossima azione: completa i dati mancanti e rileggi il centro", "Next action: complete missing data and read the center again"));
-    const actionText = cleanDisplayText(primary?.suggestedAction || summary.firstExternalAction || primary?.action, copy("Controlla dati, cassa, agenda e costi", "Check data, cash desk, agenda and costs"));
-    const explanationText = cleanDisplayText(primary?.explanationShort || context?.explanationShort || summary.title, copy("Cosa manca: verifica dati economici, costi servizi/operatori, agenda e cassa prima della prossima decisione.", "What is missing: check economic data, service/operator costs, agenda and cash desk before the next decision."));
+    const primaryText = localizeGeneratedText(cleanDisplayText(primary?.label || primary?.suggestedAction || summary.primaryActionLabel || summary.primaryAction, copy("Prossima azione: completa i dati mancanti e rileggi il centro", "Next action: complete missing data and read the center again")));
+    const actionText = localizeGeneratedText(cleanDisplayText(primary?.suggestedAction || summary.firstExternalAction || primary?.action, copy("Controlla dati, cassa, agenda e costi", "Check data, cash desk, agenda and costs")));
+    const explanationText = localizeGeneratedText(cleanDisplayText(primary?.explanationShort || context?.explanationShort || summary.title, copy("Cosa manca: verifica dati economici, costi servizi/operatori, agenda e cassa prima della prossima decisione.", "What is missing: check economic data, service/operator costs, agenda and cash desk before the next decision.")));
     const primaryRoute = routeForGoldAction(primary?.action || primaryText, primary?.domain, primary || {});
     const actionRoute = routeForGoldAction(primary?.suggestedAction || primary?.action || actionText, primary?.domain, primary || {});
     const explanationRoute = routeForDomain(primary?.domain, "/ai-gold");
@@ -726,7 +797,7 @@
         </div>
         ${secondary.slice(0, 3).map((item) => `
           <div class="gold-bridge-item" data-gold-route="${routeForGoldAction(item.action, item.domain, item)}" role="button" tabindex="0" aria-label="${copy("Apri priorita secondaria", "Open secondary priority")}">
-            <div class="gold-bridge-item-title">${item.label || item.domain || copy("Priorita secondaria", "Secondary priority")}</div>
+            <div class="gold-bridge-item-title">${localizeGeneratedText(item.label || item.domain || copy("Priorita secondaria", "Secondary priority"))}</div>
             <div class="gold-bridge-item-subtitle">${copy("Dominio", "Domain")}: ${item.domain || copy("centro", "center")} · ${copy("punteggio", "score")} ${(Number(item.score || 0)).toFixed(2)}</div>
           </div>
         `).join("")}
@@ -792,6 +863,7 @@
           anchor.insertAdjacentElement("afterend", panel);
         }
       });
+      sanitizeGoldUiText(panel);
     } catch (_error) {
       sanitizeGoldUiText();
       if (!shouldRender()) {
