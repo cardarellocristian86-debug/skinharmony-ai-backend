@@ -301,6 +301,53 @@ try {
   await assertSemanticSelectionForConnector("smartdesk", "smartdesk_connector", "smart_desk");
   await assertSemanticSelectionForConnector("translator", "wordpress_connector", "skinharmony_core");
 
+  const softwareLanguageSchema = await api(base, "GET", "/v1/software-language-gate/schema", undefined);
+  assert(softwareLanguageSchema.status === 200 && softwareLanguageSchema.json.mandatory === true, "software language gate schema failed");
+  assert(softwareLanguageSchema.json.required_pipeline?.includes("v2_semantic_filter"), "software language gate missing V2 pipeline");
+  mark("software_language_gate_schema", true, {
+    schema_version: softwareLanguageSchema.json.schema_version,
+    blocking_radars: softwareLanguageSchema.json.blocking_radars,
+  });
+
+  const softwareLanguageGate = await api(base, "POST", "/v1/software-language-gate/evaluate", {
+    tenant_id: "tenant_demo_skinharmony",
+    app: "smartdesk",
+    target_lang: "de",
+    entries: [
+      {
+        key: "gold.next_action",
+        source: "runtime_copy",
+        text: "Gold resta attivo: se mancano dati, mostra cosa completare.",
+      },
+      {
+        key: "auth.start_trial",
+        source: "runtime_copy",
+        text: "Start free trial",
+      },
+      {
+        key: "repair.regex",
+        source: "translation_repair_rule",
+        text: "], [/bapri servizi e operatorib/g, (_match) => `open services and staff`]",
+      },
+      {
+        key: "nav.clients",
+        source: "runtime_copy",
+        text: "Kunden",
+      },
+    ],
+  }, connectorKey);
+  assert(softwareLanguageGate.status === 200 && softwareLanguageGate.json.schema_version === "software_language_gate_v1", "software language gate evaluate failed");
+  assert(softwareLanguageGate.json.mandatory === true && softwareLanguageGate.json.core_nyra_required === true, "software language gate should be mandatory");
+  assert(softwareLanguageGate.json.language_ready === false, "software language gate should block incomplete German UI");
+  assert(softwareLanguageGate.json.action_mediation?.execution_allowed === false, "software language gate should not allow release");
+  assert(softwareLanguageGate.json.summary.noise_removed >= 1, "software language gate should remove V2 noise");
+  assert(softwareLanguageGate.json.summary.blocking_high >= 2, "software language gate should report blocking high findings");
+  mark("software_language_gate_blocks_not_ready", true, {
+    decision: softwareLanguageGate.json.decision,
+    summary: softwareLanguageGate.json.summary,
+    mediation: softwareLanguageGate.json.action_mediation,
+  });
+
   const flowcore = await api(base, "POST", "/v1/flowcore/decision", {
     tenant_id: "tenant_demo_skinharmony",
     metrics: {

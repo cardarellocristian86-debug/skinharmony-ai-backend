@@ -39,10 +39,14 @@ import {
   summarizeCustomerIntelligenceReadiness,
 } from "./customerIntelligenceContract.js";
 import { selectSemanticCandidates } from "./semanticSelection.js";
+import {
+  SOFTWARE_LANGUAGE_GATE_VERSION,
+  evaluateSoftwareLanguageGate,
+} from "./softwareLanguageGate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.16-change-impact-orchestration";
+const SERVICE_VERSION = "0.3.17-software-language-gate";
 
 function nowIso() {
   return new Date().toISOString();
@@ -812,6 +816,7 @@ function buildConnectorSdkManifest() {
     ],
     core_routes: {
       gate: "/v1/ai-gateway/evaluate",
+      software_language_gate: "/v1/software-language-gate/evaluate",
       control_plane: "/v1/control-plane/overview",
       runbooks: "/v1/runbooks",
       runbook_evaluate: "/v1/runbooks/evaluate",
@@ -3035,6 +3040,56 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/api/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     return handleSemanticSelection(req, res);
+  });
+
+  app.get("/v1/software-language-gate/schema", (req, res) => {
+    res.json({
+      ok: true,
+      schema_version: SOFTWARE_LANGUAGE_GATE_VERSION,
+      mandatory: true,
+      horizontal: true,
+      applies_to: ["skinharmony_core_translator", "smartdesk", "ai_gold", "site_suite", "future_core_nyra_software"],
+      required_pipeline: ["v2_semantic_filter", "v1_writing_policy_filter", "v0_final_visible_risk_gate"],
+      blocking_radars: ["cta", "errors", "onboarding_trial", "ai_gold_copy", "legal_privacy", "pricing_payment"],
+      rule: "No software language/runtime/AI copy is ready until horizontal radars plus V2/V1/V0 plus Core/Nyra governance pass.",
+    });
+  });
+
+  app.get("/api/v1/software-language-gate/schema", (req, res) => {
+    res.redirect(307, "/v1/software-language-gate/schema");
+  });
+
+  function handleSoftwareLanguageGate(req, res) {
+    const result = evaluateSoftwareLanguageGate({
+      ...(req.body || {}),
+      tenant_id: req.tenantId,
+    });
+    audit.append("core_software_language_gate_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      app: result.app,
+      target_lang: result.target_lang,
+      language_ready: result.language_ready,
+      decision: result.decision,
+      entries: result.summary.entries,
+      raw_findings_before_noise: result.summary.raw_findings_before_noise,
+      noise_removed: result.summary.noise_removed,
+      findings: result.summary.findings,
+      blocking_high: result.summary.blocking_high,
+    });
+    return res.json({
+      ...result,
+      audit_event: "core_software_language_gate_evaluated",
+      source: "universal_core_render",
+    });
+  }
+
+  app.post("/v1/software-language-gate/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    return handleSoftwareLanguageGate(req, res);
+  });
+
+  app.post("/api/v1/software-language-gate/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    return handleSoftwareLanguageGate(req, res);
   });
 
   app.get("/v1/ai-gateway/schema", (req, res) => {
