@@ -324,10 +324,61 @@ function buildBlocked(message, action = null, payload = {}) {
 }
 
 function assistantLanguage(context = {}) {
-  return String(context.language || context.settings?.appLanguage || "it").toLowerCase() === "en" ? "en" : "it";
+  const language = String(context.language || context.settings?.appLanguage || "it").toLowerCase().slice(0, 2);
+  return language === "en" || language === "de" ? language : "it";
 }
 
 function localizeAssistantText(message, language) {
+  if (language === "de") {
+    return String(message || "")
+      .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart-Desk-Lesung: lokale Daten als Evidenz, Core/Nyra-Server als Primärquelle, wenn verfügbar.")
+      .replace(/\bLettura Smart Desk: dati locali come evidenza, Core\/Nyra server come fonte primaria quando disponibile\./g, "Smart-Desk-Lesung: lokale Daten als Evidenz, Core/Nyra-Server als Primärquelle, wenn verfügbar.")
+      .replace(/\bLettura AI Gold operativa sui dati disponibili, con Core\/Nyra server come fonte primaria quando risponde:/g, "Operative AI-Gold-Lesung auf verfügbaren Daten, mit Core/Nyra-Server als Primärquelle, wenn er antwortet:")
+      .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "Im Silver-Plan kann ich dich durch Module und Berichte führen, aber keine AI-Prioritäten erzeugen.")
+      .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "Im Base-Plan bleibt der Smart-Button nutzbar, verwendet aber keine AI-Prioritäten.")
+      .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatische Prioritäten und Entscheidungsalarme sind im Gold-Plan verfügbar.")
+      .replace(/\bNon ho eseguito azioni automatiche\. Conferma sempre tu eventuali contatti, modifiche o verifiche operative\./g, "Ich habe keine automatischen Aktionen ausgeführt. Kontakte, Änderungen und operative Prüfungen bestätigst immer du.")
+      .replace(/\bCi sono priorita operative da gestire\./g, "Es gibt operative Prioritäten zu bearbeiten.")
+      .replace(/\bAgenda vuota oggi\. Ti conviene lavorare su recall o clienti inattivi\./g, "Die Agenda ist heute leer. Arbeite an Recalls oder inaktiven Kunden.")
+      .replace(/\bSintesi operativa:/g, "Operative Zusammenfassung:")
+      .replace(/\bCosa fare ora:/g, "Was jetzt zu tun ist:")
+      .replace(/\bCosa puoi fare ora:/g, "Was du jetzt tun kannst:")
+      .replace(/\bPriorità principale:/g, "Hauptpriorität:")
+      .replace(/\bAzioni consigliate:/g, "Empfohlene Aktionen:")
+      .replace(/\bBlocchi e verifiche:/g, "Blockaden und Prüfungen:")
+      .replace(/\bEsecuzione:/g, "Ausführung:")
+      .replace(/\bStato centro:/g, "Center-Status:")
+      .replace(/\bMarketing:/g, "Marketing:")
+      .replace(/\bRedditività:/g, "Rentabilität:")
+      .replace(/\bTrend mensile:/g, "Monatlicher Trend:")
+      .replace(/\bDomanda ricevuta:/g, "Empfangene Frage:")
+      .replace(/\bApro la dashboard\./g, "Ich öffne das Dashboard.")
+      .replace(/\bApro l[’']agenda\./g, "Ich öffne die Agenda.")
+      .replace(/\bApro i clienti\./g, "Ich öffne die Kunden.")
+      .replace(/\bApro il magazzino\./g, "Ich öffne das Lager.")
+      .replace(/\bApro i report\./g, "Ich öffne die Berichte.")
+      .replace(/\bApro la cassa operativa\./g, "Ich öffne die operative Kasse.")
+      .replace(/\bApro turni e presenze\./g, "Ich öffne Schichten und Anwesenheiten.")
+      .replace(/\bApro il controllo redditività\./g, "Ich öffne die Rentabilitätskontrolle.")
+      .replace(/\bApro i protocolli\./g, "Ich öffne die Protokolle.")
+      .replace(/\bApro le impostazioni\./g, "Ich öffne die Einstellungen.")
+      .replace(/\bFiltro l[’']agenda sul periodo richiesto\./g, "Ich filtere die Agenda nach dem gewünschten Zeitraum.")
+      .replace(/\bAlert letti dal gestionale:?/gi, "Alarme aus dem Managementsystem")
+      .replace(/\bNessuna priorità principale disponibile\./g, "Nächste Aktion: fehlende Daten ergänzen und das Center erneut lesen.")
+      .replace(/\bNessuna azione secondaria prioritaria\./g, "Daten, Kasse, Agenda und Kosten prüfen, bevor weitere Aktionen gesucht werden.")
+      .replace(/\bNessun blocco critico dal Gold Engine\./g, "Keine kritische Blockade aus der Gold Engine.")
+      .replace(/\bApri Agenda\b|\bApri agenda\b/g, "Agenda öffnen")
+      .replace(/\bApri Clienti\b|\bApri clienti\b/g, "Kunden öffnen")
+      .replace(/\bApri Cassa\b|\bApri cassa\b/g, "Kasse öffnen")
+      .replace(/\bApri Report\b|\bApri report\b/g, "Berichte öffnen")
+      .replace(/\bApri Redditività\b|\bApri redditività\b/g, "Rentabilität öffnen")
+      .replace(/\bApri Marketing\b|\bApri marketing\b/g, "Marketing öffnen")
+      .replace(/\bMostrami priorità\b/g, "Prioritäten anzeigen")
+      .replace(/\bSintesi:\b/g, "Zusammenfassung:")
+      .replace(/\bPriorità:\b/g, "Prioritäten:")
+      .replace(/\bLimiti \/ dati mancanti:\b/g, "Grenzen / fehlende Daten:")
+      .replace(/\bStato centro non ancora rappresentativo\b/g, "Center-Status noch nicht repräsentativ");
+  }
   if (language !== "en") return message;
   return String(message || "")
     .replace(/\bLettura Smart allineata a Universal Core Decision Engine\./g, "Smart Desk reading: local data as evidence, Core/Nyra server as primary source when available.")
@@ -393,7 +444,7 @@ function localizeAssistantText(message, language) {
 
 function localizeAssistantEnvelope(response, context = {}) {
   const language = assistantLanguage(context);
-  if (!response || language !== "en") return response;
+  if (!response || !["en", "de"].includes(language)) return response;
   return {
     ...response,
     message: localizeAssistantText(response.message, language)
@@ -1233,11 +1284,14 @@ class AssistantService {
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const language = assistantLanguage(context);
     const instructions = [
       "Sei SkinHarmony AI Assistant, assistente operativo reale del gestionale.",
-      assistantLanguage(context) === "en"
+      language === "en"
         ? "Respond in English, premium tone, clear, brief, concrete."
-        : "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
+        : language === "de"
+          ? "Antworte auf Deutsch, mit Premium-Ton, klar, kurz und konkret."
+          : "Rispondi in italiano, tono premium, chiaro, breve, concreto.",
       "Riconosci il centro e il piano solo dal contesto di sessione. Non chiedere all'utente chi e se il contesto lo contiene.",
       "Usa esclusivamente dati del centro presenti nel contesto JSON. Non parlare di altri centri e non inventare dati mancanti.",
       "Non promettere azioni non eseguibili.",
@@ -1710,7 +1764,23 @@ class AssistantService {
         "Reply in English, premium, clear and practical.",
         "Structure the answer as: Summary, Priorities, Suggested actions, Limits/missing data."
       ].join("\n")
-      : [
+      : language === "de"
+        ? [
+        "Du bist AI Gold in SkinHarmony Smart Desk. Der Universal-Core-Server ist das primäre Entscheidungsgate; der Nyra-Server ist die Erklärungsschicht. Smart Desk ist nur die Datenquelle.",
+        "Du bist kein generischer Chatbot: du bist ein operativer Assistent für Kosmetik-, Friseur- und Hybridcenter.",
+        "Nutze nur die Daten im JSON-Kontext. Wenn Daten fehlen, sage es klar.",
+        "Sende keine Nachrichten, ändere keine Preise, ändere keine Daten und starte keine automatischen Kampagnen.",
+        "Schlage konkrete Aktionen vor, die der Operator bestätigen muss.",
+        "Wenn monthlyTrend vorhanden ist, nutze ihn für Schwankungen, Rückgänge, Erholungen und operative Instabilität.",
+        "Wenn goldDecisionContext vorhanden ist, nutze ihn als offizielle Quelle: primaryAction, secondaryActions, blockedActions, risk, confidence, EV, NEU, RAP_2 und trend.",
+        "Du erhältst auch governedBaseline: das ist die bereits governte Core/Nyra-Server-Lesung. Verfeinere Stimme und Klarheit, ändere aber keine Prioritäten, Risiken, Blockaden oder Primäraktion.",
+        "Umgehe niemals canExecute, blockedActions, hohes Risiko oder geringe Confidence. Wenn Gold blockiert, musst du blockieren oder Prüfung verlangen.",
+        "Wenn goldCapabilities vorhanden ist, nutze Features und Limits, um zu verstehen, was aktiv ist. Wenn WhatsApp nicht aktiviert ist, schlage nur manuelles Kopieren/Fallback vor.",
+        "Vermeide medizinische oder therapeutische Claims und garantierte Ergebnisse.",
+        "Antworte auf Deutsch, premium, klar und praktisch.",
+        "Strukturiere die Antwort als: Zusammenfassung, Prioritäten, empfohlene Aktionen, Grenzen/fehlende Daten."
+      ].join("\n")
+        : [
         "Sei AI Gold di SkinHarmony Smart Desk. Universal Core server è il gate decisionale primario; Nyra server è il layer di spiegazione. Smart Desk è solo sorgente dati.",
         "Non sei un chatbot generico: sei un assistente operativo per centri estetici, parrucchieri e ibridi.",
         "Usa solo i dati presenti nel contesto JSON. Se un dato manca, dillo.",
@@ -1747,7 +1817,7 @@ class AssistantService {
       return {
         goldEnabled: true,
         provider: "universal_core_server_nyra_server_openai",
-        answer: language === "en" ? localizeAssistantText(answer, language) : answer,
+        answer: ["en", "de"].includes(language) ? localizeAssistantText(answer, language) : answer,
         actions: [],
         structured: governedBaseline.structured || null,
         dialogue: governedBaseline.dialogue || null,

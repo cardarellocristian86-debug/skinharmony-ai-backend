@@ -15,14 +15,20 @@
 
   function normalizeLanguage(value) {
     const language = String(value || "").toLowerCase().slice(0, 2);
-    return language === "en" ? "en" : "it";
+    if (language === "en" || language === "de") return language;
+    return "it";
   }
 
   function isEnglish() {
     return uiLanguage === "en";
   }
 
-  function copy(it, en) {
+  function isGerman() {
+    return uiLanguage === "de";
+  }
+
+  function copy(it, en, de = en) {
+    if (isGerman()) return de;
     return isEnglish() ? en : it;
   }
 
@@ -353,9 +359,9 @@
   }
 
   function riskLabel(band) {
-    if (band === "high") return copy("Rischio alta", "High risk");
-    if (band === "medium") return copy("Rischio media", "Medium risk");
-    return copy("Rischio bassa", "Low risk");
+    if (band === "high") return copy("Rischio alta", "High risk", "Hohes Risiko");
+    if (band === "medium") return copy("Rischio media", "Medium risk", "Mittleres Risiko");
+    return copy("Rischio bassa", "Low risk", "Niedriges Risiko");
   }
 
   function normalizeRoute(value) {
@@ -485,8 +491,71 @@
   function localizeGeneratedText(value) {
     const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
     let text = String(value || "");
-    const replacements = isEnglish()
+    const replacements = isGerman()
       ? [
+        [/\bAI Gold ha letto il centro\./g, "AI Gold hat das Center gelesen."],
+        [/\bAI Gold has read the center\./g, "AI Gold hat das Center gelesen."],
+        [/\bPrima priorita:/g, "Erste Priorität:"],
+        [/\bFirst priority:/g, "Erste Priorität:"],
+        [/\bPoi controlla:/g, "Dann prüfen:"],
+        [/\bThen check:/g, "Dann prüfen:"],
+        [/\bOperatore:/g, "Operator:"],
+        [/\bOperator:/g, "Operator:"],
+        [/\bSmart Desk non modifica dati:/g, "Smart Desk ändert keine Daten:"],
+        [/\bSmart Desk does not change data:/g, "Smart Desk ändert keine Daten:"],
+        [/\bapri servizi e operatori, poi completa (\d+) costi servizio e (\d+) costi orari operatori\b/g, (_match, serviceCosts, hourlyCosts) => `Leistungen und Mitarbeitende öffnen, dann ${serviceCosts} ${Number(serviceCosts) === 1 ? "Leistungskostenpunkt" : "Leistungskostenpunkte"} und ${hourlyCosts} ${Number(hourlyCosts) === 1 ? "Stundenkostenpunkt" : "Stundenkostenpunkte"} ergänzen`],
+        [/\bopen services and staff, then complete (\d+) service costs? and (\d+) staff hourly costs?\b/g, (_match, serviceCosts, hourlyCosts) => `Leistungen und Mitarbeitende öffnen, dann ${serviceCosts} ${Number(serviceCosts) === 1 ? "Leistungskostenpunkt" : "Leistungskostenpunkte"} und ${hourlyCosts} ${Number(hourlyCosts) === 1 ? "Stundenkostenpunkt" : "Stundenkostenpunkte"} ergänzen`],
+        [/\bapri servizi\/operatori e completa i costi prima di leggere la redditivita\b/g, "Leistungen/Mitarbeitende öffnen und Kosten ergänzen, bevor die Rentabilität gelesen wird"],
+        [/\bopen services\/staff and complete costs before reading profitability\b/g, "Leistungen/Mitarbeitende öffnen und Kosten ergänzen, bevor die Rentabilität gelesen wird"],
+        [/\bapri servizi\/operatori/g, "Leistungen/Mitarbeitende öffnen"],
+        [/\bopen services\/staff/g, "Leistungen/Mitarbeitende öffnen"],
+        [/\bapri servizi e operatori/g, "Leistungen und Mitarbeitende öffnen"],
+        [/\bopen services and staff/g, "Leistungen und Mitarbeitende öffnen"],
+        [/\bpoi completa\b/g, "dann ergänzen"],
+        [/\bthen complete\b/g, "dann ergänzen"],
+        [/\bcompleta i costi prima di leggere la redditivita\b/g, "Kosten ergänzen, bevor die Rentabilität gelesen wird"],
+        [/\bcomplete costs before reading profitability\b/g, "Kosten ergänzen, bevor die Rentabilität gelesen wird"],
+        [/\bcompleta configurazione costi\b/g, "Kostenkonfiguration ergänzen"],
+        [/\bcomplete cost setup\b/g, "Kostenkonfiguration ergänzen"],
+        [/\bcompleta il dato o conferma l'azione manuale\b/g, "fehlende Daten ergänzen oder die manuelle Aktion bestätigen"],
+        [/\bcomplete the missing data or confirm the manual action\b/g, "fehlende Daten ergänzen oder die manuelle Aktion bestätigen"],
+        [/\bconferma prima di eseguire\b/g, "vor der Ausführung bestätigen"],
+        [/\bconfirm before executing\b/g, "vor der Ausführung bestätigen"],
+        [/\bapri il modulo indicato\b/g, "das angegebene Modul öffnen"],
+        [/\bopen the indicated module\b/g, "das angegebene Modul öffnen"],
+        [/\bapri cassa\b/g, "Kasse öffnen"],
+        [/\bopen checkout\b/g, "Kasse öffnen"],
+        [/\bcollega pagamenti\/appuntamenti\b/g, "Zahlungen/Termine verknüpfen"],
+        [/\blink payments\/appointments\b/g, "Zahlungen/Termine verknüpfen"],
+        [/\bprima del report\b/g, "vor dem Bericht"],
+        [/\bbefore the report\b/g, "vor dem Bericht"],
+        [/\b(\d+)\s+costi servizio\b/g, counted("Leistungskostenpunkt", "Leistungskostenpunkte")],
+        [/\b(\d+)\s+service costs?\b/g, counted("Leistungskostenpunkt", "Leistungskostenpunkte")],
+        [/\b(\d+)\s+costi orari operatori\b/g, counted("Stundenkostenpunkt", "Stundenkostenpunkte")],
+        [/\b(\d+)\s+staff hourly costs?\b/g, counted("Stundenkostenpunkt", "Stundenkostenpunkte")],
+        [/\bcosti orari operatori\b/g, "Stundenkosten Mitarbeitende"],
+        [/\bstaff hourly costs\b/g, "Stundenkosten Mitarbeitende"],
+        [/\bcosti servizio\b/g, "Leistungskosten"],
+        [/\bservice costs\b/g, "Leistungskosten"],
+        [/\bservizio\b/g, "Leistung"],
+        [/\bservice\b/g, "Leistung"],
+        [/\bredditivita\b/g, "Rentabilität"],
+        [/\bprofitability\b/g, "Rentabilität"],
+        [/\bQualità dati\b/g, "Datenqualität"],
+        [/\bData quality\b/g, "Datenqualität"],
+        [/\bCliente occasionale\b/g, "Gelegenheitskunde"],
+        [/\bOccasional client\b/g, "Gelegenheitskunde"],
+        [/\bDominio\b/g, "Bereich"],
+        [/\bDomain\b/g, "Bereich"],
+        [/\brischio\b/g, "Risiko"],
+        [/\brisk\b/g, "Risiko"],
+        [/\bpunteggio\b/g, "Score"],
+        [/\bscore\b/g, "Score"],
+        [/\bconferma owner richiesta\b/g, "Owner-Bestätigung erforderlich"],
+        [/\bowner confirmation required\b/g, "Owner-Bestätigung erforderlich"]
+      ]
+      : isEnglish()
+        ? [
         [/\bAI Gold ha letto il centro\./g, "AI Gold has read the center."],
         [/\bPrima priorita:/g, "First priority:"],
         [/\bPoi controlla:/g, "Then check:"],
@@ -522,7 +591,7 @@
         [/\bpunteggio\b/g, "score"],
         [/\bconferma owner richiesta\b/g, "owner confirmation required"]
       ]
-      : [
+        : [
         [/\bAI Gold has read the center\./g, "AI Gold ha letto il centro."],
         [/\bFirst priority:/g, "Prima priorita:"],
         [/\bThen check:/g, "Poi controlla:"],
@@ -556,15 +625,15 @@
   function sourceStatus(context = {}, capabilities = {}) {
     const external = context?.externalAi || {};
     const primary = Boolean(external.primary || context?.summary?.externalPrimary || context?.decisionAuthority === "core_nyra_render_primary");
-    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", copy("Lettura dati Smart Desk", "Smart Desk data reading"));
+    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", copy("Lettura dati Smart Desk", "Smart Desk data reading", "Smart-Desk-Datenlesung"));
     return {
       primary,
       provider,
-      label: primary ? copy("Fonte primaria", "Primary source") : copy("Lettura prudente", "Careful reading"),
-      title: primary ? copy("Core/Nyra server in alto", "Core/Nyra server on top") : copy("Core/Nyra server non pienamente disponibili", "Core/Nyra server not fully available"),
+      label: primary ? copy("Fonte primaria", "Primary source", "Primärquelle") : copy("Lettura prudente", "Careful reading", "Vorsichtige Lesung"),
+      title: primary ? copy("Core/Nyra server in alto", "Core/Nyra server on top", "Core/Nyra-Server als Hauptquelle") : copy("Core/Nyra server non pienamente disponibili", "Core/Nyra server not fully available", "Core/Nyra-Server nicht vollständig verfügbar"),
       copy: primary
-        ? copy("Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile.", "Smart Desk reads the center data; Core server decides the priority; Nyra server explains what to do. OpenAI only refines the wording when available.")
-        : copy("Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.", "Smart Desk is showing a careful reading from local data. Check missing data and retry the external reading."),
+        ? copy("Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile.", "Smart Desk reads the center data; Core server decides the priority; Nyra server explains what to do. OpenAI only refines the wording when available.", "Smart Desk liest die Center-Daten; der Core-Server entscheidet die Priorität; der Nyra-Server erklärt, was zu tun ist. OpenAI verfeinert nur die Formulierung, wenn verfügbar.")
+        : copy("Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.", "Smart Desk is showing a careful reading from local data. Check missing data and retry the external reading.", "Smart Desk zeigt eine vorsichtige Lesung aus lokalen Daten. Fehlende Daten prüfen und die externe Lesung erneut starten."),
       className: primary ? "" : "fallback"
     };
   }
@@ -573,25 +642,88 @@
     if (!root) return;
     const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
     const replacements = new Map([
-      ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server")],
-      ["Universal Core Read-only", copy("Core server sola lettura", "Core server read-only")],
-      ["Core server read-only", copy("Core server sola lettura", "Core server read-only")],
-      ["Customer Intelligence Core", copy("Lettura clienti Core", "Core client reading")],
-      ["Core + Nyra + OpenAI", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server")],
-      ["Core/Nyra Render", copy("Core/Nyra server", "Core/Nyra server")],
-      ["Core Render", copy("Core server", "Core server")],
-      ["Nyra Render", copy("Nyra server", "Nyra server")],
-      ["Nessuna priorità urgente", copy("Cosa manca / cosa controllare", "What is missing / what to check")],
-      ["Nessuna priorita urgente", copy("Cosa manca / cosa controllare", "What is missing / what to check")],
-      ["Nessuna priorità principale disponibile.", copy("Prossima azione: completa i dati mancanti e rileggi il centro.", "Next action: complete missing data and read the center again.")],
-      ["Nessuna azione secondaria prioritaria.", copy("Controlla dati, cassa, agenda e costi prima di cercare altre azioni.", "Check data, cash desk, agenda and costs before looking for more actions.")],
-      ["Non ci sono priorità urgenti da mostrare.", copy("Non ci sono urgenze forti: controlla cosa manca e la prossima azione manuale.", "There are no strong urgent items: check what is missing and the next manual action.")],
-      ["Gold continua a leggere il centro e riapparirà solo quando serve un'azione.", copy("Gold resta attivo: se mancano dati, mostra cosa completare; se i dati sono coerenti, indica la prossima verifica utile.", "Gold stays active: if data is missing, it shows what to complete; if data is coherent, it points to the next useful check.")],
-      ["Centro sotto controllo", copy("Centro letto da Smart Desk", "Center read by Smart Desk")],
-      ["AI priority alerts", copy("AI Gold - cosa fare ora", "AI Gold - what to do now")]
+      ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server", "AI Gold - Core/Nyra-Server")],
+      ["Universal Core Read-only", copy("Core server sola lettura", "Core server read-only", "Core-Server nur lesend")],
+      ["Core server read-only", copy("Core server sola lettura", "Core server read-only", "Core-Server nur lesend")],
+      ["Customer Intelligence Core", copy("Lettura clienti Core", "Core client reading", "Core-Kundenlesung")],
+      ["Core + Nyra + OpenAI", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server", "AI Gold - Core/Nyra-Server")],
+      ["Core/Nyra Render", copy("Core/Nyra server", "Core/Nyra server", "Core/Nyra-Server")],
+      ["Core Render", copy("Core server", "Core server", "Core-Server")],
+      ["Nyra Render", copy("Nyra server", "Nyra server", "Nyra-Server")],
+      ["Nessuna priorità urgente", copy("Cosa manca / cosa controllare", "What is missing / what to check", "Was fehlt / was zu prüfen ist")],
+      ["Nessuna priorita urgente", copy("Cosa manca / cosa controllare", "What is missing / what to check", "Was fehlt / was zu prüfen ist")],
+      ["Nessuna priorità principale disponibile.", copy("Prossima azione: completa i dati mancanti e rileggi il centro.", "Next action: complete missing data and read the center again.", "Nächste Aktion: fehlende Daten ergänzen und das Center erneut lesen.")],
+      ["Nessuna azione secondaria prioritaria.", copy("Controlla dati, cassa, agenda e costi prima di cercare altre azioni.", "Check data, cash desk, agenda and costs before looking for more actions.", "Daten, Kasse, Agenda und Kosten prüfen, bevor weitere Aktionen gesucht werden.")],
+      ["Non ci sono priorità urgenti da mostrare.", copy("Non ci sono urgenze forti: controlla cosa manca e la prossima azione manuale.", "There are no strong urgent items: check what is missing and the next manual action.", "Es gibt keine starke Dringlichkeit: prüfe, was fehlt, und die nächste manuelle Aktion.")],
+      ["Gold continua a leggere il centro e riapparirà solo quando serve un'azione.", copy("Gold resta attivo: se mancano dati, mostra cosa completare; se i dati sono coerenti, indica la prossima verifica utile.", "Gold stays active: if data is missing, it shows what to complete; if data is coherent, it points to the next useful check.", "Gold bleibt aktiv: wenn Daten fehlen, zeigt es, was zu ergänzen ist; wenn die Daten stimmig sind, zeigt es die nächste sinnvolle Prüfung.")],
+      ["Centro sotto controllo", copy("Centro letto da Smart Desk", "Center read by Smart Desk", "Center von Smart Desk gelesen")],
+      ["AI priority alerts", copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")]
     ]);
-    const regexReplacements = isEnglish()
+    const regexReplacements = isGerman()
       ? [
+        [/\bDa richiamare\b|\bTo recall\b/g, "Zurückrufen"],
+        [/\bA rischio\b|\bAt risk\b/g, "Gefährdet"],
+        [/\bPerso\b|\bLost\b/g, "Verloren"],
+        [/\bStorico\b|\bHistoric\b/g, "Historisch"],
+        [/\bIn linea\b|\bOn track\b/g, "Im Plan"],
+        [/\bApri Smart\b|\bOpen Smart\b/g, "Smart öffnen"],
+        [/\bLingua\b|\bLanguage\b/g, "Sprache"],
+        [/\bCentro sotto controllo\b|\bCenter under control\b/g, "Center unter Kontrolle"],
+        [/\bDashboard\b/g, "Dashboard"],
+        [/\bAgenda\b|\bSchedule\b/g, "Agenda"],
+        [/\bClienti\b|\bClients\b/g, "Kunden"],
+        [/\bServizi\b|\bServices\b/g, "Leistungen"],
+        [/\bCassa\b|\bCash desk\b|\bCheckout\b/g, "Kasse"],
+        [/\bMagazzino\b|\bStock\b|\bInventory\b/g, "Lager"],
+        [/\bRedditivita\b|\bRedditività\b|\bProfitability\b/g, "Rentabilität"],
+        [/\bReport\b|\bReports\b/g, "Berichte"],
+        [/\bImpostazioni\b|\bSettings\b/g, "Einstellungen"],
+        [/\bAI Gold - cosa fare ora\b|\bAI Gold - what to do now\b/g, "AI Gold - was jetzt zu tun ist"],
+        [/\bCore\/Nyra server in alto\b|\bCore\/Nyra server on top\b/g, "Core/Nyra-Server als Hauptquelle"],
+        [/\bFonte primaria\b|\bPrimary source\b/g, "Primärquelle"],
+        [/\bFonte\b|\bSource\b/g, "Quelle"],
+        [/\bProssima azione\b|\bNext action\b/g, "Nächste Aktion"],
+        [/\bCosa controllare\b|\bWhat to check\b/g, "Was prüfen"],
+        [/\bIn attesa\b|\bWaiting\b/g, "Wartend"],
+        [/\bArrivati\b|\bArrived\b/g, "Angekommen"],
+        [/\bIn corso\b|\bIn progress\b/g, "In Bearbeitung"],
+        [/\bCompletati\b|\bCompleted\b/g, "Abgeschlossen"],
+        [/\bOperatori attivi\b|\bActive staff\b/g, "Aktive Mitarbeitende"],
+        [/\bServizi attivi\b|\bActive services\b/g, "Aktive Leistungen"],
+        [/\bClienti attivi\b|\bActive clients\b/g, "Aktive Kunden"],
+        [/\bDati da completare\b|\bData to complete\b/g, "Zu ergänzende Daten"],
+        [/\bSome information is still missing to complete the analysis\./g, "Einige Informationen fehlen noch, um die Analyse abzuschließen."],
+        [/\bClients to recall \/ at risk\b/g, "Kunden zum Zurückrufen / gefährdet"],
+        [/\bNo upcoming appointments appear in the selected period\./g, "Im ausgewählten Zeitraum erscheinen keine anstehenden Termine."],
+        [/\bThere are no open confirmations to close in the selected period\./g, "Im ausgewählten Zeitraum gibt es keine offenen Bestätigungen."],
+        [/\bBase revenue by payment method\b/g, "Basisumsatz nach Zahlungsart"],
+        [/\bregistered payments appear in the selected period\./g, "registrierte Zahlungen erscheinen im ausgewählten Zeitraum."],
+        [/\bAI prepared today's plan\b/g, "AI hat den Tagesplan vorbereitet"],
+        [/\b(\d+)\s+signals to review\b/g, counted("Signal zu prüfen", "Signale zu prüfen")],
+        [/\bApri agenda\b|\bOpen schedule\b/g, "Agenda öffnen"],
+        [/\bApri clienti\b|\bOpen clients\b/g, "Kunden öffnen"],
+        [/\bApri cassa\b|\bOpen checkout\b/g, "Kasse öffnen"],
+        [/\bApri report\b|\bOpen reports\b/g, "Berichte öffnen"],
+        [/\bApri redditività\b|\bOpen profitability\b/g, "Rentabilität öffnen"],
+        [/\bApri impostazioni\b|\bOpen settings\b/g, "Einstellungen öffnen"],
+        [/\bOpen details\b|\bApri dettaglio\b/g, "Details öffnen"],
+        [/\bDominio\b|\bDomain\b/g, "Bereich"],
+        [/\brischio\b|\brisk\b/g, "Risiko"],
+        [/\bpunteggio\b|\bscore\b/g, "Score"],
+        [/\bQualità dati\b|\bData quality\b/g, "Datenqualität"],
+        [/\bCliente occasionale\b|\bOccasional client\b/g, "Gelegenheitskunde"],
+        [/\bEffetto domino attivo\b|\bDomino effect active\b/g, "Dominoeffekt aktiv"],
+        [/\bconferma owner richiesta\b|\bowner confirmation required\b/g, "Owner-Bestätigung erforderlich"],
+        [/\b(\d+)\s+clienti? senza telefono o email\b|\b(\d+)\s+clients? without phone or email\b/g, (_match, itCount, enCount) => counted("Kunde ohne Telefon oder E-Mail", "Kunden ohne Telefon oder E-Mail")(_match, itCount || enCount)],
+        [/\b(\d+)\s+servizi? senza costi configurati\b|\b(\d+)\s+services? without configured costs\b/g, (_match, itCount, enCount) => counted("Leistung ohne konfigurierte Kosten", "Leistungen ohne konfigurierte Kosten")(_match, itCount || enCount)],
+        [/\b(\d+)\s+servizi? con costi stimati non collegat[io] a prodotti o tecnologie\b|\b(\d+)\s+services? with estimated costs not linked to products or technologies\b/g, (_match, itCount, enCount) => counted("Leistung mit geschätzten Kosten ohne Produkt- oder Technologieverknüpfung", "Leistungen mit geschätzten Kosten ohne Produkt- oder Technologieverknüpfung")(_match, itCount || enCount)],
+        [/\b(\d+)\s+appuntament[io] passat[io] senza pagamento collegato\b|\b(\d+)\s+past appointments? without a linked payment\b/g, (_match, itCount, enCount) => counted("vergangener Termin ohne verknüpfte Zahlung", "vergangene Termine ohne verknüpfte Zahlung")(_match, itCount || enCount)],
+        [/\b(\d+)\s+pagament[io] da collegare\b|\b(\d+)\s+payments? to link\b/g, (_match, itCount, enCount) => counted("Zahlung zu verknüpfen", "Zahlungen zu verknüpfen")(_match, itCount || enCount)],
+        [/\b(\d+)\s+grupp[oi] di possibili duplicati cliente\b|\b(\d+)\s+possible duplicate client groups?\b/g, (_match, itCount, enCount) => counted("mögliche Kundenduplikat-Gruppe", "mögliche Kundenduplikat-Gruppen")(_match, itCount || enCount)],
+        [/\b(\d+)\s+possibil[ei] duplicat[oi]\b|\b(\d+)\s+possible duplicates?\b/g, (_match, itCount, enCount) => counted("mögliches Duplikat", "mögliche Duplikate")(_match, itCount || enCount)]
+      ]
+      : isEnglish()
+        ? [
         [/\bDa richiamare\b/g, "To recall"],
         [/\bA rischio\b/g, "At risk"],
         [/\bPerso\b/g, "Lost"],
@@ -606,7 +738,7 @@
         [/\b(\d+)\s+grupp[oi] di possibili duplicati cliente\b/g, counted("possible duplicate client group", "possible duplicate client groups")],
         [/\b(\d+)\s+possibil[ei] duplicat[oi]\b/g, counted("possible duplicate", "possible duplicates")]
       ]
-      : [
+        : [
         [/\bTo recall\b/g, "Da richiamare"],
         [/\bAt risk\b/g, "A rischio"],
         [/\bLost\b/g, "Perso"],
@@ -771,22 +903,22 @@
       </div>
       <div class="gold-bridge-header">
         <div>
-          <div class="gold-bridge-title">${copy("AI Gold - cosa fare ora", "AI Gold - what to do now")}</div>
-          <div class="gold-bridge-subtitle">${copy("Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.", "The management system says what is happening. AI Gold says what to do, what is missing and which control to open.")}</div>
+          <div class="gold-bridge-title">${copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")}</div>
+          <div class="gold-bridge-subtitle">${copy("Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.", "The management system says what is happening. AI Gold says what to do, what is missing and which control to open.", "Das Managementsystem zeigt, was passiert. AI Gold sagt, was zu tun ist, was fehlt und welche Kontrolle zu öffnen ist.")}</div>
         </div>
         <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
       </div>
       <div class="gold-bridge-grid">
         <div class="gold-bridge-metric" data-gold-route="${primaryRoute}" role="button" tabindex="0" aria-label="${copy("Apri modulo collegato alla priorita AI", "Open the module linked to the AI priority")}">
-          <div class="gold-bridge-label">${copy("Prossima azione", "Next action")}</div>
+          <div class="gold-bridge-label">${copy("Prossima azione", "Next action", "Nächste Aktion")}</div>
           <div class="gold-bridge-value">${escapeHtml(primaryText)}</div>
         </div>
         <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="${copy("Apri AI Gold", "Open AI Gold")}">
-          <div class="gold-bridge-label">${copy("Fonte", "Source")}</div>
-          <div class="gold-bridge-value">${source.primary ? "Core/Nyra server" : copy("Fallback dati", "Data fallback")}</div>
+          <div class="gold-bridge-label">${copy("Fonte", "Source", "Quelle")}</div>
+          <div class="gold-bridge-value">${source.primary ? copy("Core/Nyra server", "Core/Nyra server", "Core/Nyra-Server") : copy("Fallback dati", "Data fallback", "Daten-Fallback")}</div>
         </div>
         <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="${copy("Apri azione suggerita da AI Gold", "Open the action suggested by AI Gold")}">
-          <div class="gold-bridge-label">${copy("Cosa controllare", "What to check")}</div>
+          <div class="gold-bridge-label">${copy("Cosa controllare", "What to check", "Was prüfen")}</div>
           <div class="gold-bridge-value">${escapeHtml(actionText)}</div>
         </div>
       </div>

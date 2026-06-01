@@ -1163,10 +1163,16 @@ const translations = {
     nav: {
       ecosystem: "Ökosystem",
       dashboard: "Dashboard",
+      aiGold: "AI Gold",
+      marketing: "Marketing",
       appointments: "Agenda",
+      cashdesk: "Kasse",
+      inventory: "Lager",
+      profitability: "Rentabilität",
       reports: "Berichte",
       clients: "Kunden",
       services: "Leistungen",
+      protocols: "Protokolle",
       settings: "Einstellungen"
     },
     settings: {
@@ -1179,6 +1185,57 @@ const translations = {
       infraCopy: "Diese Web-Shell stammt aus einer neuen Basis, die an die Desktop-Version angelehnt ist und handlungsfähige Meldungen liefern soll. Als Nächstes werden Kundendrawer, erweiterte Agenda und lange Modulnavigation nachgezogen.",
       consistencyTitle: "Plan- und Konsistenzstatus",
       consistencyCopy: "Wenn ein Modul nicht aktiv ist, muss die Ansicht es premium, kohärent und auf den nächsten Schritt ausgerichtet erklären: keine harten Fehler, keine stummen Leerzustände, keine abweichenden Texte."
+    },
+    dashboardView: {
+      title: "Center unter Kontrolle",
+      subtitle: "Operative Tageslesung, nicht nur verstreute Zahlen.",
+      openAgenda: "Agenda öffnen",
+      waiting: "Wartend",
+      reminders: "Recalls",
+      revenue: "Umsatz",
+      nextAppointments: "Nächste Termine",
+      openClients: "Kunden öffnen",
+      noAppointments: "In der aktuellen Lesung sind keine Termine verfügbar.",
+      focusTitle: "Operativer Fokus",
+      openReports: "Berichte öffnen",
+      activeClients: "Aktive Kunden",
+      activeServices: "Aktive Leistungen",
+      activeStaff: "Aktive Mitarbeitende"
+    },
+    aiGoldView: {
+      title: "AI-Prioritätsalarme",
+      unavailable: "AI Gold ist in der aktuellen Lesung nicht verfügbar.",
+      subtitle: "Das Managementsystem sagt, was passiert. AI Gold sagt, was zu tun ist.",
+      roomTitle: "AI-Gold-Raum",
+      roomSubtitle: "Operative Prioritäten, Tagesdruck und Freigabewarteschlangen ohne automatische Ausführung.",
+      risk: "Risiko",
+      todayPriority: "Priorität heute",
+      confidence: "Sicherheit",
+      action: "Aktion",
+      needMoreData: "Es werden mehr Daten oder Signale benötigt, um eine nützliche Erklärung zu erzeugen.",
+      domain: "Bereich",
+      secondaryPriority: "Sekundäre Priorität",
+      blockedActions: "Blockierte Aktionen",
+      monitorCenter: "Center überwachen",
+      openRoom: "AI Gold öffnen",
+      openModule: "Modul öffnen",
+      backToDashboard: "Zurück zum Dashboard",
+      roleBadge: "Premium-operativer Assistent",
+      nextPriorities: "Nächste Prioritäten",
+      noSecondaryPriorities: "Keine starke sekundäre Priorität in der aktuellen Lesung.",
+      todayPressures: "Heutiger Druck",
+      openConfirmations: "Offene Bestätigungen",
+      cashBlocked: "Kasse zu prüfen",
+      cashAligned: "Kasse ausgerichtet",
+      profitabilityAlerts: "Center-Alarme",
+      alertsSuffix: "Signale",
+      marketingQueue: "Marketing-Warteschlange zur Freigabe",
+      noMarketingQueue: "Kein Kunde mit prioritärem Recall und Marketingeinwilligung in der aktuellen Lesung.",
+      reviewInClients: "In Kunden prüfen",
+      executionPolicy: "Ausführungsrichtlinie",
+      executionPolicyCopy: "Gold schlägt vor und öffnet das richtige Modul, führt aber keine sensiblen Aktionen ohne Bestätigung aus.",
+      requiresConfirmation: "Operator-Bestätigung erforderlich",
+      directExecutionBlocked: "Direkte Ausführung blockiert"
     }
   },
   es: {
@@ -1228,7 +1285,7 @@ export function createI18n(state) {
   function t(key, variables = {}) {
   const language = currentLanguage();
   const tree = translations[language] || translations.it;
-  const fallback = translations.it;
+  const fallback = language === "it" ? translations.it : translations.en || translations.it;
   const parts = key.split(".");
   const read = (source) => parts.reduce((value, part) => (value && typeof value === "object" ? value[part] : undefined), source);
   let message = read(tree) ?? read(fallback) ?? key;

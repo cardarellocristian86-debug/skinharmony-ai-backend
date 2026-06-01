@@ -481,8 +481,44 @@ function economicConfigGapText(servicesMissingCosts = 0, operatorsMissingHourlyC
 }
 
 function localizeServerText(value, language = "it") {
-  if (language !== "en") return value;
   const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
+  if (language === "de") {
+    return String(value || "")
+      .replace(/\bDa richiamare\b/g, "Zurückrufen")
+      .replace(/\bA rischio\b/g, "Gefährdet")
+      .replace(/\bPerso\b/g, "Verloren")
+      .replace(/\bStorico\b/g, "Historisch")
+      .replace(/\bIn linea\b/g, "Im Plan")
+      .replace(/\bStato centro non ancora rappresentativo\b/g, "Center-Status noch nicht repräsentativ")
+      .replace(/\bLettura centro prudente: configurazione economica incompleta\b/g, "Vorsichtige Center-Lesung: wirtschaftliche Konfiguration unvollständig")
+      .replace(/\bVolume presente, lettura centro ancora prudente\b/g, "Volumen vorhanden, Center-Lesung bleibt vorsichtig")
+      .replace(/\bRedditività da configurare: configurazione economica incompleta\b/g, "Rentabilität zu konfigurieren: wirtschaftliche Konfiguration unvollständig")
+      .replace(/\bRedditività da configurare\b/g, "Rentabilität zu konfigurieren")
+      .replace(/\bQuadro da verificare\b/g, "Lage zu prüfen")
+      .replace(/\bQualità dati\b/g, "Datenqualität")
+      .replace(/\bCompleta qualita dati\b/g, "Datenqualität ergänzen")
+      .replace(/\bVerifica marginalita e costi\b/g, "Marge und Kosten prüfen")
+      .replace(/\bverifica prima di agire\b/g, "vor der Aktion prüfen")
+      .replace(/\bcompleta costi servizi e operatori\b/g, "Leistungs- und Mitarbeiterkosten ergänzen")
+      .replace(/\bcompleta costi servizi prima di leggere la redditivita\b/g, "Leistungskosten ergänzen, bevor die Rentabilität gelesen wird")
+      .replace(/\bIl Gold State Layer segnala confidenza insufficiente o dato fragile\./g, "Der Gold State Layer meldet geringe Sicherheit oder fragile Daten.")
+      .replace(/\bPrimo snapshot dashboard creato\. Le prossime aperture leggeranno il dato salvato\./g, "Erster Dashboard-Snapshot erstellt. Die nächsten Öffnungen lesen die gespeicherten Daten.")
+      .replace(/\bCompleta e incassa gli appuntamenti per attivare un report più preciso\./g, "Termine abschließen und kassieren, um einen genaueren Bericht zu aktivieren.")
+      .replace(/\b(\d+) clienti? senza telefono o email\b/g, counted("Kunde ohne Telefon oder E-Mail", "Kunden ohne Telefon oder E-Mail"))
+      .replace(/\b(\d+) servizi? senza costi configurati\b/g, counted("Leistung ohne konfigurierte Kosten", "Leistungen ohne konfigurierte Kosten"))
+      .replace(/\b(\d+) servizi? con costi stimati non collegat[io] a prodotti o tecnologie\b/g, counted("Leistung mit geschätzten Kosten ohne Produkt- oder Technologieverknüpfung", "Leistungen mit geschätzten Kosten ohne Produkt- oder Technologieverknüpfung"))
+      .replace(/\b(\d+) appuntament[io] passat[io] senza pagamento collegato\b/g, counted("vergangener Termin ohne verknüpfte Zahlung", "vergangene Termine ohne verknüpfte Zahlung"))
+      .replace(/\b(\d+) pagament[io] da collegare\b/g, counted("Zahlung zu verknüpfen", "Zahlungen zu verknüpfen"))
+      .replace(/\b(\d+) grupp[oi] di possibili duplicati cliente\b/g, counted("mögliche Kundenduplikat-Gruppe", "mögliche Kundenduplikat-Gruppen"))
+      .replace(/\bservizi con costi stimati non collegati a prodotti o tecnologie\b/g, "Leistungen mit geschätzten Kosten ohne Produkt- oder Technologieverknüpfung")
+      .replace(/\bappuntamenti passati senza pagamento collegato\b/g, "vergangene Termine ohne verknüpfte Zahlung")
+      .replace(/\bfatturato per operatore sotto soglia\b/g, "Umsatz pro Mitarbeitendem unter Schwelle")
+      .replace(/\bagenda poco satura\b/g, "Agenda zu wenig ausgelastet")
+      .replace(/\bcontinuità clienti bassa\b/g, "geringe Kundenkontinuität")
+      .replace(/\bpochi clienti attivi nel periodo\b/g, "zu wenige aktive Kunden im Zeitraum")
+      .replace(/\bDati sufficienti per lettura operativa\./g, "Daten reichen für eine operative Lesung aus.");
+  }
+  if (language !== "en") return value;
   return String(value || "")
     .replace(/\bfatturato per operatore sotto soglia · agenda poco satura · continuità clienti bassa · pochi clienti attivi nel periodo\b/g, "revenue per operator below threshold · schedule fill is too low · client continuity is low · too few active clients in the period")
     .replace(/\bLa salute centro non include margini prodotti o resa tecnologie: prima sopravvivenza del centro, poi ottimizzazione dei margini\.\b/g, "Center health does not include product margins or technology performance: survival first, margin optimization after.")
@@ -6107,7 +6143,8 @@ class DesktopMirrorService {
 
   getRuntimeLanguage(session = null) {
     const settings = this.getSettings(session);
-    return String(settings.appLanguage || "it").toLowerCase() === "en" ? "en" : "it";
+    const language = String(settings.appLanguage || "it").toLowerCase().slice(0, 2);
+    return language === "en" || language === "de" ? language : "it";
   }
 
   saveSettings(payload = {}, session = null) {
