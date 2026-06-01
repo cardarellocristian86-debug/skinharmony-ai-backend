@@ -12,6 +12,9 @@
   let observerStarted = false;
   let mutationLockDepth = 0;
   let uiLanguage = "it";
+  let uiLanguageReady = false;
+  let uiLanguageRefreshPromise = null;
+  let uiLanguageLastRefreshAt = 0;
 
   function normalizeLanguage(value) {
     const language = String(value || "").toLowerCase().slice(0, 2);
@@ -640,6 +643,7 @@
 
   function sanitizeGoldUiText(root = document.getElementById("root")) {
     if (!root) return;
+    if (!uiLanguageReady) return;
     const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
     const replacements = new Map([
       ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server", "AI Gold - Core/Nyra-Server")],
@@ -1191,13 +1195,34 @@
     return response.json();
   }
 
-  async function refreshUiLanguage(settingsPayload = null) {
+  async function refreshUiLanguage(settingsPayload = null, options = {}) {
+    const now = Date.now();
+    if (!settingsPayload && !options.force && uiLanguageRefreshPromise) return uiLanguageRefreshPromise;
+    if (!settingsPayload && !options.force && now - uiLanguageLastRefreshAt < 4500) return Promise.resolve(uiLanguage);
+    uiLanguageRefreshPromise = (async () => {
+      uiLanguageLastRefreshAt = Date.now();
+      try {
+        const settings = settingsPayload || await fetchJson("/api/settings");
+        uiLanguage = normalizeLanguage(settings?.appLanguage || document.documentElement.getAttribute("lang") || navigator.language);
+        document.documentElement.setAttribute("lang", uiLanguage);
+      } catch (_error) {
+        uiLanguage = normalizeLanguage(document.documentElement.getAttribute("lang") || navigator.language || "it");
+      } finally {
+        uiLanguageReady = true;
+        uiLanguageRefreshPromise = null;
+      }
+      return uiLanguage;
+    })();
+    return uiLanguageRefreshPromise;
+  }
+
+  function refreshLanguageAndSanitize(options = {}) {
     try {
-      const settings = settingsPayload || await fetchJson("/api/settings");
-      uiLanguage = normalizeLanguage(settings?.appLanguage || document.documentElement.getAttribute("lang") || navigator.language);
-      document.documentElement.setAttribute("lang", uiLanguage);
+      void refreshUiLanguage(null, options).then(() => {
+        sanitizeGoldUiText();
+      });
     } catch (_error) {
-      uiLanguage = normalizeLanguage(document.documentElement.getAttribute("lang") || navigator.language || "it");
+      sanitizeGoldUiText();
     }
   }
 
@@ -1743,8 +1768,11 @@
     clearTimers(goldRenderTimers);
     clearTimers(settingsRenderTimers);
     goldRenderTimers = [
+      window.setTimeout(() => refreshLanguageAndSanitize({ force: true }), 40),
       window.setTimeout(renderGoldBridge, 180),
-      window.setTimeout(renderGoldBridge, 900)
+      window.setTimeout(() => refreshLanguageAndSanitize(), 420),
+      window.setTimeout(renderGoldBridge, 900),
+      window.setTimeout(() => refreshLanguageAndSanitize({ force: true }), 1400)
     ];
     settingsRenderTimers = [
       window.setTimeout(renderEnterprisePanels, 180),
@@ -1756,7 +1784,7 @@
 
   const observer = new MutationObserver(() => {
     if (mutationLockDepth > 0) return;
-    sanitizeGoldUiText();
+    refreshLanguageAndSanitize();
     scheduleRender();
   });
 
@@ -1792,6 +1820,7 @@
     }
     observer.observe(root, { childList: true, subtree: true });
     observerStarted = true;
+    refreshLanguageAndSanitize({ force: true });
   }
 
   startObserver();
