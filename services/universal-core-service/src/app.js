@@ -839,6 +839,37 @@ function extractorBinaryPath() {
   return process.env.SH_EXTRACTOR_BIN || path.join(repoRoot(), "skinharmony-rust-extractor-governor", "target", "release", "skinharmony-extract");
 }
 
+function extractorCandidatePaths() {
+  return [
+    extractorBinaryPath(),
+    path.join(process.cwd(), "skinharmony-rust-extractor-governor", "target", "release", "skinharmony-extract"),
+    path.join(repoRoot(), "target", "release", "skinharmony-extract"),
+  ];
+}
+
+function resolveExtractorBinaryPath({ allowBuild = false } = {}) {
+  for (const candidate of extractorCandidatePaths()) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+
+  if (allowBuild && process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1") {
+    const buildScript = path.join(repoRoot(), "scripts", "build-rust-extractor-render.sh");
+    if (fs.existsSync(buildScript)) {
+      execFileSync("bash", [buildScript], {
+        cwd: repoRoot(),
+        env: process.env,
+        stdio: "ignore",
+        timeout: Number(process.env.SH_EXTRACTOR_BUILD_TIMEOUT_MS || 180_000),
+      });
+      for (const candidate of extractorCandidatePaths()) {
+        if (candidate && fs.existsSync(candidate)) return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
 function safeRelativeExtractorPath(value, fallbackIndex = 0) {
   const raw = String(value || `input_${fallbackIndex}.txt`).replaceAll("\\", "/").trim();
   if (!raw || path.isAbsolute(raw)) return `input_${fallbackIndex}.txt`;
@@ -924,8 +955,8 @@ function extractorCatalogStats(segments = []) {
 }
 
 function runRustExtractorGovernor(storageRoot, payload = {}) {
-  const binary = extractorBinaryPath();
-  if (!fs.existsSync(binary)) throw new Error("extractor_binary_missing");
+  const binary = resolveExtractorBinaryPath({ allowBuild: true });
+  if (!binary) throw new Error("extractor_binary_missing");
 
   const jobId = `extract_${crypto.randomUUID()}`;
   const jobRoot = path.join(storageRoot, "extractor", "jobs", jobId);
@@ -3006,19 +3037,21 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/translator/extractor/status", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
-    const binary = extractorBinaryPath();
+    const binary = resolveExtractorBinaryPath({ allowBuild: false });
     audit.append("core_translation_extractor_status_read", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
-      binary_available: fs.existsSync(binary),
+      binary_available: Boolean(binary),
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       extractor: {
-        status: fs.existsSync(binary) ? "ready" : "missing_binary",
+        status: binary ? "ready" : "missing_binary",
         mode: "core_sidecar_process",
-        binary,
+        binary: binary || extractorBinaryPath(),
+        candidate_paths: extractorCandidatePaths(),
+        lazy_build_enabled: process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1",
         route: "/v1/translator/extractor/catalog",
         does_translate: false,
         publish_default: false,
