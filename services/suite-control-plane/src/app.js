@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.6-nyra-suite-branches";
+const SERVICE_VERSION = "0.4.7-marketing-journey-dispatch";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
@@ -1975,6 +1975,64 @@ function createMemoryStorage(options = {}) {
       emitChange();
       return dispatch;
     },
+    marketingJourneyDispatch(payload) {
+      const node = getOrCreateNode(payload.node_id, payload.tenant_id);
+      const body = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
+      const approvalQueue = Array.isArray(body.approval_queue) ? body.approval_queue : [];
+      const ownerConfirmed = payload.owner_confirmed === true || payload.owner_confirmed === "true" || payload.owner_confirmed === "yes";
+      const dispatch = {
+        id: `marketing_dispatch_${crypto.randomUUID()}`,
+        created_at: nowIso(),
+        received_at: nowIso(),
+        dispatch_type: sanitizeId(payload.dispatch_type || "marketing_journey_queue", "dispatch"),
+        node_id: node.node_id,
+        tenant_id: node.tenant_id,
+        state: "queued_for_marketing_pull",
+        accepted: true,
+        owner_confirmed: ownerConfirmed,
+        execution_allowed: false,
+        execution_mode: "draft_approve_only",
+        risk: "medium",
+        source: sanitizeId(body.source || "wordpress_site_suite", "source"),
+        suite_version: String(body.suite_version || "").slice(0, 40),
+        schema_version: sanitizeId(body.schema_version || "suite_marketing_journey_builder_v1", "schema"),
+        mode: sanitizeId(body.mode || "draft_approve_only", "mode"),
+        source_event: sanitizeId(body.source_event || "manual_sync", "source_event"),
+        core_branch_group: sanitizeId(body.core_branch_group || "marketing_intelligence", "branch"),
+        journeys_count: Number.isFinite(Number(body.journeys_count)) ? Number(body.journeys_count) : 0,
+        approval_queue_count: Number.isFinite(Number(body.approval_queue_count)) ? Number(body.approval_queue_count) : approvalQueue.length,
+        approval_queue: approvalQueue.slice(0, 50).map((item) => ({
+          id: sanitizeId(item?.id || "", "approval"),
+          journey_id: sanitizeId(item?.journey_id || "", "journey"),
+          label: String(item?.label || "").slice(0, 160),
+          priority: sanitizeId(item?.priority || "media", "priority"),
+          required_gate: sanitizeId(item?.required_gate || "core_marketing_intelligence_gate", "gate"),
+          requires_owner_confirmation: true,
+          execution_allowed: false,
+        })),
+        policy: {
+          no_auto_send: true,
+          no_ads_launch: true,
+          owner_confirmation_required: true,
+          raw_customer_records_stored: false,
+          personal_data_payload: false,
+        },
+      };
+      dispatches.unshift(dispatch);
+      if (dispatches.length > 1000) dispatches.length = 1000;
+      node.last_seen_at = dispatch.received_at;
+      appendNodeEvent(node, "marketing_journey_dispatch", {
+        id: dispatch.id,
+        received_at: dispatch.received_at,
+        dispatch_type: dispatch.dispatch_type,
+        state: dispatch.state,
+        journeys_count: dispatch.journeys_count,
+        approval_queue_count: dispatch.approval_queue_count,
+        execution_allowed: false,
+      });
+      emitChange();
+      return { node, dispatch };
+    },
     runbookArtifact(payload) {
       const node = getOrCreateNode(payload.node_id, payload.tenant_id);
       const artifact = {
@@ -2495,6 +2553,32 @@ export function createSuiteControlPlane(options = {}) {
       snapshot_id: snapshot.id,
       received_at: snapshot.received_at,
       privacy: snapshot.privacy,
+    });
+  });
+
+  app.post("/api/suite/marketing/journeys/dispatch", auth, (req, res) => {
+    const { node, dispatch } = storage.marketingJourneyDispatch(req.body || {});
+    res.json({
+      ok: true,
+      accepted: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      mode: "marketing_journey_dispatch_receiver",
+      execution_allowed: false,
+      tenant_id: node.tenant_id,
+      node_id: node.node_id,
+      dispatch,
+      received_at: dispatch.received_at,
+      privacy: {
+        aggregate_only: true,
+        raw_customer_records_stored: false,
+        personal_data_payload: false,
+      },
+      safety_policy: {
+        no_auto_send: true,
+        no_ads_launch: true,
+        owner_confirmation_required: true,
+      },
     });
   });
 

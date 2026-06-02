@@ -276,6 +276,42 @@ try {
   assert.equal(commerceSnapshot.body.execution_allowed, false);
   assert.equal(commerceSnapshot.body.privacy.raw_customer_records_stored, false);
 
+  const marketingDispatch = await request("/api/suite/marketing/journeys/dispatch", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      node_id: "wp_test_node",
+      tenant_id: "tenant_demo",
+      dispatch_type: "marketing_journey_queue",
+      owner_confirmed: true,
+      payload: {
+        source: "wordpress_site_suite",
+        suite_version: "5.3.19",
+        schema_version: "suite_marketing_journey_builder_v1",
+        mode: "draft_approve_only",
+        source_event: "manual_rest_sync",
+        core_branch_group: "marketing_intelligence",
+        journeys_count: 4,
+        approval_queue_count: 1,
+        approval_queue: [
+          {
+            id: "recall_attention",
+            journey_id: "recall",
+            label: "Richiamo da approvare",
+            priority: "alta",
+            required_gate: "core_marketing_intelligence_gate",
+          },
+        ],
+      },
+    }),
+  });
+  assert.equal(marketingDispatch.response.status, 200);
+  assert.equal(marketingDispatch.body.accepted, true);
+  assert.equal(marketingDispatch.body.execution_allowed, false);
+  assert.equal(marketingDispatch.body.dispatch.state, "queued_for_marketing_pull");
+  assert.equal(marketingDispatch.body.dispatch.approval_queue_count, 1);
+  assert.equal(marketingDispatch.body.privacy.raw_customer_records_stored, false);
+
   const commerceSummary = await request("/api/suite/tenants/tenant_demo/commerce/summary", { headers });
   assert.equal(commerceSummary.response.status, 200);
   assert.equal(commerceSummary.body.summary.mode, "read_only_summary");
@@ -609,14 +645,15 @@ try {
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.body.dashboard.node.node_id, "wp_test_node");
   assert.equal(dashboard.body.dashboard.node.evidence_count, 1);
-  assert.equal(dashboard.body.dashboard.dispatches.length, 3);
+  assert.equal(dashboard.body.dashboard.dispatches.length, 4);
+  assert.ok(dashboard.body.dashboard.dispatches.some((item) => item.dispatch_type === "marketing_journey_queue"));
   assert.equal(dashboard.body.dashboard.runbook_artifacts.length, 1);
 
   const overview = await request("/api/suite/overview", { headers });
   assert.equal(overview.response.status, 200);
   assert.equal(overview.body.overview.nodes_total, 1);
   assert.equal(overview.body.overview.runbooks_total, runbooks.body.runbooks.length);
-  assert.equal(overview.body.overview.dispatches_total, 3);
+  assert.equal(overview.body.overview.dispatches_total, 4);
   assert.equal(overview.body.overview.runbook_artifacts_total, 1);
 
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-suite-control-"));
