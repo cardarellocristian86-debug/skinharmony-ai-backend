@@ -30,6 +30,18 @@
     return uiLanguage === "de";
   }
 
+  function isPublicAuthRoute() {
+    return ["/login", "/trial", "/verify-email", "/forgot-password", "/reset-password"].includes(window.location.pathname || "");
+  }
+
+  function getStoredPublicLanguage() {
+    try {
+      return window.localStorage.getItem("skinharmony-web-public-language");
+    } catch (_error) {
+      return "";
+    }
+  }
+
   function copy(it, en, de = en) {
     if (isGerman()) return de;
     return isEnglish() ? en : it;
@@ -644,6 +656,7 @@
   function sanitizeGoldUiText(root = document.getElementById("root")) {
     if (!root) return;
     if (!uiLanguageReady) return;
+    if (isPublicAuthRoute() && !isEnglish() && !isGerman()) return;
     const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
     const replacements = new Map([
       ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server", "AI Gold - Core/Nyra-Server")],
@@ -1203,10 +1216,11 @@
       uiLanguageLastRefreshAt = Date.now();
       try {
         const settings = settingsPayload || await fetchJson("/api/settings");
-        uiLanguage = normalizeLanguage(settings?.appLanguage || document.documentElement.getAttribute("lang") || navigator.language);
+        uiLanguage = normalizeLanguage(settings?.appLanguage || getStoredPublicLanguage() || document.documentElement.getAttribute("lang") || navigator.language);
         document.documentElement.setAttribute("lang", uiLanguage);
       } catch (_error) {
-        uiLanguage = normalizeLanguage(document.documentElement.getAttribute("lang") || navigator.language || "it");
+        uiLanguage = normalizeLanguage(getStoredPublicLanguage() || document.documentElement.getAttribute("lang") || navigator.language || "it");
+        document.documentElement.setAttribute("lang", uiLanguage);
       } finally {
         uiLanguageReady = true;
         uiLanguageRefreshPromise = null;
