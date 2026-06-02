@@ -852,7 +852,8 @@ function resolveExtractorBinaryPath({ allowBuild = false } = {}) {
     if (candidate && fs.existsSync(candidate)) return candidate;
   }
 
-  if (allowBuild && process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1") {
+  const lazyBuildAllowed = process.env.SH_EXTRACTOR_ENABLE_LAZY_BUILD === "1" || (process.env.NODE_ENV !== "production" && process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1");
+  if (allowBuild && lazyBuildAllowed) {
     const buildScript = path.join(repoRoot(), "scripts", "build-rust-extractor-render.sh");
     if (fs.existsSync(buildScript)) {
       try {
@@ -3059,7 +3060,7 @@ export function createUniversalCoreService(options = {}) {
         mode: "core_sidecar_process",
         binary: binary || extractorBinaryPath(),
         candidate_paths: extractorCandidatePaths(),
-        lazy_build_enabled: process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1",
+        lazy_build_enabled: process.env.SH_EXTRACTOR_ENABLE_LAZY_BUILD === "1" || (process.env.NODE_ENV !== "production" && process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1"),
         route: "/v1/translator/extractor/catalog",
         does_translate: false,
         publish_default: false,

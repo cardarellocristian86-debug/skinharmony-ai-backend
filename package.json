@@ -19,6 +19,7 @@
     "instagram:sync": "node instagram_manager.js sync",
     "monitor:outreach": "node mail/monitor_campaigns.js",
     "report:outreach": "node mail/track_outreach.js report",
+    "postinstall": "bash scripts/build-rust-extractor-render.sh",
     "nyra:render": "node personal-control-center/server.js",
     "core:service": "node --experimental-strip-types services/universal-core-service/server.js",
     "core:service:test": "node --experimental-strip-types services/universal-core-service/test/core-service-smoke.js",
