@@ -444,30 +444,35 @@ fn extract_resource_lines(content: &str, file: &str, ext: &str) -> Vec<Candidate
 
 fn extract_source_literals(content: &str, file: &str, ext: &str) -> Vec<Candidate> {
     let mut candidates = Vec::new();
-    let string_pattern =
-        Regex::new(r#"(?s)(['"`])((?:\\.|[^'"`]){2,260})(['"`])"#).expect("source literal regex");
     let technical_prefix = Regex::new(r"(import|require|from|className|href|src|data-testid)\s*[:=]?\s*$")
         .expect("technical prefix regex");
-    for captures in string_pattern.captures_iter(content) {
-        let Some(found) = captures.get(2) else {
-            continue;
-        };
-        let before = safe_prefix(content, found.start(), 80);
-        if technical_prefix.is_match(before) {
-            continue;
+    for pattern in [
+        r#""((?:\\.|[^"\\\n]){2,260})""#,
+        r#"'((?:\\.|[^'\\\n]){2,260})'"#,
+        r#"`((?:\\.|[^`\\\n]){2,260})`"#,
+    ] {
+        let string_pattern = Regex::new(pattern).expect("source literal regex");
+        for captures in string_pattern.captures_iter(content) {
+            let Some(found) = captures.get(1) else {
+                continue;
+            };
+            let before = safe_prefix(content, found.start(), 80);
+            if technical_prefix.is_match(before) {
+                continue;
+            }
+            let origin = if ["js", "ts", "jsx", "tsx", "php", "vue"].contains(&ext) {
+                Origin::Source
+            } else {
+                Origin::Generated
+            };
+            push_text_candidate(
+                &mut candidates,
+                content,
+                found.as_str(),
+                found.start(),
+                CandidateSource::new(file, ext, origin, Some("string_literal")),
+            );
         }
-        let origin = if ["js", "ts", "jsx", "tsx", "php", "vue"].contains(&ext) {
-            Origin::Source
-        } else {
-            Origin::Generated
-        };
-        push_text_candidate(
-            &mut candidates,
-            content,
-            found.as_str(),
-            found.start(),
-            CandidateSource::new(file, ext, origin, Some("string_literal")),
-        );
     }
     let html_text = Regex::new(r#">\s*([^<>{}\n][^<>{}]{1,240}?)\s*<"#).expect("jsx text regex");
     for captures in html_text.captures_iter(content) {
@@ -610,6 +615,9 @@ fn is_low_signal(text: &str) -> bool {
         || technical_penalty(trimmed) >= 1.0
         || is_internal_helper_copy(trimmed)
         || looks_like_static_person_or_tenant_name(trimmed)
+        || looks_like_code_fragment(trimmed)
+        || looks_like_translation_key(trimmed)
+        || looks_like_css_utility_list(trimmed)
 }
 
 fn is_operational_bridge_copy(file: &str, key_hint: &str, text: &str) -> bool {
@@ -647,6 +655,134 @@ fn looks_like_static_person_or_tenant_name(text: &str) -> bool {
         chars.next().is_some_and(char::is_uppercase)
             && chars
                 .all(|ch| ch.is_lowercase() || matches!(ch, '\'' | '-' | 'à' | 'è' | 'é' | 'ì' | 'ò' | 'ù'))
+    })
+}
+
+fn looks_like_code_fragment(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let syntax_count = text
+        .chars()
+        .filter(|ch| {
+            matches!(
+                ch,
+                '{' | '}' | '[' | ']' | '(' | ')' | ';' | '=' | '<' | '>' | '&' | '|'
+            )
+        })
+        .count();
+    let has_code_operator = lower.contains("=>")
+        || lower.contains("===")
+        || lower.contains("!==")
+        || lower.contains("&&")
+        || lower.contains("||")
+        || lower.contains("?.")
+        || lower.contains("return ")
+        || lower.contains("function ")
+        || lower.contains("const ")
+        || lower.contains("let ")
+        || lower.contains("var ")
+        || lower.contains("json.stringify")
+        || lower.contains("usememo")
+        || lower.contains("usestate");
+    let has_many_tokens_without_sentence_shape =
+        text.split_whitespace().count() >= 8 && syntax_count >= 4 && !text.ends_with(['.', '!', '?']);
+    has_code_operator || has_many_tokens_without_sentence_shape
+}
+
+fn looks_like_translation_key(text: &str) -> bool {
+    if text.contains(' ') || text.len() > 96 {
+        return false;
+    }
+    let parts = text.split('.').collect::<Vec<_>>();
+    parts.len() >= 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        })
+        && parts
+            .iter()
+            .filter(|part| {
+                part.chars()
+                    .any(|ch| ch == '_' || ch == '-' || ch.is_ascii_lowercase())
+            })
+            .count()
+            >= 2
+}
+
+fn looks_like_css_utility_list(text: &str) -> bool {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    if words.len() < 3 {
+        return false;
+    }
+    let utility_count = words.iter().filter(|word| looks_like_css_utility(word)).count();
+    utility_count >= 3 && utility_count * 2 >= words.len()
+}
+
+fn looks_like_css_utility(word: &str) -> bool {
+    let lower = word
+        .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '`' | ',' | ';'))
+        .to_lowercase();
+    let utility_prefixes = [
+        "absolute",
+        "relative",
+        "fixed",
+        "flex",
+        "grid",
+        "hidden",
+        "block",
+        "inline",
+        "items-",
+        "justify-",
+        "content-",
+        "gap-",
+        "space-",
+        "p-",
+        "px-",
+        "py-",
+        "pt-",
+        "pr-",
+        "pb-",
+        "pl-",
+        "m-",
+        "mx-",
+        "my-",
+        "mt-",
+        "mr-",
+        "mb-",
+        "ml-",
+        "w-",
+        "h-",
+        "min-",
+        "max-",
+        "text-",
+        "font-",
+        "leading-",
+        "tracking-",
+        "bg-",
+        "border",
+        "rounded",
+        "shadow",
+        "opacity-",
+        "z-",
+        "overflow-",
+        "transition",
+        "duration-",
+        "ease-",
+        "hover:",
+        "focus:",
+        "md:",
+        "lg:",
+        "xl:",
+    ];
+    utility_prefixes.iter().any(|prefix| {
+        lower == *prefix
+            || lower.strip_prefix(prefix).is_some_and(|rest| {
+                rest.is_empty()
+                    || rest.starts_with('[')
+                    || rest.starts_with('-')
+                    || (prefix.ends_with('-') && !rest.is_empty())
+            })
     })
 }
 
@@ -796,5 +932,25 @@ mod tests {
         assert!(tsx.iter().any(|item| item.text.contains("Upgrade now")));
         let css = extract_css(r#".x::before{content:"Required field"}"#, "style.css", "css");
         assert!(css.iter().any(|item| item.text.contains("Required field")));
+    }
+
+    #[test]
+    fn source_literal_extractor_rejects_code_fragments() {
+        let source = r#"
+            const label = "Save customer";
+            const bad = "return items.filter((item) => item.enabled && item.name !== '')";
+        "#;
+        let segments = extract_source_literals(source, "App.tsx", "tsx");
+        assert!(segments.iter().any(|item| item.text == "Save customer"));
+        assert!(!segments.iter().any(|item| item.text.contains("items.filter")));
+    }
+
+    #[test]
+    fn rejects_css_utilities_and_translation_keys() {
+        assert!(is_low_signal(
+            "row gap-8 rounded-2xl bg-white shadow-lg px-4 py-3"
+        ));
+        assert!(is_low_signal("appointments.quickClientError"));
+        assert!(!is_low_signal("Open customer record"));
     }
 }
