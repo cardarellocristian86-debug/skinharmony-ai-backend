@@ -9,3 +9,4 @@ universal-core/native/
 universal-core/node_modules/
 node_modules/
 universal-core/data/
+.render-rust/
