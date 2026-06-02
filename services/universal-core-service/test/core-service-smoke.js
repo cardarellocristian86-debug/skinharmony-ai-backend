@@ -124,9 +124,45 @@ try {
   const sdkManifest = await api(base, "GET", "/v1/connectors/sdk/manifest?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(sdkManifest.status === 200 && sdkManifest.json.sdk?.manifest_version === "core_connector_sdk_v1", "connector sdk manifest failed");
   assert(sdkManifest.json.sdk?.transports?.includes("mcp_ready_schema"), "connector sdk mcp-ready transport missing");
+  assert(sdkManifest.json.sdk?.core_routes?.translator_extractor_catalog === "/v1/translator/extractor/catalog", "connector sdk missing translator extractor route");
   mark("connector_sdk_manifest", true, {
     adapters: sdkManifest.json.sdk.adapters,
     routes: Object.keys(sdkManifest.json.sdk.core_routes),
+  });
+
+  const extractorStatus = await api(base, "GET", "/v1/translator/extractor/status?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
+  assert(extractorStatus.status === 200 && extractorStatus.json.extractor?.status === "ready", "translation extractor status failed");
+  mark("translation_extractor_status", true, extractorStatus.json.extractor);
+
+  const extractorCatalog = await api(base, "POST", "/v1/translator/extractor/catalog", {
+    tenant_id: "tenant_demo_skinharmony",
+    source_lang: "it",
+    target_lang: "en",
+    files: [
+      {
+        path: "smartdesk/runtime-messages.json",
+        content: JSON.stringify({
+          headline: "Centro sotto controllo",
+          cta: "Apri AI Gold",
+          error_message: "Il servizio sta impiegando troppo tempo. Riprova tra poco.",
+          token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.secret",
+        }),
+      },
+      {
+        path: "src/App.tsx",
+        content: "export function App(){return <button aria-label=\"Richiedi proposta\">Richiedi proposta</button>}",
+      },
+    ],
+    scan_bundles: true,
+    stats: true,
+  }, connectorKey);
+  assert(extractorCatalog.status === 200 && extractorCatalog.json.catalog?.total >= 2, "translation extractor catalog failed");
+  assert(extractorCatalog.json.guardrail?.publish_allowed === false, "extractor should not allow publish");
+  assert(!JSON.stringify(extractorCatalog.json.catalog.segments).includes("eyJhbGci"), "extractor leaked token-like string");
+  mark("translation_extractor_catalog", true, {
+    total: extractorCatalog.json.catalog.total,
+    stats: extractorCatalog.json.extractor.stats,
+    evidence_id: extractorCatalog.json.evidence.evidence_id,
   });
 
   const runbooks = await api(base, "GET", "/v1/runbooks?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);

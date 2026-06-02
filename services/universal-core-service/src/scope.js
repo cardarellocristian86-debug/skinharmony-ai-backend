@@ -14,8 +14,12 @@ export const SCOPES = Object.freeze({
   CLAIM_CHECK: "claim:check",
   PRICING_CHECK: "pricing:check",
   POLICY_CHECK: "policy:check",
+  EXTRACT_CATALOG: "extract:catalog",
   AUTOMATION_CODEX: "automation:codex",
   AI_GATEWAY: "gateway:ai",
+  READ_CONTROL_PLANE: "read:control_plane",
+  WRITE_RUNBOOK: "write:runbook",
+  READ_EVIDENCE: "read:evidence",
 });
 
 export const DEFAULT_CONNECTOR_SCOPES = [
@@ -28,7 +32,10 @@ export const DEFAULT_CONNECTOR_SCOPES = [
   SCOPES.CLAIM_CHECK,
   SCOPES.PRICING_CHECK,
   SCOPES.POLICY_CHECK,
+  SCOPES.EXTRACT_CATALOG,
   SCOPES.AI_GATEWAY,
+  SCOPES.READ_CONTROL_PLANE,
+  SCOPES.READ_EVIDENCE,
 ];
 
 export const DEFAULT_AUTOMATION_SCOPES = [
@@ -42,8 +49,12 @@ export const DEFAULT_AUTOMATION_SCOPES = [
   SCOPES.CLAIM_CHECK,
   SCOPES.PRICING_CHECK,
   SCOPES.POLICY_CHECK,
+  SCOPES.EXTRACT_CATALOG,
   SCOPES.AUTOMATION_CODEX,
   SCOPES.AI_GATEWAY,
+  SCOPES.READ_CONTROL_PLANE,
+  SCOPES.WRITE_RUNBOOK,
+  SCOPES.READ_EVIDENCE,
 ];
 
 export const KEY_PRESETS = Object.freeze({
@@ -59,7 +70,11 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.CLAIM_CHECK,
       SCOPES.PRICING_CHECK,
       SCOPES.POLICY_CHECK,
+      SCOPES.EXTRACT_CATALOG,
       SCOPES.AI_GATEWAY,
+      SCOPES.READ_CONTROL_PLANE,
+      SCOPES.WRITE_RUNBOOK,
+      SCOPES.READ_EVIDENCE,
     ],
   },
   smartdesk_connector: {
@@ -71,7 +86,10 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.READ_DECISION,
       SCOPES.WRITE_SYNC_SUITE,
       SCOPES.POLICY_CHECK,
+      SCOPES.EXTRACT_CATALOG,
       SCOPES.AI_GATEWAY,
+      SCOPES.READ_CONTROL_PLANE,
+      SCOPES.READ_EVIDENCE,
     ],
   },
   wordpress_connector: {
@@ -85,6 +103,7 @@ export const KEY_PRESETS = Object.freeze({
       SCOPES.CLAIM_CHECK,
       SCOPES.PRICING_CHECK,
       SCOPES.POLICY_CHECK,
+      SCOPES.EXTRACT_CATALOG,
       SCOPES.AI_GATEWAY,
     ],
   },

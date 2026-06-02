@@ -1,0 +1,8 @@
+{
+  "title": "Payment required",
+  "error_message": "Your subscription could not be renewed.",
+  "validation": "Email is required",
+  "support": "Contact support if the problem continues.",
+  "id": "8d31f1d0-f1f2-41df-a7b3-09c4a552d914",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.fake"
+}

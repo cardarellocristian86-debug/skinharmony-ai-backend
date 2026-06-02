@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/skinharmony-core-math",
+  "crates/skinharmony-translator-contract",
+  "crates/skinharmony-classifier",
+  "crates/skinharmony-catalog",
+  "crates/skinharmony-policy",
+  "crates/skinharmony-extractor",
+  "crates/skinharmony-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+authors = ["SkinHarmony"]
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+globset = "0.4"
+ignore = "0.4"
+quick-xml = "0.38"
+regex = "1"
+scraper = "0.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+walkdir = "2"
+

@@ -1,0 +1,25 @@
+[package]
+name = "skinharmony-extractor"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+csv.workspace = true
+globset.workspace = true
+ignore.workspace = true
+quick-xml.workspace = true
+regex.workspace = true
+scraper.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+skinharmony-classifier = { path = "../skinharmony-classifier" }
+skinharmony-core-math = { path = "../skinharmony-core-math" }
+skinharmony-translator-contract = { path = "../skinharmony-translator-contract" }
+
+[dev-dependencies]
+skinharmony-catalog = { path = "../skinharmony-catalog" }
+skinharmony-policy = { path = "../skinharmony-policy" }

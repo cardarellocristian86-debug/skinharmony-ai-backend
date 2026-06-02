@@ -2,6 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
 import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branches/flowcore/src/index.ts";
@@ -818,6 +819,8 @@ function buildConnectorSdkManifest() {
       gate: "/v1/ai-gateway/evaluate",
       software_language_gate: "/v1/software-language-gate/evaluate",
       control_plane: "/v1/control-plane/overview",
+      translator_extractor_status: "/v1/translator/extractor/status",
+      translator_extractor_catalog: "/v1/translator/extractor/catalog",
       runbooks: "/v1/runbooks",
       runbook_evaluate: "/v1/runbooks/evaluate",
       release_check: "/v1/releases/manifest/check",
@@ -825,6 +828,236 @@ function buildConnectorSdkManifest() {
       customer_intelligence_contract: "/v1/customer-intelligence/contract",
       customer_intelligence_readiness: "/v1/customer-intelligence/readiness",
     },
+  };
+}
+
+function repoRoot() {
+  return path.resolve(__dirname, "../../..");
+}
+
+function extractorBinaryPath() {
+  return process.env.SH_EXTRACTOR_BIN || path.join(repoRoot(), "skinharmony-rust-extractor-governor", "target", "release", "skinharmony-extract");
+}
+
+function safeRelativeExtractorPath(value, fallbackIndex = 0) {
+  const raw = String(value || `input_${fallbackIndex}.txt`).replaceAll("\\", "/").trim();
+  if (!raw || path.isAbsolute(raw)) return `input_${fallbackIndex}.txt`;
+  const clean = raw
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/");
+  return clean || `input_${fallbackIndex}.txt`;
+}
+
+function writeExtractorInputFiles(inputDir, files = []) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new Error("extractor_files_required");
+  }
+
+  const maxFiles = Number(process.env.SH_EXTRACTOR_MAX_FILES || 250);
+  const maxFileBytes = Number(process.env.SH_EXTRACTOR_MAX_FILE_BYTES || 900_000);
+  const maxTotalBytes = Number(process.env.SH_EXTRACTOR_MAX_TOTAL_BYTES || 8_000_000);
+  if (files.length > maxFiles) throw new Error("extractor_too_many_files");
+
+  const root = path.resolve(inputDir);
+  let totalBytes = 0;
+  const written = [];
+
+  files.forEach((file, index) => {
+    const rel = safeRelativeExtractorPath(file?.path || file?.name, index);
+    const target = path.resolve(root, rel);
+    if (!target.startsWith(`${root}${path.sep}`) && target !== root) {
+      throw new Error("extractor_invalid_file_path");
+    }
+
+    const content = String(file?.content ?? file?.text ?? "");
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > maxFileBytes) throw new Error("extractor_file_too_large");
+    totalBytes += bytes;
+    if (totalBytes > maxTotalBytes) throw new Error("extractor_payload_too_large");
+
+    ensureDir(path.dirname(target));
+    fs.writeFileSync(target, content, "utf8");
+    written.push({ path: rel, bytes });
+  });
+
+  return { files: written, total_bytes: totalBytes };
+}
+
+function readJsonFileSafe(file, fallback = null) {
+  try {
+    return readJsonFile(file, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function readJsonlCatalog(file) {
+  if (!fs.existsSync(file)) return [];
+  return fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function extractorCatalogStats(segments = []) {
+  const riskCounts = {};
+  const radarCounts = {};
+  const categoryCounts = {};
+  for (const segment of segments) {
+    const risk = segment?.risk?.level || "unknown";
+    const radar = segment?.radar?.level || "unknown";
+    const category = segment?.category || "unknown";
+    riskCounts[risk] = (riskCounts[risk] || 0) + 1;
+    radarCounts[radar] = (radarCounts[radar] || 0) + 1;
+    categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+  }
+  return {
+    total: segments.length,
+    risk: riskCounts,
+    radar: radarCounts,
+    categories: categoryCounts,
+    high_or_block: (riskCounts.high || 0) + (riskCounts.block || 0),
+    critical_radar: radarCounts.critical || 0,
+  };
+}
+
+function runRustExtractorGovernor(storageRoot, payload = {}) {
+  const binary = extractorBinaryPath();
+  if (!fs.existsSync(binary)) throw new Error("extractor_binary_missing");
+
+  const jobId = `extract_${crypto.randomUUID()}`;
+  const jobRoot = path.join(storageRoot, "extractor", "jobs", jobId);
+  const inputDir = path.join(jobRoot, "input");
+  const outputDir = path.join(jobRoot, "out");
+  ensureDir(inputDir);
+  ensureDir(outputDir);
+
+  const written = writeExtractorInputFiles(inputDir, payload.files);
+  const outFile = path.join(outputDir, "catalog.jsonl");
+  const policyFile = path.join(outputDir, "policy.json");
+  const radarFile = path.join(outputDir, "radar.json");
+  const noiseFile = path.join(outputDir, "noise.json");
+
+  const args = [
+    inputDir,
+    "--source-lang",
+    textValue(payload.source_lang, "it"),
+    "--target-lang",
+    textValue(payload.target_lang, "en"),
+    "--out",
+    outFile,
+    "--format",
+    "jsonl",
+    "--min-confidence",
+    String(Number(payload.min_confidence ?? 0.62)),
+    "--min-quality",
+    String(Number(payload.min_quality ?? 0.58)),
+    "--emit-policy-report",
+    policyFile,
+    "--emit-radar-report",
+    radarFile,
+    "--emit-noise-report",
+    noiseFile,
+  ];
+
+  if (payload.scan_bundles === true) args.push("--scan-bundles");
+  if (payload.use_sourcemaps === true) args.push("--use-sourcemaps");
+  if (payload.stats !== false) args.push("--stats");
+  for (const include of Array.isArray(payload.include) ? payload.include.slice(0, 20) : []) args.push("--include", String(include));
+  for (const exclude of Array.isArray(payload.exclude) ? payload.exclude.slice(0, 20) : []) args.push("--exclude", String(exclude));
+
+  const stdout = execFileSync(binary, args, {
+    encoding: "utf8",
+    timeout: Number(process.env.SH_EXTRACTOR_TIMEOUT_MS || 75_000),
+    maxBuffer: Number(process.env.SH_EXTRACTOR_MAX_BUFFER || 12_000_000),
+  });
+
+  const segments = readJsonlCatalog(outFile);
+  return {
+    job_id: jobId,
+    binary,
+    input: written,
+    stdout,
+    catalog_file: outFile,
+    policy_file: policyFile,
+    radar_file: radarFile,
+    noise_file: noiseFile,
+    segments,
+    stats: extractorCatalogStats(segments),
+    policy: readJsonFileSafe(policyFile, null),
+    radar: readJsonFileSafe(radarFile, null),
+    noise: readJsonFileSafe(noiseFile, null),
+  };
+}
+
+function buildExtractorCoreInput(req, extraction) {
+  const stats = extraction.stats || {};
+  const policySafe = extraction.policy?.publish_safe === true;
+  return {
+    request_id: `extractor_${extraction.job_id}`,
+    generated_at: nowIso(),
+    domain: "translation_extraction_governance",
+    context: {
+      tenant_id: req.tenantId,
+      actor_id: req.body?.actor_id || "translator_connector",
+      locale: req.body?.locale || "it",
+      metadata: {
+        source: "rust_extractor_governor",
+        source_lang: textValue(req.body?.source_lang, "it"),
+        target_lang: textValue(req.body?.target_lang, "en"),
+        job_id: extraction.job_id,
+      },
+    },
+    signals: [
+      normalizeSignal({
+        id: "extractor:catalog_size",
+        label: "Segmenti traducibili trovati",
+        category: "translation",
+        normalized_score: Math.min(100, Number(stats.total || 0) * 2),
+        confidence_hint: 88,
+        tags: ["extractor", "catalog"],
+      }),
+      normalizeSignal({
+        id: "extractor:risk",
+        label: "Segmenti high/block da validare",
+        category: "risk",
+        normalized_score: Math.min(100, Number(stats.high_or_block || 0) * 22),
+        severity_hint: Math.min(100, Number(stats.high_or_block || 0) * 28),
+        confidence_hint: 86,
+        tags: ["extractor", "publish_safe"],
+      }),
+      normalizeSignal({
+        id: "extractor:radar",
+        label: "Segmenti critical radar",
+        category: "visibility",
+        normalized_score: Math.min(100, Number(stats.critical_radar || 0) * 18),
+        confidence_hint: 84,
+        tags: ["extractor", "radar"],
+      }),
+      normalizeSignal({
+        id: "extractor:policy",
+        label: policySafe ? "Policy catalogo senza blocchi" : "Policy catalogo richiede validazione",
+        category: "policy",
+        normalized_score: policySafe ? 10 : 72,
+        severity_hint: policySafe ? 10 : 72,
+        confidence_hint: 90,
+        evidence: [{ label: "publish_safe", value: policySafe }],
+        tags: ["core_nyra_gate", "translation"],
+      }),
+    ],
+    data_quality: {
+      score: stats.total ? 82 : 45,
+      missing_fields: stats.total ? [] : ["translatable_segments"],
+    },
+    constraints: safeConstraints({
+      require_confirmation: true,
+      max_control_level: "confirm",
+      allow_automation: false,
+      safety_mode: true,
+      blocked_actions: ["publish_without_translation_validation", "publish_high_risk_untranslated"],
+    }, req.coreKey, false),
   };
 }
 
@@ -2481,7 +2714,7 @@ export function createUniversalCoreService(options = {}) {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
 
   app.get("/healthz", (req, res) => {
     res.json({
@@ -2770,6 +3003,97 @@ export function createUniversalCoreService(options = {}) {
   app.get("/v1/connectors/sdk/manifest", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
     audit.append("core_connector_sdk_manifest_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, tenant_id: req.tenantId, sdk: buildConnectorSdkManifest() });
+  });
+
+  app.get("/v1/translator/extractor/status", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
+    const binary = extractorBinaryPath();
+    audit.append("core_translation_extractor_status_read", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      binary_available: fs.existsSync(binary),
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      extractor: {
+        status: fs.existsSync(binary) ? "ready" : "missing_binary",
+        mode: "core_sidecar_process",
+        binary,
+        route: "/v1/translator/extractor/catalog",
+        does_translate: false,
+        publish_default: false,
+      },
+    });
+  });
+
+  app.post("/v1/translator/extractor/catalog", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
+    try {
+      const extraction = runRustExtractorGovernor(storageRoot, req.body || {});
+      const coreInput = buildExtractorCoreInput(req, extraction);
+      const output = runUniversalCore(coreInput);
+      const decisionContract = normalizeDecisionContract(output, {
+        action_type: "translation_catalog_extraction",
+        publish_intent: false,
+      });
+      const evidenceRecord = evidence.append(req.tenantId, "translation_catalog_extracted", {
+        job_id: extraction.job_id,
+        source_lang: textValue(req.body?.source_lang, "it"),
+        target_lang: textValue(req.body?.target_lang, "en"),
+        stats: extraction.stats,
+        catalog_file: extraction.catalog_file,
+        policy_file: extraction.policy_file,
+        radar_file: extraction.radar_file,
+        noise_file: extraction.noise_file,
+        decision_contract: decisionContract,
+        publish_allowed: false,
+      });
+      audit.append("core_translation_catalog_extracted", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        job_id: extraction.job_id,
+        segment_count: extraction.stats.total,
+        high_or_block: extraction.stats.high_or_block,
+        evidence_id: evidenceRecord.evidence_id,
+      });
+      res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        extractor: {
+          job_id: extraction.job_id,
+          mode: "rust_governor_inside_universal_core",
+          does_translate: false,
+          stdout: extraction.stdout,
+          input: extraction.input,
+          stats: extraction.stats,
+        },
+        catalog: {
+          format: "jsonl",
+          total: extraction.segments.length,
+          segments: extraction.segments,
+        },
+        policy: extraction.policy,
+        radar: extraction.radar,
+        noise: extraction.noise,
+        output,
+        decision_contract: decisionContract,
+        evidence: evidenceRecord,
+        guardrail: {
+          publish_allowed: false,
+          execution_allowed: false,
+          owner_confirmation_required: true,
+          mode: "catalog_only_then_core_nyra_publish_safe_gate",
+        },
+      });
+    } catch (error) {
+      const code = error.message || "extractor_failed";
+      const status = code === "extractor_binary_missing" ? 503 : code.includes("too_large") ? 413 : 400;
+      audit.append("core_translation_extractor_failed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        error: code,
+      });
+      publicError(res, status, code);
+    }
   });
 
   app.get("/v1/customer-intelligence/contract", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {

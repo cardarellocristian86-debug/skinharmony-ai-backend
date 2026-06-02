@@ -1,0 +1,11 @@
+[package]
+name = "skinharmony-policy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+skinharmony-translator-contract = { path = "../skinharmony-translator-contract" }
+

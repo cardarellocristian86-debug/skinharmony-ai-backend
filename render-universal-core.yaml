@@ -3,7 +3,7 @@ services:
     name: skinharmony-universal-core
     env: node
     plan: starter
-    buildCommand: npm ci
+    buildCommand: npm ci && bash scripts/build-rust-extractor-render.sh
     startCommand: npm run core:service
     healthCheckPath: /healthz
     envVars:

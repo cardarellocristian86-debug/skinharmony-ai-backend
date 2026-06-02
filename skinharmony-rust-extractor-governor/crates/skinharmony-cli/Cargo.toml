@@ -1,0 +1,18 @@
+[package]
+name = "skinharmony-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "skinharmony-extract"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+skinharmony-catalog = { path = "../skinharmony-catalog" }
+skinharmony-extractor = { path = "../skinharmony-extractor" }
+skinharmony-policy = { path = "../skinharmony-policy" }
+skinharmony-translator-contract = { path = "../skinharmony-translator-contract" }

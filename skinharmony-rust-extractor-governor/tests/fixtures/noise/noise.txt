@@ -1,0 +1,5 @@
+https://example.com
+support@example.com
+1.2.3
+main_button_class
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.fake
