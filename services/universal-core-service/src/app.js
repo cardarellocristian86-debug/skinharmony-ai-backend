@@ -855,12 +855,20 @@ function resolveExtractorBinaryPath({ allowBuild = false } = {}) {
   if (allowBuild && process.env.SH_EXTRACTOR_DISABLE_LAZY_BUILD !== "1") {
     const buildScript = path.join(repoRoot(), "scripts", "build-rust-extractor-render.sh");
     if (fs.existsSync(buildScript)) {
-      execFileSync("bash", [buildScript], {
-        cwd: repoRoot(),
-        env: process.env,
-        stdio: "ignore",
-        timeout: Number(process.env.SH_EXTRACTOR_BUILD_TIMEOUT_MS || 180_000),
-      });
+      try {
+        execFileSync("bash", [buildScript], {
+          cwd: repoRoot(),
+          env: process.env,
+          encoding: "utf8",
+          timeout: Number(process.env.SH_EXTRACTOR_BUILD_TIMEOUT_MS || 180_000),
+        });
+      } catch (error) {
+        const output = `${error.stdout || ""}\n${error.stderr || ""}`.trim();
+        const snippet = output
+          .replace(/(api[_-]?key|token|secret|password)=\\S+/gi, "$1=[redacted]")
+          .slice(0, Number(process.env.SH_EXTRACTOR_BUILD_ERROR_BYTES || 1200));
+        throw new Error(`extractor_build_failed:${snippet || error.message || "unknown"}`);
+      }
       for (const candidate of extractorCandidatePaths()) {
         if (candidate && fs.existsSync(candidate)) return candidate;
       }
