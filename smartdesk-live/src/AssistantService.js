@@ -132,6 +132,46 @@ const RESPONSE_SCHEMA = {
   required: ["mode", "message", "action", "payload", "requiresConfirmation"]
 };
 
+const SUPPORT_ALLOWED_PATHS = new Set([
+  "/",
+  "/ai-gold",
+  "/appointments",
+  "/cashdesk",
+  "/clients",
+  "/ecosystem",
+  "/inventory",
+  "/marketing",
+  "/profitability",
+  "/protocols",
+  "/reports",
+  "/services",
+  "/settings",
+  "/shifts",
+  "/treatments"
+]);
+
+const SUPPORT_RESPONSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    message: { type: "string" },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          label: { type: "string" },
+          path: { type: "string" },
+          kind: { type: "string", enum: ["navigation", "ai_gold", "upgrade", "whatsapp", "none"] }
+        },
+        required: ["label", "path", "kind"]
+      }
+    }
+  },
+  required: ["message", "actions"]
+};
+
 function normalizeRole(role) {
   const safe = String(role || "owner").toLowerCase();
   return ROLE_CAPABILITIES[safe] ? safe : "owner";
@@ -179,6 +219,141 @@ function stripAccents(value) {
 
 function normalizeText(value) {
   return stripAccents(value).toLowerCase().trim();
+}
+
+function supportAction(label, path, kind = "navigation") {
+  return { label, path, kind };
+}
+
+function sanitizeSupportActions(actions = [], context = {}) {
+  const plan = String(context.subscriptionPlan || "base").toLowerCase();
+  const safe = [];
+  for (const action of Array.isArray(actions) ? actions : []) {
+    const label = String(action?.label || "").trim().slice(0, 48);
+    const kind = ["navigation", "ai_gold", "upgrade", "whatsapp", "none"].includes(action?.kind) ? action.kind : "navigation";
+    let path = String(action?.path || "").trim();
+    if (!label) continue;
+    if (kind === "whatsapp") {
+      safe.push({ label, path: "whatsapp", kind });
+      continue;
+    }
+    if (kind === "none") {
+      safe.push({ label, path: "", kind });
+      continue;
+    }
+    if (!path.startsWith("/")) path = "/";
+    if (!SUPPORT_ALLOWED_PATHS.has(path)) path = "/";
+    if (path === "/ai-gold" && plan !== "gold") {
+      safe.push({ label: "Vedi piano Gold", path: "/settings", kind: "upgrade" });
+      continue;
+    }
+    if (path === "/profitability" && plan === "base") {
+      safe.push({ label: "Vedi piani Silver/Gold", path: "/settings", kind: "upgrade" });
+      continue;
+    }
+    safe.push({ label, path, kind });
+  }
+  const unique = [];
+  const seen = new Set();
+  for (const item of safe) {
+    const key = `${item.kind}:${item.path}:${item.label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+    if (unique.length >= 3) break;
+  }
+  return unique;
+}
+
+function buildSupportFallback(message, context = {}) {
+  const normalized = normalizeText(message);
+  const plan = String(context.subscriptionPlan || "base").toLowerCase();
+  const planLabel = plan === "gold" ? "Gold" : plan === "silver" ? "Silver" : "Base";
+  const quality = context.dataQuality?.metrics || {};
+
+  if (/(cliente|clienti|anagrafica|telefono|email|contatto)/.test(normalized)) {
+    return {
+      message: "Per aggiungere un cliente apri Clienti, premi Nuovo cliente, compila nome e almeno telefono o email, poi salva. Se manca il contatto, Smart Desk lo segnala nella qualità dati così puoi correggerlo prima dei report.",
+      actions: [supportAction("Apri clienti", "/clients")]
+    };
+  }
+
+  if (/(dipendente|operatore|staff|collaboratore|orario|turno|turni)/.test(normalized)) {
+    return {
+      message: "Per aggiungere un operatore apri Servizi e operatori, entra nella sezione operatori/staff e salva nome, ruolo e costo orario se vuoi leggere la redditività. I turni si gestiscono da Turni: nel Base sono lettura/inserimento semplice, in Silver e Gold diventano più evoluti.",
+      actions: [supportAction("Apri servizi/operatori", "/services"), supportAction("Apri turni", "/shifts")]
+    };
+  }
+
+  if (/(servizio|listino|prezzo|costo|costi|durata)/.test(normalized)) {
+    return {
+      message: "Per configurare un servizio apri Servizi, inserisci nome, durata, prezzo e costo. Il costo serve per leggere margini e redditività: se manca, AI Gold e i report devono segnalarlo invece di inventare il dato.",
+      actions: [supportAction("Apri servizi", "/services")]
+    };
+  }
+
+  if (/(appuntamento|agenda|prenot|slot|calendario)/.test(normalized)) {
+    return {
+      message: "Per creare un appuntamento apri Agenda, scegli giorno e orario, collega cliente, operatore e servizio, poi salva. Dopo la seduta puoi passare da Cassa per collegare il pagamento: così report e qualità dati restano coerenti.",
+      actions: [supportAction("Apri agenda", "/appointments"), supportAction("Apri cassa", "/cashdesk")]
+    };
+  }
+
+  if (/(cassa|pagamento|incasso|checkout|scontrino|metodo)/.test(normalized)) {
+    return {
+      message: "Per registrare un pagamento apri Cassa, seleziona cliente o appuntamento, inserisci importo e metodo di pagamento, poi salva. Se un pagamento non è collegato a un appuntamento, Smart Desk lo mostra come dato da sistemare.",
+      actions: [supportAction("Apri cassa", "/cashdesk")]
+    };
+  }
+
+  if (/(magazzino|prodotto|stock|giacenza|scorta)/.test(normalized)) {
+    return {
+      message: "Per gestire prodotti e stock apri Magazzino. Nel Base puoi gestire articoli, giacenze e costo; nei piani superiori hai letture più evolute su movimenti, sottoscorta e valore operativo.",
+      actions: [supportAction("Apri magazzino", "/inventory")]
+    };
+  }
+
+  if (/(report|redditivita|redditività|margine|margini|utile|perdita)/.test(normalized)) {
+    if (plan === "base") {
+      return {
+        message: "Nel piano Base puoi vedere agenda, clienti, cassa e incassi. La redditività parte da Silver; in Gold diventa lettura decisionale con priorità e controlli guidati.",
+        actions: [supportAction("Apri report", "/reports"), supportAction("Vedi piani", "/settings", "upgrade")]
+      };
+    }
+    return {
+      message: "Per leggere report e margini apri Report o Margini. Prima controlla che servizi e operatori abbiano costi configurati, altrimenti il dato economico va letto come incompleto.",
+      actions: [supportAction("Apri report", "/reports"), supportAction("Apri margini", "/profitability")]
+    };
+  }
+
+  if (/(ai gold|gold|priorita|priorità|cosa devo fare|decisione|azioni|alert)/.test(normalized)) {
+    if (plan === "gold") {
+      return {
+        message: "Questa è una domanda da AI Gold: il gestionale dice cosa sta succedendo, AI Gold dice cosa fare. Apri AI Gold per leggere priorità, dati mancanti, clienti da recuperare e controlli da completare.",
+        actions: [supportAction("Apri AI Gold", "/ai-gold", "ai_gold")]
+      };
+    }
+    return {
+      message: `Ora sei sul piano ${planLabel}: posso guidarti nell'uso dei moduli, ma le priorità automatiche e la lettura decisionale del centro sono funzioni Gold.`,
+      actions: [supportAction("Vedi piano Gold", "/settings", "upgrade")]
+    };
+  }
+
+  const missing = [
+    quality.clientsMissingContact ? `${quality.clientsMissingContact} clienti senza contatto` : "",
+    quality.servicesMissingCosts ? `${quality.servicesMissingCosts} servizi senza costo` : "",
+    quality.appointmentsMissingPayment ? `${quality.appointmentsMissingPayment} appuntamenti senza pagamento` : ""
+  ].filter(Boolean).join(", ");
+  return {
+    message: `Sono il Supporto SkinHarmony. Piano rilevato: ${planLabel}. Posso guidarti su clienti, agenda, cassa, servizi, operatori, turni, magazzino, report e impostazioni.${missing ? ` Prima cosa utile da controllare: ${missing}.` : ""} Dimmi cosa vuoi fare e ti porto al modulo giusto.`,
+    actions: [supportAction("Apri dashboard", "/"), supportAction("Apri impostazioni", "/settings"), supportAction("WhatsApp supporto", "whatsapp", "whatsapp")]
+  };
+}
+
+function shouldUseSupportOpenAI() {
+  const mode = String(process.env.SUPPORT_ASSISTANT_PROVIDER || "openai").trim().toLowerCase();
+  if (mode === "rules" || mode === "local") return false;
+  return Boolean(String(process.env.OPENAI_API_KEY || "").trim());
 }
 
 function extractPhone(value) {
@@ -1267,6 +1442,112 @@ class AssistantService {
     }
 
     return safe;
+  }
+
+  async supportChat(payload = {}, session = null) {
+    const message = String(payload.message || "").trim();
+    const context = this.buildContext(payload, session);
+    const fallback = buildSupportFallback(message, context);
+    const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+
+    if (!message || !shouldUseSupportOpenAI()) {
+      return {
+        mode: "support",
+        message: fallback.message,
+        actions: sanitizeSupportActions(fallback.actions, context),
+        provider: "support_rules",
+        plan: context.subscriptionPlan
+      };
+    }
+
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+    const language = assistantLanguage(context);
+    const instructions = [
+      "Sei Supporto SkinHarmony dentro Smart Desk.",
+      language === "en"
+        ? "Respond in English unless the user writes in another language."
+        : language === "de"
+          ? "Antworte auf Deutsch, wenn der Nutzer Deutsch verwendet; sonst folge der Sprache des Nutzers."
+          : "Rispondi in italiano, tono premium, chiaro e operativo.",
+      "Il tuo compito e spiegare come usare Smart Desk: clienti, agenda, cassa, servizi, operatori, turni, magazzino, report, impostazioni e piani.",
+      "Non sei AI Gold. Non devi analizzare il centro, decidere priorita commerciali o inventare performance.",
+      "Formula stabile: il gestionale dice cosa sta succedendo; AI Gold dice cosa fare. Tu spieghi come usare il gestionale.",
+      "Se l'utente chiede priorita, margini da correggere, clienti da recuperare o decisioni operative: se il piano e Gold proponi AI Gold; se non e Gold spiega che e funzione Gold.",
+      "Non salvare dati, non promettere automazioni, non dire che hai modificato il gestionale.",
+      "Non inventare prezzi o specifiche. Se parli di piani, usa solo: Base guida moduli base; Silver gestione/report/redditivita; Gold intelligenza sopra i moduli.",
+      "Evita claim medici o terapeutici.",
+      "Se manca un dato, dillo chiaramente e guida al modulo per completarlo.",
+      "Azioni consentite solo verso questi percorsi: /, /clients, /appointments, /services, /cashdesk, /shifts, /inventory, /reports, /marketing, /protocols, /settings, /ai-gold, /profitability, /ecosystem, /treatments.",
+      "Rispondi con massimo 4 frasi e massimo 3 azioni."
+    ].join("\n");
+
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          input: [
+            { role: "system", content: [{ type: "input_text", text: instructions }] },
+            {
+              role: "user",
+              content: [{
+                type: "input_text",
+                text: JSON.stringify({
+                  message,
+                  context: {
+                    centerName: context.centerName,
+                    language: context.language,
+                    subscriptionPlan: context.subscriptionPlan,
+                    currentRoute: context.currentRoute,
+                    userRole: context.userRole,
+                    dataQuality: context.dataQuality,
+                    dashboard: context.dashboard,
+                    settings: context.settings
+                  },
+                  fallback
+                })
+              }]
+            }
+          ],
+          text: {
+            format: {
+              type: "json_schema",
+              name: "skinharmony_support_response",
+              strict: true,
+              schema: SUPPORT_RESPONSE_SCHEMA
+            }
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`OpenAI HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      const raw = data?.output_text || data?.output?.[0]?.content?.[0]?.text || "{}";
+      const parsed = JSON.parse(raw);
+      return {
+        mode: "support",
+        message: typeof parsed?.message === "string" && parsed.message.trim() ? parsed.message.trim() : fallback.message,
+        actions: sanitizeSupportActions(parsed?.actions?.length ? parsed.actions : fallback.actions, context),
+        provider: "openai_support",
+        plan: context.subscriptionPlan
+      };
+    } catch (error) {
+      return {
+        mode: "support",
+        message: fallback.message,
+        actions: sanitizeSupportActions(fallback.actions, context),
+        provider: "support_rules",
+        plan: context.subscriptionPlan,
+        warning: error instanceof Error ? error.message : "support_openai_unavailable"
+      };
+    }
   }
 
   async chat(payload = {}, session = null) {

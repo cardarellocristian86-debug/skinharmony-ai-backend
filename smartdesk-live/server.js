@@ -1010,6 +1010,14 @@ app.post("/api/assistant/chat", async (req, res) => {
   }
 });
 
+app.post("/api/support-assistant/chat", async (req, res) => {
+  try {
+    res.json(await assistantService.supportChat(req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile usare il supporto SkinHarmony");
+  }
+});
+
 app.get("/api/assistant/brief", (req, res) => {
   const settings = service.getPublicSettings(req.session);
   const dashboard = service.getDashboardStats({ period: "day" }, req.session);
