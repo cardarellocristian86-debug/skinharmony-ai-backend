@@ -397,7 +397,7 @@ function classifyAssistantRoute(message, context = {}, localDecision = null) {
     return routeCategory("openai_required", "language_or_copy_generation");
   }
 
-  if (localDecision?.mode === "action" && localDecision?.action) {
+  if (localDecision?.action) {
     const permission = ACTION_PERMISSIONS[localDecision.action] || "INFO_ONLY";
     return routeCategory(permission === "UI_NAVIGATION" ? "local_navigation" : "local_safe_action", permission.toLowerCase(), {
       action: localDecision.action
