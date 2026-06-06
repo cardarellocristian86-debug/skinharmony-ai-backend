@@ -432,12 +432,16 @@ function extractPhone(value) {
 
 function extractClientDraft(message) {
   const raw = String(message || "").trim();
-  const match = raw.match(/(?:aggiungi|crea|inserisci)\s+cliente\s+(.+)/i);
+  const match = raw.match(/(?:aggiungi|crea|inserisci)\s+cliente\s+(.+)/i)
+    || raw.match(/(?:aggiungi|crea|inserisci)\s+(.+?)\s+come\s+cliente(?:\s+(.+))?$/i)
+    || raw.match(/(?:aggiungi|crea|inserisci)\s+(.+?)\s+cliente(?:\s+(.+))?$/i);
   if (!match) return null;
-  const tail = match[1].trim();
+  const tail = [match[1], match[2]].filter(Boolean).join(" ").trim();
   const phone = extractPhone(tail);
   const noContact = /(senza\s+(telefono|numero|contatto|email|mail)|non\s+vuole\s+lasciare|no\s+contatto)/i.test(tail);
   const namePart = (phone ? tail.replace(/(\+?\d[\d\s]{5,})$/, "") : tail)
+    .replace(/\b(come\s+)?cliente\b/ig, "")
+    .replace(/\b(tel|telefono|numero|cellulare|cell)\b[:\s]*/ig, "")
     .replace(/senza\s+(telefono|numero|contatto|email|mail)/ig, "")
     .replace(/non\s+vuole\s+lasciare\s+(telefono|numero|contatto|email|mail)/ig, "")
     .replace(/no\s+contatto/ig, "")
