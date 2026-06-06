@@ -271,6 +271,25 @@ function buildSupportFallback(message, context = {}) {
   const planLabel = plan === "gold" ? "Gold" : plan === "silver" ? "Silver" : "Base";
   const quality = context.dataQuality?.metrics || {};
 
+  if (/(cosa include|cosa posso fare|mio piano|piano include|abbonamento|funzioni incluse|moduli inclusi)/.test(normalized)) {
+    if (plan === "gold") {
+      return {
+        message: "Il piano Gold include i moduli Silver più AI operativa sopra il gestionale: priorità, lettura decisionale, marketing suggerito, redditività guidata e controlli da confermare. Nyra ti guida nell'uso; AI Gold/Core legge il centro e indica cosa fare senza eseguire da sola.",
+        actions: [supportAction("Apri AI Gold", "/ai-gold", "ai_gold"), supportAction("Apri report", "/reports"), supportAction("Apri margini", "/profitability")]
+      };
+    }
+    if (plan === "silver") {
+      return {
+        message: "Il piano Silver serve per gestire seriamente il centro: Base completo, turni evoluti, magazzino evoluto, report, redditività e assistente limitato. Le priorità automatiche e la lettura decisionale del centro sono Gold.",
+        actions: [supportAction("Apri report", "/reports"), supportAction("Apri margini", "/profitability"), supportAction("Vedi Gold", "/settings", "upgrade")]
+      };
+    }
+    return {
+      message: "Il piano Base copre l'operatività essenziale: agenda, clienti, appuntamenti, cassa/incassi, turni base, magazzino base, note, reminder e protocolli manuali. Redditività evoluta, report avanzati e AI decisionale partono dai piani superiori.",
+      actions: [supportAction("Apri agenda", "/appointments"), supportAction("Apri clienti", "/clients"), supportAction("Vedi piani", "/settings", "upgrade")]
+    };
+  }
+
   if (/(cliente|clienti|anagrafica|telefono|email|contatto)/.test(normalized)) {
     return {
       message: "Per aggiungere un cliente apri Clienti, premi Nuovo cliente, compila nome e almeno telefono o email, poi salva. Se manca il contatto, Smart Desk lo segnala nella qualità dati così puoi correggerlo prima dei report.",
@@ -345,7 +364,7 @@ function buildSupportFallback(message, context = {}) {
     quality.appointmentsMissingPayment ? `${quality.appointmentsMissingPayment} appuntamenti senza pagamento` : ""
   ].filter(Boolean).join(", ");
   return {
-    message: `Sono il Supporto SkinHarmony. Piano rilevato: ${planLabel}. Posso guidarti su clienti, agenda, cassa, servizi, operatori, turni, magazzino, report e impostazioni.${missing ? ` Prima cosa utile da controllare: ${missing}.` : ""} Dimmi cosa vuoi fare e ti porto al modulo giusto.`,
+    message: `Sono l'Assistente virtuale Nyra. Piano rilevato: ${planLabel}. Posso guidarti su clienti, agenda, cassa, servizi, operatori, turni, magazzino, report e impostazioni.${missing ? ` Prima cosa utile da controllare: ${missing}.` : ""} Dimmi cosa vuoi fare e ti porto al modulo giusto.`,
     actions: [supportAction("Apri dashboard", "/"), supportAction("Apri impostazioni", "/settings"), supportAction("WhatsApp supporto", "whatsapp", "whatsapp")]
   };
 }
@@ -354,6 +373,56 @@ function shouldUseSupportOpenAI() {
   const mode = String(process.env.SUPPORT_ASSISTANT_PROVIDER || "openai").trim().toLowerCase();
   if (mode === "rules" || mode === "local") return false;
   return Boolean(String(process.env.OPENAI_API_KEY || "").trim());
+}
+
+function routeCategory(category, reason = "", extra = {}) {
+  return { category, reason, ...extra };
+}
+
+function classifyAssistantRoute(message, context = {}, localDecision = null) {
+  const normalized = normalizeText(message);
+  if (!normalized) return routeCategory("local_support", "empty_or_short_guidance");
+
+  if (/(elimina|cancella|rimuovi|resetta|azzera|esporta|scarica|modifica prezzo|cambia prezzo|attiva piano|disattiva piano|cambia permessi|password|api key|chiave|deploy|pubblica|pagamento massivo|tutti i clienti|tutti gli appuntamenti|tutti i dati)/.test(normalized)) {
+    return routeCategory("core_required", "sensitive_or_destructive_request");
+  }
+
+  if (/(priorita gold|priorità gold|analizza priorita|analizza priorità|ai gold|gold state|decisione gold|piano operativo gold|cosa devo fare oggi|priorita di oggi|priorità di oggi)/.test(normalized)) {
+    return routeCategory("gold_decision_required", "gold_decision_context", {
+      provider: "gold_decision_required"
+    });
+  }
+
+  if (/(scrivi|prepara|riscrivi|messaggio|testo|elegante|tono|whatsapp|email|campagna|recuperare|cliente inattiva|cliente inattivo|copy|traduci|translate|deutsch|english)/.test(normalized)) {
+    return routeCategory("openai_required", "language_or_copy_generation");
+  }
+
+  if (localDecision?.mode === "action" && localDecision?.action) {
+    const permission = ACTION_PERMISSIONS[localDecision.action] || "INFO_ONLY";
+    return routeCategory(permission === "UI_NAVIGATION" ? "local_navigation" : "local_safe_action", permission.toLowerCase(), {
+      action: localDecision.action
+    });
+  }
+
+  if (/(come|dove|apri|vai|mostra|cosa include|mio piano|piano|cliente|clienti|pagamento|cassa|agenda|appuntamento|dipendente|operatore|staff|servizio|turno|magazzino|report|impostazioni)/.test(normalized)) {
+    return routeCategory("local_support", "covered_by_nyra_rules");
+  }
+
+  return routeCategory("openai_required", "not_covered_by_local_rules");
+}
+
+function withAssistantDebug(response, route, provider) {
+  return {
+    ...response,
+    provider,
+    router: route.category,
+    debug: {
+      ...(response.debug || {}),
+      provider,
+      router: route.category,
+      routerReason: route.reason || ""
+    }
+  };
 }
 
 function extractPhone(value) {
@@ -510,7 +579,7 @@ function localizeAssistantText(message, language) {
       .replace(/\bLettura Smart Desk: dati locali come evidenza, Core\/Nyra server come fonte primaria quando disponibile\./g, "Smart-Desk-Lesung: lokale Daten als Evidenz, Core/Nyra-Server als Primärquelle, wenn verfügbar.")
       .replace(/\bLettura AI Gold operativa sui dati disponibili, con Core\/Nyra server come fonte primaria quando risponde:/g, "Operative AI-Gold-Lesung auf verfügbaren Daten, mit Core/Nyra-Server als Primärquelle, wenn er antwortet:")
       .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "Im Silver-Plan kann ich dich durch Module und Berichte führen, aber keine AI-Prioritäten erzeugen.")
-      .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "Im Base-Plan bleibt der Smart-Button nutzbar, verwendet aber keine AI-Prioritäten.")
+      .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "Im Base-Plan bleibt der virtuelle Assistent Nyra nutzbar, verwendet aber keine AI-Prioritäten.")
       .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatische Prioritäten und Entscheidungsalarme sind im Gold-Plan verfügbar.")
       .replace(/\bNon ho eseguito azioni automatiche\. Conferma sempre tu eventuali contatti, modifiche o verifiche operative\./g, "Ich habe keine automatischen Aktionen ausgeführt. Kontakte, Änderungen und operative Prüfungen bestätigst immer du.")
       .replace(/\bCi sono priorita operative da gestire\./g, "Es gibt operative Prioritäten zu bearbeiten.")
@@ -560,7 +629,7 @@ function localizeAssistantText(message, language) {
     .replace(/\bLettura Smart Desk: dati locali come evidenza, Core\/Nyra server come fonte primaria quando disponibile\./g, "Smart Desk reading: local data as evidence, Core/Nyra server as primary source when available.")
     .replace(/\bLettura AI Gold operativa sui dati disponibili, con Core\/Nyra server come fonte primaria quando risponde:/g, "AI Gold operational reading on available data, with Core/Nyra server as the primary source when it responds:")
     .replace(/\bNel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI\./g, "On the Silver plan I can guide you through modules and reports, but I do not generate AI priorities.")
-    .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "On the Base plan the Smart button stays operational, but it does not use AI priorities.")
+    .replace(/\bNel piano Base il pulsante Smart resta operativo, ma non usa priorità AI\./g, "On the Base plan the Nyra virtual assistant stays operational, but it does not use AI priorities.")
     .replace(/\bLe priorità automatiche e gli alert decisionali sono disponibili nel piano Gold\./g, "Automatic priorities and decision alerts are available on the Gold plan.")
     .replace(/\bGli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold\./g, "Decision alerts, priority recall and AI readings are available on the Gold plan.")
     .replace(/\bNon ho eseguito azioni automatiche\. Conferma sempre tu eventuali contatti, modifiche o verifiche operative\./g, "I did not execute automatic actions. You always confirm contacts, changes or operational checks.")
@@ -957,7 +1026,7 @@ class AssistantService {
       time,
       durationMin,
       status: "confirmed",
-      notes: "Creato dal pulsante Smart dopo conferma operatore."
+      notes: "Creato dall'Assistente virtuale Nyra dopo conferma operatore."
     };
   }
 
@@ -973,7 +1042,7 @@ class AssistantService {
       date,
       startTime: times[0] || "",
       endTime: times[1] || "",
-      notes: "Turno creato dal pulsante Smart dopo conferma operatore."
+      notes: "Turno creato dall'Assistente virtuale Nyra dopo conferma operatore."
     };
   }
 
@@ -1026,7 +1095,7 @@ class AssistantService {
         ].join("\n");
       }
       return [
-        "Nel piano Base il pulsante Smart resta operativo, ma non usa priorità AI.",
+        "Nel piano Base l'Assistente virtuale Nyra resta operativo, ma non usa priorità AI.",
         "",
         "Cosa puoi fare ora:",
         "1. Apri Agenda.",
@@ -1448,16 +1517,36 @@ class AssistantService {
     const message = String(payload.message || "").trim();
     const context = this.buildContext(payload, session);
     const fallback = buildSupportFallback(message, context);
+    const route = classifyAssistantRoute(message, context, null);
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
-    if (!message || !shouldUseSupportOpenAI()) {
-      return {
+    if (route.category === "core_required") {
+      return withAssistantDebug({
+        mode: "support",
+        message: "Questa richiesta tocca dati o azioni sensibili. Nyra non la esegue direttamente: serve verifica Core e conferma operatore.",
+        actions: sanitizeSupportActions([supportAction("Apri impostazioni", "/settings")], context),
+        plan: context.subscriptionPlan
+      }, route, "core_required");
+    }
+
+    if (route.category === "gold_decision_required") {
+      return withAssistantDebug({
+        mode: "support",
+        message: context.subscriptionPlan === "gold"
+          ? "Questa è una lettura Gold: apro AI Gold, dove Core/Nyra leggono priorità, blocchi e prossima azione senza inventare dati."
+          : "La lettura decisionale del centro è una funzione Gold. Posso guidarti nei moduli disponibili del tuo piano.",
+        actions: sanitizeSupportActions([supportAction(context.subscriptionPlan === "gold" ? "Apri AI Gold" : "Vedi piano Gold", context.subscriptionPlan === "gold" ? "/ai-gold" : "/settings", context.subscriptionPlan === "gold" ? "ai_gold" : "upgrade")], context),
+        plan: context.subscriptionPlan
+      }, route, "gold_decision_required");
+    }
+
+    if (!message || route.category !== "openai_required" || !shouldUseSupportOpenAI()) {
+      return withAssistantDebug({
         mode: "support",
         message: fallback.message,
         actions: sanitizeSupportActions(fallback.actions, context),
-        provider: "support_rules",
         plan: context.subscriptionPlan
-      };
+      }, route, "nyra_local");
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
@@ -1535,16 +1624,20 @@ class AssistantService {
         mode: "support",
         message: typeof parsed?.message === "string" && parsed.message.trim() ? parsed.message.trim() : fallback.message,
         actions: sanitizeSupportActions(parsed?.actions?.length ? parsed.actions : fallback.actions, context),
-        provider: "openai_support",
-        plan: context.subscriptionPlan
+        provider: "openai",
+        plan: context.subscriptionPlan,
+        router: route.category,
+        debug: { provider: "openai", router: route.category, routerReason: route.reason || "" }
       };
     } catch (error) {
       return {
         mode: "support",
         message: fallback.message,
         actions: sanitizeSupportActions(fallback.actions, context),
-        provider: "support_rules",
+        provider: "nyra_local",
         plan: context.subscriptionPlan,
+        router: route.category,
+        debug: { provider: "nyra_local", router: route.category, routerReason: route.reason || "" },
         warning: error instanceof Error ? error.message : "support_openai_unavailable"
       };
     }
@@ -1554,14 +1647,42 @@ class AssistantService {
     const message = String(payload.message || "").trim();
     const context = this.buildContext(payload, session);
     const localDecision = this.buildLocalDecision(message, context, session);
+    const route = classifyAssistantRoute(message, context, localDecision);
     const normalizedMessage = normalizeText(message);
-    if (/(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
-      return localizeAssistantEnvelope({ ...localDecision, provider: this.getAiProviderMode() === "corelia_only" ? "corelia" : "rules" }, context);
+
+    if (route.category === "core_required") {
+      return localizeAssistantEnvelope(withAssistantDebug({
+        mode: "blocked_action",
+        message: "Questa richiesta è sensibile o distruttiva. Nyra non la esegue: serve verifica Core e conferma esplicita dell'operatore.",
+        action: "open_settings",
+        payload: {},
+        requiresConfirmation: false
+      }, route, "core_required"), context);
+    }
+
+    if (["local_navigation", "local_safe_action", "local_support"].includes(route.category)) {
+      const provider = route.category === "local_support" ? "nyra_local" : route.category;
+      if (route.category === "local_support") {
+        const fallback = buildSupportFallback(message, context);
+        return localizeAssistantEnvelope(withAssistantDebug({
+          mode: "answer",
+          message: fallback.message,
+          action: null,
+          payload: {},
+          requiresConfirmation: false,
+          supportActions: sanitizeSupportActions(fallback.actions, context)
+        }, route, provider), context);
+      }
+      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, provider), context);
+    }
+
+    if (route.category === "gold_decision_required" || /(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
+      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, "gold_decision_required"), context);
     }
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
     if (!this.shouldUseOpenAI()) {
-      return localizeAssistantEnvelope({ ...localDecision, provider: this.getFallbackProviderName() }, context);
+      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, this.getFallbackProviderName()), context);
     }
 
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
@@ -1666,15 +1787,19 @@ class AssistantService {
           payload: mergedPayload,
           message: buildConfirmationMessage(localDecision.action, mergedPayload, localDecision.message),
           requiresConfirmation: true,
-          provider: "openai"
+          provider: "openai",
+          router: route.category,
+          debug: { provider: "openai", router: route.category, routerReason: route.reason || "" }
         }, context);
       }
       return localizeAssistantEnvelope({
         ...sanitized,
-        provider: "openai"
+        provider: "openai",
+        router: route.category,
+        debug: { provider: "openai", router: route.category, routerReason: route.reason || "" }
       }, context);
     } catch {
-      return localizeAssistantEnvelope({ ...localDecision, provider: this.getFallbackProviderName() }, context);
+      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, this.getFallbackProviderName()), context);
     }
   }
 
