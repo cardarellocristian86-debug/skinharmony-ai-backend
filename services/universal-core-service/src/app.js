@@ -2323,6 +2323,100 @@ function buildBranchPayload(branch, payload = {}) {
       web_research_required: !data.sources_provided,
       owner_review_required: true,
     };
+  } else if (branch === "skinharmony_analyzer") {
+    const scores = Array.isArray(data.scores) ? data.scores.map((item) => ({
+      key: textValue(item?.key),
+      label: textValue(item?.label || item?.key),
+      score: Number.isFinite(Number(item?.score)) ? Number(item.score) : null,
+    })).filter((item) => item.key) : [];
+    if (!scores.length) missing.push("scores");
+    const byKey = Object.fromEntries(scores.map((item) => [item.key, item]));
+    const getScore = (key) => Number.isFinite(Number(byKey[key]?.score)) ? Number(byKey[key].score) : null;
+    const attention = (key, fallback = 52) => {
+      const score = getScore(key);
+      return score == null ? fallback : clampScore(100 - score);
+    };
+    const relationshipRules = [];
+    const pores = getScore("pores_texture");
+    const texture = getScore("texture_fine_lines");
+    const hydration = getScore("water_oil_balance");
+    const redness = getScore("redness_sensitivity_signals");
+    const pigment = getScore("spots_pigmentation_signals");
+    const tone = getScore("skin_tone_brightness");
+    if (pores != null && pores < 50 && hydration != null && hydration >= 80) {
+      relationshipRules.push("Pori bassi con idratazione buona: priorita su grana, film superficiale e pulizia progressiva, non su idratazione generica.");
+    }
+    if (pores != null && pores < 55 && texture != null && texture < 80) {
+      relationshipRules.push("Pori e texture sono collegati: la pelle va letta come qualita della superficie, non come parametro isolato.");
+    }
+    if (redness != null && redness <= 55 && pores != null && pores < 60) {
+      relationshipRules.push("Reattivita media con pori bassi: percorso estetico graduale, evitando approcci aggressivi iniziali.");
+    }
+    if (pigment != null && pigment >= 85) {
+      relationshipRules.push("Discromie alte/stabili: non spostare la priorita sulle macchie se il quadro indica pori o texture.");
+    }
+    if (tone != null && tone < 70 && hydration != null && hydration >= 75) {
+      relationshipRules.push("Luminosita da sostenere con idratazione gia buona: lavorare su uniformita superficiale e grana.");
+    }
+    const domains = [
+      {
+        id: "pores_texture_matrix",
+        label: "pori, grana e texture",
+        score: Math.round(clampScore(attention("pores_texture") * 0.55 + attention("texture_fine_lines") * 0.25 + attention("water_oil_balance") * 0.1 + attention("redness_sensitivity_signals") * 0.1 + (pores != null && pores < 50 && hydration != null && hydration >= 80 ? 10 : 0) + (pores != null && pores < 55 && texture != null && texture < 80 ? 8 : 0) + (redness != null && redness <= 55 && pores != null && pores < 60 ? 7 : 0))),
+      },
+      {
+        id: "sensitivity_reactivity_matrix",
+        label: "reattivita e tolleranza cutanea",
+        score: Math.round(clampScore(attention("redness_sensitivity_signals") * 0.55 + attention("skin_tone_brightness") * 0.2 + attention("water_oil_balance") * 0.15 + attention("pores_texture") * 0.1 + (redness != null && redness <= 55 && pores != null && pores < 60 ? 7 : 0))),
+      },
+      {
+        id: "barrier_hydration_matrix",
+        label: "barriera, idratazione e comfort",
+        score: Math.round(clampScore(attention("water_oil_balance") * 0.45 + attention("skin_tone_brightness") * 0.25 + attention("redness_sensitivity_signals") * 0.2 + attention("texture_fine_lines") * 0.1)),
+      },
+      {
+        id: "pigmentation_tone_matrix",
+        label: "discromie e uniformita del tono",
+        score: Math.round(clampScore(attention("spots_pigmentation_signals") * 0.55 + attention("skin_tone_brightness") * 0.25 + attention("redness_sensitivity_signals") * 0.1 + attention("texture_fine_lines") * 0.1 - (pigment != null && pigment >= 85 ? 8 : 0))),
+      },
+      {
+        id: "aging_texture_matrix",
+        label: "qualita della superficie e segni di eta cutanea",
+        score: Math.round(clampScore(attention("texture_fine_lines") * 0.45 + attention("skin_tone_brightness") * 0.25 + attention("water_oil_balance") * 0.2 + attention("spots_pigmentation_signals") * 0.1)),
+      },
+    ].sort((a, b) => b.score - a.score);
+    const dominant = domains[0] || null;
+    const secondary = domains.filter((item) => item.id !== dominant?.id && item.score >= 42).slice(0, 3);
+    const products = Array.isArray(data.products) ? data.products : [];
+    const protocols = Array.isArray(data.protocols) ? data.protocols : [];
+    const reportText = textValue(data.report_text || data.proposed_text || data.client_language);
+    const claimResult = reportText ? claimShieldCheck({ text: reportText, context: data.context || {} }) : { risk_score: 10, issues: [] };
+    domains.forEach((domain) => addSignal(domain.id, `Skin analyzer ${domain.label}`, domain.score, "skin_analysis", ["ensemble", domain.id]));
+    addSignal("claim_risk", "Rischio claim testo analyzer", claimResult.risk_score, "claim", ["claim_guard"]);
+    addSignal("catalog_readiness", "Catalogo prodotti/protocolli disponibile", products.length || protocols.length ? 20 : 65, "catalog", ["products", "protocols"]);
+    branchOutput = {
+      branch: "skinharmony_skin_ensemble_v1",
+      dominant_pattern: dominant,
+      secondary_patterns: secondary,
+      all_patterns: domains,
+      score_relationships: relationshipRules,
+      protective_signals: [
+        ...(hydration != null && hydration >= 80 ? ["idratazione rilevata buona"] : []),
+        ...(pigment != null && pigment >= 85 ? ["discromie non prioritarie nel quadro attuale"] : []),
+        ...(redness != null && redness <= 55 ? ["reattivita da rispettare nella progressione"] : []),
+      ],
+      products_loaded: products.length,
+      protocols_loaded: protocols.length,
+      suggested_direction: dominant?.id === "pores_texture_matrix"
+        ? "Percorso riequilibrante su grana, pori e texture, con progressione rispettosa della reattivita."
+        : dominant?.id === "sensitivity_reactivity_matrix"
+          ? "Percorso comfort e tolleranza prima di stimoli estetici piu intensivi."
+          : "Percorso estetico basato sul pattern dominante e sui segnali secondari.",
+      product_rule: products.length ? "Selezionare solo prodotti taggati sui pattern dominanti." : "Nessun prodotto caricato: non inventare nomi commerciali.",
+      protocol_rule: protocols.length ? "Selezionare solo protocolli caricati e coerenti con pattern dominante e tolleranza." : "Nessun protocollo caricato: indicare solo direzione estetica generale.",
+      blocked_claims: claimResult.issues.map((issue) => issue.term),
+      visible_language_rule: "Report professionale finito, non linguaggio provvisorio o medico.",
+    };
   } else if (branch === "technology_market") {
     const technology = textValue(data.technology || data.device || data.protocol);
     if (!technology) missing.push("technology");

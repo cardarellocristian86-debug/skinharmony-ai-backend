@@ -407,6 +407,7 @@ try {
 
   const branches = await api(base, "GET", "/v1/branches?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
+  assert(branches.json.branches?.skinharmony_analyzer?.production_status === "advisory", "skinharmony analyzer branch missing");
   assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
   assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
   assert(branches.json.branches?.change_impact_orchestration?.subbranches?.includes("rollback_impact"), "change impact orchestration branch missing");
@@ -811,6 +812,31 @@ try {
   mark("branch_cosmetic_chemistry", true, {
     state: chemistryBranch.json.output.state,
     research_required: chemistryBranch.json.branch_output.web_research_required,
+  });
+
+  const analyzerBranch = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      scores: [
+        { key: "skin_tone_brightness", label: "Tono e luminosita", score: 66 },
+        { key: "water_oil_balance", label: "Idratazione", score: 85 },
+        { key: "texture_fine_lines", label: "Texture e linee fini", score: 73 },
+        { key: "redness_sensitivity_signals", label: "Sensibilita", score: 50 },
+        { key: "spots_pigmentation_signals", label: "Discromie", score: 94 },
+        { key: "pores_texture", label: "Pori e grana", score: 30 },
+      ],
+      products: [],
+      protocols: [],
+      data_quality_score: 88,
+    },
+  }, connectorKey);
+  assert(analyzerBranch.status === 200 && analyzerBranch.json.branch_output?.branch === "skinharmony_skin_ensemble_v1", "skinharmony analyzer branch failed");
+  assert(analyzerBranch.json.branch_output?.dominant_pattern?.id === "pores_texture_matrix", "skinharmony analyzer dominant pattern failed");
+  assert(analyzerBranch.json.branch_output?.secondary_patterns?.some((item) => item.id === "sensitivity_reactivity_matrix"), "skinharmony analyzer secondary pattern failed");
+  mark("branch_skinharmony_analyzer", true, {
+    state: analyzerBranch.json.output.state,
+    dominant: analyzerBranch.json.branch_output.dominant_pattern,
+    secondary: analyzerBranch.json.branch_output.secondary_patterns,
   });
 
   const textGuard = await api(base, "POST", "/v1/content-guard/check", {

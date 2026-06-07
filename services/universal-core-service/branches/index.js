@@ -12,6 +12,7 @@ import { branchFunnelConversionGuard } from "./branch-funnel-conversion-guard.js
 import { branchEmailRecallGuard } from "./branch-email-recall-guard.js";
 import { branchContentLocalizationGuard } from "./branch-content-localization-guard.js";
 import { branchCosmeticChemistry } from "./branch-cosmetic-chemistry.js";
+import { branchSkinHarmonyAnalyzer } from "./branch-skinharmony-analyzer.js";
 import { branchTechnologyMarket } from "./branch-technology-market.js";
 import { branchBusinessStrategy } from "./branch-business-strategy.js";
 import { branchTranslationGovernance } from "./branch-translation-governance.js";
@@ -62,6 +63,7 @@ const BRANCHES = [
   branchEmailRecallGuard,
   branchContentLocalizationGuard,
   branchCosmeticChemistry,
+  branchSkinHarmonyAnalyzer,
   branchTechnologyMarket,
   branchBusinessStrategy,
   branchTranslationGovernance,
@@ -135,6 +137,7 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
   "ramo_testo",
   "translation_governance",
   "cosmetic_chemistry",
+  "skinharmony_analyzer",
   "technology_market",
   "beauty_market",
 ];
@@ -190,7 +193,7 @@ export const BRANCH_GROUPS = Object.freeze({
   smartdesk_vertical: {
     label: "Smart Desk Vertical",
     description: "Operativita centro, AI Gold, protocolli, agenda, cassa, magazzino, marketing e conferma operatore.",
-    branches: ["smartdesk_operations_guard", "beauty_protocol_guard", "consent_ledger_guard", "customer_360_guard", "product_inventory_guard", "support_success_guard"],
+    branches: ["smartdesk_operations_guard", "beauty_protocol_guard", "skinharmony_analyzer", "consent_ledger_guard", "customer_360_guard", "product_inventory_guard", "support_success_guard"],
   },
   security_defense: {
     label: "Security / Defensive Intelligence",
