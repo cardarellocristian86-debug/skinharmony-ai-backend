@@ -28,6 +28,7 @@ const nyraRenderAutopilotReportPath = "reports/universal-core/nyra-learning/nyra
 const nyraFinanceProfilePath = "personal-control-center/data/nyra-finance-profile.json";
 const nyraSiteSuitePriceGuardSnapshotPath = "personal-control-center/data/nyra-site-suite-price-guard-snapshot.json";
 const nyraDecisionClarityPackPath = "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json";
+const nyraAnalyzerLearningPackPath = "personal-control-center/data/nyra-analyzer-learning-pack.json";
 const nyraSiteSuitePriceGuardUrl = String(
   process.env.NYRA_SITE_SUITE_PRICE_GUARD_URL ||
   "https://www.skinharmony.it/wp-json/shss/v1/price-guard/nyra-snapshot"
@@ -6081,6 +6082,416 @@ app.get("/api/nyra/text-learning/status", (_req, res) => {
   });
 });
 
+const analyzerMetricOrder = [
+  "skin_tone_brightness",
+  "water_oil_balance",
+  "texture_fine_lines",
+  "redness_sensitivity_signals",
+  "spots_pigmentation_signals",
+  "pores_texture"
+];
+
+const analyzerMetricLabels = {
+  skin_tone_brightness: "tono e luminosita",
+  water_oil_balance: "acqua e sebo",
+  texture_fine_lines: "texture e linee fini",
+  redness_sensitivity_signals: "rossore e sensibilita visibile",
+  spots_pigmentation_signals: "discromie e uniformita",
+  pores_texture: "pori e grana"
+};
+
+const analyzerMetricAliases = {
+  fs: "skin_tone_brightness",
+  brightness: "skin_tone_brightness",
+  luminosita: "skin_tone_brightness",
+  tono: "skin_tone_brightness",
+  skin_tone: "skin_tone_brightness",
+  skin_tone_brightness: "skin_tone_brightness",
+  yf: "water_oil_balance",
+  water_oil: "water_oil_balance",
+  acqua_sebo: "water_oil_balance",
+  sebo: "water_oil_balance",
+  water_oil_balance: "water_oil_balance",
+  xw: "texture_fine_lines",
+  texture: "texture_fine_lines",
+  linee_fini: "texture_fine_lines",
+  texture_fine_lines: "texture_fine_lines",
+  yz: "redness_sensitivity_signals",
+  redness: "redness_sensitivity_signals",
+  rossore: "redness_sensitivity_signals",
+  sensibilita: "redness_sensitivity_signals",
+  redness_sensitivity_signals: "redness_sensitivity_signals",
+  sb: "spots_pigmentation_signals",
+  spots: "spots_pigmentation_signals",
+  pigmentation: "spots_pigmentation_signals",
+  pigmentazione: "spots_pigmentation_signals",
+  discromie: "spots_pigmentation_signals",
+  macchie: "spots_pigmentation_signals",
+  spots_pigmentation_signals: "spots_pigmentation_signals",
+  mk: "pores_texture",
+  pores: "pores_texture",
+  pori: "pores_texture",
+  grana: "pores_texture",
+  pores_texture: "pores_texture"
+};
+
+function loadNyraAnalyzerLearningPack() {
+  return readJson(nyraAnalyzerLearningPackPath, {
+    pack_id: "nyra_skinharmony_analyzer_beauty_learning_v1",
+    version: "fallback",
+    governance: {
+      forbidden_scope: ["diagnosi medica", "claim terapeutici", "prodotti inventati"],
+      red_flags: ["lesioni sospette o sintomi importanti da inviare a medico/dermatologo"]
+    },
+    analyzer_metrics: {},
+    active_families: {},
+    cross_score_logic: [],
+    marketing_framework: {}
+  });
+}
+
+function analyzerNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.min(100, Math.round(value)));
+  }
+  const raw = String(value ?? "").replace(",", ".").trim();
+  const match = raw.match(/-?\d+(\.\d+)?/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
+function analyzerSlug(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function canonicalAnalyzerKey(key, label = "") {
+  const keySlug = analyzerSlug(key);
+  const labelSlug = analyzerSlug(label);
+  return analyzerMetricAliases[keySlug] || analyzerMetricAliases[labelSlug] || null;
+}
+
+function analyzerBand(value) {
+  if (value < 50) return "priority";
+  if (value < 85) return "watch";
+  return "stable";
+}
+
+function analyzerBandLabel(value) {
+  if (value < 50) return "priorita alta";
+  if (value < 85) return "da migliorare";
+  return "stabile";
+}
+
+function pushAnalyzerScore(target, key, value, label = "") {
+  const canonical = canonicalAnalyzerKey(key, label);
+  const score = analyzerNumber(value);
+  if (!canonical || score === null) return;
+  target.set(canonical, {
+    key: canonical,
+    raw_key: String(key || canonical),
+    label: analyzerMetricLabels[canonical] || String(label || canonical),
+    score,
+    band: analyzerBand(score),
+    band_label: analyzerBandLabel(score)
+  });
+}
+
+function collectAnalyzerScoresFromSource(target, source) {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    source.forEach((entry) => {
+      if (!entry || typeof entry !== "object") return;
+      pushAnalyzerScore(target, entry.key || entry.id || entry.metric || entry.name, entry.score ?? entry.value, entry.label || entry.name || "");
+    });
+    return;
+  }
+  if (typeof source === "object") {
+    Object.entries(source).forEach(([key, value]) => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        pushAnalyzerScore(target, key, value.score ?? value.value, value.label || value.name || key);
+        return;
+      }
+      pushAnalyzerScore(target, key, value, key);
+    });
+  }
+}
+
+function collectAnalyzerScoresFromMessage(target, message = "") {
+  const chunks = String(message || "").split(/[;\n]+/);
+  chunks.forEach((chunk) => {
+    const value = analyzerNumber(chunk);
+    if (value === null) return;
+    const normalized = analyzerSlug(chunk);
+    if (/(luminos|tono|brightness|fs)/.test(normalized)) pushAnalyzerScore(target, "skin_tone_brightness", value);
+    if (/(acqua|sebo|water|oil|yf)/.test(normalized)) pushAnalyzerScore(target, "water_oil_balance", value);
+    if (/(texture|linee|xw)/.test(normalized)) pushAnalyzerScore(target, "texture_fine_lines", value);
+    if (/(rossore|sensibil|redness|yz)/.test(normalized)) pushAnalyzerScore(target, "redness_sensitivity_signals", value);
+    if (/(discrom|macchie|spots|pigment|sb)/.test(normalized)) pushAnalyzerScore(target, "spots_pigmentation_signals", value);
+    if (/(pori|grana|pores|mk)/.test(normalized)) pushAnalyzerScore(target, "pores_texture", value);
+  });
+}
+
+function normalizeAnalyzerScores(body = {}) {
+  const target = new Map();
+  collectAnalyzerScoresFromSource(target, body.scores);
+  collectAnalyzerScoresFromSource(target, body.score_reading);
+  collectAnalyzerScoresFromSource(target, body.data?.scores);
+  collectAnalyzerScoresFromSource(target, body.data?.score_reading);
+  collectAnalyzerScoresFromSource(target, body.payload?.scores);
+  collectAnalyzerScoresFromSource(target, body.local_core_decision?.scores);
+  collectAnalyzerScoresFromSource(target, body.analyzer?.scores);
+  collectAnalyzerScoresFromMessage(target, body.message);
+  return analyzerMetricOrder.filter((key) => target.has(key)).map((key) => target.get(key));
+}
+
+function flattenAnalyzerTags(values) {
+  const tags = [];
+  const push = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(push);
+      return;
+    }
+    const text = analyzerSlug(value);
+    if (text) tags.push(text);
+  };
+  values.forEach(push);
+  return [...new Set(tags)];
+}
+
+function normalizeAnalyzerItems(body = {}, field) {
+  const candidates = [body[field], body.data?.[field], body.payload?.[field], body.context?.[field]];
+  const source = candidates.find((value) => Array.isArray(value));
+  if (!source) return [];
+  return source
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      name: String(item.name || item.title || item.label || item.id || "Elemento senza nome"),
+      category: String(item.category || item.type || ""),
+      tags: flattenAnalyzerTags([item.tags, item.active_tags, item.ingredients, item.active_ingredients, item.category, item.type, item.name])
+    }));
+}
+
+function uniqueAnalyzerStrings(values) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value)))];
+}
+
+function analyzerMetricPack(pack, key) {
+  return pack.analyzer_metrics?.[key] || {
+    label: analyzerMetricLabels[key] || key,
+    biology: "",
+    low_reading: "",
+    ingredient_families: [],
+    service_logic: [],
+    sales_logic: ""
+  };
+}
+
+function analyzerPriorityRows(scores) {
+  return [...scores].sort((a, b) => {
+    const bandOrder = { priority: 0, watch: 1, stable: 2 };
+    return (bandOrder[a.band] - bandOrder[b.band]) || (a.score - b.score);
+  });
+}
+
+function buildAnalyzerRelationships(scores, pack) {
+  const byKey = Object.fromEntries(scores.map((row) => [row.key, row]));
+  const lowOrWatch = (key) => byKey[key] && byKey[key].score < 85;
+  const relationships = [];
+  (pack.cross_score_logic || []).forEach((rule) => {
+    if (rule.id === "pores_texture_matrix" && lowOrWatch("pores_texture") && lowOrWatch("texture_fine_lines")) relationships.push(rule.reading);
+    if (rule.id === "tone_pigmentation_matrix" && lowOrWatch("skin_tone_brightness") && lowOrWatch("spots_pigmentation_signals")) relationships.push(rule.reading);
+    if (rule.id === "tolerance_first" && lowOrWatch("redness_sensitivity_signals")) relationships.push(rule.reading);
+    if (rule.id === "hydration_not_generic" && byKey.water_oil_balance?.score >= 85 && lowOrWatch("pores_texture")) relationships.push(rule.reading);
+  });
+  return uniqueAnalyzerStrings(relationships);
+}
+
+function collectAnalyzerFamilies(pack, dominant, secondary) {
+  const rows = [dominant, ...secondary].filter(Boolean);
+  const families = [];
+  rows.forEach((row) => {
+    const metric = analyzerMetricPack(pack, row.key);
+    (metric.ingredient_families || []).forEach((family) => families.push(family));
+  });
+  if (rows.some((row) => row.key === "redness_sensitivity_signals" && row.score < 85)) {
+    families.unshift("soothing", "barrier_lipids", "minimal_routine");
+  }
+  return uniqueAnalyzerStrings(families).slice(0, 8);
+}
+
+function explainAnalyzerFamilies(pack, families) {
+  return families.map((family) => {
+    const item = pack.active_families?.[family] || {};
+    return {
+      id: family,
+      examples: Array.isArray(item.examples) ? item.examples.slice(0, 5) : [],
+      role: item.cosmetic_role || "Famiglia utile da verificare nel catalogo centro.",
+      caution: item.caution || ""
+    };
+  });
+}
+
+function rankAnalyzerItems(items, families, dominant, sensitivityFirst) {
+  if (!items.length) return [];
+  const familySlugs = families.map(analyzerSlug);
+  const dominantSlug = analyzerSlug(dominant?.key || "");
+  return items.map((item) => {
+    let score = 0;
+    const tags = item.tags || [];
+    familySlugs.forEach((family) => {
+      if (tags.some((tag) => tag.includes(family) || family.includes(tag))) score += 2;
+    });
+    if (dominantSlug && tags.some((tag) => tag.includes(dominantSlug))) score += 3;
+    if (sensitivityFirst && tags.some((tag) => /(acid|retino|peeling|bha|aha)/.test(tag))) score -= 4;
+    return {
+      ...item,
+      match_score: score,
+      reason: score > 0 ? "coerente con il pattern Analyzer" : "presente ma senza tag sufficienti per priorita alta"
+    };
+  }).filter((item) => item.match_score > 0).sort((a, b) => b.match_score - a.match_score).slice(0, 3);
+}
+
+function analyzerTextFromBody(body = {}) {
+  const raw = body.core_text || body.coreText || body.data?.report_text || body.core_decision || body.coreDecision || "";
+  if (typeof raw === "string") return raw.trim();
+  try {
+    return JSON.stringify(raw).slice(0, 1200);
+  } catch (_error) {
+    return "";
+  }
+}
+
+function buildNyraAnalyzerResponse(body = {}) {
+  const pack = loadNyraAnalyzerLearningPack();
+  const scores = normalizeAnalyzerScores(body);
+  if (!scores.length) {
+    return {
+      ok: false,
+      error: "Punteggi Analyzer mancanti.",
+      reply: "Nyra Analyzer non puo interpretare: mancano gli score originali dello Skin Analyzer.",
+      pack_id: pack.pack_id,
+      version: pack.version
+    };
+  }
+
+  const priorityRows = analyzerPriorityRows(scores);
+  const dominant = priorityRows.find((row) => row.score < 85) || priorityRows[0];
+  const secondary = priorityRows.filter((row) => row.key !== dominant.key && row.score < 85).slice(0, 3);
+  const stable = scores.filter((row) => row.score >= 85);
+  const dominantMetric = analyzerMetricPack(pack, dominant.key);
+  const relationships = buildAnalyzerRelationships(scores, pack);
+  const families = collectAnalyzerFamilies(pack, dominant, secondary);
+  const activeLogic = explainAnalyzerFamilies(pack, families);
+  const products = normalizeAnalyzerItems(body, "products");
+  const protocols = normalizeAnalyzerItems(body, "protocols");
+  const sensitivityFirst = scores.some((row) => row.key === "redness_sensitivity_signals" && row.score < 85);
+  const rankedProducts = rankAnalyzerItems(products, families, dominant, sensitivityFirst);
+  const rankedProtocols = rankAnalyzerItems(protocols, [dominant.key, ...families], dominant, sensitivityFirst);
+  const coreText = analyzerTextFromBody(body);
+  const client = body.client || body.data?.client || {};
+  const clientName = String(client.name || body.clientName || body.data?.client_name || "").trim();
+
+  const mainProblem = `${dominantMetric.label || dominant.label}: ${dominant.score}/100 (${dominant.band_label}). ${dominantMetric.low_reading || "Area estetica dominante da leggere nel quadro complessivo."}`;
+  const secondaryText = secondary.length
+    ? secondary.map((row) => `${row.label} ${row.score}/100`).join("; ")
+    : "nessun secondo segnale sotto soglia operativa";
+  const stableText = stable.length
+    ? stable.map((row) => `${row.label} ${row.score}/100`).join("; ")
+    : "nessun segnale stabile forte nel set disponibile";
+  const firstMove = sensitivityFirst
+    ? "Prima mossa: tolleranza e barriera cosmetica, poi intensita progressiva."
+    : `Prima mossa: lavorare su ${dominantMetric.label || dominant.label} collegando ${secondary.length ? "i segnali secondari" : "mantenimento e routine"}.`;
+  const serviceSales = dominantMetric.service_logic || [];
+  const productSales = rankedProducts.length
+    ? rankedProducts.map((item) => `${item.name}: ${item.reason}`)
+    : [products.length
+      ? `Prodotti caricati ma nessun match abbastanza coerente: usare criteri ${families.join(", ")} o completare i tag catalogo.`
+      : `Prodotti non caricati: usare criteri ${families.join(", ")} senza inventare nomi o prezzi.`];
+  const protocolSales = rankedProtocols.length
+    ? rankedProtocols.map((item) => `${item.name}: ${item.reason}`)
+    : [protocols.length
+      ? "Protocolli caricati ma nessun match abbastanza coerente: completare tag area/obiettivo/intensita prima di selezionare."
+      : "Protocolli centro non caricati: proporre struttura seduta iniziale, ciclo, home routine e recheck, senza inventare protocollo proprietario."];
+  const activeLine = activeLogic.map((item) => `${item.id} (${item.examples.join(", ") || "categoria da verificare"})`).join("; ");
+  const relationshipLine = relationships.length ? relationships.join(" ") : "La lettura resta sul pattern dominante senza forzare correlazioni non presenti.";
+  const coreLine = coreText ? `Core letto: ${coreText.slice(0, 600)}` : "Core non allegato nel payload: Nyra interpreta solo gli score ricevuti.";
+
+  const reply = [
+    "Nyra Analyzer - lettura estetica premium",
+    clientName ? `Cliente: ${clientName}` : "",
+    `Problema principale: ${mainProblem}`,
+    `Segnali secondari: ${secondaryText}`,
+    `Segnali da valorizzare: ${stableText}`,
+    `Lettura d'insieme: ${relationshipLine}`,
+    firstMove,
+    `Attivi coerenti: ${activeLine}`,
+    `Servizio da vendere: ${(serviceSales[0] || "percorso estetico progressivo")} + controllo risultati e routine domiciliare.`,
+    `Prodotti: ${productSales.join(" ")}`,
+    `Protocolli: ${protocolSales.join(" ")}`,
+    `Linguaggio cliente: ${pack.marketing_framework?.premium_positioning || "Vendere un percorso misurabile, non una promessa."}`,
+    coreLine,
+    "Limite: lettura estetica/cosmetica, non diagnosi medica; in presenza di red flag visibili serve invio a professionista sanitario."
+  ].filter(Boolean).join("\n");
+
+  return {
+    ok: true,
+    service: "skinharmony-nyra-core",
+    endpoint: "/api/nyra/analyzer/read-only",
+    mode: pack.mode,
+    pack_id: pack.pack_id,
+    version: pack.version,
+    score_count: scores.length,
+    scores,
+    dominant_pattern: {
+      key: dominant.key,
+      label: dominantMetric.label || dominant.label,
+      score: dominant.score,
+      band: dominant.band_label,
+      reading: dominantMetric.low_reading || ""
+    },
+    secondary_patterns: secondary.map((row) => ({
+      key: row.key,
+      label: row.label,
+      score: row.score,
+      band: row.band_label
+    })),
+    protective_signals: stable.map((row) => ({
+      key: row.key,
+      label: row.label,
+      score: row.score
+    })),
+    relationships,
+    main_problem: mainProblem,
+    first_move: firstMove,
+    active_logic: activeLogic,
+    service_sales_logic: serviceSales,
+    product_sales_logic: productSales,
+    protocol_logic: protocolSales,
+    ranked_products: rankedProducts,
+    ranked_protocols: rankedProtocols,
+    client_language: pack.marketing_framework?.client_script_blocks || [],
+    limits: {
+      aesthetic_only: true,
+      no_medical_diagnosis: true,
+      no_therapeutic_claims: true,
+      no_invented_products: true,
+      no_invented_scores: true
+    },
+    red_flags: pack.governance?.red_flags || [],
+    core_text_used: Boolean(coreText),
+    reply
+  };
+}
+
 app.post("/api/nyra/text-chat", async (req, res) => {
   const message = String(req.body.message || req.body.text || "").trim();
   const sessionId = String(req.body.sessionId || "nyra-render-text-sandbox").trim();
@@ -6099,6 +6510,35 @@ app.post("/api/nyra/text-chat", async (req, res) => {
     res.status(500).json({
       ok: false,
       error: error.message || "Runtime Nyra text sandbox non disponibile."
+    });
+  }
+});
+
+app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
+  const pack = loadNyraAnalyzerLearningPack();
+  res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    endpoint: "/api/nyra/analyzer/read-only",
+    pack_id: pack.pack_id,
+    version: pack.version,
+    mode: pack.mode,
+    metrics: Object.keys(pack.analyzer_metrics || {}),
+    active_families: Object.keys(pack.active_families || {}),
+    guardrails: pack.governance || {}
+  });
+});
+
+app.post("/api/nyra/analyzer/read-only", (req, res) => {
+  try {
+    res.json(buildNyraAnalyzerResponse(req.body || {}));
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      service: "skinharmony-nyra-core",
+      endpoint: "/api/nyra/analyzer/read-only",
+      error: error.message || "Errore Nyra Analyzer.",
+      reply: "Nyra Analyzer non ha completato la lettura per un errore runtime."
     });
   }
 });

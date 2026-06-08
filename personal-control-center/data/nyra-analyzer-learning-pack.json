@@ -1,0 +1,322 @@
+{
+  "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
+  "version": "1.0.0",
+  "updated_at": "2026-06-08T12:27:00Z",
+  "product": "SkinHarmony Analyzer Pro",
+  "mode": "aesthetic_cosmetic_commercial_read_only",
+  "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
+  "governance": {
+    "decision_chain": [
+      "Core decide priorita e rischio dal quadro punteggi.",
+      "Nyra interpreta la lettura estetica, gli attivi coerenti, il percorso e la vendita.",
+      "OpenAI genera il report finale quando configurato.",
+      "Il sistema non inventa punteggi, prodotti o protocolli."
+    ],
+    "allowed_scope": [
+      "lettura estetica non medica",
+      "idratazione cosmetica e barriera cutanea in termini estetici",
+      "uniformita del tono e luminosita",
+      "texture, grana, pori e linee fini come segni estetici visibili",
+      "rossore/sensibilita come segnali visibili da trattare con prudenza cosmetica",
+      "proposta servizi cabina e home routine se coerenti con dati e prodotti caricati",
+      "marketing premium di percorso, continuita e controllo risultati estetici"
+    ],
+    "forbidden_scope": [
+      "diagnosi dermatologica",
+      "cura o trattamento di patologie",
+      "promesse di guarigione",
+      "claim terapeutici o farmacologici",
+      "correzione degli score originali",
+      "prodotti inventati se il centro non li ha caricati",
+      "prezzi inventati",
+      "garanzie di risultato"
+    ],
+    "red_flags": [
+      "lesioni che cambiano forma, colore o dimensione",
+      "ferite aperte, sanguinamento, ustioni, infezioni visibili",
+      "rash esteso, dolore, prurito severo o edema",
+      "reazioni acute dopo cosmetici o trattamenti",
+      "sospetto melanoma o neo irregolare",
+      "acne severa, rosacea severa, dermatite attiva o condizioni infiammatorie importanti",
+      "gravidanza, farmaci fotosensibilizzanti o terapie dermatologiche quando si considerano retinoidi/acidi/peeling"
+    ],
+    "client_language_rule": "Parlare di quadro estetico, priorita visibili, percorso e mantenimento. Evitare parole come malattia, terapia, cura, guarigione, diagnosi clinica."
+  },
+  "source_basis": [
+    {
+      "name": "FDA Cosmetics Labeling Claims",
+      "url": "https://www.fda.gov/cosmetics/cosmetics-labeling/cosmetics-labeling-claims",
+      "use_in_pack": "Claim cosmetici veritieri/non ingannevoli; evitare claim di trattamento/prevenzione malattia o struttura/funzione."
+    },
+    {
+      "name": "FDA Cosmetic, Drug, or Both",
+      "url": "https://www.fda.gov/cosmetics/cosmetics-laws-regulations/it-cosmetic-drug-or-both-or-it-soap",
+      "use_in_pack": "Separazione tra cosmetico e drug claim."
+    },
+    {
+      "name": "EU Regulation EC 1223/2009",
+      "url": "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX%3A32009R1223",
+      "use_in_pack": "Sicurezza cosmetici, responsible person, safety assessment, claim e product information."
+    },
+    {
+      "name": "EU Regulation 655/2013",
+      "url": "https://health.ec.europa.eu/publications/commission-regulation-6552013_en",
+      "use_in_pack": "Criteri comuni per giustificare claim cosmetici."
+    },
+    {
+      "name": "American Academy of Dermatology - retinoid/retinol",
+      "url": "https://www.aad.org/public/everyday-care/skin-care-secrets/anti-aging/retinoid-retinol",
+      "use_in_pack": "Prudenza su retinoidi, irritazione, gravidanza, fotoprotezione e invio a dermatologo quando necessario."
+    },
+    {
+      "name": "NCBI/PMC - Cosmetic moisturizers review",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8703425/",
+      "use_in_pack": "Famiglie cosmetiche idratanti: umettanti, emollienti, occlusivi e supporto barriera."
+    },
+    {
+      "name": "NCBI/PMC - Niacinamide skin aging and pigmentation review",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8389214/",
+      "use_in_pack": "Niacinamide come attivo cosmetico per barriera, uniformita e aspetto della pelle."
+    }
+  ],
+  "score_model": {
+    "interpretation": "Score bassi indicano priorita estetica maggiore; score intermedi indicano area da migliorare; score alti indicano segnale stabile da mantenere.",
+    "bands": [
+      {
+        "id": "priority",
+        "range": "0-49",
+        "meaning": "priorita alta",
+        "tone": "chiaro, concreto, rassicurante"
+      },
+      {
+        "id": "watch",
+        "range": "50-84",
+        "meaning": "area da migliorare o monitorare",
+        "tone": "professionale e orientato al percorso"
+      },
+      {
+        "id": "stable",
+        "range": "85-100",
+        "meaning": "punto stabile o protettivo",
+        "tone": "valorizzare senza promettere risultati"
+      }
+    ]
+  },
+  "analyzer_metrics": {
+    "skin_tone_brightness": {
+      "label": "tono e luminosita",
+      "native_keys": ["fs", "skin_tone_brightness", "brightness"],
+      "biology": "La luminosita estetica dipende da superficie cutanea, idratazione dello strato corneo, uniformita della riflessione e presenza di discromie visibili.",
+      "low_reading": "Tono spento o luminosita ridotta: leggere insieme a discromie, texture e acqua/sebo prima di proporre un percorso.",
+      "ingredient_families": ["humectants", "barrier_lipids", "antioxidants", "niacinamide", "vitamin_c_derivatives"],
+      "service_logic": ["detersione professionale delicata", "idratazione/ossigenazione estetica se disponibile", "trattamento illuminante cosmetico", "mantenimento con fotoprotezione quando coerente"],
+      "sales_logic": "Vendere percorso luminosita come continuita: seduta cabina + routine domiciliare per aspetto piu uniforme e pelle piu curata."
+    },
+    "water_oil_balance": {
+      "label": "acqua e sebo",
+      "native_keys": ["yf", "water_oil_balance", "water_oil"],
+      "biology": "Il comfort estetico dipende da acqua nello strato corneo, film idrolipidico, sebo e integrita barriera.",
+      "low_reading": "Equilibrio acqua/sebo fragile: evitare lettura generica, distinguere disidratazione cosmetica, lucidita e sensazione di barriera alterata.",
+      "ingredient_families": ["humectants", "emollients", "barrier_lipids", "sebum_balance", "soothing"],
+      "service_logic": ["riequilibrio cosmetico", "idratazione stratificata", "supporto barriera", "routine domiciliare essenziale"],
+      "sales_logic": "Vendere il mantenimento: cleanser corretto, crema/gel bilanciato e controllo settimanale della risposta estetica."
+    },
+    "texture_fine_lines": {
+      "label": "texture e linee fini",
+      "native_keys": ["xw", "texture_fine_lines", "texture"],
+      "biology": "Texture e linee fini sono influenzate da idratazione superficiale, qualita dello strato corneo, turnover estetico e fotoinvecchiamento visibile.",
+      "low_reading": "Texture irregolare o linee fini evidenti: priorita a regolarita superficiale, idratazione e tolleranza.",
+      "ingredient_families": ["humectants", "peeling_acids_low_risk", "retinoid_cosmetic_low_start", "peptides", "barrier_lipids"],
+      "service_logic": ["esfoliazione cosmetica progressiva se tollerata", "idratazione profonda estetica", "trattamenti leviganti non aggressivi", "progressione a cicli"],
+      "sales_logic": "Vendere percorso, non singola seduta: texture migliora come percezione di superficie solo con continuita e routine coerente."
+    },
+    "redness_sensitivity_signals": {
+      "label": "rossore e sensibilita visibile",
+      "native_keys": ["yz", "redness_sensitivity_signals", "redness"],
+      "biology": "Rossore visibile e reattivita estetica richiedono lettura prudente: barriera, irritazione cosmetica e tolleranza guidano la scelta.",
+      "low_reading": "Segnali visibili di sensibilita: proteggere barriera e tolleranza prima di acidi, retinoidi o trattamenti intensivi.",
+      "ingredient_families": ["soothing", "barrier_lipids", "humectants", "fragrance_low", "minimal_routine"],
+      "service_logic": ["trattamento lenitivo estetico", "barrier reset", "riduzione intensita protocolli", "evitare shock cosmetico"],
+      "sales_logic": "Vendere sicurezza e comfort: proposta premium centrata su pelle che tollera meglio il percorso, non su intervento aggressivo."
+    },
+    "spots_pigmentation_signals": {
+      "label": "discromie e uniformita",
+      "native_keys": ["sb", "spots_pigmentation_signals", "spots", "pigmentation"],
+      "biology": "Le discromie estetiche si leggono come differenze visibili di tono; vanno collegate a luminosita, esposizione UV, infiammazione passata e tolleranza.",
+      "low_reading": "Uniformita cromatica in priorita: lavorare su tono, protezione cosmetica, routine costante e attivi illuminanti compatibili.",
+      "ingredient_families": ["niacinamide", "vitamin_c_derivatives", "azelaic_cosmetic_caution", "tranexamic_cosmetic_caution", "licorice", "sunscreen"],
+      "service_logic": ["percorso uniformante cosmetico", "trattamento illuminante", "esfoliazione delicata se tollerata", "educazione fotoprotezione"],
+      "sales_logic": "Vendere controllo nel tempo: discromie estetiche richiedono costanza, foto di confronto e home care mirata."
+    },
+    "pores_texture": {
+      "label": "pori e grana",
+      "native_keys": ["mk", "pores_texture", "pores"],
+      "biology": "Aspetto dei pori e grana dipendono da sebo, cheratinizzazione superficiale, texture, elasticita visibile e qualita della detersione.",
+      "low_reading": "Pori/grana in priorita: leggere sempre con texture e acqua/sebo; evitare promessa di chiusura dei pori.",
+      "ingredient_families": ["sebum_balance", "bha_caution", "niacinamide", "clays", "barrier_lipids"],
+      "service_logic": ["detersione profonda non aggressiva", "esfoliazione controllata se tollerata", "riequilibrio sebo", "mantenimento domiciliare"],
+      "sales_logic": "Vendere qualita della superficie: pelle piu ordinata, routine piu precisa, controllo lucido/grana, senza claim irreali."
+    }
+  },
+  "active_families": {
+    "humectants": {
+      "examples": ["glycerin", "hyaluronic acid", "sodium PCA", "urea cosmetic level", "panthenol"],
+      "cosmetic_role": "Richiamano e trattengono acqua nello strato corneo, migliorando comfort e aspetto superficiale.",
+      "caution": "Su pelle molto reattiva usare formule complete con emollienti/barriera, non solo attivi isolati."
+    },
+    "emollients": {
+      "examples": ["squalane", "caprylic/capric triglyceride", "dimethicone", "plant oils when tolerated"],
+      "cosmetic_role": "Migliorano morbidezza, scorrevolezza e sensazione di pelle curata.",
+      "caution": "Scegliere texture coerente con sebo e preferenze cliente."
+    },
+    "barrier_lipids": {
+      "examples": ["ceramides", "cholesterol", "fatty acids", "phytosphingosine"],
+      "cosmetic_role": "Supportano la funzione barriera in senso cosmetico e il comfort cutaneo.",
+      "caution": "Non promettere riparazione medica di dermatiti o patologie."
+    },
+    "soothing": {
+      "examples": ["allantoin", "bisabolol", "beta-glucan", "panthenol", "centella extracts"],
+      "cosmetic_role": "Aiutano a dare comfort estetico a pelle che appare stressata o reattiva.",
+      "caution": "Se il rossore e severo, doloroso o persistente, indicare valutazione dermatologica."
+    },
+    "niacinamide": {
+      "examples": ["niacinamide"],
+      "cosmetic_role": "Attivo versatile per barriera cosmetica, uniformita, sebo visibile e texture.",
+      "caution": "Partire gradualmente su pelle reattiva; evitare promesse su patologie o macchie cliniche."
+    },
+    "vitamin_c_derivatives": {
+      "examples": ["ascorbyl glucoside", "sodium ascorbyl phosphate", "magnesium ascorbyl phosphate", "ethyl ascorbic acid"],
+      "cosmetic_role": "Supporto cosmetico a luminosita, antiossidanti e aspetto del tono.",
+      "caution": "Valutare tolleranza, pH/formula e uso diurno con fotoprotezione quando coerente."
+    },
+    "antioxidants": {
+      "examples": ["vitamin C derivatives", "vitamin E", "ferulic acid", "green tea extract", "resveratrol"],
+      "cosmetic_role": "Supportano la protezione cosmetica dall'aspetto spento e aiutano la narrativa premium su luminosita e qualita della pelle.",
+      "caution": "Non trasformare antiossidante in claim di prevenzione o cura di danni biologici."
+    },
+    "licorice": {
+      "examples": ["licorice root extract", "glabridin"],
+      "cosmetic_role": "Attivo botanico usato in formule uniformanti e lenitive in chiave cosmetica.",
+      "caution": "Usare come supporto all'uniformita visibile, non come trattamento di melasma o patologie pigmentarie."
+    },
+    "azelaic_cosmetic_caution": {
+      "examples": ["azelaic acid cosmetic formulas where compliant"],
+      "cosmetic_role": "Puo essere presente in formule cosmetiche per aspetto di tono, texture e imperfezioni visibili.",
+      "caution": "Verificare normativa, percentuale, claim e tolleranza; evitare claim acne/rosacea se non prodotto autorizzato."
+    },
+    "tranexamic_cosmetic_caution": {
+      "examples": ["tranexamic acid cosmetic formulas where compliant"],
+      "cosmetic_role": "Usato in formule cosmetiche per aspetto di uniformita e luminosita.",
+      "caution": "Evitare promesse su macchie cliniche; verificare formule e norme locali."
+    },
+    "peeling_acids_low_risk": {
+      "examples": ["lactic acid", "mandelic acid", "gluconolactone", "low strength glycolic acid"],
+      "cosmetic_role": "Favoriscono levigatezza e luminosita estetica con uso progressivo.",
+      "caution": "Non usare come scorciatoia su pelle reattiva; evitare claim terapeutici."
+    },
+    "bha_caution": {
+      "examples": ["salicylic acid cosmetic where allowed"],
+      "cosmetic_role": "Utile nella lettura cosmetica di pori/sebo quando formula e normativa lo consentono.",
+      "caution": "Attenzione a sensibilita, gravidanza, farmaci e limiti normativi locali."
+    },
+    "retinoid_cosmetic_low_start": {
+      "examples": ["retinol", "retinal cosmetic formulas", "retinyl esters"],
+      "cosmetic_role": "Attivi cosmetici per aspetto di texture, linee fini e uniformita con introduzione graduale.",
+      "caution": "Evitare in gravidanza/allattamento salvo parere medico; usare fotoprotezione e progressione lenta."
+    },
+    "sunscreen": {
+      "examples": ["broad spectrum SPF where available and compliant"],
+      "cosmetic_role": "Elemento chiave di mantenimento per luminosita, discromie estetiche e fotoinvecchiamento visibile.",
+      "caution": "Rispetto delle norme locali: negli USA i sunscreen sono OTC drug; evitare claim non consentiti."
+    },
+    "sebum_balance": {
+      "examples": ["niacinamide", "zinc PCA", "clays", "lightweight emulsions"],
+      "cosmetic_role": "Aiutano a gestire aspetto lucido e grana visibile in modo cosmetico.",
+      "caution": "Non sgrassare troppo: barriera fragile puo peggiorare comfort e texture."
+    },
+    "clays": {
+      "examples": ["kaolin", "bentonite", "illite"],
+      "cosmetic_role": "Aiutano la proposta cosmetica su lucidita e aspetto dei pori quando usate con equilibrio.",
+      "caution": "Non abusare su pelle secca o reattiva; abbinare comfort e barriera."
+    },
+    "fragrance_low": {
+      "examples": ["fragrance-free or low-fragrance formulas where available"],
+      "cosmetic_role": "Riduce complessita sensoriale nelle routine per pelle che appare reattiva.",
+      "caution": "Non usare 'ipoallergenico' come garanzia assoluta."
+    },
+    "minimal_routine": {
+      "examples": ["gentle cleanser", "barrier moisturizer", "daily photoprotection where coherent"],
+      "cosmetic_role": "Approccio essenziale per riportare ordine cosmetico prima di aumentare intensita.",
+      "caution": "Evitare stratificazione di troppi attivi in presenza di sensibilita visibile."
+    }
+  },
+  "cross_score_logic": [
+    {
+      "id": "pores_texture_matrix",
+      "when": ["pores_texture low_or_watch", "texture_fine_lines low_or_watch"],
+      "reading": "La priorita e qualita della superficie: pori, grana e texture si leggono insieme.",
+      "commercial_move": "Proporre ciclo di pulizia/equilibrio/levigatezza + home routine mirata."
+    },
+    {
+      "id": "tone_pigmentation_matrix",
+      "when": ["skin_tone_brightness low_or_watch", "spots_pigmentation_signals low_or_watch"],
+      "reading": "Luminosita e discromie vanno lette come uniformita del tono, non come due problemi separati.",
+      "commercial_move": "Proporre percorso uniformante progressivo con fotoprotezione e attivi illuminanti compatibili."
+    },
+    {
+      "id": "tolerance_first",
+      "when": ["redness_sensitivity_signals low_or_watch"],
+      "reading": "Quando la sensibilita visibile entra nel quadro, la tolleranza viene prima dell'intensita.",
+      "commercial_move": "Vendere barrier reset, comfort e progressione graduale."
+    },
+    {
+      "id": "hydration_not_generic",
+      "when": ["water_oil_balance stable", "pores_texture low_or_watch"],
+      "reading": "Se acqua/sebo e stabile ma pori/grana no, non vendere idratazione generica: lavorare su superficie e routine.",
+      "commercial_move": "Proporre servizio texture/pori e prodotto sebo-grana, non crema generica."
+    }
+  ],
+  "product_selection_rules": {
+    "if_products_loaded": [
+      "Usare solo prodotti presenti nel payload.",
+      "Preferire prodotti con tag collegati al pattern dominante e secondario.",
+      "Se sensibilita/rossore e basso o watch, penalizzare acidi forti, retinoidi e profumi.",
+      "Se discromie/luminosita sono prioritarie, cercare tag niacinamide, vitamin_c, sunscreen, antioxidants.",
+      "Se pori/grana sono prioritari, cercare tag niacinamide, sebum_balance, bha_caution, clays, texture.",
+      "Se acqua/sebo e fragile, cercare humectants, barrier_lipids, emollients."
+    ],
+    "if_products_missing": "Non inventare nomi. Dire: prodotti non caricati; criteri consigliati: famiglia attivi + texture + frequenza."
+  },
+  "protocol_selection_rules": {
+    "if_protocols_loaded": [
+      "Usare solo protocolli presenti nel payload.",
+      "Se Core segnala rischio/sensibilita, preferire protocolli lenitivi o progressivi.",
+      "Se dominano pori/texture, scegliere protocolli superficie/sebo/grana con intensita coerente.",
+      "Se dominano luminosita/discromie, scegliere protocolli uniformanti e mantenimento.",
+      "Non consigliare tecnologie invasive o fuori formazione del centro."
+    ],
+    "if_protocols_missing": "Non inventare protocollo centro. Proporre architettura: seduta iniziale, ciclo, home routine, recheck."
+  },
+  "marketing_framework": {
+    "premium_positioning": "Vendere un percorso misurabile, non una promessa: lettura iniziale, priorita, cabina, home routine, controllo e confronto immagini.",
+    "client_script_blocks": [
+      "Cosa vediamo",
+      "Perche e importante",
+      "Cosa facciamo oggi",
+      "Cosa mantieni a casa",
+      "Quando ricontrolliamo"
+    ],
+    "service_sales_rules": [
+      "Partire dal problema dominante Core.",
+      "Collegare sempre almeno un segnale secondario per evitare vendita banale.",
+      "Trasformare lo score in obiettivo estetico comprensibile.",
+      "Evitare paura e pressione: usare autorevolezza, chiarezza e continuita."
+    ],
+    "product_sales_rules": [
+      "Il prodotto chiude il lavoro della cabina, non lo sostituisce.",
+      "Proporre massimo 2-3 prodotti coerenti se caricati.",
+      "Se mancano prodotti caricati, proporre categorie/attivi e chiedere caricamento catalogo centro.",
+      "Non inventare prezzo, marca o risultato garantito."
+    ]
+  }
+}
