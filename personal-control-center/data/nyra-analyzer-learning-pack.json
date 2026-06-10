@@ -1,7 +1,7 @@
 {
   "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
-  "version": "1.0.0",
-  "updated_at": "2026-06-08T12:27:00Z",
+  "version": "1.2.0",
+  "updated_at": "2026-06-10T18:05:00Z",
   "product": "SkinHarmony Analyzer Pro",
   "mode": "aesthetic_cosmetic_commercial_read_only",
   "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
@@ -67,6 +67,86 @@
       "name": "American Academy of Dermatology - retinoid/retinol",
       "url": "https://www.aad.org/public/everyday-care/skin-care-secrets/anti-aging/retinoid-retinol",
       "use_in_pack": "Prudenza su retinoidi, irritazione, gravidanza, fotoprotezione e invio a dermatologo quando necessario."
+    },
+    {
+      "name": "American Academy of Dermatology - acne-prone skin care",
+      "url": "https://www.aad.org/public/diseases/acne/skin-care",
+      "use_in_pack": "Base medica per trasformare impurita, comedoni, pori e sebo in routine cosmetica prudente, senza diagnosi di acne."
+    },
+    {
+      "name": "American Academy of Dermatology - rosacea resource center",
+      "url": "https://www.aad.org/public/diseases/rosacea",
+      "use_in_pack": "Base per leggere rossore e reattivita come segnali estetici di tolleranza/barriera, non come diagnosi di rosacea."
+    },
+    {
+      "name": "DermNet - dry skin / xeroderma",
+      "url": "https://dermnetnz.org/topics/dry-skin",
+      "use_in_pack": "Base medica per distinguere secchezza, desquamazione, barriera fragile e comfort cosmetico."
+    },
+    {
+      "name": "DermNet - melasma",
+      "url": "https://dermnetnz.org/topics/melasma",
+      "use_in_pack": "Base medica per discromie e pigmentazione: pattern, ruolo luce/UV, fotoprotezione e cautela su trattamenti intensivi."
+    },
+    {
+      "name": "Canfield VISIA complexion analysis",
+      "url": "https://www.canfieldsci.com/imaging-systems/visia-complexion-analysis/",
+      "use_in_pack": "Benchmark di mercato per indicatori e visualizzazioni: spots, wrinkles, texture, pores, UV spots, brown spots, red areas, porphyrins, multi-spettrale e follow-up."
+    },
+    {
+      "name": "American Academy of Dermatology - sunscreen FAQs",
+      "url": "https://www.aad.org/public/everyday-care/sun-protection/sunscreen-patients/sunscreen-faqs",
+      "use_in_pack": "Fotoprotezione come mantenimento estetico su discromie, luminosita e photoaging, senza trasformarla in claim terapeutico."
+    },
+    {
+      "name": "American Academy of Dermatology - ABCDEs of melanoma",
+      "url": "https://www.aad.org/public/diseases/skin-cancer/find/at-risk/abcdes",
+      "use_in_pack": "Red flag su macchie/lesioni irregolari: Nyra deve fermare la vendita estetica e consigliare controllo medico quando emergono segnali sospetti."
+    },
+    {
+      "name": "American Academy of Dermatology - hyperpigmentation overview",
+      "url": "https://www.aad.org/public/diseases/a-z/hyperpigmentation-overview",
+      "use_in_pack": "Base per distinguere discromia estetica, segni post-imperfezione e fotoprotezione; non diagnosticare condizioni pigmentarie."
+    },
+    {
+      "name": "FDA - sunscreen and sun protection",
+      "url": "https://www.fda.gov/drugs/understanding-over-counter-medicines/sunscreen-how-help-protect-your-skin-sun",
+      "use_in_pack": "Gestire sunscreen come categoria regolata: utile per mantenimento e protezione, senza claim impropri."
+    },
+    {
+      "name": "Korea MFDS - Ministry of Food and Drug Safety",
+      "url": "https://www.mfds.go.kr/eng/index.do",
+      "use_in_pack": "Contesto regolatorio Corea/K-beauty su cosmetici funzionali e prudenza claim: whitening/brightening e anti-wrinkle vanno tradotti in linguaggio cosmetico consentito."
+    },
+    {
+      "name": "Korea Cosmetic Association",
+      "url": "https://kcia.or.kr/home_en/",
+      "use_in_pack": "Contesto industria/regolatorio coreano per categorie cosmetiche, ingredienti e linguaggio commerciale; non fonte clinica primaria."
+    },
+    {
+      "name": "Russian Federation clinical recommendations portal",
+      "url": "https://cr.minzdrav.gov.ru/",
+      "use_in_pack": "Contesto clinico russo per verificare prudenza su condizioni dermatologiche; non usare come output cliente diretto e non tradurre in claim medico."
+    },
+    {
+      "name": "DermNet - skin phototype",
+      "url": "https://dermnetnz.org/topics/skin-phototype",
+      "use_in_pack": "Fototipo come contesto di pigmentazione, risposta a UV, macchie e rischio irritazione; non sostituisce valutazione clinica."
+    },
+    {
+      "name": "DermNet - photoageing",
+      "url": "https://dermnetnz.org/topics/photoageing",
+      "use_in_pack": "Base per trasformare danno solare/texture/rughe in percorso estetico di luminosita, barriera, antiossidanti e fotoprotezione."
+    },
+    {
+      "name": "DermNet - rosacea",
+      "url": "https://dermnetnz.org/topics/rosacea",
+      "use_in_pack": "Confronto internazionale su rossore/flushing; Nyra deve restare su tolleranza estetica e red flag, non diagnosi."
+    },
+    {
+      "name": "DermNet - postinflammatory hyperpigmentation",
+      "url": "https://dermnetnz.org/topics/postinflammatory-hyperpigmentation",
+      "use_in_pack": "Lettura prudente dei segni post-imperfezione e post-irritazione: percorso uniformante e protezione, non promessa di rimozione."
     },
     {
       "name": "NCBI/PMC - Cosmetic moisturizers review",
@@ -276,6 +356,329 @@
       "commercial_move": "Proporre servizio texture/pori e prodotto sebo-grana, non crema generica."
     }
   ],
+  "medical_to_aesthetic_learning": {
+    "principle": "Nyra usa fonti mediche per capire i pattern reali, poi traduce tutto in lettura estetica/cosmetica. Non nomina diagnosi clinica come certezza e non propone cure; collega score, marker, eta, anamnesi e immagini in un percorso estetico credibile.",
+    "evidence_hierarchy": [
+      "1. Score originali Analyzer e marker generati dall'app.",
+      "2. Qualita e zona della foto: barba, ombre, fuoco, luce errata o zona non coerente abbassano fiducia.",
+      "3. Anamnesi cliente: eta, routine, prodotti, trattamenti recenti, esposizione sole, sensibilita dichiarata.",
+      "4. Storico dello stesso cliente: confronto solo se il report nasce dalla scheda cliente e dalla stessa area/luce.",
+      "5. Prodotti/protocolli caricati dal centro: usati solo se presenti e taggati."
+    ],
+    "declared_vs_observed_rule": {
+      "if_declared_and_supported": "Se il cliente dichiara un problema e score/marker/area lo supportano, Nyra lo presenta come quadro estetico compatibile e propone percorso cosmetico prudente.",
+      "if_declared_not_supported": "Se il cliente dichiara un problema ma la lettura attuale non lo conferma, Nyra deve dirlo: oggi i dati non mostrano un supporto forte; si monitora e si evita di forzare trattamenti non necessari.",
+      "if_observed_not_declared": "Se score/marker mostrano una priorita non dichiarata, Nyra la segnala come elemento emerso dalla lettura, spiegandola con tono premium e non allarmistico.",
+      "confidence_language": ["coerente con", "compatibile con", "emerge come priorita estetica", "da monitorare", "non supportato in modo forte dalla lettura di oggi"],
+      "forbidden_language": ["hai dermatite", "hai acne", "hai melasma", "cura", "terapia", "guarisce", "risolve definitivamente"]
+    },
+    "age_context": [
+      {
+        "band": "under_18",
+        "normal_expected": ["sebo e impurita possono essere piu variabili", "barriera spesso reattiva a prodotti aggressivi", "evitare protocolli intensivi non necessari"],
+        "nyra_move": "routine semplice, detersione corretta, equilibrio sebo/barriera, invio a specialista se quadro severo o doloroso."
+      },
+      {
+        "band": "18_24",
+        "normal_expected": ["lucidita zona T", "pori piu visibili in zone sebo-attive", "segni post-imperfezione e discromie post-infiammatorie possibili"],
+        "nyra_move": "controllo impurita, texture e fotoprotezione; non seccare troppo la pelle."
+      },
+      {
+        "band": "25_34",
+        "normal_expected": ["prime linee di disidratazione", "tono che risente di sonno, sole, routine e stress", "texture da mantenere"],
+        "nyra_move": "prevenzione estetica premium: barriera, antiossidanti, idratazione, esfoliazione progressiva se tollerata."
+      },
+      {
+        "band": "35_44",
+        "normal_expected": ["linee fini piu leggibili", "discromie e luminosita diventano piu strategiche", "tolleranza ai trattamenti va valutata"],
+        "nyra_move": "percorso luminosita/texture con attivi uniformanti e controllo barriera; evitare intensita se rossore o acqua/sebo sono fragili."
+      },
+      {
+        "band": "45_54",
+        "normal_expected": ["texture, tono, macchie visibili e comfort possono pesare insieme", "secchezza e sensibilita possono aumentare"],
+        "nyra_move": "priorita a barriera, densita cosmetica percepita, uniformita e continuita; trattamento progressivo e follow-up fotografico."
+      },
+      {
+        "band": "55_plus",
+        "normal_expected": ["secchezza, linee, perdita di luminosita e discromie sono piu frequenti", "pelle spesso meno tollerante agli eccessi"],
+        "nyra_move": "routine ricca ma semplice, comfort, attivi ben tollerati, fotoprotezione, trattamenti cabina non aggressivi e misurazione nel tempo."
+      }
+    ],
+    "case_playbooks": [
+      {
+        "id": "sebo_pori_impurita",
+        "medical_basis": "Acne e impurita possono coinvolgere follicolo, sebo, comedoni, infiammazione e fattori di routine; in estetica si lavora su aspetto lucido, pori, grana e comfort.",
+        "support_signals": ["pores_texture < 85", "water_oil_balance < 85 o molto variabile", "marker pori/sebo coerenti su naso, mento, zona T", "porphyrin-like dots o impurita visibili se disponibili"],
+        "weak_support_signals": ["foto su dito/barba/ombra", "score sebo invariato su aree non pelle", "marker non centrati su zona T"],
+        "what_is_normal": "Una certa lucidita e pori visibili in zona T possono essere fisiologici, soprattutto in eta giovane o pelle mista.",
+        "what_is_not_normal_for_report": "Score identico su zone molto diverse o marker fuori area indicano fiducia bassa, non un problema reale da vendere.",
+        "aesthetic_action": ["detersione professionale non aggressiva", "riequilibrio sebo", "BHA/acidi solo se barriera e sensibilita sono stabili", "niacinamide/zinc PCA/clay in formule coerenti", "idratazione leggera per non compensare con eccesso di sebo"],
+        "avoid": ["promettere chiusura pori", "sgrassare troppo", "peeling se idratazione bassa o rossore alto"],
+        "red_flag": "lesioni dolorose, noduli, cicatrici, infiammazione severa o peggioramento rapido: invio a dermatologo."
+      },
+      {
+        "id": "secchezza_disidratazione_barriera",
+        "medical_basis": "La secchezza/xerosi e la barriera fragile possono dare ruvidita, desquamazione, prurito/fastidio e aumento della reattivita; in estetica si traduce in comfort, idratazione e barriera cosmetica.",
+        "support_signals": ["water_oil_balance < 85", "texture_fine_lines < 85", "redness_sensitivity_signals < 85 se reattivita associata", "foto con desquamazione/ruvidita visibile"],
+        "weak_support_signals": ["foto sovraesposta o troppo scura", "area non comparabile allo storico", "cliente dichiara secchezza ma acqua/sebo alto e marker non coerenti"],
+        "what_is_normal": "Una lieve disidratazione superficiale puo variare con clima, detersione, sole, sonno e prodotti recenti.",
+        "what_is_not_normal_for_report": "Desquamazione intensa, fissurazioni, bruciore o prurito persistente non vanno trattati come semplice estetica.",
+        "aesthetic_action": ["barrier reset", "umettanti + emollienti + lipidi barriera", "ridurre attivi irritanti", "trattamento lenitivo/idratante", "controllo dopo 2-4 settimane"],
+        "avoid": ["glicolico o peeling aggressivo come prima mossa", "routine con troppi attivi", "claim di riparazione medica"],
+        "red_flag": "fessurazioni, eczema sospetto, dolore, bruciore severo o rash esteso: valutazione sanitaria."
+      },
+      {
+        "id": "rossore_reattivita_sensibilita",
+        "medical_basis": "Rossore persistente, flushing, teleangectasie o irritazione possono avere cause diverse; in estetica si legge come tolleranza cutanea e rischio di sovratrattamento.",
+        "support_signals": ["redness_sensitivity_signals < 85", "aree rosse su guance/naso", "cliente dichiara bruciore o pelle che reagisce", "peggioramento dopo trattamenti/prodotti recenti"],
+        "weak_support_signals": ["rossore solo da pressione della tricocamera", "foto calda/satura", "marker su barba o ombra"],
+        "what_is_normal": "Un leggero arrossamento temporaneo dopo contatto, caldo o detersione puo essere transitorio.",
+        "what_is_not_normal_for_report": "Rossore persistente, dolore, edema, papule diffuse o peggioramento rapido non vanno gestiti come semplice sensibilita estetica.",
+        "aesthetic_action": ["tolleranza prima dell'intensita", "formule lenitive e low-fragrance", "barriera e comfort", "evitare calore/acidi/retinoidi finche il quadro non e stabile", "testare su area piccola se si introduce un attivo"],
+        "avoid": ["protocolli aggressivi", "messaggi che spaventano", "diagnosi di rosacea o dermatite"],
+        "red_flag": "edema, dolore, rash esteso, sospetta reazione acuta o rossore severo persistente: invio a medico/dermatologo."
+      },
+      {
+        "id": "discromie_macchie_uniformita",
+        "medical_basis": "Pigmentazione e melasma-like sono influenzati da melanin activity, UV/luce visibile, ormoni, infiammazione e fotoinvecchiamento; in estetica si lavora su uniformita e protezione.",
+        "support_signals": ["spots_pigmentation_signals < 85", "skin_tone_brightness < 85", "macchie/brown spots visibili", "storia di sole, gravidanza, macchie post-imperfezione o trattamenti recenti"],
+        "weak_support_signals": ["barba o peli nella zona letta", "ombre forti", "foto non polarizzata correttamente", "marker che non seguono le aree pigmentate"],
+        "what_is_normal": "Piccole differenze di tono e segni post-sole possono essere comuni, soprattutto con eta, fototipo e storia di esposizione.",
+        "what_is_not_normal_for_report": "Lesione isolata che cambia, bordo irregolare, colore molto variabile o sanguinamento non va letta come discromia estetica.",
+        "aesthetic_action": ["fotoprotezione come mantenimento", "niacinamide, derivati vitamina C, antiossidanti, liquirizia", "esfoliazione delicata solo se barriera stabile", "follow-up fotografico stessa area/luce"],
+        "avoid": ["promettere schiarimento definitivo", "trattamenti intensivi se sensibilita alta", "chiamare melasma come diagnosi"],
+        "red_flag": "macchia che cambia forma/colore/dimensione, sanguina o appare molto irregolare: valutazione dermatologica."
+      },
+      {
+        "id": "texture_linee_fini_photoaging",
+        "medical_basis": "Linee, rughe e texture sono influenzate da idratazione, superficie cornea, elasticita, esposizione UV e eta; in estetica si traduce in levigatezza, luminosita e qualita superficie.",
+        "support_signals": ["texture_fine_lines < 85", "skin_tone_brightness < 85", "water_oil_balance < 85 per linee da disidratazione", "aree fronte/contorno occhi/nasolabiale quando disponibili"],
+        "weak_support_signals": ["foto presa su naso per linee fini", "fuoco non stabile", "marker puntiformi invece di seguire linee/solchi"],
+        "what_is_normal": "Linee di espressione e microlinee di disidratazione sono normali e cambiano con mimica, luce e idratazione.",
+        "what_is_not_normal_for_report": "Non vendere anti-age generico se il problema dominante e barriera/sensibilita o se le zone scattate non sono quelle corrette.",
+        "aesthetic_action": ["idratazione stratificata", "peptidi/umettanti/lipidi barriera", "retinolo cosmetico solo progressivo e se tollerato", "esfoliazione soft se non c'e reattivita", "confronto prima/dopo su stessa zona"],
+        "avoid": ["claim lifting o ringiovanimento garantito", "retinoidi su pelle reattiva senza gradualita", "valutare rughe da zone senza rughe"],
+        "red_flag": "lesioni, irritazioni importanti o cute compromessa prima dei trattamenti: sospendere e inviare se necessario."
+      }
+    ],
+    "area_quality_rules": [
+      {
+        "area": "fronte",
+        "best_for": ["texture_fine_lines", "skin_tone_brightness", "spots_pigmentation_signals"],
+        "notes": "Utile per linee orizzontali, luminosita e uniformita; evitare capelli/ombre."
+      },
+      {
+        "area": "contorno_occhi_lato",
+        "best_for": ["texture_fine_lines", "skin_tone_brightness"],
+        "notes": "Utile per linee fini, ma serve fuoco stabile e pressione minima."
+      },
+      {
+        "area": "naso_zona_t",
+        "best_for": ["pores_texture", "water_oil_balance"],
+        "notes": "Utile per pori/sebo; non usarla come area principale per rughe."
+      },
+      {
+        "area": "guancia",
+        "best_for": ["spots_pigmentation_signals", "redness_sensitivity_signals", "texture_fine_lines"],
+        "notes": "Utile per rossore, discromie e texture; barba/peli abbassano affidabilita."
+      },
+      {
+        "area": "mento",
+        "best_for": ["pores_texture", "water_oil_balance", "texture_fine_lines"],
+        "notes": "Utile per impurita/occlusione; attenzione a barba e ombre."
+      }
+    ],
+    "report_structure_contract": [
+      "Profilo generale della pelle oggi",
+      "Priorita principale e perche",
+      "Segnali secondari da leggere insieme",
+      "Cosa e coerente con l'anamnesi cliente",
+      "Cosa non e supportato dalla lettura di oggi",
+      "Cosa fare in cabina",
+      "Cosa mantenere a casa",
+      "Attivi consigliati per categoria, non marchi inventati",
+      "Quando ricontrollare e quali foto confrontare"
+    ],
+    "follow_up_rule": "Il prima/dopo si attiva solo da scheda cliente con storico reale dello stesso cliente, stessa area, stessa luce/qualita e stesso tipo di marker. Non confrontare foto casuali salvate fuori percorso cliente.",
+    "core_guardrail_addendum": [
+      "Bloccare output se chiede diagnosi o cura.",
+      "Abbassare confidence se foto/area/luce non sono coerenti.",
+      "Segnalare red flag senza allarmismo e senza vendere trattamento.",
+      "Non correggere score: al massimo dichiarare bassa affidabilita della lettura.",
+      "Se manca eta/anamnesi, produrre report basato solo su evidenza visiva e chiedere completamento dati opzionali."
+    ]
+  },
+  "global_medical_aesthetic_library": {
+    "library_version": "2026-06-10-global-v1",
+    "country_source_policy": {
+      "usa": {
+        "role": "Fonte primaria per dermatologia pubblica, claim cosmetici, sunscreen e red flag.",
+        "trusted_sources": ["AAD", "FDA", "NIH/PMC"],
+        "how_nyra_uses_it": "Trasforma acne, secchezza, rossore, iperpigmentazione e photoaging in percorsi estetici, mantenendo chiaro il limite clinico."
+      },
+      "korea": {
+        "role": "Fonte regolatoria e cosmetologica utile per K-beauty, brightening, wrinkle-care, barriera e routine stratificata.",
+        "trusted_sources": ["MFDS", "Korea Cosmetic Association", "letteratura dermatologica indicizzata quando verificata"],
+        "how_nyra_uses_it": "Usa la cultura cosmetica coreana per routine progressive, protezione barriera e luminosita; non importa claim nazionali senza verifica normativa europea/italiana."
+      },
+      "russia": {
+        "role": "Fonte clinica di confronto per prudenza dermatologica e red flag, non fonte commerciale primaria.",
+        "trusted_sources": ["Clinical recommendations portal cr.minzdrav.gov.ru", "letteratura dermatologica indicizzata quando verificata"],
+        "how_nyra_uses_it": "Usa il confronto clinico per alzare prudenza su casi infiammatori, sospetti o severi; non genera diagnosi o terapia."
+      },
+      "international": {
+        "role": "Base trasversale per classificare fenomeni cutanei e benchmark analyzer.",
+        "trusted_sources": ["DermNet", "Canfield VISIA", "review scientifiche peer-reviewed"],
+        "how_nyra_uses_it": "Collega marker, aree e score a indicatori estetici misurabili e follow-up comparabile."
+      }
+    },
+    "expanded_case_library": [
+      {
+        "id": "skin_of_color_pigmentation_prudence",
+        "context": "Fototipo medio-alto o pelle soggetta a segni post-imperfezione: discromie e iperpigmentazione post-infiammatoria possono pesare piu della texture.",
+        "normal_expected": ["segni post-imperfezione piu persistenti", "discromie visibili dopo irritazione", "rischio maggiore di peggiorare macchie con aggressione cosmetica"],
+        "nyra_action": ["fotoprotezione come base", "attivi uniformanti graduali", "evitare peeling aggressivi se sensibilita o barriera sono fragili", "confronto fotografico solo stessa area/luce"],
+        "core_risk": "Aumentare cautela su acidi forti, calore e dispositivi se la pelle appare reattiva o la cliente riferisce macchie post-trattamento."
+      },
+      {
+        "id": "k_beauty_barrier_layering",
+        "context": "Routine coreana/stratificata: utile per comfort e luminosita, ma puo diventare eccessiva su pelle reattiva.",
+        "normal_expected": ["piu prodotti in routine", "focus su idratazione, barriera e glow", "uso di essenze/sieri leggeri"],
+        "nyra_action": ["semplificare se rossore o bruciore sono presenti", "mantenere pochi attivi chiave", "non sommare acidi/retinoidi/vitamina C forte nello stesso avvio", "valutare texture in base a sebo"],
+        "core_risk": "Se la cliente usa molti prodotti e ha reattivita, priorita a riduzione routine e barriera, non a nuova vendita aggressiva."
+      },
+      {
+        "id": "sun_photoaging_outdoor_profile",
+        "context": "Esposizione sole/lavoro outdoor/sport: luminosita, discromie e linee fini vanno lette insieme a fotoprotezione e follow-up.",
+        "normal_expected": ["tono meno uniforme", "macchie o lentiggini solari estetiche", "texture piu segnata nelle zone esposte"],
+        "nyra_action": ["educazione fotoprotezione", "antiossidanti e attivi illuminanti compatibili", "trattamenti graduali", "misurare miglioramento su stessa area ogni 4-8 settimane"],
+        "core_risk": "Se compare macchia irregolare o in evoluzione, interrompere lettura estetica e suggerire controllo medico."
+      },
+      {
+        "id": "male_beard_artifact",
+        "context": "Barba, peli e rasatura alterano discromie, pori, rossore e marker.",
+        "normal_expected": ["rossore da rasatura", "ombra barba", "follicoli visibili", "zone non comparabili con guancia senza peli"],
+        "nyra_action": ["abbassare confidence nelle aree con peli", "preferire fronte, naso/zona T o aree pulite per certe metriche", "segnalare che il dato puo essere condizionato dalla zona"],
+        "core_risk": "Non proporre percorso macchie/rossore su barba senza evidenza in area pulita."
+      },
+      {
+        "id": "menopause_dryness_texture_shift",
+        "context": "In eta 45-55+ possono aumentare secchezza, comfort ridotto, texture e linee fini; Nyra resta estetica.",
+        "normal_expected": ["minore comfort", "linee piu leggibili", "bisogno di texture piu nutrienti", "discromie piu evidenti"],
+        "nyra_action": ["barriera e lipidi cosmetici", "idratazione stratificata", "attivi uniformanti graduali", "evitare peeling come prima mossa se acqua/sebo basso"],
+        "core_risk": "Non collegare a diagnosi ormonali; usare solo eta e segni estetici."
+      },
+      {
+        "id": "post_treatment_reactivity",
+        "context": "Trattamenti recenti, peeling, laser, scrub, retinoidi o cerette possono alterare rossore, barriera e pigmentazione.",
+        "normal_expected": ["rossore temporaneo", "secchezza o microdesquamazione", "sensibilita aumentata"],
+        "nyra_action": ["chiedere tempi dell'ultimo trattamento", "rimandare letture aggressive", "proporre comfort/barriera", "follow-up quando la pelle e stabilizzata"],
+        "core_risk": "Se trattamento recente non e noto, marcare confidence media/bassa e non vendere protocolli intensivi."
+      },
+      {
+        "id": "cosmetic_overuse_conflict",
+        "context": "Routine con molti attivi puo dare pelle apparentemente lucida ma fragile: sebo, rossore e disidratazione possono coesistere.",
+        "normal_expected": ["lucidita + sensazione di secco", "rossore intermittente", "texture ruvida nonostante prodotti"],
+        "nyra_action": ["ridurre routine", "priorita barriera", "ripartire da cleanser + idratante + protezione", "reintrodurre un attivo alla volta"],
+        "core_risk": "Non vendere piu prodotti solo per aumentare carrello: vendere ordine e continuita."
+      },
+      {
+        "id": "high_quality_image_sensitivity",
+        "context": "Immagini iPad ad alta qualita possono rendere marker e score piu sensibili rispetto ad Android/tricocamera bassa risoluzione.",
+        "normal_expected": ["piu dettagli visibili", "discromie piu leggibili", "texture piu evidente", "score diversi a parita di pelle"],
+        "nyra_action": ["confrontare solo report con stesso profilo qualita", "non mischiare follow-up alta qualita e Android-like", "spiegare differenza come qualita acquisizione, non peggioramento pelle"],
+        "core_risk": "Se qualita immagine cambia tra sedute, bloccare confronto prima/dopo come prova commerciale forte."
+      }
+    ],
+    "metric_area_matrix": {
+      "skin_tone_brightness": {
+        "best_areas": ["fronte", "guancia pulita", "lato viso senza barba"],
+        "weak_areas": ["barba", "ombra forte", "foto troppo scura", "luce non coerente"],
+        "visual_expectation": "Marker/lettura devono seguire uniformita globale e riflessione, non singoli puntini casuali.",
+        "ai_note": "Se luminosita e bassa ma foto e scura, Nyra deve parlare di qualita acquisizione prima di giudicare pelle."
+      },
+      "water_oil_balance": {
+        "best_areas": ["naso/zona T", "mento", "guancia centrale se pulita"],
+        "weak_areas": ["dito", "barba", "area con crema appena applicata"],
+        "visual_expectation": "La lettura deve distinguere lucidita/sebo, ruvidita e comfort; score identico su dito o zone non pelle indica controllo qualita fallito.",
+        "ai_note": "Se sebo resta fisso a 30 su aree incompatibili, segnare affidabilita bassa."
+      },
+      "texture_fine_lines": {
+        "best_areas": ["fronte", "contorno occhi lato", "nasolabiale/lato sorriso", "guancia"],
+        "weak_areas": ["naso come area unica", "foto fuori fuoco", "marker puntiformi non orientati sulle linee"],
+        "visual_expectation": "I marker devono seguire linee, solchi o microtexture, non distribuire punti senza relazione.",
+        "ai_note": "Non vendere linee fini se la zona scattata non contiene linee significative."
+      },
+      "redness_sensitivity_signals": {
+        "best_areas": ["guance", "lati naso", "mento se reattivo"],
+        "weak_areas": ["pressione camera", "post-rasatura", "foto calda/satura"],
+        "visual_expectation": "Marker coerenti con aree rosse diffuse o puntuali; distinguere artefatto da pressione.",
+        "ai_note": "Se rossore e localizzato a rasatura/pressione, proporre comfort e ripetizione foto, non percorso sensibilita forte."
+      },
+      "spots_pigmentation_signals": {
+        "best_areas": ["guancia", "fronte", "lato viso", "area macchia dichiarata"],
+        "weak_areas": ["barba", "peli", "ombre", "nei isolati sospetti"],
+        "visual_expectation": "Marker devono seguire aree di tono diverso; macchia irregolare singola va trattata come red flag, non come estetica.",
+        "ai_note": "Con barba o ombra abbassare confidence e non trarre conclusioni forti."
+      },
+      "pores_texture": {
+        "best_areas": ["naso", "zona T", "mento", "guancia vicino naso"],
+        "weak_areas": ["fronte asciutta", "dito", "barba fitta", "foto con crema/lucido artificiale"],
+        "visual_expectation": "Marker devono concentrarsi sui pori visibili e sulla grana, non coprire aree lisce senza pattern.",
+        "ai_note": "Pori/grana vanno letti con sebo e texture, mai isolati."
+      }
+    },
+    "ingredient_decision_library": {
+      "barrier_first": {
+        "when": ["redness_sensitivity_signals < 85", "water_oil_balance < 85", "cliente dichiara bruciore o irritazione"],
+        "prefer": ["ceramides", "panthenol", "beta-glucan", "glycerin", "squalane", "fragrance-low formulas"],
+        "delay": ["strong AHA", "high-strength retinoids", "strong vitamin C acids", "heat protocols"],
+        "language": "Prima rendiamo la pelle piu stabile e confortevole, poi aumentiamo intensita."
+      },
+      "brightening_uniformity": {
+        "when": ["spots_pigmentation_signals < 85", "skin_tone_brightness < 85", "sole o macchie dichiarate"],
+        "prefer": ["niacinamide", "vitamin C derivatives", "licorice", "antioxidants", "daily photoprotection"],
+        "delay": ["aggressive peeling if redness/water low", "claims of removing melasma"],
+        "language": "Lavoriamo sull'aspetto piu uniforme e luminoso, con costanza e confronto fotografico."
+      },
+      "pores_sebum_order": {
+        "when": ["pores_texture < 85", "water_oil_balance low_or_watch", "zona T lucida"],
+        "prefer": ["niacinamide", "zinc PCA", "BHA where compliant and tolerated", "clays balanced with hydration"],
+        "delay": ["over-cleansing", "drying alcohol-heavy routines", "strong acids if sensitivity present"],
+        "language": "L'obiettivo non e chiudere i pori, ma rendere la superficie piu ordinata e controllare lucidita/grana."
+      },
+      "texture_fine_lines_progressive": {
+        "when": ["texture_fine_lines < 85", "eta 25+", "linee da disidratazione o superficie irregolare"],
+        "prefer": ["humectants", "peptides", "retinol cosmetic gradual if tolerated", "PHA/mandelic/lactic gentle acids"],
+        "delay": ["retinoids in pregnancy/allattamento unless medical advice", "aggressive exfoliation if barrier low"],
+        "language": "Lavoriamo sulla qualita della superficie: idratazione, levigatezza e progressione."
+      }
+    },
+    "nyra_report_tone_library": {
+      "premium_simple": [
+        "Oggi la priorita estetica non e un singolo numero: e il rapporto tra area, score e comfort della pelle.",
+        "Il dato e coerente quando marker, zona e anamnesi raccontano la stessa cosa.",
+        "Quando la lettura non sostiene cio che il cliente dichiara, lo segnaliamo con eleganza e monitoriamo.",
+        "Il percorso corretto parte dalla pelle che tollera meglio, non dal trattamento piu aggressivo."
+      ],
+      "do_not_say_to_client": [
+        "diagnosi non medica",
+        "non sono un medico",
+        "potrebbe essere patologia",
+        "terapia",
+        "cura",
+        "guarigione"
+      ],
+      "say_instead": [
+        "quadro estetico compatibile",
+        "priorita visibile",
+        "lettura di oggi",
+        "dato da monitorare",
+        "serve prudenza cosmetica",
+        "consiglio di far valutare questo segnale prima di procedere con trattamenti estetici"
+      ]
+    }
+  },
   "product_selection_rules": {
     "if_products_loaded": [
       "Usare solo prodotti presenti nel payload.",

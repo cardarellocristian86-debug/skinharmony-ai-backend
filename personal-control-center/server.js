@@ -6136,7 +6136,7 @@ const analyzerMetricAliases = {
 };
 
 function loadNyraAnalyzerLearningPack() {
-  return readJson(nyraAnalyzerLearningPackPath, {
+  const fallbackPack = {
     pack_id: "nyra_skinharmony_analyzer_beauty_learning_v1",
     version: "fallback",
     governance: {
@@ -6147,7 +6147,42 @@ function loadNyraAnalyzerLearningPack() {
     active_families: {},
     cross_score_logic: [],
     marketing_framework: {}
-  });
+  };
+  const storagePack = readJson(nyraAnalyzerLearningPackPath, null);
+  const repoPath = path.join(rootDir, nyraAnalyzerLearningPackPath);
+  const repoPack = fs.existsSync(repoPath) ? JSON.parse(fs.readFileSync(repoPath, "utf8")) : null;
+  const bestPack = chooseNewestNyraAnalyzerPack(storagePack, repoPack) || fallbackPack;
+  return {
+    ...bestPack,
+    runtime_source: bestPack === repoPack ? "repo" : bestPack === storagePack ? "storage" : "fallback"
+  };
+}
+
+function nyraAnalyzerVersionParts(version) {
+  return String(version || "0.0.0")
+    .split(".")
+    .map((part) => {
+      const parsed = Number(String(part).match(/\d+/)?.[0] || 0);
+      return Number.isFinite(parsed) ? parsed : 0;
+    });
+}
+
+function compareNyraAnalyzerVersions(a, b) {
+  const left = nyraAnalyzerVersionParts(a);
+  const right = nyraAnalyzerVersionParts(b);
+  const max = Math.max(left.length, right.length, 3);
+  for (let index = 0; index < max; index += 1) {
+    const delta = (left[index] || 0) - (right[index] || 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+function chooseNewestNyraAnalyzerPack(storagePack, repoPack) {
+  if (!storagePack && !repoPack) return null;
+  if (!storagePack) return repoPack;
+  if (!repoPack) return storagePack;
+  return compareNyraAnalyzerVersions(repoPack.version, storagePack.version) >= 0 ? repoPack : storagePack;
 }
 
 function analyzerNumber(value) {
@@ -6280,6 +6315,32 @@ function normalizeAnalyzerItems(body = {}, field) {
     }));
 }
 
+function normalizeAnalyzerClientProfile(body = {}) {
+  const source = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || body.payload?.client_profile || body.payload?.clientProfile || {};
+  const get = (...keys) => {
+    for (const key of keys) {
+      const value = source?.[key];
+      if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+    }
+    return "";
+  };
+  const profile = {
+    age: get("age", "eta"),
+    sex: get("sex", "gender", "sesso"),
+    age_band: get("age_band", "ageBand", "fascia_eta"),
+    concerns: get("concerns", "problematiche", "needs"),
+    declared_signs: get("declared_signs", "declaredSigns", "segni_dichiarati"),
+    sensitivity: get("sensitivity", "sensibilita"),
+    routine: get("routine", "home_routine"),
+    products_used: get("products_used", "productsUsed", "prodotti_usati"),
+    recent_treatments: get("recent_treatments", "recentTreatments", "trattamenti_recenti"),
+    sun_exposure: get("sun_exposure", "sunExposure", "esposizione_sole"),
+    acquisition_notes: get("acquisition_notes", "acquisitionNotes", "note_acquisizione")
+  };
+  profile.has_data = Object.entries(profile).some(([key, value]) => key !== "has_data" && Boolean(value));
+  return profile;
+}
+
 function uniqueAnalyzerStrings(values) {
   return [...new Set(values.filter(Boolean).map((value) => String(value)))];
 }
@@ -6313,6 +6374,117 @@ function buildAnalyzerRelationships(scores, pack) {
     if (rule.id === "hydration_not_generic" && byKey.water_oil_balance?.score >= 85 && lowOrWatch("pores_texture")) relationships.push(rule.reading);
   });
   return uniqueAnalyzerStrings(relationships);
+}
+
+function analyzerScoreByKey(scores, key) {
+  return scores.find((row) => row.key === key) || null;
+}
+
+function analyzerMetricSupported(scores, metricKey) {
+  const row = analyzerScoreByKey(scores, metricKey);
+  return Boolean(row && row.score < 85);
+}
+
+function analyzerTextHasAny(text, words) {
+  const slug = analyzerSlug(text);
+  return words.some((word) => slug.includes(analyzerSlug(word)));
+}
+
+function analyzerAgeBand(profile) {
+  if (profile.age_band) return analyzerSlug(profile.age_band);
+  const age = analyzerNumber(profile.age);
+  if (age === null) return "";
+  if (age < 18) return "under_18";
+  if (age <= 24) return "18_24";
+  if (age <= 34) return "25_34";
+  if (age <= 44) return "35_44";
+  if (age <= 54) return "45_54";
+  return "55_plus";
+}
+
+function buildAnalyzerLearningInsights({ scores, pack, profile, dominant }) {
+  const medical = pack.medical_to_aesthetic_learning || {};
+  const global = pack.global_medical_aesthetic_library || {};
+  const declaredText = [
+    profile.concerns,
+    profile.declared_signs,
+    profile.sensitivity,
+    profile.routine,
+    profile.products_used,
+    profile.recent_treatments,
+    profile.sun_exposure,
+    profile.acquisition_notes
+  ].filter(Boolean).join(" | ");
+  const declaredChecks = [
+    {
+      id: "discromie_macchie_uniformita",
+      label: "discromie / uniformita",
+      match: analyzerTextHasAny(declaredText, ["macchie", "discromie", "melasma", "pigmentazione", "tono", "chiazze"]),
+      supported: analyzerMetricSupported(scores, "spots_pigmentation_signals") || analyzerMetricSupported(scores, "skin_tone_brightness")
+    },
+    {
+      id: "rossore_reattivita_sensibilita",
+      label: "rossore / sensibilita",
+      match: analyzerTextHasAny(declaredText, ["rossore", "sensibile", "sensibilita", "irritazione", "bruciore", "reattiva", "dermatite"]),
+      supported: analyzerMetricSupported(scores, "redness_sensitivity_signals")
+    },
+    {
+      id: "secchezza_disidratazione_barriera",
+      label: "secchezza / barriera",
+      match: analyzerTextHasAny(declaredText, ["secca", "secchezza", "disidrata", "desquamazione", "barriera", "tira"]),
+      supported: analyzerMetricSupported(scores, "water_oil_balance") || analyzerMetricSupported(scores, "texture_fine_lines")
+    },
+    {
+      id: "sebo_pori_impurita",
+      label: "sebo / pori / impurita",
+      match: analyzerTextHasAny(declaredText, ["sebo", "grassa", "lucida", "pori", "brufoli", "acne", "comedoni", "impurita"]),
+      supported: analyzerMetricSupported(scores, "pores_texture") || analyzerMetricSupported(scores, "water_oil_balance")
+    },
+    {
+      id: "texture_linee_fini_photoaging",
+      label: "texture / linee fini",
+      match: analyzerTextHasAny(declaredText, ["rughe", "linee", "texture", "grana", "invecchiamento", "photoaging"]),
+      supported: analyzerMetricSupported(scores, "texture_fine_lines")
+    }
+  ].filter((item) => item.match);
+  const supported = declaredChecks.filter((item) => item.supported).map((item) => item.label);
+  const unsupported = declaredChecks.filter((item) => !item.supported).map((item) => item.label);
+  const ageBand = analyzerAgeBand(profile);
+  const ageContext = (medical.age_context || []).find((item) => analyzerSlug(item.band) === ageBand) || null;
+  const globalCaseIds = [];
+  if (analyzerTextHasAny(declaredText, ["acidi", "molti sieri", "tanti prodotti", "troppi prodotti", "retinolo", "scrub"])) globalCaseIds.push("cosmetic_overuse_conflict", "k_beauty_barrier_layering");
+  if (profile.recent_treatments) globalCaseIds.push("post_treatment_reactivity");
+  if (analyzerTextHasAny(profile.sun_exposure, ["alta", "sole", "outdoor", "mare", "lampade"])) globalCaseIds.push("sun_photoaging_outdoor_profile");
+  if (ageBand === "45_54" || ageBand === "55_plus") globalCaseIds.push("menopause_dryness_texture_shift");
+  if (analyzerTextHasAny([profile.sex, profile.acquisition_notes].join(" "), ["m", "maschio", "uomo", "barba", "rasatura"])) globalCaseIds.push("male_beard_artifact");
+  const globalCases = (global.expanded_case_library || []).filter((item) => globalCaseIds.includes(item.id));
+  const metricArea = global.metric_area_matrix?.[dominant?.key || ""] || null;
+  const reportContract = Array.isArray(medical.report_structure_contract) ? medical.report_structure_contract : [];
+  const tone = global.nyra_report_tone_library || {};
+  return {
+    has_profile: Boolean(profile.has_data),
+    profile_summary: profile.has_data ? [
+      profile.age ? `eta ${profile.age}` : "",
+      profile.sex ? `sesso ${profile.sex}` : "",
+      profile.concerns ? `priorita dichiarate: ${profile.concerns}` : "",
+      profile.sensitivity ? `sensibilita dichiarata: ${profile.sensitivity}` : "",
+      profile.routine ? `routine: ${profile.routine}` : "",
+      profile.recent_treatments ? `trattamenti recenti: ${profile.recent_treatments}` : "",
+      profile.sun_exposure ? `sole: ${profile.sun_exposure}` : ""
+    ].filter(Boolean) : [],
+    age_context: ageContext,
+    declared_supported: supported,
+    declared_not_supported: unsupported,
+    global_cases: globalCases.map((item) => ({
+      id: item.id,
+      context: item.context,
+      nyra_action: item.nyra_action || [],
+      core_risk: item.core_risk || ""
+    })),
+    dominant_metric_area_rule: metricArea,
+    report_contract: reportContract,
+    preferred_language: Array.isArray(tone.say_instead) ? tone.say_instead : []
+  };
 }
 
 function collectAnalyzerFamilies(pack, dominant, secondary) {
@@ -6399,6 +6571,8 @@ function buildNyraAnalyzerResponse(body = {}) {
   const coreText = analyzerTextFromBody(body);
   const client = body.client || body.data?.client || {};
   const clientName = String(client.name || body.clientName || body.data?.client_name || "").trim();
+  const clientProfile = normalizeAnalyzerClientProfile(body);
+  const learningInsights = buildAnalyzerLearningInsights({ scores, pack, profile: clientProfile, dominant });
 
   const mainProblem = `${dominantMetric.label || dominant.label}: ${dominant.score}/100 (${dominant.band_label}). ${dominantMetric.low_reading || "Area estetica dominante da leggere nel quadro complessivo."}`;
   const secondaryText = secondary.length
@@ -6423,23 +6597,46 @@ function buildNyraAnalyzerResponse(body = {}) {
       : "Protocolli centro non caricati: proporre struttura seduta iniziale, ciclo, home routine e recheck, senza inventare protocollo proprietario."];
   const activeLine = activeLogic.map((item) => `${item.id} (${item.examples.join(", ") || "categoria da verificare"})`).join("; ");
   const relationshipLine = relationships.length ? relationships.join(" ") : "La lettura resta sul pattern dominante senza forzare correlazioni non presenti.";
-  const coreLine = coreText ? `Core letto: ${coreText.slice(0, 600)}` : "Core non allegato nel payload: Nyra interpreta solo gli score ricevuti.";
+  const profileLine = learningInsights.profile_summary.length
+    ? `Scheda cliente letta: ${learningInsights.profile_summary.join("; ")}.`
+    : "Scheda cliente non compilata: lettura basata su score e marker disponibili.";
+  const ageLine = learningInsights.age_context
+    ? `Contesto eta: ${learningInsights.age_context.nyra_move}`
+    : "";
+  const supportedLine = learningInsights.declared_supported.length
+    ? `Coerenza anamnesi-score: i dati sostengono ${learningInsights.declared_supported.join(", ")}.`
+    : "";
+  const unsupportedLine = learningInsights.declared_not_supported.length
+    ? `Elementi dichiarati non forti nella lettura di oggi: ${learningInsights.declared_not_supported.join(", ")}. Si monitora senza forzare il percorso.`
+    : "";
+  const globalCaseLine = learningInsights.global_cases.length
+    ? `Casi Nyra attivati: ${learningInsights.global_cases.map((item) => item.id).join(", ")}.`
+    : "";
+  const areaRuleLine = learningInsights.dominant_metric_area_rule
+    ? `Controllo area dominante: migliori aree ${learningInsights.dominant_metric_area_rule.best_areas?.join(", ") || "non definite"}; attenzione a ${learningInsights.dominant_metric_area_rule.weak_areas?.join(", ") || "artefatti acquisizione"}.`
+    : "";
+  const coreLine = coreText ? `Indicazione Core applicata: ${coreText.slice(0, 600)}` : "";
 
   const reply = [
     "Nyra Analyzer - lettura estetica premium",
     clientName ? `Cliente: ${clientName}` : "",
+    profileLine,
     `Problema principale: ${mainProblem}`,
     `Segnali secondari: ${secondaryText}`,
     `Segnali da valorizzare: ${stableText}`,
     `Lettura d'insieme: ${relationshipLine}`,
+    ageLine,
+    supportedLine,
+    unsupportedLine,
+    globalCaseLine,
+    areaRuleLine,
     firstMove,
     `Attivi coerenti: ${activeLine}`,
     `Servizio da vendere: ${(serviceSales[0] || "percorso estetico progressivo")} + controllo risultati e routine domiciliare.`,
     `Prodotti: ${productSales.join(" ")}`,
     `Protocolli: ${protocolSales.join(" ")}`,
     `Linguaggio cliente: ${pack.marketing_framework?.premium_positioning || "Vendere un percorso misurabile, non una promessa."}`,
-    coreLine,
-    "Limite: lettura estetica/cosmetica, non diagnosi medica; in presenza di red flag visibili serve invio a professionista sanitario."
+    coreLine
   ].filter(Boolean).join("\n");
 
   return {
@@ -6473,6 +6670,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     main_problem: mainProblem,
     first_move: firstMove,
     active_logic: activeLogic,
+    learning_insights: learningInsights,
     service_sales_logic: serviceSales,
     product_sales_logic: productSales,
     protocol_logic: protocolSales,
@@ -6522,9 +6720,25 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
     endpoint: "/api/nyra/analyzer/read-only",
     pack_id: pack.pack_id,
     version: pack.version,
+    runtime_source: pack.runtime_source || "unknown",
     mode: pack.mode,
     metrics: Object.keys(pack.analyzer_metrics || {}),
     active_families: Object.keys(pack.active_families || {}),
+    source_count: Array.isArray(pack.source_basis) ? pack.source_basis.length : 0,
+    medical_to_aesthetic: {
+      present: Boolean(pack.medical_to_aesthetic_learning),
+      cases: Array.isArray(pack.medical_to_aesthetic_learning?.case_playbooks)
+        ? pack.medical_to_aesthetic_learning.case_playbooks.map((item) => item.id).filter(Boolean)
+        : []
+    },
+    global_library: {
+      present: Boolean(pack.global_medical_aesthetic_library),
+      cases: Array.isArray(pack.global_medical_aesthetic_library?.expanded_case_library)
+        ? pack.global_medical_aesthetic_library.expanded_case_library.map((item) => item.id).filter(Boolean)
+        : [],
+      metric_area_keys: Object.keys(pack.global_medical_aesthetic_library?.metric_area_matrix || {}),
+      ingredient_decisions: Object.keys(pack.global_medical_aesthetic_library?.ingredient_decision_library || {})
+    },
     guardrails: pack.governance || {}
   });
 });
