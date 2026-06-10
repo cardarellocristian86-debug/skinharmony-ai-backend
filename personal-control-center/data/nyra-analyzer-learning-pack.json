@@ -1,7 +1,7 @@
 {
   "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
-  "version": "1.2.0",
-  "updated_at": "2026-06-10T18:05:00Z",
+  "version": "1.3.0",
+  "updated_at": "2026-06-11T00:00:00Z",
   "product": "SkinHarmony Analyzer Pro",
   "mode": "aesthetic_cosmetic_commercial_read_only",
   "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
@@ -92,6 +92,26 @@
       "name": "Canfield VISIA complexion analysis",
       "url": "https://www.canfieldsci.com/imaging-systems/visia-complexion-analysis/",
       "use_in_pack": "Benchmark di mercato per indicatori e visualizzazioni: spots, wrinkles, texture, pores, UV spots, brown spots, red areas, porphyrins, multi-spettrale e follow-up."
+    },
+    {
+      "name": "DermNet - lasers in dermatology",
+      "url": "https://dermnetnz.org/topics/lasers-in-dermatology",
+      "use_in_pack": "Base tecnica e prudenziale per leggere laser/IPL/luce come tecnologie qualificate con rischi, indicazioni e cautela su pigmentazione, rossore e procedure ablative."
+    },
+    {
+      "name": "DermNet - chemical peeling",
+      "url": "https://dermnetnz.org/topics/chemical-peeling",
+      "use_in_pack": "Base per trasformare peeling/esfoliazione in scelta cosmetica progressiva: barriera e sensibilita prima dell'intensita."
+    },
+    {
+      "name": "NCBI/PMC - moisturizers and barrier review",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8703425/",
+      "use_in_pack": "Base open access per famiglie idratanti, emollienti, occlusive e supporto barriera nella routine cosmetica."
+    },
+    {
+      "name": "NCBI/PMC - niacinamide dermatology review",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8389214/",
+      "use_in_pack": "Base open access per usare niacinamide come famiglia cosmetica versatile su barriera, sebo, tono e texture senza promettere cura."
     },
     {
       "name": "American Academy of Dermatology - sunscreen FAQs",
@@ -678,6 +698,253 @@
         "consiglio di far valutare questo segnale prima di procedere con trattamenti estetici"
       ]
     }
+  },
+  "catalog_choice_library": {
+    "library_version": "2026-06-11-catalog-choice-v1",
+    "purpose": "Scegliere servizi, prodotti e tecnologie del centro sovrapponendo score Analyzer, anamnesi, cosmetologia, formulazione, dermatologia estetica prudenziale e marketing premium.",
+    "visible_output_policy": [
+      "Nel report cliente dire cosa fare, cosa usare e cosa rimandare.",
+      "Non spiegare meccanismi tecnici se non servono alla vendita.",
+      "Non dichiarare cura, guarigione, trattamento medico o risultato garantito.",
+      "Se un prodotto, servizio o tecnologia non e nel catalogo del centro, citare solo la categoria operativa.",
+      "Se anamnesi e score non coincidono, dichiarare che la lettura di oggi non sostiene abbastanza quella priorita e proporre monitoraggio/follow-up."
+    ],
+    "need_tags": {
+      "barrier_support": "Barriera, comfort, secchezza, pelle che tira, routine troppo aggressiva.",
+      "hydration_support": "Acqua/sebo fragile, linee da disidratazione, superficie spenta.",
+      "calm_down": "Rossore, reattivita, sensibilita, post trattamento, cute che non tollera intensita.",
+      "sebum_balance": "Lucidita, pori, grana irregolare, impurita cosmetiche non severe.",
+      "deep_cleansing": "Necessita di detersione professionale, estrazione non traumatica, controllo residui/sebo.",
+      "controlled_exfoliation": "Ispessimento corneo estetico, texture, luminosita spenta, grana irregolare con barriera stabile.",
+      "brightening_uniformity": "Discromie estetiche, tono disomogeneo, luminosita bassa, segni post imperfezione.",
+      "texture_refinement": "Texture non uniforme, linee fini, grana, superficie da levigare progressivamente.",
+      "firmness_support": "Perdita di compattezza percepita, eta/anamnesi coerente, texture e linee da percorso progressivo.",
+      "home_routine": "Mantenimento domiciliare essenziale per far durare il lavoro cabina.",
+      "follow_up_measurement": "Controllo fotografico e comparazione nel tempo."
+    },
+    "service_families": {
+      "professional_gentle_cleansing": {
+        "best_for_tags": ["deep_cleansing", "sebum_balance", "pores_texture", "home_routine"],
+        "delay_when_tags": ["calm_down_high", "acute_reactivity", "open_lesions"],
+        "cabina_move": "Detersione professionale delicata, preparazione cute e pulizia progressiva senza stressare la barriera.",
+        "home_move": "Routine semplice: detergente delicato, idratazione coerente, prodotto sebo-equilibrante solo se tollerato.",
+        "marketing_use": "Seduta di partenza quando la pelle deve essere ordinata prima di trattamenti piu intensivi."
+      },
+      "barrier_reset_hydration": {
+        "best_for_tags": ["barrier_support", "hydration_support", "calm_down", "redness_sensitivity_signals"],
+        "delay_when_tags": ["none"],
+        "cabina_move": "Trattamento comfort, idratazione stratificata e ripristino cosmetico della tolleranza.",
+        "home_move": "Siero umettante, crema barriera, detergenza non aggressiva, riduzione temporanea di acidi/scrub.",
+        "marketing_use": "Prima scelta quando la pelle non e pronta per stimoli, peeling o trattamenti intensi."
+      },
+      "controlled_exfoliation_cabin": {
+        "best_for_tags": ["controlled_exfoliation", "texture_refinement", "brightening_uniformity", "pores_texture"],
+        "delay_when_tags": ["calm_down", "barrier_support", "hydration_support_low", "recent_irritation"],
+        "cabina_move": "Esfoliazione cosmetica controllata e progressiva, scelta solo se idratazione e sensibilita sono compatibili.",
+        "home_move": "Mantenimento leggero con idratazione e protezione; evitare sovrapposizione di acidi a casa.",
+        "marketing_use": "Da proporre come step di percorso, non come trattamento aggressivo singolo."
+      },
+      "brightening_uniformity_path": {
+        "best_for_tags": ["brightening_uniformity", "skin_tone_brightness", "spots_pigmentation_signals", "photoaging_context"],
+        "delay_when_tags": ["acute_reactivity", "sunburn", "unknown_spot_red_flag"],
+        "cabina_move": "Percorso uniformante e illuminante, con intensita progressiva e controllo della tolleranza.",
+        "home_move": "Antiossidanti, niacinamide o attivi uniformanti compatibili, idratazione e fotoprotezione quando coerente.",
+        "marketing_use": "Vendere come percorso di uniformita e luminosita misurabile nel tempo."
+      },
+      "sebum_pore_refinement": {
+        "best_for_tags": ["sebum_balance", "deep_cleansing", "pores_texture", "texture_refinement"],
+        "delay_when_tags": ["hydration_support_low", "calm_down", "overcleansing_history"],
+        "cabina_move": "Riequilibrio sebo/grana con pulizia mirata, esfoliazione solo se la barriera lo consente.",
+        "home_move": "Niacinamide/sebo-equilibranti, detergenza calibrata, idratazione leggera, niente secchezza forzata.",
+        "marketing_use": "Ottimo quando il cliente percepisce pelle lucida o grana poco compatta, ma va sempre letto con idratazione."
+      },
+      "texture_fine_lines_progressive": {
+        "best_for_tags": ["texture_refinement", "hydration_support", "firmness_support", "texture_fine_lines"],
+        "delay_when_tags": ["calm_down", "barrier_support_low"],
+        "cabina_move": "Percorso levigante progressivo con idratazione, comfort e stimolo estetico non aggressivo.",
+        "home_move": "Umettanti, peptidi, antiossidanti e retinoidi cosmetici graduali solo se tollerati e compatibili.",
+        "marketing_use": "Vendere come qualita della pelle e continuita, non come cancellazione rughe."
+      },
+      "calming_sensitive_skin": {
+        "best_for_tags": ["calm_down", "redness_sensitivity_signals", "post_treatment_reactivity"],
+        "delay_when_tags": ["none"],
+        "cabina_move": "Protocollo lenitivo, ripristino comfort e riduzione degli stimoli superflui.",
+        "home_move": "Routine minima, lenitivi, crema barriera, stop temporaneo a prodotti irritanti.",
+        "marketing_use": "Trattamento di fiducia: prima rendere la pelle piu tollerante, poi costruire il percorso."
+      },
+      "firmness_lifting_support": {
+        "best_for_tags": ["firmness_support", "texture_refinement", "age_35_plus", "client_laxity_concern"],
+        "delay_when_tags": ["calm_down", "hydration_support_low", "contraindication_unknown"],
+        "cabina_move": "Percorso tonificante/compattezza con tecnologia solo se disponibile, formazione presente e pelle compatibile.",
+        "home_move": "Routine di supporto con idratazione, antiossidanti, peptidi o retinoidi cosmetici graduali se tollerati.",
+        "marketing_use": "Da vendere come percorso di compattezza visibile e mantenimento, non come lifting medico."
+      },
+      "follow_up_measurement_session": {
+        "best_for_tags": ["follow_up_measurement", "home_routine", "any_priority"],
+        "delay_when_tags": ["none"],
+        "cabina_move": "Ripetere acquisizione nelle stesse aree e condizioni, confrontando score, marker e anamnesi.",
+        "home_move": "Verificare aderenza routine e tolleranza prodotti prima di aumentare intensita.",
+        "marketing_use": "Chiude la vendita premium: il cliente vede il percorso, non solo una seduta."
+      }
+    },
+    "product_family_decision_library": {
+      "gentle_cleanser": {
+        "best_for_tags": ["barrier_support", "calm_down", "sebum_balance", "home_routine"],
+        "avoid_when": ["detergente aggressivo gia in uso", "cute molto reattiva senza test di tolleranza"],
+        "selection_rule": "Prima base domiciliare quando la routine e confusa o la barriera e fragile."
+      },
+      "humectant_serum": {
+        "best_for_tags": ["hydration_support", "texture_fine_lines", "skin_tone_brightness"],
+        "avoid_when": ["nessuna crema di chiusura in pelle molto secca"],
+        "selection_rule": "Preferire quando acqua/sebo o linee da disidratazione sono sotto soglia."
+      },
+      "barrier_cream": {
+        "best_for_tags": ["barrier_support", "calm_down", "hydration_support"],
+        "avoid_when": ["texture troppo ricca su pelle molto sebacea se non serve"],
+        "selection_rule": "Prima scelta se rossore/sensibilita o idratazione bloccano trattamenti piu intensi."
+      },
+      "niacinamide_family": {
+        "best_for_tags": ["sebum_balance", "brightening_uniformity", "barrier_support", "pores_texture"],
+        "avoid_when": ["irritazione individuale riferita"],
+        "selection_rule": "Famiglia trasversale: utile quando pori, tono e barriera si sovrappongono."
+      },
+      "antioxidant_vitamin_c_family": {
+        "best_for_tags": ["brightening_uniformity", "skin_tone_brightness", "photoaging_context"],
+        "avoid_when": ["sensibilita alta", "routine gia irritante", "formulazione non tollerata"],
+        "selection_rule": "Usare per luminosita e uniformita se la cute tollera; preferire derivati piu delicati se serve."
+      },
+      "soothing_family": {
+        "best_for_tags": ["calm_down", "redness_sensitivity_signals", "post_treatment_reactivity"],
+        "avoid_when": ["nessuna cautela specifica salvo allergie note"],
+        "selection_rule": "Scelta prioritaria quando i segnali reattivi riducono l'intensita del percorso."
+      },
+      "controlled_acids_family": {
+        "best_for_tags": ["controlled_exfoliation", "texture_refinement", "sebum_balance", "brightening_uniformity"],
+        "avoid_when": ["calm_down", "hydration_support_low", "pregnancy_caution", "recent_peeling_or_irritation"],
+        "selection_rule": "Solo dopo barriera stabile; PHA/mandelico/lattico piu prudenziali, BHA se sebo/pori e tolleranza lo consentono."
+      },
+      "retinoid_cosmetic_gradual": {
+        "best_for_tags": ["texture_refinement", "firmness_support", "photoaging_context"],
+        "avoid_when": ["pregnancy_or_breastfeeding_without_medical_advice", "sensibilita alta", "barriera fragile"],
+        "selection_rule": "Scelta progressiva per texture/linee solo se la routine e stabile e la cute tollera."
+      },
+      "sunscreen_or_photoprotection": {
+        "best_for_tags": ["brightening_uniformity", "photoaging_context", "spots_pigmentation_signals"],
+        "avoid_when": ["nessuna: scegliere texture adatta e normativa corretta"],
+        "selection_rule": "Categoria chiave quando si parla di discromie/luminosita; evitare claim fuori normativa."
+      },
+      "mask_patch_hydrating_or_soothing": {
+        "best_for_tags": ["hydration_support", "calm_down", "post_treatment_reactivity", "premium_experience"],
+        "avoid_when": ["occlusione non tollerata", "irritazione acuta"],
+        "selection_rule": "Ottimo come elemento cabina scenico e comfort; non sostituisce routine base."
+      }
+    },
+    "technology_decision_library": {
+      "radiofrequency": {
+        "best_for_tags": ["firmness_support", "texture_refinement", "age_35_plus"],
+        "delay_when_tags": ["calm_down", "hydration_support_low", "contraindication_unknown"],
+        "visible_recommendation": "Tecnologia tonificante/compattezza se presente nel centro e compatibile con scheda cliente.",
+        "core_guard": "Non promettere lifting, collagene garantito o risultato permanente."
+      },
+      "electroporation_or_infusion": {
+        "best_for_tags": ["hydration_support", "brightening_uniformity", "barrier_support"],
+        "delay_when_tags": ["acute_reactivity", "product_formula_unknown"],
+        "visible_recommendation": "Veicolazione cosmetica/infusione se il centro ha sieri compatibili e la pelle e tollerante.",
+        "core_guard": "Non parlare di penetrazione profonda medica o effetto farmacologico."
+      },
+      "led_red_or_blue": {
+        "best_for_tags": ["calm_down", "sebum_balance", "post_treatment_reactivity", "premium_support"],
+        "delay_when_tags": ["photosensitivity_risk_unknown", "eye_safety_unmanaged"],
+        "visible_recommendation": "Luce di supporto come complemento al protocollo, scelta in base a tolleranza e obiettivo estetico.",
+        "core_guard": "Non promettere cura acne, rosacea o infiammazioni."
+      },
+      "microdermabrasion_or_hydrodermabrasion": {
+        "best_for_tags": ["deep_cleansing", "controlled_exfoliation", "texture_refinement", "pores_texture"],
+        "delay_when_tags": ["calm_down", "hydration_support_low", "barrier_support_low", "visible_irritation"],
+        "visible_recommendation": "Pulizia/levigatura professionale solo se la pelle e pronta e non reattiva.",
+        "core_guard": "Se idratazione o sensibilita sono basse, prima ripristino barriera."
+      },
+      "ultrasound_sonophoresis": {
+        "best_for_tags": ["hydration_support", "home_routine", "barrier_support"],
+        "delay_when_tags": ["contraindication_unknown", "acute_reactivity"],
+        "visible_recommendation": "Supporto cabina delicato per comfort e trattamento cosmetico progressivo.",
+        "core_guard": "Non dichiarare effetti medici o profondita non verificata."
+      },
+      "cryo_cooling": {
+        "best_for_tags": ["calm_down", "post_treatment_reactivity", "comfort_finish"],
+        "delay_when_tags": ["cold_intolerance", "contraindication_unknown"],
+        "visible_recommendation": "Finale comfort/lenitivo quando rossore o calore visibile richiedono prudenza.",
+        "core_guard": "Non promettere chiusura pori permanente o trattamento vascolare."
+      },
+      "controlled_plasma_ionization": {
+        "best_for_tags": ["sebum_balance", "texture_refinement", "firmness_support", "brightening_uniformity"],
+        "delay_when_tags": ["calm_down", "hydration_support_low", "barrier_support_low", "contraindication_unknown"],
+        "visible_recommendation": "Tecnologia estetica di superficie solo se disponibile, formazione presente e pelle compatibile.",
+        "core_guard": "Non parlare di disinfezione terapeutica, radicali liberi come claim cliente o trattamento patologie."
+      },
+      "ipl_laser_medical_or_qualified": {
+        "best_for_tags": ["brightening_uniformity", "redness_visual", "photoaging_context"],
+        "delay_when_tags": ["operator_not_qualified", "phototype_risk_unknown", "recent_sun", "medical_condition_unknown"],
+        "visible_recommendation": "Solo percorso qualificato se il centro e autorizzato/formato e la scheda cliente e completa.",
+        "core_guard": "Se non qualificato o non nel catalogo, non proporre; inviare a valutazione idonea se ci sono segnali sospetti."
+      }
+    },
+    "overlap_matrix": [
+      {
+        "id": "barrier_first",
+        "when": ["redness_sensitivity_signals < 85", "water_oil_balance < 85"],
+        "choose": ["barrier_reset_hydration", "soothing_family", "barrier_cream", "humectant_serum"],
+        "delay": ["controlled_exfoliation_cabin", "microdermabrasion_or_hydrodermabrasion", "radiofrequency"],
+        "report_move": "Prima stabilizzare comfort e idratazione; poi aumentare intensita."
+      },
+      {
+        "id": "pores_without_dehydrating",
+        "when": ["pores_texture < 85", "water_oil_balance >= 70"],
+        "choose": ["professional_gentle_cleansing", "sebum_pore_refinement", "niacinamide_family"],
+        "delay": ["drying_routines", "aggressive_scrub"],
+        "report_move": "Ordinare grana e lucidita senza seccare la pelle."
+      },
+      {
+        "id": "pores_but_barrier_low",
+        "when": ["pores_texture < 85", "water_oil_balance < 70"],
+        "choose": ["barrier_reset_hydration", "gentle_cleanser", "barrier_cream"],
+        "delay": ["controlled_acids_family", "microdermabrasion_or_hydrodermabrasion"],
+        "report_move": "Pori/grana si trattano dopo aver rimesso acqua e comfort."
+      },
+      {
+        "id": "pigmentation_brightness_path",
+        "when": ["spots_pigmentation_signals < 85", "skin_tone_brightness < 85"],
+        "choose": ["brightening_uniformity_path", "antioxidant_vitamin_c_family", "niacinamide_family", "sunscreen_or_photoprotection"],
+        "delay": ["high_intensity_peels_if_sensitive"],
+        "report_move": "Percorso uniformante e luminosita con protezione e controllo tolleranza."
+      },
+      {
+        "id": "texture_firmness_progression",
+        "when": ["texture_fine_lines < 85", "age_35_plus OR client_laxity_concern"],
+        "choose": ["texture_fine_lines_progressive", "firmness_lifting_support", "humectant_serum", "retinoid_cosmetic_gradual"],
+        "delay": ["radiofrequency_if_hydration_low_or_sensitivity_high"],
+        "report_move": "Lavorare sulla qualita della superficie prima e sulla compattezza in percorso."
+      }
+    ],
+    "anamnesis_to_catalog_rules": [
+      "Eta, sesso, barba/rasatura, sole, routine, prodotti in uso e trattamenti recenti cambiano priorita e intensita, non cambiano gli score originali.",
+      "Dermatite, acne, rosacea, melasma o condizioni mediche dichiarate non vanno confermate da Nyra: se i marker le sostengono si parla di segnali estetici compatibili; se non le sostengono si dice che oggi non emergono forti nella lettura.",
+      "Se il cliente usa troppi attivi, acidi o retinoidi e gli score mostrano sensibilita/idratatazione bassa, vendere semplificazione e barriera prima di intensita.",
+      "Se il cliente cerca risultato rapido ma gli score mostrano barriera fragile, proporre una prima seduta comfort e un follow-up misurabile."
+    ],
+    "marketing_choice_rules": [
+      "Vendere prima la priorita visibile, poi il percorso, poi il prodotto di mantenimento.",
+      "Non proporre piu di una tecnologia principale nella prima raccomandazione se non serve.",
+      "Quando il catalogo contiene servizi e tecnologie, scegliere una seduta oggi + una routine casa + un controllo.",
+      "Quando il catalogo contiene solo prodotti, costruire routine essenziale con massimo tre famiglie.",
+      "Quando il catalogo e vuoto, chiedere caricamento catalogo e dare solo categorie, mai nomi o prezzi inventati."
+    ],
+    "core_catalog_guards": [
+      "Bloccare claim medico, terapeutico, curativo, antibatterico terapeutico, lifting garantito, collagene garantito, pori chiusi definitivamente.",
+      "Bloccare tecnologie non presenti nel catalogo o non compatibili con anamnesi incompleta.",
+      "Penalizzare intensita quando rossore, idratazione o barriera sono sotto soglia.",
+      "Se appare una red flag, sospendere vendita estetica e consigliare valutazione idonea prima di procedere."
+    ]
   },
   "product_selection_rules": {
     "if_products_loaded": [
