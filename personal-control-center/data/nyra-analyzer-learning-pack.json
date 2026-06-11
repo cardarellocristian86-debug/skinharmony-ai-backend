@@ -1,7 +1,7 @@
 {
   "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
-  "version": "1.3.0",
-  "updated_at": "2026-06-11T00:00:00Z",
+  "version": "1.4.0",
+  "updated_at": "2026-06-11T08:00:00Z",
   "product": "SkinHarmony Analyzer Pro",
   "mode": "aesthetic_cosmetic_commercial_read_only",
   "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
@@ -945,6 +945,88 @@
       "Penalizzare intensita quando rossore, idratazione o barriera sono sotto soglia.",
       "Se appare una red flag, sospendere vendita estetica e consigliare valutazione idonea prima di procedere."
     ]
+  },
+  "treatment_context_timing_library": {
+    "library_version": "2026-06-11-treatment-context-v1",
+    "purpose": "Leggere score e marker sapendo cosa e stato fatto prima dello scatto, cosi Nyra non interpreta come peggioramento stabile un effetto estetico temporaneo di servizio, tecnologia o routine.",
+    "visible_output_policy": [
+      "Dire in modo semplice che il dato puo essere influenzato dal trattamento recente.",
+      "Non spiegare meccanismi tecnici al cliente.",
+      "Non correggere score e non inventare miglioramenti.",
+      "Se il trattamento e troppo recente, usare il report come controllo di risposta, non come prima/dopo commerciale definitivo.",
+      "Follow-up standard SkinHarmony: 2/3 settimane, salvo red flag o reazione evidente."
+    ],
+    "time_windows": {
+      "same_day_0_24h": {
+        "interpretation": "Possibile rossore, calore, lucidita, disidratazione apparente o variazione luce/marker. Non usare come confronto definitivo.",
+        "nyra_move": "Registrare trattamento e leggere il report come risposta immediata della pelle."
+      },
+      "day_1_3": {
+        "interpretation": "Fase di assestamento: rossore, secchezza, micro-desquamazione o comfort variabile possono essere ancora coerenti con trattamento/routine recente.",
+        "nyra_move": "Non aumentare intensita se sensibilita o idratazione sono basse; privilegiare comfort e barriera."
+      },
+      "day_4_7": {
+        "interpretation": "La lettura diventa piu utile, ma peeling/esfoliazione o tecnologie stimolanti possono avere ancora superficie non stabilizzata.",
+        "nyra_move": "Confrontare solo se area, luce e routine sono coerenti; segnalare eventuale effetto residuo."
+      },
+      "week_2_3": {
+        "interpretation": "Finestra standard SkinHarmony per controllo estetico piu credibile su score, marker e percezione cliente.",
+        "nyra_move": "Usare come follow-up operativo e proposta di continuita."
+      },
+      "over_4_weeks": {
+        "interpretation": "Controllo di ciclo/percorso: leggere andamento, costanza routine e risposta al piano.",
+        "nyra_move": "Valutare mantenimento, cambio intensita o nuovo obiettivo."
+      }
+    },
+    "technology_timing_rules": {
+      "radiofrequency": {
+        "temporary_effects_to_watch": ["rossore", "calore", "edema leggero percepito", "idratazione variabile"],
+        "same_day_move": "Se rossore e piu alto nello stesso giorno, trattarlo come possibile risposta temporanea al trattamento e non come peggioramento stabile.",
+        "follow_up": "ricontrollo 2/3 settimane con stessa area e luce."
+      },
+      "microdermabrasion_or_hydrodermabrasion": {
+        "temporary_effects_to_watch": ["rossore", "secchezza transitoria", "texture piu esposta", "sensibilita"],
+        "same_day_move": "Se idratazione scende o rossore sale, leggere come possibile effetto di superficie: routine barriera prima di nuovo stimolo.",
+        "follow_up": "ricontrollo 2/3 settimane."
+      },
+      "controlled_exfoliation_or_peel": {
+        "temporary_effects_to_watch": ["rossore", "desquamazione", "luminosita variabile", "secchezza"],
+        "same_day_move": "Non vendere miglioramento definitivo se lo scatto e troppo vicino al peeling; leggere tolleranza e comfort.",
+        "follow_up": "ricontrollo 2/3 settimane, evitando confronto durante desquamazione."
+      },
+      "electroporation_or_infusion": {
+        "temporary_effects_to_watch": ["lucidita", "idratazione momentanea", "rossore lieve", "residuo prodotto"],
+        "same_day_move": "Se luminosita/idratatazione salgono subito, trattare come risposta immediata, non come risultato stabilizzato.",
+        "follow_up": "ricontrollo 2/3 settimane per continuita."
+      },
+      "led_red_or_blue": {
+        "temporary_effects_to_watch": ["calore lieve", "rossore variabile", "comfort soggettivo"],
+        "same_day_move": "Lettura generalmente prudente: non attribuire cambiamenti forti solo alla luce, usare storico.",
+        "follow_up": "ricontrollo 2/3 settimane."
+      },
+      "cryo_cooling": {
+        "temporary_effects_to_watch": ["rossore ridotto temporaneamente", "vasocostrizione estetica", "comfort immediato"],
+        "same_day_move": "Se rossore sembra molto migliore subito dopo crio, segnalarlo come risposta immediata e non come stabilizzazione.",
+        "follow_up": "ricontrollo 2/3 settimane."
+      },
+      "controlled_plasma_ionization": {
+        "temporary_effects_to_watch": ["rossore", "secchezza", "sensibilita", "texture alterata temporaneamente"],
+        "same_day_move": "Se sensibilita o secchezza aumentano, ridurre intensita e leggere come fase post trattamento.",
+        "follow_up": "ricontrollo 2/3 settimane."
+      },
+      "ipl_laser_medical_or_qualified": {
+        "temporary_effects_to_watch": ["rossore", "calore", "pigmento piu evidente temporaneamente", "sensibilita"],
+        "same_day_move": "Solo se qualificato e caricato; se recente, non fare confronto estetico definitivo e mantenere prudenza claim.",
+        "follow_up": "ricontrollo 2/3 settimane o secondo protocollo professionale del centro."
+      }
+    },
+    "service_and_home_routine_rules": {
+      "cleansing_or_deep_cleansing": "La detersione/pulizia puo cambiare sebo visibile e lucidita nello stesso giorno: leggere pori/sebo con prudenza.",
+      "butter_or_oil_cleanser_before_capture": "Burro/olio detergente vicino allo scatto puo alterare luminosita, sebo e idratazione percepita: registrarlo sempre.",
+      "pdrn_or_hydrating_serum": "Sieri idratanti/filmogeni vicini allo scatto possono alzare luminosita o cambiare idratazione apparente; il dato va confermato al follow-up.",
+      "new_acids_or_retinoids": "Nuovi acidi/retinoidi possono aumentare secchezza o sensibilita: se compare rossore, prima barriera e routine semplice.",
+      "spf_or_makeup_residue": "SPF, trucco o residui possono alterare marker di luminosita, pori e discromie; segnalarlo come limite acquisizione."
+    }
   },
   "product_selection_rules": {
     "if_products_loaded": [

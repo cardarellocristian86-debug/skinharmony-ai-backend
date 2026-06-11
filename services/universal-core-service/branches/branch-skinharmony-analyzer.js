@@ -17,6 +17,7 @@ export const branchSkinHarmonyAnalyzer = {
     "formulation_compatibility_guard",
     "anamnesis_sales_guard",
     "technology_claim_guard",
+    "post_treatment_timing_guard",
   ],
   rules: [
     "Leggere i punteggi come insieme: dominante, secondari, segnali protettivi e relazioni.",
@@ -28,6 +29,8 @@ export const branchSkinHarmonyAnalyzer = {
     "Se una tecnologia non e nel catalogo o manca idoneita/formazione, non proporla come azione; usare solo categoria da valutare.",
     "Nel testo cliente non spiegare meccanismi tecnici se non servono: raccomandare cosa fare, cosa usare e cosa rimandare.",
     "Quando anamnesi e score non coincidono, segnalare che la lettura di oggi non sostiene abbastanza quel punto e proporre monitoraggio.",
+    "Se prima dello scatto e presente tecnologia, servizio o nuova routine, leggere rossore, idratazione, sebo e luminosita come possibili effetti temporanei e non come variazione stabile.",
+    "Usare 2/3 settimane come follow-up operativo standard per confronto cliente, salvo reazione importante o protocollo professionale specifico.",
     "Usare linguaggio estetico professionale, non diagnosi o promesse cliniche.",
   ],
   guardrails: {
