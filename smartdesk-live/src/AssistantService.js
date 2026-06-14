@@ -455,6 +455,19 @@ function extractClientDraft(message) {
   };
 }
 
+function extractLooseAppointmentName(message) {
+  const raw = String(message || "").trim();
+  const match = raw.match(/\b(?:a|per)\s+(.+?)(?=\s+(?:oggi|domani|dopodomani|lunedi|lunedì|martedi|martedì|mercoledi|mercoledì|giovedi|giovedì|venerdi|venerdì|sabato|domenica|il|alle|ore|con|per\s+(?:taglio|colore|piega|rituale|trattamento|servizio))\b|$)/i);
+  if (!match) return "";
+  const candidate = String(match[1] || "")
+    .replace(/\b(cliente|appuntamento|prenotazione|agenda|occasionale)\b/ig, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (candidate.length < 2) return "";
+  if (/\d/.test(candidate)) return "";
+  return candidate;
+}
+
 function parseAgendaFilter(message) {
   const normalized = normalizeText(message);
   if (!/(filtra|mostra).*(agenda|appuntamenti)/.test(normalized)) return null;
@@ -1008,8 +1021,9 @@ class AssistantService {
     if (!/(aggiungi|crea|inserisci|prenota).*(appuntamento|prenotazione|agenda)/.test(normalized)) return null;
     const client = this.findClientMention(message, context, session);
     const occasionalMatch = String(message || "").match(/cliente\s+(?:occasionale\s+)?(.+?)(?=\s+(?:oggi|domani|dopodomani|alle|ore|con|per)\b|$)/i);
-    const walkInName = !client && occasionalMatch
-      ? occasionalMatch[1]
+    const looseWalkInName = extractLooseAppointmentName(message);
+    const walkInName = !client
+      ? (occasionalMatch ? occasionalMatch[1] : looseWalkInName)
         .replace(/\b(oggi|domani|dopodomani|alle|ore|con|per)\b.*$/i, "")
         .trim()
       : "";
@@ -1257,6 +1271,22 @@ class AssistantService {
       ].join("\n"));
     }
 
+    if (/(marketing|recall|richiam|cliente inattiv|cliente pers|messaggio|whatsapp|campagna)/.test(normalized)) {
+      const clientSearch = !/\bclienti\b/i.test(message)
+        ? message.match(/(?:cliente|per|a)\s+(.+?)(?=\s+(?:messaggio|whatsapp|recall|richiamo|inattiv|pers|da|con|$))/i)
+        : null;
+      const query = clientSearch ? String(clientSearch[1] || "").trim() : "";
+      if (query) {
+        const client = this.findClientByQuery(query, context, session);
+        if (client) {
+          const fullName = `${client.firstName || ""} ${client.lastName || ""}`.trim() || client.name || query;
+          return buildAction(`Apro Marketing con il cliente ${fullName} pronto da valutare. Nessun messaggio viene inviato senza conferma.`, "open_marketing", { clientId: client.id, query: fullName, source: "ai_gold_marketing_command" });
+        }
+        return buildAction(`Apro Marketing e cerco ${query}. Nessun messaggio viene inviato senza conferma.`, "open_marketing", { query, source: "ai_gold_marketing_command" });
+      }
+      return buildAction("Apro Marketing/Recall. Da lì preparo la coda clienti e ogni invio resta da confermare dall'operatore.", "open_marketing", { source: "ai_gold_marketing_command" });
+    }
+
     const clientDraft = extractClientDraft(message);
     if (clientDraft) {
       if (clientDraft.firstName && (clientDraft.phone || clientDraft.noContact)) {
@@ -1411,6 +1441,7 @@ class AssistantService {
         : buildBlocked("Il modulo magazzino non è attivo in questo centro.", "open_settings", { section: "inventory" });
     }
     if (/(apri report|vai report|report business|reportistica)/.test(normalized)) return buildAction("Apro i report.", "open_reports", {});
+    if (/(apri servizi|vai servizi|servizi e operatori|servizi\/operatori|operatori|staff|collaboratori)/.test(normalized)) return buildAction("Apro Servizi e operatori.", "open_services", {});
     if (/(apri cassa|vai cassa|cassa|pagamento|pagamenti)/.test(normalized)) return buildAction("Apro la cassa operativa.", "open_cashdesk", {});
     if (/(apri turni|turni|presenze)/.test(normalized)) return buildAction("Apro turni e presenze.", normalized.includes("presenze") ? "open_attendance" : "open_turns", {});
     if (/(apri redditivita|redditivita|margini|profitto)/.test(normalized)) {
