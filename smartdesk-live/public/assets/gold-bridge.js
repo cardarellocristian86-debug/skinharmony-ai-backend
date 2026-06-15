@@ -1531,6 +1531,8 @@
 
   function buildEnterpriseSettingsPanel(session, settings) {
     const role = String(session?.role || "owner").toLowerCase();
+    const supportMode = Boolean(session?.supportMode);
+    if (role !== "superadmin" || supportMode) return null;
     const confirmationMode = role === "superadmin" ? "high_control" : "required_for_sensitive_actions";
     const activeModules = [
       settings?.enableMarketing !== false,
@@ -1736,6 +1738,10 @@
           const panel = buildEnterpriseSettingsPanel(session, settings);
           const existing = document.getElementById(ENTERPRISE_SETTINGS_PANEL_ID);
           runWithMutationLock(() => {
+            if (!panel) {
+              if (existing) existing.remove();
+              return;
+            }
             if (existing) existing.replaceWith(panel);
             else anchor.insertAdjacentElement("afterend", panel);
           });
