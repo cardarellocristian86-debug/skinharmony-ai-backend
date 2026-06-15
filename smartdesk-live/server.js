@@ -1939,15 +1939,12 @@ app.post("/api/ai-gold/whatsapp/bulk-send", requirePlan("gold"), async (req, res
   }
 });
 
-app.post("/api/ai-gold/protocols/draft", requireSuperAdmin, requirePlan("silver"), async (req, res) => {
-  if (isSafeModeActive()) {
-    return res.status(429).json(safeModePayload("Sistema sotto carico: generazione protocolli temporaneamente limitata"));
-  }
-  try {
-    res.json(await service.generateAiGoldProtocolDraft(req.body || {}, req.session));
-  } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile generare la bozza protocollo AI Gold");
-  }
+app.post("/api/ai-gold/protocols/draft", requirePlan("silver"), (_req, res) => {
+  res.status(423).json({
+    success: false,
+    code: "protocol_ai_standby",
+    message: "Protocolli AI in standby. Usa i protocolli manuali del centro."
+  });
 });
 
 app.get("/api/treatments", requirePlan("silver"), (req, res) => {
