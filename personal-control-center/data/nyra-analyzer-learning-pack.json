@@ -1,7 +1,7 @@
 {
   "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
-  "version": "1.4.0",
-  "updated_at": "2026-06-11T08:00:00Z",
+  "version": "1.6.0",
+  "updated_at": "2026-06-16T21:55:00+02:00",
   "product": "SkinHarmony Analyzer Pro",
   "mode": "aesthetic_cosmetic_commercial_read_only",
   "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
@@ -41,6 +41,121 @@
       "gravidanza, farmaci fotosensibilizzanti o terapie dermatologiche quando si considerano retinoidi/acidi/peeling"
     ],
     "client_language_rule": "Parlare di quadro estetico, priorita visibili, percorso e mantenimento. Evitare parole come malattia, terapia, cura, guarigione, diagnosi clinica."
+  },
+  "practice_profiles": {
+    "aesthetic_center": {
+      "title": "Centro estetico",
+      "core_policy_id": "skinharmony_analyzer_aesthetic_claim_policy_v1",
+      "nyra_library_id": "nyra_skin_analyzer_aesthetic_operational_v1",
+      "runtime_scope": "beauty_center_operational",
+      "output_header": "Nyra Analyzer - lettura estetica professionale",
+      "language_rule": "Usare linguaggio estetico, cosmetico e operativo: problema visibile, causa possibile, soluzione in cabina, routine e prodotto se caricato.",
+      "allowed_terms": [
+        "quadro estetico",
+        "priorita visibile",
+        "barriera cosmetica",
+        "uniformita",
+        "luminosita",
+        "texture",
+        "sebo",
+        "routine domiciliare",
+        "percorso cabina"
+      ],
+      "blocked_terms": [
+        "diagnosi definitiva",
+        "terapia",
+        "cura",
+        "guarigione",
+        "patologia",
+        "prescrizione",
+        "farmaco"
+      ],
+      "decision_focus": [
+        "vendere percorso estetico coerente con score e anamnesi",
+        "consigliare prodotti caricati se compatibili",
+        "evitare tecnicismi clinici inutili",
+        "bloccare claim medici o terapeutici"
+      ],
+      "core_activation": {
+        "claim_guard": "strict_cosmetic",
+        "medical_language": "blocked",
+        "catalog_policy": "only_loaded_products_services"
+      }
+    },
+    "pharmacy_dermocosmetic": {
+      "title": "Farmacia / dermocosmesi",
+      "core_policy_id": "skinharmony_analyzer_dermocosmetic_pharmacy_policy_v1",
+      "nyra_library_id": "nyra_skin_analyzer_pharmacy_dermocosmetic_v1",
+      "runtime_scope": "pharmacy_dermocosmetic_advice",
+      "output_header": "Nyra Analyzer - lettura dermocosmetica",
+      "language_rule": "Usare linguaggio dermocosmetico: barriera, sebo, sensibilita, attivi cosmetici, routine e aderenza. Evitare diagnosi definitiva e prescrizione.",
+      "allowed_terms": [
+        "profilo dermocosmetico",
+        "barriera cutanea",
+        "tolleranza",
+        "sebo",
+        "discromia visibile",
+        "attivi cosmetici",
+        "fotoprotezione",
+        "routine",
+        "aderenza"
+      ],
+      "blocked_terms": [
+        "diagnosi automatica definitiva",
+        "prescrizione",
+        "cura garantita",
+        "trattamento terapeutico",
+        "farmaco consigliato dal software"
+      ],
+      "decision_focus": [
+        "trasformare lo score in consiglio dermocosmetico prudente",
+        "collegare famiglia attivi e prodotti caricati",
+        "segnalare red flag al professionista senza vendere sopra il rischio",
+        "non sostituire consiglio medico o farmacista"
+      ],
+      "core_activation": {
+        "claim_guard": "dermocosmetic_prudent",
+        "medical_language": "limited_professional_context",
+        "catalog_policy": "only_loaded_products_with_ingredient_family"
+      }
+    },
+    "medical_dermatology": {
+      "title": "Medico / dermatologia estetica",
+      "core_policy_id": "skinharmony_analyzer_medical_professional_policy_v1",
+      "nyra_library_id": "nyra_skin_analyzer_medical_dermatology_language_v1",
+      "runtime_scope": "professional_medical_context_support",
+      "output_header": "Nyra Analyzer - lettura professionale per contesto medico",
+      "language_rule": "Usare termini clinici prudenti solo se coerenti con score, immagini, anamnesi e contesto. Parlare di compatibilita e segni osservabili; non produrre diagnosi automatica definitiva.",
+      "allowed_terms": [
+        "valutazione professionale",
+        "segni osservabili",
+        "compatibile con",
+        "da correlare con anamnesi",
+        "barriera cutanea",
+        "eritema visibile",
+        "iperpigmentazione visibile",
+        "photoaging",
+        "follow-up"
+      ],
+      "blocked_terms": [
+        "diagnosi automatica definitiva",
+        "prescrizione automatica",
+        "cura garantita",
+        "guarigione",
+        "terapia decisa dal software"
+      ],
+      "decision_focus": [
+        "supportare lettura professionale senza sostituire il medico",
+        "evidenziare coerenza tra score, anamnesi e segni osservabili",
+        "separare risultato estetico, segnale clinico e red flag",
+        "mantenere audit e prudenza regolatoria"
+      ],
+      "core_activation": {
+        "claim_guard": "medical_professional_prudent",
+        "medical_language": "allowed_with_evidence",
+        "catalog_policy": "only_loaded_products_services_no_prescription"
+      }
+    }
   },
   "source_basis": [
     {
@@ -206,6 +321,9 @@
     "skin_tone_brightness": {
       "label": "tono e luminosita",
       "native_keys": ["fs", "skin_tone_brightness", "brightness"],
+      "spectrum": "luce bianca/parallela",
+      "marker_model": "dullness pattern, rifrazione opaca diffusa, microrilievi biancastri e griglia cutanea non uniforme",
+      "rust_digest_logic": "Leggere uniformita dei microsolchi e accumuli opachi. Se FS e basso insieme a XW/SB/YF, orienta superficie ispessita, pelle asfittica o ricambio superficiale non uniforme.",
       "biology": "La luminosita estetica dipende da superficie cutanea, idratazione dello strato corneo, uniformita della riflessione e presenza di discromie visibili.",
       "low_reading": "Tono spento o luminosita ridotta: leggere insieme a discromie, texture e acqua/sebo prima di proporre un percorso.",
       "ingredient_families": ["humectants", "barrier_lipids", "antioxidants", "niacinamide", "vitamin_c_derivatives"],
@@ -215,6 +333,9 @@
     "water_oil_balance": {
       "label": "acqua e sebo",
       "native_keys": ["yf", "water_oil_balance", "water_oil"],
+      "spectrum": "luce UV/Wood o luce dedicata alla fluorescenza di fondo",
+      "marker_model": "perdita di riflessione blu-biancastra, cluster scuri/spenti, microriflessi violacei opachi",
+      "rust_digest_logic": "Misurare intensita media e omogeneita del fondo. Se YF e basso con YZ/XW fragili, priorita a barriera, comfort e idratazione prima di attivi intensi.",
       "biology": "Il comfort estetico dipende da acqua nello strato corneo, film idrolipidico, sebo e integrita barriera.",
       "low_reading": "Equilibrio acqua/sebo fragile: evitare lettura generica, distinguere disidratazione cosmetica, lucidita e sensazione di barriera alterata.",
       "ingredient_families": ["humectants", "emollients", "barrier_lipids", "sebum_balance", "soothing"],
@@ -224,6 +345,9 @@
     "texture_fine_lines": {
       "label": "texture e linee fini",
       "native_keys": ["xw", "texture_fine_lines", "texture"],
+      "spectrum": "luce bianca/parallela",
+      "marker_model": "micro-shadows, solchi lineari stabili, gradiente grigio/ombra e continuita della superficie",
+      "rust_digest_logic": "Misurare ampiezza, linearita e contrasto dei solchi. Se YF e basso, leggere prima linee da disidratazione; se eta/FS/SB sono coerenti, leggere qualita superficie/fotoaging visivo.",
       "biology": "Texture e linee fini sono influenzate da idratazione superficiale, qualita dello strato corneo, turnover estetico e fotoinvecchiamento visibile.",
       "low_reading": "Texture irregolare o linee fini evidenti: priorita a regolarita superficiale, idratazione e tolleranza.",
       "ingredient_families": ["humectants", "peeling_acids_low_risk", "retinoid_cosmetic_low_start", "peptides", "barrier_lipids"],
@@ -233,6 +357,9 @@
     "redness_sensitivity_signals": {
       "label": "rossore e sensibilita visibile",
       "native_keys": ["yz", "redness_sensitivity_signals", "redness"],
+      "spectrum": "luce polarizzata",
+      "marker_model": "red areas, pixel rossi diffusi o puntiformi, possibile pattern vascolare/telangiectasico visibile",
+      "rust_digest_logic": "Mappare densita e morfologia dei pixel rossi. Se YZ e basso con YF fragile, bloccare aggressivita; se rosso e ramificato/stabile, aumentare cautela su calore e acidi forti.",
       "biology": "Rossore visibile e reattivita estetica richiedono lettura prudente: barriera, irritazione cosmetica e tolleranza guidano la scelta.",
       "low_reading": "Segnali visibili di sensibilita: proteggere barriera e tolleranza prima di acidi, retinoidi o trattamenti intensivi.",
       "ingredient_families": ["soothing", "barrier_lipids", "humectants", "fragrance_low", "minimal_routine"],
@@ -242,6 +369,9 @@
     "spots_pigmentation_signals": {
       "label": "discromie e uniformita",
       "native_keys": ["sb", "spots_pigmentation_signals", "spots", "pigmentation"],
+      "spectrum": "luce polarizzata",
+      "marker_model": "brown spots, aree brune/giallo-scure, bordo netto/sfumato e omogeneita del pigmento",
+      "rust_digest_logic": "Analizzare gradiente del marrone, estensione e omogeneita. Confini netti orientano pigmento superficiale; confini sfumati richiedono cautela e follow-up.",
       "biology": "Le discromie estetiche si leggono come differenze visibili di tono; vanno collegate a luminosita, esposizione UV, infiammazione passata e tolleranza.",
       "low_reading": "Uniformita cromatica in priorita: lavorare su tono, protezione cosmetica, routine costante e attivi illuminanti compatibili.",
       "ingredient_families": ["niacinamide", "vitamin_c_derivatives", "azelaic_cosmetic_caution", "tranexamic_cosmetic_caution", "licorice", "sunscreen"],
@@ -251,6 +381,9 @@
     "pores_texture": {
       "label": "pori e grana",
       "native_keys": ["mk", "pores_texture", "pores"],
+      "spectrum": "luce UV/Wood",
+      "marker_model": "fluorescenza arancio/rosso-corallo da porfirine visive, punti giallo-biancastri freddi e plugging cherato-sebaceo",
+      "rust_digest_logic": "Contare fluorescenza attiva e plugging solo su zona T/mento/ali naso. Usare MK come priorita sebo/follicolo solo se coerente con YF, YZ, area e anamnesi.",
       "biology": "Aspetto dei pori e grana dipendono da sebo, cheratinizzazione superficiale, texture, elasticita visibile e qualita della detersione.",
       "low_reading": "Pori/grana in priorita: leggere sempre con texture e acqua/sebo; evitare promessa di chiusura dei pori.",
       "ingredient_families": ["sebum_balance", "bha_caution", "niacinamide", "clays", "barrier_lipids"],
@@ -1048,6 +1181,49 @@
       "Non consigliare tecnologie invasive o fuori formazione del centro."
     ],
     "if_protocols_missing": "Non inventare protocollo centro. Proporre architettura: seduta iniziale, ciclo, home routine, recheck."
+  },
+  "commercial_recommendation_engine": {
+    "branch_id": "nyra_analyzer_product_erp_commercial_recommendation_v1",
+    "purpose": "Usare catalogo prodotti, stock, campagna e profilo struttura per scegliere prodotti reali da proporre nel report, senza inventare nomi e senza forzare promozioni incoerenti.",
+    "inventory_signals": [
+      "stock_quantity indica disponibilita locale",
+      "threshold_quantity indica soglia sottoscorta",
+      "retail_price e cost aiutano a capire pressione commerciale ma non devono comparire nel report cliente",
+      "sku e supplier servono a riconoscere prodotto/brand, non a fare testo tecnico",
+      "marketing_image presente rende la routine piu vendibile e visuale"
+    ],
+    "campaign_policy": {
+      "if_campaign_active": [
+        "Considerare prima i prodotti campaign_focus solo se coerenti con punteggi, marker, anamnesi e storico.",
+        "Non proporre un prodotto in campagna se i bisogni pelle non lo supportano.",
+        "Se due prodotti sono equivalenti sul bisogno, preferire campaign_focus o stock_priority."
+      ],
+      "if_campaign_missing": [
+        "Usare default su tutto il catalogo vendibile.",
+        "Scegliere prodotto da bisogni pelle e tags, senza pressione commerciale extra.",
+        "Non dire che manca campagna al cliente."
+      ],
+      "if_low_stock": [
+        "Sottoscorta puo essere spinta solo se coerente e vendibile.",
+        "Non creare urgenza artificiale nel report cliente.",
+        "In output cliente dire semplicemente Prodotto: usa X, non spiegare pressione magazzino."
+      ]
+    },
+    "profile_rules": {
+      "aesthetic_center": "Orientare verso routine domiciliare collegata al percorso estetico e alla continuita post cabina.",
+      "pharmacy_dermocosmetic": "Orientare verso consiglio dermocosmetico e routine semplice; priorita a tolleranza, attivi coerenti e aderenza.",
+      "medical_dermatology": "Usare prodotti solo come supporto professionale prudente; evitare prescrizione automatica e claim di cura."
+    },
+    "ranking_order": [
+      "1. Coerenza con problema e causa probabile",
+      "2. Compatibilita con sensibilita/barriera",
+      "3. Need tags e famiglia attivi",
+      "4. Disponibilita e vendibilita",
+      "5. Campagna marketing",
+      "6. Stock priority o sottoscorta",
+      "7. Foto marketing per routine visiva"
+    ],
+    "visible_output_rule": "Nel report cliente non spiegare ERP, stock, soglia o campagna: scrivere solo il prodotto consigliato e come usarlo in modo semplice."
   },
   "marketing_framework": {
     "premium_positioning": "Vendere un percorso misurabile, non una promessa: lettura iniziale, priorita, cabina, home routine, controllo e confronto immagini.",

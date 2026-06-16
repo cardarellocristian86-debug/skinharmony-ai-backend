@@ -93,6 +93,42 @@ app.use((req, res, next) => {
   res.status(401).send("Authentication required");
 });
 
+function analyzerScopedKeys() {
+  return [
+    process.env.NYRA_ANALYZER_API_KEY,
+    process.env.NYRA_ANALYZER_API_KEYS
+  ]
+    .filter(Boolean)
+    .flatMap((value) => String(value).split(/[\s,]+/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function bearerTokenFromHeader(header = "") {
+  const match = String(header).match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+app.use("/api/nyra/analyzer", (req, res, next) => {
+  const keys = analyzerScopedKeys();
+  if (!keys.length) {
+    next();
+    return;
+  }
+  const provided =
+    bearerTokenFromHeader(req.headers.authorization) ||
+    String(req.headers["x-skinharmony-analyzer-key"] || "").trim();
+  if (provided && keys.includes(provided)) {
+    next();
+    return;
+  }
+  res.status(401).json({
+    ok: false,
+    service: "skinharmony-nyra-core",
+    error: "analyzer_key_required"
+  });
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 
 function readJson(relativePath, fallback = null) {
@@ -6341,6 +6377,58 @@ function normalizeAnalyzerClientProfile(body = {}) {
   return profile;
 }
 
+function normalizeAnalyzerPracticeProfile(body = {}, pack = {}) {
+  const raw =
+    body.practice_profile ||
+    body.practiceProfile ||
+    body.data?.practice_profile ||
+    body.data?.practiceProfile ||
+    body.payload?.practice_profile ||
+    body.payload?.practiceProfile ||
+    body.context?.practice_profile ||
+    body.context?.practiceProfile ||
+    {};
+  const rawValue = typeof raw === "string"
+    ? raw
+    : raw.id || raw.raw_value || raw.rawValue || raw.value || raw.title || raw.name || "";
+  const slug = analyzerSlug(rawValue || "aesthetic_center");
+  const aliases = {
+    aesthetic: "aesthetic_center",
+    aesthetic_center: "aesthetic_center",
+    centro_estetico: "aesthetic_center",
+    beauty_center: "aesthetic_center",
+    farmacia: "pharmacy_dermocosmetic",
+    pharmacy: "pharmacy_dermocosmetic",
+    pharmacy_dermocosmetic: "pharmacy_dermocosmetic",
+    dermocosmesi: "pharmacy_dermocosmetic",
+    medico: "medical_dermatology",
+    medical: "medical_dermatology",
+    medical_dermatology: "medical_dermatology",
+    dermatologia: "medical_dermatology",
+    dermatologist: "medical_dermatology"
+  };
+  const id = aliases[slug] || "aesthetic_center";
+  const profiles = pack.practice_profiles || {};
+  const fallback = {
+    title: "Centro estetico",
+    core_policy_id: "skinharmony_analyzer_aesthetic_claim_policy_v1",
+    nyra_library_id: "nyra_skin_analyzer_aesthetic_operational_v1",
+    output_header: "Nyra Analyzer - lettura estetica professionale",
+    language_rule: pack.governance?.client_language_rule || "",
+    blocked_terms: pack.governance?.forbidden_scope || [],
+    decision_focus: [],
+    core_activation: {
+      claim_guard: "strict_cosmetic",
+      medical_language: "blocked",
+      catalog_policy: "only_loaded_products_services"
+    }
+  };
+  return {
+    id,
+    ...(profiles[id] || fallback)
+  };
+}
+
 function uniqueAnalyzerStrings(values) {
   return [...new Set(values.filter(Boolean).map((value) => String(value)))];
 }
@@ -6544,6 +6632,7 @@ function analyzerTextFromBody(body = {}) {
 
 function buildNyraAnalyzerResponse(body = {}) {
   const pack = loadNyraAnalyzerLearningPack();
+  const practiceProfile = normalizeAnalyzerPracticeProfile(body, pack);
   const scores = normalizeAnalyzerScores(body);
   if (!scores.length) {
     return {
@@ -6551,7 +6640,8 @@ function buildNyraAnalyzerResponse(body = {}) {
       error: "Punteggi Analyzer mancanti.",
       reply: "Nyra Analyzer non puo interpretare: mancano gli score originali dello Skin Analyzer.",
       pack_id: pack.pack_id,
-      version: pack.version
+      version: pack.version,
+      practice_profile: practiceProfile
     };
   }
 
@@ -6618,8 +6708,9 @@ function buildNyraAnalyzerResponse(body = {}) {
   const coreLine = coreText ? `Indicazione Core applicata: ${coreText.slice(0, 600)}` : "";
 
   const reply = [
-    "Nyra Analyzer - lettura estetica premium",
+    practiceProfile.output_header || "Nyra Analyzer - lettura estetica premium",
     clientName ? `Cliente: ${clientName}` : "",
+    `Setup struttura: ${practiceProfile.title}. ${practiceProfile.language_rule}`,
     profileLine,
     `Problema principale: ${mainProblem}`,
     `Segnali secondari: ${secondaryText}`,
@@ -6636,7 +6727,8 @@ function buildNyraAnalyzerResponse(body = {}) {
     `Prodotti: ${productSales.join(" ")}`,
     `Protocolli: ${protocolSales.join(" ")}`,
     `Linguaggio cliente: ${pack.marketing_framework?.premium_positioning || "Vendere un percorso misurabile, non una promessa."}`,
-    coreLine
+    coreLine,
+    `Regola Core: ${practiceProfile.core_policy_id}. Libreria Nyra: ${practiceProfile.nyra_library_id}.`
   ].filter(Boolean).join("\n");
 
   return {
@@ -6646,6 +6738,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     mode: pack.mode,
     pack_id: pack.pack_id,
     version: pack.version,
+    practice_profile: practiceProfile,
     score_count: scores.length,
     scores,
     dominant_pattern: {
@@ -6678,11 +6771,19 @@ function buildNyraAnalyzerResponse(body = {}) {
     ranked_protocols: rankedProtocols,
     client_language: pack.marketing_framework?.client_script_blocks || [],
     limits: {
-      aesthetic_only: true,
-      no_medical_diagnosis: true,
-      no_therapeutic_claims: true,
+      aesthetic_only: practiceProfile.id !== "medical_dermatology",
+      medical_professional_language: practiceProfile.id === "medical_dermatology",
+      no_automatic_definitive_diagnosis: true,
+      no_therapeutic_claims: practiceProfile.id !== "medical_dermatology",
+      no_prescription_by_software: true,
       no_invented_products: true,
       no_invented_scores: true
+    },
+    profile_guardrails: {
+      blocked_terms: practiceProfile.blocked_terms || [],
+      allowed_terms: practiceProfile.allowed_terms || [],
+      decision_focus: practiceProfile.decision_focus || [],
+      core_activation: practiceProfile.core_activation || {}
     },
     red_flags: pack.governance?.red_flags || [],
     core_text_used: Boolean(coreText),
@@ -6724,6 +6825,13 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
     mode: pack.mode,
     metrics: Object.keys(pack.analyzer_metrics || {}),
     active_families: Object.keys(pack.active_families || {}),
+    practice_profiles: Object.entries(pack.practice_profiles || {}).map(([id, profile]) => ({
+      id,
+      title: profile.title,
+      core_policy_id: profile.core_policy_id,
+      nyra_library_id: profile.nyra_library_id,
+      runtime_scope: profile.runtime_scope
+    })),
     source_count: Array.isArray(pack.source_basis) ? pack.source_basis.length : 0,
     medical_to_aesthetic: {
       present: Boolean(pack.medical_to_aesthetic_learning),
