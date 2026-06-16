@@ -1,6 +1,6 @@
 {
   "center_admin": {
-    "centerName": "SkinHarmony Demo Gold",
+    "centerName": "Privilege Parrucchieri",
     "centerType": "Advanced Aesthetic Systems",
     "centerLegalName": "",
     "centerVatNumber": "",
@@ -65,6 +65,14 @@
     "whatsappProvider": "twilio",
     "whatsappTemplatesReady": false,
     "whatsappWebhookReady": false,
+    "whatsappTwilioAccountSid": "",
+    "whatsappTwilioAuthToken": "",
+    "whatsappTwilioAuthTokenConfigured": false,
+    "whatsappTwilioFrom": "",
+    "whatsappTwilioConnectedAt": "",
+    "whatsappTwilioLastTestAt": "",
+    "whatsappTwilioLastTestStatus": "",
+    "whatsappTwilioLastTestMessage": "",
     "moduleSkinPro": false,
     "moduleO3System": false,
     "moduleTermosauna": false,
@@ -72,267 +80,7 @@
     "backupFrequency": "Ogni 6 ore",
     "syncEnabled": false,
     "centerId": "center_admin",
-    "progressiveIntelligenceStatus": {
-      "centerId": "center_admin",
-      "maturityScore": 0.5358,
-      "trustFunction": {
-        "maturityScore": 0.5358,
-        "trustScore": 0.5358,
-        "interpretation": "Il maturity score misura quanto è legittimo produrre intelligenza avanzata per questo tenant."
-      },
-      "activationLevel": 1,
-      "activationCode": "L1",
-      "activationLabel": "operativo_base",
-      "activationEnterpriseLabel": "operational basic",
-      "qualityVector": {
-        "historyCoverage": 0.5,
-        "dataVolume": 0.0459,
-        "costCompleteness": 0.2326,
-        "crmQuality": 0.85,
-        "stateStability": 1,
-        "economicReliability": 0.712
-      },
-      "thresholds": {
-        "l1": {
-          "maturity": 0.2,
-          "historyMonths": 0.5,
-          "minOperationalRecords": 5
-        },
-        "l2": {
-          "maturity": 0.4,
-          "minClients": 20,
-          "minAppointments": 30,
-          "minPayments": 20
-        },
-        "l3": {
-          "maturity": 0.6,
-          "minCostCompleteness": 0.55,
-          "minStateStability": 0.75
-        },
-        "l4": {
-          "maturity": 0.75,
-          "minHistoryCoverage": 0.8,
-          "minEconomicReliability": 0.65,
-          "minStateStability": 0.9
-        },
-        "l5": {
-          "maturity": 0.85,
-          "minHistoryCoverage": 0.8,
-          "minCostCompleteness": 0.75,
-          "minStateStability": 0.95,
-          "minCrmQuality": 0.75,
-          "minDataVolume": 0.75,
-          "minEconomicReliability": 0.75
-        }
-      },
-      "weights": {
-        "historyCoverage": 0.18,
-        "dataVolume": 0.18,
-        "costCompleteness": 0.18,
-        "crmQuality": 0.16,
-        "stateStability": 0.16,
-        "economicReliability": 0.14
-      },
-      "hardConstraints": {
-        "l1": {
-          "maturity": 0.2,
-          "historyMonths": 0.5,
-          "minOperationalRecords": 5
-        },
-        "l2": {
-          "maturity": 0.4,
-          "minClients": 20,
-          "minAppointments": 30,
-          "minPayments": 20
-        },
-        "l3": {
-          "maturity": 0.6,
-          "minCostCompleteness": 0.55,
-          "minStateStability": 0.75
-        },
-        "l4": {
-          "maturity": 0.75,
-          "minHistoryCoverage": 0.8,
-          "minEconomicReliability": 0.65,
-          "minStateStability": 0.9
-        },
-        "l5": {
-          "maturity": 0.85,
-          "minHistoryCoverage": 0.8,
-          "minCostCompleteness": 0.75,
-          "minStateStability": 0.95,
-          "minCrmQuality": 0.75,
-          "minDataVolume": 0.75,
-          "minEconomicReliability": 0.75
-        }
-      },
-      "enabledFeatures": [
-        {
-          "key": "quality_alerts",
-          "label": "Alert qualità dati",
-          "minLevel": 0
-        },
-        {
-          "key": "startup_checklist",
-          "label": "Checklist avvio",
-          "minLevel": 0
-        },
-        {
-          "key": "daily_priorities_basic",
-          "label": "Priorità giornaliere semplici",
-          "minLevel": 1
-        },
-        {
-          "key": "basic_risk_clients",
-          "label": "Clienti a rischio base",
-          "minLevel": 1
-        }
-      ],
-      "blockedFeatures": [
-        {
-          "key": "recall",
-          "label": "Recall",
-          "minLevel": 2,
-          "reason": "richiede livello L2"
-        },
-        {
-          "key": "continuity_signals",
-          "label": "Segnali continuità",
-          "minLevel": 2,
-          "reason": "richiede livello L2"
-        },
-        {
-          "key": "customer_frequency_insights",
-          "label": "Insight clienti e frequenze",
-          "minLevel": 2,
-          "reason": "richiede livello L2"
-        },
-        {
-          "key": "margin_analysis",
-          "label": "Analisi margini",
-          "minLevel": 3,
-          "reason": "richiede livello L3"
-        },
-        {
-          "key": "operator_productivity",
-          "label": "Produttività operatori",
-          "minLevel": 3,
-          "reason": "richiede livello L3"
-        },
-        {
-          "key": "service_correction_suggestions",
-          "label": "Servizi da correggere",
-          "minLevel": 3,
-          "reason": "richiede livello L3"
-        },
-        {
-          "key": "strategic_optimization",
-          "label": "Ottimizzazione strategica centro",
-          "minLevel": 4,
-          "reason": "richiede livello L4"
-        },
-        {
-          "key": "push_reduce_guidance",
-          "label": "Cosa spingere / cosa ridurre",
-          "minLevel": 4,
-          "reason": "richiede livello L4"
-        },
-        {
-          "key": "forecast_scenarios",
-          "label": "Scenari futuri",
-          "minLevel": 5,
-          "reason": "richiede livello L5"
-        },
-        {
-          "key": "intelligent_marketing",
-          "label": "Marketing intelligente",
-          "minLevel": 5,
-          "reason": "richiede livello L5"
-        },
-        {
-          "key": "campaign_timing",
-          "label": "Timing campagne",
-          "minLevel": 5,
-          "reason": "richiede livello L5"
-        }
-      ],
-      "reasons": {
-        "recall": "richiede livello L2",
-        "continuity_signals": "richiede livello L2",
-        "customer_frequency_insights": "richiede livello L2",
-        "margin_analysis": "richiede livello L3",
-        "operator_productivity": "richiede livello L3",
-        "service_correction_suggestions": "richiede livello L3",
-        "strategic_optimization": "richiede livello L4",
-        "push_reduce_guidance": "richiede livello L4",
-        "forecast_scenarios": "richiede livello L5",
-        "intelligent_marketing": "richiede livello L5",
-        "campaign_timing": "richiede livello L5",
-        "level": [
-          "volume minimo clienti/appuntamenti/pagamenti insufficiente per L2"
-        ]
-      },
-      "forecastAllowed": false,
-      "marketingReady": false,
-      "oracle": {
-        "enabled": false,
-        "mode": "descriptive_benchmark_only",
-        "reason": "richiede livello L5; storico insufficiente; completezza costi insufficiente; affidabilità economica insufficiente",
-        "thresholds": {
-          "minLevel": 5,
-          "minHistoryCoverage": 0.8,
-          "minCostCompleteness": 0.75,
-          "minStateStability": 0.95,
-          "minEconomicReliability": 0.75
-        }
-      },
-      "prudentialForecast": {
-        "available": false,
-        "reason": "richiede livello L5; storico insufficiente; completezza costi insufficiente; affidabilità economica insufficiente",
-        "outputPolicy": "benchmark descrittivo, nessuna previsione rigida"
-      },
-      "framework": {
-        "flow": "raw_data -> state_layer -> maturity_layer -> decision_layer -> oracle_layer",
-        "predictionPolicy": "nessuna previsione puntuale rigida; solo scenari condizionati e prudenti",
-        "noResponsibilityPolicy": "assenza di confidenza = blocco prudenziale corretto, non errore del sistema"
-      },
-      "generatedAt": "2026-05-19T19:10:19.908Z",
-      "sourceLayer": "progressive_intelligence_activation_layer_v2",
-      "message": "Modalità operativa base attiva: priorità semplici e messaggi prudenti.",
-      "currentPlan": "gold",
-      "centerName": "SkinHarmony Demo Gold",
-      "historyMonths": 4.27,
-      "historyRange": {
-        "oldestDate": "2026-01-09T11:00:00.000Z",
-        "newestDate": "2026-05-19T07:30:00.000Z"
-      },
-      "rawCounts": {
-        "clients": 12,
-        "appointments": 44,
-        "payments": 43,
-        "services": 4,
-        "staff": 3,
-        "inventory": 3
-      },
-      "goldStateEventSeq": 109,
-      "pialDataQualityComparison": {
-        "mode": "shadow",
-        "legacyScore": 0.93,
-        "coreScore": 0.9052,
-        "comparableScore": 0.9315,
-        "legacyBand": "REAL",
-        "coreBand": "REAL",
-        "comparableBand": "REAL",
-        "rawAgreementScore": 0.9839,
-        "rawAgreementBand": "ALIGNED",
-        "agreementScore": 0.9994,
-        "agreementBand": "ALIGNED",
-        "recommendedSource": "core"
-      },
-      "cached": true,
-      "recomputeReason": "demo_gold_cockpit_seed_test",
-      "persistedAt": "2026-05-19T19:10:19.908Z"
-    },
-    "updatedAt": "2026-05-19T19:10:19.908Z"
+    "progressiveIntelligenceStatus": null,
+    "updatedAt": "2026-06-16T11:51:55.181Z"
   }
 }
