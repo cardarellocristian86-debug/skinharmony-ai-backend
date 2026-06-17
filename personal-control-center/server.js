@@ -6588,6 +6588,81 @@ function collectAnalyzerFamilies(pack, dominant, secondary) {
   return uniqueAnalyzerStrings(families).slice(0, 8);
 }
 
+
+
+function analyzerVoiceMetricKey(canonicalKey) {
+  const map = {
+    skin_tone_brightness: "fs",
+    water_oil_balance: "yf",
+    texture_fine_lines: "xw",
+    redness_sensitivity_signals: "yz",
+    spots_pigmentation_signals: "sb",
+    pores_texture: "mk"
+  };
+  return map[canonicalKey] || canonicalKey;
+}
+
+function analyzerVoiceLevel(score) {
+  const normalized = analyzerNumber(score) ?? 0;
+  if (normalized >= 90) return 0;
+  if (normalized >= 80) return 1;
+  if (normalized >= 70) return 2;
+  if (normalized >= 60) return 3;
+  return 4;
+}
+
+function analyzerVoiceLibraryContext(pack, practiceProfile, dominant) {
+  const library = pack.voice_library || {};
+  const metricKey = analyzerVoiceMetricKey(dominant?.key || "");
+  const level = analyzerVoiceLevel(dominant?.score);
+  const profileId = practiceProfile?.id || "aesthetic_center";
+  const profileContract = (library.profile_contracts || []).find((item) => item.id === profileId) || null;
+  const metricCard = (library.metric_cards || []).find((item) => item.key === metricKey) || null;
+  const examples = (library.examples || [])
+    .filter((item) => item.profile === profileId && item.metric === metricKey && item.level === level)
+    .slice(0, 3);
+  const profileLanguage = metricCard?.profile_language?.[profileId] || {};
+  return {
+    active: Boolean(library.id && profileContract && metricCard),
+    id: library.id || "",
+    version: library.version || "",
+    profile: profileId,
+    profile_label: profileContract?.label || practiceProfile?.title || "",
+    metric: metricKey,
+    level,
+    level_label: library.severity_levels?.[level]?.label || dominant?.band_label || "",
+    opening_rule: profileContract?.opening_rule || "",
+    writing_rule: library.severity_levels?.[level]?.writing_rule || "",
+    readable_problem: metricCard?.readable_problem || "",
+    readable_conditions: metricCard?.readable_conditions || [],
+    problem_words: profileLanguage.problem_words || [],
+    possible_causes: profileLanguage.possible_causes || [],
+    solution_moves: profileLanguage.solution_moves || [],
+    avoid_now: profileLanguage.avoid_now || [],
+    follow_up: profileLanguage.follow_up || "",
+    guardrail: metricCard?.guardrail || "",
+    selected_examples: examples.map((item) => item.text)
+  };
+}
+
+function analyzerVoiceLines(context) {
+  if (!context.active) return [];
+  const problem = context.problem_words[0] || context.readable_problem;
+  const cause = context.possible_causes[0] || "da leggere insieme ad anamnesi, marker e zona acquisita";
+  const solution = context.solution_moves[0] || "procedere con una routine progressiva e controllabile";
+  const avoid = context.avoid_now[0] || "forzare conclusioni non sostenute dai marker";
+  const premiumLine = context.selected_examples[0] || "";
+  return [
+    "Lettura " + context.profile_label + ": metrica " + String(context.metric || "").toUpperCase() + ", livello " + context.level_label + ".",
+    "Problema: " + problem + ".",
+    "Possibile causa: " + cause + ".",
+    "Soluzione: " + solution + ".",
+    "Evita per ora: " + avoid + ".",
+    "Controllo: " + (context.follow_up || "2/3 settimane sulla stessa area e stessa luce") + ".",
+    premiumLine ? "Sintesi: " + premiumLine : ""
+  ].filter(Boolean);
+}
+
 function explainAnalyzerFamilies(pack, families) {
   return families.map((family) => {
     const item = pack.active_families?.[family] || {};
@@ -6663,6 +6738,8 @@ function buildNyraAnalyzerResponse(body = {}) {
   const clientName = String(client.name || body.clientName || body.data?.client_name || "").trim();
   const clientProfile = normalizeAnalyzerClientProfile(body);
   const learningInsights = buildAnalyzerLearningInsights({ scores, pack, profile: clientProfile, dominant });
+  const voiceContext = analyzerVoiceLibraryContext(pack, practiceProfile, dominant);
+  const voiceLines = analyzerVoiceLines(voiceContext);
 
   const mainProblem = `${dominantMetric.label || dominant.label}: ${dominant.score}/100 (${dominant.band_label}). ${dominantMetric.low_reading || "Area estetica dominante da leggere nel quadro complessivo."}`;
   const secondaryText = secondary.length
@@ -6711,6 +6788,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     practiceProfile.output_header || "Nyra Analyzer - lettura estetica premium",
     clientName ? `Cliente: ${clientName}` : "",
     `Setup struttura: ${practiceProfile.title}. ${practiceProfile.language_rule}`,
+    ...voiceLines,
     profileLine,
     `Problema principale: ${mainProblem}`,
     `Segnali secondari: ${secondaryText}`,
@@ -6764,6 +6842,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     first_move: firstMove,
     active_logic: activeLogic,
     learning_insights: learningInsights,
+    voice_library: voiceContext,
     service_sales_logic: serviceSales,
     product_sales_logic: productSales,
     protocol_logic: protocolSales,
@@ -6833,6 +6912,15 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
       runtime_scope: profile.runtime_scope
     })),
     source_count: Array.isArray(pack.source_basis) ? pack.source_basis.length : 0,
+    voice_library: {
+      present: Boolean(pack.voice_library),
+      id: pack.voice_library?.id || "",
+      version: pack.voice_library?.version || "",
+      profiles: Array.isArray(pack.voice_library?.profile_contracts) ? pack.voice_library.profile_contracts.map((item) => item.id).filter(Boolean) : [],
+      metrics: Array.isArray(pack.voice_library?.metric_cards) ? pack.voice_library.metric_cards.map((item) => item.key).filter(Boolean) : [],
+      examples: Array.isArray(pack.voice_library?.examples) ? pack.voice_library.examples.length : 0,
+      sources: Array.isArray(pack.voice_library?.sources) ? pack.voice_library.sources.length : 0
+    },
     medical_to_aesthetic: {
       present: Boolean(pack.medical_to_aesthetic_learning),
       cases: Array.isArray(pack.medical_to_aesthetic_learning?.case_playbooks)
