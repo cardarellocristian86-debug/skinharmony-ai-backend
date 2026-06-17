@@ -6590,6 +6590,8 @@ function collectAnalyzerFamilies(pack, dominant, secondary) {
 
 
 
+
+
 function analyzerVoiceMetricKey(canonicalKey) {
   const map = {
     skin_tone_brightness: "fs",
@@ -6620,7 +6622,13 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant) {
   const metricCard = (library.metric_cards || []).find((item) => item.key === metricKey) || null;
   const examples = (library.examples || [])
     .filter((item) => item.profile === profileId && item.metric === metricKey && item.level === level)
+    .slice(0, 12);
+  const blueprints = (library.voice_blueprints || [])
+    .filter((item) => item.profile === profileId)
     .slice(0, 3);
+  const sourceScoutQueries = (library.source_scout_queries || [])
+    .filter((item) => item.profile === profileId && item.metric === metricKey)
+    .slice(0, 6);
   const profileLanguage = metricCard?.profile_language?.[profileId] || {};
   return {
     active: Boolean(library.id && profileContract && metricCard),
@@ -6641,7 +6649,9 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant) {
     avoid_now: profileLanguage.avoid_now || [],
     follow_up: profileLanguage.follow_up || "",
     guardrail: metricCard?.guardrail || "",
-    selected_examples: examples.map((item) => item.text)
+    selected_examples: examples.map((item) => item.text),
+    voice_blueprints: blueprints,
+    source_scout_queries: sourceScoutQueries
   };
 }
 
@@ -6651,14 +6661,14 @@ function analyzerVoiceLines(context) {
   const cause = context.possible_causes[0] || "da leggere insieme ad anamnesi, marker e zona acquisita";
   const solution = context.solution_moves[0] || "procedere con una routine progressiva e controllabile";
   const avoid = context.avoid_now[0] || "forzare conclusioni non sostenute dai marker";
-  const premiumLine = context.selected_examples[0] || "";
+  const followUp = String(context.follow_up || "2/3 settimane sulla stessa area e stessa luce").replace(/[.]+$/g, "");
+  const premiumLine = context.selected_examples.find((line) => String(line).includes("Il problema principale")) || context.selected_examples[0] || "";
   return [
-    "Lettura " + context.profile_label + ": metrica " + String(context.metric || "").toUpperCase() + ", livello " + context.level_label + ".",
-    "Problema: " + problem + ".",
+    "Quadro " + context.profile_label + ": " + problem + ".",
     "Possibile causa: " + cause + ".",
-    "Soluzione: " + solution + ".",
-    "Evita per ora: " + avoid + ".",
-    "Controllo: " + (context.follow_up || "2/3 settimane sulla stessa area e stessa luce") + ".",
+    "Azione consigliata: " + solution + ".",
+    "Da evitare per ora: " + avoid + ".",
+    "Controllo: " + followUp + ".",
     premiumLine ? "Sintesi: " + premiumLine : ""
   ].filter(Boolean);
 }
@@ -6919,7 +6929,9 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
       profiles: Array.isArray(pack.voice_library?.profile_contracts) ? pack.voice_library.profile_contracts.map((item) => item.id).filter(Boolean) : [],
       metrics: Array.isArray(pack.voice_library?.metric_cards) ? pack.voice_library.metric_cards.map((item) => item.key).filter(Boolean) : [],
       examples: Array.isArray(pack.voice_library?.examples) ? pack.voice_library.examples.length : 0,
-      sources: Array.isArray(pack.voice_library?.sources) ? pack.voice_library.sources.length : 0
+      sources: Array.isArray(pack.voice_library?.sources) ? pack.voice_library.sources.length : 0,
+      source_scout_queries: Array.isArray(pack.voice_library?.source_scout_queries) ? pack.voice_library.source_scout_queries.length : 0,
+      voice_blueprints: Array.isArray(pack.voice_library?.voice_blueprints) ? pack.voice_library.voice_blueprints.length : 0
     },
     medical_to_aesthetic: {
       present: Boolean(pack.medical_to_aesthetic_learning),
