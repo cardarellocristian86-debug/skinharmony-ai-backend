@@ -6706,9 +6706,14 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
   const metricGlossary = voiceOrchestrator.metric_glossary?.[metricKey] || {};
   const client = body.client || body.data?.client || {};
   const profile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || {};
-  const secondarySignature = analyzerVoiceSignatureFromRows(analysis.secondary || []);
-  const stableSignature = analyzerVoiceSignatureFromRows(analysis.stable || []);
-  const scoreSignature = analyzerVoiceSignatureFromRows(analysis.scores || []);
+  const secondaryRows = Array.isArray(analysis.secondary) ? analysis.secondary.filter(Boolean) : [];
+  const stableRows = Array.isArray(analysis.stable) ? analysis.stable.filter(Boolean) : [];
+  const scoreRows = Array.isArray(analysis.scores) ? analysis.scores.filter(Boolean) : [];
+  const secondarySignature = analyzerVoiceSignatureFromRows(secondaryRows);
+  const stableSignature = analyzerVoiceSignatureFromRows(stableRows);
+  const scoreSignature = analyzerVoiceSignatureFromRows(scoreRows);
+  const secondaryKeys = secondaryRows.map((row) => row.key).filter(Boolean);
+  const stableKeys = stableRows.map((row) => row.key).filter(Boolean);
   const variationClock = body.voice_seed || body.voiceSeed || body.report_id || body.reportId || body.session_id || body.sessionId || Date.now();
   const baseVariationSeed = analyzerVoiceHash([
     profileId,
@@ -6730,6 +6735,15 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
     profile.sex || profile.sesso || ""
   ].join("|"));
   const secondaryStyleOffset = styleModes.length ? analyzerVoiceHash(secondarySignature || scoreSignature || metricKey) % styleModes.length : 0;
+  const voiceVariantSeed = analyzerVoiceHash([
+    contextVariationSeed,
+    secondarySignature,
+    stableSignature,
+    scoreSignature,
+    secondaryKeys.join(","),
+    stableKeys.join(",")
+  ].join("|"));
+  const voiceVariantId = Math.abs(voiceVariantSeed) % 11;
   const selectedStyleMode = styleModes.length
     ? styleModes[Math.abs(contextVariationSeed + secondaryStyleOffset + level) % styleModes.length]
     : null;
@@ -6769,6 +6783,10 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
     secondary_signature: secondarySignature,
     stable_signature: stableSignature,
     score_signature: scoreSignature,
+    secondary_keys: secondaryKeys,
+    stable_keys: stableKeys,
+    voice_variant_id: voiceVariantId,
+    voice_variant_seed: voiceVariantSeed,
     base_variation_seed: baseVariationSeed,
     variation_seed: contextVariationSeed
   };
@@ -6817,6 +6835,27 @@ function analyzerVoiceLines(context) {
   const detailLine = analyzerVoicePick(detailPool, seed, 8);
   const bridgeLabel = styleMode.term_bridge_label || profileStyle.term_bridge_label || "Chiave di lettura";
   const meaning = metricGlossary.meaning || "";
+  const variant = Number.isFinite(Number(context.voice_variant_id)) ? Number(context.voice_variant_id) : 0;
+  const secondaryKeys = Array.isArray(context.secondary_keys) ? context.secondary_keys : [];
+  const hasPigment = secondaryKeys.includes("spots_pigmentation_signals");
+  const hasTexture = secondaryKeys.includes("texture_fine_lines");
+  const hasPores = secondaryKeys.includes("pores_texture");
+  const hasTone = secondaryKeys.includes("skin_tone_brightness");
+  let caseAngle = "";
+  if (hasPigment && !hasTexture) {
+    caseAngle = "Lettura incrociata: il valore principale va collegato anche all'uniformita cromatica, per capire se il segnale nasce solo dalla reattivita o coinvolge anche la melanina visibile.";
+  } else if (hasTexture && !hasPigment) {
+    caseAngle = "Lettura incrociata: qui conta anche la trama cutanea; la superficie racconta quanto la pelle riesce a restare compatta, regolare e stabile.";
+  } else if (hasPigment && hasTexture) {
+    caseAngle = "Lettura incrociata: colore e trama si sommano, quindi il percorso deve proteggere la barriera mentre lavora su uniformita e qualita superficiale.";
+  } else if (hasPores && hasTone) {
+    caseAngle = "Lettura incrociata: pori, grana e luminosita fanno da controllo di coerenza del quadro, per distinguere una pelle solo reattiva da una pelle che sta compensando.";
+  }
+  const causeLabels = ["Possibile origine", "Causa probabile", "Meccanismo osservabile", "Da cosa puo dipendere", "Lettura causale", "Punto di partenza", "Interpretazione", "Origine del segnale", "Fattore da controllare", "Nesso principale", "Ipotesi operativa"];
+  const actionLabels = ["Mossa consigliata", "Direzione del percorso", "Cosa fare adesso", "Scelta operativa", "Protocollo iniziale", "Priorita pratica", "Azione guidata", "Passo successivo", "Strategia immediata", "Intervento da preferire", "Percorso da impostare"];
+  const avoidLabels = ["Da non forzare", "Meglio evitare", "Limite di oggi", "Attenzione operativa", "Da rimandare", "Non spingere ora", "Soglia di prudenza", "Cosa non fare", "Controllo del rischio", "Da tenere leggero", "Freno intelligente"];
+  const controlLabels = ["Rivalutazione", "Controllo consigliato", "Verifica", "Follow-up", "Rilettura", "Confronto successivo", "Controllo strumentale", "Prossimo check", "Verifica percorso", "Tempo di risposta", "Controllo evoluzione"];
+  const voiceLabels = ["Sintesi Nyra", "Lettura cliente", "Sintesi operativa", "Messaggio guidato", "Traduzione pratica", "Lettura premium", "Sintesi finale", "Indicazione Nyra", "Chiusura consulenza", "Formula cliente", "Quadro in parole semplici"];
   const values = {
     profileLabel: context.profile_label,
     metric: metricGlossary.public_name || context.metric,
@@ -6833,14 +6872,15 @@ function analyzerVoiceLines(context) {
     analyzerVoiceFill(opening, values),
     formula ? analyzerVoiceFill(formula, values) : "",
     detailLine ? analyzerVoiceFill(detailLine, values) : "",
+    caseAngle ? analyzerVoiceFill(caseAngle, values) : "",
     `${bridgeLabel}: ${term}.${meaning ? " In questa lettura significa " + meaning + "." : ""}`,
-    "Possibile causa: " + cause + ".",
-    "Azione consigliata: " + solution + ".",
-    "Da evitare per ora: " + avoid + ".",
-    "Controllo: " + followUp + ".",
+    `${causeLabels[variant]}: ${cause}.`,
+    `${actionLabels[variant]}: ${solution}.`,
+    `${avoidLabels[variant]}: ${avoid}.`,
+    `${controlLabels[variant]}: ${followUp}.`,
     premiumLine
-      ? "Voce Nyra: " + premiumLine
-      : "Voce Nyra: " + analyzerVoiceFill("Il problema principale e {problem}: la causa possibile e {cause}; la soluzione e {solution}. Il controllo serve a capire se il pattern si riduce o resta stabile.", values)
+      ? `${voiceLabels[variant]}: ${premiumLine}`
+      : `${voiceLabels[variant]}: ${analyzerVoiceFill("Il problema principale e {problem}: la causa possibile e {cause}; la soluzione e {solution}. Il controllo serve a capire se il pattern si riduce o resta stabile.", values)}`
   ].filter(Boolean);
 }
 
