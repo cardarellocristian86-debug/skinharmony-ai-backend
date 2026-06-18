@@ -6613,7 +6613,50 @@ function analyzerVoiceLevel(score) {
   return 4;
 }
 
-function analyzerVoiceLibraryContext(pack, practiceProfile, dominant) {
+function analyzerVoiceHash(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function analyzerVoiceArray(values) {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
+function analyzerVoicePick(values, seed = 0, offset = 0) {
+  const list = analyzerVoiceArray(values);
+  if (!list.length) return "";
+  return list[Math.abs(Number(seed || 0) + offset) % list.length];
+}
+
+function analyzerVoiceFill(template, values = {}) {
+  return String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key) => {
+    const value = values[key];
+    return value === undefined || value === null ? "" : String(value);
+  }).replace(/\s+/g, " ").trim();
+}
+
+function analyzerVoiceExampleSafeForMetric(line = "", metric = "") {
+  const text = analyzerSlug(line);
+  const blockers = {
+    fs: /(eritem|rossor|sebo|porfir|comedon|lentigo|melasma|pih)/,
+    yf: /(lentigo|melasma|pih|porfir|comedon|telangiect|ruga_profonda)/,
+    xw: /(porfir|comedon|melasma|lentigo|pih|telangiect)/,
+    yz: /(lentigo|melasma|pih|discrom|melanin|macchi|porfir|comedon|sebo|poro|ruga|ipercher)/,
+    sb: /(porfir|comedon|sebo|poro|telangiect|eritema_attivo)/,
+    mk: /(melasma|lentigo|pih|telangiect|ruga_profonda|ipercheratosi)/
+  };
+  return !(blockers[metric] || /$a/).test(text);
+}
+
+function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {}) {
   const library = pack.voice_library || {};
   const metricKey = analyzerVoiceMetricKey(dominant?.key || "");
   const level = analyzerVoiceLevel(dominant?.score);
@@ -6630,6 +6673,22 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant) {
     .filter((item) => item.profile === profileId && item.metric === metricKey)
     .slice(0, 6);
   const profileLanguage = metricCard?.profile_language?.[profileId] || {};
+  const voiceOrchestrator = library.voice_orchestrator || library.semantic_voice_orchestrator || {};
+  const profileStyle = voiceOrchestrator.profile_style_lexicon?.[profileId] || {};
+  const metricGlossary = voiceOrchestrator.metric_glossary?.[metricKey] || {};
+  const client = body.client || body.data?.client || {};
+  const profile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || {};
+  const variationClock = body.voice_seed || body.voiceSeed || body.report_id || body.reportId || body.session_id || body.sessionId || Date.now();
+  const variationSeed = analyzerVoiceHash([
+    profileId,
+    metricKey,
+    level,
+    dominant?.score,
+    client.name || body.clientName || body.data?.client_name || "",
+    profile.age || profile.eta || "",
+    profile.concerns || profile.problematiche || "",
+    variationClock
+  ].join("|"));
   return {
     active: Boolean(library.id && profileContract && metricCard),
     id: library.id || "",
@@ -6651,25 +6710,73 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant) {
     guardrail: metricCard?.guardrail || "",
     selected_examples: examples.map((item) => item.text),
     voice_blueprints: blueprints,
-    source_scout_queries: sourceScoutQueries
+    source_scout_queries: sourceScoutQueries,
+    voice_orchestrator: {
+      active: Boolean(voiceOrchestrator.version),
+      version: voiceOrchestrator.version || "",
+      role: "nyra_text_voice_selector_not_core_engine",
+      anti_repetition: voiceOrchestrator.anti_repetition || {},
+      source_research_digest: voiceOrchestrator.source_research_digest || []
+    },
+    profile_style: profileStyle,
+    metric_glossary: metricGlossary,
+    term_meanings: Array.isArray(voiceOrchestrator.term_meanings) ? voiceOrchestrator.term_meanings : [],
+    variation_seed: variationSeed
   };
 }
 
 function analyzerVoiceLines(context) {
   if (!context.active) return [];
-  const problem = context.problem_words[0] || context.readable_problem;
-  const cause = context.possible_causes[0] || "da leggere insieme ad anamnesi, marker e zona acquisita";
-  const solution = context.solution_moves[0] || "procedere con una routine progressiva e controllabile";
-  const avoid = context.avoid_now[0] || "forzare conclusioni non sostenute dai marker";
+  const seed = context.variation_seed || 0;
+  const profileStyle = context.profile_style || {};
+  const metricGlossary = context.metric_glossary || {};
+  const profileMetricTerms = analyzerVoiceArray(metricGlossary.profile_terms?.[context.profile]);
+  const term = analyzerVoicePick(profileMetricTerms, seed, 1)
+    || analyzerVoicePick(metricGlossary.terms, seed, 1)
+    || context.readable_problem;
+  const problem = analyzerVoicePick([
+    ...analyzerVoiceArray(context.problem_words),
+    ...profileMetricTerms,
+    metricGlossary.public_name,
+    context.readable_problem
+  ], seed, 2) || context.readable_problem;
+  const glossaryCauses = analyzerVoiceArray(metricGlossary.cause_terms);
+  const glossarySolutions = analyzerVoiceArray(metricGlossary.solution_terms);
+  const glossaryAvoids = analyzerVoiceArray(metricGlossary.avoid_terms);
+  const cause = analyzerVoicePick(glossaryCauses.length ? glossaryCauses : context.possible_causes, seed, 3) || "da leggere insieme ad anamnesi, marker e zona acquisita";
+  const solution = analyzerVoicePick(glossarySolutions.length ? glossarySolutions : context.solution_moves, seed, 4) || "procedere con una routine progressiva e controllabile";
+  const avoid = analyzerVoicePick(glossaryAvoids.length ? glossaryAvoids : context.avoid_now, seed, 5) || "forzare conclusioni non sostenute dai marker";
   const followUp = String(context.follow_up || "2/3 settimane sulla stessa area e stessa luce").replace(/[.]+$/g, "");
-  const premiumLine = context.selected_examples.find((line) => String(line).includes("Il problema principale")) || context.selected_examples[0] || "";
+  const safeExamples = analyzerVoiceArray(context.selected_examples).filter((line) => analyzerVoiceExampleSafeForMetric(line, context.metric));
+  const premiumLine = analyzerVoicePick(safeExamples, seed, 10);
+  const opening = analyzerVoicePick(profileStyle.opening_rotations, seed, 0)
+    || "Quadro {profileLabel}: {problem}.";
+  const formula = analyzerVoicePick(profileStyle.experience_formulas, seed, 6);
+  const bridgeLabel = profileStyle.term_bridge_label || "Chiave di lettura";
+  const meaning = metricGlossary.meaning || "";
+  const values = {
+    profileLabel: context.profile_label,
+    metric: metricGlossary.public_name || context.metric,
+    problem,
+    cause,
+    solution,
+    avoid,
+    followUp,
+    term,
+    meaning,
+    levelLabel: context.level_label
+  };
   return [
-    "Quadro " + context.profile_label + ": " + problem + ".",
+    analyzerVoiceFill(opening, values),
+    formula ? analyzerVoiceFill(formula, values) : "",
+    `${bridgeLabel}: ${term}.${meaning ? " In questa lettura significa " + meaning + "." : ""}`,
     "Possibile causa: " + cause + ".",
     "Azione consigliata: " + solution + ".",
     "Da evitare per ora: " + avoid + ".",
     "Controllo: " + followUp + ".",
-    premiumLine ? "Sintesi: " + premiumLine : ""
+    premiumLine
+      ? "Voce Nyra: " + premiumLine
+      : "Voce Nyra: " + analyzerVoiceFill("Il problema principale e {problem}: la causa possibile e {cause}; la soluzione e {solution}. Il controllo serve a capire se il pattern si riduce o resta stabile.", values)
   ].filter(Boolean);
 }
 
@@ -6931,7 +7038,14 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
       examples: Array.isArray(pack.voice_library?.examples) ? pack.voice_library.examples.length : 0,
       sources: Array.isArray(pack.voice_library?.sources) ? pack.voice_library.sources.length : 0,
       source_scout_queries: Array.isArray(pack.voice_library?.source_scout_queries) ? pack.voice_library.source_scout_queries.length : 0,
-      voice_blueprints: Array.isArray(pack.voice_library?.voice_blueprints) ? pack.voice_library.voice_blueprints.length : 0
+      voice_blueprints: Array.isArray(pack.voice_library?.voice_blueprints) ? pack.voice_library.voice_blueprints.length : 0,
+      voice_orchestrator: {
+        present: Boolean(pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator),
+        version: pack.voice_library?.voice_orchestrator?.version || pack.voice_library?.semantic_voice_orchestrator?.version || "",
+        role: pack.voice_library?.voice_orchestrator?.role || pack.voice_library?.semantic_voice_orchestrator?.role || "",
+        term_glossary_count: Object.keys((pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator)?.metric_glossary || {}).length,
+        profile_style_count: Object.keys((pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator)?.profile_style_lexicon || {}).length
+      }
     },
     medical_to_aesthetic: {
       present: Boolean(pack.medical_to_aesthetic_learning),

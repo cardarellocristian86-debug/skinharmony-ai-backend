@@ -1,7 +1,7 @@
 {
   "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
-  "version": "1.8.0",
-  "updated_at": "2026-06-17T23:20:00+02:00",
+  "version": "1.9.0",
+  "updated_at": "2026-06-18T11:36:00+02:00",
   "product": "SkinHarmony Analyzer Pro",
   "mode": "aesthetic_cosmetic_commercial_read_only",
   "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
@@ -2069,7 +2069,7 @@
   },
   "voice_library": {
     "id": "nyra_skinharmony_analyzer_voice_library_v1",
-    "version": 1.8,
+    "version": 1.9,
     "generated_at": "2026-06-17T21:07:57.274Z",
     "purpose": "Libreria proprietaria SkinHarmony per trasformare score, marker, anamnesi e catalogo in testo professionale, piu vivo e differenziato per centro estetico, farmacia dermocosmetica e studio medico.",
     "copyright_policy": "Le fonti sono usate come riferimento terminologico e di perimetro. I testi salvati sono parafrasati e generativi, non copie verbatim.",
@@ -2081,6 +2081,210 @@
       "Prodotti per nome solo se caricati e coerenti.",
       "Nessuna diagnosi automatica, promessa di guarigione o risultato garantito."
     ],
+    "voice_orchestrator": {
+      "version": "1.9.0",
+      "role": "nyra_text_voice_selector_not_core_engine",
+      "purpose": "Scegliere parole, profondita e formula narrativa in base a profilo struttura, metrica dominante, livello e anamnesi. Core V2 resta il motore decisionale; questo blocco non modifica priorita, score, prodotti o guardrail.",
+      "anti_repetition": {
+        "rule": "Non usare sempre la prima frase della libreria. Variare apertura, parola guida, causa, soluzione, evita, follow-up e voce Nyra usando seed di report, cliente, profilo e metrica.",
+        "blocked_patterns": [
+          "Quadro sempre identico per tutti i clienti",
+          "Report che inizia sempre dal punteggio",
+          "Stessa causa possibile su profili diversi",
+          "Stessa soluzione per estetica, farmacia e medico",
+          "Uso ripetuto di idratazione come priorita quando non e dominante"
+        ],
+        "required_variation_axes": [
+          "profilo struttura",
+          "metrica dominante",
+          "livello stabilita/lieve/medio/alto/critico",
+          "anamnesi dichiarata",
+          "segnali secondari",
+          "prodotti caricati o assenti"
+        ]
+      },
+      "profile_style_lexicon": {
+        "aesthetic_center": {
+          "term_bridge_label": "In parole semplici",
+          "opening_rotations": [
+            "Oggi la lettura mette in evidenza {problem}: non e solo un numero, e il punto da cui costruire il percorso visibile.",
+            "La pelle racconta soprattutto {problem}. Da qui conviene partire con una scelta ordinata, senza caricare la routine.",
+            "Il segnale piu utile oggi e {problem}: va tradotto in un lavoro concreto su comfort, grana e continuita.",
+            "La priorita estetica che emerge e {problem}. Il percorso deve essere semplice, progressivo e misurabile."
+          ],
+          "experience_formulas": [
+            "Formula di lavoro: leggere il segnale, capire cosa lo alimenta, fare una prima azione leggera e controllare la risposta.",
+            "Metodo cabina: prima si stabilizza la qualita della pelle, poi si sale con trattamenti piu mirati.",
+            "Lettura operativa: il risultato migliore arriva quando cabina e routine domiciliare lavorano nella stessa direzione.",
+            "Scelta pratica: meno promesse, piu continuita; il dato serve a scegliere il prossimo passo giusto."
+          ]
+        },
+        "pharmacy_dermocosmetic": {
+          "term_bridge_label": "Chiave dermocosmetica",
+          "opening_rotations": [
+            "La lettura dermocosmetica evidenzia {problem}: il punto non e correggere tutto, ma scegliere una routine tollerabile e coerente.",
+            "Il quadro di oggi orienta su {problem}. In farmacia questo dato serve a collegare barriera, attivi funzionali e aderenza.",
+            "Il segnale prevalente e {problem}: va tradotto in un consiglio dermocosmetico prudente, sostenibile e controllabile.",
+            "La priorita di consiglio e {problem}. La scelta prodotto deve restare semplice, leggibile e compatibile con la sensibilita dichiarata."
+          ],
+          "experience_formulas": [
+            "Formula di consiglio: segnale visibile, possibile fattore cosmetico, attivo funzionale, modalita d'uso e controllo a breve.",
+            "Metodo farmacia: ridurre confusione, scegliere pochi passaggi, verificare tollerabilita e continuita.",
+            "Lettura banco: il prodotto non viene spinto per categoria, ma scelto per coerenza con segnale e anamnesi.",
+            "Scelta dermocosmetica: prima aderenza e tollerabilita, poi intensita."
+          ]
+        },
+        "medical_dermatology": {
+          "term_bridge_label": "Lettura clinico-strumentale",
+          "opening_rotations": [
+            "Il dato strumentale orienta su {problem}: la lettura resta descrittiva e va correlata ad anamnesi, osservazione e follow-up.",
+            "Nel profilo medico il segnale principale e {problem}. La formulazione corretta e prudente: dato osservabile, ipotesi coerente, condotta di controllo.",
+            "Il quadro acquisito mostra {problem}. Non e una diagnosi automatica: e un orientamento clinico-estetico da integrare con valutazione professionale.",
+            "La mappa di oggi porta l'attenzione su {problem}. Il valore del report e distinguere cio che e osservabile da cio che va confermato."
+          ],
+          "experience_formulas": [
+            "Formula medica: dato strumentale, correlazione possibile, esclusione di eccessi interpretativi, scelta prudente e rivalutazione.",
+            "Metodo studio: descrivere il pattern, pesare anamnesi e marker, evitare claim non supportati.",
+            "Lettura professionale: il punteggio orienta, il pattern conferma, il follow-up misura.",
+            "Condotta: linguaggio preciso, nessuna certezza non dimostrata, indicazione proporzionata al quadro."
+          ]
+        }
+      },
+      "metric_glossary": {
+        "fs": {
+          "public_name": "tono, luminosita e strato corneo",
+          "terms": ["strato corneo", "opacita superficiale", "riflessione cutanea", "micro-desquamazione", "qualita della superficie"],
+          "profile_terms": {
+            "aesthetic_center": ["pelle piu spenta", "grana meno luminosa", "superficie meno levigata", "effetto pelle asfittica"],
+            "pharmacy_dermocosmetic": ["barriera superficiale disomogenea", "cheratinizzazione irregolare", "opacita da strato corneo", "comfort epidermico ridotto"],
+            "medical_dermatology": ["ipercheratosi osservabile", "disomogeneita dello strato corneo", "alterazione della riflettanza superficiale", "micro-desquamazione visibile"]
+          },
+          "meaning": "il modo in cui la superficie riflette la luce e appare uniforme, levigata o opaca",
+          "cause_terms": ["accumulo di cellule cornee", "detersione non equilibrata", "turnover superficiale rallentato", "routine poco esfoliante o poco emolliente"],
+          "solution_terms": ["lavorare con detersione delicata, esfoliazione progressiva e ripristino comfort", "migliorare levigatezza e riflessione prima di trattamenti intensi", "costruire una routine che renda la superficie piu uniforme"],
+          "avoid_terms": ["esfoliazioni aggressive se compare rossore", "promettere schiarimenti o correzioni definitive", "sovrapporre troppi attivi nello stesso giorno"]
+        },
+        "yf": {
+          "public_name": "barriera e idratazione",
+          "terms": ["barriera cutanea", "film idrolipidico", "idratazione superficiale", "comfort epidermico", "perdita di acqua transepidermica"],
+          "profile_terms": {
+            "aesthetic_center": ["pelle che trattiene meno comfort", "barriera cosmetica da rinforzare", "aspetto meno turgido", "pelle meno elastica al tatto"],
+            "pharmacy_dermocosmetic": ["supporto barriera", "idratazione funzionale", "film idrolipidico da sostenere", "tollerabilita della routine"],
+            "medical_dermatology": ["barriera epidermica", "idratazione dello strato corneo", "TEWL come concetto di riferimento non misurato direttamente", "xerosi o disidratazione osservabile quando coerente"]
+          },
+          "meaning": "la capacita della pelle di mantenere acqua, comfort e tollerabilita nella parte superficiale",
+          "cause_terms": ["detersione sgrassante", "barriera cosmetica indebolita", "routine povera di umettanti e lipidi", "trattamenti recenti o clima che aumentano secchezza percepita"],
+          "solution_terms": ["rinforzare barriera con umettanti, lipidi e routine semplice", "ridurre passaggi irritanti e aumentare continuita idratante", "lavorare prima sul comfort e poi su attivi piu forti"],
+          "avoid_terms": ["acidi o retinoidi intensi se la pelle e reattiva", "cambiare troppi prodotti insieme", "interpretare una singola lettura come diagnosi di secchezza patologica"]
+        },
+        "xw": {
+          "public_name": "texture, grana e linee",
+          "terms": ["micro-rilievo", "texture", "linee fini", "solchi superficiali", "qualita topografica"],
+          "profile_terms": {
+            "aesthetic_center": ["grana meno compatta", "linee piu visibili", "texture non uniforme", "pelle meno liscia alla luce"],
+            "pharmacy_dermocosmetic": ["micro-rilievo disomogeneo", "linee da disidratazione o struttura", "supporto elasticita", "levigatezza funzionale"],
+            "medical_dermatology": ["solchi superficiali osservabili", "pattern topografico cutaneo", "linee fini compatibili con texture alterata", "segno di photoaging se coerente con anamnesi"]
+          },
+          "meaning": "il disegno della superficie cutanea, cioe quanto la pelle appare liscia, compatta o segnata da micro-linee",
+          "cause_terms": ["disidratazione superficiale", "perdita di compattezza", "fotoesposizione cumulativa", "texture accentuata da luce e micro-ombre"],
+          "solution_terms": ["lavorare su idratazione, levigatezza e attivi pro-compattezza", "combinare routine emolliente con trattamento progressivo di texture", "controllare se le linee migliorano quando la barriera e piu stabile"],
+          "avoid_terms": ["trattamenti troppo aggressivi se il rossore e presente", "promettere cancellazione delle rughe", "confondere linee dinamiche con correzione definitiva"]
+        },
+        "yz": {
+          "public_name": "rossore e reattivita",
+          "terms": ["eritema", "reattivita cutanea", "microcircolo visibile", "sensibilita vascolare", "rossore diffuso"],
+          "profile_terms": {
+            "aesthetic_center": ["pelle che reagisce facilmente", "rossore visibile", "sensazione di calore o fragilita da verificare", "barriera da calmare"],
+            "pharmacy_dermocosmetic": ["reattivita dermocosmetica", "tollerabilita ridotta", "rossore da gestire con prudenza", "routine lenitiva"],
+            "medical_dermatology": ["eritema osservabile", "pattern vascolare superficiale", "telangiectasia-like se il marker lo sostiene", "reattivita da correlare clinicamente"]
+          },
+          "meaning": "la componente rossa visibile che puo indicare reattivita, stimolo recente o fragilita cosmetica",
+          "cause_terms": ["barriera alterata", "stimolo meccanico o trattamento recente", "routine troppo attiva", "tendenza vascolare o sensibilita dichiarata"],
+          "solution_terms": ["ridurre intensita, proteggere barriera e usare passaggi lenitivi", "preferire routine corta e test di tollerabilita", "rivalutare dopo fase calmante prima di acidi o trattamenti forti"],
+          "avoid_terms": ["peeling aggressivi", "calore intenso non necessario", "retinoidi/acidi senza gradualita", "parole come cura o guarigione nei profili non medici"]
+        },
+        "sb": {
+          "public_name": "discromie e uniformita cromatica",
+          "terms": ["discromia", "iperpigmentazione", "melanina superficiale", "macchie post-infiammatorie", "uniformita del tono"],
+          "profile_terms": {
+            "aesthetic_center": ["tono meno uniforme", "macchie visibili", "luminosita irregolare", "discromie da controllare con costanza"],
+            "pharmacy_dermocosmetic": ["uniformita cromatica", "supporto depigmentante cosmetico", "fotoprotezione quotidiana", "macchie post-infiammatorie se coerenti"],
+            "medical_dermatology": ["pattern pigmentario osservabile", "iperpigmentazione compatibile con quadro strumentale", "melasma-like solo se supportato", "PIH-like se anamnesi e marker lo sostengono"]
+          },
+          "meaning": "la distribuzione non omogenea del colore della pelle, da leggere sempre con esposizione solare, fototipo e storia recente",
+          "cause_terms": ["fotoesposizione", "infiammazione precedente", "fototipo predisposto", "routine SPF non costante", "trattamenti irritanti recenti"],
+          "solution_terms": ["stabilizzare fotoprotezione e attivi uniformanti", "lavorare con costanza su luminosita e prevenzione della ricomparsa", "evitare intensita finche la barriera non e stabile"],
+          "avoid_terms": ["promettere eliminazione macchie", "trattare macchie senza SPF", "usare termini diagnostici se il profilo non e medico", "sovra-trattare se c'e rossore"]
+        },
+        "mk": {
+          "public_name": "sebo, pori e impurita visibili",
+          "terms": ["sebo", "pori visibili", "comedogenicita visiva", "porfirine", "ostruzione follicolare"],
+          "profile_terms": {
+            "aesthetic_center": ["zona piu lucida o impura", "pori piu evidenti", "sebo da riequilibrare", "grana con impurita visibili"],
+            "pharmacy_dermocosmetic": ["eccesso sebaceo cosmetico", "ostruzione follicolare visibile", "routine sebo-equilibrante", "fluorescenza porfirinica quando presente"],
+            "medical_dermatology": ["segnale porfirinico osservabile", "comedoni o plug follicolari se supportati dal marker", "pori dilatati osservabili", "pattern seborroico da correlare"]
+          },
+          "meaning": "la lettura di pori, lucidita e fluorescenze che orientano sulla gestione cosmetica di sebo e impurita",
+          "cause_terms": ["produzione sebacea alta", "detersione non bilanciata", "occlusione cosmetica", "routine troppo ricca o poco costante", "fluorescenza porfirinica quando rilevata"],
+          "solution_terms": ["riequilibrare senza sgrassare troppo", "usare attivi purificanti progressivi e idratazione leggera", "lavorare su detersione, texture e controllo della lucidita"],
+          "avoid_terms": ["sgrassare in modo aggressivo", "saltare idratazione leggera", "dire acne se il quadro non lo sostiene", "inventare prodotto purificante non caricato"]
+        }
+      },
+      "term_meanings": [
+        {
+          "term": "barriera cutanea",
+          "meaning": "insieme funzionale di strato corneo, lipidi e film superficiale che aiuta la pelle a trattenere acqua e tollerare gli stimoli"
+        },
+        {
+          "term": "film idrolipidico",
+          "meaning": "strato superficiale formato da acqua, lipidi e secrezioni che contribuisce a comfort, elasticita percepita e protezione cosmetica"
+        },
+        {
+          "term": "eritema",
+          "meaning": "rossore osservabile collegato alla componente vascolare superficiale; nel software va descritto come segnale, non come diagnosi"
+        },
+        {
+          "term": "porfirine",
+          "meaning": "fluorescenze rosso-arancio visibili in certe condizioni UV, utili come indizio strumentale di impurita follicolare"
+        },
+        {
+          "term": "discromia",
+          "meaning": "irregolarita cromatica del tono cutaneo che puo avere cause cosmetiche, solari o post-infiammatorie da verificare col contesto"
+        }
+      ],
+      "source_research_digest": [
+        {
+          "source": "FDA Cosmetics Labeling Claims",
+          "url": "https://www.fda.gov/cosmetics/cosmetics-labeling/cosmetics-labeling-claims",
+          "used_for": "Confine claim cosmetico: migliorare aspetto, comfort e routine senza promettere cura o trattamento di malattie."
+        },
+        {
+          "source": "NIAMS Acne",
+          "url": "https://www.niams.nih.gov/health-topics/acne",
+          "used_for": "Lessico prudente su follicoli, sebo e impurita senza trasformare il report estetico in diagnosi acne."
+        },
+        {
+          "source": "Mayo Clinic Acne",
+          "url": "https://www.mayoclinic.org/diseases-conditions/acne/symptoms-causes/syc-20368047",
+          "used_for": "Distinzione tra pelle oleosa/pori/comedoni e condizioni che richiedono profilo medico."
+        },
+        {
+          "source": "Canfield VISIA Complexion Analysis",
+          "url": "https://www.canfieldsci.com/imaging-systems/visia-complexion-analysis/",
+          "used_for": "Benchmark competitor: categorie visive come spots, pores, wrinkles, texture, red areas e UV spots."
+        },
+        {
+          "source": "Perfect Corp AI Skin Analysis",
+          "url": "https://www.perfectcorp.com/business/solutions/ai-skin-analysis",
+          "used_for": "Benchmark linguaggio commerciale: analisi AI come esperienza consultiva e personalizzazione prodotto."
+        },
+        {
+          "source": "Cleveland Clinic patient education skin topics",
+          "url": "https://my.clevelandclinic.org/health/body/10978-skin",
+          "used_for": "Linguaggio chiaro per spiegare funzioni cutanee senza eccesso tecnico nel profilo farmacia/cliente."
+        }
+      ]
+    },
     "sources": [
       {
         "id": "aad_acne_public",
@@ -13679,18 +13883,22 @@
       "potential_phrase_variants": 17280,
       "source_count": 54,
       "source_scout_query_count": 108,
-      "voice_blueprint_count": 9
+      "voice_blueprint_count": 9,
+      "voice_orchestrator": true,
+      "term_glossary_count": 6
     }
   },
   "voice_library_summary": {
     "id": "nyra_skinharmony_analyzer_voice_library_v1",
-    "version": 1.8,
+    "version": 1.9,
     "profile_count": 3,
     "metric_count": 6,
     "example_count": 1080,
     "potential_phrase_variants": 17280,
     "source_count": 54,
     "source_scout_query_count": 108,
-    "voice_blueprint_count": 9
+    "voice_blueprint_count": 9,
+    "voice_orchestrator": true,
+    "term_glossary_count": 6
   }
 }
