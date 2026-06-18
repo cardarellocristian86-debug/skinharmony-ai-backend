@@ -1,7 +1,7 @@
 {
   "pack_id": "nyra_skinharmony_analyzer_beauty_learning_v1",
-  "version": "1.9.0",
-  "updated_at": "2026-06-18T11:36:00+02:00",
+  "version": "1.9.1",
+  "updated_at": "2026-06-18T12:01:00+02:00",
   "product": "SkinHarmony Analyzer Pro",
   "mode": "aesthetic_cosmetic_commercial_read_only",
   "mission": "Interpretare i punteggi dello SkinHarmony Analyzer in linguaggio estetico professionale, collegando biologia cutanea, cosmetologia, chimica cosmetica, servizi cabina e proposta prodotto senza fare diagnosi medica.",
@@ -2069,7 +2069,7 @@
   },
   "voice_library": {
     "id": "nyra_skinharmony_analyzer_voice_library_v1",
-    "version": 1.9,
+    "version": 1.91,
     "generated_at": "2026-06-17T21:07:57.274Z",
     "purpose": "Libreria proprietaria SkinHarmony per trasformare score, marker, anamnesi e catalogo in testo professionale, piu vivo e differenziato per centro estetico, farmacia dermocosmetica e studio medico.",
     "copyright_policy": "Le fonti sono usate come riferimento terminologico e di perimetro. I testi salvati sono parafrasati e generativi, non copie verbatim.",
@@ -2082,7 +2082,7 @@
       "Nessuna diagnosi automatica, promessa di guarigione o risultato garantito."
     ],
     "voice_orchestrator": {
-      "version": "1.9.0",
+      "version": "1.9.1",
       "role": "nyra_text_voice_selector_not_core_engine",
       "purpose": "Scegliere parole, profondita e formula narrativa in base a profilo struttura, metrica dominante, livello e anamnesi. Core V2 resta il motore decisionale; questo blocco non modifica priorita, score, prodotti o guardrail.",
       "anti_repetition": {
@@ -2100,7 +2100,8 @@
           "livello stabilita/lieve/medio/alto/critico",
           "anamnesi dichiarata",
           "segnali secondari",
-          "prodotti caricati o assenti"
+          "prodotti caricati o assenti",
+          "registro voce interno"
         ]
       },
       "profile_style_lexicon": {
@@ -2117,6 +2118,110 @@
             "Metodo cabina: prima si stabilizza la qualita della pelle, poi si sale con trattamenti piu mirati.",
             "Lettura operativa: il risultato migliore arriva quando cabina e routine domiciliare lavorano nella stessa direzione.",
             "Scelta pratica: meno promesse, piu continuita; il dato serve a scegliere il prossimo passo giusto."
+          ],
+          "style_modes": [
+            {
+              "id": "aesthetic_consulente_premium",
+              "label": "Consulente premium",
+              "term_bridge_label": "Tradotto per il cliente",
+              "opening_rotations": [
+                "La lettura di oggi mette al centro {problem}: e il punto che puo cambiare piu velocemente la percezione della pelle.",
+                "Guardando il quadro nel suo insieme, {problem} e il segnale da usare come guida del percorso."
+              ],
+              "experience_formulas": [
+                "Approccio consulenziale: una priorita chiara, una scelta semplice, un controllo ravvicinato.",
+                "Qui non serve aggiungere passaggi: serve scegliere il passaggio giusto e renderlo costante."
+              ],
+              "detail_lines": [
+                "L'obiettivo e far capire al cliente cosa vede, cosa puo sentire sulla pelle e cosa fare da oggi.",
+                "Il linguaggio deve restare concreto: una pelle piu ordinata si costruisce con metodo, non con promesse."
+              ]
+            },
+            {
+              "id": "aesthetic_cabina_operativa",
+              "label": "Operatore cabina",
+              "term_bridge_label": "Lavoro in cabina",
+              "opening_rotations": [
+                "In cabina partirei da {problem}, perche e il segnale che condiziona la scelta del trattamento.",
+                "La seduta va costruita intorno a {problem}: prima si mette ordine, poi si intensifica."
+              ],
+              "experience_formulas": [
+                "Sequenza cabina: preparazione delicata, azione mirata, chiusura protettiva, controllo della risposta.",
+                "Il trattamento deve lasciare la pelle piu leggibile, non piu stressata."
+              ],
+              "detail_lines": [
+                "Se la pelle risponde bene, nella seduta successiva si puo salire di precisione.",
+                "Se compare reattivita, si riduce intensita e si protegge la barriera cosmetica."
+              ]
+            },
+            {
+              "id": "aesthetic_home_routine",
+              "label": "Routine domiciliare",
+              "term_bridge_label": "Routine a casa",
+              "opening_rotations": [
+                "Per casa, il punto da non perdere e {problem}: pochi gesti, fatti bene, valgono piu di molti prodotti.",
+                "La routine deve sostenere {problem} senza confondere la pelle con troppi passaggi."
+              ],
+              "experience_formulas": [
+                "Formula home: detergere senza impoverire, correggere con un solo attivo guida, proteggere e ricontrollare.",
+                "La costanza e parte del trattamento: senza continuita il dato migliora meno."
+              ],
+              "detail_lines": [
+                "Il consiglio deve sembrare facile da seguire, altrimenti il cliente lo abbandona.",
+                "Il prodotto puo essere nominato solo quando e realmente presente e coerente con il quadro."
+              ]
+            },
+            {
+              "id": "aesthetic_luxury_calm",
+              "label": "Tono luxury calmo",
+              "term_bridge_label": "Lettura premium",
+              "opening_rotations": [
+                "Il quadro non va letto con fretta: {problem} indica dove la pelle chiede piu ordine e continuita.",
+                "La qualita della pelle oggi ruota intorno a {problem}, da trattare con precisione e misura."
+              ],
+              "experience_formulas": [
+                "La scelta migliore e elegante perche e essenziale: poche azioni, ben abbinate, controllate nel tempo.",
+                "Il percorso premium non forza la pelle; la accompagna verso un aspetto piu stabile."
+              ],
+              "detail_lines": [
+                "Il tono resta autorevole, mai commerciale aggressivo.",
+                "Il risultato percepito nasce da comfort, luminosita e coerenza della routine."
+              ]
+            },
+            {
+              "id": "aesthetic_followup_control",
+              "label": "Controllo percorso",
+              "term_bridge_label": "Cosa verifichiamo",
+              "opening_rotations": [
+                "Il valore di oggi e avere un punto di partenza su {problem}, cosi il prossimo controllo non sara a sensazione.",
+                "Questa lettura serve a misurare {problem} e a capire se il percorso sta andando nella direzione giusta."
+              ],
+              "experience_formulas": [
+                "Controllo: stessa zona, stessa luce, stessa routine dichiarata; solo cosi il confronto ha valore.",
+                "Il follow-up deve dire cosa migliora, cosa resta stabile e cosa va corretto."
+              ],
+              "detail_lines": [
+                "Il cliente deve capire che il controllo non e un extra, ma la parte che rende il percorso credibile.",
+                "Se il dato cambia molto, va riletto con trattamento recente, detersione e qualita immagine."
+              ]
+            },
+            {
+              "id": "aesthetic_soft_sales",
+              "label": "Vendita morbida",
+              "term_bridge_label": "Scelta consigliata",
+              "opening_rotations": [
+                "{problem} e il motivo per cui oggi ha senso proporre una scelta mirata, non generica.",
+                "Il dato rende piu chiaro quale prodotto o servizio proporre: si parte da {problem}."
+              ],
+              "experience_formulas": [
+                "Vendita corretta: prima spiegare il bisogno, poi proporre il prodotto caricato solo se coerente.",
+                "La proposta funziona quando il cliente riconosce il problema prima ancora del prodotto."
+              ],
+              "detail_lines": [
+                "Il nome prodotto entra nel testo solo se e nel catalogo del centro.",
+                "Se manca il prodotto giusto, il consiglio resta sulla categoria funzionale."
+              ]
+            }
           ]
         },
         "pharmacy_dermocosmetic": {
@@ -2132,6 +2237,110 @@
             "Metodo farmacia: ridurre confusione, scegliere pochi passaggi, verificare tollerabilita e continuita.",
             "Lettura banco: il prodotto non viene spinto per categoria, ma scelto per coerenza con segnale e anamnesi.",
             "Scelta dermocosmetica: prima aderenza e tollerabilita, poi intensita."
+          ],
+          "style_modes": [
+            {
+              "id": "pharmacy_banco_pratico",
+              "label": "Banco pratico",
+              "term_bridge_label": "Consiglio al banco",
+              "opening_rotations": [
+                "Al banco il dato utile e {problem}: permette di dare un consiglio chiaro senza appesantire la routine.",
+                "La lettura orienta su {problem}; il consiglio deve essere semplice da capire e facile da seguire."
+              ],
+              "experience_formulas": [
+                "Sequenza banco: bisogno, prodotto coerente se caricato, modalita d'uso, controllo tollerabilita.",
+                "Il cliente deve uscire con pochi passaggi e un motivo chiaro per seguirli."
+              ],
+              "detail_lines": [
+                "In farmacia il linguaggio deve essere piu tecnico dell'estetica ma meno definitivo del medico.",
+                "La vendita resta credibile solo se il prodotto risponde al segnale e all'anamnesi."
+              ]
+            },
+            {
+              "id": "pharmacy_dermocosmetic_science",
+              "label": "Dermocosmesi scientifica",
+              "term_bridge_label": "Razionale dermocosmetico",
+              "opening_rotations": [
+                "Il segnale {problem} va letto come indicatore dermocosmetico: orienta attivi, texture e tollerabilita.",
+                "Dal punto di vista dermocosmetico, il segnale legato a {problem} orienta una scelta piu razionale degli attivi."
+              ],
+              "experience_formulas": [
+                "Razionale: dato visibile, funzione cutanea coinvolta, attivo compatibile, controllo aderenza.",
+                "La profondita non sta nel dire tutto: sta nel selezionare l'attivo giusto per il quadro."
+              ],
+              "detail_lines": [
+                "Il termine tecnico va spiegato in modo utile, senza diventare una lezione pesante.",
+                "Gli attivi si nominano come funzione, non come promessa terapeutica."
+              ]
+            },
+            {
+              "id": "pharmacy_routine_adherence",
+              "label": "Aderenza routine",
+              "term_bridge_label": "Come usarlo davvero",
+              "opening_rotations": [
+                "Per {problem}, la scelta piu importante e una routine che il cliente riesca davvero a mantenere.",
+                "Il rischio non e solo scegliere il prodotto sbagliato: e creare una routine troppo complessa per {problem}."
+              ],
+              "experience_formulas": [
+                "Aderenza: pochi prodotti, tempi chiari, compatibilita con abitudini e controllo dopo 2/3 settimane.",
+                "Una routine efficace deve essere sostenibile, non perfetta sulla carta e impossibile da seguire."
+              ],
+              "detail_lines": [
+                "Se il cliente usa gia molti prodotti, il primo valore e semplificare prima di aggiungere.",
+                "La spiegazione deve aiutare il farmacista a vendere senza sembrare generico."
+              ]
+            },
+            {
+              "id": "pharmacy_tolerance_first",
+              "label": "Tollerabilita prima",
+              "term_bridge_label": "Tollerabilita",
+              "opening_rotations": [
+                "Con {problem}, la prima domanda e: la pelle tollera bene quello che stiamo proponendo?",
+                "Il quadro richiede prudenza: {problem} va gestito senza aumentare il carico irritativo."
+              ],
+              "experience_formulas": [
+                "Prima tollerabilita, poi intensita: questa e la linea piu sicura per un consiglio dermocosmetico.",
+                "Se la pelle reagisce, il prodotto migliore e quello che il cliente riesce a usare senza sospenderlo."
+              ],
+              "detail_lines": [
+                "Quando rossore, barriera o anamnesi indicano sensibilita, la priorita e ridurre il carico.",
+                "Evitare tono allarmistico: si parla di prudenza, non di paura."
+              ]
+            },
+            {
+              "id": "pharmacy_education",
+              "label": "Educazione cliente",
+              "term_bridge_label": "Perche succede",
+              "opening_rotations": [
+                "La parte educativa e importante: {problem} va spiegato bene, altrimenti il cliente compra ma non capisce.",
+                "Il dato su {problem} serve anche a far capire perche alcuni gesti quotidiani possono cambiare la risposta della pelle."
+              ],
+              "experience_formulas": [
+                "Educazione: spiegare il termine, collegarlo alla routine, dare una regola semplice, verificare.",
+                "Il consiglio diventa piu forte quando il cliente capisce il meccanismo, non solo il prodotto."
+              ],
+              "detail_lines": [
+                "I termini tecnici vanno tradotti senza banalizzarli.",
+                "Il testo deve dare una piccola lezione utile, non un paragrafo enciclopedico."
+              ]
+            },
+            {
+              "id": "pharmacy_campaign_smart",
+              "label": "Campagna intelligente",
+              "term_bridge_label": "Prodotto prioritario",
+              "opening_rotations": [
+                "Se la farmacia ha una campagna attiva, {problem} permette di selezionare solo il prodotto coerente.",
+                "Il dato filtra la campagna: resta solo cio che ha senso per {problem}."
+              ],
+              "experience_formulas": [
+                "Campagna corretta: prodotto disponibile, coerente con segnale, tollerabile per anamnesi, spiegabile in una frase.",
+                "La promozione funziona se resta intelligente: cio che non c'entra va lasciato fuori."
+              ],
+              "detail_lines": [
+                "Se nessun prodotto campagna e coerente, la proposta resta sulla categoria funzionale.",
+                "Il prodotto viene nominato solo se caricato, vendibile e disponibile."
+              ]
+            }
           ]
         },
         "medical_dermatology": {
@@ -2147,6 +2356,110 @@
             "Metodo studio: descrivere il pattern, pesare anamnesi e marker, evitare claim non supportati.",
             "Lettura professionale: il punteggio orienta, il pattern conferma, il follow-up misura.",
             "Condotta: linguaggio preciso, nessuna certezza non dimostrata, indicazione proporzionata al quadro."
+          ],
+          "style_modes": [
+            {
+              "id": "medical_clinical_descriptive",
+              "label": "Clinico descrittivo",
+              "term_bridge_label": "Dato osservabile",
+              "opening_rotations": [
+                "Il pattern principale e {problem}: va descritto come dato osservabile, non trasformato in conclusione automatica.",
+                "La lettura strumentale documenta {problem}; il significato va correlato alla sede e all'anamnesi."
+              ],
+              "experience_formulas": [
+                "Sequenza clinica: osservazione, compatibilita, limiti, condotta prudente e follow-up.",
+                "Il report medico deve aiutare la valutazione, non sostituirla."
+              ],
+              "detail_lines": [
+                "La nota resta asciutta, precisa e adatta a cartella o visita.",
+                "Ogni termine clinico deve restare ancorato a cio che il marker sostiene."
+              ]
+            },
+            {
+              "id": "medical_instrumental_followup",
+              "label": "Strumentale follow-up",
+              "term_bridge_label": "Confronto nel tempo",
+              "opening_rotations": [
+                "{problem} oggi diventa un riferimento strumentale da confrontare nel controllo successivo.",
+                "Il valore del dato su {problem} aumenta se viene ripetuto con stessa area, luce e condizioni."
+              ],
+              "experience_formulas": [
+                "Follow-up: stessa tecnica, stessa sede, stesso contesto; poi valutare variazione, stabilita o peggioramento.",
+                "La robustezza non nasce da una singola immagine, ma dalla comparabilita del controllo."
+              ],
+              "detail_lines": [
+                "Il testo fa capire cosa misurare di nuovo, non solo cosa si vede ora.",
+                "Se il dato non e comparabile, prima viene il controllo tecnico e poi la conclusione."
+              ]
+            },
+            {
+              "id": "medical_aesthetic_dermatology",
+              "label": "Dermatologia estetica",
+              "term_bridge_label": "Lettura dermatologica",
+              "opening_rotations": [
+                "Nel percorso di dermatologia estetica, {problem} orienta la scelta senza autorizzare conclusioni definitive.",
+                "Il quadro {problem} aiuta a dosare la strategia: prima sicurezza cutanea, poi obiettivo estetico."
+              ],
+              "experience_formulas": [
+                "Dermatologia estetica: segno osservabile, tolleranza, obiettivo, intensita proporzionata.",
+                "L'intervento migliore e quello che rispetta il quadro cutaneo prima del risultato visivo."
+              ],
+              "detail_lines": [
+                "Il linguaggio puo essere piu clinico, restando prudente e proporzionato.",
+                "La soluzione resta una indicazione proporzionata, non una prescrizione automatica."
+              ]
+            },
+            {
+              "id": "medical_anamnesis_correlation",
+              "label": "Correlazione anamnesi",
+              "term_bridge_label": "Correlazione anamnestica",
+              "opening_rotations": [
+                "{problem} assume piu valore quando viene letto insieme a eta, fototipo, trattamenti recenti e routine.",
+                "Il dato su {problem} non va isolato: va messo in relazione con cio che il paziente dichiara."
+              ],
+              "experience_formulas": [
+                "Correlazione: dato strumentale, storia recente, esposizioni, prodotti usati e risposta clinica.",
+                "Se anamnesi e marker non coincidono, il report deve segnalarlo senza forzare."
+              ],
+              "detail_lines": [
+                "Quando sono dichiarate problematiche specifiche, la lettura separa dichiarato e osservato.",
+                "Il testo distingue cio che e dichiarato da cio che e supportato dal quadro."
+              ]
+            },
+            {
+              "id": "medical_risk_control",
+              "label": "Controllo rischio",
+              "term_bridge_label": "Prudenza clinica",
+              "opening_rotations": [
+                "Con {problem}, la priorita e evitare sovrainterpretazione e indicare cosa va verificato.",
+                "Il dato suggerisce {problem}; la condotta deve restare prudente finche il quadro non e confermato."
+              ],
+              "experience_formulas": [
+                "Controllo rischio: non diagnosticare da marker singolo, non promettere risposta, non ignorare red flag.",
+                "Meglio una nota prudente e utile che una frase forte non sostenuta."
+              ],
+              "detail_lines": [
+                "Quando il testo rischia di diventare troppo assertivo, la nota resta prudente e proporzionata.",
+                "Se il segnale e marcato o persistente, rimandare a valutazione professionale resta corretto."
+              ]
+            },
+            {
+              "id": "medical_documentation",
+              "label": "Documentazione professionale",
+              "term_bridge_label": "Nota per report",
+              "opening_rotations": [
+                "Per documentare il caso, {problem} va registrato con linguaggio stabile e ripetibile.",
+                "Il report riporta {problem} come elemento di documentazione del quadro acquisito."
+              ],
+              "experience_formulas": [
+                "Documentazione: descrizione breve, contesto tecnico, indicazione proporzionata, controllo programmato.",
+                "La nota deve essere chiara anche riletta tra settimane, senza dipendere dalla memoria dell'operatore."
+              ],
+              "detail_lines": [
+                "Questo stile e utile per PDF, archivio cliente e confronto prima/dopo.",
+                "La frase deve restare professionale, breve e non sensazionalistica."
+              ]
+            }
           ]
         }
       },
@@ -13885,12 +14198,14 @@
       "source_scout_query_count": 108,
       "voice_blueprint_count": 9,
       "voice_orchestrator": true,
-      "term_glossary_count": 6
+      "term_glossary_count": 6,
+      "style_mode_count": 18,
+      "style_modes_per_profile": 6
     }
   },
   "voice_library_summary": {
     "id": "nyra_skinharmony_analyzer_voice_library_v1",
-    "version": 1.9,
+    "version": 1.91,
     "profile_count": 3,
     "metric_count": 6,
     "example_count": 1080,
@@ -13899,6 +14214,8 @@
     "source_scout_query_count": 108,
     "voice_blueprint_count": 9,
     "voice_orchestrator": true,
-    "term_glossary_count": 6
+    "term_glossary_count": 6,
+    "style_mode_count": 18,
+    "style_modes_per_profile": 6
   }
 }

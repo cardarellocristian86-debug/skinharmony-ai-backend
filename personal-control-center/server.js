@@ -6648,6 +6648,12 @@ function analyzerVoiceClean(value = "") {
   return String(value || "").replace(/\s+/g, " ").replace(/[.;:!?]+$/g, "").trim();
 }
 
+function analyzerVoiceInlineTerm(value = "") {
+  const clean = analyzerVoiceClean(value);
+  if (!clean) return "";
+  return clean.charAt(0).toLocaleLowerCase("it-IT") + clean.slice(1);
+}
+
 function analyzerVoiceNormalizeLine(value = "") {
   return String(value || "")
     .replace(/\s+/g, " ")
@@ -6688,6 +6694,7 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {})
   const profileLanguage = metricCard?.profile_language?.[profileId] || {};
   const voiceOrchestrator = library.voice_orchestrator || library.semantic_voice_orchestrator || {};
   const profileStyle = voiceOrchestrator.profile_style_lexicon?.[profileId] || {};
+  const styleModes = Array.isArray(profileStyle.style_modes) ? profileStyle.style_modes : [];
   const metricGlossary = voiceOrchestrator.metric_glossary?.[metricKey] || {};
   const client = body.client || body.data?.client || {};
   const profile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || {};
@@ -6702,6 +6709,7 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {})
     profile.concerns || profile.problematiche || "",
     variationClock
   ].join("|"));
+  const selectedStyleMode = styleModes.length ? styleModes[variationSeed % styleModes.length] : null;
   return {
     active: Boolean(library.id && profileContract && metricCard),
     id: library.id || "",
@@ -6732,6 +6740,7 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {})
       source_research_digest: voiceOrchestrator.source_research_digest || []
     },
     profile_style: profileStyle,
+    selected_style_mode: selectedStyleMode,
     metric_glossary: metricGlossary,
     term_meanings: Array.isArray(voiceOrchestrator.term_meanings) ? voiceOrchestrator.term_meanings : [],
     variation_seed: variationSeed
@@ -6742,12 +6751,13 @@ function analyzerVoiceLines(context) {
   if (!context.active) return [];
   const seed = context.variation_seed || 0;
   const profileStyle = context.profile_style || {};
+  const styleMode = context.selected_style_mode || {};
   const metricGlossary = context.metric_glossary || {};
   const profileMetricTerms = analyzerVoiceArray(metricGlossary.profile_terms?.[context.profile]);
-  const term = analyzerVoiceClean(analyzerVoicePick(profileMetricTerms, seed, 1)
+  const term = analyzerVoiceInlineTerm(analyzerVoicePick(profileMetricTerms, seed, 1)
     || analyzerVoicePick(metricGlossary.terms, seed, 1)
     || context.readable_problem);
-  const problem = analyzerVoiceClean(analyzerVoicePick([
+  const problem = analyzerVoiceInlineTerm(analyzerVoicePick([
     ...analyzerVoiceArray(context.problem_words),
     ...profileMetricTerms,
     metricGlossary.public_name,
@@ -6765,10 +6775,20 @@ function analyzerVoiceLines(context) {
   const followUp = String(context.follow_up || "2/3 settimane sulla stessa area e stessa luce").replace(/[.]+$/g, "");
   const safeExamples = analyzerVoiceArray(context.selected_examples).filter((line) => analyzerVoiceExampleSafeForMetric(line, context.metric));
   const premiumLine = analyzerVoicePick(safeExamples, seed, 10);
-  const opening = analyzerVoicePick(profileStyle.opening_rotations, seed, 0)
+  const openingPool = [
+    ...analyzerVoiceArray(styleMode.opening_rotations),
+    ...analyzerVoiceArray(profileStyle.opening_rotations)
+  ];
+  const formulaPool = [
+    ...analyzerVoiceArray(styleMode.experience_formulas),
+    ...analyzerVoiceArray(profileStyle.experience_formulas)
+  ];
+  const detailPool = analyzerVoiceArray(styleMode.detail_lines);
+  const opening = analyzerVoicePick(openingPool, seed, 0)
     || "Quadro {profileLabel}: {problem}.";
-  const formula = analyzerVoicePick(profileStyle.experience_formulas, seed, 6);
-  const bridgeLabel = profileStyle.term_bridge_label || "Chiave di lettura";
+  const formula = analyzerVoicePick(formulaPool, seed, 6);
+  const detailLine = analyzerVoicePick(detailPool, seed, 8);
+  const bridgeLabel = styleMode.term_bridge_label || profileStyle.term_bridge_label || "Chiave di lettura";
   const meaning = metricGlossary.meaning || "";
   const values = {
     profileLabel: context.profile_label,
@@ -6785,6 +6805,7 @@ function analyzerVoiceLines(context) {
   return [
     analyzerVoiceFill(opening, values),
     formula ? analyzerVoiceFill(formula, values) : "",
+    detailLine ? analyzerVoiceFill(detailLine, values) : "",
     `${bridgeLabel}: ${term}.${meaning ? " In questa lettura significa " + meaning + "." : ""}`,
     "Possibile causa: " + cause + ".",
     "Azione consigliata: " + solution + ".",
@@ -7060,7 +7081,9 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
         version: pack.voice_library?.voice_orchestrator?.version || pack.voice_library?.semantic_voice_orchestrator?.version || "",
         role: pack.voice_library?.voice_orchestrator?.role || pack.voice_library?.semantic_voice_orchestrator?.role || "",
         term_glossary_count: Object.keys((pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator)?.metric_glossary || {}).length,
-        profile_style_count: Object.keys((pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator)?.profile_style_lexicon || {}).length
+        profile_style_count: Object.keys((pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator)?.profile_style_lexicon || {}).length,
+        style_mode_count: Object.values((pack.voice_library?.voice_orchestrator || pack.voice_library?.semantic_voice_orchestrator)?.profile_style_lexicon || {})
+          .reduce((sum, profile) => sum + (Array.isArray(profile?.style_modes) ? profile.style_modes.length : 0), 0)
       }
     },
     medical_to_aesthetic: {
