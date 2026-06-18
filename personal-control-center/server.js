@@ -6892,7 +6892,7 @@ function buildNyraAnalyzerResponse(body = {}) {
   const clientName = String(client.name || body.clientName || body.data?.client_name || "").trim();
   const clientProfile = normalizeAnalyzerClientProfile(body);
   const learningInsights = buildAnalyzerLearningInsights({ scores, pack, profile: clientProfile, dominant });
-  const voiceContext = analyzerVoiceLibraryContext(pack, practiceProfile, dominant);
+  const voiceContext = analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body);
   const voiceLines = analyzerVoiceLines(voiceContext);
 
   const mainProblem = `${dominantMetric.label || dominant.label}: ${dominant.score}/100 (${dominant.band_label}). ${dominantMetric.low_reading || "Area estetica dominante da leggere nel quadro complessivo."}`;
@@ -6937,11 +6937,35 @@ function buildNyraAnalyzerResponse(body = {}) {
     ? `Controllo area dominante: migliori aree ${learningInsights.dominant_metric_area_rule.best_areas?.join(", ") || "non definite"}; attenzione a ${learningInsights.dominant_metric_area_rule.weak_areas?.join(", ") || "artefatti acquisizione"}.`
     : "";
   const coreLine = coreText ? `Indicazione Core applicata: ${coreText.slice(0, 600)}` : "";
+  const profileContextLine = (() => {
+    if (practiceProfile.id === "medical_dermatology") {
+      return "Contesto: studio medico. Lettura descrittiva dei segni osservabili, da correlare con anamnesi e valutazione professionale.";
+    }
+    if (practiceProfile.id === "pharmacy_dermocosmetic") {
+      return "Contesto: farmacia dermocosmetica. Lettura orientata a barriera, tollerabilita, attivi cosmetici e aderenza alla routine.";
+    }
+    return "Contesto: centro estetico. Lettura orientata a trattamento, routine domiciliare e controllo del percorso.";
+  })();
+  const visibleProductLine = (() => {
+    if (rankedProducts.length) {
+      return `Prodotto consigliato: ${rankedProducts.map((item) => item.brand ? `${item.brand} ${item.name}` : item.name).join("; ")}.`;
+    }
+    if (products.length) {
+      return "Prodotti: nel catalogo caricato non emerge un prodotto abbastanza coerente con il quadro di oggi.";
+    }
+    return "Prodotti: nessun prodotto caricato; il consiglio resta sulla categoria funzionale piu adatta.";
+  })();
+  const visibleProtocolLine = (() => {
+    if (rankedProtocols.length) {
+      return `Percorso consigliato: ${rankedProtocols.map((item) => item.name).join("; ")} con controllo dei risultati.`;
+    }
+    return "Percorso consigliato: seduta progressiva, routine essenziale e controllo sulla stessa area.";
+  })();
 
   const reply = [
     practiceProfile.output_header || "Nyra Analyzer - lettura estetica premium",
     clientName ? `Cliente: ${clientName}` : "",
-    `Setup struttura: ${practiceProfile.title}. ${practiceProfile.language_rule}`,
+    profileContextLine,
     ...voiceLines,
     profileLine,
     `Problema principale: ${mainProblem}`,
@@ -6951,16 +6975,9 @@ function buildNyraAnalyzerResponse(body = {}) {
     ageLine,
     supportedLine,
     unsupportedLine,
-    globalCaseLine,
-    areaRuleLine,
     firstMove,
-    `Attivi coerenti: ${activeLine}`,
-    `Servizio da vendere: ${(serviceSales[0] || "percorso estetico progressivo")} + controllo risultati e routine domiciliare.`,
-    `Prodotti: ${productSales.join(" ")}`,
-    `Protocolli: ${protocolSales.join(" ")}`,
-    `Linguaggio cliente: ${pack.marketing_framework?.premium_positioning || "Vendere un percorso misurabile, non una promessa."}`,
-    coreLine,
-    `Regola Core: ${practiceProfile.core_policy_id}. Libreria Nyra: ${practiceProfile.nyra_library_id}.`
+    visibleProtocolLine,
+    visibleProductLine
   ].filter(Boolean).join("\n");
 
   return {
