@@ -6675,7 +6675,15 @@ function analyzerVoiceExampleSafeForMetric(line = "", metric = "") {
   return !(blockers[metric] || /$a/).test(text);
 }
 
-function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {}) {
+function analyzerVoiceSignatureFromRows(rows = []) {
+  return rows
+    .filter(Boolean)
+    .map((row) => `${row.key || ""}:${Math.round(analyzerNumber(row.score) ?? 0)}`)
+    .filter((value) => value !== ":0")
+    .join("|");
+}
+
+function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {}, analysis = {}) {
   const library = pack.voice_library || {};
   const metricKey = analyzerVoiceMetricKey(dominant?.key || "");
   const level = analyzerVoiceLevel(dominant?.score);
@@ -6698,8 +6706,11 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {})
   const metricGlossary = voiceOrchestrator.metric_glossary?.[metricKey] || {};
   const client = body.client || body.data?.client || {};
   const profile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || {};
+  const secondarySignature = analyzerVoiceSignatureFromRows(analysis.secondary || []);
+  const stableSignature = analyzerVoiceSignatureFromRows(analysis.stable || []);
+  const scoreSignature = analyzerVoiceSignatureFromRows(analysis.scores || []);
   const variationClock = body.voice_seed || body.voiceSeed || body.report_id || body.reportId || body.session_id || body.sessionId || Date.now();
-  const variationSeed = analyzerVoiceHash([
+  const baseVariationSeed = analyzerVoiceHash([
     profileId,
     metricKey,
     level,
@@ -6709,7 +6720,19 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {})
     profile.concerns || profile.problematiche || "",
     variationClock
   ].join("|"));
-  const selectedStyleMode = styleModes.length ? styleModes[variationSeed % styleModes.length] : null;
+  const contextVariationSeed = analyzerVoiceHash([
+    baseVariationSeed,
+    secondarySignature,
+    stableSignature,
+    scoreSignature,
+    client.name || body.clientName || body.data?.client_name || "",
+    profile.age || profile.eta || "",
+    profile.sex || profile.sesso || ""
+  ].join("|"));
+  const secondaryStyleOffset = styleModes.length ? analyzerVoiceHash(secondarySignature || scoreSignature || metricKey) % styleModes.length : 0;
+  const selectedStyleMode = styleModes.length
+    ? styleModes[Math.abs(contextVariationSeed + secondaryStyleOffset + level) % styleModes.length]
+    : null;
   return {
     active: Boolean(library.id && profileContract && metricCard),
     id: library.id || "",
@@ -6743,7 +6766,11 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {})
     selected_style_mode: selectedStyleMode,
     metric_glossary: metricGlossary,
     term_meanings: Array.isArray(voiceOrchestrator.term_meanings) ? voiceOrchestrator.term_meanings : [],
-    variation_seed: variationSeed
+    secondary_signature: secondarySignature,
+    stable_signature: stableSignature,
+    score_signature: scoreSignature,
+    base_variation_seed: baseVariationSeed,
+    variation_seed: contextVariationSeed
   };
 }
 
@@ -6892,7 +6919,11 @@ function buildNyraAnalyzerResponse(body = {}) {
   const clientName = String(client.name || body.clientName || body.data?.client_name || "").trim();
   const clientProfile = normalizeAnalyzerClientProfile(body);
   const learningInsights = buildAnalyzerLearningInsights({ scores, pack, profile: clientProfile, dominant });
-  const voiceContext = analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body);
+  const voiceContext = analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body, {
+    scores,
+    secondary,
+    stable
+  });
   const voiceLines = analyzerVoiceLines(voiceContext);
 
   const mainProblem = `${dominantMetric.label || dominant.label}: ${dominant.score}/100 (${dominant.band_label}). ${dominantMetric.low_reading || "Area estetica dominante da leggere nel quadro complessivo."}`;
