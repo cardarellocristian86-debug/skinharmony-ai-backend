@@ -6352,11 +6352,26 @@ function normalizeAnalyzerItems(body = {}, field) {
 }
 
 function normalizeAnalyzerClientProfile(body = {}) {
-  const source = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || body.payload?.client_profile || body.payload?.clientProfile || {};
+  const profileSources = [
+    body.client_profile,
+    body.clientProfile,
+    body.data?.client_profile,
+    body.data?.clientProfile,
+    body.payload?.client_profile,
+    body.payload?.clientProfile,
+    body.context?.client_profile,
+    body.context?.clientProfile,
+    body.client,
+    body.data?.client,
+    body.payload?.client,
+    body.context?.client
+  ].filter((value) => value && typeof value === "object");
   const get = (...keys) => {
-    for (const key of keys) {
-      const value = source?.[key];
-      if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+    for (const source of profileSources) {
+      for (const key of keys) {
+        const value = source?.[key];
+        if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+      }
     }
     return "";
   };
@@ -6704,8 +6719,9 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
   const profileStyle = voiceOrchestrator.profile_style_lexicon?.[profileId] || {};
   const styleModes = Array.isArray(profileStyle.style_modes) ? profileStyle.style_modes : [];
   const metricGlossary = voiceOrchestrator.metric_glossary?.[metricKey] || {};
-  const client = body.client || body.data?.client || {};
-  const profile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || {};
+  const client = body.client || body.data?.client || body.payload?.client || body.context?.client || {};
+  const rawProfile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || body.payload?.client_profile || body.payload?.clientProfile || body.context?.client_profile || body.context?.clientProfile || {};
+  const profile = { ...client, ...rawProfile };
   const secondaryRows = Array.isArray(analysis.secondary) ? analysis.secondary.filter(Boolean) : [];
   const stableRows = Array.isArray(analysis.stable) ? analysis.stable.filter(Boolean) : [];
   const scoreRows = Array.isArray(analysis.scores) ? analysis.scores.filter(Boolean) : [];
