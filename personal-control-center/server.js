@@ -6637,10 +6637,23 @@ function analyzerVoicePick(values, seed = 0, offset = 0) {
 }
 
 function analyzerVoiceFill(template, values = {}) {
-  return String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key) => {
+  const line = String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key) => {
     const value = values[key];
     return value === undefined || value === null ? "" : String(value);
   }).replace(/\s+/g, " ").trim();
+  return analyzerVoiceNormalizeLine(line);
+}
+
+function analyzerVoiceClean(value = "") {
+  return String(value || "").replace(/\s+/g, " ").replace(/[.;:!?]+$/g, "").trim();
+}
+
+function analyzerVoiceNormalizeLine(value = "") {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/([.!?]){2,}/g, "$1")
+    .trim();
 }
 
 function analyzerVoiceExampleSafeForMetric(line = "", metric = "") {
@@ -6731,21 +6744,24 @@ function analyzerVoiceLines(context) {
   const profileStyle = context.profile_style || {};
   const metricGlossary = context.metric_glossary || {};
   const profileMetricTerms = analyzerVoiceArray(metricGlossary.profile_terms?.[context.profile]);
-  const term = analyzerVoicePick(profileMetricTerms, seed, 1)
+  const term = analyzerVoiceClean(analyzerVoicePick(profileMetricTerms, seed, 1)
     || analyzerVoicePick(metricGlossary.terms, seed, 1)
-    || context.readable_problem;
-  const problem = analyzerVoicePick([
+    || context.readable_problem);
+  const problem = analyzerVoiceClean(analyzerVoicePick([
     ...analyzerVoiceArray(context.problem_words),
     ...profileMetricTerms,
     metricGlossary.public_name,
     context.readable_problem
-  ], seed, 2) || context.readable_problem;
+  ], seed, 2) || context.readable_problem);
   const glossaryCauses = analyzerVoiceArray(metricGlossary.cause_terms);
   const glossarySolutions = analyzerVoiceArray(metricGlossary.solution_terms);
-  const glossaryAvoids = analyzerVoiceArray(metricGlossary.avoid_terms);
-  const cause = analyzerVoicePick(glossaryCauses.length ? glossaryCauses : context.possible_causes, seed, 3) || "da leggere insieme ad anamnesi, marker e zona acquisita";
-  const solution = analyzerVoicePick(glossarySolutions.length ? glossarySolutions : context.solution_moves, seed, 4) || "procedere con una routine progressiva e controllabile";
-  const avoid = analyzerVoicePick(glossaryAvoids.length ? glossaryAvoids : context.avoid_now, seed, 5) || "forzare conclusioni non sostenute dai marker";
+  let glossaryAvoids = analyzerVoiceArray(metricGlossary.avoid_terms);
+  if (context.profile === "medical_dermatology") {
+    glossaryAvoids = glossaryAvoids.filter((line) => !/profili non medici|claim medici/i.test(line));
+  }
+  const cause = analyzerVoiceClean(analyzerVoicePick(glossaryCauses.length ? glossaryCauses : context.possible_causes, seed, 3) || "da leggere insieme ad anamnesi, marker e zona acquisita");
+  const solution = analyzerVoiceClean(analyzerVoicePick(glossarySolutions.length ? glossarySolutions : context.solution_moves, seed, 4) || "procedere con una routine progressiva e controllabile");
+  const avoid = analyzerVoiceClean(analyzerVoicePick(glossaryAvoids.length ? glossaryAvoids : context.avoid_now, seed, 5) || "forzare conclusioni non sostenute dai marker");
   const followUp = String(context.follow_up || "2/3 settimane sulla stessa area e stessa luce").replace(/[.]+$/g, "");
   const safeExamples = analyzerVoiceArray(context.selected_examples).filter((line) => analyzerVoiceExampleSafeForMetric(line, context.metric));
   const premiumLine = analyzerVoicePick(safeExamples, seed, 10);
