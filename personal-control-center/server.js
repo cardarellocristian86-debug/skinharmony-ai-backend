@@ -5981,11 +5981,14 @@ const analyzerMetricAliases = {
   xw: "texture_fine_lines",
   texture: "texture_fine_lines",
   linee_fini: "texture_fine_lines",
+  texture_linee_fini: "texture_fine_lines",
   texture_fine_lines: "texture_fine_lines",
   yz: "redness_sensitivity_signals",
   redness: "redness_sensitivity_signals",
   rossore: "redness_sensitivity_signals",
   sensibilita: "redness_sensitivity_signals",
+  rossore_sensibilita: "redness_sensitivity_signals",
+  rossore_sensibilita_visibile: "redness_sensitivity_signals",
   redness_sensitivity_signals: "redness_sensitivity_signals",
   sb: "spots_pigmentation_signals",
   spots: "spots_pigmentation_signals",
@@ -5993,11 +5996,13 @@ const analyzerMetricAliases = {
   pigmentazione: "spots_pigmentation_signals",
   discromie: "spots_pigmentation_signals",
   macchie: "spots_pigmentation_signals",
+  discromie_uniformita: "spots_pigmentation_signals",
   spots_pigmentation_signals: "spots_pigmentation_signals",
   mk: "pores_texture",
   pores: "pores_texture",
   pori: "pores_texture",
   grana: "pores_texture",
+  pori_grana: "pores_texture",
   pores_texture: "pores_texture"
 };
 
