@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, dirname, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DatabaseSync } from "node:sqlite";
 
 const VECTOR_DIMENSIONS = 128;
 const DEFAULT_CHUNK_CHARS = 900;
@@ -10,6 +9,33 @@ const MAX_FILE_BYTES = 512_000;
 
 type NyraVectorScope = "shared_memory" | "runtime_learning" | "report" | "event" | "private";
 type NyraVectorDomain = "nyra" | "analyzer" | "smartdesk" | "suite" | "wordpress" | "core" | "finance" | "ipad" | "general";
+
+type NyraVectorChunk = {
+  chunk_id: string;
+  document_id: string;
+  ordinal: number;
+  text: string;
+  vector: number[];
+  token_count: number;
+};
+
+type NyraVectorDocument = {
+  document_id: string;
+  path: string;
+  title: string;
+  scope: NyraVectorScope;
+  domain: NyraVectorDomain;
+  tags: string[];
+  content_hash: string;
+  updated_at: string;
+  chunks: NyraVectorChunk[];
+};
+
+type NyraVectorMemoryStore = {
+  generated_at: string;
+  source_groups: string[];
+  documents: NyraVectorDocument[];
+};
 
 type NyraVectorMemoryStats = {
   documents: number;
@@ -72,12 +98,12 @@ function ensureDir(path: string) {
   mkdirSync(path, { recursive: true });
 }
 
-export function getNyraVectorMemoryDir(rootDir = process.cwd()): string {
+function getNyraVectorMemoryDir(rootDir = process.cwd()): string {
   return join(resolveRepoRoot(rootDir), "universal-core", "runtime", "nyra-vector-memory");
 }
 
-export function getNyraVectorMemoryDbPath(rootDir = process.cwd()): string {
-  return join(getNyraVectorMemoryDir(rootDir), "nyra_vector_memory.sqlite");
+function getNyraVectorMemoryStorePath(rootDir = process.cwd()): string {
+  return join(getNyraVectorMemoryDir(rootDir), "nyra_vector_memory.json");
 }
 
 export function getNyraVectorMemoryManifestPath(rootDir = process.cwd()): string {
@@ -104,42 +130,6 @@ function cosineSimilarity(left: number[], right: number[]): number {
   let dot = 0;
   for (let index = 0; index < length; index += 1) dot += (left[index] || 0) * (right[index] || 0);
   return clamp((dot + 1) / 2, 0, 1);
-}
-
-function openDb(rootDir = process.cwd()): DatabaseSync {
-  const dbPath = getNyraVectorMemoryDbPath(rootDir);
-  ensureDir(dirname(dbPath));
-  const db = new DatabaseSync(dbPath);
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS documents (
-      document_id TEXT PRIMARY KEY,
-      path TEXT NOT NULL,
-      title TEXT NOT NULL,
-      scope TEXT NOT NULL,
-      domain TEXT NOT NULL,
-      tags_json TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS chunks (
-      chunk_id TEXT PRIMARY KEY,
-      document_id TEXT NOT NULL,
-      ordinal INTEGER NOT NULL,
-      text TEXT NOT NULL,
-      vector_json TEXT NOT NULL,
-      token_count INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS ingest_runs (
-      run_id TEXT PRIMARY KEY,
-      created_at TEXT NOT NULL,
-      documents INTEGER NOT NULL,
-      chunks INTEGER NOT NULL,
-      skipped_large_files INTEGER NOT NULL,
-      source_groups_json TEXT NOT NULL
-    );
-  `);
-  return db;
 }
 
 function inferScope(filePath: string): NyraVectorScope {
@@ -240,6 +230,24 @@ function collectSourceFiles(rootDir: string): { files: string[]; sourceGroups: s
   return { files: Array.from(files).sort(), sourceGroups };
 }
 
+function loadStore(rootDir = process.cwd()): NyraVectorMemoryStore {
+  const storePath = getNyraVectorMemoryStorePath(rootDir);
+  if (!existsSync(storePath)) {
+    return { generated_at: "", source_groups: [], documents: [] };
+  }
+  try {
+    return JSON.parse(readFileSync(storePath, "utf8")) as NyraVectorMemoryStore;
+  } catch {
+    return { generated_at: "", source_groups: [], documents: [] };
+  }
+}
+
+function saveStore(rootDir: string, store: NyraVectorMemoryStore) {
+  const storePath = getNyraVectorMemoryStorePath(rootDir);
+  ensureDir(dirname(storePath));
+  writeFileSync(storePath, JSON.stringify(store, null, 2));
+}
+
 function writeManifest(rootDir: string, payload: unknown) {
   const manifestPath = getNyraVectorMemoryManifestPath(rootDir);
   ensureDir(dirname(manifestPath));
@@ -247,35 +255,19 @@ function writeManifest(rootDir: string, payload: unknown) {
 }
 
 export function getNyraVectorMemoryStats(rootDir = process.cwd()): NyraVectorMemoryStats {
-  const db = openDb(rootDir);
-  const documents = Number((db.prepare("SELECT COUNT(*) AS count FROM documents").get() as { count: number }).count || 0);
-  const chunks = Number((db.prepare("SELECT COUNT(*) AS count FROM chunks").get() as { count: number }).count || 0);
-  const lastRow = db.prepare("SELECT created_at FROM ingest_runs ORDER BY created_at DESC LIMIT 1").get() as { created_at?: string } | undefined;
-  db.close();
-  return { documents, chunks, last_ingest_at: lastRow?.created_at || null };
+  const store = loadStore(rootDir);
+  const documents = store.documents.length;
+  const chunks = store.documents.reduce((sum, document) => sum + document.chunks.length, 0);
+  return { documents, chunks, last_ingest_at: store.generated_at || null };
 }
 
 export function ingestNyraVectorMemory(rootDir = process.cwd()) {
   const repoRoot = resolveRepoRoot(rootDir);
-  const db = openDb(rootDir);
   const { files, sourceGroups } = collectSourceFiles(rootDir);
   let docs = 0;
   let chunks = 0;
   let skippedLargeFiles = 0;
-  const insertDocument = db.prepare(`
-    INSERT INTO documents (document_id, path, title, scope, domain, tags_json, content_hash, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(document_id) DO UPDATE SET
-      path=excluded.path,
-      title=excluded.title,
-      scope=excluded.scope,
-      domain=excluded.domain,
-      tags_json=excluded.tags_json,
-      content_hash=excluded.content_hash,
-      updated_at=excluded.updated_at
-  `);
-  const deleteChunks = db.prepare("DELETE FROM chunks WHERE document_id = ?");
-  const insertChunk = db.prepare("INSERT OR REPLACE INTO chunks (chunk_id, document_id, ordinal, text, vector_json, token_count) VALUES (?, ?, ?, ?, ?, ?)");
+  const documents: NyraVectorDocument[] = [];
 
   for (const filePath of files) {
     const stats = statSync(filePath);
@@ -290,24 +282,44 @@ export function ingestNyraVectorMemory(rootDir = process.cwd()) {
     const tags = inferTags(relativePath, content, scope, domain);
     const title = titleFromPath(relativePath, content);
     const documentId = sha1(relativePath);
-    insertDocument.run(documentId, relativePath, title, scope, domain, JSON.stringify(tags), sha1(content), new Date(stats.mtimeMs).toISOString());
-    deleteChunks.run(documentId);
-    for (const [index, text] of chunkText(content).entries()) {
-      insertChunk.run(sha1(`${documentId}:${index}:${text}`), documentId, index, text, JSON.stringify(buildHashedEmbedding(text)), tokenize(text).length);
-      chunks += 1;
-    }
+    const documentChunks = chunkText(content).map((text, index) => ({
+      chunk_id: sha1(`${documentId}:${index}:${text}`),
+      document_id: documentId,
+      ordinal: index,
+      text,
+      vector: buildHashedEmbedding(text),
+      token_count: tokenize(text).length,
+    }));
+
+    documents.push({
+      document_id: documentId,
+      path: relativePath,
+      title,
+      scope,
+      domain,
+      tags,
+      content_hash: sha1(content),
+      updated_at: new Date(stats.mtimeMs).toISOString(),
+      chunks: documentChunks,
+    });
     docs += 1;
+    chunks += documentChunks.length;
   }
 
-  const createdAt = new Date().toISOString();
-  db.prepare("INSERT INTO ingest_runs (run_id, created_at, documents, chunks, skipped_large_files, source_groups_json) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(`ingest_${Date.now()}`, createdAt, docs, chunks, skippedLargeFiles, JSON.stringify(sourceGroups));
+  const generatedAt = new Date().toISOString();
+  const store: NyraVectorMemoryStore = { generated_at: generatedAt, source_groups: sourceGroups, documents };
+  saveStore(rootDir, store);
   const stats = getNyraVectorMemoryStats(rootDir);
-  writeManifest(rootDir, { generated_at: createdAt, db_path: getNyraVectorMemoryDbPath(rootDir), documents: stats.documents, chunks: stats.chunks, source_groups: sourceGroups });
-  db.close();
+  writeManifest(rootDir, {
+    generated_at: generatedAt,
+    store_path: getNyraVectorMemoryStorePath(rootDir),
+    documents: stats.documents,
+    chunks: stats.chunks,
+    source_groups: sourceGroups,
+  });
   return {
     mode: "nyra_vector_memory_ingest",
-    db_path: getNyraVectorMemoryDbPath(rootDir),
+    store_path: getNyraVectorMemoryStorePath(rootDir),
     manifest_path: getNyraVectorMemoryManifestPath(rootDir),
     stats,
     ingested: { documents: docs, chunks, skipped_large_files: skippedLargeFiles, source_groups: sourceGroups },
@@ -316,62 +328,42 @@ export function ingestNyraVectorMemory(rootDir = process.cwd()) {
 
 export function searchNyraVectorMemory(input: NyraVectorSearchOptions): NyraVectorSearchResult[] {
   const rootDir = input.root_dir ?? process.cwd();
-  const db = openDb(rootDir);
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (input.exclude_private ?? true) {
-    where.push("documents.scope != ?");
-    params.push("private");
-  }
-  if (input.domain_allowlist?.length) {
-    where.push(`documents.domain IN (${input.domain_allowlist.map(() => "?").join(", ")})`);
-    params.push(...input.domain_allowlist);
-  }
-  if (input.scope_allowlist?.length) {
-    where.push(`documents.scope IN (${input.scope_allowlist.map(() => "?").join(", ")})`);
-    params.push(...input.scope_allowlist);
-  }
-  const rows = db.prepare(`
-    SELECT chunks.chunk_id, chunks.text, chunks.vector_json, documents.path, documents.title, documents.scope, documents.domain, documents.tags_json, documents.updated_at
-    FROM chunks JOIN documents ON documents.document_id = chunks.document_id
-    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-  `).all(...params) as Array<Record<string, unknown>>;
-  db.close();
+  const store = loadStore(rootDir);
   const normalizedQuery = normalize(input.query);
-  return rows.map((row) => {
-    const excerpt = String(row.text || "").replace(/\s+/g, " ").trim();
-    const title = String(row.title || "");
-    const path = String(row.path || "");
-    const domain = inferDomain(path, `${title} ${excerpt}`);
-    const tags = inferTags(path, `${title} ${excerpt}`, String(row.scope || "shared_memory") as NyraVectorScope, domain);
-    const titleHits = tokenize(input.query).filter((token) => normalize(title).includes(token)).length;
-    const excerptHits = tokenize(input.query).filter((token) => normalize(excerpt).includes(token)).length;
-    const evidenceBonus =
-      ((normalizedQuery.includes("fix") || normalizedQuery.includes("bug") || normalizedQuery.includes("alias")) && tags.includes("fix") ? 0.08 : 0) +
-      ((normalizedQuery.includes("test") || normalizedQuery.includes("smoke") || normalizedQuery.includes("verify")) && tags.includes("test") ? 0.06 : 0) +
-      ((normalizedQuery.includes("problema") || normalizedQuery.includes("errore") || normalizedQuery.includes("incident")) && tags.includes("incident") ? 0.05 : 0) +
-      ((normalizedQuery.includes("stato") || normalizedQuery.includes("status")) && tags.includes("status") ? 0.04 : 0);
-    const score = clamp(
-      cosineSimilarity(buildHashedEmbedding(input.query), JSON.parse(String(row.vector_json || "[]")) as number[]) +
-      titleHits * 0.03 +
-      excerptHits * 0.015 +
-      evidenceBonus,
-      0,
-      1,
-    );
-    return {
-      chunk_id: String(row.chunk_id || ""),
-      document_path: path,
-      document_title: title,
-      scope: String(row.scope || "shared_memory") as NyraVectorScope,
-      domain,
-      tags,
-      score,
-      excerpt: excerpt.slice(0, 280),
-    };
-  }).filter((row) => row.score >= (input.min_score ?? 0.5))
+  const queryVector = buildHashedEmbedding(input.query);
+  const limit = input.limit ?? 5;
+  const minScore = input.min_score ?? 0.5;
+
+  return store.documents
+    .filter((document) => !(input.exclude_private ?? true) || document.scope !== "private")
+    .filter((document) => !input.domain_allowlist?.length || input.domain_allowlist.includes(document.domain))
+    .filter((document) => !input.scope_allowlist?.length || input.scope_allowlist.includes(document.scope))
+    .flatMap((document) =>
+      document.chunks.map((chunk) => {
+        const excerpt = chunk.text.replace(/\s+/g, " ").trim();
+        const titleHits = tokenize(input.query).filter((token) => normalize(document.title).includes(token)).length;
+        const excerptHits = tokenize(input.query).filter((token) => normalize(excerpt).includes(token)).length;
+        const evidenceBonus =
+          ((normalizedQuery.includes("fix") || normalizedQuery.includes("bug") || normalizedQuery.includes("alias")) && document.tags.includes("fix") ? 0.08 : 0) +
+          ((normalizedQuery.includes("test") || normalizedQuery.includes("smoke") || normalizedQuery.includes("verify")) && document.tags.includes("test") ? 0.06 : 0) +
+          ((normalizedQuery.includes("problema") || normalizedQuery.includes("errore") || normalizedQuery.includes("incident")) && document.tags.includes("incident") ? 0.05 : 0) +
+          ((normalizedQuery.includes("stato") || normalizedQuery.includes("status")) && document.tags.includes("status") ? 0.04 : 0);
+        const score = clamp(cosineSimilarity(queryVector, chunk.vector) + titleHits * 0.03 + excerptHits * 0.015 + evidenceBonus, 0, 1);
+        return {
+          chunk_id: chunk.chunk_id,
+          document_path: document.path,
+          document_title: document.title,
+          scope: document.scope,
+          domain: document.domain,
+          tags: document.tags,
+          score,
+          excerpt: excerpt.slice(0, 280),
+        };
+      }),
+    )
+    .filter((row) => row.score >= minScore)
     .sort((a, b) => b.score - a.score || a.document_path.localeCompare(b.document_path))
-    .slice(0, input.limit ?? 5);
+    .slice(0, limit);
 }
 
 export function summarizeNyraVectorMemory(rootDir = process.cwd()): string {
@@ -394,8 +386,9 @@ export function refreshNyraVectorMemoryIfStale(rootDir = process.cwd(), maxAgeMi
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { generated_at?: string };
   const ageMs = Date.now() - Date.parse(String(manifest.generated_at || 0));
   if (!Number.isFinite(ageMs) || ageMs > maxAgeMinutes * 60_000) {
+    const before = summarizeNyraVectorMemory(rootDir);
     const ingest = ingestNyraVectorMemory(rootDir);
-    return { mode: "nyra_vector_memory_refresh_if_stale", refreshed: true, reason: "stale_manifest", max_age_minutes: maxAgeMinutes, current_summary_before: summarizeNyraVectorMemory(rootDir), ingest, stats_after: ingest.stats };
+    return { mode: "nyra_vector_memory_refresh_if_stale", refreshed: true, reason: "stale_manifest", max_age_minutes: maxAgeMinutes, current_summary_before: before, ingest, stats_after: ingest.stats };
   }
   return { mode: "nyra_vector_memory_refresh_if_stale", refreshed: false, reason: "fresh_manifest", max_age_minutes: maxAgeMinutes, current_summary_before: summarizeNyraVectorMemory(rootDir), stats_after: getNyraVectorMemoryStats(rootDir) };
 }
@@ -428,6 +421,6 @@ if (isDirectRun) {
   } else if (command === "search") {
     console.log(JSON.stringify(searchNyraVectorMemory({ root_dir: rootDir, query: String(flags.query || ""), limit: Number(flags.limit || 5), exclude_private: true }), null, 2));
   } else {
-    console.log(JSON.stringify({ path: getNyraVectorMemoryDbPath(rootDir), summary: summarizeNyraVectorMemory(rootDir), stats: getNyraVectorMemoryStats(rootDir) }, null, 2));
+    console.log(JSON.stringify({ path: getNyraVectorMemoryStorePath(rootDir), summary: summarizeNyraVectorMemory(rootDir), stats: getNyraVectorMemoryStats(rootDir) }, null, 2));
   }
 }
