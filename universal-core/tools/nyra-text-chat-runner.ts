@@ -1,5 +1,6 @@
 import { runNyraTextBranch } from "./nyra-text-branch/nyra-text-runtime.ts";
 import type { NyraTextChatOutput } from "./nyra-text-chat-types.ts";
+import { summarizeNyraVectorMemory, summarizeNyraVectorRetrievalContext } from "./nyra-vector-memory.ts";
 
 function buildHelpMessage(): string {
   return [
@@ -91,12 +92,28 @@ export async function runNyraTextChatTurn(text: string, sessionId = "nyra-text-c
     text: trimmed,
   });
 
+  const semanticMemorySummary = summarizeNyraVectorMemory(process.cwd());
+  const semanticRetrieval = summarizeNyraVectorRetrievalContext({
+    root_dir: process.cwd(),
+    query: trimmed,
+    limit: 2,
+    exclude_private: true,
+    min_score: 0.5,
+  });
+
   return {
     ...(result as any),
-    content: result.content,
+    content: [result.content, semanticRetrieval].filter(Boolean).join(" ").trim(),
     confidence: result.confidence,
     risk: result.risk,
     memoryUpdated: result.memoryUpdated,
     source: result.source,
+    ui: {
+      ...(((result as any).ui || {}) as Record<string, unknown>),
+      notes: [
+        `Memoria semantica: ${semanticMemorySummary}`,
+        ...((((result as any).ui?.notes || []) as string[])),
+      ],
+    },
   };
 }

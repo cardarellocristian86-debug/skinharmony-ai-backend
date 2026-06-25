@@ -7065,6 +7065,13 @@ app.post("/api/nyra/text-chat", async (req, res) => {
     return;
   }
   try {
+    await runNodeJson([
+      "--experimental-strip-types",
+      "universal-core/tools/nyra-vector-memory.ts",
+      "refresh-if-stale",
+      "--max-age-minutes",
+      "180"
+    ]);
     const output = await runNodeJson([
       "--experimental-strip-types",
       "universal-core/tools/nyra-text-chat-api.ts",
