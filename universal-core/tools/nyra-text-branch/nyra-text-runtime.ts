@@ -8,7 +8,6 @@ import {
 } from "./nyra-text-sidecar-memory.ts";
 import { coerceRichPipelineToTextOutput, forceTextOnly } from "./nyra-text-output-guard.ts";
 import { runTextFallbackBrain } from "./nyra-text-fallback-brain.ts";
-import { buildNyraCore2RenderPipeline } from "../nyra-core2-pipeline.ts";
 import { runLocalTextOverride } from "./nyra-text-local-overrides.ts";
 import { routeTextDomain, type NyraTextRoute } from "./nyra-text-domain-router.ts";
 import { runBranchBridge } from "./nyra-text-branch-bridge.ts";
@@ -19,6 +18,9 @@ import {
   finalizeNyraTextLearning,
   handleNyraTextLearningCommand,
 } from "../nyra-learning-text-adapter.ts";
+import { buildNyraBranchOverlay, type NyraBranchOverlay } from "../nyra-branch-overlay.ts";
+import { buildNyraActionRoute, type NyraActionRoute } from "../nyra-action-router.ts";
+import { buildNyraCore2Pipeline, type NyraCore2PipelineResult } from "../nyra-core2-pipeline.ts";
 
 function buildRichPayload(input: NyraTextInput, sidecarMemory: any, route: NyraTextRoute): any {
   return {
@@ -85,6 +87,38 @@ function deriveRichSessionId(input: NyraTextInput, route: NyraTextRoute): string
   }
 }
 
+function buildTextOverlay(text: string): {
+  branch_overlay: NyraBranchOverlay;
+  action_route: NyraActionRoute;
+  core2_pipeline: NyraCore2PipelineResult;
+} {
+  const branchOverlay = buildNyraBranchOverlay(text);
+  const actionRoute = buildNyraActionRoute({ user_text: text, overlay: branchOverlay });
+  const core2Pipeline = buildNyraCore2Pipeline({
+    user_text: text,
+    overlay: branchOverlay,
+    route: actionRoute,
+  });
+  return {
+    branch_overlay: branchOverlay,
+    action_route: actionRoute,
+    core2_pipeline: core2Pipeline,
+  };
+}
+
+function branchSummaryNotes(
+  overlay: NyraBranchOverlay,
+  route: NyraActionRoute,
+  pipeline: NyraCore2PipelineResult,
+): string[] {
+  const active = overlay.active_branches.slice(0, 3).map((branch) => branch.id).join(", ") || overlay.primary_branch.id;
+  return [
+    `Rami attivi: ${active}`,
+    `Route: ${route.intent}, modo ${route.execution_mode}`,
+    `Core: V2 ${pipeline.stages.v2.control_level}, V7 ${pipeline.stages.v7.path_label}`,
+  ];
+}
+
 export async function runNyraTextBranch(partial: {
   ownerId?: string;
   text: string;
@@ -105,6 +139,7 @@ export async function runNyraTextBranch(partial: {
     disableAudio: true,
     requestedOutput: "text",
   };
+  const overlay = buildTextOverlay(input.text);
 
   const command = input.text.trim().toLowerCase();
 
@@ -114,11 +149,6 @@ export async function runNyraTextBranch(partial: {
     memoryUpdated: boolean;
     sidecarMemory: Awaited<ReturnType<typeof readSidecarMemory>>;
   }): Promise<NyraTextOutput> {
-    const core2Pipeline = buildNyraCore2RenderPipeline({
-      text: input.text,
-      routePrimary: params.route.primary,
-    });
-    const coreNote = `Core2 ${core2Pipeline.winner.control_level} · V1 ${core2Pipeline.stages.v1.control_level} · V2 ${core2Pipeline.stages.v2.control_level} · V7 ${core2Pipeline.stages.v7.path_label}`;
     const routedOutput: NyraTextOutput = {
       ...params.output,
       route: params.output.route ?? {
@@ -130,26 +160,18 @@ export async function runNyraTextBranch(partial: {
         isolateFromPreviousContext: params.route.isolateFromPreviousContext,
         reason: params.route.reason,
       },
+      branch_overlay: params.output.branch_overlay ?? overlay.branch_overlay,
+      action_route: params.output.action_route ?? overlay.action_route,
+      core2_pipeline: params.output.core2_pipeline ?? overlay.core2_pipeline,
+      memoryUpdated: params.output.memoryUpdated || params.memoryUpdated,
       ui: {
         ...(params.output.ui ?? {}),
-        badges: [...(params.output.ui?.badges ?? []), "core2-v1-v2-v7"],
         notes: [
+          ...branchSummaryNotes(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline),
           ...(params.output.ui?.notes ?? []),
-          coreNote,
-          core2Pipeline.winner.explanation,
-        ],
-        warning: [
-          ...(params.output.ui?.warning ?? []),
-          ...(core2Pipeline.input.target_environment === "production" ? ["Render/produzione protetti: serve fase separata confermata."] : []),
-        ],
-        action: [
-          ...(params.output.ui?.action ?? []),
-          core2Pipeline.winner.selected_action,
         ],
       },
-      memoryUpdated: params.output.memoryUpdated || params.memoryUpdated,
-      core2Pipeline,
-    } as NyraTextOutput & { core2Pipeline: ReturnType<typeof buildNyraCore2RenderPipeline> };
+    };
 
     const weighted = applySidecarMemoryWeight({
       input,
@@ -198,7 +220,11 @@ export async function runNyraTextBranch(partial: {
       risk: "medium",
       source: "text-branch-command",
       actor: "command",
+      branch_overlay: overlay.branch_overlay,
+      action_route: overlay.action_route,
+      core2_pipeline: overlay.core2_pipeline,
       memoryUpdated: true,
+      ui: { notes: branchSummaryNotes(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline) },
     };
   }
 
@@ -211,7 +237,11 @@ export async function runNyraTextBranch(partial: {
       risk: "low",
       source: "text-branch-command",
       actor: "command",
+      branch_overlay: overlay.branch_overlay,
+      action_route: overlay.action_route,
+      core2_pipeline: overlay.core2_pipeline,
       memoryUpdated: false,
+      ui: { notes: branchSummaryNotes(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline) },
     };
   }
 

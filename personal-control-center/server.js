@@ -6942,9 +6942,307 @@ function analyzerTextFromBody(body = {}) {
   }
 }
 
+function analyzerCorePayload(body = {}) {
+  const branchOutput = body.branch_output || body.branchOutput || body.core_branch_output || body.coreBranchOutput || body.data?.branch_output || {};
+  const coreV2Digest = body.core_v2_digest || body.coreV2Digest || body.data?.core_v2_digest || {};
+  const coreV2DigestText = String(body.core_v2_digest_text || body.coreV2DigestText || body.data?.core_v2_digest_text || "").trim();
+  return {
+    branch_output: branchOutput && typeof branchOutput === "object" ? branchOutput : {},
+    core_v2_digest: coreV2Digest && typeof coreV2Digest === "object" ? coreV2Digest : {},
+    core_v2_digest_text: coreV2DigestText
+  };
+}
+
+function analyzerBranchMetaForKey(key = "") {
+  const map = {
+    skin_tone_brightness: {
+      id: "pigmentation_tone_matrix",
+      label: "tono e uniformita",
+      why: "luminosita e discromie vanno lette come uniformita del tono"
+    },
+    water_oil_balance: {
+      id: "barrier_hydration_matrix",
+      label: "barriera e idratazione",
+      why: "comfort, film idrolipidico e tollerabilita guidano la progressione"
+    },
+    texture_fine_lines: {
+      id: "aging_texture_matrix",
+      label: "texture e micro-rilievo",
+      why: "trama e linee superficiali richiedono progressione, non correzione brusca"
+    },
+    redness_sensitivity_signals: {
+      id: "sensitivity_reactivity_matrix",
+      label: "reattivita e rossore",
+      why: "la tollerabilita viene prima dell'intensita"
+    },
+    spots_pigmentation_signals: {
+      id: "pigmentation_tone_matrix",
+      label: "discromie e pigmento",
+      why: "tono non uniforme e pigmento vanno letti con fotoprotezione e costanza"
+    },
+    pores_texture: {
+      id: "pores_texture_matrix",
+      label: "pori, grana e pattern follicolare",
+      why: "pori, grana e assetto sebaceo vanno letti insieme"
+    }
+  };
+  return map[key] || {
+    id: analyzerSlug(key) || "generic_matrix",
+    label: key || "ramo generale",
+    why: "ramo generale del quadro Analyzer"
+  };
+}
+
+function analyzerBranchMetaForId(id = "") {
+  const map = {
+    pores_texture_matrix: analyzerBranchMetaForKey("pores_texture"),
+    sensitivity_reactivity_matrix: analyzerBranchMetaForKey("redness_sensitivity_signals"),
+    barrier_hydration_matrix: analyzerBranchMetaForKey("water_oil_balance"),
+    pigmentation_tone_matrix: analyzerBranchMetaForKey("spots_pigmentation_signals"),
+    aging_texture_matrix: analyzerBranchMetaForKey("texture_fine_lines"),
+    catalog_choice_matrix: {
+      id: "catalog_choice_matrix",
+      label: "scelta catalogo coerente",
+      why: "catalogo e proposta vanno dopo la lettura del quadro, non prima"
+    },
+    service_product_technology_overlap: {
+      id: "service_product_technology_overlap",
+      label: "sovrapposizione servizi, prodotti e tecnologie",
+      why: "la proposta si sceglie solo dove i segnali convergono"
+    },
+    formulation_compatibility_guard: {
+      id: "formulation_compatibility_guard",
+      label: "compatibilita formulativa",
+      why: "attivi e texture vanno scelti secondo tollerabilita e contesto"
+    },
+    anamnesis_sales_guard: {
+      id: "anamnesis_sales_guard",
+      label: "coerenza anamnesi e vendita",
+      why: "dichiarato cliente e segnale osservato non vanno confusi"
+    },
+    technology_claim_guard: {
+      id: "technology_claim_guard",
+      label: "guardrail claim tecnologia",
+      why: "nessuna promessa tecnica o terapeutica non supportata"
+    },
+    post_treatment_timing_guard: {
+      id: "post_treatment_timing_guard",
+      label: "contesto post-trattamento",
+      why: "reattivita e variazioni temporanee non vanno lette come quadro stabile"
+    }
+  };
+  return map[id] || {
+    id: id || "generic_matrix",
+    label: id ? id.replace(/_/g, " ") : "ramo generale",
+    why: "ramo generale del quadro Analyzer"
+  };
+}
+
+function analyzerBranchCandidate(candidate = {}) {
+  const score = analyzerNumber(candidate.score) ?? analyzerNumber(candidate.attention_score) ?? analyzerNumber(candidate.priority) ?? 50;
+  return {
+    id: candidate.id,
+    label: candidate.label,
+    score: Math.round(score),
+    source: candidate.source || "local",
+    why: candidate.why || "",
+    metric_key: candidate.metric_key || "",
+    metric_label: candidate.metric_label || "",
+    severity: candidate.severity || "",
+  };
+}
+
+function analyzerV2SignalsToBranches(digest = {}) {
+  const rows = [
+    ...(Array.isArray(digest.primary_signals) ? digest.primary_signals : []),
+    ...(Array.isArray(digest.secondary_signals) ? digest.secondary_signals : []),
+  ];
+  return rows.map((row, index) => {
+    const meta = analyzerBranchMetaForKey(row.key);
+    return analyzerBranchCandidate({
+      id: meta.id,
+      label: meta.label,
+      score: row.priority ?? row.severity ?? row.risk_hint ?? row.score,
+      source: index < (digest.primary_signals || []).length ? "core_v2_primary" : "core_v2_secondary",
+      why: meta.why,
+      metric_key: row.key || "",
+      metric_label: row.label || "",
+      severity: row.severity != null ? String(row.severity) : ""
+    });
+  });
+}
+
+function analyzerV0Branches(dominant, secondary = [], stable = [], branchOutput = {}) {
+  const items = [];
+  const dominantId = branchOutput?.dominant_pattern?.id || analyzerBranchMetaForKey(dominant?.key || "").id;
+  const dominantMeta = analyzerBranchMetaForId(dominantId);
+  items.push(analyzerBranchCandidate({
+    id: dominantMeta.id,
+    label: dominantMeta.label,
+    score: 100 - (analyzerNumber(dominant?.score) ?? 50),
+    source: "core_v0_dominant",
+    why: dominantMeta.why,
+    metric_key: dominant?.key || "",
+    metric_label: dominant?.label || "",
+    severity: dominant?.band_label || ""
+  }));
+  secondary.forEach((row) => {
+    const meta = analyzerBranchMetaForKey(row.key);
+    items.push(analyzerBranchCandidate({
+      id: meta.id,
+      label: meta.label,
+      score: 100 - (analyzerNumber(row.score) ?? 50),
+      source: "core_v0_secondary",
+      why: meta.why,
+      metric_key: row.key || "",
+      metric_label: row.label || "",
+      severity: row.band_label || ""
+    }));
+  });
+  stable.forEach((row) => {
+    const meta = analyzerBranchMetaForKey(row.key);
+    items.push(analyzerBranchCandidate({
+      id: meta.id,
+      label: meta.label,
+      score: Math.max(20, 100 - (analyzerNumber(row.score) ?? 85)),
+      source: "core_v0_protective",
+      why: "segnale protettivo che riduce l'aggressivita della lettura",
+      metric_key: row.key || "",
+      metric_label: row.label || "",
+      severity: "protective"
+    }));
+  });
+  return items;
+}
+
+function analyzerMergeBranchCandidates(candidates = []) {
+  const merged = new Map();
+  candidates.filter(Boolean).forEach((candidate) => {
+    const key = candidate.id || candidate.label;
+    if (!key) return;
+    if (!merged.has(key)) {
+      merged.set(key, { ...candidate, sources: [candidate.source].filter(Boolean) });
+      return;
+    }
+    const current = merged.get(key);
+    current.score = Math.max(current.score || 0, candidate.score || 0);
+    current.why = current.why || candidate.why || "";
+    current.metric_key = current.metric_key || candidate.metric_key || "";
+    current.metric_label = current.metric_label || candidate.metric_label || "";
+    current.severity = current.severity || candidate.severity || "";
+    if (candidate.source && !current.sources.includes(candidate.source)) current.sources.push(candidate.source);
+  });
+  return Array.from(merged.values()).sort((a, b) => (b.score - a.score) || String(a.id).localeCompare(String(b.id)));
+}
+
+function analyzerV7Overlay(params = {}) {
+  const riskScore = analyzerNumber(params.core_v2_digest?.risk_score) ?? 34;
+  const blocked = analyzerNumber(params.core_v2_digest?.blocked_action_count) ?? 0;
+  const secondaryCount = Array.isArray(params.secondary) ? params.secondary.length : 0;
+  const stableCount = Array.isArray(params.stable) ? params.stable.length : 0;
+  const relationshipCount = Array.isArray(params.relationships) ? params.relationships.length : 0;
+  const familyCount = Array.isArray(params.families) ? params.families.length : 0;
+  const overlapScore = Math.round(
+    Math.min(
+      100,
+      26
+        + secondaryCount * 11
+        + relationshipCount * 9
+        + familyCount * 6
+        + (stableCount ? 4 : 0)
+        + Math.max(0, riskScore - 40) * 0.25
+    )
+  );
+  const pathLabel = blocked > 0 || riskScore >= 72
+    ? "protect"
+    : overlapScore >= 68 || secondaryCount >= 2
+      ? "verify"
+      : "normal";
+  return {
+    overlap_score: overlapScore,
+    path_label: pathLabel,
+    why: pathLabel === "protect"
+      ? "il quadro richiede prudenza massima e guardrail forti"
+      : pathLabel === "verify"
+        ? "il quadro ha rami sovrapposti che vanno letti insieme prima della proposta"
+        : "il quadro resta leggibile con un ramo dominante e pochi vincoli di sovrapposizione"
+  };
+}
+
+function buildAnalyzerCoreOverlay(input = {}) {
+  const branchOutput = input.core_payload?.branch_output || {};
+  const coreV2Digest = input.core_payload?.core_v2_digest || {};
+  const v0Branches = analyzerV0Branches(input.dominant, input.secondary, input.stable, branchOutput);
+  const explicitCoreBranches = [
+    branchOutput?.dominant_pattern ? analyzerBranchCandidate({
+      id: branchOutput.dominant_pattern.id || analyzerBranchMetaForKey(input.dominant?.key || "").id,
+      label: branchOutput.dominant_pattern.label || analyzerBranchMetaForKey(input.dominant?.key || "").label,
+      score: branchOutput.dominant_pattern.attention_score ?? 100 - (analyzerNumber(input.dominant?.score) ?? 50),
+      source: "core_branch_output_dominant",
+      why: branchOutput.suggested_direction || analyzerBranchMetaForKey(input.dominant?.key || "").why,
+      severity: branchOutput.dominant_pattern.severity || input.dominant?.band_label || ""
+    }) : null,
+    ...(Array.isArray(branchOutput.secondary_patterns) ? branchOutput.secondary_patterns.map((row) => analyzerBranchCandidate({
+      id: row.id || analyzerBranchMetaForKey(row.key || "").id,
+      label: row.label || analyzerBranchMetaForKey(row.key || "").label,
+      score: row.attention_score ?? row.score ?? 52,
+      source: "core_branch_output_secondary",
+      why: analyzerBranchMetaForId(row.id || "").why,
+      severity: row.severity || row.band || ""
+    })) : [])
+  ].filter(Boolean);
+  const v2Branches = analyzerV2SignalsToBranches(coreV2Digest);
+  const merged = analyzerMergeBranchCandidates([...explicitCoreBranches, ...v0Branches, ...v2Branches]);
+  const v7 = analyzerV7Overlay({
+    core_v2_digest: coreV2Digest,
+    secondary: input.secondary,
+    stable: input.stable,
+    relationships: input.relationships,
+    families: input.families
+  });
+  const selected = merged.slice(0, v7.path_label === "normal" ? 2 : 3);
+  return {
+    v0: {
+      dominant_branch: explicitCoreBranches[0] || v0Branches[0] || null,
+      secondary_branches: analyzerMergeBranchCandidates([...explicitCoreBranches.slice(1), ...v0Branches.slice(1)]).slice(0, 3),
+      protective_count: Array.isArray(input.stable) ? input.stable.length : 0
+    },
+    v2: {
+      state: coreV2Digest.state || "not_provided",
+      risk_score: analyzerNumber(coreV2Digest.risk_score) ?? null,
+      priority_score: analyzerNumber(coreV2Digest.priority_score) ?? null,
+      fallback_required: Boolean(coreV2Digest.fallback_required),
+      selected_branches: v2Branches.slice(0, 3)
+    },
+    v7: {
+      overlap_score: v7.overlap_score,
+      path_label: v7.path_label,
+      why: v7.why,
+      selected_branches: selected
+    },
+    selected_branches: selected
+  };
+}
+
+function analyzerCoreOverlayLine(overlay = {}, practiceProfile = {}) {
+  const selected = Array.isArray(overlay.selected_branches) ? overlay.selected_branches : [];
+  if (!selected.length) return "";
+  const head = selected[0];
+  const tail = selected.slice(1);
+  const joinTail = tail.length ? ` con ${tail.map((item) => item.label).join(" e ")}` : "";
+  if (practiceProfile.id === "medical_dermatology") {
+    return `Lettura guidata dai rami Core: il quadro va letto da ${head.label}${joinTail}, con percorso ${overlay.v7?.path_label || "normal"} e correlazione prudente dei segni osservabili.`;
+  }
+  if (practiceProfile.id === "pharmacy_dermocosmetic") {
+    return `Lettura guidata dai rami Core: oggi il quadro si appoggia a ${head.label}${joinTail}, cosi la routine resta coerente e non si disperde su troppi fronti.`;
+  }
+  return `Lettura guidata dai rami Core: oggi il percorso parte da ${head.label}${joinTail}, perche e li che conviene concentrare la scelta operativa.`;
+}
+
 function buildNyraAnalyzerResponse(body = {}) {
   const pack = loadNyraAnalyzerLearningPack();
   const practiceProfile = normalizeAnalyzerPracticeProfile(body, pack);
+  const corePayload = analyzerCorePayload(body);
   const scores = normalizeAnalyzerScores(body);
   if (!scores.length) {
     return {
@@ -6981,6 +7279,14 @@ function buildNyraAnalyzerResponse(body = {}) {
     stable
   });
   const voiceLines = analyzerVoiceLines(voiceContext);
+  const coreOverlay = buildAnalyzerCoreOverlay({
+    core_payload: corePayload,
+    dominant,
+    secondary,
+    stable,
+    families,
+    relationships
+  });
 
   const mainProblem = `${dominantMetric.label || dominant.label}: ${dominant.score}/100 (${dominant.band_label}). ${dominantMetric.low_reading || "Area estetica dominante da leggere nel quadro complessivo."}`;
   const secondaryText = secondary.length
@@ -7005,6 +7311,7 @@ function buildNyraAnalyzerResponse(body = {}) {
       : "Protocolli centro non caricati: proporre struttura seduta iniziale, ciclo, home routine e recheck, senza inventare protocollo proprietario."];
   const activeLine = activeLogic.map((item) => `${item.id} (${item.examples.join(", ") || "categoria da verificare"})`).join("; ");
   const relationshipLine = relationships.length ? relationships.join(" ") : "La lettura resta sul pattern dominante senza forzare correlazioni non presenti.";
+  const branchOverlayLine = analyzerCoreOverlayLine(coreOverlay, practiceProfile);
   const profileLine = learningInsights.profile_summary.length
     ? `Scheda cliente letta: ${learningInsights.profile_summary.join("; ")}.`
     : "Scheda cliente non compilata: lettura basata su score e marker disponibili.";
@@ -7054,6 +7361,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     clientName ? `Cliente: ${clientName}` : "",
     profileContextLine,
     ...voiceLines,
+    branchOverlayLine,
     profileLine,
     `Problema principale: ${mainProblem}`,
     `Segnali secondari: ${secondaryText}`,
@@ -7062,9 +7370,12 @@ function buildNyraAnalyzerResponse(body = {}) {
     ageLine,
     supportedLine,
     unsupportedLine,
+    areaRuleLine,
     firstMove,
     visibleProtocolLine,
-    visibleProductLine
+    visibleProductLine,
+    coreOverlay.v7?.path_label === "protect" ? "Guardrail percorso: prima si protegge il quadro, poi si amplia il lavoro." : "",
+    coreOverlay.v7?.path_label === "verify" ? "Guardrail percorso: i rami restano sovrapposti, quindi il controllo comparabile conta piu della fretta." : ""
   ].filter(Boolean).join("\n");
 
   return {
@@ -7101,6 +7412,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     active_logic: activeLogic,
     learning_insights: learningInsights,
     voice_library: voiceContext,
+    core_overlay: coreOverlay,
     service_sales_logic: serviceSales,
     product_sales_logic: productSales,
     protocol_logic: protocolSales,

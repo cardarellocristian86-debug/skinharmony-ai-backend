@@ -1,6 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { summarizeNyraCodexWorkMemory } from "./nyra-codex-memory-importer.ts";
+import { buildNyraBranchOverlay, type NyraBranchOverlay } from "./nyra-branch-overlay.ts";
+import { buildNyraActionRoute, type NyraActionRoute } from "./nyra-action-router.ts";
+import { buildNyraCore2Pipeline, type NyraCore2PipelineResult } from "./nyra-core2-pipeline.ts";
 import { buildNyraDialogueEngineResult } from "./nyra-dialogue-engine.ts";
 import { buildNyraActiveProtectionLine, NYRA_ACTIVE_PROTECTION_IDENTITY } from "./nyra-identity-principles.ts";
 import { buildNyraFrontDialogue } from "./nyra-front-dialogue-layer.ts";
@@ -10,6 +14,7 @@ export type NyraCommunicationSnapshot = {
   state_summary: string;
   work_summary: string;
   learning_summary: string;
+  codex_work_memory_summary: string;
   financial_summary: string;
   financial_live_self_diagnosis: string;
 };
@@ -33,6 +38,9 @@ export type NyraCommunicationResult = {
   action_band: string;
   owner_sensitive: boolean;
   snapshots: NyraCommunicationSnapshot;
+  branch_overlay?: NyraBranchOverlay;
+  action_route?: NyraActionRoute;
+  core2_pipeline?: NyraCore2PipelineResult;
   writes_memory: false;
 };
 
@@ -224,6 +232,9 @@ function buildDirectReadOnlyReply(input: NyraCommunicationInput): string | undef
       snapshots.learning_summary
         ? `Oggi posso usare questa memoria distillata: ${snapshots.learning_summary}.`
         : "Oggi non vedo una sintesi learning collegata al canale read-only.",
+      snapshots.codex_work_memory_summary
+        ? `Sul lavoro Codex leggo anche: ${snapshots.codex_work_memory_summary}.`
+        : "La memoria Codex distillata non e ancora agganciata o popolata.",
       "Per migliorarmi serve chiudere il ciclo: studio, distillazione, test, collegamento al dialogo, verifica su casi reali.",
     ].join(" ");
   }
@@ -272,23 +283,29 @@ function readJson(path: string): unknown {
   }
 }
 
-function resolveRepoRoot(rootDir: string): string {
+function resolveCoreDir(rootDir: string): string {
   const storageRoot = process.env.NYRA_STORAGE_ROOT;
-  if (storageRoot && existsSync(join(storageRoot, "universal-core", "runtime", "nyra"))) {
-    return storageRoot;
+  const candidates = [
+    storageRoot ? join(storageRoot, "universal-core-2.0") : undefined,
+    storageRoot ? join(storageRoot, "universal-core") : undefined,
+    storageRoot,
+    rootDir,
+    join(rootDir, "universal-core-2.0"),
+    join(rootDir, "universal-core"),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "runtime", "nyra"))) {
+      return candidate;
+    }
   }
-  if (existsSync(join(rootDir, "universal-core", "runtime", "nyra"))) {
-    return rootDir;
-  }
-  if (existsSync(join(rootDir, "runtime", "nyra"))) {
-    return join(rootDir, "..");
-  }
+
   return rootDir;
 }
 
 function summarizeLearning(rootDir: string): string {
-  const repoRoot = resolveRepoRoot(rootDir);
-  const learningDir = join(repoRoot, "universal-core", "runtime", "nyra-learning");
+  const coreDir = resolveCoreDir(rootDir);
+  const learningDir = join(coreDir, "runtime", "nyra-learning");
   const advanced = readJson(join(learningDir, "nyra_advanced_memory_pack_latest.json")) as
     | {
         selected_domains?: string[];
@@ -345,8 +362,8 @@ function summarizeLearning(rootDir: string): string {
 }
 
 function summarizeFinancialLearning(rootDir: string): string {
-  const repoRoot = resolveRepoRoot(rootDir);
-  const learningDir = join(repoRoot, "universal-core", "runtime", "nyra-learning");
+  const coreDir = resolveCoreDir(rootDir);
+  const learningDir = join(coreDir, "runtime", "nyra-learning");
   const pack = readJson(join(learningDir, "nyra_financial_learning_pack_latest.json")) as
     | {
         domains?: Array<{ id: string; label?: string; summary?: string }>;
@@ -373,8 +390,8 @@ function summarizeFinancialLearning(rootDir: string): string {
 }
 
 function summarizeFinancialLiveSelfDiagnosis(rootDir: string): string {
-  const repoRoot = resolveRepoRoot(rootDir);
-  const diagnosis = readJson(join(repoRoot, "universal-core", "runtime", "nyra-learning", "nyra_financial_self_diagnosis_live_latest.json")) as
+  const coreDir = resolveCoreDir(rootDir);
+  const diagnosis = readJson(join(coreDir, "runtime", "nyra-learning", "nyra_financial_self_diagnosis_live_latest.json")) as
     | {
         generated_at?: string;
         summary?: {
@@ -433,13 +450,14 @@ function summarizeFinancialLiveSelfDiagnosis(rootDir: string): string {
 }
 
 export function loadNyraCommunicationSnapshot(rootDir = process.cwd()): NyraCommunicationSnapshot {
-  const repoRoot = resolveRepoRoot(rootDir);
-  const nyraRuntimeDir = join(repoRoot, "universal-core", "runtime", "nyra");
+  const coreDir = resolveCoreDir(rootDir);
+  const nyraRuntimeDir = join(coreDir, "runtime", "nyra");
   return {
     map_summary: compact(readText(join(nyraRuntimeDir, "NYRA_MAP_SNAPSHOT.md"))),
     state_summary: compact(readText(join(nyraRuntimeDir, "NYRA_STATE_SNAPSHOT.json"))),
     work_summary: compact(readText(join(nyraRuntimeDir, "NYRA_WORK_SNAPSHOT.md")), 4200),
     learning_summary: summarizeLearning(rootDir),
+    codex_work_memory_summary: summarizeNyraCodexWorkMemory(coreDir),
     financial_summary: summarizeFinancialLearning(rootDir),
     financial_live_self_diagnosis: summarizeFinancialLiveSelfDiagnosis(rootDir),
   };
@@ -461,18 +479,50 @@ function fallbackReply(input: NyraCommunicationInput, snapshots: NyraCommunicati
   ].filter(Boolean).join(" ");
 }
 
+function branchSummaryLine(overlay: NyraBranchOverlay, route: NyraActionRoute, pipeline: NyraCore2PipelineResult): string {
+  const active = overlay.active_branches.slice(0, 3).map((branch) => branch.id).join(", ");
+  return [
+    `Rami attivi: ${active || overlay.primary_branch.id}.`,
+    `Route: ${route.intent}, modo ${route.execution_mode}.`,
+    `Core: V2 ${pipeline.stages.v2.control_level}, V7 ${pipeline.stages.v7.path_label}.`,
+  ].join(" ");
+}
+
+function buildReadOnlyOverlay(userText: string): {
+  branch_overlay: NyraBranchOverlay;
+  action_route: NyraActionRoute;
+  core2_pipeline: NyraCore2PipelineResult;
+} {
+  const branchOverlay = buildNyraBranchOverlay(userText);
+  const actionRoute = buildNyraActionRoute({ user_text: userText, overlay: branchOverlay });
+  const core2Pipeline = buildNyraCore2Pipeline({
+    user_text: userText,
+    overlay: branchOverlay,
+    route: actionRoute,
+  });
+  return {
+    branch_overlay: branchOverlay,
+    action_route: actionRoute,
+    core2_pipeline: core2Pipeline,
+  };
+}
+
 export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): NyraCommunicationResult {
   const snapshots = loadNyraCommunicationSnapshot(input.root_dir);
+  const overlay = buildReadOnlyOverlay(input.user_text);
   const directReply = buildDirectReadOnlyReply(input);
   if (directReply) {
     return {
       mode: "read_only",
-      reply: directReply,
+      reply: `${directReply} ${branchSummaryLine(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline)}`.trim(),
       intent: "simple_dialogue",
       tone: "direct",
       action_band: "reply_only",
       owner_sensitive: false,
       snapshots,
+      branch_overlay: overlay.branch_overlay,
+      action_route: overlay.action_route,
+      core2_pipeline: overlay.core2_pipeline,
       writes_memory: false,
     };
   }
@@ -501,12 +551,18 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
 
   return {
     mode: "read_only",
-    reply: engine.reply ?? fallbackReply(input, snapshots),
+    reply: [
+      branchSummaryLine(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline),
+      engine.reply ?? fallbackReply(input, snapshots),
+    ].filter(Boolean).join(" "),
     intent: engine.analysis.intent,
     tone: engine.analysis.tone,
     action_band: engine.analysis.action_band,
     owner_sensitive: engine.diagnosis.owner_sensitive,
     snapshots,
+    branch_overlay: overlay.branch_overlay,
+    action_route: overlay.action_route,
+    core2_pipeline: overlay.core2_pipeline,
     writes_memory: false,
   };
 }

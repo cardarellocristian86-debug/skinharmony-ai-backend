@@ -1,3 +1,7 @@
+import type { NyraBranchOverlay } from "../nyra-branch-overlay.ts";
+import type { NyraActionRoute } from "../nyra-action-router.ts";
+import type { NyraCore2PipelineResult } from "../nyra-core2-pipeline.ts";
+
 export type NyraTextRisk = "low" | "medium" | "high";
 
 export type NyraTextInput = {
@@ -41,6 +45,9 @@ export type NyraTextOutput = {
   source: NyraTextSource;
   actor?: NyraTextActor;
   route?: NyraTextRouteSnapshot;
+  branch_overlay?: NyraBranchOverlay;
+  action_route?: NyraActionRoute;
+  core2_pipeline?: NyraCore2PipelineResult;
   memoryUpdated: boolean;
   ui?: {
     badges?: string[];
