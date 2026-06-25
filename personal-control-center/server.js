@@ -7083,7 +7083,7 @@ function rankAnalyzerSemanticHits(rows = []) {
         _is_analyzer_domain: isAnalyzerDomain,
       };
     })
-    .filter((row) => row._is_analyzer_domain || row._analyzer_rank >= 6)
+    .filter((row) => row._is_analyzer_domain)
     .sort((a, b) => b._analyzer_rank - a._analyzer_rank || Number(b.score || 0) - Number(a.score || 0));
 }
 
@@ -7212,7 +7212,7 @@ app.post("/api/nyra/analyzer/read-only", async (req, res) => {
       ]);
     }
     const rankedSemanticHits = rankAnalyzerSemanticHits(Array.isArray(semanticHits) ? semanticHits : []);
-    const selectedSemanticHits = (rankedSemanticHits.length ? rankedSemanticHits : (Array.isArray(semanticHits) ? semanticHits : [])).slice(0, 2);
+    const selectedSemanticHits = rankedSemanticHits.slice(0, 2);
 
     const semanticLine = selectedSemanticHits.length
       ? `Memoria semantica utile: ${selectedSemanticHits.map((row) => `[${row.domain || "general"}/${row.scope || "shared_memory"}] ${row.document_title || row.document_path}: ${String(row.excerpt || "").slice(0, 220)}`).join(" | ")}`
