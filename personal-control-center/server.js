@@ -4,6 +4,28 @@ const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
 const { googleApiRequest } = require("../google_api");
+function loadNyraBranchComposerShared() {
+  const candidates = [
+    "../universal-core-2.0/tools/nyra-branch-composer-shared.cjs",
+    "../universal-core/tools/nyra-branch-composer-shared.cjs",
+  ];
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      return require(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Nyra branch composer shared module not found.");
+}
+
+const {
+  buildAnalyzerCoreOverlayData,
+  getAnalyzerBranchMetaByIdData,
+  getAnalyzerBranchMetaByKeyData,
+  buildNyraAnalyzerCoreOverlayLineData,
+} = loadNyraBranchComposerShared();
 
 const rootDir = path.resolve(__dirname, "..");
 const app = express();
@@ -12,6 +34,7 @@ const host = process.env.HOST || (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const nyraStorageRoot = process.env.NYRA_STORAGE_ROOT ? path.resolve(process.env.NYRA_STORAGE_ROOT) : "";
 const controlDataPath = "personal-control-center/data/marketing-data.json";
 const nyraFinanceHistoryPath = "personal-control-center/data/nyra-finance-history.json";
+const nyraFinanceLiveStatePath = "personal-control-center/data/nyra-finance-live-state.json";
 const nyraFinanceFeedbackPath = "runtime/nyra-learning/nyra_financial_live_feedback_latest.json";
 const nyraFinanceRealtimeAutoimprovePath = "runtime/nyra-learning/nyra_financial_realtime_autoimprovement_latest.json";
 const nyraWorldMarketScanPath = "runtime/nyra-learning/nyra_world_market_scan_latest.json";
@@ -37,7 +60,7 @@ const NYRA_WORLD_PAPER_TRAINING_FEE_RATE = 0.0005;
 const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
-const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 1000000);
+const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
 
 loadEnv();
 
@@ -795,7 +818,10 @@ const nyraFinanceLiveState = {
   intervalMs: 60_000,
   lastStartedAt: "",
   lastFinishedAt: "",
+  nextRunAt: "",
   lastError: "",
+  lastResult: null,
+  cyclesCompleted: 0,
   lastReport: null,
   profile: null
 };
@@ -827,7 +853,73 @@ const nyraWorldPaperAutoState = {
 };
 
 let nyraWorldPaperAutoTimer = null;
-let nyraWorldPaperAutoWatchdogTimer = null;
+
+function saveNyraFinanceLiveState() {
+  writeJson(nyraFinanceLiveStatePath, {
+    enabled: nyraFinanceLiveState.enabled,
+    intervalMs: nyraFinanceLiveState.intervalMs,
+    lastStartedAt: nyraFinanceLiveState.lastStartedAt,
+    lastFinishedAt: nyraFinanceLiveState.lastFinishedAt,
+    nextRunAt: nyraFinanceLiveState.nextRunAt,
+    lastError: nyraFinanceLiveState.lastError,
+    lastResult: nyraFinanceLiveState.lastResult,
+    cyclesCompleted: nyraFinanceLiveState.cyclesCompleted,
+    profile: nyraFinanceLiveState.profile
+  });
+}
+
+function restoreNyraFinanceLiveState() {
+  const stored = readJson(nyraFinanceLiveStatePath, null);
+  if (!stored || typeof stored !== "object") return;
+  nyraFinanceLiveState.enabled = Boolean(stored.enabled);
+  nyraFinanceLiveState.intervalMs = Number(stored.intervalMs || nyraFinanceLiveState.intervalMs);
+  nyraFinanceLiveState.lastStartedAt = stored.lastStartedAt || "";
+  nyraFinanceLiveState.lastFinishedAt = stored.lastFinishedAt || "";
+  nyraFinanceLiveState.nextRunAt = stored.nextRunAt || "";
+  nyraFinanceLiveState.lastError = stored.lastError || "";
+  nyraFinanceLiveState.lastResult = stored.lastResult || null;
+  nyraFinanceLiveState.cyclesCompleted = Number(stored.cyclesCompleted || 0);
+  nyraFinanceLiveState.profile = stored.profile || null;
+}
+
+function applyNyraFinanceLiveEnvDefaults() {
+  const autostartRaw = String(process.env.NYRA_FINANCE_LIVE_AUTOSTART || "").trim().toLowerCase();
+  const autostart = ["1", "true", "yes", "on"].includes(autostartRaw);
+  const intervalSeconds = Number(process.env.NYRA_FINANCE_LIVE_INTERVAL_SECONDS || 0);
+  const intervalMinutes = Number(process.env.NYRA_FINANCE_LIVE_INTERVAL_MINUTES || 0);
+  const requestedIntervalMs = intervalSeconds > 0
+    ? intervalSeconds * 1000
+    : intervalMinutes > 0
+      ? intervalMinutes * 60_000
+      : nyraFinanceLiveState.intervalMs;
+  const intervalMs = Math.max(30_000, Math.min(60 * 60_000, requestedIntervalMs));
+  nyraFinanceLiveState.intervalMs = Number.isFinite(intervalMs) ? intervalMs : nyraFinanceLiveState.intervalMs;
+  if (autostart) nyraFinanceLiveState.enabled = true;
+}
+
+function buildNyraFinanceIsolationContract() {
+  return {
+    mode: "nyra_finance_isolated_paper_monitor",
+    execution: "paper_only_no_real_orders",
+    coreRole: "gate_and_audit_only_no_runtime_merge",
+    dataScope: "market_public_or_paper_state",
+    persistentState: nyraFinanceLiveStatePath,
+    storageRoot: nyraStorageRoot ? "persistent_disk" : "repo_local",
+    allowed: [
+      "read_public_market_signals",
+      "write_paper_history",
+      "write_monitor_status",
+      "surface_macro_risk_for_owner_review"
+    ],
+    forbidden: [
+      "real_orders",
+      "broker_api_keys",
+      "payment_actions",
+      "tenant_mutations",
+      "universal_core_policy_mutations"
+    ]
+  };
+}
 
 function saveNyraWorldPaperAutoState() {
   writeJson(nyraWorldPaperAutoStatePath, {
@@ -962,8 +1054,6 @@ async function refreshNyraFinanceProfileState(overrides = {}) {
     "--manual-profile",
     manualProfile
   ], { timeoutMs: 20000 });
-  syncPersistentJson("personal-control-center/data/nyra-finance-profile.json");
-  syncPersistentJson("personal-control-center/data/nyra-finance-profile-history.json");
   const profileWarning = profileState.mode === "manual" &&
     profileState.warning &&
     (
@@ -1023,28 +1113,50 @@ async function runNyraFinanceLiveCycle() {
   nyraFinanceLiveState.running = true;
   nyraFinanceLiveState.lastStartedAt = new Date().toISOString();
   nyraFinanceLiveState.lastError = "";
+  saveNyraFinanceLiveState();
   try {
     await refreshNyraFinanceProfileState();
     const report = await runNodeJson(getNyraFinanceLiveArgs(), { timeoutMs: 120000 });
-    syncPersistentJson("runtime/nyra-learning/nyra_financial_live_feedback_latest.json");
-    syncPersistentJson("runtime/nyra-learning/nyra_financial_realtime_autoimprovement_latest.json");
-    syncPersistentJson("reports/universal-core/financial-core-test/nyra_live_portfolio_trade_latest.json");
     nyraFinanceLiveState.lastReport = report;
-    appendNyraFinanceHistory(report);
+    const history = appendNyraFinanceHistory(report);
+    const latest = Array.isArray(history) && history.length ? history[history.length - 1] : null;
+    nyraFinanceLiveState.cyclesCompleted += 1;
+    nyraFinanceLiveState.lastResult = {
+      at: new Date().toISOString(),
+      generatedAt: latest?.generatedAt || "",
+      topCandidate: latest?.topCandidate?.product || "",
+      selectedPositions: Number(latest?.selectedPositions || 0),
+      totalPnlEur: Number(latest?.totalPnlEur || 0),
+      historyCount: history.length
+    };
     nyraFinanceLiveState.lastFinishedAt = new Date().toISOString();
   } catch (error) {
     nyraFinanceLiveState.lastError = error.message;
+    nyraFinanceLiveState.lastResult = {
+      at: new Date().toISOString(),
+      status: "error",
+      message: error.message
+    };
     nyraFinanceLiveState.lastFinishedAt = new Date().toISOString();
   } finally {
     nyraFinanceLiveState.running = false;
+    saveNyraFinanceLiveState();
   }
 }
 
 function scheduleNyraFinanceLiveLoop(immediate = false) {
   if (nyraFinanceLiveTimer) clearInterval(nyraFinanceLiveTimer);
   syncNyraFinanceKeepAwake();
-  if (!nyraFinanceLiveState.enabled) return;
+  if (!nyraFinanceLiveState.enabled) {
+    nyraFinanceLiveState.nextRunAt = "";
+    saveNyraFinanceLiveState();
+    return;
+  }
+  nyraFinanceLiveState.nextRunAt = new Date(Date.now() + nyraFinanceLiveState.intervalMs).toISOString();
+  saveNyraFinanceLiveState();
   nyraFinanceLiveTimer = setInterval(() => {
+    nyraFinanceLiveState.nextRunAt = new Date(Date.now() + nyraFinanceLiveState.intervalMs).toISOString();
+    saveNyraFinanceLiveState();
     runNyraFinanceLiveCycle().catch(() => {});
   }, nyraFinanceLiveState.intervalMs);
   if (immediate) {
@@ -1052,24 +1164,34 @@ function scheduleNyraFinanceLiveLoop(immediate = false) {
   }
 }
 
-function nyraFinanceLiveStatusPayload() {
-  const report = nyraFinanceLiveState.enabled ? nyraFinanceLiveState.lastReport : null;
-  const realtimeAutoimprovement = nyraFinanceLiveState.enabled
-    ? readJson(nyraFinanceRealtimeAutoimprovePath, null)
-    : null;
+function tailEntries(entries, limit = 30) {
+  return Array.isArray(entries) ? entries.slice(-limit) : [];
+}
+
+function nyraFinanceLiveStatusPayload(options = {}) {
+  const full = Boolean(options.full);
+  const report = nyraFinanceLiveState.lastReport;
+  const realtimeAutoimprovement = readJson(nyraFinanceRealtimeAutoimprovePath, null);
   nyraFinanceKeepAwakeState.battery = readNyraBatteryState();
   const paperPortfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
   const treasury = buildUnifiedFinanceTreasury(paperPortfolio, report);
+  const profileHistory = loadNyraFinanceProfileHistory().entries || [];
+  const history = loadNyraFinanceHistory();
   return {
     ok: true,
+    compact: !full,
     enabled: nyraFinanceLiveState.enabled,
     running: nyraFinanceLiveState.running,
     intervalMs: nyraFinanceLiveState.intervalMs,
     lastStartedAt: nyraFinanceLiveState.lastStartedAt,
     lastFinishedAt: nyraFinanceLiveState.lastFinishedAt,
+    nextRunAt: nyraFinanceLiveState.nextRunAt,
     lastError: nyraFinanceLiveState.lastError,
+    lastResult: nyraFinanceLiveState.lastResult,
+    cyclesCompleted: nyraFinanceLiveState.cyclesCompleted,
+    isolation: buildNyraFinanceIsolationContract(),
     profile: nyraFinanceLiveState.profile || loadNyraFinanceProfileConfig(),
-    profileHistory: loadNyraFinanceProfileHistory().entries || [],
+    profileHistory: full ? profileHistory : tailEntries(profileHistory, 20),
     keepAwake: {
       enabled: nyraFinanceKeepAwakeState.enabled,
       active: nyraFinanceKeepAwakeState.active,
@@ -1081,9 +1203,9 @@ function nyraFinanceLiveStatusPayload() {
     },
     treasury,
     realtimeAutoimprovement,
-    history: loadNyraFinanceHistory(),
+    history: full ? history : tailEntries(history, 40),
     finance: report ? buildNyraFinanceLiveCard(report) : null,
-    raw: report
+    raw: full ? report : null
   };
 }
 
@@ -1444,15 +1566,6 @@ function writeJson(relativePath, data) {
   const filePath = resolveStoragePath(relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
-}
-
-function syncPersistentJson(relativePath) {
-  if (!nyraStorageRoot || !nyraPersistentPath(relativePath)) return;
-  const repoPath = path.join(rootDir, relativePath);
-  const persistentPath = path.join(nyraStorageRoot, relativePath);
-  if (!fs.existsSync(repoPath)) return;
-  fs.mkdirSync(path.dirname(persistentPath), { recursive: true });
-  fs.copyFileSync(repoPath, persistentPath);
 }
 
 function dateOnly(value) {
@@ -3532,9 +3645,6 @@ app.post("/api/nyra/finance/live", async (_req, res) => {
   try {
     await refreshNyraFinanceProfileState();
     const report = await runNodeJson(getNyraFinanceLiveArgs(), { timeoutMs: 120000 });
-    syncPersistentJson("runtime/nyra-learning/nyra_financial_live_feedback_latest.json");
-    syncPersistentJson("runtime/nyra-learning/nyra_financial_realtime_autoimprovement_latest.json");
-    syncPersistentJson("reports/universal-core/financial-core-test/nyra_live_portfolio_trade_latest.json");
     nyraFinanceLiveState.lastReport = report;
     const history = appendNyraFinanceHistory(report);
     res.json({
@@ -5344,71 +5454,6 @@ function executeWorldPaperStep(body = {}) {
         return { ok: true, action: "paper_profit_learning_probe", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
       }
     }
-    if (
-      learning?.learning_state === "benchmark_catchup_learning" &&
-      row &&
-      history &&
-      isNewSymbol &&
-      !isPenalizedSymbol &&
-      !isPenalizedClass &&
-      !recentBlockers.symbols.has(String(row.symbol || "").toUpperCase()) &&
-      Number(row.edge_score || 0) >= 75 &&
-      Number(row.risk_score || 0) <= 28 &&
-      Number(history.knowledge_score || 0) >= 28 &&
-      !["high_volatility_convex", "duration_risk"].includes(String(history.behavior || ""))
-    ) {
-      const catchupMaxAllocation = 0.012;
-      const probeBudget = Math.min(
-        Number(portfolio.cash_eur || 0),
-        Number(treasury.paperCashAvailableEur || 0),
-        capital * Math.min(maxAllocation, catchupMaxAllocation)
-      );
-      if (probeBudget >= 100) {
-        const entryPrice = Number(row.last_price || 0) * (1 + slippageRate);
-        const fee = probeBudget * feeRate;
-        const netBudget = probeBudget - fee;
-        const quantity = entryPrice > 0 ? netBudget / entryPrice : 0;
-        const marketValue = quantity * Number(row.last_price || 0);
-        const position = {
-          symbol: row.symbol,
-          name: row.name,
-          class: row.class,
-          region: row.region,
-          quantity: Number(quantity.toFixed(8)),
-          entry_price: Number(entryPrice.toFixed(6)),
-          last_price: Number(row.last_price || 0),
-          cost_basis_eur: Number(probeBudget.toFixed(2)),
-          market_value_eur: Number(marketValue.toFixed(2)),
-          pnl_eur: Number((marketValue - probeBudget).toFixed(2)),
-          pnl_pct: probeBudget > 0 ? Number((((marketValue / probeBudget) - 1) * 100).toFixed(4)) : 0,
-          opened_at: now,
-          gear: riskBudget.gear,
-          profile: riskBudget.profile,
-          max_allocation: Math.min(maxAllocation, catchupMaxAllocation),
-          last_action: row.action,
-          multiverse_thesis: row.multiverse_thesis || null,
-          reason: `${row.reason}; benchmark catch-up micro-probe ${history.behavior || "studied asset"}`
-        };
-        portfolio.cash_eur = Number((Number(portfolio.cash_eur || 0) - probeBudget).toFixed(2));
-        portfolio.positions.push(position);
-        portfolio.trades.unshift({
-          at: now,
-          type: "benchmark_catchup_probe",
-          symbol: row.symbol,
-          gear: riskBudget.gear,
-          profile: riskBudget.profile,
-          budget_eur: Number(probeBudget.toFixed(2)),
-          fee_eur: Number(fee.toFixed(2)),
-          slippage_pct: Number((slippageRate * 100).toFixed(2)),
-          price: position.entry_price,
-          reason: `benchmark catch-up: QQQ corre e Nyra e troppo cash. Apro micro-probe paper su ${row.symbol} per edge/rischio puliti (${Number(row.edge_score || 0).toFixed(1)} edge / ${Number(row.risk_score || 0).toFixed(1)} rischio), senza ordini reali.`
-        });
-        portfolio.updated_at = now;
-        writeJson(nyraWorldPaperPortfolioPath, portfolio);
-        const policy = buildWorldPaperLearningPolicy(portfolio);
-        return { ok: true, action: "benchmark_catchup_probe", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
-      }
-    }
     portfolio.trades.unshift({
       at: now,
       type: "learning_pause",
@@ -5426,74 +5471,6 @@ function executeWorldPaperStep(body = {}) {
     const error = new Error("Nyra non apre paper trade su un mercato in avoid.");
     error.statusCode = 409;
     throw error;
-  }
-  if (autoSelect && learning?.learning_state === "benchmark_catchup_learning" && row && !existingForSelected) {
-    const catchupHistory = assetHistoryForDiversification?.by_symbol?.[row.symbol];
-    const catchupRecentBlockers = recentWorldPaperTradeBlockers(portfolio, 360);
-    const catchupPenalizedSymbol = (learningPolicy.penalize_symbols || []).some((item) => String(item.symbol || "") === String(row.symbol || ""));
-    const catchupPenalizedClass = (learningPolicy.penalize_classes || []).some((item) => String(item.class || "") === String(row.class || ""));
-    const canCatchupProbe =
-      catchupHistory &&
-      !catchupPenalizedSymbol &&
-      !catchupPenalizedClass &&
-      !catchupRecentBlockers.symbols.has(String(row.symbol || "").toUpperCase()) &&
-      Number(row.edge_score || 0) >= 75 &&
-      Number(row.risk_score || 0) <= 28 &&
-      Number(catchupHistory.knowledge_score || 0) >= 28 &&
-      !["high_volatility_convex", "duration_risk"].includes(String(catchupHistory.behavior || ""));
-    if (canCatchupProbe) {
-      const catchupMaxAllocation = 0.012;
-      const probeBudget = Math.min(
-        Number(portfolio.cash_eur || 0),
-        Number(treasury.paperCashAvailableEur || 0),
-        capital * Math.min(maxAllocation, catchupMaxAllocation)
-      );
-      if (probeBudget >= 100) {
-        const entryPrice = Number(row.last_price || 0) * (1 + slippageRate);
-        const fee = probeBudget * feeRate;
-        const netBudget = probeBudget - fee;
-        const quantity = entryPrice > 0 ? netBudget / entryPrice : 0;
-        const marketValue = quantity * Number(row.last_price || 0);
-        const position = {
-          symbol: row.symbol,
-          name: row.name,
-          class: row.class,
-          region: row.region,
-          quantity: Number(quantity.toFixed(8)),
-          entry_price: Number(entryPrice.toFixed(6)),
-          last_price: Number(row.last_price || 0),
-          cost_basis_eur: Number(probeBudget.toFixed(2)),
-          market_value_eur: Number(marketValue.toFixed(2)),
-          pnl_eur: Number((marketValue - probeBudget).toFixed(2)),
-          pnl_pct: probeBudget > 0 ? Number((((marketValue / probeBudget) - 1) * 100).toFixed(4)) : 0,
-          opened_at: now,
-          gear: riskBudget.gear,
-          profile: riskBudget.profile,
-          max_allocation: Math.min(maxAllocation, catchupMaxAllocation),
-          last_action: row.action,
-          multiverse_thesis: row.multiverse_thesis || null,
-          reason: `${row.reason}; benchmark catch-up micro-probe ${catchupHistory.behavior || "studied asset"}`
-        };
-        portfolio.cash_eur = Number((Number(portfolio.cash_eur || 0) - probeBudget).toFixed(2));
-        portfolio.positions.push(position);
-        portfolio.trades.unshift({
-          at: now,
-          type: "benchmark_catchup_probe",
-          symbol: row.symbol,
-          gear: riskBudget.gear,
-          profile: riskBudget.profile,
-          budget_eur: Number(probeBudget.toFixed(2)),
-          fee_eur: Number(fee.toFixed(2)),
-          slippage_pct: Number((slippageRate * 100).toFixed(2)),
-          price: position.entry_price,
-          reason: `benchmark catch-up: QQQ corre e Nyra e troppo cash. Apro micro-probe paper su ${row.symbol} per edge/rischio puliti (${Number(row.edge_score || 0).toFixed(1)} edge / ${Number(row.risk_score || 0).toFixed(1)} rischio), senza ordini reali.`
-        });
-        portfolio.updated_at = now;
-        writeJson(nyraWorldPaperPortfolioPath, portfolio);
-        const policy = buildWorldPaperLearningPolicy(portfolio);
-        return { ok: true, action: "benchmark_catchup_probe", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
-      }
-    }
   }
   if (autoSelect && row?.fee_edge && !row.fee_edge.ok) {
     portfolio.trades.unshift({
@@ -5527,133 +5504,6 @@ function executeWorldPaperStep(body = {}) {
     writeJson(nyraWorldPaperPortfolioPath, portfolio);
     const policy = buildWorldPaperLearningPolicy(portfolio);
     return { ok: true, action: "hold", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
-  }
-  if (autoSelect) {
-    const thesis = row?.multiverse_thesis || null;
-    const feeEdge = row?.fee_edge || worldPaperHasFeeEdge(row, thesis, feeRate, slippageRate, thesis?.thesis_valid ? 1.2 : 1.6);
-    const disciplinedAutoEntry =
-      thesis?.thesis_valid &&
-      ["enter", "hold_thesis"].includes(String(thesis.thesis_action || "")) &&
-      feeEdge.ok &&
-      Number(row?.edge_score || 0) >= Math.max(55, minEdgeForNewEntry) &&
-      Number(row?.risk_score || 0) <= maxRiskForNewEntry &&
-      Number(thesis?.confidence || 0) >= 48 &&
-      Number(thesis?.expected_value_score || 0) >= 8;
-    const currentSummary = summarizeWorldPaperPortfolio(portfolio, scan);
-    const recentHoldOrSkipCount = portfolio.trades
-      .slice(0, 20)
-      .filter((trade) => /(hold|pause|skip)/i.test(String(trade.type || ""))).length;
-    const canCoreReengage =
-      !existing &&
-      Number(currentSummary.positions_count || 0) === 0 &&
-      Number(currentSummary.alpha_vs_qqq_pct || 0) <= -0.25 &&
-      recentHoldOrSkipCount >= 5;
-    let relaxedProbeRow = null;
-    if (!disciplinedAutoEntry && canCoreReengage) {
-      const thesisPolicy = loadWorldThesisLearningPolicy();
-      const evaluatedCandidates = [row, ...ranked]
-        .filter(Boolean)
-        .map((candidate) => {
-          const candidateHistory = assetHistoryForDiversification?.by_symbol?.[candidate.symbol];
-          const candidateThesis = candidate.multiverse_thesis || buildWorldMultiverseThesis(candidate, riskBudget, candidateHistory, thesisPolicy);
-          const candidateFeeEdge = candidate.fee_edge || worldPaperHasFeeEdge(candidate, candidateThesis, feeRate, slippageRate, candidateThesis?.thesis_valid ? 1.2 : 1.6);
-          return {
-            row: {
-              ...candidate,
-              multiverse_thesis: candidateThesis,
-              fee_edge: candidateFeeEdge
-            },
-            thesis: candidateThesis,
-            feeEdge: candidateFeeEdge
-          };
-        });
-      relaxedProbeRow = evaluatedCandidates.find(({ row: candidate, thesis: candidateThesis, feeEdge: candidateFeeEdge }) => (
-        String(candidate?.action || "").toLowerCase() !== "avoid" &&
-        candidateFeeEdge.ok &&
-        Number(candidate?.risk_score || 0) <= 58 &&
-        (
-          (candidateThesis?.thesis_valid && Number(candidateThesis?.confidence || 0) >= 44) ||
-          (
-            Number(candidate?.edge_score || 0) >= 66 &&
-            Number(candidateThesis?.expected_value_score || 0) >= 0
-          ) ||
-          (
-            Number(candidate?.edge_score || 0) >= 90 &&
-            Number(candidate?.risk_score || 0) <= 25 &&
-            Number(candidateThesis?.confidence || 0) >= 68 &&
-            Number(candidateThesis?.expected_value_score || 0) >= -12 &&
-            Number(assetHistoryForDiversification?.by_symbol?.[candidate.symbol]?.knowledge_score || 0) >= 50
-          )
-        )
-      ))?.row || null;
-    }
-    if (!disciplinedAutoEntry && relaxedProbeRow) {
-      const probeBudget = Math.min(
-        Number(portfolio.cash_eur || 0),
-        Number(treasury.paperCashAvailableEur || 0),
-        capital * Math.min(maxAllocation * newPositionMultiplier, 0.012)
-      );
-      if (probeBudget >= 100) {
-        row = relaxedProbeRow;
-        const probePrice = Number(row.last_price || 0) * (1 + slippageRate);
-        const fee = probeBudget * feeRate;
-        const netBudget = probeBudget - fee;
-        const quantity = probePrice > 0 ? netBudget / probePrice : 0;
-        const marketValue = quantity * Number(row.last_price || 0);
-        const position = {
-          symbol: row.symbol,
-          name: row.name,
-          class: row.class,
-          region: row.region,
-          quantity: Number(quantity.toFixed(8)),
-          entry_price: Number(probePrice.toFixed(6)),
-          last_price: Number(row.last_price || 0),
-          cost_basis_eur: Number(probeBudget.toFixed(2)),
-          market_value_eur: Number(marketValue.toFixed(2)),
-          pnl_eur: Number((marketValue - probeBudget).toFixed(2)),
-          pnl_pct: probeBudget > 0 ? Number((((marketValue / probeBudget) - 1) * 100).toFixed(4)) : 0,
-          opened_at: now,
-          gear: riskBudget.gear,
-          profile: riskBudget.profile,
-          max_allocation: Math.min(maxAllocation * newPositionMultiplier, 0.012),
-          last_action: row.action,
-          multiverse_thesis: row.multiverse_thesis || null,
-          reason: `${row.reason}; core reengage probe per evitare stallo totale contro QQQ`
-        };
-        portfolio.cash_eur = Number((Number(portfolio.cash_eur || 0) - probeBudget).toFixed(2));
-        portfolio.positions.push(position);
-        portfolio.trades.unshift({
-          at: now,
-          type: "core_reengage_probe_buy",
-          symbol: row.symbol,
-          gear: riskBudget.gear,
-          profile: riskBudget.profile,
-          budget_eur: Number(probeBudget.toFixed(2)),
-          fee_eur: Number(fee.toFixed(2)),
-          slippage_pct: Number((slippageRate * 100).toFixed(2)),
-          price: position.entry_price,
-          reason: `Nyra era sottoesposta e sotto QQQ con ${recentHoldOrSkipCount} hold/skip recenti: apre micro-probe disciplinato su ${row.symbol} per non restare a 0% deployata.`
-        });
-        portfolio.updated_at = now;
-        writeJson(nyraWorldPaperPortfolioPath, portfolio);
-        const policy = buildWorldPaperLearningPolicy(portfolio);
-        return { ok: true, action: "core_reengage_probe_buy", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
-      }
-    }
-    if (!disciplinedAutoEntry) {
-      portfolio.trades.unshift({
-        at: now,
-        type: "study_skip_no_valid_thesis",
-        symbol: row?.symbol || "NONE",
-        gear: riskBudget.gear,
-        profile: riskBudget.profile,
-        reason: `studio senza ingresso: ${row?.symbol || "asset"} non passa il gate minimo di tesi/EV/confidenza/rischio. Nyra osserva e aggiorna memoria, ma non compra.`,
-        price: row?.last_price || 0
-      });
-      writeJson(nyraWorldPaperPortfolioPath, portfolio);
-      const policy = buildWorldPaperLearningPolicy(portfolio);
-      return { ok: true, action: "study_skip_no_valid_thesis", mode, riskBudget, autoChoice, learning: policy, portfolio, summary: summarizeWorldPaperPortfolio(portfolio, scan), treasury: buildUnifiedFinanceTreasury(portfolio), selected: row };
-    }
   }
   const budget = Math.min(
     Number(portfolio.cash_eur || 0),
@@ -5903,25 +5753,6 @@ function scheduleNyraWorldPaperAutoLoop(immediate = false) {
   if (immediate) runNyraWorldPaperAutoCycle().catch(() => {});
 }
 
-function ensureNyraWorldPaperAutoLoopAlive() {
-  if (!nyraWorldPaperAutoState.enabled) return;
-  const nextRunAtMs = Date.parse(nyraWorldPaperAutoState.nextRunAt || "");
-  const staleNextRun = Number.isFinite(nextRunAtMs) && nextRunAtMs > 0 && nextRunAtMs < (Date.now() - 90_000);
-  const missingTimer = !nyraWorldPaperAutoTimer;
-  if (nyraWorldPaperAutoState.running) return;
-  if (!missingTimer && !staleNextRun) return;
-  scheduleNyraWorldPaperAutoLoop(staleNextRun);
-}
-
-function startNyraWorldPaperAutoWatchdog() {
-  if (nyraWorldPaperAutoWatchdogTimer) clearInterval(nyraWorldPaperAutoWatchdogTimer);
-  nyraWorldPaperAutoWatchdogTimer = setInterval(() => {
-    try {
-      ensureNyraWorldPaperAutoLoopAlive();
-    } catch (_error) {}
-  }, 60_000);
-}
-
 function nyraWorldPaperAutoStatusPayload() {
   const portfolio = readJson(nyraWorldPaperPortfolioPath, emptyWorldPaperPortfolio());
   const worldScan = readJson(nyraWorldMarketScanPath, null);
@@ -5938,19 +5769,6 @@ function nyraWorldPaperAutoStatusPayload() {
     treasury,
     selfDiagnosis
   };
-}
-
-function resetNyraWorldPaperAutoStateArtifacts() {
-  nyraWorldPaperAutoState.running = false;
-  nyraWorldPaperAutoState.lastStartedAt = "";
-  nyraWorldPaperAutoState.lastFinishedAt = "";
-  nyraWorldPaperAutoState.lastError = "";
-  nyraWorldPaperAutoState.lastResult = null;
-  nyraWorldPaperAutoState.cyclesCompleted = 0;
-  if (!nyraWorldPaperAutoState.enabled) {
-    nyraWorldPaperAutoState.nextRunAt = "";
-  }
-  saveNyraWorldPaperAutoState();
 }
 
 app.get("/api/nyra/finance/world-paper", (_req, res) => {
@@ -5975,11 +5793,9 @@ app.post("/api/nyra/finance/world-paper/reset", (req, res) => {
   const worldScan = readJson(nyraWorldMarketScanPath, null);
   ensureWorldPaperBenchmark(portfolio, worldScan);
   writeJson(nyraWorldPaperPortfolioPath, portfolio);
-  resetNyraWorldPaperAutoStateArtifacts();
   const learning = buildWorldPaperLearningPolicy(portfolio);
   const treasury = buildUnifiedFinanceTreasury(portfolio);
   const selfDiagnosis = buildNyraFinancialSelfDiagnosisLive({ portfolio, worldScan });
-  buildNyraRenderAutopilotReport();
   res.json({
     ok: true,
     portfolio,
@@ -6034,8 +5850,9 @@ app.post("/api/nyra/finance/world-paper/auto/stop", (_req, res) => {
   res.json(nyraWorldPaperAutoStatusPayload());
 });
 
-app.get("/api/nyra/finance/live/status", (_req, res) => {
-  res.json(nyraFinanceLiveStatusPayload());
+app.get("/api/nyra/finance/live/status", (req, res) => {
+  const full = ["1", "true", "yes", "on"].includes(String(req.query.full || "").trim().toLowerCase());
+  res.json(nyraFinanceLiveStatusPayload({ full }));
 });
 
 app.get("/api/nyra/finance/channel-risk", (_req, res) => {
@@ -6066,8 +5883,19 @@ app.get("/api/nyra/finance/history", (_req, res) => {
   });
 });
 
-app.post("/api/nyra/finance/live/start", (_req, res) => {
+app.post("/api/nyra/finance/live/start", (req, res) => {
   nyraFinanceLiveState.enabled = true;
+  const intervalSeconds = Number(req.body?.intervalSeconds || 0);
+  const intervalMinutes = Number(req.body?.intervalMinutes || 0);
+  const requestedIntervalMs = intervalSeconds > 0
+    ? intervalSeconds * 1000
+    : intervalMinutes > 0
+      ? intervalMinutes * 60_000
+      : nyraFinanceLiveState.intervalMs;
+  if (Number.isFinite(requestedIntervalMs) && requestedIntervalMs > 0) {
+    nyraFinanceLiveState.intervalMs = Math.max(30_000, Math.min(60 * 60_000, requestedIntervalMs));
+  }
+  saveNyraFinanceLiveState();
   scheduleNyraFinanceLiveLoop(true);
   res.json(nyraFinanceLiveStatusPayload());
 });
@@ -6079,6 +5907,8 @@ app.post("/api/nyra/finance/live/stop", (_req, res) => {
     nyraFinanceLiveTimer = null;
   }
   syncNyraFinanceKeepAwake();
+  nyraFinanceLiveState.nextRunAt = "";
+  saveNyraFinanceLiveState();
   res.json(nyraFinanceLiveStatusPayload());
 });
 
@@ -6352,26 +6182,11 @@ function normalizeAnalyzerItems(body = {}, field) {
 }
 
 function normalizeAnalyzerClientProfile(body = {}) {
-  const profileSources = [
-    body.client_profile,
-    body.clientProfile,
-    body.data?.client_profile,
-    body.data?.clientProfile,
-    body.payload?.client_profile,
-    body.payload?.clientProfile,
-    body.context?.client_profile,
-    body.context?.clientProfile,
-    body.client,
-    body.data?.client,
-    body.payload?.client,
-    body.context?.client
-  ].filter((value) => value && typeof value === "object");
+  const source = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || body.payload?.client_profile || body.payload?.clientProfile || {};
   const get = (...keys) => {
-    for (const source of profileSources) {
-      for (const key of keys) {
-        const value = source?.[key];
-        if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
-      }
+    for (const key of keys) {
+      const value = source?.[key];
+      if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
     }
     return "";
   };
@@ -6603,10 +6418,6 @@ function collectAnalyzerFamilies(pack, dominant, secondary) {
   return uniqueAnalyzerStrings(families).slice(0, 8);
 }
 
-
-
-
-
 function analyzerVoiceMetricKey(canonicalKey) {
   const map = {
     skin_tone_brightness: "fs",
@@ -6719,17 +6530,11 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
   const profileStyle = voiceOrchestrator.profile_style_lexicon?.[profileId] || {};
   const styleModes = Array.isArray(profileStyle.style_modes) ? profileStyle.style_modes : [];
   const metricGlossary = voiceOrchestrator.metric_glossary?.[metricKey] || {};
-  const client = body.client || body.data?.client || body.payload?.client || body.context?.client || {};
-  const rawProfile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || body.payload?.client_profile || body.payload?.clientProfile || body.context?.client_profile || body.context?.clientProfile || {};
-  const profile = { ...client, ...rawProfile };
-  const secondaryRows = Array.isArray(analysis.secondary) ? analysis.secondary.filter(Boolean) : [];
-  const stableRows = Array.isArray(analysis.stable) ? analysis.stable.filter(Boolean) : [];
-  const scoreRows = Array.isArray(analysis.scores) ? analysis.scores.filter(Boolean) : [];
-  const secondarySignature = analyzerVoiceSignatureFromRows(secondaryRows);
-  const stableSignature = analyzerVoiceSignatureFromRows(stableRows);
-  const scoreSignature = analyzerVoiceSignatureFromRows(scoreRows);
-  const secondaryKeys = secondaryRows.map((row) => row.key).filter(Boolean);
-  const stableKeys = stableRows.map((row) => row.key).filter(Boolean);
+  const client = body.client || body.data?.client || {};
+  const profile = body.client_profile || body.clientProfile || body.data?.client_profile || body.data?.clientProfile || {};
+  const secondarySignature = analyzerVoiceSignatureFromRows(analysis.secondary || []);
+  const stableSignature = analyzerVoiceSignatureFromRows(analysis.stable || []);
+  const scoreSignature = analyzerVoiceSignatureFromRows(analysis.scores || []);
   const variationClock = body.voice_seed || body.voiceSeed || body.report_id || body.reportId || body.session_id || body.sessionId || Date.now();
   const baseVariationSeed = analyzerVoiceHash([
     profileId,
@@ -6751,15 +6556,6 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
     profile.sex || profile.sesso || ""
   ].join("|"));
   const secondaryStyleOffset = styleModes.length ? analyzerVoiceHash(secondarySignature || scoreSignature || metricKey) % styleModes.length : 0;
-  const voiceVariantSeed = analyzerVoiceHash([
-    contextVariationSeed,
-    secondarySignature,
-    stableSignature,
-    scoreSignature,
-    secondaryKeys.join(","),
-    stableKeys.join(",")
-  ].join("|"));
-  const voiceVariantId = Math.abs(voiceVariantSeed) % 11;
   const selectedStyleMode = styleModes.length
     ? styleModes[Math.abs(contextVariationSeed + secondaryStyleOffset + level) % styleModes.length]
     : null;
@@ -6799,10 +6595,6 @@ function analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body = {},
     secondary_signature: secondarySignature,
     stable_signature: stableSignature,
     score_signature: scoreSignature,
-    secondary_keys: secondaryKeys,
-    stable_keys: stableKeys,
-    voice_variant_id: voiceVariantId,
-    voice_variant_seed: voiceVariantSeed,
     base_variation_seed: baseVariationSeed,
     variation_seed: contextVariationSeed
   };
@@ -6851,27 +6643,6 @@ function analyzerVoiceLines(context) {
   const detailLine = analyzerVoicePick(detailPool, seed, 8);
   const bridgeLabel = styleMode.term_bridge_label || profileStyle.term_bridge_label || "Chiave di lettura";
   const meaning = metricGlossary.meaning || "";
-  const variant = Number.isFinite(Number(context.voice_variant_id)) ? Number(context.voice_variant_id) : 0;
-  const secondaryKeys = Array.isArray(context.secondary_keys) ? context.secondary_keys : [];
-  const hasPigment = secondaryKeys.includes("spots_pigmentation_signals");
-  const hasTexture = secondaryKeys.includes("texture_fine_lines");
-  const hasPores = secondaryKeys.includes("pores_texture");
-  const hasTone = secondaryKeys.includes("skin_tone_brightness");
-  let caseAngle = "";
-  if (hasPigment && !hasTexture) {
-    caseAngle = "Lettura incrociata: il valore principale va collegato anche all'uniformita cromatica, per capire se il segnale nasce solo dalla reattivita o coinvolge anche la melanina visibile.";
-  } else if (hasTexture && !hasPigment) {
-    caseAngle = "Lettura incrociata: qui conta anche la trama cutanea; la superficie racconta quanto la pelle riesce a restare compatta, regolare e stabile.";
-  } else if (hasPigment && hasTexture) {
-    caseAngle = "Lettura incrociata: colore e trama si sommano, quindi il percorso deve proteggere la barriera mentre lavora su uniformita e qualita superficiale.";
-  } else if (hasPores && hasTone) {
-    caseAngle = "Lettura incrociata: pori, grana e luminosita fanno da controllo di coerenza del quadro, per distinguere una pelle solo reattiva da una pelle che sta compensando.";
-  }
-  const causeLabels = ["Possibile origine", "Causa probabile", "Meccanismo osservabile", "Da cosa puo dipendere", "Lettura causale", "Punto di partenza", "Interpretazione", "Origine del segnale", "Fattore da controllare", "Nesso principale", "Ipotesi operativa"];
-  const actionLabels = ["Mossa consigliata", "Direzione del percorso", "Cosa fare adesso", "Scelta operativa", "Protocollo iniziale", "Priorita pratica", "Azione guidata", "Passo successivo", "Strategia immediata", "Intervento da preferire", "Percorso da impostare"];
-  const avoidLabels = ["Da non forzare", "Meglio evitare", "Limite di oggi", "Attenzione operativa", "Da rimandare", "Non spingere ora", "Soglia di prudenza", "Cosa non fare", "Controllo del rischio", "Da tenere leggero", "Freno intelligente"];
-  const controlLabels = ["Rivalutazione", "Controllo consigliato", "Verifica", "Follow-up", "Rilettura", "Confronto successivo", "Controllo strumentale", "Prossimo check", "Verifica percorso", "Tempo di risposta", "Controllo evoluzione"];
-  const voiceLabels = ["Sintesi Nyra", "Lettura cliente", "Sintesi operativa", "Messaggio guidato", "Traduzione pratica", "Lettura premium", "Sintesi finale", "Indicazione Nyra", "Chiusura consulenza", "Formula cliente", "Quadro in parole semplici"];
   const values = {
     profileLabel: context.profile_label,
     metric: metricGlossary.public_name || context.metric,
@@ -6888,15 +6659,14 @@ function analyzerVoiceLines(context) {
     analyzerVoiceFill(opening, values),
     formula ? analyzerVoiceFill(formula, values) : "",
     detailLine ? analyzerVoiceFill(detailLine, values) : "",
-    caseAngle ? analyzerVoiceFill(caseAngle, values) : "",
     `${bridgeLabel}: ${term}.${meaning ? " In questa lettura significa " + meaning + "." : ""}`,
-    `${causeLabels[variant]}: ${cause}.`,
-    `${actionLabels[variant]}: ${solution}.`,
-    `${avoidLabels[variant]}: ${avoid}.`,
-    `${controlLabels[variant]}: ${followUp}.`,
+    "Possibile causa: " + cause + ".",
+    "Azione consigliata: " + solution + ".",
+    "Da evitare per ora: " + avoid + ".",
+    "Controllo: " + followUp + ".",
     premiumLine
-      ? `${voiceLabels[variant]}: ${premiumLine}`
-      : `${voiceLabels[variant]}: ${analyzerVoiceFill("Il problema principale e {problem}: la causa possibile e {cause}; la soluzione e {solution}. Il controllo serve a capire se il pattern si riduce o resta stabile.", values)}`
+      ? "Voce Nyra: " + premiumLine
+      : "Voce Nyra: " + analyzerVoiceFill("Il problema principale e {problem}: la causa possibile e {cause}; la soluzione e {solution}. Il controllo serve a capire se il pattern si riduce o resta stabile.", values)
   ].filter(Boolean);
 }
 
@@ -8089,12 +7859,14 @@ app.post("/api/tasks", (req, res) => {
 const server = app.listen(port, host, () => {
   console.log(`SkinHarmony Control Desk attivo su http://${host}:${port}`);
   seedNyraRuntimeFromBootstrap();
+  restoreNyraFinanceLiveState();
+  applyNyraFinanceLiveEnvDefaults();
   restoreNyraWorldPaperAutoState();
   applyNyraWorldPaperAutoEnvDefaults();
   const runPaperOnBoot = nyraWorldPaperAutoState.enabled && ["1", "true", "yes", "on"].includes(String(process.env.NYRA_WORLD_PAPER_RUN_ON_BOOT || "").trim().toLowerCase());
   scheduleNyraWorldPaperAutoLoop(runPaperOnBoot);
-  startNyraWorldPaperAutoWatchdog();
-  scheduleNyraFinanceLiveLoop(false);
+  const runFinanceOnBoot = nyraFinanceLiveState.enabled && ["1", "true", "yes", "on"].includes(String(process.env.NYRA_FINANCE_LIVE_RUN_ON_BOOT || "").trim().toLowerCase());
+  scheduleNyraFinanceLiveLoop(runFinanceOnBoot);
 });
 
 server.on("error", (error) => {
