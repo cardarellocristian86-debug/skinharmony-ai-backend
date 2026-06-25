@@ -7057,6 +7057,36 @@ function buildNyraAnalyzerResponse(body = {}) {
   };
 }
 
+function rankAnalyzerSemanticHits(rows = []) {
+  const analyzerSignal = (text = "") => /analyzer|skin analyzer|marker|rossore|discrom|texture|pori|grana|sensibil|moondream|ipad|capture|protocollo/i.test(String(text));
+  const allowedDomain = new Set(["analyzer", "ipad"]);
+  return rows
+    .map((row) => {
+      const path = String(row.document_path || "");
+      const title = String(row.document_title || "");
+      const excerpt = String(row.excerpt || "");
+      const domain = String(row.domain || "");
+      const score = Number(row.score || 0);
+      const tags = Array.isArray(row.tags) ? row.tags.map(String) : [];
+      const isAnalyzerDomain = allowedDomain.has(domain);
+      const lexicalScore =
+        (analyzerSignal(title) ? 5 : 0) +
+        (analyzerSignal(path) ? 5 : 0) +
+        (analyzerSignal(excerpt) ? 3 : 0) +
+        (tags.some((tag) => /analyzer|ipad|marker|skin/i.test(tag)) ? 3 : 0) +
+        (/report/i.test(path) ? 2 : 0) +
+        (/fix|test/i.test(title) ? 1 : 0);
+      const penalty = /chess|market|study_plan|decision_clarity|financial/i.test(`${path} ${title}`) ? 8 : 0;
+      return {
+        ...row,
+        _analyzer_rank: (isAnalyzerDomain ? 20 : 0) + lexicalScore - penalty + score,
+        _is_analyzer_domain: isAnalyzerDomain,
+      };
+    })
+    .filter((row) => row._is_analyzer_domain || row._analyzer_rank >= 6)
+    .sort((a, b) => b._analyzer_rank - a._analyzer_rank || Number(b.score || 0) - Number(a.score || 0));
+}
+
 app.post("/api/nyra/text-chat", async (req, res) => {
   const message = String(req.body.message || req.body.text || "").trim();
   const sessionId = String(req.body.sessionId || "nyra-render-text-sandbox").trim();
@@ -7178,18 +7208,20 @@ app.post("/api/nyra/analyzer/read-only", async (req, res) => {
         "--query",
         semanticQuery,
         "--limit",
-        "2"
+        "12"
       ]);
     }
+    const rankedSemanticHits = rankAnalyzerSemanticHits(Array.isArray(semanticHits) ? semanticHits : []);
+    const selectedSemanticHits = (rankedSemanticHits.length ? rankedSemanticHits : (Array.isArray(semanticHits) ? semanticHits : [])).slice(0, 2);
 
-    const semanticLine = Array.isArray(semanticHits) && semanticHits.length
-      ? `Memoria semantica utile: ${semanticHits.slice(0, 2).map((row) => `[${row.domain || "general"}/${row.scope || "shared_memory"}] ${row.document_title || row.document_path}: ${String(row.excerpt || "").slice(0, 220)}`).join(" | ")}`
+    const semanticLine = selectedSemanticHits.length
+      ? `Memoria semantica utile: ${selectedSemanticHits.map((row) => `[${row.domain || "general"}/${row.scope || "shared_memory"}] ${row.document_title || row.document_path}: ${String(row.excerpt || "").slice(0, 220)}`).join(" | ")}`
       : "";
 
     res.json({
       ...result,
       semantic_memory_summary: semanticSummary,
-      semantic_memory_hits: Array.isArray(semanticHits) ? semanticHits : [],
+      semantic_memory_hits: selectedSemanticHits,
       reply: [result.reply, semanticLine].filter(Boolean).join("\n"),
     });
   } catch (error) {
