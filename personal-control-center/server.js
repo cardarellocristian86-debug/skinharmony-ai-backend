@@ -7144,9 +7144,54 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
   });
 });
 
-app.post("/api/nyra/analyzer/read-only", (req, res) => {
+app.post("/api/nyra/analyzer/read-only", async (req, res) => {
   try {
-    res.json(buildNyraAnalyzerResponse(req.body || {}));
+    const refresh = await runNodeJson([
+      "--experimental-strip-types",
+      "universal-core/tools/nyra-vector-memory.ts",
+      "refresh-if-stale",
+      "--max-age-minutes",
+      "180"
+    ]);
+    const result = buildNyraAnalyzerResponse(req.body || {});
+    const semanticSummary = refresh?.stats_after
+      ? [
+          `documents=${Number(refresh.stats_after.documents || 0)}`,
+          `chunks=${Number(refresh.stats_after.chunks || 0)}`,
+          refresh.stats_after.last_ingest_at ? `last_ingest_at=${refresh.stats_after.last_ingest_at}` : ""
+        ].filter(Boolean).join(" ")
+      : "";
+
+    const semanticQuery = [
+      result.practice_profile?.id || "",
+      result.dominant_pattern?.label || "",
+      result.main_problem || "",
+      Array.isArray(result.relationships) ? result.relationships.join(" ") : ""
+    ].filter(Boolean).join(" ");
+
+    let semanticHits = [];
+    if (semanticQuery) {
+      semanticHits = await runNodeJson([
+        "--experimental-strip-types",
+        "universal-core/tools/nyra-vector-memory.ts",
+        "search",
+        "--query",
+        semanticQuery,
+        "--limit",
+        "2"
+      ]);
+    }
+
+    const semanticLine = Array.isArray(semanticHits) && semanticHits.length
+      ? `Memoria semantica utile: ${semanticHits.slice(0, 2).map((row) => `[${row.domain || "general"}/${row.scope || "shared_memory"}] ${row.document_title || row.document_path}: ${String(row.excerpt || "").slice(0, 220)}`).join(" | ")}`
+      : "";
+
+    res.json({
+      ...result,
+      semantic_memory_summary: semanticSummary,
+      semantic_memory_hits: Array.isArray(semanticHits) ? semanticHits : [],
+      reply: [result.reply, semanticLine].filter(Boolean).join("\n"),
+    });
   } catch (error) {
     res.status(500).json({
       ok: false,
