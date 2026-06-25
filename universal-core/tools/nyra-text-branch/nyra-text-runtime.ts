@@ -18,9 +18,13 @@ import {
   finalizeNyraTextLearning,
   handleNyraTextLearningCommand,
 } from "../nyra-learning-text-adapter.ts";
-import { buildNyraBranchOverlay, type NyraBranchOverlay } from "../nyra-branch-overlay.ts";
-import { buildNyraActionRoute, type NyraActionRoute } from "../nyra-action-router.ts";
-import { buildNyraCore2Pipeline, type NyraCore2PipelineResult } from "../nyra-core2-pipeline.ts";
+import type { NyraBranchOverlay } from "../nyra-branch-overlay.ts";
+import type { NyraActionRoute } from "../nyra-action-router.ts";
+import type { NyraCore2PipelineResult } from "../nyra-core2-pipeline.ts";
+import {
+  buildNyraBranchSummaryNotes,
+  buildNyraRuntimeOverlayBundle,
+} from "../nyra-branch-composer.ts";
 
 function buildRichPayload(input: NyraTextInput, sidecarMemory: any, route: NyraTextRoute): any {
   return {
@@ -92,18 +96,7 @@ function buildTextOverlay(text: string): {
   action_route: NyraActionRoute;
   core2_pipeline: NyraCore2PipelineResult;
 } {
-  const branchOverlay = buildNyraBranchOverlay(text);
-  const actionRoute = buildNyraActionRoute({ user_text: text, overlay: branchOverlay });
-  const core2Pipeline = buildNyraCore2Pipeline({
-    user_text: text,
-    overlay: branchOverlay,
-    route: actionRoute,
-  });
-  return {
-    branch_overlay: branchOverlay,
-    action_route: actionRoute,
-    core2_pipeline: core2Pipeline,
-  };
+  return buildNyraRuntimeOverlayBundle(text);
 }
 
 function branchSummaryNotes(
@@ -111,12 +104,11 @@ function branchSummaryNotes(
   route: NyraActionRoute,
   pipeline: NyraCore2PipelineResult,
 ): string[] {
-  const active = overlay.active_branches.slice(0, 3).map((branch) => branch.id).join(", ") || overlay.primary_branch.id;
-  return [
-    `Rami attivi: ${active}`,
-    `Route: ${route.intent}, modo ${route.execution_mode}`,
-    `Core: V2 ${pipeline.stages.v2.control_level}, V7 ${pipeline.stages.v7.path_label}`,
-  ];
+  return buildNyraBranchSummaryNotes({
+    branch_overlay: overlay,
+    action_route: route,
+    core2_pipeline: pipeline,
+  });
 }
 
 export async function runNyraTextBranch(partial: {

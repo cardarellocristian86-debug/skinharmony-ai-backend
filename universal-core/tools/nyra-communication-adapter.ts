@@ -2,9 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { summarizeNyraCodexWorkMemory } from "./nyra-codex-memory-importer.ts";
-import { buildNyraBranchOverlay, type NyraBranchOverlay } from "./nyra-branch-overlay.ts";
-import { buildNyraActionRoute, type NyraActionRoute } from "./nyra-action-router.ts";
-import { buildNyraCore2Pipeline, type NyraCore2PipelineResult } from "./nyra-core2-pipeline.ts";
+import type { NyraBranchOverlay } from "./nyra-branch-overlay.ts";
+import type { NyraActionRoute } from "./nyra-action-router.ts";
+import type { NyraCore2PipelineResult } from "./nyra-core2-pipeline.ts";
+import {
+  buildNyraBranchSummaryLine,
+  buildNyraRuntimeOverlayBundle,
+} from "./nyra-branch-composer.ts";
 import { buildNyraDialogueEngineResult } from "./nyra-dialogue-engine.ts";
 import { buildNyraActiveProtectionLine, NYRA_ACTIVE_PROTECTION_IDENTITY } from "./nyra-identity-principles.ts";
 import { buildNyraFrontDialogue } from "./nyra-front-dialogue-layer.ts";
@@ -479,32 +483,12 @@ function fallbackReply(input: NyraCommunicationInput, snapshots: NyraCommunicati
   ].filter(Boolean).join(" ");
 }
 
-function branchSummaryLine(overlay: NyraBranchOverlay, route: NyraActionRoute, pipeline: NyraCore2PipelineResult): string {
-  const active = overlay.active_branches.slice(0, 3).map((branch) => branch.id).join(", ");
-  return [
-    `Rami attivi: ${active || overlay.primary_branch.id}.`,
-    `Route: ${route.intent}, modo ${route.execution_mode}.`,
-    `Core: V2 ${pipeline.stages.v2.control_level}, V7 ${pipeline.stages.v7.path_label}.`,
-  ].join(" ");
-}
-
 function buildReadOnlyOverlay(userText: string): {
   branch_overlay: NyraBranchOverlay;
   action_route: NyraActionRoute;
   core2_pipeline: NyraCore2PipelineResult;
 } {
-  const branchOverlay = buildNyraBranchOverlay(userText);
-  const actionRoute = buildNyraActionRoute({ user_text: userText, overlay: branchOverlay });
-  const core2Pipeline = buildNyraCore2Pipeline({
-    user_text: userText,
-    overlay: branchOverlay,
-    route: actionRoute,
-  });
-  return {
-    branch_overlay: branchOverlay,
-    action_route: actionRoute,
-    core2_pipeline: core2Pipeline,
-  };
+  return buildNyraRuntimeOverlayBundle(userText);
 }
 
 export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): NyraCommunicationResult {
@@ -514,7 +498,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
   if (directReply) {
     return {
       mode: "read_only",
-      reply: `${directReply} ${branchSummaryLine(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline)}`.trim(),
+      reply: `${directReply} ${buildNyraBranchSummaryLine(overlay)}`.trim(),
       intent: "simple_dialogue",
       tone: "direct",
       action_band: "reply_only",
@@ -552,7 +536,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
   return {
     mode: "read_only",
     reply: [
-      branchSummaryLine(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline),
+      buildNyraBranchSummaryLine(overlay),
       engine.reply ?? fallbackReply(input, snapshots),
     ].filter(Boolean).join(" "),
     intent: engine.analysis.intent,
