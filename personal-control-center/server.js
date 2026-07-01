@@ -7128,10 +7128,6 @@ const ANALYZER_BRANCH_REPORTS_BY_ID = {
   ]
 };
 
-const ANALYZER_GLOBAL_REPORTS = [
-  'reports/ipad-analyzer/NYRA_ANALYZER_ITALIAN_SCORE_ALIASES_RENDER_FIX_2026-06-25.md'
-];
-
 function analyzerPackSummary(pack, practiceProfile) {
   const metricCount = Object.keys(pack.analyzer_metrics || {}).length;
   const familyCount = Object.keys(pack.active_families || {}).length;
@@ -7175,7 +7171,7 @@ function buildAnalyzerBranchLearning(input) {
         analyzerEmbeddedLearningSource(branchId, 'medical_aesthetic_bridge', 'Analyzer Medical Aesthetic Bridge', analyzerMedicalSummary(pack), 'personal-control-center/server.js#medical_global_library')
       );
     }
-    [...ANALYZER_GLOBAL_REPORTS, ...(ANALYZER_BRANCH_REPORTS_BY_ID[branchId] || [])].forEach((relativePath) => {
+    (ANALYZER_BRANCH_REPORTS_BY_ID[branchId] || []).forEach((relativePath) => {
       const parsed = readAnalyzerLearningMarkdownSummary(relativePath);
       if (!parsed) return;
       sources.push({
@@ -7190,7 +7186,7 @@ function buildAnalyzerBranchLearning(input) {
     return {
       branch_id: branchId,
       branch_label: String(branch.label || branchId),
-      sources: sources.slice(0, 5)
+      sources: sources.slice(0, 4)
     };
   }).filter((entry) => Array.isArray(entry.sources) && entry.sources.length > 0);
   return { mode: 'branch_learning', entries };
@@ -7199,14 +7195,7 @@ function buildAnalyzerBranchLearning(input) {
 function buildAnalyzerBranchLearningLine(branchLearning) {
   const entries = Array.isArray(branchLearning?.entries) ? branchLearning.entries : [];
   if (!entries.length) return '';
-  return `Learning rami: ${entries.slice(0, 3).map((entry) => `${entry.branch_id}:${summarizeAnalyzerLearningTitles(entry.sources)}`).join(' | ')}`;
-}
-
-function summarizeAnalyzerLearningTitles(sources) {
-  const list = Array.isArray(sources) ? sources : [];
-  const titles = list.slice(0, 3).map((source) => source.title).filter(Boolean);
-  const extra = list.length - titles.length;
-  return `${titles.join(' + ')}${extra > 0 ? ` + ${extra} altre fonti` : ''}`;
+  return `Learning rami: ${entries.slice(0, 3).map((entry) => `${entry.branch_id}:${(Array.isArray(entry.sources) ? entry.sources : []).slice(0, 2).map((source) => source.title).join(' + ')}`).join(' | ')}`;
 }
 
 function rankAnalyzerSemanticHits(rows = []) {
