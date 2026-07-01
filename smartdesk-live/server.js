@@ -1569,7 +1569,18 @@ app.get("/api/ai-gold/decision-context", requirePlan("silver"), async (req, res)
       endDate: req.query.endDate || ""
     }, req.session);
     const mode = normalizedPlan(req.session) === "silver" ? "silver" : "gold";
-    res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, mode));
+    if (String(req.query.external || "") === "1") {
+      return res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, mode));
+    }
+    res.json({
+      ...payload,
+      sourceLayer: payload.sourceLayer || "smartdesk_gold_state",
+      externalAi: {
+        skipped: true,
+        reason: "fast_path_default",
+        endpoint: "/api/ai-gold/decision-context?external=1"
+      }
+    });
   } catch (error) {
     res.json({
       goldEnabled: false,

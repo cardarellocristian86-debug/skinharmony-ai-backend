@@ -2182,9 +2182,44 @@ class AssistantService {
     const context = this.buildAiGoldExternalContext(payload, session);
     const language = assistantLanguage(context);
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
-    const governedBaseline = await this.buildAiGoldExternalResponse(payload, session, context);
+    const useExternal = payload.external === true || String(payload.external || "") === "1";
+    const refineWithOpenAi = payload.refine === true || String(payload.refine || "") === "1";
+    const localBaseline = {
+      goldEnabled: true,
+      provider: "smartdesk_gold_state_local",
+      sourceLayer: context.businessSnapshot?.sourceLayer || context.goldDecisionContext?.sourceLayer || "smartdesk_gold_state",
+      answer: this.buildAiGoldFallback(question, context),
+      actions: [],
+      structured: {
+        sourceLayer: context.businessSnapshot?.sourceLayer || context.goldDecisionContext?.sourceLayer || "smartdesk_gold_state",
+        primarySignal: context.goldDecisionContext?.primaryAction?.label || context.goldDecisionContext?.primaryAction?.suggestedAction || "",
+        primaryAction: context.goldDecisionContext?.primaryAction?.suggestedAction || context.goldDecisionContext?.primaryAction?.label || "",
+        recommendedNextStep: context.goldDecisionContext?.primaryAction?.suggestedAction || context.goldDecisionContext?.primaryAction?.label || "",
+        confidence: Number(context.goldDecisionContext?.globalConfidence || 0)
+      },
+      guardrails: {
+        smartDeskCalculatesNumbers: true,
+        coreDecides: true,
+        nyraExplains: false,
+        openAiRefinesOnly: true,
+        automaticExecutionAllowed: false,
+        operatorConfirmationRequired: true
+      },
+      external: {
+        skipped: true,
+        reason: "fast_path_default"
+      }
+    };
 
-    if (!this.shouldUseOpenAI()) {
+    if (!useExternal && !refineWithOpenAi) {
+      return localBaseline;
+    }
+
+    const governedBaseline = useExternal
+      ? await this.buildAiGoldExternalResponse(payload, session, context)
+      : localBaseline;
+
+    if (!refineWithOpenAi || !this.shouldUseOpenAI()) {
       return governedBaseline;
     }
 
