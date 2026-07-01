@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import type { NyraBranchOverlay } from "./nyra-branch-overlay.ts";
+import { semanticDomainAllowlistForPrompt } from "./nyra-semantic-router.ts";
 
 export type NyraActionIntent =
   | "ask_status"
@@ -232,7 +233,11 @@ export function buildNyraActionRoute(input: {
   overlay?: NyraBranchOverlay;
 }): NyraActionRoute {
   const text = normalize(input.user_text);
-  const intent = detectIntent(text);
+  const semanticAllowlist = semanticDomainAllowlistForPrompt(input.user_text);
+  let intent = detectIntent(text);
+  if (intent === "unknown" && Array.isArray(semanticAllowlist) && semanticAllowlist.length > 0) {
+    intent = "ask_status";
+  }
   const renderProtected = Boolean(input.overlay?.render_protected || intent === "deploy_or_render");
   const policy = routePolicy(intent, renderProtected);
   const reasons = [
