@@ -7093,15 +7093,18 @@ function analyzerEmbeddedLearningSource(branchId, sourceId, title, summary, virt
 
 const ANALYZER_BRANCH_REPORTS_BY_ID = {
   sensitivity_reactivity_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
     'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
   ],
   barrier_hydration_matrix: [
     'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
   ],
   pores_texture_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
     'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
   ],
   aging_texture_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
     'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
   ],
   pigmentation_tone_matrix: [
