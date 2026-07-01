@@ -3275,7 +3275,9 @@ class DesktopMirrorService {
     }
     const snapshots = state.snapshots || {};
     const snapshot = snapshotKey ? snapshots[snapshotKey] : snapshots;
-    if (!snapshot || (snapshotKey && snapshot.source !== "gold_state")) {
+    const snapshotSource = String(snapshot?.source || "");
+    const validSnapshotSource = !snapshotKey || ["gold_state", "smartdesk_gold_state"].includes(snapshotSource);
+    if (!snapshot || !validSnapshotSource) {
       return { valid: false, reason: "invalid_snapshot", state, eventSeq };
     }
     const confidence = Number(state.components?.Conf ?? snapshot.confidence ?? snapshot.economicConfidence ?? 0);
