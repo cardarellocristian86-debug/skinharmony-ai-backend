@@ -32,12 +32,15 @@ const BRANCH_LEARNING_REGISTRY: Record<NyraBranchId, RegistrySource[]> = {
   core_decision: [
     { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
     { source_id: "software_architecture_pack", path: "universal-core/runtime/nyra-learning/nyra_software_architecture_practice_pack_latest.json", kind: "json_pack" },
+    { source_id: "domain_verify_pack", path: "universal-core/runtime/nyra-learning/nyra_domain_verify_exercise_latest.json", kind: "json_pack" },
   ],
   codex_guidance: [
     { source_id: "software_architecture_pack", path: "universal-core/runtime/nyra-learning/nyra_software_architecture_practice_pack_latest.json", kind: "json_pack" },
+    { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
   ],
   developer_code: [
     { source_id: "software_architecture_pack", path: "universal-core/runtime/nyra-learning/nyra_software_architecture_practice_pack_latest.json", kind: "json_pack" },
+    { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
   ],
   nyra_voice: [
     { source_id: "expression_memory_pack", path: "universal-core/runtime/nyra-learning/nyra_expression_memory_pack_latest.json", kind: "json_pack" },
@@ -48,9 +51,11 @@ const BRANCH_LEARNING_REGISTRY: Record<NyraBranchId, RegistrySource[]> = {
     { source_id: "advanced_memory_pack", path: "universal-core/runtime/nyra-learning/nyra_advanced_memory_pack_latest.json", kind: "json_pack" },
   ],
   event_audit: [
-    { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
+    { source_id: "selector_autowrite_policy", path: "universal-core/runtime/nyra-learning/nyra_selector_autowrite_policy_latest.json", kind: "json_pack" },
+    { source_id: "autonomous_learning_loop", path: "universal-core/runtime/nyra-learning/nyra_autonomous_learning_loop_latest.json", kind: "json_pack" },
   ],
   branch_overlay: [
+    { source_id: "global_router_benchmark", path: "universal-core/runtime/nyra-learning/nyra_global_router_benchmark_latest.json", kind: "json_pack" },
     { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
   ],
   render_boundary: [
@@ -60,10 +65,14 @@ const BRANCH_LEARNING_REGISTRY: Record<NyraBranchId, RegistrySource[]> = {
   smartdesk_product: [
     { source_id: "smartdesk_vertical_pack", path: "universal-core/runtime/nyra-learning/nyra_smartdesk_strategic_vertical_branch_latest.json", kind: "json_pack" },
     { source_id: "smartdesk_seed", path: "reports/smartdesk/SMARTDESK_OPERATIONAL_SEMANTIC_SEED_2026-07-01.md", kind: "markdown_report" },
+    { source_id: "smartdesk_operational_report", path: "reports/smartdesk/SMARTDESK_GOLD_WHY_IT_WORKS_2026-05-19.md", kind: "markdown_report" },
+    { source_id: "smartdesk_unified_engine_assessment", path: "reports/smartdesk/SMARTDESK_RENDER_GOLD_UNIFIED_ENGINE_ASSESSMENT_2026-05-19.md", kind: "markdown_report" },
   ],
   suite_wordpress: [
     { source_id: "suite_seed", path: "reports/wordpress/SUITE_WAAS_CRM_SEMANTIC_SEED_2026-07-01.md", kind: "markdown_report" },
-    { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
+    { source_id: "suite_branch_learning_pack", path: "universal-core/runtime/nyra-learning/nyra_suite_branch_learning_pack_latest.json", kind: "json_pack" },
+    { source_id: "suite_connector_contract", path: "reports/wordpress/SUITE_CORE_CODEX_CONNECTOR_ENFORCEMENT_CONTRACT_V1.md", kind: "markdown_report" },
+    { source_id: "suite_branch_learning_report", path: "reports/wordpress/SUITE_5_3_18_NYRA_BRANCH_LEARNING_2026-06-01.md", kind: "markdown_report" },
   ],
   financial: [
     { source_id: "financial_learning_pack", path: "universal-core/runtime/nyra-learning/nyra_financial_learning_pack_latest.json", kind: "json_pack" },

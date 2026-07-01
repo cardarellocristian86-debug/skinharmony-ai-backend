@@ -96,11 +96,18 @@ function buildNyraBranchSummaryNotesData(bundle) {
   if (learningEntries.length) {
     notes.push(
       `Learning rami: ${learningEntries.slice(0, 3).map((entry) => (
-        `${entry.branch_id}:${(Array.isArray(entry.sources) ? entry.sources : []).slice(0, 2).map((source) => source.title).join(" + ")}`
+        `${entry.branch_id}:${summarizeLearningTitles(entry.sources)}`
       )).join(" | ")}`
     );
   }
   return notes;
+}
+
+function summarizeLearningTitles(sources) {
+  const list = Array.isArray(sources) ? sources : [];
+  const titles = list.slice(0, 3).map((source) => source.title).filter(Boolean);
+  const extra = list.length - titles.length;
+  return `${titles.join(" + ")}${extra > 0 ? ` + ${extra} altre fonti` : ""}`;
 }
 
 function buildNyraBranchSummaryLineData(bundle) {
