@@ -13512,7 +13512,10 @@ class DesktopMirrorService {
     const profitability = snapshot.profitability || {};
     const operational = snapshot.report?.operational || {};
     const centerHealth = snapshot.report?.centerHealth || {};
-    const inventory = snapshot.inventory || {};
+    let inventory = snapshot.inventory || {};
+    if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && !Array.isArray(inventory.lowStock)) {
+      inventory = this.getInventoryOverview(session);
+    }
     const dataQuality = snapshot.dataQuality || {};
     const goldEngine = snapshot.goldEngine || {};
     const profitabilityBlockedForConfig = Number(dataQuality.metrics?.servicesMissingCosts || 0) > 0
@@ -13943,7 +13946,10 @@ class DesktopMirrorService {
     const centerHealth = snapshot.report?.centerHealth || {};
     const profitability = snapshot.profitability || {};
     const marketing = snapshot.marketing || {};
-    const inventory = snapshot.inventory || {};
+    let inventory = snapshot.inventory || {};
+    if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && !Array.isArray(inventory.lowStock)) {
+      inventory = this.getInventoryOverview(session);
+    }
     const primaryAction = decisionContext.primaryAction || null;
     const priorityClients = Array.isArray(marketing.priorityClients)
       ? marketing.priorityClients
