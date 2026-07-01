@@ -2,6 +2,10 @@ import { runNyraTextBranch } from "./nyra-text-branch/nyra-text-runtime.ts";
 import type { NyraTextChatOutput } from "./nyra-text-chat-types.ts";
 import { summarizeNyraVectorMemory, summarizeNyraVectorRetrievalContext } from "./nyra-vector-memory.ts";
 
+function isAnalyzerIpadPrompt(text: string): boolean {
+  return /\banalyzer\b|skin analyzer|skinanalyzer|\bipad\b|rossore|sensibilita|discromie|pori|grana|acqua sebo|acqua_sebo|texture_linee_fini|rossore_sensibilita|discromie_uniformita|pori_grana|marker|multi-zone|topographic|\bmk\b|\byz\b|\bxw\b|\bsb\b|\byf\b|\bfs\b/i.test(String(text || ''));
+}
+
 function buildHelpMessage(): string {
   return [
     "Modalita attiva: chat testuale locale.",
@@ -97,6 +101,7 @@ export async function runNyraTextChatTurn(text: string, sessionId = "nyra-text-c
     root_dir: process.cwd(),
     query: trimmed,
     limit: 2,
+    domain_allowlist: isAnalyzerIpadPrompt(trimmed) ? ["analyzer", "ipad"] : undefined,
     exclude_private: true,
     min_score: 0.5,
   });
