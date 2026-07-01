@@ -13,6 +13,7 @@ import { buildNyraDialogueEngineResult } from "./nyra-dialogue-engine.ts";
 import { buildNyraActiveProtectionLine, NYRA_ACTIVE_PROTECTION_IDENTITY } from "./nyra-identity-principles.ts";
 import { buildNyraFrontDialogue } from "./nyra-front-dialogue-layer.ts";
 import { summarizeNyraVectorMemory, summarizeNyraVectorRetrievalContext } from "./nyra-vector-memory.ts";
+import { semanticDomainAllowlistForPrompt } from "./nyra-semantic-router.ts";
 
 export type NyraCommunicationSnapshot = {
   map_summary: string;
@@ -128,14 +129,6 @@ function isIdentityRuleRequest(text: string): boolean {
     (normalized.includes("regola") || normalized.includes("identita") || normalized.includes("ferro")) &&
     (normalized.includes("nyra") || normalized.includes("nira") || normalized.includes("protegg") || normalized.includes("cristian"))
   );
-}
-
-function semanticDomainAllowlistForPrompt(text: string): string[] | undefined {
-  const raw = String(text || '');
-  if (/\banalyzer\b|skin analyzer|skinanalyzer|\bipad\b|rossore|sensibilita|discromie|pori|grana|acqua sebo|acqua_sebo|texture_linee_fini|rossore_sensibilita|discromie_uniformita|pori_grana|marker|multi-zone|topographic|\bmk\b|\byz\b|\bxw\b|\bsb\b|\byf\b|\bfs\b/i.test(raw)) return ["analyzer", "ipad"];
-  if (/smartdesk|ai gold|agenda|appuntamenti|cassa|incassi|redditivita|richiamare|marketing autopilot|magazzino|fleet intelligence|god mode|protocollo|clienti da recuperare|centro sotto controllo/i.test(raw)) return ["smartdesk"];
-  if (/\bsuite\b|site suite|waas|wordpress|mini crm|b2b crm|tenant|template clone|lead|bridge smart desk|page factory|plugin|claim price guard|social channels/i.test(raw)) return ["suite", "wordpress"];
-  return undefined;
 }
 
 function normalizeInput(text: string): string {
