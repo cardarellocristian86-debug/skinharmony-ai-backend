@@ -1505,7 +1505,17 @@ app.get("/api/ai-gold/decision-center", requirePlan("gold"), async (req, res) =>
         || req.query.force === "true"
       )
     }, req.session);
-    res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, "gold"));
+    if (String(req.query.external || "") === "1") {
+      return res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, "gold"));
+    }
+    res.json({
+      ...payload,
+      externalAi: {
+        skipped: true,
+        reason: "fast_path_default",
+        endpoint: "/api/ai-gold/decision-center?external=1"
+      }
+    });
   } catch (error) {
     res.json({
       goldEnabled: false,
@@ -1523,7 +1533,17 @@ app.get("/api/ai-gold/cockpit", requirePlan("gold"), async (req, res) => {
       startDate: req.query.startDate || "",
       endDate: req.query.endDate || ""
     }, req.session);
-    res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, "gold"));
+    if (String(req.query.external || "") === "1") {
+      return res.json(await assistantService.enhanceGoldPayloadWithExternalReadout(payload, req.session, "gold"));
+    }
+    res.json({
+      ...payload,
+      externalAi: {
+        skipped: true,
+        reason: "fast_path_default",
+        endpoint: "/api/ai-gold/cockpit?external=1"
+      }
+    });
   } catch (error) {
     res.json({
       goldEnabled: false,
