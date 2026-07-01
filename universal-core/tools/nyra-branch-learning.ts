@@ -60,6 +60,7 @@ const BRANCH_LEARNING_REGISTRY: Record<NyraBranchId, RegistrySource[]> = {
   smartdesk_product: [
     { source_id: "smartdesk_vertical_pack", path: "universal-core/runtime/nyra-learning/nyra_smartdesk_strategic_vertical_branch_latest.json", kind: "json_pack" },
     { source_id: "smartdesk_seed", path: "reports/smartdesk/SMARTDESK_OPERATIONAL_SEMANTIC_SEED_2026-07-01.md", kind: "markdown_report" },
+    { source_id: "smartdesk_operational_report", path: "reports/smartdesk/SMARTDESK_GOLD_WHY_IT_WORKS_2026-05-19.md", kind: "markdown_report" },
   ],
   suite_wordpress: [
     { source_id: "suite_seed", path: "reports/wordpress/SUITE_WAAS_CRM_SEMANTIC_SEED_2026-07-01.md", kind: "markdown_report" },
