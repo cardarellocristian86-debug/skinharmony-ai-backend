@@ -14128,7 +14128,10 @@ class DesktopMirrorService {
             id: "source-inventory",
             label: "Magazzino",
             value: `${Number(inventory.totalItems || inventory.summary?.totalItems || 0)} articoli letti`,
-            endpoint: "/api/inventory/overview"
+            endpoint: "/api/inventory/overview",
+            button: "Apri magazzino",
+            target: "inventory",
+            targetFocus: Array.isArray(inventory.lowStock) && inventory.lowStock.length ? "low-stock" : ""
           }
         ]
       }
