@@ -13513,7 +13513,7 @@ class DesktopMirrorService {
     const operational = snapshot.report?.operational || {};
     const centerHealth = snapshot.report?.centerHealth || {};
     let inventory = snapshot.inventory || {};
-    if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && !Array.isArray(inventory.lowStock)) {
+    if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && (!Array.isArray(inventory.lowStock) || inventory.lowStock.length === 0)) {
       const liveInventoryItems = this.filterByCenter(this.inventoryRepository.list(), session);
       inventory = {
         totalItems: liveInventoryItems.length,
@@ -13952,7 +13952,7 @@ class DesktopMirrorService {
     const profitability = snapshot.profitability || {};
     const marketing = snapshot.marketing || {};
     let inventory = snapshot.inventory || {};
-    if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && !Array.isArray(inventory.lowStock)) {
+    if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && (!Array.isArray(inventory.lowStock) || inventory.lowStock.length === 0)) {
       const liveInventoryItems = this.filterByCenter(this.inventoryRepository.list(), session);
       inventory = {
         totalItems: liveInventoryItems.length,
