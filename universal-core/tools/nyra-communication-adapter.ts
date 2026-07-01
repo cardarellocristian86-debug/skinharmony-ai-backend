@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { summarizeNyraCodexWorkMemory } from "./nyra-codex-memory-importer.ts";
 import type { NyraBranchOverlay } from "./nyra-branch-overlay.ts";
+import type { NyraBranchLearningBundle } from "./nyra-branch-learning.ts";
 import type { NyraActionRoute } from "./nyra-action-router.ts";
 import type { NyraCore2PipelineResult } from "./nyra-core2-pipeline.ts";
 import {
@@ -46,6 +47,7 @@ export type NyraCommunicationResult = {
   owner_sensitive: boolean;
   snapshots: NyraCommunicationSnapshot;
   branch_overlay?: NyraBranchOverlay;
+  branch_learning?: NyraBranchLearningBundle;
   action_route?: NyraActionRoute;
   core2_pipeline?: NyraCore2PipelineResult;
   writes_memory: false;
@@ -490,17 +492,18 @@ function fallbackReply(input: NyraCommunicationInput, snapshots: NyraCommunicati
   ].filter(Boolean).join(" ");
 }
 
-function buildReadOnlyOverlay(userText: string): {
+function buildReadOnlyOverlay(userText: string, rootDir?: string): {
   branch_overlay: NyraBranchOverlay;
+  branch_learning?: NyraBranchLearningBundle;
   action_route: NyraActionRoute;
   core2_pipeline: NyraCore2PipelineResult;
 } {
-  return buildNyraRuntimeOverlayBundle(userText);
+  return buildNyraRuntimeOverlayBundle(userText, rootDir);
 }
 
 export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): NyraCommunicationResult {
   const snapshots = loadNyraCommunicationSnapshot(input.root_dir);
-  const overlay = buildReadOnlyOverlay(input.user_text);
+  const overlay = buildReadOnlyOverlay(input.user_text, input.root_dir);
   const semanticRetrieval = summarizeNyraVectorRetrievalContext({
     root_dir: input.root_dir,
     query: input.user_text,
@@ -520,6 +523,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
       owner_sensitive: false,
       snapshots,
       branch_overlay: overlay.branch_overlay,
+      branch_learning: overlay.branch_learning,
       action_route: overlay.action_route,
       core2_pipeline: overlay.core2_pipeline,
       writes_memory: false,
@@ -563,6 +567,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
     owner_sensitive: engine.diagnosis.owner_sensitive,
     snapshots,
     branch_overlay: overlay.branch_overlay,
+    branch_learning: overlay.branch_learning,
     action_route: overlay.action_route,
     core2_pipeline: overlay.core2_pipeline,
     writes_memory: false,

@@ -93,22 +93,20 @@ function deriveRichSessionId(input: NyraTextInput, route: NyraTextRoute): string
 
 function buildTextOverlay(text: string): {
   branch_overlay: NyraBranchOverlay;
+  branch_learning?: any;
   action_route: NyraActionRoute;
   core2_pipeline: NyraCore2PipelineResult;
 } {
-  return buildNyraRuntimeOverlayBundle(text);
+  return buildNyraRuntimeOverlayBundle(text, process.cwd());
 }
 
-function branchSummaryNotes(
-  overlay: NyraBranchOverlay,
-  route: NyraActionRoute,
-  pipeline: NyraCore2PipelineResult,
-): string[] {
-  return buildNyraBranchSummaryNotes({
-    branch_overlay: overlay,
-    action_route: route,
-    core2_pipeline: pipeline,
-  });
+function branchSummaryNotes(bundle: {
+  branch_overlay: NyraBranchOverlay;
+  branch_learning?: any;
+  action_route: NyraActionRoute;
+  core2_pipeline: NyraCore2PipelineResult;
+}): string[] {
+  return buildNyraBranchSummaryNotes(bundle);
 }
 
 export async function runNyraTextBranch(partial: {
@@ -153,13 +151,14 @@ export async function runNyraTextBranch(partial: {
         reason: params.route.reason,
       },
       branch_overlay: params.output.branch_overlay ?? overlay.branch_overlay,
+      branch_learning: params.output.branch_learning ?? overlay.branch_learning,
       action_route: params.output.action_route ?? overlay.action_route,
       core2_pipeline: params.output.core2_pipeline ?? overlay.core2_pipeline,
       memoryUpdated: params.output.memoryUpdated || params.memoryUpdated,
       ui: {
         ...(params.output.ui ?? {}),
         notes: [
-          ...branchSummaryNotes(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline),
+          ...branchSummaryNotes(overlay),
           ...(params.output.ui?.notes ?? []),
         ],
       },
@@ -213,10 +212,11 @@ export async function runNyraTextBranch(partial: {
       source: "text-branch-command",
       actor: "command",
       branch_overlay: overlay.branch_overlay,
+      branch_learning: overlay.branch_learning,
       action_route: overlay.action_route,
       core2_pipeline: overlay.core2_pipeline,
       memoryUpdated: true,
-      ui: { notes: branchSummaryNotes(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline) },
+      ui: { notes: branchSummaryNotes(overlay) },
     };
   }
 
@@ -230,10 +230,11 @@ export async function runNyraTextBranch(partial: {
       source: "text-branch-command",
       actor: "command",
       branch_overlay: overlay.branch_overlay,
+      branch_learning: overlay.branch_learning,
       action_route: overlay.action_route,
       core2_pipeline: overlay.core2_pipeline,
       memoryUpdated: false,
-      ui: { notes: branchSummaryNotes(overlay.branch_overlay, overlay.action_route, overlay.core2_pipeline) },
+      ui: { notes: branchSummaryNotes(overlay) },
     };
   }
 

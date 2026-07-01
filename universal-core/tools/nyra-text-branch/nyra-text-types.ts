@@ -1,4 +1,5 @@
 import type { NyraBranchOverlay } from "../nyra-branch-overlay.ts";
+import type { NyraBranchLearningBundle } from "../nyra-branch-learning.ts";
 import type { NyraActionRoute } from "../nyra-action-router.ts";
 import type { NyraCore2PipelineResult } from "../nyra-core2-pipeline.ts";
 
@@ -46,6 +47,7 @@ export type NyraTextOutput = {
   actor?: NyraTextActor;
   route?: NyraTextRouteSnapshot;
   branch_overlay?: NyraBranchOverlay;
+  branch_learning?: NyraBranchLearningBundle;
   action_route?: NyraActionRoute;
   core2_pipeline?: NyraCore2PipelineResult;
   memoryUpdated: boolean;

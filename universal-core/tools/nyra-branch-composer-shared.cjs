@@ -87,11 +87,20 @@ function getAnalyzerBranchMetaByIdData(id, fallback) {
 }
 
 function buildNyraBranchSummaryNotesData(bundle) {
-  return [
+  const notes = [
     `Rami attivi: ${summarizeActiveBranches(bundle.branch_overlay)}`,
     `Route: ${bundle.action_route?.intent || "unknown"}, modo ${bundle.action_route?.execution_mode || "unknown"}`,
     `Core: V2 ${bundle.core2_pipeline?.stages?.v2?.control_level || "unknown"}, V7 ${bundle.core2_pipeline?.stages?.v7?.path_label || "unknown"}`,
   ];
+  const learningEntries = Array.isArray(bundle?.branch_learning?.entries) ? bundle.branch_learning.entries : [];
+  if (learningEntries.length) {
+    notes.push(
+      `Learning rami: ${learningEntries.slice(0, 3).map((entry) => (
+        `${entry.branch_id}:${(Array.isArray(entry.sources) ? entry.sources : []).slice(0, 2).map((source) => source.title).join(" + ")}`
+      )).join(" | ")}`
+    );
+  }
+  return notes;
 }
 
 function buildNyraBranchSummaryLineData(bundle) {
