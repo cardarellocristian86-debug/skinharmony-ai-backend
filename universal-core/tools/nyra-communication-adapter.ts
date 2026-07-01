@@ -548,6 +548,8 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
     action_labels: actionLabels,
   });
 
+  const resolvedIntent = engine.analysis.intent === "unknown" ? overlay.action_route.intent : engine.analysis.intent;
+
   return {
     mode: "read_only",
     reply: [
@@ -555,7 +557,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
       semanticRetrieval,
       engine.reply ?? fallbackReply(input, snapshots),
     ].filter(Boolean).join(" "),
-    intent: engine.analysis.intent,
+    intent: resolvedIntent,
     tone: engine.analysis.tone,
     action_band: engine.analysis.action_band,
     owner_sensitive: engine.diagnosis.owner_sensitive,
