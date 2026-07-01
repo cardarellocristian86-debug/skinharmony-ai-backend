@@ -190,6 +190,47 @@ function goldTargetView(item) {
   return "dashboard";
 }
 
+function goldPriorityTone(item = {}, context = {}) {
+  const text = [
+    item?.priority,
+    item?.level,
+    item?.severity,
+    item?.actionBand,
+    item?.action,
+    item?.domain,
+    item?.label,
+    context?.risk?.band,
+    context?.actionBand
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  const score = Math.max(
+    Number(item?.score || 0),
+    Number(item?.priorityScore || 0),
+    Number(item?.riskAdjustedPriority || 0),
+    Number(context?.risk?.score || 0)
+  );
+  const hasActionTarget = goldTargetView(item) !== "dashboard";
+  if (
+    hasActionTarget &&
+    (
+      text.includes("act_now") ||
+      text.includes("critical") ||
+      text.includes("urgent") ||
+      text.includes("alta") ||
+      text.includes("high") ||
+      text.includes("sottoscorta") ||
+      text.includes("stock") ||
+      score >= 0.72
+    )
+  ) return "critical";
+  if (text.includes("verify") || text.includes("warning") || text.includes("medium") || score >= 0.5) return "warning";
+  return "regular";
+}
+
+function priorityCardClass(item = {}, context = {}) {
+  const tone = goldPriorityTone(item, context);
+  return tone === "critical" ? "priority-card priority-critical" : tone === "warning" ? "priority-card priority-warning" : "priority-card";
+}
+
 function goldMarketingQueue() {
   return (state.clients || [])
     .filter((item) => item.marketingConsent && item.recallDue)
@@ -222,7 +263,7 @@ function classifyMarketingClient(client) {
 
 function inventoryTone(item) {
   if (Number(item.stockQuantity || 0) <= 0) return "critical";
-  if (Number(item.stockQuantity || 0) <= Number(item.thresholdQuantity || 0)) return "warning";
+  if (Number(item.stockQuantity || 0) <= Number(item.thresholdQuantity || 0)) return "critical";
   return "regular";
 }
 
@@ -420,12 +461,12 @@ function renderAiGoldPriority() {
         </div>
       </div>
       <div class="list mt-16">
-        <div class="list-item">
+        <div class="list-item ${priorityCardClass(primary, context)}">
           <div class="item-title">${escapeHtml(context.explanationShort || t("aiGoldView.needMoreData"))}</div>
           <div class="item-subtitle">${t("aiGoldView.domain")}: ${escapeHtml(primary?.domain || "center")} · ${t("aiGoldView.risk").toLowerCase()} ${Number(risk.score || 0).toFixed(2)}</div>
         </div>
         ${secondary.map((item) => `
-          <div class="list-item">
+          <div class="list-item ${priorityCardClass(item, context)}">
             <div class="item-title">${escapeHtml(item.label || item.domain || t("aiGoldView.secondaryPriority"))}</div>
             <div class="item-subtitle">${t("aiGoldView.domain")}: ${escapeHtml(item.domain || "center")} · score ${Number(item.score || 0).toFixed(2)}</div>
           </div>
@@ -486,12 +527,12 @@ function renderAiGoldRoom() {
       </section>
 
       <div class="settings-grid">
-        <section class="card">
+        <section class="card ${goldPriorityTone(primary, context) === "critical" ? "priority-section priority-critical" : ""}">
           <div class="row between mb-16">
             <div class="section-title">${t("aiGoldView.todayPriority")}</div>
             <div class="module-pill active">${t("aiGoldView.risk")} ${escapeHtml(riskBandLabel(risk.band))}</div>
           </div>
-          <div class="consultation-box">
+          <div class="consultation-box ${priorityCardClass(primary, context)}">
             <div class="item-title">${escapeHtml(primary?.label || t("aiGoldView.monitorCenter"))}</div>
             <div class="item-subtitle mt-16">${escapeHtml(context.explanationShort || t("aiGoldView.needMoreData"))}</div>
             <div class="item-subtitle mt-16">${t("aiGoldView.domain")}: ${escapeHtml(primary?.domain || "center")} · ${t("aiGoldView.action")}: ${escapeHtml(primary?.action || "MONITOR")} · ${t("aiGoldView.confidence")}: ${Math.round(confidence * 100)}%</div>
@@ -522,7 +563,7 @@ function renderAiGoldRoom() {
           <div class="section-title mb-16">${t("aiGoldView.nextPriorities")}</div>
           <div class="list">
             ${secondary.length ? secondary.slice(0, 4).map((item) => `
-              <div class="list-item">
+              <div class="list-item ${priorityCardClass(item, context)}">
                 <div>
                   <div class="item-title">${escapeHtml(item.label || item.domain || t("aiGoldView.secondaryPriority"))}</div>
                   <div class="item-subtitle">${t("aiGoldView.domain")}: ${escapeHtml(item.domain || "center")} · score ${Number(item.score || 0).toFixed(2)}</div>
@@ -542,7 +583,7 @@ function renderAiGoldRoom() {
           </div>
           <div class="list">
             ${alerts.length ? alerts.map((item) => `
-              <div class="list-item">
+              <div class="list-item priority-card priority-warning">
                 <div class="item-title">${escapeHtml(item)}</div>
               </div>
             `).join("") : `<div class="settings-note">${t("aiGoldView.needMoreData")}</div>`}
@@ -1527,7 +1568,7 @@ function bindViewEvents() {
   }
 
   if (state.currentView === "inventory") {
-    bindInventoryViewEvents({ API_SERVER_URL, loadData, renderView, showFeedback, t });
+    bindInventoryViewEvents({ state, API_SERVER_URL, loadData, renderView, showFeedback, t });
   }
 
   if (state.currentView === "profitability") {

@@ -42,11 +42,35 @@ export function bindMarketingViewEvents(deps) {
 }
 
 export function bindInventoryViewEvents(deps) {
-  const { API_SERVER_URL, loadData, renderView, showFeedback, t } = deps;
+  const { state, API_SERVER_URL, loadData, renderView, showFeedback, t } = deps;
 
   document.querySelector('[data-action="refresh-inventory"]')?.addEventListener("click", async () => {
     await loadData(["inventoryItems", "inventoryMovements", "inventoryOverview", "goldDecisionContext", "goldCapabilities"]);
     renderView();
+  });
+  document.querySelectorAll('[data-action="prepare-inventory-load"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      const itemId = button.dataset.id || "";
+      const itemSelect = document.getElementById("inventory-item-id");
+      const typeSelect = document.getElementById("inventory-movement-type");
+      if (itemSelect) itemSelect.value = itemId;
+      if (typeSelect) typeSelect.value = "load";
+      document.getElementById("inventory-movement-quantity")?.focus();
+      const item = (state.inventoryItems || []).find((entry) => entry.id === itemId);
+      showFeedback(t("inventoryView.prepareLoadFeedback", { name: item?.name || t("inventoryView.movementFallbackItem") }));
+    });
+  });
+  document.querySelectorAll('[data-action="open-inventory-item"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      const itemId = button.dataset.id || "";
+      const select = document.getElementById("inventory-item-id");
+      if (select) {
+        select.value = itemId;
+        select.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      const item = (state.inventoryItems || []).find((entry) => entry.id === itemId);
+      showFeedback(t("inventoryView.openItemFeedback", { name: item?.name || t("inventoryView.movementFallbackItem") }));
+    });
   });
   document.querySelector('[data-action="save-inventory-movement"]')?.addEventListener("click", async () => {
     const itemId = document.getElementById("inventory-item-id")?.value || "";

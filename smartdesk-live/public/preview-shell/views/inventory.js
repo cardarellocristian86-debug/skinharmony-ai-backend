@@ -57,13 +57,15 @@ export function renderInventoryView(deps) {
           <div class="section-title mb-16">${t("inventoryView.lowStockTitle")}</div>
           <div class="list">
             ${lowStockItems.length ? lowStockItems.map((item) => `
-              <div class="list-item inventory-item-row inventory-${inventoryTone(item)}">
+              <div class="list-item inventory-item-row inventory-${inventoryTone(item)} priority-card priority-critical">
                 <div>
                   <div class="item-title">${escapeHtml(item.name || t("inventoryView.movementFallbackItem"))}</div>
-                  <div class="item-subtitle">${escapeHtml(item.category || "General")} · ${escapeHtml(item.usageType || t("inventoryView.usageCabin"))}</div>
-                  <div class="item-subtitle">${t("inventoryView.thresholdLine", { value: inventoryQuantityLabel(item.thresholdQuantity, item.unit), state: inventoryStateLabel(item) })}</div>
+                  <div class="item-subtitle">${currentLanguage() === "en" ? `${inventoryQuantityLabel(item.stockQuantity, item.unit)} available · threshold ${inventoryQuantityLabel(item.thresholdQuantity, item.unit)}` : `${inventoryQuantityLabel(item.stockQuantity, item.unit)} disponibili · soglia ${inventoryQuantityLabel(item.thresholdQuantity, item.unit)}`}</div>
                 </div>
-                <div class="item-subtitle">${inventoryQuantityLabel(item.stockQuantity, item.unit)}</div>
+                <div class="action-row">
+                  <button class="sh-button danger-btn" data-action="prepare-inventory-load" data-id="${escapeHtml(item.id)}" type="button">${currentLanguage() === "en" ? "Prepare load" : "Prepara carico"}</button>
+                  <button class="sh-button secondary-btn danger-outline-btn" data-action="open-inventory-item" data-id="${escapeHtml(item.id)}" type="button">${currentLanguage() === "en" ? "Open item" : "Apri articolo"}</button>
+                </div>
               </div>
             `).join("") : `<div class="settings-note">${t("inventoryView.noCriticalItems")}</div>`}
           </div>

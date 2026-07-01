@@ -8,6 +8,10 @@
   --accent: #69d3f0;
   --accent-strong: #42b8df;
   --accent-deep: #2a82c4;
+  --danger: #c83d3d;
+  --danger-deep: #9f2424;
+  --danger-soft: #fff3f3;
+  --danger-border: rgba(200, 61, 61, 0.34);
   --brand-gradient: linear-gradient(90deg, #7adcf0 0%, #54c4e2 28%, #379fd3 62%, #236eb8 100%);
   --shadow: 0 12px 35px rgba(34, 72, 112, 0.08);
   --radius: 20px;
@@ -382,6 +386,56 @@ body.agenda-fullscreen-shell {
   background: rgba(255,255,255,0.92);
   border-radius: 16px;
   padding: 14px;
+}
+
+.priority-card,
+.priority-section {
+  position: relative;
+}
+
+.priority-critical {
+  border-color: var(--danger-border) !important;
+  background: linear-gradient(180deg, #fffafa 0%, var(--danger-soft) 100%) !important;
+  box-shadow: 0 14px 32px rgba(200, 61, 61, 0.10);
+}
+
+.priority-critical::before {
+  content: "";
+  position: absolute;
+  inset: 12px auto 12px 0;
+  width: 4px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+
+.priority-critical .item-title,
+.priority-critical .section-title {
+  color: var(--danger-deep);
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+}
+
+.priority-critical .item-subtitle {
+  color: #7c4b4b;
+}
+
+.priority-warning {
+  border-color: rgba(210, 154, 55, 0.34) !important;
+  background: linear-gradient(180deg, #fffdf8 0%, #fff8e8 100%) !important;
+}
+
+.danger-btn {
+  background: linear-gradient(180deg, #d94b4b 0%, var(--danger) 100%);
+  color: #fff;
+  border-color: rgba(159, 36, 36, 0.28);
+  box-shadow: 0 12px 24px rgba(200, 61, 61, 0.16);
+}
+
+.danger-outline-btn {
+  color: var(--danger-deep);
+  border-color: var(--danger-border);
+  background: #fffafa;
 }
 
 .list-item-head {
