@@ -65,6 +65,7 @@ const BRANCH_LEARNING_REGISTRY: Record<NyraBranchId, RegistrySource[]> = {
   suite_wordpress: [
     { source_id: "suite_seed", path: "reports/wordpress/SUITE_WAAS_CRM_SEMANTIC_SEED_2026-07-01.md", kind: "markdown_report" },
     { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
+    { source_id: "suite_branch_learning_report", path: "reports/wordpress/SUITE_5_3_18_NYRA_BRANCH_LEARNING_2026-06-01.md", kind: "markdown_report" },
   ],
   financial: [
     { source_id: "financial_learning_pack", path: "universal-core/runtime/nyra-learning/nyra_financial_learning_pack_latest.json", kind: "json_pack" },
