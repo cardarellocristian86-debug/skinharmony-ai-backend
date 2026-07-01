@@ -421,8 +421,26 @@ body.agenda-fullscreen-shell {
 }
 
 .priority-warning {
-  border-color: rgba(210, 154, 55, 0.34) !important;
-  background: linear-gradient(180deg, #fffdf8 0%, #fff8e8 100%) !important;
+  border-color: rgba(210, 154, 55, 0.52) !important;
+  background: linear-gradient(180deg, #fffdf4 0%, #fff1c9 100%) !important;
+  box-shadow: 0 14px 30px rgba(210, 154, 55, 0.14);
+}
+
+.priority-warning::before {
+  content: "";
+  position: absolute;
+  inset: 12px auto 12px 0;
+  width: 4px;
+  border-radius: 999px;
+  background: #d29a37;
+}
+
+.priority-warning .item-title {
+  color: #7a5a20;
+}
+
+.priority-warning .item-subtitle {
+  color: #735f38;
 }
 
 .danger-btn {
