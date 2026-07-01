@@ -3836,19 +3836,28 @@ class DesktopMirrorService {
       button: decision.domain === "cash" ? "Apri cassa" : decision.domain === "profitability" ? "Apri redditività" : decision.domain === "operations" ? "Apri dashboard" : decision.domain === "growth" ? "Apri marketing" : "Apri dettaglio",
       target: decision.domain === "cash" ? "cashdesk" : decision.domain === "profitability" ? "profitability" : decision.domain === "operations" ? "dashboard" : decision.domain === "growth" ? "marketing" : "dashboard"
     };
-    const secondaryItems = (decision.secondaryActions || []).slice(0, 3).map((item, index) => ({
-      id: `gold-state-secondary-${item.domain || index}`,
-      level: Number(item.score || 0) >= 0.7 ? "critical" : Number(item.score || 0) >= 0.45 ? "warning" : "info",
-      area: item.domain || "gold",
-      conclusion: item.label || "Segnale secondario Gold",
-      reason: "Segnale secondario letto dal Gold State Layer.",
-      details: `Score ${Math.round(Number(item.score || 0) * 100)} · Fonte gold_state`,
-      impactCents: 0,
-      riskCents: 0,
-      action: item.label || "monitorare",
-      button: item.domain === "cash" ? "Apri cassa" : item.domain === "profitability" ? "Apri redditività" : "Apri dettaglio",
-      target: item.domain === "cash" ? "cashdesk" : item.domain === "profitability" ? "profitability" : "dashboard"
-    }));
+    const secondaryItems = (decision.secondaryActions || []).slice(0, 3).map((item, index) => {
+      const labelText = String(item.label || "");
+      const isDataQualityAction = /qualita dati|qualità dati|completa/i.test(labelText) && item.domain === "data_quality";
+      return {
+        id: `gold-state-secondary-${item.domain || index}`,
+        level: isDataQualityAction ? "warning" : Number(item.score || 0) >= 0.7 ? "critical" : Number(item.score || 0) >= 0.45 ? "warning" : "info",
+        area: item.domain || "gold",
+        conclusion: labelText || "Segnale secondario Gold",
+        reason: "Segnale secondario letto dal Gold State Layer.",
+        details: `Score ${Math.round(Number(item.score || 0) * 100)} · Fonte gold_state`,
+        impactCents: 0,
+        riskCents: 0,
+        action: labelText || "monitorare",
+        button: isDataQualityAction
+          ? (missingServiceCosts > 0 ? "Completa costi servizi" : "Apri dettaglio")
+          : item.domain === "cash" ? "Apri cassa" : item.domain === "profitability" ? "Apri redditività" : "Apri dettaglio",
+        target: isDataQualityAction && missingServiceCosts > 0
+          ? "services"
+          : item.domain === "cash" ? "cashdesk" : item.domain === "profitability" ? "profitability" : "dashboard",
+        targetFocus: isDataQualityAction && missingServiceCosts > 0 ? "service-costs" : ""
+      };
+    });
     const blockedItems = (decision.blockedActions || []).slice(0, 3).map((label, index) => ({
       id: `gold-state-blocked-${index}`,
       level: "warning",
@@ -3868,7 +3877,7 @@ class DesktopMirrorService {
         title: "Stato centro",
         items: [{
           id: "center-health-main",
-          level: centerHealth.level,
+          level: profitabilityConfigBlocked && stateHasOperationalEvidence ? "warning" : centerHealth.level,
           area: "salute centro",
           conclusion: profitabilityConfigBlocked && stateHasOperationalEvidence
             ? "Lettura centro prudente: configurazione economica incompleta"
@@ -3884,8 +3893,9 @@ class DesktopMirrorService {
           action: profitabilityConfigBlocked && stateHasOperationalEvidence
             ? "completa costi servizi e operatori"
             : centerHealth.status === "sotto_soglia" ? "verifica dati e operativita" : "mantieni controllo operativo",
-          button: "Apri dashboard",
-          target: "dashboard"
+          button: profitabilityConfigBlocked && stateHasOperationalEvidence ? "Completa costi servizi" : "Apri dashboard",
+          target: profitabilityConfigBlocked && stateHasOperationalEvidence ? "services" : "dashboard",
+          targetFocus: profitabilityConfigBlocked && stateHasOperationalEvidence ? "service-costs" : ""
         }]
       },
       {
