@@ -4137,7 +4137,8 @@ class DesktopMirrorService {
       riskCents: 0,
       action: lowStock ? "verifica stock e riordino" : "collega prodotti ai servizi per margini reali",
       button: "Apri magazzino",
-      target: "inventory"
+      target: "inventory",
+      targetFocus: lowStock ? "low-stock" : "product-links"
     };
 
     return {
@@ -13387,7 +13388,7 @@ class DesktopMirrorService {
       };
     }
     if (rawTarget === "autopilot") return { target: "marketing", targetFocus: "autopilot" };
-    if (rawTarget === "cash") return { target: "cashdesk", targetFocus: "" };
+    if (rawTarget === "cash") return { target: "cashdesk", targetFocus: String(item.targetFocus || "unlinked-payments") };
     if (rawTarget === "profit" || rawTarget === "profitability") return { target: "profitability", targetFocus: "" };
     if (rawTarget === "agenda" || rawTarget === "appointments") return { target: "appointments", targetFocus: "" };
     if (rawTarget === "marketing" || /marketing|recall|messagg/.test(text)) return { target: "marketing", targetFocus: "" };
@@ -13770,7 +13771,8 @@ class DesktopMirrorService {
             riskCents: 0,
             action: "verifica stock",
             button: "Apri magazzino",
-            target: "inventory"
+            target: "inventory",
+            targetFocus: "low-stock"
           } : null,
           membershipWarning ? {
             id: `membership-${membershipWarning.clientId}`,
