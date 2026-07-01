@@ -4108,7 +4108,7 @@ class DesktopMirrorService {
     const operatorRevenue = activeStaff.length ? Math.round(revenueCents / activeStaff.length) : 0;
     const operatorItem = {
       id: "gold-commercial-operators",
-      level: activeStaff.length ? "info" : "warning",
+      level: missingOperatorCosts > 0 ? "warning" : activeStaff.length ? "info" : "warning",
       area: "operatori",
       conclusion: activeStaff.length ? "Operatori da leggere per resa e saturazione" : "Aggiungi operatori reali",
       reason: "Gold deve dire se il centro regge per persona: fatturato per operatore, agenda e continuità vengono prima dei dettagli di margine.",
@@ -13589,7 +13589,7 @@ class DesktopMirrorService {
         items: [
           {
             id: "center-health-main",
-            level: centerHealth.level,
+            level: centerHealthNotRepresentative || profitabilityBlockedForConfig ? "warning" : centerHealth.level,
             area: "salute centro",
             conclusion: centerHealthNotRepresentative
               ? "Stato centro non ancora rappresentativo"
@@ -13849,7 +13849,7 @@ class DesktopMirrorService {
           },
           {
             id: "action-data",
-            level: dataQuality.status === "basso" ? "warning" : "info",
+            level: profitabilityBlockedForConfig || dataQuality.status === "basso" ? "warning" : "info",
             area: "qualità dati",
             conclusion: dataQuality.status === "basso" ? "Dati da sistemare" : `Dati ordinati ${dataQuality.score}%`,
             reason: dataQuality.status === "basso" ? "Alcuni dati impediscono a Gold di leggere bene il centro." : "I dati principali sono leggibili. Tieni puliti clienti, cassa e servizi.",
