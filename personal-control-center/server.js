@@ -6355,13 +6355,13 @@ function buildAnalyzerLearningInsights({ scores, pack, profile, dominant }) {
       id: "secchezza_disidratazione_barriera",
       label: "secchezza / barriera",
       match: analyzerTextHasAny(declaredText, ["secca", "secchezza", "disidrata", "desquamazione", "barriera", "tira"]),
-      supported: analyzerMetricSupported(scores, "water_oil_balance") || analyzerMetricSupported(scores, "texture_fine_lines")
+      supported: analyzerSupportsBarrierReading(scores, profile)
     },
     {
       id: "sebo_pori_impurita",
       label: "sebo / pori / impurita",
       match: analyzerTextHasAny(declaredText, ["sebo", "grassa", "lucida", "pori", "brufoli", "acne", "comedoni", "impurita"]),
-      supported: analyzerMetricSupported(scores, "pores_texture") || analyzerMetricSupported(scores, "water_oil_balance")
+      supported: analyzerSupportsSebumReading(scores, profile)
     },
     {
       id: "texture_linee_fini_photoaging",
@@ -6410,7 +6410,164 @@ function buildAnalyzerLearningInsights({ scores, pack, profile, dominant }) {
   };
 }
 
-function collectAnalyzerFamilies(pack, dominant, secondary) {
+function analyzerProfileDeclaredText(profile = {}) {
+  return [
+    profile.concerns,
+    profile.declared_signs,
+    profile.sensitivity,
+    profile.routine,
+    profile.products_used,
+    profile.recent_treatments,
+    profile.sun_exposure,
+    profile.acquisition_notes
+  ].filter(Boolean).join(" | ");
+}
+
+function analyzerSupportsBarrierReading(scores, profile = {}) {
+  const declaredText = analyzerProfileDeclaredText(profile);
+  const waterOil = analyzerScoreByKey(scores, "water_oil_balance")?.score ?? null;
+  const redness = analyzerScoreByKey(scores, "redness_sensitivity_signals")?.score ?? null;
+  const texture = analyzerScoreByKey(scores, "texture_fine_lines")?.score ?? null;
+  const pores = analyzerScoreByKey(scores, "pores_texture")?.score ?? null;
+  const barrierWords = analyzerTextHasAny(declaredText, ["secca", "secchezza", "disidrata", "desquamazione", "barriera", "tira", "comfort", "reattiva"]);
+  if (barrierWords && waterOil !== null && waterOil < 85) return true;
+  if (waterOil !== null && waterOil < 60 && (pores === null || pores >= 80)) return true;
+  if (waterOil !== null && waterOil < 85 && redness !== null && redness < 85) return true;
+  if (waterOil !== null && waterOil < 85 && texture !== null && texture < 80) return true;
+  return false;
+}
+
+function analyzerSupportsSebumReading(scores, profile = {}) {
+  const declaredText = analyzerProfileDeclaredText(profile);
+  const waterOil = analyzerScoreByKey(scores, "water_oil_balance")?.score ?? null;
+  const pores = analyzerScoreByKey(scores, "pores_texture")?.score ?? null;
+  const sebumWords = analyzerTextHasAny(declaredText, ["sebo", "grassa", "lucida", "pori", "brufoli", "acne", "comedoni", "impurita"]);
+  if (pores !== null && pores < 85 && sebumWords) return true;
+  if (pores !== null && pores < 78 && waterOil !== null && waterOil < 85) return true;
+  if (sebumWords && waterOil !== null && waterOil < 72) return true;
+  return false;
+}
+
+function buildAnalyzerDominantContext({ scores, profile, dominant }) {
+  if (!dominant || dominant.key !== "water_oil_balance") return null;
+  const waterOil = analyzerScoreByKey(scores, "water_oil_balance")?.score ?? dominant.score ?? null;
+  const pores = analyzerScoreByKey(scores, "pores_texture")?.score ?? null;
+  const redness = analyzerScoreByKey(scores, "redness_sensitivity_signals")?.score ?? null;
+  const texture = analyzerScoreByKey(scores, "texture_fine_lines")?.score ?? null;
+  const barrierSupport = analyzerSupportsBarrierReading(scores, profile);
+  const sebumSupport = analyzerSupportsSebumReading(scores, profile);
+
+  if (sebumSupport && !barrierSupport) {
+    return {
+      id: "sebum_surface_balance",
+      label: "equilibrio sebo e superficie",
+      main_label: "equilibrio sebo e superficie",
+      low_reading: "Equilibrio sebo/superficie da riordinare: leggere lucidita, pori e comfort senza trasformare tutto in semplice pelle grassa.",
+      first_move: "Prima mossa: riequilibrare sebo e grana senza stripping, poi rifinire texture e continuita domiciliare.",
+      families: ["sebum_balance", "niacinamide", "clays", "bha_caution", "humectants", "barrier_lipids"],
+      service_logic: ["riequilibrio superficie", "gestione lucidita e pori", "routine leggera ma non aggressiva", "controllo risposta zona T/guance"],
+      voice_override: {
+        readable_problem: "Zona T, sebo visibile o grana da riequilibrare senza stressare la pelle.",
+        public_name: "equilibrio sebo e superficie",
+        meaning: "il rapporto tra lucidita, pori visibili, grana superficiale e comfort della pelle nelle aree piu attive",
+        profile_terms: {
+          aesthetic_center: ["zona T da riequilibrare", "lucidita da ordinare", "grana da affinare senza sgrassare"],
+          pharmacy_dermocosmetic: ["equilibrio sebo-superficie", "lucidita da gestire con prudenza", "poro visibile da leggere con barriera"],
+          medical_dermatology: ["sebo superficiale e pattern follicolare", "lucidita da correlare al contesto clinico", "superficie non uniforme"]
+        },
+        problem_words: ["zona T piu attiva", "lucidita da riequilibrare", "grana da affinare", "superficie da riordinare"],
+        possible_causes: ["routine troppo sgrassante o troppo ricca", "equilibrio superficie non stabile", "prodotti occlusivi non coerenti con la zona"],
+        solution_moves: ["riequilibrare sebo e superficie senza stripping", "scegliere texture leggere ma non disseccanti", "lavorare su grana e continuita prima di intensificare"],
+        avoid_now: ["stripping", "oli pesanti se la zona T resta attiva", "lettura semplicistica tipo pelle grassa e basta"],
+        follow_up: "Controllare lucidita, grana e comfort sulla stessa area tra 2/3 settimane."
+      }
+    };
+  }
+
+  if (barrierSupport && !sebumSupport) {
+    return {
+      id: "barrier_hydration_balance",
+      label: "barriera e comfort superficiale",
+      main_label: "barriera e comfort superficiale",
+      low_reading: "Comfort e barriera da sostenere: distinguere disidratazione, sensibilita e film superficiale senza ricondurre tutto al sebo.",
+      first_move: "Prima mossa: ripristinare comfort e continuita cosmetica, poi aumentare precisione su texture o luminosita.",
+      families: ["humectants", "emollients", "barrier_lipids", "soothing", "niacinamide"],
+      service_logic: ["supporto barriera", "idratazione funzionale", "riduzione stimoli inutili", "routine essenziale di continuita"],
+      voice_override: {
+        readable_problem: "Comfort e barriera cosmetica non pieni, con bisogno di ordine prima di attivi piu intensi.",
+        public_name: "barriera e comfort superficiale",
+        meaning: "la capacita della pelle di mantenere comfort, elasticita percepita e tollerabilita nella parte superficiale",
+        profile_terms: {
+          aesthetic_center: ["barriera cosmetica da rinforzare", "comfort da ricostruire", "pelle che si svuota facilmente"],
+          pharmacy_dermocosmetic: ["supporto barriera", "comfort epidermico da sostenere", "routine da semplificare"],
+          medical_dermatology: ["barriera epidermica", "comfort cutaneo superficiale", "film superficiale non omogeneo"]
+        },
+        problem_words: ["comfort non pieno", "barriera da ricostruire", "pelle che si spegne facilmente", "equilibrio superficiale da sostenere"],
+        possible_causes: ["detersione troppo sgrassante", "routine povera di supporto barriera", "trattamenti recenti o clima che alterano comfort e film superficiale"],
+        solution_moves: ["rinforzare barriera e continuita cosmetica", "ridurre passaggi irritanti e aumentare comfort", "lavorare prima sulla tollerabilita e poi sugli attivi piu forti"],
+        avoid_now: ["leggere tutto come sebo", "cambiare troppi prodotti insieme", "forzare peeling o routine aggressive"],
+        follow_up: "Controllare comfort, elasticita percepita e stessa mappa di barriera tra 2/3 settimane."
+      }
+    };
+  }
+
+  return {
+    id: "mixed_surface_balance",
+    label: "equilibrio acqua, sebo e superficie",
+    main_label: "equilibrio acqua, sebo e superficie",
+    low_reading: "Equilibrio superficiale misto: leggere insieme comfort, lucidita e grana senza far collassare il quadro solo sul sebo.",
+    first_move: "Prima mossa: mettere ordine a comfort e superficie con una routine bilanciata, poi salire su pori o texture solo se la pelle regge bene.",
+    families: ["humectants", "barrier_lipids", "niacinamide", "sebum_balance", "soothing"],
+    service_logic: ["riequilibrio superficie", "supporto comfort", "gestione zona T/guance", "routine bilanciata e progressiva"],
+    voice_override: {
+      readable_problem: "Superficie mista da bilanciare: comfort, lucidita e grana vanno letti insieme.",
+      public_name: "equilibrio acqua, sebo e superficie",
+      meaning: "il modo in cui comfort, film superficiale, lucidita e grana si influenzano nella stessa lettura",
+      profile_terms: {
+        aesthetic_center: ["superficie da bilanciare", "comfort e lucidita da riordinare", "zona mista da leggere meglio"],
+        pharmacy_dermocosmetic: ["equilibrio superficie-barriera", "lucidita e comfort da gestire insieme", "routine da bilanciare"],
+        medical_dermatology: ["superficie mista", "comfort e sebo da contestualizzare", "pattern superficiale non omogeneo"]
+      },
+      problem_words: ["superficie da bilanciare", "comfort e lucidita non allineati", "quadro misto da ordinare", "base superficiale non omogenea"],
+      possible_causes: ["routine non bilanciata", "zona T e guance che rispondono in modo diverso", "trattamenti o stagionalita che spostano il film superficiale"],
+      solution_moves: ["bilanciare comfort e superficie prima di intensificare", "scegliere texture e attivi piu ordinati tra zona T e guance", "tenere insieme barriera e grana nella stessa strategia"],
+      avoid_now: ["ridurre tutto a pelle grassa", "stripping", "sovraccarico di oli o attivi forti senza progressione"],
+      follow_up: "Controllare comfort, grana e lucidita sulla stessa area tra 2/3 settimane."
+    }
+  };
+}
+
+function applyAnalyzerDominantContextMetric(baseMetric = {}, dominantContext = null) {
+  if (!dominantContext) return baseMetric;
+  return {
+    ...baseMetric,
+    label: dominantContext.main_label || baseMetric.label,
+    low_reading: dominantContext.low_reading || baseMetric.low_reading,
+    service_logic: Array.isArray(dominantContext.service_logic) ? dominantContext.service_logic : baseMetric.service_logic
+  };
+}
+
+function applyAnalyzerDominantContextToVoice(context = {}, dominantContext = null) {
+  if (!dominantContext?.voice_override) return context;
+  const override = dominantContext.voice_override;
+  return {
+    ...context,
+    readable_problem: override.readable_problem || context.readable_problem,
+    problem_words: Array.isArray(override.problem_words) ? override.problem_words : context.problem_words,
+    possible_causes: Array.isArray(override.possible_causes) ? override.possible_causes : context.possible_causes,
+    solution_moves: Array.isArray(override.solution_moves) ? override.solution_moves : context.solution_moves,
+    avoid_now: Array.isArray(override.avoid_now) ? override.avoid_now : context.avoid_now,
+    follow_up: override.follow_up || context.follow_up,
+    metric_glossary: {
+      ...(context.metric_glossary || {}),
+      public_name: override.public_name || context.metric_glossary?.public_name,
+      meaning: override.meaning || context.metric_glossary?.meaning,
+      profile_terms: override.profile_terms || context.metric_glossary?.profile_terms || {}
+    }
+  };
+}
+
+function collectAnalyzerFamilies(pack, dominant, secondary, dominantContext = null) {
   const rows = [dominant, ...secondary].filter(Boolean);
   const families = [];
   rows.forEach((row) => {
@@ -6419,6 +6576,9 @@ function collectAnalyzerFamilies(pack, dominant, secondary) {
   });
   if (rows.some((row) => row.key === "redness_sensitivity_signals" && row.score < 85)) {
     families.unshift("soothing", "barrier_lipids", "minimal_routine");
+  }
+  if (dominantContext?.families?.length) {
+    return uniqueAnalyzerStrings(dominantContext.families).slice(0, 8);
   }
   return uniqueAnalyzerStrings(families).slice(0, 8);
 }
@@ -6876,9 +7036,10 @@ function buildNyraAnalyzerResponse(body = {}) {
   const dominant = priorityRows.find((row) => row.score < 85) || priorityRows[0];
   const secondary = priorityRows.filter((row) => row.key !== dominant.key && row.score < 85).slice(0, 3);
   const stable = scores.filter((row) => row.score >= 85);
-  const dominantMetric = analyzerMetricPack(pack, dominant.key);
+  const clientProfile = normalizeAnalyzerClientProfile(body);
+  const dominantContext = buildAnalyzerDominantContext({ scores, profile: clientProfile, dominant });
   const relationships = buildAnalyzerRelationships(scores, pack);
-  const families = collectAnalyzerFamilies(pack, dominant, secondary);
+  const families = collectAnalyzerFamilies(pack, dominant, secondary, dominantContext);
   const activeLogic = explainAnalyzerFamilies(pack, families);
   const products = normalizeAnalyzerItems(body, "products");
   const protocols = normalizeAnalyzerItems(body, "protocols");
@@ -6888,13 +7049,13 @@ function buildNyraAnalyzerResponse(body = {}) {
   const coreText = analyzerTextFromBody(body);
   const client = body.client || body.data?.client || {};
   const clientName = String(client.name || body.clientName || body.data?.client_name || "").trim();
-  const clientProfile = normalizeAnalyzerClientProfile(body);
+  const dominantMetric = applyAnalyzerDominantContextMetric(analyzerMetricPack(pack, dominant.key), dominantContext);
   const learningInsights = buildAnalyzerLearningInsights({ scores, pack, profile: clientProfile, dominant });
-  const voiceContext = analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body, {
+  const voiceContext = applyAnalyzerDominantContextToVoice(analyzerVoiceLibraryContext(pack, practiceProfile, dominant, body, {
     scores,
     secondary,
     stable
-  });
+  }), dominantContext);
   const voiceLines = analyzerVoiceLines(voiceContext);
   const coreOverlay = buildAnalyzerCoreOverlay({
     core_payload: corePayload,
@@ -6912,7 +7073,9 @@ function buildNyraAnalyzerResponse(body = {}) {
   const stableText = stable.length
     ? stable.map((row) => `${row.label} ${row.score}/100`).join("; ")
     : "nessun segnale stabile forte nel set disponibile";
-  const firstMove = sensitivityFirst
+  const firstMove = dominantContext?.first_move
+    ? dominantContext.first_move
+    : sensitivityFirst
     ? "Prima mossa: tolleranza e barriera cosmetica, poi intensita progressiva."
     : `Prima mossa: lavorare su ${dominantMetric.label || dominant.label} collegando ${secondary.length ? "i segnali secondari" : "mantenimento e routine"}.`;
   const serviceSales = dominantMetric.service_logic || [];
@@ -6927,14 +7090,12 @@ function buildNyraAnalyzerResponse(body = {}) {
       ? "Protocolli caricati ma nessun match abbastanza coerente: completare tag area/obiettivo/intensita prima di selezionare."
       : "Protocolli centro non caricati: proporre struttura seduta iniziale, ciclo, home routine e recheck, senza inventare protocollo proprietario."];
   const activeLine = activeLogic.map((item) => `${item.id} (${item.examples.join(", ") || "categoria da verificare"})`).join("; ");
-  const relationshipLine = relationships.length ? relationships.join(" ") : "La lettura resta sul pattern dominante senza forzare correlazioni non presenti.";
+  const relationshipLine = relationships.length
+    ? relationships.join(" ")
+    : dominantContext?.id === "mixed_surface_balance"
+      ? "Comfort, lucidita e grana vanno letti insieme: il quadro non va ridotto a sebo o disidratazione da soli."
+      : "La lettura resta sul pattern dominante senza forzare correlazioni non presenti.";
   const branchOverlayLine = buildNyraAnalyzerCoreOverlayLineData(coreOverlay, practiceProfile);
-  const branchLearning = buildAnalyzerBranchLearning({
-    pack,
-    core_overlay: coreOverlay,
-    practice_profile: practiceProfile
-  });
-  const branchLearningLine = buildAnalyzerBranchLearningLine(branchLearning);
   const profileLine = learningInsights.profile_summary.length
     ? `Scheda cliente letta: ${learningInsights.profile_summary.join("; ")}.`
     : "Scheda cliente non compilata: lettura basata su score e marker disponibili.";
@@ -6985,7 +7146,6 @@ function buildNyraAnalyzerResponse(body = {}) {
     profileContextLine,
     ...voiceLines,
     branchOverlayLine,
-    branchLearningLine,
     profileLine,
     `Problema principale: ${mainProblem}`,
     `Segnali secondari: ${secondaryText}`,
@@ -7037,7 +7197,6 @@ function buildNyraAnalyzerResponse(body = {}) {
     learning_insights: learningInsights,
     voice_library: voiceContext,
     core_overlay: coreOverlay,
-    branch_learning: branchLearning,
     service_sales_logic: serviceSales,
     product_sales_logic: productSales,
     protocol_logic: protocolSales,
@@ -7065,179 +7224,6 @@ function buildNyraAnalyzerResponse(body = {}) {
   };
 }
 
-function readAnalyzerLearningMarkdownSummary(relativePath) {
-  try {
-    const absolutePath = path.join(rootDir, relativePath);
-    if (!fs.existsSync(absolutePath)) return null;
-    const raw = fs.readFileSync(absolutePath, 'utf8');
-    const lines = raw.split(/\r?\n/).map((line) => line.trim());
-    const titleLine = lines.find((line) => line.startsWith('#')) || path.basename(relativePath, '.md');
-    const title = titleLine.replace(/^#+\s*/, '').trim();
-    const paragraph = lines.find((line) => line && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('```')) || title;
-    return { title, summary: paragraph.trim() };
-  } catch (_error) {
-    return null;
-  }
-}
-
-function analyzerEmbeddedLearningSource(branchId, sourceId, title, summary, virtualPath) {
-  return {
-    branch_id: branchId,
-    source_id: sourceId,
-    title,
-    path: virtualPath,
-    kind: sourceId.includes('seed') ? 'markdown_report' : 'json_pack',
-    summary: String(summary || '').trim()
-  };
-}
-
-const ANALYZER_BRANCH_REPORTS_BY_ID = {
-  sensitivity_reactivity_matrix: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
-    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
-  ],
-  barrier_hydration_matrix: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
-  ],
-  pores_texture_matrix: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
-    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
-  ],
-  aging_texture_matrix: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
-    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
-  ],
-  pigmentation_tone_matrix: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
-    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
-  ],
-  catalog_choice_matrix: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
-  ],
-  service_product_technology_overlap: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
-  ],
-  formulation_compatibility_guard: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
-  ],
-  anamnesis_sales_guard: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
-  ],
-  technology_claim_guard: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
-  ],
-  post_treatment_timing_guard: [
-    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
-  ]
-};
-
-function analyzerPackSummary(pack, practiceProfile) {
-  const metricCount = Object.keys(pack.analyzer_metrics || {}).length;
-  const familyCount = Object.keys(pack.active_families || {}).length;
-  const profileLabel = practiceProfile?.title || practiceProfile?.id || 'profilo non definito';
-  return `Pack Analyzer ${pack.version || 'unknown'} per ${profileLabel}; metriche=${metricCount}; famiglie=${familyCount}.`;
-}
-
-function analyzerVoiceSummary(pack) {
-  const voice = pack.voice_library || {};
-  const metricCards = Array.isArray(voice.metric_cards) ? voice.metric_cards.length : 0;
-  const profiles = Array.isArray(voice.profile_contracts) ? voice.profile_contracts.length : 0;
-  const blueprints = Array.isArray(voice.voice_blueprints) ? voice.voice_blueprints.length : 0;
-  return `Voice library ${voice.id || 'embedded'}: metric_cards=${metricCards}; profili=${profiles}; blueprints=${blueprints}.`;
-}
-
-function analyzerMedicalSummary(pack) {
-  const medical = pack.medical_to_aesthetic_learning || {};
-  const global = pack.global_medical_aesthetic_library || {};
-  const cases = Array.isArray(medical.case_playbooks) ? medical.case_playbooks.length : 0;
-  const expanded = Array.isArray(global.expanded_case_library) ? global.expanded_case_library.length : 0;
-  const areaKeys = Object.keys(global.metric_area_matrix || {}).length;
-  return `Bridge medico-estetico: case_playbooks=${cases}; global_cases=${expanded}; metric_area_keys=${areaKeys}.`;
-}
-
-function buildAnalyzerBranchLearning(input) {
-  const selected = Array.isArray(input?.core_overlay?.selected_branches) ? input.core_overlay.selected_branches.slice(0, 3) : [];
-  const pack = input?.pack || {};
-  const practiceProfile = input?.practice_profile || {};
-  const entries = selected.map((branch) => {
-    const branchId = String(branch.id || 'analyzer_branch');
-    const sources = [
-      analyzerEmbeddedLearningSource(branchId, 'analyzer_pack', pack.pack_id || 'nyra_skinharmony_analyzer_beauty_learning_v1', analyzerPackSummary(pack, practiceProfile), 'personal-control-center/server.js#nyra_analyzer_learning_pack')
-    ];
-    if (pack.voice_library) {
-      sources.push(
-        analyzerEmbeddedLearningSource(branchId, 'voice_library', pack.voice_library.id || 'nyra_analyzer_voice_library', analyzerVoiceSummary(pack), 'personal-control-center/server.js#voice_library')
-      );
-    }
-    if (pack.medical_to_aesthetic_learning || pack.global_medical_aesthetic_library) {
-      sources.push(
-        analyzerEmbeddedLearningSource(branchId, 'medical_aesthetic_bridge', 'Analyzer Medical Aesthetic Bridge', analyzerMedicalSummary(pack), 'personal-control-center/server.js#medical_global_library')
-      );
-    }
-    (ANALYZER_BRANCH_REPORTS_BY_ID[branchId] || []).forEach((relativePath) => {
-      const parsed = readAnalyzerLearningMarkdownSummary(relativePath);
-      if (!parsed) return;
-      sources.push({
-        branch_id: branchId,
-        source_id: path.basename(relativePath, '.md').toLowerCase(),
-        title: parsed.title,
-        path: relativePath,
-        kind: 'markdown_report',
-        summary: parsed.summary
-      });
-    });
-    return {
-      branch_id: branchId,
-      branch_label: String(branch.label || branchId),
-      sources: sources.slice(0, 4)
-    };
-  }).filter((entry) => Array.isArray(entry.sources) && entry.sources.length > 0);
-  return { mode: 'branch_learning', entries };
-}
-
-function buildAnalyzerBranchLearningLine(branchLearning) {
-  // render-rollout-anchor: analyzer-reply-line
-  const entries = Array.isArray(branchLearning?.entries) ? branchLearning.entries : [];
-  if (!entries.length) return '';
-  return `Learning rami: ${entries.slice(0, 3).map((entry) => {
-    const sources = Array.isArray(entry.sources) ? entry.sources : [];
-    const preferred = sources.filter((source) => source && source.kind === 'markdown_report');
-    const fallback = sources.filter((source) => source && source.kind !== 'markdown_report');
-    const visible = (preferred.length ? preferred : fallback).slice(0, 2);
-    return `${entry.branch_id}:${visible.map((source) => source.title).join(' + ')}`;
-  }).join(' | ')}`;
-}
-
-function rankAnalyzerSemanticHits(rows = []) {
-  const analyzerSignal = (text = "") => /analyzer|skin analyzer|marker|rossore|discrom|texture|pori|grana|sensibil|moondream|ipad|capture|protocollo/i.test(String(text));
-  const allowedDomain = new Set(["analyzer", "ipad"]);
-  return rows
-    .map((row) => {
-      const path = String(row.document_path || "");
-      const title = String(row.document_title || "");
-      const excerpt = String(row.excerpt || "");
-      const domain = String(row.domain || "");
-      const score = Number(row.score || 0);
-      const tags = Array.isArray(row.tags) ? row.tags.map(String) : [];
-      const isAnalyzerDomain = allowedDomain.has(domain);
-      const lexicalScore =
-        (analyzerSignal(title) ? 5 : 0) +
-        (analyzerSignal(path) ? 5 : 0) +
-        (analyzerSignal(excerpt) ? 3 : 0) +
-        (tags.some((tag) => /analyzer|ipad|marker|skin/i.test(tag)) ? 3 : 0) +
-        (/report/i.test(path) ? 2 : 0) +
-        (/fix|test/i.test(title) ? 1 : 0);
-      const penalty = /chess|market|study_plan|decision_clarity|financial/i.test(`${path} ${title}`) ? 8 : 0;
-      return {
-        ...row,
-        _analyzer_rank: (isAnalyzerDomain ? 20 : 0) + lexicalScore - penalty + score,
-        _is_analyzer_domain: isAnalyzerDomain,
-      };
-    })
-    .filter((row) => row._is_analyzer_domain)
-    .sort((a, b) => b._analyzer_rank - a._analyzer_rank || Number(b.score || 0) - Number(a.score || 0));
-}
-
 app.post("/api/nyra/text-chat", async (req, res) => {
   const message = String(req.body.message || req.body.text || "").trim();
   const sessionId = String(req.body.sessionId || "nyra-render-text-sandbox").trim();
@@ -7246,13 +7232,6 @@ app.post("/api/nyra/text-chat", async (req, res) => {
     return;
   }
   try {
-    await runNodeJson([
-      "--experimental-strip-types",
-      "universal-core/tools/nyra-vector-memory.ts",
-      "refresh-if-stale",
-      "--max-age-minutes",
-      "180"
-    ]);
     const output = await runNodeJson([
       "--experimental-strip-types",
       "universal-core/tools/nyra-text-chat-api.ts",
@@ -7325,56 +7304,9 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
   });
 });
 
-app.post("/api/nyra/analyzer/read-only", async (req, res) => {
+app.post("/api/nyra/analyzer/read-only", (req, res) => {
   try {
-    const refresh = await runNodeJson([
-      "--experimental-strip-types",
-      "universal-core/tools/nyra-vector-memory.ts",
-      "refresh-if-stale",
-      "--max-age-minutes",
-      "180"
-    ]);
-    const result = buildNyraAnalyzerResponse(req.body || {});
-    const semanticSummary = refresh?.stats_after
-      ? [
-          `documents=${Number(refresh.stats_after.documents || 0)}`,
-          `chunks=${Number(refresh.stats_after.chunks || 0)}`,
-          refresh.stats_after.last_ingest_at ? `last_ingest_at=${refresh.stats_after.last_ingest_at}` : ""
-        ].filter(Boolean).join(" ")
-      : "";
-
-    const semanticQuery = [
-      result.practice_profile?.id || "",
-      result.dominant_pattern?.label || "",
-      result.main_problem || "",
-      Array.isArray(result.relationships) ? result.relationships.join(" ") : ""
-    ].filter(Boolean).join(" ");
-
-    let semanticHits = [];
-    if (semanticQuery) {
-      semanticHits = await runNodeJson([
-        "--experimental-strip-types",
-        "universal-core/tools/nyra-vector-memory.ts",
-        "search",
-        "--query",
-        semanticQuery,
-        "--limit",
-        "12"
-      ]);
-    }
-    const rankedSemanticHits = rankAnalyzerSemanticHits(Array.isArray(semanticHits) ? semanticHits : []);
-    const selectedSemanticHits = rankedSemanticHits.slice(0, 2);
-
-    const semanticLine = selectedSemanticHits.length
-      ? `Memoria semantica utile: ${selectedSemanticHits.map((row) => `[${row.domain || "general"}/${row.scope || "shared_memory"}] ${row.document_title || row.document_path}: ${String(row.excerpt || "").slice(0, 220)}`).join(" | ")}`
-      : "";
-
-    res.json({
-      ...result,
-      semantic_memory_summary: semanticSummary,
-      semantic_memory_hits: selectedSemanticHits,
-      reply: [result.reply, semanticLine].filter(Boolean).join("\n"),
-    });
+    res.json(buildNyraAnalyzerResponse(req.body || {}));
   } catch (error) {
     res.status(500).json({
       ok: false,
@@ -7395,14 +7327,14 @@ app.post("/api/nyra/read-only", async (req, res) => {
   try {
     await runNodeJson([
       "--experimental-strip-types",
-      "universal-core/tools/nyra-vector-memory.ts",
+      "universal-core-2.0/tools/nyra-vector-memory.ts",
       "refresh-if-stale",
       "--max-age-minutes",
-      "180"
+      "180",
     ]);
     const result = await runNodeJson([
       "--experimental-strip-types",
-      "universal-core/tools/nyra-communication-adapter.ts",
+      "universal-core-2.0/tools/nyra-communication-adapter.ts",
       message
     ]);
     res.json({
