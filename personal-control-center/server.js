@@ -7196,6 +7196,7 @@ function buildAnalyzerBranchLearning(input) {
 }
 
 function buildAnalyzerBranchLearningLine(branchLearning) {
+  // render-rollout-anchor: analyzer-reply-line
   const entries = Array.isArray(branchLearning?.entries) ? branchLearning.entries : [];
   if (!entries.length) return '';
   return `Learning rami: ${entries.slice(0, 3).map((entry) => {
