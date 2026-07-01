@@ -7198,7 +7198,13 @@ function buildAnalyzerBranchLearning(input) {
 function buildAnalyzerBranchLearningLine(branchLearning) {
   const entries = Array.isArray(branchLearning?.entries) ? branchLearning.entries : [];
   if (!entries.length) return '';
-  return `Learning rami: ${entries.slice(0, 3).map((entry) => `${entry.branch_id}:${(Array.isArray(entry.sources) ? entry.sources : []).slice(0, 2).map((source) => source.title).join(' + ')}`).join(' | ')}`;
+  return `Learning rami: ${entries.slice(0, 3).map((entry) => {
+    const sources = Array.isArray(entry.sources) ? entry.sources : [];
+    const preferred = sources.filter((source) => source && source.kind === 'markdown_report');
+    const fallback = sources.filter((source) => source && source.kind !== 'markdown_report');
+    const visible = (preferred.length ? preferred : fallback).slice(0, 2);
+    return `${entry.branch_id}:${visible.map((source) => source.title).join(' + ')}`;
+  }).join(' | ')}`;
 }
 
 function rankAnalyzerSemanticHits(rows = []) {
