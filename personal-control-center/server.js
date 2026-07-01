@@ -6929,6 +6929,12 @@ function buildNyraAnalyzerResponse(body = {}) {
   const activeLine = activeLogic.map((item) => `${item.id} (${item.examples.join(", ") || "categoria da verificare"})`).join("; ");
   const relationshipLine = relationships.length ? relationships.join(" ") : "La lettura resta sul pattern dominante senza forzare correlazioni non presenti.";
   const branchOverlayLine = buildNyraAnalyzerCoreOverlayLineData(coreOverlay, practiceProfile);
+  const branchLearning = buildAnalyzerBranchLearning({
+    pack,
+    core_overlay: coreOverlay,
+    practice_profile: practiceProfile
+  });
+  const branchLearningLine = buildAnalyzerBranchLearningLine(branchLearning);
   const profileLine = learningInsights.profile_summary.length
     ? `Scheda cliente letta: ${learningInsights.profile_summary.join("; ")}.`
     : "Scheda cliente non compilata: lettura basata su score e marker disponibili.";
@@ -6979,6 +6985,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     profileContextLine,
     ...voiceLines,
     branchOverlayLine,
+    branchLearningLine,
     profileLine,
     `Problema principale: ${mainProblem}`,
     `Segnali secondari: ${secondaryText}`,
@@ -7030,6 +7037,7 @@ function buildNyraAnalyzerResponse(body = {}) {
     learning_insights: learningInsights,
     voice_library: voiceContext,
     core_overlay: coreOverlay,
+    branch_learning: branchLearning,
     service_sales_logic: serviceSales,
     product_sales_logic: productSales,
     protocol_logic: protocolSales,
@@ -7055,6 +7063,139 @@ function buildNyraAnalyzerResponse(body = {}) {
     core_text_used: Boolean(coreText),
     reply
   };
+}
+
+function readAnalyzerLearningMarkdownSummary(relativePath) {
+  try {
+    const absolutePath = path.join(rootDir, relativePath);
+    if (!fs.existsSync(absolutePath)) return null;
+    const raw = fs.readFileSync(absolutePath, 'utf8');
+    const lines = raw.split(/\r?\n/).map((line) => line.trim());
+    const titleLine = lines.find((line) => line.startsWith('#')) || path.basename(relativePath, '.md');
+    const title = titleLine.replace(/^#+\s*/, '').trim();
+    const paragraph = lines.find((line) => line && !line.startsWith('#') && !line.startsWith('-') && !line.startsWith('```')) || title;
+    return { title, summary: paragraph.trim() };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function analyzerEmbeddedLearningSource(branchId, sourceId, title, summary, virtualPath) {
+  return {
+    branch_id: branchId,
+    source_id: sourceId,
+    title,
+    path: virtualPath,
+    kind: sourceId.includes('seed') ? 'markdown_report' : 'json_pack',
+    summary: String(summary || '').trim()
+  };
+}
+
+const ANALYZER_BRANCH_REPORTS_BY_ID = {
+  sensitivity_reactivity_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
+  ],
+  barrier_hydration_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
+  ],
+  pores_texture_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
+  ],
+  aging_texture_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
+  ],
+  pigmentation_tone_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md',
+    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
+  ],
+  catalog_choice_matrix: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
+  ],
+  service_product_technology_overlap: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
+  ],
+  formulation_compatibility_guard: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
+  ],
+  anamnesis_sales_guard: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
+  ],
+  technology_claim_guard: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_SCORE_KEYS_SEED_2026-06-27.md'
+  ],
+  post_treatment_timing_guard: [
+    'reports/ipad-analyzer/ANALYZER_IPAD_TOPOGRAPHIC_MARKER_SEED_2026-06-27.md'
+  ]
+};
+
+function analyzerPackSummary(pack, practiceProfile) {
+  const metricCount = Object.keys(pack.analyzer_metrics || {}).length;
+  const familyCount = Object.keys(pack.active_families || {}).length;
+  const profileLabel = practiceProfile?.title || practiceProfile?.id || 'profilo non definito';
+  return `Pack Analyzer ${pack.version || 'unknown'} per ${profileLabel}; metriche=${metricCount}; famiglie=${familyCount}.`;
+}
+
+function analyzerVoiceSummary(pack) {
+  const voice = pack.voice_library || {};
+  const metricCards = Array.isArray(voice.metric_cards) ? voice.metric_cards.length : 0;
+  const profiles = Array.isArray(voice.profile_contracts) ? voice.profile_contracts.length : 0;
+  const blueprints = Array.isArray(voice.voice_blueprints) ? voice.voice_blueprints.length : 0;
+  return `Voice library ${voice.id || 'embedded'}: metric_cards=${metricCards}; profili=${profiles}; blueprints=${blueprints}.`;
+}
+
+function analyzerMedicalSummary(pack) {
+  const medical = pack.medical_to_aesthetic_learning || {};
+  const global = pack.global_medical_aesthetic_library || {};
+  const cases = Array.isArray(medical.case_playbooks) ? medical.case_playbooks.length : 0;
+  const expanded = Array.isArray(global.expanded_case_library) ? global.expanded_case_library.length : 0;
+  const areaKeys = Object.keys(global.metric_area_matrix || {}).length;
+  return `Bridge medico-estetico: case_playbooks=${cases}; global_cases=${expanded}; metric_area_keys=${areaKeys}.`;
+}
+
+function buildAnalyzerBranchLearning(input) {
+  const selected = Array.isArray(input?.core_overlay?.selected_branches) ? input.core_overlay.selected_branches.slice(0, 3) : [];
+  const pack = input?.pack || {};
+  const practiceProfile = input?.practice_profile || {};
+  const entries = selected.map((branch) => {
+    const branchId = String(branch.id || 'analyzer_branch');
+    const sources = [
+      analyzerEmbeddedLearningSource(branchId, 'analyzer_pack', pack.pack_id || 'nyra_skinharmony_analyzer_beauty_learning_v1', analyzerPackSummary(pack, practiceProfile), 'personal-control-center/server.js#nyra_analyzer_learning_pack')
+    ];
+    if (pack.voice_library) {
+      sources.push(
+        analyzerEmbeddedLearningSource(branchId, 'voice_library', pack.voice_library.id || 'nyra_analyzer_voice_library', analyzerVoiceSummary(pack), 'personal-control-center/server.js#voice_library')
+      );
+    }
+    if (pack.medical_to_aesthetic_learning || pack.global_medical_aesthetic_library) {
+      sources.push(
+        analyzerEmbeddedLearningSource(branchId, 'medical_aesthetic_bridge', 'Analyzer Medical Aesthetic Bridge', analyzerMedicalSummary(pack), 'personal-control-center/server.js#medical_global_library')
+      );
+    }
+    (ANALYZER_BRANCH_REPORTS_BY_ID[branchId] || []).forEach((relativePath) => {
+      const parsed = readAnalyzerLearningMarkdownSummary(relativePath);
+      if (!parsed) return;
+      sources.push({
+        branch_id: branchId,
+        source_id: path.basename(relativePath, '.md').toLowerCase(),
+        title: parsed.title,
+        path: relativePath,
+        kind: 'markdown_report',
+        summary: parsed.summary
+      });
+    });
+    return {
+      branch_id: branchId,
+      branch_label: String(branch.label || branchId),
+      sources: sources.slice(0, 4)
+    };
+  }).filter((entry) => Array.isArray(entry.sources) && entry.sources.length > 0);
+  return { mode: 'branch_learning', entries };
+}
+
+function buildAnalyzerBranchLearningLine(branchLearning) {
+  const entries = Array.isArray(branchLearning?.entries) ? branchLearning.entries : [];
+  if (!entries.length) return '';
+  return `Learning rami: ${entries.slice(0, 3).map((entry) => `${entry.branch_id}:${(Array.isArray(entry.sources) ? entry.sources : []).slice(0, 2).map((source) => source.title).join(' + ')}`).join(' | ')}`;
 }
 
 function rankAnalyzerSemanticHits(rows = []) {
