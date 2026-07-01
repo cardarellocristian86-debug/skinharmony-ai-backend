@@ -13514,7 +13514,12 @@ class DesktopMirrorService {
     const centerHealth = snapshot.report?.centerHealth || {};
     let inventory = snapshot.inventory || {};
     if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && !Array.isArray(inventory.lowStock)) {
-      inventory = this.getInventoryOverview(session);
+      const liveInventoryItems = this.filterByCenter(this.inventoryRepository.list(), session);
+      inventory = {
+        totalItems: liveInventoryItems.length,
+        summary: { totalItems: liveInventoryItems.length },
+        lowStock: liveInventoryItems.filter((item) => Number(item.quantity || 0) <= Number(item.minQuantity || 0))
+      };
     }
     const dataQuality = snapshot.dataQuality || {};
     const goldEngine = snapshot.goldEngine || {};
@@ -13948,7 +13953,12 @@ class DesktopMirrorService {
     const marketing = snapshot.marketing || {};
     let inventory = snapshot.inventory || {};
     if (!Number(inventory.totalItems || inventory.summary?.totalItems || 0) && !Array.isArray(inventory.lowStock)) {
-      inventory = this.getInventoryOverview(session);
+      const liveInventoryItems = this.filterByCenter(this.inventoryRepository.list(), session);
+      inventory = {
+        totalItems: liveInventoryItems.length,
+        summary: { totalItems: liveInventoryItems.length },
+        lowStock: liveInventoryItems.filter((item) => Number(item.quantity || 0) <= Number(item.minQuantity || 0))
+      };
     }
     const primaryAction = decisionContext.primaryAction || null;
     const priorityClients = Array.isArray(marketing.priorityClients)
