@@ -13378,6 +13378,7 @@ class DesktopMirrorService {
       item.details
     ].filter(Boolean).join(" ").toLowerCase();
     if (/center-health|salute centro|stato centro/.test(text) || area === "salute centro") return "center_health";
+    if (/redditiv|margini|margine|costi per sbloccare|costi servizi|qualita dati|qualità dati/.test(text)) return "profitability";
     if (target === "profitability" || target === "profit" || area === "profitability" || area === "redditività" || area === "servizi" || area === "tecnologie") return "profitability";
     if (target === "services" && /redditiv|margini|margine|costi|costo|profit/.test(text)) return "profitability";
     if (target === "inventory" || target === "stock" || area === "magazzino") return "hidden";
@@ -13494,6 +13495,9 @@ class DesktopMirrorService {
       item.value,
       item.label
     ].filter(Boolean).join(" ").toLowerCase();
+    if ((rawTarget === "dashboard" || rawTarget === "center_health") && /stato centro|salute centro|blocco economico resta/.test(text)) {
+      return { target: "dashboard", targetFocus: String(item.targetFocus || "") };
+    }
     if (rawTarget === "inventory" || rawTarget === "stock" || rawTarget === "magazzino") return { target: "inventory", targetFocus: String(item.targetFocus || "") };
     if (rawTarget === "clients" || rawTarget === "client") return { target: "clients", targetFocus: item.clientId ? `client:${item.clientId}` : String(item.targetFocus || "") };
     if ((rawTarget === "profit" || rawTarget === "profitability") && !/manca|mancanti|completa|configura|bloccata|bloccato/.test(text)) {
