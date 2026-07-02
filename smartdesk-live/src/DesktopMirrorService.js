@@ -13596,6 +13596,178 @@ class DesktopMirrorService {
     });
   }
 
+  isGoldInternalNoise(value = "") {
+    return /core\/nyra|corelia|nyra|gold engine|modulo corretto|evitare duplicati|legge il centro|fonte primaria|sorgente|snapshot|decision context|business_snapshot|gold_decision|layer esterno/i.test(String(value || ""));
+  }
+
+  buildGoldCoreV2UserCopy(item = {}, sectionKey = "") {
+    const route = this.normalizeGoldManualTarget(item, item.target || sectionKey || "dashboard");
+    const focus = String(item.targetFocus || route.targetFocus || "").toLowerCase();
+    const target = String(route.target || item.target || "").toLowerCase();
+    const raw = [
+      item.title,
+      item.label,
+      item.conclusion,
+      item.reason,
+      item.details,
+      item.value,
+      item.action,
+      item.suggestedAction,
+      item.instruction
+    ].filter(Boolean).join(" ").toLowerCase();
+
+    if (focus === "service-costs" || (/servizi|servizio/.test(raw) && /costi|costo|redditiv|margini/.test(raw))) {
+      return {
+        title: "Completa costi servizi",
+        reason: "Mancano dati economici sui servizi: finche non li completi, margini e redditivita non sono affidabili.",
+        details: "Controlla prezzo, durata, costo prodotto e consumo dei servizi evidenziati.",
+        action: "completa i costi dei servizi evidenziati",
+        button: "Completa costi servizi"
+      };
+    }
+    if (focus === "staff-costs" || (/operatori|operatore|staff/.test(raw) && /costi|costo|resa|performance/.test(raw))) {
+      return {
+        title: "Completa costi operatori",
+        reason: "Manca il costo orario degli operatori: senza questo dato la resa del centro resta parziale.",
+        details: "Controlla costo orario, ruolo e turni degli operatori evidenziati.",
+        action: "completa i costi operatori",
+        button: "Completa costi operatori"
+      };
+    }
+    if (focus === "low-stock" || target === "inventory" || /sottoscorta|sotto soglia|stock|magazzino|giacenza/.test(raw)) {
+      return {
+        title: "Prepara riordino stock",
+        reason: "Un articolo utile al lavoro e sotto soglia.",
+        details: "Verifica giacenza reale e prepara carico o riordino prima che blocchi i servizi.",
+        action: "verifica giacenza e prepara carico",
+        button: "Apri magazzino"
+      };
+    }
+    if (target === "marketing" || /cliente|clienti|recall|richiamare|recuperare|contatto|messaggio/.test(raw)) {
+      return {
+        title: "Lavora clienti prioritari",
+        reason: "Parti dai clienti con piu valore o rischio di perdita.",
+        details: "Verifica consenso, ultimo passaggio e motivo del contatto prima di inviare messaggi.",
+        action: "prepara il contatto cliente",
+        button: "Apri marketing"
+      };
+    }
+    if (target === "cashdesk" || /cassa|pagamenti|incassi|pagamento/.test(raw)) {
+      return {
+        title: "Sistema cassa e pagamenti",
+        reason: "I report restano poco affidabili se cassa e appuntamenti non sono allineati.",
+        details: "Collega i pagamenti aperti e chiudi gli appuntamenti gia incassati.",
+        action: "controlla cassa e pagamenti",
+        button: "Apri cassa"
+      };
+    }
+    if (target === "appointments" || /agenda|appuntamenti|slot|giornata scarica/.test(raw)) {
+      return {
+        title: "Riempi agenda",
+        reason: "Prima serve volume operativo: agenda e continuita clienti vengono prima dell'ottimizzazione margini.",
+        details: "Controlla slot liberi, richiami utili e appuntamenti deboli.",
+        action: "riempi agenda con richiami mirati",
+        button: "Apri agenda"
+      };
+    }
+    if (target === "profitability" || sectionKey === "profitability" || /redditiv|margini|margine|utile|perdita/.test(raw)) {
+      return {
+        title: "Controlla margini",
+        reason: "Verifica quali servizi assorbono margine prima di spingerli in vendita.",
+        details: "Lavora prima i servizi con dati incompleti, costo alto o margine debole.",
+        action: "controlla dettaglio redditivita",
+        button: "Apri redditivita"
+      };
+    }
+    return {
+      title: item.conclusion || item.label || item.title || "Azione prioritaria",
+      reason: item.reason || item.value || item.details || "Completa il controllo indicato nel modulo.",
+      details: item.details || item.value || "",
+      action: item.action || item.suggestedAction || "apri il modulo e completa il controllo",
+      button: item.button || "Apri modulo"
+    };
+  }
+
+  normalizeGoldCoreV2Item(item = {}, sectionKey = "") {
+    const copy = this.buildGoldCoreV2UserCopy(item, sectionKey);
+    const route = this.normalizeGoldManualTarget(item, item.target || sectionKey || "dashboard");
+    const explicitTarget = String(item.target || "").toLowerCase();
+    if (route.target === "dashboard" && explicitTarget && !["dashboard", "ai-gold", "center_health"].includes(explicitTarget)) {
+      route.target = explicitTarget === "agenda" ? "appointments"
+        : explicitTarget === "cash" ? "cashdesk"
+        : explicitTarget === "client" ? "clients"
+        : explicitTarget;
+    }
+    const originalText = [
+      item.title,
+      item.label,
+      item.conclusion,
+      item.reason,
+      item.details,
+      item.value,
+      item.action,
+      item.instruction
+    ].filter(Boolean).join(" ");
+    const shouldReplace = this.isGoldInternalNoise(originalText)
+      || sectionKey === "gold_engine"
+      || !String(item.conclusion || item.label || item.title || "").trim();
+    const normalized = {
+      ...item,
+      target: route.target,
+      targetFocus: item.targetFocus || route.targetFocus || "",
+      conclusion: shouldReplace ? copy.title : (item.conclusion || item.label || item.title || copy.title),
+      title: shouldReplace ? copy.title : (item.title || item.conclusion || item.label || copy.title),
+      label: shouldReplace ? copy.title : (item.label || item.conclusion || item.title || copy.title),
+      reason: shouldReplace || this.isGoldInternalNoise(item.reason) ? copy.reason : (item.reason || copy.reason),
+      details: shouldReplace || this.isGoldInternalNoise(item.details) ? copy.details : (item.details || copy.details),
+      value: shouldReplace || this.isGoldInternalNoise(item.value) ? copy.reason : (item.value || copy.reason),
+      action: shouldReplace || this.isGoldInternalNoise(item.action) ? copy.action : (item.action || copy.action),
+      instruction: shouldReplace || this.isGoldInternalNoise(item.instruction) ? copy.action : (item.instruction || copy.action),
+      button: this.isGoldInternalNoise(item.button) ? copy.button : (item.button || copy.button),
+      coreV2Prefiltered: true
+    };
+    return normalized;
+  }
+
+  applyGoldCoreV2Prefilter(payload = {}) {
+    const seen = new Set();
+    const sections = (Array.isArray(payload.sections) ? payload.sections : []).map((section) => {
+      const sectionKey = String(section.key || "");
+      const normalizedItems = [];
+      (Array.isArray(section.items) ? section.items : []).forEach((item) => {
+        if (!item) return;
+        const normalized = this.normalizeGoldCoreV2Item(item, sectionKey);
+        const signature = [
+          sectionKey,
+          normalized.target || "",
+          normalized.targetFocus || "",
+          normalized.conclusion || normalized.label || normalized.title || ""
+        ].join("|").toLowerCase();
+        if (seen.has(signature)) return;
+        seen.add(signature);
+        normalizedItems.push(normalized);
+      });
+      const normalizedSection = {
+        ...section,
+        title: sectionKey === "gold_engine" ? "Regia operativa" : section.title,
+        items: normalizedItems.slice(0, 4)
+      };
+      return {
+        ...normalizedSection,
+        actions: this.buildGoldManualActionsForSection(normalizedSection).map((action) => this.normalizeGoldCoreV2Item(action, sectionKey))
+      };
+    });
+    return {
+      ...payload,
+      coreV2Prefilter: {
+        enabled: true,
+        rule: "noise_removed_before_ui",
+        generatedAt: nowIso()
+      },
+      sections
+    };
+  }
+
   getAiGoldDecisionCenter(options = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
@@ -13620,7 +13792,7 @@ class DesktopMirrorService {
             centerId: this.getCenterId(session),
             source: "smartdesk_gold_state"
           }));
-          return stateDecisionCenter;
+          return localizeDecisionCenterPayload(this.applyGoldCoreV2Prefilter(stateDecisionCenter), this.getRuntimeLanguage(session));
         }
       } catch (error) {
         console.warn("[gold_state_decision_error]", error?.message || error);
@@ -14039,7 +14211,7 @@ class DesktopMirrorService {
       },
       sections: manualSections
     };
-    return localizeDecisionCenterPayload(payload, this.getRuntimeLanguage(session));
+    return localizeDecisionCenterPayload(this.applyGoldCoreV2Prefilter(payload), this.getRuntimeLanguage(session));
   }
 
   getAiGoldCockpit(options = {}, session = null) {
@@ -14270,7 +14442,7 @@ class DesktopMirrorService {
       items: Array.isArray(section.items) ? section.items : []
     })));
 
-    return {
+    return this.applyGoldCoreV2Prefilter({
       goldEnabled: true,
       cockpitVersion: "gold_cockpit_v1",
       sourceLayer: "smartdesk_gold_cockpit",
@@ -14300,7 +14472,7 @@ class DesktopMirrorService {
         rule: "Cockpit Gold legge e ordina. Non invia messaggi, non modifica prezzi, non pubblica e non corregge dati senza operatore."
       },
       sections
-    };
+    });
   }
 
   buildAiGoldProfitabilityFromOverview(overview = {}, session = null) {
