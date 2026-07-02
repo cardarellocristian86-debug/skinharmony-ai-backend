@@ -3891,40 +3891,28 @@ class DesktopMirrorService {
           impactCents: Number(business.revenueCents || 0),
           riskCents: 0,
           action: profitabilityConfigBlocked && stateHasOperationalEvidence
-            ? "completa costi servizi e operatori"
+            ? "leggi lo stato centro come prudente; il blocco economico resta nella sezione redditivita"
             : centerHealth.status === "sotto_soglia" ? "verifica dati e operativita" : "mantieni controllo operativo",
-          button: profitabilityConfigBlocked && stateHasOperationalEvidence ? "Completa costi servizi" : "Apri dashboard",
-          target: profitabilityConfigBlocked && stateHasOperationalEvidence ? "services" : "dashboard",
-          targetFocus: profitabilityConfigBlocked && stateHasOperationalEvidence ? "service-costs" : ""
+          button: "Apri dashboard",
+          target: "dashboard",
+          targetFocus: ""
         }]
-      },
-      {
-        key: "gold_engine",
-        title: "AI Gold - Core/Nyra esterni",
-        items: [
-          commercialGuidance.primaryItem,
-          primaryItem,
-          ...secondaryItems
-        ].filter(Boolean).slice(0, 4)
       },
       {
         key: "daily",
         title: "Priorità del giorno",
         items: [
-          commercialGuidance.primaryItem,
           commercialGuidance.clientItem,
-          primaryItem,
-          ...secondaryItems
-        ].filter((item) => item && item.area !== "profitability").slice(0, 4)
+          ...[primaryItem, ...secondaryItems].filter((item) => this.getGoldDecisionHomeSection(item, "daily") === "daily")
+        ].filter(Boolean).slice(0, 4)
       },
       {
         key: "profitability",
         title: "Redditività prodotti e tecnologie",
         items: [
           commercialGuidance.profitabilityItem,
-          primaryItem,
-          ...secondaryItems
-        ].filter((item) => item && item.area === "profitability").slice(0, 4)
+          ...[primaryItem, ...secondaryItems].filter((item) => this.getGoldDecisionHomeSection(item, "daily") === "profitability")
+        ].filter(Boolean).slice(0, 4)
       },
       {
         key: "performance",
@@ -3936,19 +3924,25 @@ class DesktopMirrorService {
         title: "Opportunità nascoste",
         items: [
           commercialGuidance.inventoryItem,
-          ...[primaryItem, ...secondaryItems].filter((item) => item.area === "growth")
+          ...[primaryItem, ...secondaryItems].filter((item) => this.getGoldDecisionHomeSection(item, "daily") === "hidden")
         ].filter(Boolean).slice(0, 4)
       },
       {
         key: "actions",
         title: "Azioni immediate",
-        items: [
-          commercialGuidance.primaryItem,
-          ...(blockedItems.length ? blockedItems : [primaryItem])
-        ].filter(Boolean).slice(0, 4)
+        items: blockedItems.filter(Boolean).slice(0, 4)
       }
     ];
-    const manualSections = this.withGoldManualActions(sections);
+    const distributedSections = this.dedupeGoldDecisionSections(sections);
+    const manualSections = this.withGoldManualActions([
+      distributedSections[0],
+      {
+        key: "gold_engine",
+        title: "AI Gold - Core/Nyra esterni",
+        items: this.buildGoldEngineRoutingItems(distributedSections)
+      },
+      ...distributedSections.slice(1)
+    ]);
     const allDecisionItems = manualSections.flatMap((section) => section.items || []);
     const v7 = this.computeDecisionCenterV7(allDecisionItems);
     const uiReading = this.resolveDecisionCenterUiBand(v7, {
@@ -13371,6 +13365,123 @@ class DesktopMirrorService {
     return { key: "clear", label: "Risposta chiara" };
   }
 
+  getGoldDecisionHomeSection(item = {}, fallback = "daily") {
+    const target = String(item.target || item.domain || "").toLowerCase();
+    const area = String(item.area || item.domain || "").toLowerCase();
+    const text = [
+      item.id,
+      item.conclusion,
+      item.label,
+      item.button,
+      item.action,
+      item.reason,
+      item.details
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (/center-health|salute centro|stato centro/.test(text) || area === "salute centro") return "center_health";
+    if (target === "profitability" || target === "profit" || area === "profitability" || area === "redditività" || area === "servizi" || area === "tecnologie") return "profitability";
+    if (target === "services" && /redditiv|margini|margine|costi|costo|profit/.test(text)) return "profitability";
+    if (target === "inventory" || target === "stock" || area === "magazzino") return "hidden";
+    if (target === "shifts" || target === "operators" || area === "operatori") return "performance";
+    if (target === "marketing" || target === "clients" || target === "client" || target === "cashdesk" || target === "cash" || target === "appointments" || target === "agenda") return "daily";
+    if (area === "clienti" || area === "cassa" || area === "agenda" || area === "growth" || area === "operativita") return "daily";
+    return fallback;
+  }
+
+  getGoldSectionRoute(section = {}, item = {}) {
+    const key = String(section.key || "");
+    if (key === "center_health") return { target: "dashboard", targetFocus: "" };
+    if (key === "daily") return this.normalizeGoldManualTarget(item, "dashboard");
+    if (key === "profitability") return this.normalizeGoldManualTarget(item, "profitability");
+    if (key === "performance") return this.normalizeGoldManualTarget(item, "shifts");
+    if (key === "hidden") return this.normalizeGoldManualTarget(item, "inventory");
+    return this.normalizeGoldManualTarget(item, "dashboard");
+  }
+
+  getGoldSectionLabel(key = "") {
+    const labels = {
+      center_health: "Stato centro",
+      daily: "Priorità del giorno",
+      profitability: "Redditività",
+      performance: "Performance centro",
+      hidden: "Opportunità / magazzino",
+      actions: "Azioni immediate"
+    };
+    return labels[key] || "modulo dedicato";
+  }
+
+  buildGoldEngineRoutingItems(sections = []) {
+    const seen = new Set();
+    return (Array.isArray(sections) ? sections : [])
+      .filter((section) => section && section.key !== "gold_engine" && section.key !== "actions")
+      .map((section) => {
+        const items = Array.isArray(section.items) ? section.items : [];
+        const priorityItem = items.find((item) => ["critical", "warning"].includes(String(item.level || "").toLowerCase())) || items[0] || null;
+        if (!priorityItem) return null;
+        const route = this.getGoldSectionRoute(section, priorityItem);
+        const key = `${section.key}:${route.target}:${route.targetFocus || ""}`;
+        if (seen.has(key)) return null;
+        seen.add(key);
+        const sectionLabel = this.getGoldSectionLabel(section.key);
+        const level = String(priorityItem.level || "info").toLowerCase();
+        return {
+          id: `gold-engine-route-${section.key}`,
+          level: level === "critical" ? "critical" : level === "warning" ? "warning" : "info",
+          area: "regia",
+          conclusion: `Controlla ${sectionLabel}`,
+          reason: "Core/Nyra leggono il centro intero, ma il dettaglio operativo resta nel modulo corretto per evitare duplicati.",
+          details: priorityItem.conclusion || priorityItem.reason || "",
+          impactCents: Number(priorityItem.impactCents || 0),
+          riskCents: Number(priorityItem.riskCents || 0),
+          action: `apri ${sectionLabel.toLowerCase()} e lavora la card evidenziata`,
+          button: route.target === "profitability" ? "Apri redditività"
+            : route.target === "inventory" ? "Apri magazzino"
+            : route.target === "marketing" ? "Apri marketing"
+            : route.target === "clients" ? "Apri clienti"
+            : route.target === "cashdesk" ? "Apri cassa"
+            : route.target === "appointments" ? "Apri agenda"
+            : route.target === "shifts" ? "Apri turni"
+            : route.target === "services" ? (route.targetFocus === "staff-costs" ? "Completa costi operatori" : "Completa costi servizi")
+            : "Apri dashboard",
+          target: route.target,
+          targetFocus: route.targetFocus || ""
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 4);
+  }
+
+  getGoldDecisionItemSignature(item = {}) {
+    const route = this.normalizeGoldManualTarget(item, item.target || item.domain || "dashboard");
+    const text = [
+      item.action,
+      item.suggestedAction,
+      item.button,
+      item.conclusion,
+      item.label
+    ].filter(Boolean).join(" ").toLowerCase().replace(/\s+/g, " ").trim();
+    const normalizedText = text
+      .replace(/completa (prima )?(i )?costi servizi.*/, "completa costi servizi")
+      .replace(/completa (prima )?(i )?costi operatori.*/, "completa costi operatori")
+      .replace(/verifica stock.*/, "verifica stock")
+      .replace(/collega pagamenti.*/, "collega pagamenti");
+    return `${route.target}:${route.targetFocus || ""}:${normalizedText || item.id || "item"}`;
+  }
+
+  dedupeGoldDecisionSections(sections = []) {
+    const seen = new Set();
+    return (Array.isArray(sections) ? sections : []).map((section) => {
+      const items = [];
+      (Array.isArray(section.items) ? section.items : []).forEach((item) => {
+        if (!item) return;
+        const signature = this.getGoldDecisionItemSignature(item);
+        if (seen.has(signature)) return;
+        seen.add(signature);
+        items.push(item);
+      });
+      return { ...section, items: items.slice(0, 4) };
+    });
+  }
+
   normalizeGoldManualTarget(item = {}, fallback = "dashboard") {
     const rawTarget = String(item.target || item.domain || fallback || "dashboard").toLowerCase();
     const text = [
@@ -13592,7 +13703,7 @@ class DesktopMirrorService {
       && Number(centerHealth.monthlyRevenueCents || 0) <= 0
       && Number(centerHealth.saturationPercent || 0) <= 0
       && Number(centerHealth.continuityPercent || 0) <= 0;
-    const sections = [
+    const fallbackSections = [
       {
         key: "center_health",
         title: "Stato centro",
@@ -13635,11 +13746,6 @@ class DesktopMirrorService {
             target: "dashboard"
           }
         ]
-      },
-      {
-        key: "gold_engine",
-        title: "AI Gold - Core/Nyra esterni",
-        items: goldEnginePriorityItems
       },
       {
         key: "daily",
@@ -13881,6 +13987,16 @@ class DesktopMirrorService {
           }
         ]
       }
+    ];
+    const distributedFallbackSections = this.dedupeGoldDecisionSections(fallbackSections);
+    const sections = [
+      distributedFallbackSections[0],
+      {
+        key: "gold_engine",
+        title: "AI Gold - Core/Nyra esterni",
+        items: this.buildGoldEngineRoutingItems(distributedFallbackSections)
+      },
+      ...distributedFallbackSections.slice(1)
     ].map((section) => ({
       ...section,
       items: section.items.slice(0, 4)
