@@ -126,11 +126,12 @@
   }
 
   function itemTitle(item) {
-    return text(item.title || item.label || item.name || item.headline || item.reason || "Priorita da controllare");
+    return text(item.displayTitle || item.title || item.label || item.name || item.headline || item.reason || "Priorita da controllare");
   }
 
   function itemDescription(item) {
     return text(
+      item.displayDescription ||
       item.description ||
       item.body ||
       item.message ||
@@ -140,6 +141,89 @@
       item.nextStep ||
       ""
     );
+  }
+
+  function rawTitle(item) {
+    return text(item.title || item.label || item.name || item.headline || item.reason || item.parentTitle || "");
+  }
+
+  function rawDescription(item) {
+    return text(
+      item.description ||
+      item.body ||
+      item.message ||
+      item.subtitle ||
+      item.reason ||
+      item.action ||
+      item.nextStep ||
+      item.suggestedAction ||
+      item.explanationShort ||
+      item.explanationLong ||
+      ""
+    );
+  }
+
+  function hasInternalLanguage(value) {
+    return /core\/nyra|core|nyra|gold engine|modulo corretto|evitare duplicati|legge il centro|come fonte|sorgente|snapshot|decision/i.test(text(value));
+  }
+
+  function userFacingCopy(item, module) {
+    var focus = lower(item.targetFocus || item.focus || item.anchor);
+    var target = lower(item.target || item.module || item.route);
+    var section = lower(item.sectionKey || item.section || item.category);
+    var raw = lower(rawTitle(item) + " " + rawDescription(item) + " " + text(item.parentTitle));
+    var copy = {
+      title: rawTitle(item) || "Priorita da controllare",
+      description: rawDescription(item) || "Apri il blocco evidenziato e completa il dato richiesto."
+    };
+
+    if (/service-costs/.test(focus) || (/servizi|servizio/.test(raw) && /costi|costo|redditiv/.test(raw))) {
+      copy.title = "Completa costi servizi";
+      copy.description = "Inserisci costo prodotto, durata e consumo sui servizi indicati: finche mancano, margini e redditivita non sono affidabili.";
+    } else if (/staff-costs/.test(focus) || (/operatori|staff|operatore/.test(raw) && /costi|costo|resa|performance/.test(raw))) {
+      copy.title = "Completa costi operatori";
+      copy.description = "Controlla costo orario e ruolo degli operatori: senza questi dati la resa del centro resta parziale.";
+    } else if (/low-stock/.test(focus) || /sottoscorta|sotto soglia|stock|magazzino/.test(raw)) {
+      copy.title = "Prepara riordino stock";
+      copy.description = "Questo articolo e sotto soglia: verifica giacenza reale e prepara carico o riordino prima che blocchi il lavoro.";
+    } else if (target === "marketing" || /cliente|clienti|recall|richiamare|recuperare|alto valore/.test(raw)) {
+      copy.title = "Lavora clienti prioritari";
+      copy.description = "Parti dai clienti con piu valore o rischio di perdita: apri marketing, verifica consenso e prepara il contatto.";
+    } else if (target === "cashdesk" || /cassa|pagamenti|incassi|pagamento/.test(raw)) {
+      copy.title = "Sistema cassa e pagamenti";
+      copy.description = "Controlla pagamenti non collegati e appuntamenti senza incasso prima di leggere i report.";
+    } else if (target === "appointments" || /agenda|appuntamenti|slot/.test(raw)) {
+      copy.title = "Riempi agenda";
+      copy.description = "Controlla slot liberi e appuntamenti deboli: prima aumenta volume e continuita, poi ottimizza i margini.";
+    } else if (target === "profitability" || section === "profitability" || module.path === "/profitability") {
+      copy.title = "Controlla margini";
+      copy.description = "Apri il dettaglio redditivita e verifica i servizi che assorbono margine prima di spingerli in vendita.";
+    }
+
+    if (hasInternalLanguage(copy.title) || hasInternalLanguage(copy.description)) {
+      if (module.path === "/profitability") {
+        copy.title = "Controlla margini";
+        copy.description = "Apri il dettaglio redditivita e lavora prima i servizi con dati incompleti o margine debole.";
+      } else if (module.path === "/services") {
+        copy.title = "Completa configurazione servizi";
+        copy.description = "Sistema prezzo, durata, costo e operatori nei servizi evidenziati: poi la lettura economica diventa affidabile.";
+      } else if (module.path === "/inventory") {
+        copy.title = "Controlla stock";
+        copy.description = "Verifica gli articoli evidenziati e prepara il movimento necessario.";
+      } else if (module.path === "/marketing" || module.path === "/clients") {
+        copy.title = "Lavora clienti prioritari";
+        copy.description = "Apri la lista clienti e parti dai contatti piu utili per oggi.";
+      } else {
+        copy.title = "Azione prioritaria";
+        copy.description = "Apri il blocco evidenziato e completa il controllo richiesto.";
+      }
+    }
+
+    return {
+      ...item,
+      displayTitle: copy.title,
+      displayDescription: copy.description
+    };
   }
 
   function normalizeAction(action, parent, source, sectionKey, sectionTitle) {
@@ -211,24 +295,24 @@
     return false;
   }
 
-  function dedupe(items) {
+  function dedupe(items, module) {
     var map = new Map();
     items.forEach(function (item) {
+      var normalized = module ? userFacingCopy(item, module) : item;
       var key = [
-        lower(item.target),
-        lower(item.targetFocus),
-        lower(item.sectionKey),
-        lower(itemTitle(item)),
-        lower(itemDescription(item)).slice(0, 80)
+        lower(normalized.target),
+        lower(normalized.targetFocus),
+        lower(normalized.displayTitle || itemTitle(normalized))
       ].join("|");
       var previous = map.get(key);
-      var severity = severityOf(item);
+      var severity = severityOf(normalized);
       if (!previous) {
-        item.moduleSeverity = severity;
-        map.set(key, item);
+        normalized.moduleSeverity = severity;
+        map.set(key, normalized);
         return;
       }
       previous.moduleSeverity = strongest(previous.moduleSeverity, severity);
+      if (!previous.displayDescription && normalized.displayDescription) previous.displayDescription = normalized.displayDescription;
     });
     return Array.from(map.values()).sort(function (a, b) {
       if (a.moduleSeverity === b.moduleSeverity) return 0;
@@ -296,10 +380,11 @@
       '<div class="module-priority-grid"></div>';
 
     panel.querySelector(".module-priority-title").textContent = module.label;
-    panel.querySelector(".module-priority-count").textContent = items.length + (items.length === 1 ? " voce" : " voci");
+    var displayItems = items.slice(0, 6);
+    panel.querySelector(".module-priority-count").textContent = displayItems.length + (displayItems.length === 1 ? " voce" : " voci");
 
     var grid = panel.querySelector(".module-priority-grid");
-    items.slice(0, 6).forEach(function (item) {
+    displayItems.forEach(function (item) {
       var severity = item.moduleSeverity || severityOf(item);
       var card = document.createElement("article");
       card.className = "module-priority-card priority-" + severity;
@@ -414,7 +499,7 @@
     });
     return dedupe(allItems.filter(function (item) {
       return belongsToModule(item, module);
-    }));
+    }), module);
   }
 
   function refresh() {
