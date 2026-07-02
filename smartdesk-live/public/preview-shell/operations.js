@@ -19,6 +19,16 @@ export function createSmartDeskOperations({
   clientContinuityStatus,
   clientGoldAction
 }) {
+  function dialogField({ label, name, value = "", type = "text", placeholder = "", help = "", attrs = "" }) {
+    return `
+      <label class="smart-field">
+        <span class="smart-field-label">${escapeHtml(label)}</span>
+        <input name="${escapeHtml(name)}" class="sh-input" type="${escapeHtml(type)}" placeholder="${escapeHtml(placeholder || label)}" value="${escapeHtml(value)}" ${attrs}>
+        ${help ? `<small class="smart-field-help">${escapeHtml(help)}</small>` : ""}
+      </label>
+    `;
+  }
+
   function openClientDialog(client = null) {
     openDialog({
       title: client ? t("dialogs.editClient") : t("clientsView.newClient"),
@@ -44,12 +54,12 @@ export function createSmartDeskOperations({
       mode: service ? "edit" : "create",
       id: service?.id || "",
       fields: `
-        <input name="name" class="sh-input" placeholder="${escapeHtml(t("dialogs.serviceName"))}" value="${escapeHtml(service?.name || "")}">
-        <input name="category" class="sh-input" placeholder="${escapeHtml(t("dialogs.category"))}" value="${escapeHtml(service?.category || "")}">
-        <input name="duration" class="sh-input" type="number" placeholder="${escapeHtml(t("dialogs.duration"))}" value="${escapeHtml(service?.duration || 45)}">
-        <input name="price" class="sh-input" type="number" placeholder="${escapeHtml(t("dialogs.price"))}" value="${escapeHtml(service?.price || 0)}">
-        <input name="operatorType" class="sh-input" placeholder="${escapeHtml(t("dialogs.operatorType"))}" value="${escapeHtml(service?.operatorType || "")}">
-        <input name="room" class="sh-input" placeholder="${escapeHtml(t("dialogs.room"))}" value="${escapeHtml(service?.room || "")}">
+        ${dialogField({ label: t("dialogs.serviceName"), name: "name", value: service?.name || "", help: currentLanguage() === "en" ? "Commercial name shown in agenda and reports." : "Nome commerciale visibile in agenda e nei report." })}
+        ${dialogField({ label: t("dialogs.category"), name: "category", value: service?.category || "", help: currentLanguage() === "en" ? "Example: hair, aesthetic, skin, body." : "Esempio: hair, estetica, skin, corpo." })}
+        ${dialogField({ label: t("dialogs.duration"), name: "duration", type: "number", value: service?.duration || 45, help: currentLanguage() === "en" ? "Operational duration in minutes. Used for margin and agenda capacity." : "Durata operativa in minuti. Serve per margine e saturazione agenda." })}
+        ${dialogField({ label: t("dialogs.price"), name: "price", type: "number", value: service?.price || 0, help: currentLanguage() === "en" ? "Sale price charged to the client for this service." : "Prezzo di vendita al cliente per questo servizio." })}
+        ${dialogField({ label: t("dialogs.operatorType"), name: "operatorType", value: service?.operatorType || "", help: currentLanguage() === "en" ? "Who usually performs it: stylist, beautician, technician." : "Chi lo esegue di solito: parrucchiere, estetista, tecnico." })}
+        ${dialogField({ label: t("dialogs.room"), name: "room", value: service?.room || "", help: currentLanguage() === "en" ? "Cabin, chair, room or technology used." : "Cabina, postazione, stanza o tecnologia usata." })}
       `
     });
   }
@@ -61,10 +71,10 @@ export function createSmartDeskOperations({
       mode: member ? "edit" : "create",
       id: member?.id || "",
       fields: `
-        <input name="name" class="sh-input" placeholder="${escapeHtml(t("dialogs.operatorName"))}" value="${escapeHtml(member?.name || "")}">
-        <input name="role" class="sh-input" placeholder="${escapeHtml(t("dialogs.role"))}" value="${escapeHtml(member?.role || "")}">
-        <input name="shift" class="sh-input" placeholder="${escapeHtml(t("dialogs.shift"))}" value="${escapeHtml(member?.shift || "")}">
-        <input name="targetProgress" class="sh-input" type="number" placeholder="${escapeHtml(t("dialogs.target"))}" value="${escapeHtml(member?.targetProgress || 0)}">
+        ${dialogField({ label: t("dialogs.operatorName"), name: "name", value: member?.name || "", help: currentLanguage() === "en" ? "Name shown in agenda, shifts and operator reports." : "Nome visibile in agenda, turni e report operatore." })}
+        ${dialogField({ label: t("dialogs.role"), name: "role", value: member?.role || "", help: currentLanguage() === "en" ? "Role in the center: hair, aesthetic, reception, support." : "Ruolo nel centro: hair, estetica, reception, supporto." })}
+        ${dialogField({ label: t("dialogs.shift"), name: "shift", value: member?.shift || "", help: currentLanguage() === "en" ? "Readable working hours, for example Tue-Sat 09:00-18:00." : "Orario leggibile, esempio Mar-Sab 09:00-18:00." })}
+        ${dialogField({ label: t("dialogs.target"), name: "targetProgress", type: "number", value: member?.targetProgress || 0, help: currentLanguage() === "en" ? "Monthly target/progress reference. It is not hourly cost." : "Target o avanzamento mensile. Non e il costo orario." })}
       `
     });
   }

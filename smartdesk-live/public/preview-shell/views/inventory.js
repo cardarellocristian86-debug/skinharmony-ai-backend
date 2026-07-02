@@ -93,21 +93,41 @@ export function renderInventoryView(deps) {
           <div class="section-title mb-16">${t("inventoryView.registerMovement")}</div>
           <div class="settings-note mb-16">${t("inventoryView.stockControlCopy")}</div>
           <div class="stack">
-            <select id="inventory-item-id" class="sh-select">
-              <option value="">${t("inventoryView.selectItem")}</option>
-              ${items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}
-            </select>
-            <select id="inventory-movement-type" class="sh-select">
-              <option value="load">${t("inventoryView.movementLoad")}</option>
-              <option value="unload">${t("inventoryView.movementUnload")}</option>
-              <option value="internal_use">${t("inventoryView.movementInternalUse")}</option>
-              <option value="sale">${t("inventoryView.movementSale")}</option>
-              <option value="return">${t("inventoryView.movementReturn")}</option>
-              <option value="adjustment">${t("inventoryView.movementAdjustment")}</option>
-            </select>
-            <input id="inventory-movement-quantity" class="sh-input" type="number" min="0" step="0.01" placeholder="${escapeHtml(t("inventoryView.quantity"))}">
-            <input id="inventory-movement-operator" class="sh-input" type="text" placeholder="${escapeHtml(t("inventoryView.operatorReference"))}">
-            <input id="inventory-movement-note" class="sh-input" type="text" placeholder="${escapeHtml(t("inventoryView.movementNote"))}">
+            <label class="smart-field">
+              <span class="smart-field-label">${t("inventoryView.selectItem")}</span>
+              <select id="inventory-item-id" class="sh-select">
+                <option value="">${t("inventoryView.selectItem")}</option>
+                ${items.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}
+              </select>
+              <small class="smart-field-help">${currentLanguage() === "en" ? "Choose the product or cabin item whose stock changes." : "Scegli il prodotto o articolo cabina a cui cambia la giacenza."}</small>
+            </label>
+            <label class="smart-field">
+              <span class="smart-field-label">${t("inventoryView.movementType")}</span>
+              <select id="inventory-movement-type" class="sh-select">
+                <option value="load">${t("inventoryView.movementLoad")}</option>
+                <option value="unload">${t("inventoryView.movementUnload")}</option>
+                <option value="internal_use">${t("inventoryView.movementInternalUse")}</option>
+                <option value="sale">${t("inventoryView.movementSale")}</option>
+                <option value="return">${t("inventoryView.movementReturn")}</option>
+                <option value="adjustment">${t("inventoryView.movementAdjustment")}</option>
+              </select>
+              <small class="smart-field-help">${currentLanguage() === "en" ? "Load increases stock; unload, sale and cabin use decrease it." : "Carico aumenta la giacenza; scarico, vendita e consumo cabina la riducono."}</small>
+            </label>
+            <label class="smart-field">
+              <span class="smart-field-label">${t("inventoryView.quantity")}</span>
+              <input id="inventory-movement-quantity" class="sh-input" type="number" min="0" step="0.01" placeholder="${escapeHtml(t("inventoryView.quantity"))}">
+              <small class="smart-field-help">${currentLanguage() === "en" ? "How many pieces or units move now. It is not the threshold." : "Quanti pezzi o unita si muovono adesso. Non e la soglia."}</small>
+            </label>
+            <label class="smart-field">
+              <span class="smart-field-label">${t("inventoryView.operatorReference")}</span>
+              <input id="inventory-movement-operator" class="sh-input" type="text" placeholder="${escapeHtml(t("inventoryView.operatorReference"))}">
+              <small class="smart-field-help">${currentLanguage() === "en" ? "Who performed or requested the movement." : "Chi ha fatto o richiesto il movimento."}</small>
+            </label>
+            <label class="smart-field">
+              <span class="smart-field-label">${t("inventoryView.movementNote")}</span>
+              <input id="inventory-movement-note" class="sh-input" type="text" placeholder="${escapeHtml(t("inventoryView.movementNote"))}">
+              <small class="smart-field-help">${currentLanguage() === "en" ? "Optional: supplier, reason, correction or internal use detail." : "Opzionale: fornitore, motivo, correzione o dettaglio consumo interno."}</small>
+            </label>
             <button class="sh-button" data-action="save-inventory-movement" type="button">${t("inventoryView.registerMovement")}</button>
           </div>
         </section>

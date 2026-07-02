@@ -42,6 +42,7 @@ export function createInitialState() {
     inventoryMovements: [],
     inventoryOverview: null,
     profitabilityOverview: null,
+    goldCostMinuteProfile: null,
     treatments: [],
     sales: [],
     history: [],

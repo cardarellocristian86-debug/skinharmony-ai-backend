@@ -236,7 +236,9 @@ const translations = {
       emptyAlerts: "Nessun alert economico automatico nella lettura attuale.",
       statusLoss: "Perdita",
       statusLowMargin: "Margine basso",
-      statusProfitable: "Profittevole"
+      statusProfitable: "Profittevole",
+      goldCostSaved: "Profilo costi Gold salvato.",
+      goldCostReset: "Profilo costi Gold svuotato."
     },
     protocolsView: {
       title: "Centro protocolli",
@@ -776,7 +778,9 @@ const translations = {
       emptyAlerts: "No automatic economic alerts in the current reading.",
       statusLoss: "Loss",
       statusLowMargin: "Low margin",
-      statusProfitable: "Profitable"
+      statusProfitable: "Profitable",
+      goldCostSaved: "Gold cost profile saved.",
+      goldCostReset: "Gold cost profile reset."
     },
     protocolsView: {
       title: "Protocols hub",

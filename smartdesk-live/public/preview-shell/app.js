@@ -30,6 +30,37 @@ const API_SERVER_URL = resolveApiServerUrl();
 const state = createInitialState();
 const { currentLanguage, currentLocale, t } = createI18n(state);
 
+function loadGoldCostMinuteProfile() {
+  const fallback = {
+    fiscalRegime: "ordinary_vat",
+    businessType: "hybrid",
+    vatRate: 22,
+    workingDaysMonthly: 24,
+    operatingHoursDaily: 8,
+    rent: 0,
+    utilitiesPower: 0,
+    utilitiesWaterGas: 0,
+    accountant: 0,
+    insurance: 0,
+    software: 0,
+    marketing: 0,
+    leasing: 0,
+    cleaningLaundry: 0,
+    bankPosFees: 0,
+    payrollOwner: 0,
+    taxesContributionsReserve: 0,
+    otherFixedCosts: 0
+  };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem("smartdesk-gold-cost-minute-profile") || "null");
+    return { ...fallback, ...(parsed && typeof parsed === "object" ? parsed : {}) };
+  } catch (_) {
+    return fallback;
+  }
+}
+
+state.goldCostMinuteProfile = loadGoldCostMinuteProfile();
+
 const appView = document.getElementById("app-view");
 const feedbackNode = document.getElementById("feedback");
 const assistantDrawer = document.getElementById("assistant-drawer");
@@ -661,7 +692,9 @@ function renderProfitability() {
     kpiCards,
     euroFromCents,
     profitabilityStatusTone,
-    profitabilityStatusLabel
+    profitabilityStatusLabel,
+    currentPlanId,
+    currentLanguage
   });
 }
 
@@ -1572,7 +1605,7 @@ function bindViewEvents() {
   }
 
   if (state.currentView === "profitability") {
-    bindProfitabilityViewEvents({ state, renderView, loadProfitabilityOverview });
+    bindProfitabilityViewEvents({ state, renderView, loadProfitabilityOverview, showFeedback, t });
   }
 
   if (state.currentView === "protocols") {

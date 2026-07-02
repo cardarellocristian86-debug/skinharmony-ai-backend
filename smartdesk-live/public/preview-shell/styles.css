@@ -715,6 +715,28 @@ body.agenda-fullscreen-shell {
   resize: vertical;
 }
 
+.smart-field {
+  display: grid;
+  gap: 7px;
+}
+
+.smart-field-label {
+  color: var(--accent-deep);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.smart-field-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.gold-cost-minute-panel {
+  border-color: rgba(199, 104, 104, 0.22);
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,247,247,0.76));
+}
+
 .assistant-drawer {
   position: fixed;
   top: 24px;

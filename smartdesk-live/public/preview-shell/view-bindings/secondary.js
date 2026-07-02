@@ -98,7 +98,7 @@ export function bindInventoryViewEvents(deps) {
 }
 
 export function bindProfitabilityViewEvents(deps) {
-  const { state, renderView, loadProfitabilityOverview } = deps;
+  const { state, renderView, loadProfitabilityOverview, showFeedback, t } = deps;
 
   document.getElementById("profitability-start-date")?.addEventListener("change", async (event) => {
     state.profitabilityStartDate = event.target.value;
@@ -114,6 +114,44 @@ export function bindProfitabilityViewEvents(deps) {
     await loadProfitabilityOverview();
     renderView();
   });
+
+  function collectGoldCostMinuteProfile() {
+    const current = state.goldCostMinuteProfile || {};
+    const next = { ...current };
+    document.querySelectorAll("[data-gold-cost-field]").forEach((field) => {
+      const key = field.dataset.goldCostField;
+      if (!key) return;
+      if (field.tagName === "SELECT") {
+        next[key] = field.value;
+        return;
+      }
+      const numeric = Number(String(field.value || "0").replace(",", "."));
+      next[key] = Number.isFinite(numeric) ? numeric : 0;
+    });
+    return next;
+  }
+
+  document.querySelector('[data-action="save-gold-cost-minute"]')?.addEventListener("click", () => {
+    const profile = collectGoldCostMinuteProfile();
+    state.goldCostMinuteProfile = profile;
+    window.localStorage.setItem("smartdesk-gold-cost-minute-profile", JSON.stringify(profile));
+    showFeedback?.(t ? t("profitabilityView.goldCostSaved") : "Profilo costi Gold salvato.");
+    renderView();
+  });
+
+  document.querySelector('[data-action="reset-gold-cost-minute"]')?.addEventListener("click", () => {
+    window.localStorage.removeItem("smartdesk-gold-cost-minute-profile");
+    state.goldCostMinuteProfile = {
+      fiscalRegime: "ordinary_vat",
+      businessType: "hybrid",
+      vatRate: 22,
+      workingDaysMonthly: 24,
+      operatingHoursDaily: 8
+    };
+    showFeedback?.(t ? t("profitabilityView.goldCostReset") : "Profilo costi Gold svuotato.");
+    renderView();
+  });
+
 }
 
 export function bindProtocolsViewEvents(deps) {
