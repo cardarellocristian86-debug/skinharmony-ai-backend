@@ -13616,6 +13616,34 @@ class DesktopMirrorService {
       item.instruction
     ].filter(Boolean).join(" ").toLowerCase();
 
+    if (sectionKey === "evidence") {
+      return {
+        title: item.label || "Dato gestionale letto",
+        reason: "Dato disponibile per verifiche interne e controllo qualita.",
+        details: "Non richiede azione operativa del centro.",
+        action: "nessuna azione operativa richiesta",
+        button: item.button || "Apri modulo"
+      };
+    }
+    if (sectionKey === "gold_engine" && !/service-costs|staff-costs|low-stock/.test(focus)) {
+      if (/stato centro|salute centro|center/.test(raw)) {
+        return {
+          title: "Controlla stato centro",
+          reason: "Apri lo stato del centro e verifica il primo blocco evidenziato.",
+          details: "Parti da volume, agenda, operatori e continuita clienti.",
+          action: "controlla stato centro",
+          button: "Apri dashboard"
+        };
+      }
+      return {
+        title: "Lavora la priorita indicata",
+        reason: "Apri il modulo collegato e completa la prima azione evidenziata.",
+        details: "La priorita e gia ordinata: lavora solo cio che richiede intervento.",
+        action: "apri il modulo e lavora la priorita",
+        button: item.button || "Apri modulo"
+      };
+    }
+
     if (focus === "service-costs" || (/servizi|servizio/.test(raw) && /costi|costo|redditiv|margini/.test(raw))) {
       return {
         title: "Completa costi servizi",
@@ -13681,9 +13709,13 @@ class DesktopMirrorService {
     }
     return {
       title: item.conclusion || item.label || item.title || "Azione prioritaria",
-      reason: item.reason || item.value || item.details || "Completa il controllo indicato nel modulo.",
-      details: item.details || item.value || "",
-      action: item.action || item.suggestedAction || "apri il modulo e completa il controllo",
+      reason: this.isGoldInternalNoise(item.reason || item.value || item.details)
+        ? "Apri il modulo indicato e lavora la priorita evidenziata."
+        : (item.reason || item.value || item.details || "Completa il controllo indicato nel modulo."),
+      details: this.isGoldInternalNoise(item.details || item.value) ? "" : (item.details || item.value || ""),
+      action: this.isGoldInternalNoise(item.action || item.suggestedAction)
+        ? "apri il modulo e completa il controllo"
+        : (item.action || item.suggestedAction || "apri il modulo e completa il controllo"),
       button: item.button || "Apri modulo"
     };
   }
