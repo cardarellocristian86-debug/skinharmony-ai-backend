@@ -761,6 +761,48 @@ function hasAnyPayloadValue(payload = {}) {
   });
 }
 
+function isGoldPlan(context = {}) {
+  return String(context.subscriptionPlan || "base").toLowerCase() === "gold";
+}
+
+function actionLabel(action) {
+  const labels = {
+    open_dashboard: "Dashboard",
+    open_agenda: "Agenda",
+    open_clients: "Clienti",
+    open_marketing: "Marketing",
+    open_services: "Servizi e operatori",
+    open_inventory: "Magazzino",
+    open_reports: "Report",
+    open_operator_report: "Report operatore",
+    open_turns: "Turni",
+    open_attendance: "Presenze",
+    open_profitability: "Redditivita",
+    open_cashdesk: "Cassa",
+    open_protocols: "Protocolli",
+    open_training: "Formazione",
+    open_settings: "Impostazioni",
+    search_client: "Clienti"
+  };
+  return labels[action] || "modulo corretto";
+}
+
+function planGuidanceResponse(response = {}, context = {}) {
+  const plan = String(context.subscriptionPlan || "base").toLowerCase();
+  if (plan === "gold" || !response?.action) return response;
+  const label = actionLabel(response.action);
+  const prefix = plan === "silver"
+    ? "Nel piano Silver Nyra ti assiste e ti indica il percorso, ma non opera direttamente sui moduli."
+    : "Nel piano Base Nyra resta assistente tecnico: ti guida, ma non opera direttamente sui moduli.";
+  return {
+    mode: "answer",
+    message: `${prefix}\n\nVai in ${label}. ${response.message || "Da li puoi completare il passaggio manualmente."}`,
+    action: null,
+    payload: {},
+    requiresConfirmation: false
+  };
+}
+
 class AssistantService {
   constructor(desktopMirror, options = {}) {
     this.desktopMirror = desktopMirror;
@@ -1236,6 +1278,12 @@ class AssistantService {
       );
     }
 
+    if (/(portami|aprimi|apri|vai|mostra).*(costi?|costo).*(servizi|servizio|operatori|staff)|(?:costi?|costo).*(servizi|servizio|operatori|staff).*(sistemare|completare|controllare|configurare)/.test(normalized)) {
+      return buildAction("Apro Servizi e operatori: da li completi costi servizio e costi orari operatori.", "open_services", {
+        section: normalized.includes("operator") || normalized.includes("staff") ? "staff-costs" : "service-costs"
+      });
+    }
+
     if (/(report.*dipendent|resa dipendent|report operatore|performance operatore)/.test(normalized) && /(come|dove)/.test(normalized)) {
       return buildAnswer("Il report dipendenti è in Report business > Resa dipendenti. Da lì clicchi il nome dell’operatore e apri il suo report personale. Se vuoi posso aprire i report.");
     }
@@ -1708,11 +1756,11 @@ class AssistantService {
           supportActions: sanitizeSupportActions(fallback.actions, context)
         }, route, provider), context);
       }
-      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, provider), context);
+      return localizeAssistantEnvelope(withAssistantDebug(planGuidanceResponse(localDecision, context), route, provider), context);
     }
 
     if (route.category === "gold_decision_required" || /(priorita|priorità|cosa devo fare|oggi|piano operativo)/.test(normalizedMessage)) {
-      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, "gold_decision_required"), context);
+      return localizeAssistantEnvelope(withAssistantDebug(planGuidanceResponse(localDecision, context), route, "gold_decision_required"), context);
     }
     const model = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
 
@@ -1784,8 +1832,11 @@ class AssistantService {
       const data = await response.json();
       const raw = data?.output_text || data?.output?.[0]?.content?.[0]?.text || "{}";
       const parsed = JSON.parse(raw);
-      const sanitized = this.sanitizeResponse(parsed, context, localDecision);
+      const sanitized = planGuidanceResponse(this.sanitizeResponse(parsed, context, localDecision), context);
       if (localDecision.action && ["create_client", "create_appointment", "create_shift", "create_staff", "create_staff_with_weekly_shift"].includes(localDecision.action)) {
+        if (!isGoldPlan(context)) {
+          return localizeAssistantEnvelope(withAssistantDebug(planGuidanceResponse(localDecision, context), route, "plan_guidance_only"), context);
+        }
         const mergedPayload = { ...(localDecision.payload || {}) };
         const normalizedMessage = normalizeText(message);
         const candidateStaffName = String(sanitized.payload?.staffName || "").trim();
@@ -1834,7 +1885,7 @@ class AssistantService {
         debug: { provider: "openai", router: route.category, routerReason: route.reason || "" }
       }, context);
     } catch {
-      return localizeAssistantEnvelope(withAssistantDebug(localDecision, route, this.getFallbackProviderName()), context);
+      return localizeAssistantEnvelope(withAssistantDebug(planGuidanceResponse(localDecision, context), route, this.getFallbackProviderName()), context);
     }
   }
 

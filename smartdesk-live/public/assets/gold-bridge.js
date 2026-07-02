@@ -6,6 +6,8 @@
   const ENTERPRISE_SETTINGS_PANEL_ID = "skinharmony-enterprise-settings-bridge";
   const ENTERPRISE_REPORTS_PANEL_ID = "skinharmony-enterprise-reports-bridge";
   const ENTERPRISE_SURFACE_PANEL_ID = "skinharmony-enterprise-surface-bridge";
+  const TOPBAR_MENU_BUTTON_ID = "skinharmony-topbar-menu-toggle";
+  const TOPBAR_MENU_STORAGE_KEY = "skinharmony-topbar-menu-expanded";
   let renderToken = 0;
   let goldRenderTimers = [];
   let settingsRenderTimers = [];
@@ -59,6 +61,56 @@
         background: rgba(255,255,255,0.97);
         box-shadow: 0 20px 50px rgba(18,56,77,0.08);
         padding: 20px;
+      }
+      .topbar-nav.sh-topbar-nav-collapsible {
+        overflow: hidden;
+        transition: max-height 0.18s ease, opacity 0.18s ease, margin-top 0.18s ease;
+      }
+      .topbar-nav.sh-topbar-nav-collapsible.sh-topbar-nav-collapsed {
+        max-height: 0 !important;
+        opacity: 0;
+        margin-top: 0 !important;
+        pointer-events: none;
+      }
+      .topbar-nav.sh-topbar-nav-collapsible.sh-topbar-nav-expanded {
+        max-height: 520px;
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .sh-topbar-menu-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 42px;
+        padding: 9px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(79,182,214,0.28);
+        background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(239,249,253,0.95));
+        color: #276b86;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 900;
+        cursor: pointer;
+        box-shadow: 0 10px 24px rgba(31,134,170,0.09);
+      }
+      .sh-topbar-menu-toggle:hover,
+      .sh-topbar-menu-toggle:focus-visible {
+        border-color: rgba(79,182,214,0.58);
+        outline: none;
+      }
+      .sh-topbar-menu-toggle-current {
+        max-width: 190px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #5d7380;
+        font-weight: 800;
+      }
+      .sh-topbar-menu-toggle-icon {
+        font-size: 15px;
+        line-height: 1;
+        color: #1f86aa;
       }
       .gold-bridge-source {
         display: grid;
@@ -492,6 +544,64 @@
         mutationLockDepth = Math.max(0, mutationLockDepth - 1);
       }, 0);
     }
+  }
+
+  function getTopbarMenuExpanded() {
+    try {
+      return window.localStorage.getItem(TOPBAR_MENU_STORAGE_KEY) === "1";
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function setTopbarMenuExpanded(value) {
+    try {
+      window.localStorage.setItem(TOPBAR_MENU_STORAGE_KEY, value ? "1" : "0");
+    } catch (_error) {}
+  }
+
+  function getCurrentTopbarLabel(nav) {
+    const active = nav?.querySelector?.(".active-btn, [aria-current='page']");
+    const label = String(active?.textContent || "").replace(/\s+/g, " ").trim();
+    return label || copy("moduli", "modules", "Module");
+  }
+
+  function enhanceTopbarMenu() {
+    if (isPublicAuthRoute()) return;
+    const nav = document.querySelector(".topbar-nav");
+    if (!nav) return;
+    const topbar = nav.closest(".topbar") || nav.parentElement;
+    if (!topbar) return;
+
+    const expanded = getTopbarMenuExpanded();
+    const currentLabel = getCurrentTopbarLabel(nav);
+
+    runWithMutationLock(() => {
+      nav.classList.add("sh-topbar-nav-collapsible");
+      nav.classList.toggle("sh-topbar-nav-expanded", expanded);
+      nav.classList.toggle("sh-topbar-nav-collapsed", !expanded);
+
+      let button = document.getElementById(TOPBAR_MENU_BUTTON_ID);
+      if (!button) {
+        button = document.createElement("button");
+        button.id = TOPBAR_MENU_BUTTON_ID;
+        button.type = "button";
+        button.className = "sh-topbar-menu-toggle";
+        button.addEventListener("click", () => {
+          const next = !getTopbarMenuExpanded();
+          setTopbarMenuExpanded(next);
+          enhanceTopbarMenu();
+        });
+        nav.insertAdjacentElement("beforebegin", button);
+      }
+
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+      button.innerHTML = `
+        <span class="sh-topbar-menu-toggle-icon">${expanded ? "▴" : "▾"}</span>
+        <span>${copy("Menu", "Menu", "Menü")}</span>
+        <span class="sh-topbar-menu-toggle-current">${escapeHtml(currentLabel)}</span>
+      `;
+    });
   }
 
   function shouldRender() {
@@ -1787,6 +1897,8 @@
   function scheduleRender() {
     clearTimers(goldRenderTimers);
     clearTimers(settingsRenderTimers);
+    window.setTimeout(enhanceTopbarMenu, 80);
+    window.setTimeout(enhanceTopbarMenu, 360);
     goldRenderTimers = [
       window.setTimeout(() => refreshLanguageAndSanitize({ force: true }), 40),
       window.setTimeout(renderGoldBridge, 180),
