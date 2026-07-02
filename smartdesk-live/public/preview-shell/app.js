@@ -1605,7 +1605,7 @@ function bindViewEvents() {
   }
 
   if (state.currentView === "profitability") {
-    bindProfitabilityViewEvents({ state, renderView, loadProfitabilityOverview, showFeedback, t });
+    bindProfitabilityViewEvents({ state, renderView, loadProfitabilityOverview, showFeedback, t, API_SERVER_URL });
   }
 
   if (state.currentView === "protocols") {

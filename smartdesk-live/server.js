@@ -1072,7 +1072,8 @@ app.get("/api/center", (req, res) => {
       settings.moduleO3System ? "O3 System" : "",
       settings.moduleTermosauna ? "Termosauna" : "",
       settings.moduleExternalTech ? "Tecnologie esterne" : ""
-    ].filter(Boolean)
+    ].filter(Boolean),
+    goldFixedCostProfile: settings.goldFixedCostProfile || null
   });
 });
 
@@ -1088,6 +1089,7 @@ app.post("/api/center", (req, res) => {
     centerCity: payload.city || payload.centerCity,
     centerProvince: payload.province || payload.centerProvince,
     centerPostalCode: payload.postalCode || payload.centerPostalCode,
+    goldFixedCostProfile: payload.goldFixedCostProfile && typeof payload.goldFixedCostProfile === "object" ? payload.goldFixedCostProfile : undefined,
     updatedFrom: "preview_shell_center_adapter"
   };
   res.json(service.saveSettings(Object.fromEntries(

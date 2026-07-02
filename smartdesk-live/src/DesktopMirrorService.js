@@ -9732,13 +9732,15 @@ class DesktopMirrorService {
     const payments = this.filterByCenter(this.paymentsRepository.list(), session);
     const inventory = this.filterByCenter(this.inventoryRepository.list(), session);
     const resources = this.filterByCenter(this.resourcesRepository.list(), session);
+    const settings = this.getPublicSettings(session) || {};
     const profitabilitySnapshot = computeCenterProfitabilitySnapshot({
       appointments,
       services,
       staff,
       payments,
       inventory,
-      resources
+      resources,
+      fixedCostProfile: settings.goldFixedCostProfile || {}
     });
     const overview = {
       ...profitabilitySnapshot,
@@ -14586,6 +14588,7 @@ class DesktopMirrorService {
       generatedAt: nowIso(),
       summary: overview.totals,
       monthlyTrend: overview.monthlyTrend || [],
+      operatingCostMinuteProfile: overview.operatingCostMinuteProfile || null,
       alerts,
       suggestions
     };

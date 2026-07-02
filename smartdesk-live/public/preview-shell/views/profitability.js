@@ -9,11 +9,12 @@ function moneyInput({ id, label, value, help }) {
   `;
 }
 
-function renderGoldCostMinutePanel({ state, currentPlanId, currentLanguage, euroFromCents, escapeHtml }) {
+function renderGoldCostMinutePanel({ state, overview, currentPlanId, currentLanguage, euroFromCents, escapeHtml }) {
   const plan = String(currentPlanId?.() || "").toLowerCase();
   if (plan !== "gold") return "";
 
-  const profile = state.goldCostMinuteProfile || {};
+  const existingProfile = overview?.operatingCostMinuteProfile || {};
+  const profile = state.center?.goldFixedCostProfile || existingProfile.fixedCostProfile || state.goldCostMinuteProfile || {};
   const isEn = currentLanguage?.() === "en";
   const costKeys = [
     "rent",
@@ -23,14 +24,14 @@ function renderGoldCostMinutePanel({ state, currentPlanId, currentLanguage, euro
     "insurance",
     "software",
     "marketing",
-    "leasing",
     "cleaningLaundry",
     "bankPosFees",
-    "payrollOwner",
     "taxesContributionsReserve",
     "otherFixedCosts"
   ];
-  const totalMonthlyCents = costKeys.reduce((sum, key) => sum + Math.round(Number(profile[key] || 0) * 100), 0);
+  const existingMonthlyCents = Number(existingProfile.existingMonthlyCents || 0);
+  const manualFixedMonthlyCents = Number(existingProfile.manualFixedMonthlyCents || 0) || costKeys.reduce((sum, key) => sum + Math.round(Number(profile[key] || 0) * 100), 0);
+  const totalMonthlyCents = Number(existingProfile.totalMonthlyBaselineCents || 0) || (existingMonthlyCents + manualFixedMonthlyCents);
   const workingDays = Math.max(0, Number(profile.workingDaysMonthly || 0));
   const dailyHours = Math.max(0, Number(profile.operatingHoursDaily || 0));
   const monthlyMinutes = workingDays * dailyHours * 60;
@@ -42,11 +43,12 @@ function renderGoldCostMinutePanel({ state, currentPlanId, currentLanguage, euro
   if (!profile.utilitiesPower) missing.push(isEn ? "electricity" : "corrente elettrica");
   if (!profile.accountant) missing.push(isEn ? "accountant" : "commercialista");
   if (!profile.insurance) missing.push(isEn ? "insurance" : "assicurazione");
-  if (!profile.payrollOwner) missing.push(isEn ? "staff/owner monthly cost" : "costo mensile staff/titolare");
+  (existingProfile.missing || []).forEach((item) => missing.push(`${item.label || item.key}: ${item.count || 0}`));
   if (!workingDays) missing.push(isEn ? "working days per month" : "giorni lavorativi mensili");
   if (!dailyHours) missing.push(isEn ? "open hours per day" : "ore operative al giorno");
-  const completed = costKeys.filter((key) => Number(profile[key] || 0) > 0).length + (workingDays ? 1 : 0) + (dailyHours ? 1 : 0);
-  const coverage = Math.max(0, Math.round((completed / (costKeys.length + 2)) * 100));
+  const existingCompleted = existingMonthlyCents > 0 ? 1 : 0;
+  const completed = costKeys.filter((key) => Number(profile[key] || 0) > 0).length + existingCompleted + (workingDays ? 1 : 0) + (dailyHours ? 1 : 0);
+  const coverage = Math.max(0, Math.round((completed / (costKeys.length + 3)) * 100));
   const reportCopy = monthlyMinutes > 0 && totalMonthlyCents > 0
     ? (isEn ? `Every operational minute must cover about ${euroFromCents(costPerMinuteCents)} before direct service/product costs.` : `Ogni minuto operativo deve coprire circa ${euroFromCents(costPerMinuteCents)} prima dei costi diretti di servizio/prodotto.`)
     : (isEn ? "Enter at least monthly fixed costs, working days and daily hours to read the center cost per minute." : "Inserisci almeno costi fissi mensili, giorni lavorativi e ore giornaliere per leggere il costo minuto del centro.");
@@ -56,16 +58,17 @@ function renderGoldCostMinutePanel({ state, currentPlanId, currentLanguage, euro
       <div class="row between mb-16">
         <div>
           <div class="section-title">${isEn ? "Gold center cost per minute" : "Costo minuto centro Gold"}</div>
-          <div class="page-subtitle">${isEn ? "Fixed costs divided by real operating minutes. Tax fields are context, not a fiscal declaration." : "Costi fissi divisi per i minuti operativi reali. I campi fiscali sono contesto, non dichiarazione fiscale."}</div>
+          <div class="page-subtitle">${isEn ? "Uses existing staff, technology and inventory costs first. Add only missing general fixed costs here." : "Usa prima costi esistenti di operatori, tecnologie e magazzino. Qui aggiungi solo costi fissi generali mancanti."}</div>
         </div>
         <div class="module-pill active">${coverage}% ${isEn ? "complete" : "completo"}</div>
       </div>
       <div class="dashboard-focus-grid mb-16">
-        <div class="dashboard-focus-item"><div class="stat-label">${isEn ? "Monthly fixed costs" : "Costi fissi mese"}</div><div class="focus-value">${euroFromCents(totalMonthlyCents)}</div></div>
-        <div class="dashboard-focus-item"><div class="stat-label">${isEn ? "Cost / day" : "Costo giorno"}</div><div class="focus-value">${euroFromCents(costPerDayCents)}</div></div>
-        <div class="dashboard-focus-item"><div class="stat-label">${isEn ? "Cost / hour" : "Costo ora"}</div><div class="focus-value">${euroFromCents(costPerHourCents)}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${isEn ? "From management system" : "Dal gestionale"}</div><div class="focus-value">${euroFromCents(existingMonthlyCents)}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${isEn ? "Manual fixed costs" : "Fissi manuali"}</div><div class="focus-value">${euroFromCents(manualFixedMonthlyCents)}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${isEn ? "Monthly total" : "Totale mese"}</div><div class="focus-value">${euroFromCents(totalMonthlyCents)}</div></div>
         <div class="dashboard-focus-item priority-card ${costPerMinuteCents ? "priority-critical" : "priority-warning"}"><div class="stat-label">${isEn ? "Cost / minute" : "Costo minuto"}</div><div class="focus-value">${euroFromCents(costPerMinuteCents)}</div></div>
       </div>
+      <div class="settings-note mb-16">${isEn ? "Included from existing data" : "Inclusi da dati gia presenti"}: ${isEn ? "staff" : "operatori"} ${euroFromCents(Number(existingProfile.staffMonthlyCents || 0))} · ${isEn ? "technologies" : "tecnologie"} ${euroFromCents(Number(existingProfile.technologyMonthlyCents || 0))} · ${isEn ? "inventory cost coverage" : "copertura costi prodotti"} ${Number(existingProfile.inventoryCoverage?.withCost || 0)}/${Number(existingProfile.inventoryCoverage?.total || 0)}</div>
       <div class="settings-note mb-16">${escapeHtml(reportCopy)}</div>
       ${missing.length ? `<div class="smart-warning-card mb-16"><strong>${isEn ? "Missing data" : "Dati mancanti"}</strong><div class="smart-warning-list">${missing.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div></div>` : `<div class="settings-saved mb-16">${isEn ? "Main fixed-cost profile complete enough for operational reading." : "Profilo costi fissi abbastanza completo per lettura operativa."}</div>`}
       <div class="center-profile-grid">
@@ -90,10 +93,8 @@ function renderGoldCostMinutePanel({ state, currentPlanId, currentLanguage, euro
         ${moneyInput({ id: "gold-cost-insurance", label: isEn ? "Insurance" : "Assicurazioni", value: profile.insurance, help: isEn ? "Civil liability, shop, equipment policies." : "RC, locale, attrezzature e polizze collegate." })}
         ${moneyInput({ id: "gold-cost-software", label: isEn ? "Software / subscriptions" : "Software / abbonamenti", value: profile.software, help: isEn ? "Management tools, booking, phone, cloud, subscriptions." : "Gestionali, booking, telefono, cloud, abbonamenti." })}
         ${moneyInput({ id: "gold-cost-marketing", label: "Marketing", value: profile.marketing, help: isEn ? "Ads, content, agency, local communication." : "Ads, contenuti, agenzia, comunicazione locale." })}
-        ${moneyInput({ id: "gold-cost-leasing", label: isEn ? "Leasing / rentals" : "Leasing / noleggi", value: profile.leasing, help: isEn ? "Technologies, furniture, tools and financed equipment." : "Tecnologie, arredi, strumenti e attrezzature finanziate." })}
         ${moneyInput({ id: "gold-cost-cleaningLaundry", label: isEn ? "Cleaning / laundry" : "Pulizie / lavanderia", value: profile.cleaningLaundry, help: isEn ? "Cleaning service, towels, laundry, sanitation consumables." : "Pulizie, asciugamani, lavanderia, consumabili igiene." })}
         ${moneyInput({ id: "gold-cost-bankPosFees", label: isEn ? "Bank / POS fees" : "Banca / POS", value: profile.bankPosFees, help: isEn ? "Monthly average of banking and payment fees." : "Media mensile commissioni banca e pagamenti." })}
-        ${moneyInput({ id: "gold-cost-payrollOwner", label: isEn ? "Staff / owner monthly cost" : "Costo staff / titolare", value: profile.payrollOwner, help: isEn ? "Payroll, owner draw or monthly labor base to cover." : "Stipendi, compenso titolare o base lavoro da coprire." })}
         ${moneyInput({ id: "gold-cost-taxesContributionsReserve", label: isEn ? "Tax/contribution reserve" : "Riserva tasse/contributi", value: profile.taxesContributionsReserve, help: isEn ? "Prudential monthly reserve entered by the center/accountant." : "Accantonamento prudenziale mensile inserito dal centro/commercialista." })}
         ${moneyInput({ id: "gold-cost-otherFixedCosts", label: isEn ? "Other fixed costs" : "Altri costi fissi", value: profile.otherFixedCosts, help: isEn ? "Security, waste, licences, association fees, maintenance." : "Allarme, rifiuti, licenze, associazioni, manutenzioni." })}
         <label class="smart-field">
@@ -169,7 +170,7 @@ export function renderProfitabilityView(deps) {
         </div>
       </section>
 
-      ${renderGoldCostMinutePanel({ state, currentPlanId, currentLanguage, euroFromCents, escapeHtml })}
+      ${renderGoldCostMinutePanel({ state, overview, currentPlanId, currentLanguage, euroFromCents, escapeHtml })}
 
       ${overview.available ? kpiCards([
         { label: t("profitabilityView.servicesLogged"), value: String(overview.totals.executions || 0) },

@@ -98,7 +98,7 @@ export function bindInventoryViewEvents(deps) {
 }
 
 export function bindProfitabilityViewEvents(deps) {
-  const { state, renderView, loadProfitabilityOverview, showFeedback, t } = deps;
+  const { state, renderView, loadProfitabilityOverview, showFeedback, t, API_SERVER_URL } = deps;
 
   document.getElementById("profitability-start-date")?.addEventListener("change", async (event) => {
     state.profitabilityStartDate = event.target.value;
@@ -131,10 +131,17 @@ export function bindProfitabilityViewEvents(deps) {
     return next;
   }
 
-  document.querySelector('[data-action="save-gold-cost-minute"]')?.addEventListener("click", () => {
+  document.querySelector('[data-action="save-gold-cost-minute"]')?.addEventListener("click", async () => {
     const profile = collectGoldCostMinuteProfile();
     state.goldCostMinuteProfile = profile;
+    state.center = { ...(state.center || {}), goldFixedCostProfile: profile };
     window.localStorage.setItem("smartdesk-gold-cost-minute-profile", JSON.stringify(profile));
+    await fetch(`${API_SERVER_URL || ""}/api/center`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...(state.center || {}), goldFixedCostProfile: profile })
+    }).catch(() => null);
+    await loadProfitabilityOverview();
     showFeedback?.(t ? t("profitabilityView.goldCostSaved") : "Profilo costi Gold salvato.");
     renderView();
   });
@@ -148,6 +155,12 @@ export function bindProfitabilityViewEvents(deps) {
       workingDaysMonthly: 24,
       operatingHoursDaily: 8
     };
+    state.center = { ...(state.center || {}), goldFixedCostProfile: state.goldCostMinuteProfile };
+    fetch(`${API_SERVER_URL || ""}/api/center`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...(state.center || {}), goldFixedCostProfile: state.goldCostMinuteProfile })
+    }).catch(() => null);
     showFeedback?.(t ? t("profitabilityView.goldCostReset") : "Profilo costi Gold svuotato.");
     renderView();
   });

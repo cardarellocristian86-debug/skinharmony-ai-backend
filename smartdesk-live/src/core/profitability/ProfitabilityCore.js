@@ -428,13 +428,81 @@ function finalizeRows(rows = []) {
   }).sort((a, b) => a.marginPercent - b.marginPercent);
 }
 
+
+function computeOperatingCostMinuteProfile({ staff = [], inventory = [], resources = [], fixedCostProfile = {} } = {}) {
+  const activeStaff = (Array.isArray(staff) ? staff : []).filter((item) => item.active !== false);
+  const staffRows = activeStaff.map((item) => {
+    const grossMonthlyCents = positive(item.grossSalaryCents || item.monthlyGrossSalaryCents || item.salaryGrossCents || item.payrollCostCents || item.monthlyCostCents || 0);
+    const netMonthlyCents = positive(item.netSalaryCents || item.monthlyNetSalaryCents || item.salaryNetCents || 0);
+    const hourlyCostCents = positive(item.hourlyCostCents || item.hourlyCost || 0);
+    return {
+      id: String(item.id || ""),
+      name: item.name || "Operatore",
+      grossMonthlyCents,
+      netMonthlyCents,
+      hourlyCostCents,
+      source: grossMonthlyCents ? "gross_salary" : hourlyCostCents ? "hourly_cost" : netMonthlyCents ? "net_salary_context" : "missing"
+    };
+  });
+  const staffMonthlyCents = staffRows.reduce((sum, item) => sum + positive(item.grossMonthlyCents || 0), 0);
+  const staffHourlyDeclaredCents = staffRows.reduce((sum, item) => sum + positive(item.hourlyCostCents || 0), 0);
+  const technologyRows = (Array.isArray(resources) ? resources : []).filter((item) => item.active !== false).map((item) => ({
+    id: String(item.id || ""),
+    name: item.name || "Tecnologia",
+    monthlyCostCents: positive(item.monthlyCostCents || item.installmentCents || item.rataCents || item.leaseCostCents || 0),
+    costPerUseCents: positive(item.costPerUseCents || 0)
+  }));
+  const technologyMonthlyCents = technologyRows.reduce((sum, item) => sum + positive(item.monthlyCostCents || 0), 0);
+  const inventoryRows = (Array.isArray(inventory) ? inventory : []).filter((item) => item.active !== false).map((item) => ({
+    id: String(item.id || ""),
+    name: item.name || "Prodotto",
+    costCents: positive(item.costCents || item.unitCostCents || item.purchaseCostCents || 0),
+    costPerUseCents: positive(item.costPerUseCents || 0),
+    stockQuantity: Number(item.stockQuantity ?? item.quantity ?? item.stock ?? 0)
+  }));
+  const inventoryWithCost = inventoryRows.filter((item) => item.costCents > 0 || item.costPerUseCents > 0).length;
+  const missing = [];
+  const operatorsMissingCost = staffRows.filter((item) => !item.grossMonthlyCents && !item.hourlyCostCents);
+  const technologiesMissingCost = technologyRows.filter((item) => !item.monthlyCostCents && !item.costPerUseCents);
+  const inventoryMissingCost = inventoryRows.filter((item) => !item.costCents && !item.costPerUseCents);
+  if (operatorsMissingCost.length) missing.push({ key: "operators_cost", label: "costo operatori", count: operatorsMissingCost.length });
+  if (technologiesMissingCost.length) missing.push({ key: "technologies_cost", label: "rata/costo tecnologie", count: technologiesMissingCost.length });
+  if (inventoryMissingCost.length) missing.push({ key: "inventory_cost", label: "costo prodotti", count: inventoryMissingCost.length });
+  const fixedCostKeys = ["rent", "utilitiesPower", "utilitiesWaterGas", "accountant", "insurance", "software", "marketing", "cleaningLaundry", "bankPosFees", "taxesContributionsReserve", "otherFixedCosts"];
+  const manualFixedMonthlyCents = fixedCostKeys.reduce((sum, key) => sum + positive(Math.round(Number(fixedCostProfile?.[key] || 0) * 100)), 0);
+  return {
+    source: "profitability_core_existing_data",
+    staffMonthlyCents,
+    staffHourlyDeclaredCents,
+    technologyMonthlyCents,
+    manualFixedMonthlyCents,
+    existingMonthlyCents: staffMonthlyCents + technologyMonthlyCents,
+    totalMonthlyBaselineCents: staffMonthlyCents + technologyMonthlyCents + manualFixedMonthlyCents,
+    fixedCostProfile: fixedCostProfile && typeof fixedCostProfile === "object" ? fixedCostProfile : {},
+    staffRows,
+    technologyRows,
+    inventoryCoverage: {
+      total: inventoryRows.length,
+      withCost: inventoryWithCost,
+      missingCost: inventoryMissingCost.length
+    },
+    missing,
+    notes: [
+      "Prodotti: costo e consumo restano nel magazzino e nei link servizio.",
+      "Tecnologie: rata/costo mensile e costo uso restano nelle risorse/tecnologie.",
+      "Operatori: usare costo orario o stipendio lordo mensile; netto resta contesto."
+    ]
+  };
+}
+
 function computeCenterProfitabilitySnapshot({
   appointments = [],
   services = [],
   staff = [],
   payments = [],
   inventory = [],
-  resources = []
+  resources = [],
+  fixedCostProfile = {}
 } = {}) {
   const servicesById = mapById(services);
   const staffById = mapById(staff);
@@ -542,6 +610,7 @@ function computeCenterProfitabilitySnapshot({
   const serviceRows = finalizeRows(Array.from(serviceMap.values()));
   const productRows = finalizeRows(Array.from(productMap.values()));
   const technologyRows = finalizeRows(Array.from(technologyMap.values()));
+  const operatingCostMinuteProfile = computeOperatingCostMinuteProfile({ staff, inventory, resources, fixedCostProfile });
   const totals = serviceRows.reduce((summary, item) => ({
     executions: summary.executions + Number(item.executions || 0),
     revenueCents: summary.revenueCents + Number(item.revenueCents || 0),
@@ -574,6 +643,7 @@ function computeCenterProfitabilitySnapshot({
     products: productRows,
     technologies: technologyRows,
     monthlyTrend,
+    operatingCostMinuteProfile,
     alerts,
     appointmentBreakdowns,
     revenueCents: totals.revenueCents,
@@ -591,6 +661,7 @@ module.exports = {
   computeAppointmentProfitability,
   computeServiceProfitability,
   computeCenterProfitabilitySnapshot,
+  computeOperatingCostMinuteProfile,
   buildProfitabilityBreakdown,
   inferProfitabilityConfidence
 };

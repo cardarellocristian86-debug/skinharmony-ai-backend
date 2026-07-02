@@ -47,7 +47,10 @@ export function createSmartDeskNormalizers({ state, t, currentLanguage }) {
     return {
       ...item,
       active: item.active !== false,
-      targetProgress: Number(item.targetProgress || 0)
+      targetProgress: Number(item.targetProgress || 0),
+      hourlyCostCents: Number(item.hourlyCostCents || item.hourlyCost || 0),
+      netSalaryCents: Number(item.netSalaryCents || item.monthlyNetSalaryCents || 0),
+      grossSalaryCents: Number(item.grossSalaryCents || item.monthlyGrossSalaryCents || item.payrollCostCents || 0)
     };
   }
 
@@ -90,6 +93,7 @@ export function createSmartDeskNormalizers({ state, t, currentLanguage }) {
         costCents: Number(payload.totals?.costCents || 0),
         profitCents: Number(payload.totals?.profitCents || 0)
       },
+      operatingCostMinuteProfile: payload.operatingCostMinuteProfile || null,
       services: Array.isArray(payload.services) ? payload.services : [],
       products: Array.isArray(payload.products) ? payload.products : [],
       technologies: Array.isArray(payload.technologies) ? payload.technologies : [],
