@@ -2,6 +2,7 @@
   "use strict";
 
   var PANEL_ID = "skinharmony-module-priority-panel";
+  var COST_MINUTE_PANEL_ID = "skinharmony-gold-cost-minute-panel";
   var STYLE_ID = "skinharmony-module-priority-style";
   var currentSignature = "";
   var refreshTimer = null;
@@ -341,6 +342,24 @@
       "#"+PANEL_ID+" .module-priority-badge{display:inline-flex;margin-bottom:9px;padding:4px 9px;border-radius:999px;font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}",
       "#"+PANEL_ID+" .priority-critical .module-priority-badge{background:#ffe0e0;color:#9f2f2f}",
       "#"+PANEL_ID+" .priority-warning .module-priority-badge{background:#ffe9a8;color:#7a5a20}",
+      "#"+COST_MINUTE_PANEL_ID+"{margin:18px 0 22px;padding:20px;border:1px solid rgba(200,72,72,.46);border-radius:22px;background:linear-gradient(180deg,#fffafa,#fff0f0);box-shadow:0 18px 40px rgba(200,72,72,.13)}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-kicker{font-size:12px;font-weight:900;letter-spacing:.18em;text-transform:uppercase;color:#b24646}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-title{font-size:24px;line-height:1.08;font-weight:900;color:#26394e}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-subtitle{margin-top:5px;color:#6d7f94;font-size:14px;line-height:1.35}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-pill{padding:8px 13px;border-radius:999px;font-weight:900;background:#ffe1e1;color:#9f2f2f;border:1px solid rgba(200,72,72,.18);white-space:nowrap}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:14px 0}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-stat{border-radius:16px;border:1px solid rgba(86,150,185,.18);background:#fff;padding:13px 14px}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-stat span{display:block;font-size:12px;font-weight:800;color:#6d7f94;margin-bottom:5px}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-stat strong{font-size:23px;line-height:1;color:#26394e}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:12px}",
+      "#"+COST_MINUTE_PANEL_ID+" label{display:grid;gap:5px;font-size:12px;font-weight:800;color:#4e6178}",
+      "#"+COST_MINUTE_PANEL_ID+" input{width:100%;box-sizing:border-box;border:1px solid rgba(86,150,185,.25);border-radius:12px;padding:10px 11px;font:inherit;color:#26394e;background:#fff}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}",
+      "#"+COST_MINUTE_PANEL_ID+" button{border:1px solid rgba(86,150,185,.28);border-radius:14px;padding:10px 14px;font-weight:900;color:#2d78ad;background:#f8fdff;cursor:pointer}",
+      "#"+COST_MINUTE_PANEL_ID+" button.cost-minute-save{background:#77c2d7;color:#fff;border-color:#77c2d7}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-note{font-size:13px;color:#6d7f94;line-height:1.35}",
+      "#"+COST_MINUTE_PANEL_ID+" .cost-minute-missing{margin-top:10px;border-radius:14px;border:1px dashed rgba(200,72,72,.35);background:#fff8f8;padding:10px 12px;color:#9f2f2f;font-weight:800}",
       ".module-priority-target-critical{border-color:rgba(200,72,72,.72)!important;background:linear-gradient(180deg,#fff8f8,#ffe8e8)!important;box-shadow:0 20px 42px rgba(200,72,72,.22)!important}",
       ".module-priority-target-warning{border-color:rgba(210,154,55,.68)!important;background:linear-gradient(180deg,#fffdf4,#fff1c9)!important;box-shadow:0 18px 38px rgba(210,154,55,.2)!important}"
     ].join("\n");
@@ -361,6 +380,153 @@
       document.querySelector("#root > div") ||
       document.getElementById("root")
     );
+  }
+
+  function cents(value) {
+    var number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function eurosToCents(value) {
+    var normalized = text(value).replace(/\./g, "").replace(",", ".");
+    var number = Number(normalized);
+    return Number.isFinite(number) ? Math.round(number * 100) : 0;
+  }
+
+  function centsToEuros(value) {
+    return (cents(value) / 100).toLocaleString("it-IT", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  }
+
+  function money(value) {
+    return centsToEuros(value) + " €";
+  }
+
+  function fixedProfileValue(profile, key) {
+    var value = profile && profile[key];
+    return centsToEuros(cents(value));
+  }
+
+  function costMinute(profile) {
+    var fixed = profile && profile.fixedCostProfile ? profile.fixedCostProfile : {};
+    var workingDays = Math.max(1, Number(fixed.workingDaysMonthly || 24));
+    var operatingHours = Math.max(1, Number(fixed.operatingHoursDaily || 8));
+    var minutes = workingDays * operatingHours * 60;
+    return {
+      minutes: minutes,
+      centsPerMinute: minutes > 0 ? cents(profile && profile.totalMonthlyBaselineCents) / minutes : 0,
+      workingDays: workingDays,
+      operatingHours: operatingHours
+    };
+  }
+
+  function renderCostMinutePanel(overview) {
+    injectStyle();
+    var oldPanel = document.getElementById(COST_MINUTE_PANEL_ID);
+    if (oldPanel) oldPanel.remove();
+
+    var module = currentModule();
+    if (!module || module.path !== "/profitability") return;
+
+    var profile = overview && overview.operatingCostMinuteProfile;
+    if (!profile) return;
+
+    var fixed = profile.fixedCostProfile || {};
+    var minute = costMinute(profile);
+    var missing = Array.isArray(profile.missing) ? profile.missing : [];
+    var panel = document.createElement("section");
+    panel.id = COST_MINUTE_PANEL_ID;
+    panel.innerHTML =
+      '<div class="cost-minute-head">' +
+        '<div><div class="cost-minute-kicker">Gold · controllo costi fissi</div>' +
+        '<div class="cost-minute-title">Costo minuto centro Gold</div>' +
+        '<div class="cost-minute-subtitle">Usa operatori, tecnologie, prodotti e costi fissi. Se manca un dato, il report resta attivo ma lo segnala.</div></div>' +
+        '<div class="cost-minute-pill"></div>' +
+      '</div>' +
+      '<div class="cost-minute-grid">' +
+        '<div class="cost-minute-stat"><span>Dal gestionale</span><strong data-cost="existing"></strong></div>' +
+        '<div class="cost-minute-stat"><span>Fissi generali</span><strong data-cost="manual"></strong></div>' +
+        '<div class="cost-minute-stat"><span>Totale mese</span><strong data-cost="total"></strong></div>' +
+        '<div class="cost-minute-stat"><span>Minuti mese</span><strong data-cost="minutes"></strong></div>' +
+      '</div>' +
+      '<div class="cost-minute-form">' +
+        '<label>Giorni lavorativi mese<input inputmode="decimal" data-fixed="workingDaysMonthly" /></label>' +
+        '<label>Ore operative giorno<input inputmode="decimal" data-fixed="operatingHoursDaily" /></label>' +
+        '<label>Affitto mensile<input inputmode="decimal" data-fixed="rent" /></label>' +
+        '<label>Corrente / energia<input inputmode="decimal" data-fixed="utilitiesPower" /></label>' +
+        '<label>Acqua / gas<input inputmode="decimal" data-fixed="utilitiesWaterGas" /></label>' +
+        '<label>Commercialista<input inputmode="decimal" data-fixed="accountant" /></label>' +
+        '<label>Assicurazioni<input inputmode="decimal" data-fixed="insurance" /></label>' +
+        '<label>Software / gestionali<input inputmode="decimal" data-fixed="software" /></label>' +
+        '<label>Marketing fisso<input inputmode="decimal" data-fixed="marketing" /></label>' +
+        '<label>Altro fisso<input inputmode="decimal" data-fixed="otherFixedCosts" /></label>' +
+      '</div>' +
+      '<div class="cost-minute-actions">' +
+        '<button type="button" class="cost-minute-save">Salva costi fissi</button>' +
+        '<span class="cost-minute-note">Operatori, prodotti e tecnologie vengono letti dai moduli gia compilati. Qui completi solo i fissi generali.</span>' +
+      '</div>' +
+      '<div class="cost-minute-missing" hidden></div>';
+
+    panel.querySelector(".cost-minute-pill").textContent = money(minute.centsPerMinute) + " / minuto";
+    panel.querySelector('[data-cost="existing"]').textContent = money(profile.existingMonthlyCents);
+    panel.querySelector('[data-cost="manual"]').textContent = money(profile.manualFixedMonthlyCents);
+    panel.querySelector('[data-cost="total"]').textContent = money(profile.totalMonthlyBaselineCents);
+    panel.querySelector('[data-cost="minutes"]').textContent = Math.round(minute.minutes).toLocaleString("it-IT");
+
+    panel.querySelectorAll("[data-fixed]").forEach(function (input) {
+      var key = input.getAttribute("data-fixed");
+      if (key === "workingDaysMonthly" || key === "operatingHoursDaily") {
+        input.value = text(fixed[key] || (key === "workingDaysMonthly" ? 24 : 8));
+      } else {
+        input.value = fixedProfileValue(fixed, key);
+      }
+    });
+
+    var missingBox = panel.querySelector(".cost-minute-missing");
+    if (missing.length) {
+      missingBox.hidden = false;
+      missingBox.textContent = "Da completare: " + missing.join(", ");
+    }
+
+    panel.querySelector(".cost-minute-save").addEventListener("click", function () {
+      var nextProfile = {};
+      panel.querySelectorAll("[data-fixed]").forEach(function (input) {
+        var key = input.getAttribute("data-fixed");
+        if (key === "workingDaysMonthly" || key === "operatingHoursDaily") {
+          var number = Number(text(input.value).replace(",", "."));
+          if (Number.isFinite(number) && number > 0) nextProfile[key] = number;
+        } else {
+          nextProfile[key] = eurosToCents(input.value);
+        }
+      });
+
+      fetch("/api/center", {
+        method: "POST",
+        headers: Object.assign({ "Content-Type": "application/json" }, headers()),
+        credentials: "same-origin",
+        body: JSON.stringify({ goldFixedCostProfile: nextProfile })
+      }).then(function (response) {
+        if (!response.ok) throw new Error("save_failed");
+        cachedModulePath = "";
+        lastFetchAt = 0;
+        currentSignature = "";
+        scheduleRefresh();
+      }).catch(function () {
+        missingBox.hidden = false;
+        missingBox.textContent = "Salvataggio non riuscito. Riprova o verifica la sessione.";
+      });
+    });
+
+    var priorityPanel = document.getElementById(PANEL_ID);
+    if (priorityPanel && priorityPanel.parentNode) {
+      priorityPanel.parentNode.insertBefore(panel, priorityPanel.nextSibling);
+      return;
+    }
+
+    var host = pageHost();
+    if (host) host.prepend(panel);
   }
 
   function renderPanel(module, items) {
@@ -507,6 +673,8 @@
     if (!module || !getToken()) {
       var panel = document.getElementById(PANEL_ID);
       if (panel) panel.remove();
+      var costMinutePanel = document.getElementById(COST_MINUTE_PANEL_ID);
+      if (costMinutePanel) costMinutePanel.remove();
       clearHighlights();
       return;
     }
@@ -515,12 +683,16 @@
     if (cachedModulePath === module.path && cachedItems.length && now - lastFetchAt < 15000) {
       if (!document.getElementById(PANEL_ID)) renderPanel(module, cachedItems);
       applyHighlights(module, cachedItems);
+      if (module.path === "/profitability" && !document.getElementById(COST_MINUTE_PANEL_ID)) {
+        fetchJson("/api/profitability/overview").then(renderCostMinutePanel);
+      }
       return;
     }
 
     Promise.all([
       fetchJson("/api/ai-gold/decision-center"),
-      fetchJson("/api/ai-gold/cockpit")
+      fetchJson("/api/ai-gold/cockpit"),
+      module.path === "/profitability" ? fetchJson("/api/profitability/overview") : Promise.resolve(null)
     ]).then(function (responses) {
       var items = buildItems([
         { source: "decision-center", payload: responses[0] },
@@ -536,6 +708,7 @@
         currentSignature = signature;
         renderPanel(module, items);
       }
+      renderCostMinutePanel(responses[2]);
       applyHighlights(module, items);
     });
   }
