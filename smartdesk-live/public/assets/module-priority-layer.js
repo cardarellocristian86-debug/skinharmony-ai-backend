@@ -646,10 +646,11 @@
   }
 
   function applyProfitabilityHighlights() {
-    document.querySelectorAll(".list-item.static, .list-item, article, .sh-card, section, div").forEach(function (node) {
+    document.querySelectorAll(".list-item.static, .list-item, article, .sh-card").forEach(function (node) {
       if (!node || node.id === PANEL_ID || node.id === COST_MINUTE_PANEL_ID) return;
+      if (node.querySelector(".list-item, article, .sh-card")) return;
       var body = lower(node.innerText || node.textContent || "");
-      if (!body || body.length > 900) return;
+      if (!body || body.length > 700) return;
 
       if (/profittevole|utile [0-9,.]+ ?€|margine [5-9][0-9]%| ok\b/.test(body) && !/perdita|margine basso|costi? 0,00|ricavi 0,00|manca|mancano|senza costo/.test(body)) {
         markNode(node, "ok");
