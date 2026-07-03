@@ -361,14 +361,15 @@
       "#"+COST_MINUTE_PANEL_ID+" .cost-minute-note{font-size:13px;color:#6d7f94;line-height:1.35}",
       "#"+COST_MINUTE_PANEL_ID+" .cost-minute-missing{margin-top:10px;border-radius:14px;border:1px dashed rgba(200,72,72,.35);background:#fff8f8;padding:10px 12px;color:#9f2f2f;font-weight:800}",
       ".module-priority-target-critical{border-color:rgba(200,72,72,.72)!important;background:linear-gradient(180deg,#fff8f8,#ffe8e8)!important;box-shadow:0 20px 42px rgba(200,72,72,.22)!important}",
-      ".module-priority-target-warning{border-color:rgba(210,154,55,.68)!important;background:linear-gradient(180deg,#fffdf4,#fff1c9)!important;box-shadow:0 18px 38px rgba(210,154,55,.2)!important}"
+      ".module-priority-target-warning{border-color:rgba(210,154,55,.68)!important;background:linear-gradient(180deg,#fffdf4,#fff1c9)!important;box-shadow:0 18px 38px rgba(210,154,55,.2)!important}",
+      ".module-priority-target-ok{border-color:rgba(72,160,110,.28)!important;background:linear-gradient(180deg,#ffffff,#f5fcf8)!important;box-shadow:none!important}"
     ].join("\n");
     document.head.appendChild(style);
   }
 
   function clearHighlights() {
-    document.querySelectorAll(".module-priority-target-critical,.module-priority-target-warning").forEach(function (node) {
-      node.classList.remove("module-priority-target-critical", "module-priority-target-warning");
+    document.querySelectorAll(".module-priority-target-critical,.module-priority-target-warning,.module-priority-target-ok").forEach(function (node) {
+      node.classList.remove("module-priority-target-critical", "module-priority-target-warning", "module-priority-target-ok");
     });
   }
 
@@ -430,8 +431,13 @@
     var module = currentModule();
     if (!module || module.path !== "/profitability") return;
 
-    var profile = overview && overview.operatingCostMinuteProfile;
-    if (!profile) return;
+    var profile = overview && overview.operatingCostMinuteProfile ? overview.operatingCostMinuteProfile : {
+      existingMonthlyCents: 0,
+      manualFixedMonthlyCents: 0,
+      totalMonthlyBaselineCents: 0,
+      fixedCostProfile: {},
+      missing: ["operatori", "tecnologie", "costi fissi generali"]
+    };
 
     var fixed = profile.fixedCostProfile || {};
     var minute = costMinute(profile);
@@ -578,7 +584,11 @@
 
   function markNode(node, severity) {
     if (!node) return;
-    node.classList.remove("module-priority-target-critical", "module-priority-target-warning");
+    node.classList.remove("module-priority-target-critical", "module-priority-target-warning", "module-priority-target-ok");
+    if (severity === "ok") {
+      node.classList.add("module-priority-target-ok");
+      return;
+    }
     node.classList.add(severity === "critical" ? "module-priority-target-critical" : "module-priority-target-warning");
   }
 
@@ -635,11 +645,37 @@
     });
   }
 
+  function applyProfitabilityHighlights() {
+    document.querySelectorAll(".list-item.static, .list-item, article, .sh-card, section, div").forEach(function (node) {
+      if (!node || node.id === PANEL_ID || node.id === COST_MINUTE_PANEL_ID) return;
+      var body = lower(node.innerText || node.textContent || "");
+      if (!body || body.length > 900) return;
+
+      if (/profittevole|utile [0-9,.]+ ?€|margine [5-9][0-9]%| ok\b/.test(body) && !/perdita|margine basso|costi? 0,00|ricavi 0,00|manca|mancano|senza costo/.test(body)) {
+        markNode(node, "ok");
+        return;
+      }
+
+      if (/perdita|perde margine|lavora in perdita|sottocosto|ricavi 0,00|utile -|costo mancante|costi? 0,00|senza costo|manca|mancano|completa costi/.test(body)) {
+        markNode(node, "critical");
+        return;
+      }
+
+      if (/margine basso|da controllare|controlla|verifica|parziale|prima di promuoverlo/.test(body)) {
+        markNode(node, "warning");
+      }
+    });
+  }
+
   function applyHighlights(module, items) {
     clearHighlights();
     if (!items.length) return;
     if (module.path === "/services") {
       applyServiceHighlights(items);
+      return;
+    }
+    if (module.path === "/profitability") {
+      applyProfitabilityHighlights();
       return;
     }
     applyGenericHighlights(module, items);
@@ -684,7 +720,9 @@
       if (!document.getElementById(PANEL_ID)) renderPanel(module, cachedItems);
       applyHighlights(module, cachedItems);
       if (module.path === "/profitability" && !document.getElementById(COST_MINUTE_PANEL_ID)) {
-        fetchJson("/api/profitability/overview").then(renderCostMinutePanel);
+        fetchJson("/api/profitability/overview").then(function (overview) {
+          renderCostMinutePanel(overview);
+        });
       }
       return;
     }
