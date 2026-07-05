@@ -583,14 +583,26 @@
   }
 
   function markNode(node, severity) {
-    if (!node) return;
-    if (node.closest && (node.closest("#" + PANEL_ID) || node.closest("#" + COST_MINUTE_PANEL_ID))) return;
+    if (!node || !isHighlightLeafNode(node)) return;
     node.classList.remove("module-priority-target-critical", "module-priority-target-warning", "module-priority-target-ok");
     if (severity === "ok") {
       node.classList.add("module-priority-target-ok");
       return;
     }
     node.classList.add(severity === "critical" ? "module-priority-target-critical" : "module-priority-target-warning");
+  }
+
+  function nodeHighlightBody(node) {
+    return lower(node && (node.innerText || node.textContent || ""));
+  }
+
+  function isHighlightLeafNode(node) {
+    if (!node || node.id === PANEL_ID || node.id === COST_MINUTE_PANEL_ID) return false;
+    if (node.closest && (node.closest("#" + PANEL_ID) || node.closest("#" + COST_MINUTE_PANEL_ID))) return false;
+    if (node.querySelector && node.querySelector(".list-item, article, .sh-card")) return false;
+    var body = nodeHighlightBody(node);
+    if (!body || body.length > 700) return false;
+    return true;
   }
 
   function hasFocus(items, focus) {
@@ -616,7 +628,8 @@
     var staffSeverity = strongestSeverity(staffItems, "warning");
 
     document.querySelectorAll(".list-item.static, .list-item, article, .sh-card").forEach(function (node) {
-      var body = lower(node.innerText || node.textContent || "");
+      if (!isHighlightLeafNode(node)) return;
+      var body = nodeHighlightBody(node);
       if (serviceItems.length && /sottocosto|correggere|controllare|completa costo|costo mancante|0,00|senza costo|senza prodotto|senza tecnologia/.test(body)) {
         markNode(node, serviceSeverity);
       }
@@ -640,7 +653,8 @@
 
     if (!terms.length) return;
     document.querySelectorAll(".list-item.static, .list-item, article, .sh-card").forEach(function (node) {
-      var body = lower(node.innerText || node.textContent || "");
+      if (!isHighlightLeafNode(node)) return;
+      var body = nodeHighlightBody(node);
       var matched = terms.some(function (term) { return body.indexOf(term) >= 0; });
       if (matched) markNode(node, severity);
     });
@@ -651,7 +665,8 @@
       if (!node || node.id === PANEL_ID || node.id === COST_MINUTE_PANEL_ID) return;
       if (node.closest && (node.closest("#" + PANEL_ID) || node.closest("#" + COST_MINUTE_PANEL_ID))) return;
       if (node.querySelector(".list-item, article, .sh-card")) return;
-      var body = lower(node.innerText || node.textContent || "");
+      if (!isHighlightLeafNode(node)) return;
+      var body = nodeHighlightBody(node);
       if (!body || body.length > 700) return;
 
       if (/profittevole|utile [0-9,.]+ ?€|margine [5-9][0-9]%| ok\b/.test(body) && !/perdita|margine basso|costi? 0,00|ricavi 0,00|manca|mancano|senza costo/.test(body)) {
