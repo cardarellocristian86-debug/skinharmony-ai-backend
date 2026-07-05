@@ -670,6 +670,37 @@
     });
   }
 
+  function openRoute(path) {
+    window.history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  function fixProfitabilityActionButtons() {
+    var module = currentModule();
+    if (!module || module.path !== "/profitability") return;
+
+    document.querySelectorAll("button, a").forEach(function (button) {
+      var label = lower(button.innerText || button.textContent || "");
+      if (!/apri magazzino/.test(label)) return;
+      var card = button.closest(".list-item.static, .list-item, article, .sh-card");
+      if (!card) return;
+      if (card.closest && (card.closest("#" + PANEL_ID) || card.closest("#" + COST_MINUTE_PANEL_ID))) return;
+      var body = lower(card.innerText || card.textContent || "");
+      var isServiceProfitabilityAction = /servizi|servizio|redditiv|margine|perdita|sottocosto/.test(body)
+        && !/giacenza|sottoscorta|stock|articolo sotto soglia|riordino|carico/.test(body);
+      if (!isServiceProfitabilityAction) return;
+
+      button.textContent = "Apri servizi";
+      button.setAttribute("data-smartdesk-route-override", "/services");
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+        openRoute("/services");
+      }, true);
+    });
+  }
+
   function applyHighlights(module, items) {
     clearHighlights();
     if (!items.length) return;
@@ -679,6 +710,7 @@
     }
     if (module.path === "/profitability") {
       applyProfitabilityHighlights();
+      fixProfitabilityActionButtons();
       return;
     }
     applyGenericHighlights(module, items);
