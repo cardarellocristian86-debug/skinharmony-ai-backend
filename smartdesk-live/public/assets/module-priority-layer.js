@@ -584,6 +584,7 @@
 
   function markNode(node, severity) {
     if (!node) return;
+    if (node.closest && (node.closest("#" + PANEL_ID) || node.closest("#" + COST_MINUTE_PANEL_ID))) return;
     node.classList.remove("module-priority-target-critical", "module-priority-target-warning", "module-priority-target-ok");
     if (severity === "ok") {
       node.classList.add("module-priority-target-ok");
@@ -648,6 +649,7 @@
   function applyProfitabilityHighlights() {
     document.querySelectorAll(".list-item.static, .list-item, article, .sh-card").forEach(function (node) {
       if (!node || node.id === PANEL_ID || node.id === COST_MINUTE_PANEL_ID) return;
+      if (node.closest && (node.closest("#" + PANEL_ID) || node.closest("#" + COST_MINUTE_PANEL_ID))) return;
       if (node.querySelector(".list-item, article, .sh-card")) return;
       var body = lower(node.innerText || node.textContent || "");
       if (!body || body.length > 700) return;
