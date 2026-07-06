@@ -16,6 +16,7 @@ import { branchSkinHarmonyAnalyzer } from "./branch-skinharmony-analyzer.js";
 import { branchTechnologyMarket } from "./branch-technology-market.js";
 import { branchBusinessStrategy } from "./branch-business-strategy.js";
 import { branchTranslationGovernance } from "./branch-translation-governance.js";
+import { branchTranslatorMarketingGovernance } from "./branch-translator-marketing-governance.js";
 import { branchNyraFinanceBeautyTest } from "./branch-nyra-finance-beauty-test.js";
 import { branchRamoTesto } from "./branch-ramo-testo.js";
 import { branchCodexCodeSafety } from "./branch-codex-code-safety.js";
@@ -67,6 +68,7 @@ const BRANCHES = [
   branchTechnologyMarket,
   branchBusinessStrategy,
   branchTranslationGovernance,
+  branchTranslatorMarketingGovernance,
   branchRamoTesto,
   branchNyraFinanceBeautyTest,
   branchCodexCodeSafety,
@@ -136,6 +138,7 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
   "content_localization_guard",
   "ramo_testo",
   "translation_governance",
+  "translator_marketing_governance",
   "cosmetic_chemistry",
   "skinharmony_analyzer",
   "technology_market",
@@ -151,7 +154,7 @@ export const BRANCH_GROUPS = Object.freeze({
   content_intelligence: {
     label: "Content Intelligence",
     description: "Marketing, claim, traduzione, correzione testo, fonti e publish safety.",
-    branches: ["marketing_copy", "content_localization_guard", "translation_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+    branches: ["marketing_copy", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
   },
   marketing_intelligence: {
     label: "Marketing Intelligence",
@@ -215,7 +218,7 @@ export const BRANCH_GROUPS = Object.freeze({
 export const BRANCH_PACKAGES = Object.freeze({
   starter: ["front_desk_base"],
   base: ["front_desk_base"],
-  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
+  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
   silver: ["front_desk_base", "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
   gold: ["front_desk_base", "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
   network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],

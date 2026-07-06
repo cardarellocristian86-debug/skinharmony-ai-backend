@@ -49,6 +49,46 @@
     return map[path] || "Smart Desk";
   }
 
+  function isGreeting(message) {
+    return /^(ciao|hey|ehi|buongiorno|buonasera|salve|ok|okay|test)\W*$/i.test(String(message || "").trim());
+  }
+
+  function greetingAnswer() {
+    if (isGold()) {
+      return "Ciao. Sono qui: posso indicarti la priorita di oggi, aprire il modulo giusto o leggere clienti, agenda, cassa e margini. Dimmi cosa vuoi controllare.";
+    }
+    return "Ciao. Posso aiutarti a usare Smart Desk: agenda, clienti, cassa, servizi, magazzino e impostazioni.";
+  }
+
+  function cleanAssistantText(value) {
+    var text = String(value || "");
+    return text
+      .replace(/Domanda ricevuta:\s*.*(\n|$)/gi, "")
+      .replace(/Lettura AI Gold operativa sui dati disponibili,?\s*/gi, "")
+      .replace(/con Universal Core come motore decisionale\.?\s*/gi, "")
+      .replace(/Universal Core/gi, "il sistema")
+      .replace(/Core\/Nyra server/gi, "lettura del centro")
+      .replace(/Core\/Nyra/gi, "lettura del centro")
+      .replace(/Core server/gi, "sistema")
+      .replace(/Nyra server/gi, "Nyra")
+      .replace(/AI Gold operativa/gi, "lettura operativa")
+      .replace(/AI Gold/gi, "Nyra Gold")
+      .replace(/Fonte esterna server:.*$/gim, "")
+      .replace(/Smart Desk resta sorgente dati\.?/gi, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function compactAssistantText(value) {
+    var text = cleanAssistantText(value);
+    if (!text) return "";
+    var lines = text.split(/\n+/).map(function (line) { return line.trim(); }).filter(Boolean);
+    if (lines.length > 5) lines = lines.slice(0, 5);
+    text = lines.join("\n");
+    if (text.length > 520) text = text.slice(0, 500).replace(/\s+\S*$/, "") + "...";
+    return text;
+  }
+
   function esc(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
@@ -77,6 +117,26 @@
   function routeTo(path) {
     window.history.pushState({}, "", path);
     window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+
+  function isNativeNyraButton(node) {
+    if (!node || node.closest("#" + ROOT_ID)) return false;
+    var text = String(node.innerText || node.textContent || "").trim();
+    if (!/nyra/i.test(text)) return false;
+    var rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+    if (!rect || rect.width < 30 || rect.height < 28) return false;
+    return rect.left < 320 && rect.top > window.innerHeight - 190;
+  }
+
+  function enhanceNativeNyraButton() {
+    var buttons = Array.from(document.querySelectorAll("button, a, [role='button']"));
+    buttons.forEach(function (button) {
+      if (!isNativeNyraButton(button)) return;
+      button.classList.add("nyra-gold-native-enhanced");
+      button.setAttribute("data-nyra-mode", isGold() ? "gold" : "support");
+      button.setAttribute("aria-label", isGold() ? "Apri Nyra Gold" : "Apri Nyra");
+      button.setAttribute("title", isGold() ? "Nyra Gold" : "Nyra");
+    });
   }
 
   function seedMessages() {
@@ -155,11 +215,9 @@
           return '<button type="button" data-nyra-prompt="' + esc(label) + '">' + esc(label) + '</button>';
         }).join("") + '</div>' +
         '<form class="nyra-gold-form"><input name="message" value="' + esc(state.composer) + '" placeholder="' + (gold ? 'Scrivi a Nyra Gold...' : 'Chiedi supporto a Nyra...') + '" autocomplete="off"><button type="submit"' + (state.sending ? ' disabled' : '') + '>Invia</button></form>' +
-      '</aside>' : '',
-      '<button type="button" class="nyra-gold-trigger" aria-label="Apri Nyra">' +
-        '<span class="nyra-gold-mark">?</span><span><strong>' + (gold ? 'Nyra Gold' : 'Nyra') + '</strong><small>' + (gold ? 'operativa' : 'supporto') + '</small></span>' +
-      '</button>'
+      '</aside>' : ''
     ].join("");
+    enhanceNativeNyraButton();
     attachEvents(root);
     scrollThread(root);
   }
@@ -170,11 +228,6 @@
   }
 
   function attachEvents(root) {
-    var trigger = root.querySelector(".nyra-gold-trigger");
-    if (trigger) trigger.onclick = function () {
-      state.open = !state.open;
-      render();
-    };
     var close = root.querySelector(".nyra-gold-close");
     if (close) close.onclick = function () {
       state.open = false;
@@ -209,7 +262,7 @@
     if (!text && payload.structured) text = payload.structured.summary || payload.structured.message || "";
     var actions = payload.actions || payload.suggestedActions || payload.primaryActions || [];
     if (!Array.isArray(actions)) actions = [];
-    return { text: text || "Ho letto il contesto. Dimmi quale modulo vuoi aprire.", actions: actions.slice(0, 3) };
+    return { text: compactAssistantText(text) || "Ho letto il contesto. Dimmi quale modulo vuoi aprire.", actions: actions.slice(0, 3) };
   }
 
   function sendMessage(raw) {
@@ -217,6 +270,11 @@
     if (!message || state.sending) return;
     state.composer = "";
     state.messages.push({ role: "user", text: message });
+    if (isGreeting(message)) {
+      state.messages.push({ role: "assistant", text: greetingAnswer() });
+      render();
+      return;
+    }
     state.sending = true;
     render();
 
@@ -233,9 +291,9 @@
       })
       .catch(function (error) {
         var fallback = gold
-          ? "Non riesco a leggere AI Gold adesso. Puoi aprire AI Gold e aggiornare la lettura; non modifico dati senza conferma."
+          ? "Non riesco a leggere il centro adesso. Apri Nyra Gold o aggiorna la dashboard; non modifico dati senza conferma."
           : "Non riesco a rispondere ora. Riprova tra poco o apri il modulo dal menu.";
-        state.messages.push({ role: "assistant", text: error && error.message ? error.message : fallback });
+        state.messages.push({ role: "assistant", text: compactAssistantText(error && error.message ? error.message : fallback) });
       })
       .finally(function () {
         state.sending = false;
@@ -260,6 +318,16 @@
 
   window.addEventListener("storage", loadSession);
   window.addEventListener("popstate", function () { setTimeout(render, 50); });
+  document.addEventListener("click", function (event) {
+    var target = event.target && event.target.closest ? event.target.closest("button, a, [role='button']") : null;
+    if (!isNativeNyraButton(target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+    state.open = !state.open;
+    render();
+  }, true);
   document.addEventListener("DOMContentLoaded", loadSession);
+  setInterval(enhanceNativeNyraButton, 1200);
   setTimeout(loadSession, 900);
 })();

@@ -412,6 +412,7 @@ try {
   assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
   assert(branches.json.branches?.change_impact_orchestration?.subbranches?.includes("rollback_impact"), "change impact orchestration branch missing");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
+  assert(branches.json.tenant_package?.allowed_branches?.includes("translator_marketing_governance"), "suite connector branch package missing translator marketing governance");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
 
@@ -797,6 +798,36 @@ try {
     state: marketingBranch.json.output.state,
     risk: marketingBranch.json.output.risk.band,
     owner_review_required: marketingBranch.json.branch_output.owner_review_required,
+  });
+
+  const translatorMarketingBranch = await api(base, "POST", "/v1/branches/translator_marketing_governance/analyze", {
+    tenant_id: "tenant_demo_skinharmony",
+    data: {
+      plugin_id: "skinharmony-translator",
+      app_name: "SkinHarmony Site Suite",
+      surface_type: "marketing_microcopy",
+      copy_class: "cta",
+      source_lang: "it",
+      target_lang: "en",
+      fallback_policy: "fallback_to_it",
+      items: [
+        { key_path: "dashboard.cta_recall", source_text: "Attiva il richiamo automatico", surface: "cta" },
+        { key_path: "pricing.gold_badge", source_text: "Canone premium con AI operativa", surface: "localized_label" },
+      ],
+      contains_pricing: true,
+      data_quality_score: 88,
+    },
+  }, connectorKey);
+  assert(translatorMarketingBranch.status === 200 && translatorMarketingBranch.json.branch_output?.translation_mode === "atomic_ui_and_marketing_review", "translator marketing branch failed");
+  assert(translatorMarketingBranch.json.branch_output?.marketing_review_required === true, "translator marketing branch should require marketing review");
+  assert(translatorMarketingBranch.json.branch_output?.pricing_review_required === true, "translator marketing branch should require pricing review");
+  assert(translatorMarketingBranch.json.branch_output?.recommended_companion_branches?.includes("translation_governance"), "translator marketing branch companion branches missing");
+  assert(translatorMarketingBranch.json.guardrail.execution_allowed === false, "translator marketing branch guardrail failed");
+  mark("branch_translator_marketing_governance", true, {
+    state: translatorMarketingBranch.json.output.state,
+    risk: translatorMarketingBranch.json.output.risk.band,
+    translation_mode: translatorMarketingBranch.json.branch_output.translation_mode,
+    surface_type: translatorMarketingBranch.json.branch_output.surface_type,
   });
 
   const chemistryBranch = await api(base, "POST", "/v1/branches/cosmetic_chemistry/analyze", {

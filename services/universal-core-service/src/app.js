@@ -1353,6 +1353,13 @@ function branchRegistry() {
       production_status: "advisory",
       description: "Valuta payload traducibili, readiness e rischio di traduzione. Non traduce HTML finale.",
     },
+    translator_marketing_governance: {
+      label: "Translator Marketing Governance",
+      domain: "translation_marketing",
+      tier: "network",
+      production_status: "advisory",
+      description: "Valuta traduttore plugin e app surfaces: microcopy, CTA, fallback, review marketing/compliance e sync strutturato.",
+    },
     ramo_testo: {
       label: "Ramo Testo / Content Guard",
       domain: "content_guard",
@@ -2476,6 +2483,63 @@ function buildBranchPayload(branch, payload = {}) {
       supported_languages: supportedLanguages,
       fallback_policy: "fallback_to_it",
       review_required: unsupportedLanguage || htmlBlob || alteredProtectedTokens > 0 || unstableKeys > 0,
+    };
+  } else if (branch === "translator_marketing_governance") {
+    const items = Array.isArray(data.items) ? data.items : [];
+    const surfaceType = textValue(data.surface_type || data.surface || data.copy_surface, "ui_strings");
+    const copyClass = textValue(data.copy_class || data.text_type || data.intent, "ui_label");
+    const sourceLang = textValue(data.source_lang, "it");
+    const targetLang = textValue(data.target_lang, "en");
+    const pluginId = textValue(data.plugin_id || data.app_id || data.integration_id);
+    const appName = textValue(data.app_name || data.product_name || data.application);
+    const fallbackPolicy = textValue(data.fallback_policy || data.fallback, "fallback_to_it");
+    const localeTarget = textValue(data.locale_target || data.locale || targetLang);
+    if (!items.length) missing.push("items");
+    if (!pluginId && !appName) missing.push("plugin_or_app_identity");
+    const unstableItems = items.filter((item) => !textValue(item.key_path) || !textValue(item.source_text)).length;
+    const ctaItems = items.filter((item) => /cta|button|call.?to.?action|hero/i.test(textValue(item?.surface || item?.key_path || item?.type)));
+    const pricingItems = items.filter((item) => /price|pricing|sconto|offerta|promo|canone|monthly|annuale/i.test(textValue(item?.source_text) + " " + textValue(item?.key_path)));
+    const claimItems = items.filter((item) => /garant|risultat|tratt|cura|medical|terap/i.test(textValue(item?.source_text)));
+    const htmlBlobItems = items.filter((item) => /<[^>]+>/.test(textValue(item?.source_text)) || /html|rich_text|wysiwyg/i.test(textValue(item?.surface || item?.type)));
+    const localizedLabelsOnly = items.every((item) => ["localized_label", "ui_label", "cta", "help_text", "onboarding", "status", ""].includes(textValue(item?.surface || item?.type)));
+    const requiresFallback = fallbackPolicy !== "none" && (sourceLang === "it" || data.require_fallback !== false);
+    const marketingReviewRequired = copyClass !== "ui_label" || ctaItems.length > 0 || surfaceType === "landing_copy" || surfaceType === "marketing_microcopy";
+    const pricingReviewRequired = pricingItems.length > 0 || data.contains_pricing === true;
+    const claimReviewRequired = claimItems.length > 0 || data.contains_claims === true;
+    const publishReady = missing.length === 0 && unstableItems === 0 && htmlBlobItems.length === 0 && !pricingReviewRequired && !claimReviewRequired && data.owner_review_confirmed === true;
+    const readiness = Math.max(0, 100 - missing.length * 25 - unstableItems * 10 - htmlBlobItems.length * 18 - (pricingReviewRequired ? 12 : 0) - (claimReviewRequired ? 16 : 0));
+    addSignal("translator_payload_readiness", "Readiness payload traduttore marketing/app", readiness, "translation_marketing", ["translator_plugin"]);
+    addSignal("key_stability_risk", "Rischio key path instabili o stringhe mancanti", Math.min(100, unstableItems * 18), "translation", ["key_path"]);
+    addSignal("marketing_surface_risk", "Rischio su superfici CTA/marketing/app copy", marketingReviewRequired ? 68 : 18, "marketing", ["surface_copy"]);
+    addSignal("pricing_claim_risk", "Rischio prezzi o claim nel copy tradotto", pricingReviewRequired || claimReviewRequired ? 84 : 12, "claim", ["pricing", "claim_guard"]);
+    addSignal("html_blob_risk", "Rischio HTML finale o rich text nel traduttore", htmlBlobItems.length ? 92 : 6, "translation", ["html_blob"]);
+    warnings.push(...htmlBlobItems.slice(0, 5).map((item) => `payload surface non consentita per traduzione strutturata: ${textValue(item.key_path || item.source_text, "item")}`));
+    branchOutput = {
+      translation_mode: "atomic_ui_and_marketing_review",
+      plugin_id: pluginId || null,
+      app_name: appName || null,
+      source_lang: sourceLang,
+      target_lang: targetLang,
+      locale_target: localeTarget,
+      surface_type: surfaceType,
+      copy_class: copyClass,
+      item_count: items.length,
+      unstable_item_count: unstableItems,
+      cta_item_count: ctaItems.length,
+      pricing_item_count: pricingItems.length,
+      claim_item_count: claimItems.length,
+      html_blob_item_count: htmlBlobItems.length,
+      fallback_required: requiresFallback,
+      fallback_policy: requiresFallback ? fallbackPolicy : "no_fallback_required",
+      safe_translation_mode: localizedLabelsOnly ? "plugin_structured_copy" : "mixed_surface_review",
+      marketing_review_required: marketingReviewRequired,
+      pricing_review_required: pricingReviewRequired,
+      claim_review_required: claimReviewRequired,
+      owner_review_required: true,
+      publish_ready: publishReady,
+      recommended_companion_branches: ["translation_governance", "marketing_copy", "ramo_testo"],
+      blocked_surfaces: htmlBlobItems.length ? ["html_blob"] : [],
+      rule: "Usare per plugin traduttore e applicazioni che devono tradurre microcopy strutturato senza perdere guardrail marketing/compliance.",
     };
   } else if (branch === "ramo_testo") {
     const text = textValue(data.text || data.content || data.copy || data.draft);

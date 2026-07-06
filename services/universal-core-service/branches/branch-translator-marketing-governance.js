@@ -1,0 +1,32 @@
+export const branchTranslatorMarketingGovernance = {
+  id: "translator_marketing_governance",
+  file: "branch-translator-marketing-governance.js",
+  tier: "network",
+  label: "Translator Marketing Governance",
+  domain: "translation_marketing",
+  production_status: "advisory",
+  description: "Ramo ponte per traduttore plugin e applicazioni: traduzioni strutturate, microcopy, CTA, fallback e review marketing/compliance.",
+  rules: [
+    "Tradurre e governare stringhe strutturate, microcopy, CTA, onboarding e help text; non HTML finale.",
+    "Distinguere sempre superficie e funzione del testo: ui_label, cta, onboarding, help, release note, landing, scheda prodotto.",
+    "I key_path devono restare stabili per sync plugin, review, fallback e readiness multi-app.",
+    "Se manca traduzione approvata o il copy non e pronto per locale target, fallback all'italiano o bozza non pubblicabile.",
+    "Se il testo tocca promesse, prezzi, sconti, claim, risultati o fattori commerciali, richiedere review marketing + claim/pricing guard.",
+    "Non inventare prezzi, offerte locali, testimonianze, prove, product facts o differenze di prodotto tra lingue.",
+    "Produrre output adatto a plugin/app: payload strutturato, metadata superficie, fallback policy, review flags e priorita operative.",
+  ],
+  guardrails: {
+    destructive_automation: false,
+    publish_requires_owner_confirmation: true,
+    allowed_action_level: "translation_marketing_review",
+    blocked_actions: [
+      "translate_html_blob",
+      "auto_publish_translation",
+      "drop_fallback",
+      "invent_price",
+      "medical_claim",
+      "rewrite_product_facts",
+      "unsafe_locale_offer",
+    ],
+  },
+};
