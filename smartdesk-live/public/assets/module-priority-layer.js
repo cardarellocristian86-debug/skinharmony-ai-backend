@@ -639,6 +639,22 @@
     });
   }
 
+  function applyClientHighlights() {
+    document.querySelectorAll(".list-item.static, .list-item, article, .sh-card").forEach(function (node) {
+      if (!isHighlightLeafNode(node)) return;
+      var body = nodeHighlightBody(node);
+
+      if (/inattivo|dormiente|recupero prioritario|cliente perso|perso/.test(body)) {
+        markNode(node, "critical");
+        return;
+      }
+
+      if (/in ritardo|recuperabile|recall leggero|da richiamare|a rischio/.test(body)) {
+        markNode(node, "warning");
+      }
+    });
+  }
+
   function applyGenericHighlights(module, items) {
     var severity = strongestSeverity(items, "warning");
     var terms = [];
@@ -721,6 +737,10 @@
     if (!items.length) return;
     if (module.path === "/services") {
       applyServiceHighlights(items);
+      return;
+    }
+    if (module.path === "/clients" || module.path === "/marketing") {
+      applyClientHighlights();
       return;
     }
     if (module.path === "/profitability") {
