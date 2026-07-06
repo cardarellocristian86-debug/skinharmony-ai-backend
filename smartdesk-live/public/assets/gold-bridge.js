@@ -3,6 +3,7 @@
   const PANEL_ID = "skinharmony-gold-priority-bridge";
   const ROUTES = new Set(["/", "/dashboard", "/ai-gold"]);
   const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
+  const ENTERPRISE_HOME_PANEL_ID = "skinharmony-enterprise-home-bridge";
   const ENTERPRISE_SETTINGS_PANEL_ID = "skinharmony-enterprise-settings-bridge";
   const ENTERPRISE_REPORTS_PANEL_ID = "skinharmony-enterprise-reports-bridge";
   const ENTERPRISE_SURFACE_PANEL_ID = "skinharmony-enterprise-surface-bridge";
@@ -524,7 +525,7 @@
   }
 
   function removeEnterprisePanels() {
-    [ENTERPRISE_SETTINGS_PANEL_ID, ENTERPRISE_REPORTS_PANEL_ID, ENTERPRISE_SURFACE_PANEL_ID].forEach((id) => {
+    [ENTERPRISE_HOME_PANEL_ID, ENTERPRISE_SETTINGS_PANEL_ID, ENTERPRISE_REPORTS_PANEL_ID, ENTERPRISE_SURFACE_PANEL_ID].forEach((id) => {
       const existing = document.getElementById(id);
       if (existing) existing.remove();
     });
@@ -1562,12 +1563,25 @@
     return (window.location.pathname || "/") === "/settings";
   }
 
+  function isDashboardRoute() {
+    return ["/", "/dashboard"].includes(window.location.pathname || "/");
+  }
+
   function isReportsRoute() {
     return (window.location.pathname || "/") === "/reports";
   }
 
   function isSurfaceRoute() {
     return ["/services", "/shifts", "/protocols"].includes(window.location.pathname || "/");
+  }
+
+  function findEnterpriseHomeAnchor() {
+    return findAnchorByText("Centro letto da Smart Desk")
+      || findAnchorByText("Smart Desk center reading")
+      || findAnchorByText("Centro sotto controllo")
+      || findAnchorByText("Center under control")
+      || document.getElementById("root")?.firstElementChild
+      || null;
   }
 
   let sessionRoleCache = "";
@@ -1702,6 +1716,64 @@
           <div class="enterprise-bridge-card-title">${copy("Piani centri", "Center plans")}</div>
           <div class="enterprise-bridge-card-value">Base · Silver · Gold</div>
           <div class="enterprise-bridge-card-copy">${copy("Enterprise controlla la flotta; il singolo centro continua a lavorare nel proprio piano operativo.", "Enterprise controls the fleet; each center keeps working inside its operating plan.")}</div>
+        </div>
+      </div>
+    `;
+    bindBridgeNavigation(panel);
+    return panel;
+  }
+
+  function buildEnterpriseHomePanel(session, enterpriseControl = null) {
+    const role = String(session?.role || "owner").toLowerCase();
+    const supportMode = Boolean(session?.supportMode);
+    if (role !== "superadmin" || supportMode) return null;
+    const centerCount = Number(enterpriseControl?.centerCount || 0);
+    const centerLimit = Number(enterpriseControl?.centerLimit || 0);
+    const remainingCenters = Number(enterpriseControl?.remainingCenters || 0);
+    const canCreateCenters = Boolean(enterpriseControl?.canCreateCenters);
+    const subscriptionStatus = String(enterpriseControl?.subscriptionStatus || "active");
+    const checklist = Array.isArray(enterpriseControl?.checklist) ? enterpriseControl.checklist : [];
+    const panel = document.createElement("section");
+    panel.id = ENTERPRISE_HOME_PANEL_ID;
+    panel.className = "enterprise-bridge-panel";
+    panel.innerHTML = `
+      <div class="enterprise-bridge-header">
+        <div>
+          <div class="enterprise-bridge-title">${copy("Enterprise Control Room", "Enterprise Control Room")}</div>
+          <div class="enterprise-bridge-subtitle">${copy("Vista superadmin per catene, franchising e brand: qui controlli centri, piani, supporto, slot abbonamento e Fleet Intelligence. Il gestionale operativo resta dentro ogni singolo centro.", "Superadmin view for chains, franchises and brands: manage centers, plans, support, subscription slots and Fleet Intelligence here. The operating desk stays inside each single center.")}</div>
+        </div>
+        <div class="enterprise-bridge-pill">${copy("Piano", "Plan")} Enterprise</div>
+      </div>
+      <div class="enterprise-bridge-grid">
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0">
+          <div class="enterprise-bridge-card-title">${copy("Abbonamento", "Subscription")}</div>
+          <div class="enterprise-bridge-card-value">${subscriptionStatus}</div>
+          <div class="enterprise-bridge-card-copy">${canCreateCenters ? copy("Creazione centri consentita entro gli slot attivi.", "Center creation allowed within active slots.") : copy("Creazione nuovi centri bloccata: serve uno slot Enterprise attivo.", "New center creation locked: an active Enterprise slot is required.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0">
+          <div class="enterprise-bridge-card-title">${copy("Centri / slot", "Centers / slots")}</div>
+          <div class="enterprise-bridge-card-value">${centerCount} / ${centerLimit}</div>
+          <div class="enterprise-bridge-card-copy">${remainingCenters} ${copy("slot disponibili.", "slots available.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/fleet-intelligence" role="button" tabindex="0">
+          <div class="enterprise-bridge-card-title">${copy("Fleet Intelligence", "Fleet Intelligence")}</div>
+          <div class="enterprise-bridge-card-value">${copy("multi-centro", "multi-center")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Legge uso, anomalie e performance senza scrivere dati operativi.", "Reads usage, anomalies and performance without writing operating data.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0">
+          <div class="enterprise-bridge-card-title">${copy("Piani centri", "Center plans")}</div>
+          <div class="enterprise-bridge-card-value">Base · Silver · Gold</div>
+          <div class="enterprise-bridge-card-copy">${copy("Enterprise governa la flotta; i centri restano nei loro piani operativi.", "Enterprise governs the fleet; centers remain in their operating plans.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0">
+          <div class="enterprise-bridge-card-title">${copy("Supporto", "Support")}</div>
+          <div class="enterprise-bridge-card-value">${copy("accesso controllato", "controlled access")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Entrata supporto, reset e cambi piano restano azioni confermabili.", "Support entry, resets and plan changes remain confirmable actions.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0">
+          <div class="enterprise-bridge-card-title">${copy("Checklist", "Checklist")}</div>
+          <div class="enterprise-bridge-card-value">${checklist.length || 6} ${copy("controlli", "checks")}</div>
+          <div class="enterprise-bridge-card-copy">${(checklist.slice(0, 3).map((item) => item.label).join(" · ")) || copy("Centri, abbonamento, supporto.", "Centers, subscription, support.")}</div>
         </div>
       </div>
     `;
@@ -1854,11 +1926,36 @@
   }
 
   async function renderEnterprisePanels() {
-    if (!isSettingsRoute() && !isReportsRoute() && !isSurfaceRoute()) {
+    if (!isDashboardRoute() && !isSettingsRoute() && !isReportsRoute() && !isSurfaceRoute()) {
       runWithMutationLock(removeEnterprisePanels);
       return;
     }
     injectStyle();
+    if (isDashboardRoute()) {
+      try {
+        const [session, enterpriseControl] = await Promise.all([
+          fetchJson("/api/auth/session"),
+          fetchJson("/api/enterprise/control").catch(() => null)
+        ]);
+        const anchor = findEnterpriseHomeAnchor();
+        const panel = buildEnterpriseHomePanel(session, enterpriseControl);
+        const existing = document.getElementById(ENTERPRISE_HOME_PANEL_ID);
+        runWithMutationLock(() => {
+          if (!panel) {
+            if (existing) existing.remove();
+            return;
+          }
+          if (existing) existing.replaceWith(panel);
+          else if (anchor) anchor.insertAdjacentElement("beforebegin", panel);
+        });
+      } catch (_error) {
+        const existing = document.getElementById(ENTERPRISE_HOME_PANEL_ID);
+        if (existing) runWithMutationLock(() => existing.remove());
+      }
+    } else {
+      const existing = document.getElementById(ENTERPRISE_HOME_PANEL_ID);
+      if (existing) runWithMutationLock(() => existing.remove());
+    }
     if (isSettingsRoute()) {
       try {
         const [session, settings, enterpriseControl] = await Promise.all([
