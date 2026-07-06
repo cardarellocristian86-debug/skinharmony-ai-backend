@@ -1,0 +1,258 @@
+.nyra-gold-chat-root {
+  position: fixed;
+  left: 22px;
+  bottom: 22px;
+  z-index: 80;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #163047;
+}
+
+.nyra-gold-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 10px 18px 10px 12px;
+  border: 1px solid rgba(105, 211, 240, 0.34);
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(255,255,255,.96), rgba(232,248,253,.96));
+  color: #163047;
+  box-shadow: 0 18px 46px rgba(24, 60, 86, 0.16);
+  cursor: pointer;
+}
+
+.nyra-gold-chat-root.gold .nyra-gold-trigger {
+  border-color: rgba(42, 130, 196, 0.32);
+  background: linear-gradient(135deg, rgba(255,255,255,.98), rgba(224,247,252,.98));
+  box-shadow: 0 20px 56px rgba(42, 158, 196, 0.26);
+}
+
+.nyra-gold-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #7ed3e5, #4fb6d6);
+  color: #fff;
+  font-size: 22px;
+  font-weight: 950;
+}
+
+.nyra-gold-trigger strong,
+.nyra-gold-trigger small {
+  display: block;
+  text-align: left;
+  line-height: 1.1;
+}
+
+.nyra-gold-trigger strong {
+  font-size: 17px;
+  font-weight: 950;
+}
+
+.nyra-gold-trigger small {
+  margin-top: 3px;
+  color: #5f7786;
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.nyra-gold-panel {
+  width: min(430px, calc(100vw - 30px));
+  max-height: min(680px, calc(100vh - 110px));
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr) auto auto;
+  overflow: hidden;
+  border: 1px solid rgba(105, 211, 240, 0.28);
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(243,250,253,.98));
+  box-shadow: 0 28px 80px rgba(24, 60, 86, 0.22);
+}
+
+.nyra-gold-chat-root.gold .nyra-gold-panel {
+  border-color: rgba(42, 130, 196, 0.28);
+  background:
+    radial-gradient(circle at top right, rgba(105,211,240,.22), transparent 38%),
+    linear-gradient(180deg, rgba(255,255,255,.99), rgba(239,249,253,.98));
+}
+
+.nyra-gold-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid rgba(105, 211, 240, 0.18);
+}
+
+.nyra-gold-head strong,
+.nyra-gold-head span {
+  display: block;
+}
+
+.nyra-gold-head strong {
+  margin-top: 3px;
+  color: #102d42;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: -.03em;
+}
+
+.nyra-gold-head span {
+  margin-top: 6px;
+  color: #5b7484;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.nyra-gold-kicker {
+  color: #2a82c4;
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: .16em;
+}
+
+.nyra-gold-close {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid rgba(105, 211, 240, 0.22);
+  border-radius: 999px;
+  background: #fff;
+  color: #2a82c4;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.nyra-gold-thread {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  overflow: auto;
+}
+
+.nyra-gold-message {
+  width: min(88%, 340px);
+  padding: 11px 12px;
+  border: 1px solid rgba(105, 211, 240, 0.18);
+  border-radius: 16px;
+  background: rgba(255,255,255,.92);
+  box-shadow: 0 10px 28px rgba(24,60,86,.08);
+}
+
+.nyra-gold-message.user {
+  justify-self: end;
+  border-color: rgba(42, 130, 196, 0.28);
+  background: linear-gradient(135deg, #249fc8, #67c9dc);
+  color: #fff;
+}
+
+.nyra-gold-message.thinking {
+  opacity: .86;
+}
+
+.nyra-gold-message-label {
+  margin-bottom: 5px;
+  color: #2a82c4;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.nyra-gold-message.user .nyra-gold-message-label {
+  color: rgba(255,255,255,.78);
+}
+
+.nyra-gold-message-body {
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.nyra-gold-actions,
+.nyra-gold-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nyra-gold-actions {
+  margin-top: 10px;
+}
+
+.nyra-gold-actions button,
+.nyra-gold-quick button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid rgba(105, 211, 240, 0.24);
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  color: #2a82c4;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.nyra-gold-quick {
+  padding: 0 14px 12px;
+}
+
+.nyra-gold-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid rgba(105, 211, 240, 0.16);
+}
+
+.nyra-gold-form input {
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid rgba(121,159,184,.24);
+  border-radius: 14px;
+  background: rgba(255,255,255,.96);
+  color: #163047;
+  padding: 0 13px;
+  font: inherit;
+  outline: none;
+}
+
+.nyra-gold-form input:focus {
+  border-color: rgba(42, 158, 196, .62);
+  box-shadow: 0 0 0 3px rgba(79,182,214,.14);
+}
+
+.nyra-gold-form button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #7ed3e5, #2a9ec4);
+  color: #fff;
+  font: inherit;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+@media (max-width: 700px) {
+  .nyra-gold-chat-root {
+    left: 14px;
+    right: 14px;
+    bottom: 14px;
+  }
+
+  .nyra-gold-panel {
+    width: 100%;
+    max-height: calc(100vh - 120px);
+  }
+}
