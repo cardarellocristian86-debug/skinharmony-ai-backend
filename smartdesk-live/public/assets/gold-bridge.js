@@ -379,6 +379,44 @@
         line-height: 1.55;
         color: #5b7f91;
       }
+      .enterprise-center-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .enterprise-center-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        border-radius: 18px;
+        border: 1px solid rgba(121,159,184,0.16);
+        background: rgba(255,255,255,0.88);
+        padding: 14px 16px;
+      }
+      .enterprise-center-name {
+        font-size: 15px;
+        font-weight: 800;
+        color: #163747;
+      }
+      .enterprise-center-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: #6b8391;
+      }
+      .enterprise-center-action {
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 14px;
+        border: 0;
+        background: linear-gradient(135deg, rgba(126,211,229,.94), rgba(47,171,200,.96));
+        color: #fff;
+        font-size: 13px;
+        font-weight: 800;
+        cursor: pointer;
+        white-space: nowrap;
+      }
       .enterprise-bridge-actions {
         display: flex;
         flex-wrap: wrap;
@@ -565,6 +603,18 @@
     const active = nav?.querySelector?.(".active-btn, [aria-current='page']");
     const label = String(active?.textContent || "").replace(/\s+/g, " ").trim();
     return label || copy("moduli", "modules", "Module");
+  }
+
+  function isEnterpriseControlSessionPayload(session) {
+    return String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode;
+  }
+
+  async function isEnterpriseControlSession() {
+    try {
+      return isEnterpriseControlSessionPayload(await fetchJson("/api/auth/session"));
+    } catch (_error) {
+      return false;
+    }
   }
 
   function enhanceTopbarMenu() {
@@ -1531,6 +1581,10 @@
 
     try {
       await refreshUiLanguage();
+      if (await isEnterpriseControlSession()) {
+        runWithMutationLock(() => removePanel());
+        return;
+      }
       const [capabilities, context, customerIntelligence] = await Promise.all([
         fetchJson("/api/ai-gold/capabilities"),
         fetchJson("/api/ai-gold/decision-context"),
@@ -1565,6 +1619,10 @@
 
   function isDashboardRoute() {
     return ["/", "/dashboard"].includes(window.location.pathname || "/");
+  }
+
+  function isEnterpriseAiRoute() {
+    return (window.location.pathname || "/") === "/ai-gold";
   }
 
   function isReportsRoute() {
@@ -1723,7 +1781,45 @@
     return panel;
   }
 
-  function buildEnterpriseHomePanel(session, enterpriseControl = null) {
+  function normalizeEnterpriseCenters(users = []) {
+    const planRank = { base: 1, silver: 2, gold: 3 };
+    const centers = new Map();
+    users.forEach((user) => {
+      if (String(user.role || "").toLowerCase() === "superadmin") return;
+      const centerId = String(user.centerId || "").trim();
+      if (!centerId) return;
+      const current = centers.get(centerId) || {
+        centerId,
+        centerName: user.centerName || centerId,
+        users: 0,
+        activeUsers: 0,
+        plan: user.subscriptionPlan || "base",
+        accessState: user.accessState || "",
+        memory: user.controlStats?.memoryBytes || 0,
+        sessions: user.controlStats?.activeSessions || 0,
+        ownerName: user.ownerName || "",
+        contactEmail: user.contactEmail || ""
+      };
+      current.users += 1;
+      if (user.active !== false && !["suspended", "expired"].includes(String(user.accessState || ""))) current.activeUsers += 1;
+      if ((planRank[String(user.subscriptionPlan || "").toLowerCase()] || 0) > (planRank[String(current.plan || "").toLowerCase()] || 0)) {
+        current.plan = user.subscriptionPlan || current.plan;
+      }
+      current.sessions += Number(user.controlStats?.activeSessions || 0);
+      current.memory += Number(user.controlStats?.memoryBytes || 0);
+      centers.set(centerId, current);
+    });
+    return Array.from(centers.values()).sort((a, b) => String(a.centerName).localeCompare(String(b.centerName)));
+  }
+
+  function formatMemory(bytes) {
+    const value = Number(bytes || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(1)} MB`;
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${value} B`;
+  }
+
+  function buildEnterpriseHomePanel(session, enterpriseControl = null, users = []) {
     const role = String(session?.role || "owner").toLowerCase();
     const supportMode = Boolean(session?.supportMode);
     if (role !== "superadmin" || supportMode) return null;
@@ -1733,6 +1829,7 @@
     const canCreateCenters = Boolean(enterpriseControl?.canCreateCenters);
     const subscriptionStatus = String(enterpriseControl?.subscriptionStatus || "active");
     const checklist = Array.isArray(enterpriseControl?.checklist) ? enterpriseControl.checklist : [];
+    const centers = normalizeEnterpriseCenters(users);
     const panel = document.createElement("section");
     panel.id = ENTERPRISE_HOME_PANEL_ID;
     panel.className = "enterprise-bridge-panel";
@@ -1776,7 +1873,44 @@
           <div class="enterprise-bridge-card-copy">${(checklist.slice(0, 3).map((item) => item.label).join(" · ")) || copy("Centri, abbonamento, supporto.", "Centers, subscription, support.")}</div>
         </div>
       </div>
+      <div class="enterprise-center-list">
+        ${centers.length ? centers.slice(0, 8).map((center) => `
+          <div class="enterprise-center-row">
+            <div>
+              <div class="enterprise-center-name">${escapeHtml(center.centerName)}</div>
+              <div class="enterprise-center-meta">
+                ${escapeHtml(center.plan || "base")} · ${center.activeUsers}/${center.users} ${copy("utenti attivi", "active users")} · ${center.sessions} ${copy("sessioni", "sessions")} · ${formatMemory(center.memory)}
+              </div>
+            </div>
+            <button type="button" class="enterprise-center-action" data-enterprise-support-user="${escapeHtml(center.centerId)}">${copy("Entra nel centro", "Enter center")}</button>
+          </div>
+        `).join("") : `
+          <div class="enterprise-center-row">
+            <div>
+              <div class="enterprise-center-name">${copy("Nessun centro collegato", "No connected center")}</div>
+              <div class="enterprise-center-meta">${copy("Aggiungi centri solo tramite slot Enterprise attivi.", "Add centers only through active Enterprise slots.")}</div>
+            </div>
+          </div>
+        `}
+      </div>
     `;
+    panel.addEventListener("click", async (event) => {
+      const button = event.target?.closest?.("[data-enterprise-support-user]");
+      if (!button) return;
+      const centerId = button.getAttribute("data-enterprise-support-user");
+      const target = users.find((user) => String(user.centerId || "") === String(centerId || "") && String(user.role || "").toLowerCase() !== "superadmin");
+      if (!target?.id) return;
+      button.disabled = true;
+      button.textContent = copy("Apertura...", "Opening...");
+      try {
+        const result = await postJson(`/api/auth/users/${target.id}/support-session`, {});
+        if (result?.token) window.localStorage.setItem("skinharmony-web-token", result.token);
+        window.location.assign("/");
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = error?.message || copy("Errore", "Error");
+      }
+    });
     bindBridgeNavigation(panel);
     return panel;
   }
@@ -1926,19 +2060,20 @@
   }
 
   async function renderEnterprisePanels() {
-    if (!isDashboardRoute() && !isSettingsRoute() && !isReportsRoute() && !isSurfaceRoute()) {
+    if (!isDashboardRoute() && !isEnterpriseAiRoute() && !isSettingsRoute() && !isReportsRoute() && !isSurfaceRoute()) {
       runWithMutationLock(removeEnterprisePanels);
       return;
     }
     injectStyle();
-    if (isDashboardRoute()) {
+    if (isDashboardRoute() || isEnterpriseAiRoute()) {
       try {
-        const [session, enterpriseControl] = await Promise.all([
+        const [session, enterpriseControl, users] = await Promise.all([
           fetchJson("/api/auth/session"),
-          fetchJson("/api/enterprise/control").catch(() => null)
+          fetchJson("/api/enterprise/control").catch(() => null),
+          fetchJson("/api/auth/users").catch(() => [])
         ]);
-        const anchor = findEnterpriseHomeAnchor();
-        const panel = buildEnterpriseHomePanel(session, enterpriseControl);
+        const anchor = isEnterpriseAiRoute() ? (document.getElementById("root")?.firstElementChild || findEnterpriseHomeAnchor()) : findEnterpriseHomeAnchor();
+        const panel = buildEnterpriseHomePanel(session, enterpriseControl, users);
         const existing = document.getElementById(ENTERPRISE_HOME_PANEL_ID);
         runWithMutationLock(() => {
           if (!panel) {

@@ -2337,7 +2337,7 @@ class DesktopMirrorService {
 
   hasGoldIntelligence(session = null) {
     if (!session) return false;
-    if (this.isSuperAdminSession(session) && !session.supportMode) return true;
+    if (this.isSuperAdminSession(session) && !session.supportMode) return false;
     return ["gold", "enterprise"].includes(String(session.subscriptionPlan || "").toLowerCase());
   }
 
