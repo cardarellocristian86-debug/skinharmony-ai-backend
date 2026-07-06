@@ -1639,7 +1639,7 @@
     return panel;
   }
 
-  function buildEnterpriseSettingsPanel(session, settings) {
+  function buildEnterpriseSettingsPanel(session, settings, enterpriseControl = null) {
     const role = String(session?.role || "owner").toLowerCase();
     const supportMode = Boolean(session?.supportMode);
     if (role !== "superadmin" || supportMode) return null;
@@ -1653,32 +1653,55 @@
       settings?.profitabilityEnabled !== false,
       settings?.operatorReportsEnabled !== false
     ].filter(Boolean).length;
+    const centerCount = Number(enterpriseControl?.centerCount || 0);
+    const centerLimit = Number(enterpriseControl?.centerLimit || 0);
+    const remainingCenters = Number(enterpriseControl?.remainingCenters || 0);
+    const canCreateCenters = Boolean(enterpriseControl?.canCreateCenters);
+    const subscriptionStatus = String(enterpriseControl?.subscriptionStatus || "active");
+    const creationPolicy = enterpriseControl?.creationPolicy
+      || copy("Creazione centri gestita dall'abbonamento Enterprise.", "Center creation is managed by the Enterprise subscription.");
+    const checklist = Array.isArray(enterpriseControl?.checklist) ? enterpriseControl.checklist : [];
     const panel = document.createElement("section");
     panel.id = ENTERPRISE_SETTINGS_PANEL_ID;
     panel.className = "enterprise-bridge-panel";
     panel.innerHTML = `
       <div class="enterprise-bridge-header">
         <div>
-          <div class="enterprise-bridge-title">${copy("Configurazione Enterprise attiva", "Active Enterprise configuration")}</div>
-          <div class="enterprise-bridge-subtitle">${copy("La shell deve spiegare cosa e attivo, cosa richiede conferma e quale prossima mossa ha senso ora.", "The shell must explain what is active, what requires confirmation and which next move makes sense now.")}</div>
+          <div class="enterprise-bridge-title">${copy("Enterprise Control Room", "Enterprise Control Room")}</div>
+          <div class="enterprise-bridge-subtitle">${copy("Per catene, franchising e brand: controlla centri, accessi, piani, supporto e slot abbonamento senza entrare nel gestionale operativo del singolo centro.", "For chains, franchises and brands: manage centers, access, plans, support and subscription slots without replacing the operating desk of a single center.")}</div>
         </div>
-        <div class="enterprise-bridge-pill">${activeModules} ${copy("moduli attivi", "active modules")}</div>
+        <div class="enterprise-bridge-pill">${copy("Piano", "Plan")} Enterprise</div>
       </div>
       <div class="enterprise-bridge-grid">
         <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri impostazioni sessione", "Open session settings")}">
-          <div class="enterprise-bridge-card-title">${copy("Sessione", "Session")}</div>
-          <div class="enterprise-bridge-card-value">${role || "owner"}</div>
-          <div class="enterprise-bridge-card-copy">${copy("Le azioni sensibili restano confermabili", "Sensitive actions remain confirmable")}: ${confirmationMode}.</div>
+          <div class="enterprise-bridge-card-title">${copy("Abbonamento", "Subscription")}</div>
+          <div class="enterprise-bridge-card-value">${subscriptionStatus}</div>
+          <div class="enterprise-bridge-card-copy">${creationPolicy}</div>
         </div>
         <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri impostazioni moduli", "Open module settings")}">
-          <div class="enterprise-bridge-card-title">${copy("Regole accesso", "Access rules")}</div>
-          <div class="enterprise-bridge-card-value">${settings?.profitabilityEnabled !== false ? copy("redditivita leggibile", "profitability readable") : copy("redditivita bloccata", "profitability blocked")}</div>
-          <div class="enterprise-bridge-card-copy">${copy("Quando un modulo non e attivo, la UI deve aprire una guida premium invece di lasciare uno stato vuoto o un errore secco.", "When a module is not active, the UI must open premium guidance instead of leaving an empty state or a dry error.")}</div>
+          <div class="enterprise-bridge-card-title">${copy("Centri gestiti", "Managed centers")}</div>
+          <div class="enterprise-bridge-card-value">${centerCount} / ${centerLimit}</div>
+          <div class="enterprise-bridge-card-copy">${canCreateCenters ? `${remainingCenters} ${copy("slot disponibili per nuovi centri.", "slots available for new centers.")}` : copy("Nessuno slot disponibile: la creazione nuovi centri e bloccata.", "No slot available: new center creation is locked.")}</div>
         </div>
         <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri prossima azione impostazioni", "Open next settings action")}">
-          <div class="enterprise-bridge-card-title">${copy("Prossima mossa", "Next move")}</div>
-          <div class="enterprise-bridge-card-value">${copy("Controlla moduli, sessione e coerenza testi", "Check modules, session and copy coherence")}</div>
-          <div class="enterprise-bridge-card-copy">${copy("Se il centro non puo agire, la vista deve indicare il prossimo passo: piano, impostazioni o ruolo corretto.", "If the center cannot act, the view must indicate the next step: plan, settings or correct role.")}</div>
+          <div class="enterprise-bridge-card-title">${copy("Governance", "Governance")}</div>
+          <div class="enterprise-bridge-card-value">${copy("azioni confermabili", "confirmable actions")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Supporto, reset, cambio piano e nuovi centri restano sotto controllo abbonamento e conferma operativa.", "Support, reset, plan changes and new centers remain under subscription control and operational confirmation.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/fleet-intelligence" role="button" tabindex="0" aria-label="${copy("Apri Fleet Intelligence", "Open Fleet Intelligence")}">
+          <div class="enterprise-bridge-card-title">${copy("Fleet Intelligence", "Fleet Intelligence")}</div>
+          <div class="enterprise-bridge-card-value">${copy("read-only", "read-only")}</div>
+          <div class="enterprise-bridge-card-copy">${copy("Lettura multi-centro per anomalie, performance e uso, senza modificare dati operativi dei centri.", "Multi-center reading for anomalies, performance and usage, without changing center operating data.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri checklist Enterprise", "Open Enterprise checklist")}">
+          <div class="enterprise-bridge-card-title">${copy("Checklist", "Checklist")}</div>
+          <div class="enterprise-bridge-card-value">${checklist.length || activeModules} ${copy("controlli", "checks")}</div>
+          <div class="enterprise-bridge-card-copy">${(checklist.slice(0, 3).map((item) => item.label).join(" · ")) || copy("Centri, piani, supporto e moduli attivi.", "Centers, plans, support and active modules.")}</div>
+        </div>
+        <div class="enterprise-bridge-card" data-enterprise-card-target="/settings" role="button" tabindex="0" aria-label="${copy("Apri controllo piani", "Open plan control")}">
+          <div class="enterprise-bridge-card-title">${copy("Piani centri", "Center plans")}</div>
+          <div class="enterprise-bridge-card-value">Base · Silver · Gold</div>
+          <div class="enterprise-bridge-card-copy">${copy("Enterprise controlla la flotta; il singolo centro continua a lavorare nel proprio piano operativo.", "Enterprise controls the fleet; each center keeps working inside its operating plan.")}</div>
         </div>
       </div>
     `;
@@ -1838,14 +1861,15 @@
     injectStyle();
     if (isSettingsRoute()) {
       try {
-        const [session, settings] = await Promise.all([
+        const [session, settings, enterpriseControl] = await Promise.all([
           fetchJson("/api/auth/session"),
-          fetchJson("/api/settings")
+          fetchJson("/api/settings"),
+          fetchJson("/api/enterprise/control").catch(() => null)
         ]);
         await refreshUiLanguage(settings);
         const anchor = findSettingsAnchor();
         if (anchor) {
-          const panel = buildEnterpriseSettingsPanel(session, settings);
+          const panel = buildEnterpriseSettingsPanel(session, settings, enterpriseControl);
           const existing = document.getElementById(ENTERPRISE_SETTINGS_PANEL_ID);
           runWithMutationLock(() => {
             if (!panel) {

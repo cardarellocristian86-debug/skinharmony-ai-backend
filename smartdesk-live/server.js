@@ -481,11 +481,12 @@ function fleetFilters(req) {
 const planWeight = {
   base: 1,
   silver: 2,
-  gold: 3
+  gold: 3,
+  enterprise: 4
 };
 
 function normalizedPlan(session) {
-  if (String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode) return "gold";
+  if (String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode) return "enterprise";
   const plan = String(session?.subscriptionPlan || "").toLowerCase();
   return planWeight[plan] ? plan : "base";
 }
@@ -759,6 +760,17 @@ app.get("/api/auth/users", requireAuth, (req, res) => {
     } catch {
       return res.status(500).send(error instanceof Error ? error.message : "Impossibile leggere gli accessi");
     }
+  }
+});
+
+app.get("/api/enterprise/control", requireAuth, requireSuperAdmin, (req, res) => {
+  try {
+    res.json(service.getEnterpriseControlState(req.session));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Controllo Enterprise non disponibile"
+    });
   }
 });
 

@@ -2338,14 +2338,90 @@ class DesktopMirrorService {
   hasGoldIntelligence(session = null) {
     if (!session) return false;
     if (this.isSuperAdminSession(session) && !session.supportMode) return true;
-    return String(session.subscriptionPlan || "").toLowerCase() === "gold";
+    return ["gold", "enterprise"].includes(String(session.subscriptionPlan || "").toLowerCase());
   }
 
   getPlanLevel(session = null) {
     if (!session) return "base";
-    if (this.isSuperAdminSession(session) && !session.supportMode) return "gold";
+    if (this.isSuperAdminSession(session) && !session.supportMode) return "enterprise";
     const plan = String(session.subscriptionPlan || "").toLowerCase();
-    return ["base", "silver", "gold"].includes(plan) ? plan : "base";
+    return ["base", "silver", "gold", "enterprise"].includes(plan) ? plan : "base";
+  }
+
+  getEnterpriseControlState(session = null) {
+    if (!this.isSuperAdminSession(session) || session?.supportMode) {
+      throw new Error("Enterprise Control Room disponibile solo fuori dalla sessione supporto.");
+    }
+    const users = this.usersRepository.list();
+    const normalizedUsers = users.map((user) => this.normalizeUserAccount(user));
+    const managedCenterIds = new Set(
+      normalizedUsers
+        .filter((user) => String(user.role || "").toLowerCase() !== "superadmin")
+        .map((user) => String(user.centerId || DEFAULT_CENTER_ID))
+        .filter(Boolean)
+    );
+    const account = normalizedUsers.find((user) => String(user.id || "") === String(session?.userId || ""))
+      || normalizedUsers.find((user) => String(user.role || "").toLowerCase() === "superadmin")
+      || {};
+    const envLimit = Number(process.env.ENTERPRISE_CENTER_LIMIT || "");
+    const accountLimit = Number(account.enterpriseCenterLimit || account.enterpriseCentersLimit || "");
+    const centerCount = managedCenterIds.size;
+    const configuredLimit = Number.isFinite(accountLimit) && accountLimit > 0
+      ? accountLimit
+      : Number.isFinite(envLimit) && envLimit > 0
+        ? envLimit
+        : centerCount;
+    const subscriptionStatus = String(
+      account.enterpriseSubscriptionStatus
+      || account.enterpriseStatus
+      || process.env.ENTERPRISE_SUBSCRIPTION_STATUS
+      || "active"
+    ).toLowerCase();
+    const centerLimit = Math.max(0, Math.round(configuredLimit));
+    const remainingCenters = Math.max(0, centerLimit - centerCount);
+    const canCreateCenters = subscriptionStatus === "active" && remainingCenters > 0;
+    return {
+      success: true,
+      plan: "enterprise",
+      subscriptionStatus,
+      centerCount,
+      centerLimit,
+      remainingCenters,
+      canCreateCenters,
+      creationPolicy: canCreateCenters
+        ? "Nuovi centri consentiti entro gli slot Enterprise disponibili."
+        : "Creazione nuovi centri bloccata: serve uno slot Enterprise attivo.",
+      managedCenters: Array.from(managedCenterIds),
+      checklist: [
+        { key: "centers", label: "Centri e brand", status: centerCount > 0 ? "active" : "empty" },
+        { key: "subscription", label: "Abbonamento e slot", status: canCreateCenters ? "ready" : "locked" },
+        { key: "support", label: "Accesso supporto ai centri", status: "active" },
+        { key: "fleet", label: "Fleet Intelligence", status: "read_only" },
+        { key: "plans", label: "Piani Base, Silver, Gold", status: "active" },
+        { key: "audit", label: "Azioni sensibili confermabili", status: "protected" }
+      ],
+      blockedActions: canCreateCenters ? [] : ["create_new_center"]
+    };
+  }
+
+  assertEnterpriseCenterProvisioningAllowed(payload = {}, session = null) {
+    if (!this.isSuperAdminSession(session) || session?.supportMode) return;
+    const targetRole = String(payload.role || "staff").toLowerCase();
+    if (targetRole === "superadmin") return;
+    const users = this.usersRepository.list();
+    const requestedCenterId = String(payload.centerId || "").trim();
+    const existingCenterIds = new Set(
+      users
+        .filter((user) => String(user.role || "").toLowerCase() !== "superadmin")
+        .map((user) => String(user.centerId || DEFAULT_CENTER_ID))
+        .filter(Boolean)
+    );
+    const createsNewCenter = !requestedCenterId || !existingCenterIds.has(requestedCenterId);
+    if (!createsNewCenter) return;
+    const control = this.getEnterpriseControlState(session);
+    if (!control.canCreateCenters) {
+      throw new Error(`Creazione nuovo centro bloccata: abbonamento Enterprise senza slot disponibili (${control.centerCount}/${control.centerLimit}). Aumenta gli slot o collega l'accesso a un centro esistente.`);
+    }
   }
 
   getBusinessSnapshotCacheKey(options = {}, session = null) {
@@ -6349,6 +6425,7 @@ class DesktopMirrorService {
 
   buildSession(user, token = crypto.randomUUID(), extra = {}) {
     const normalized = this.normalizeUserAccount(user);
+    const isEnterpriseControlSession = String(normalized.role || "").toLowerCase() === "superadmin" && !extra.supportMode;
     return {
       token: String(token),
       userId: normalized.id,
@@ -6357,7 +6434,7 @@ class DesktopMirrorService {
       centerId: normalized.centerId || DEFAULT_CENTER_ID,
       centerName: normalized.centerName || DEFAULT_CENTER_NAME,
       planType: normalized.planType,
-      subscriptionPlan: normalized.subscriptionPlan,
+      subscriptionPlan: isEnterpriseControlSession ? "enterprise" : normalized.subscriptionPlan,
       paymentStatus: normalized.paymentStatus,
       accountStatus: normalized.accountStatus,
       accessState: normalized.accessState,
@@ -6476,7 +6553,8 @@ class DesktopMirrorService {
     if (this.usersRepository.list().some((item) => String(item.username || "").toLowerCase() === username)) {
       throw new Error("Utente già presente");
     }
-    const canCreateCenter = this.isSuperAdminSession(session);
+    const canCreateCenter = this.isSuperAdminSession(session) && !session?.supportMode;
+    this.assertEnterpriseCenterProvisioningAllowed(payload, session);
     const centerId = String(canCreateCenter ? (payload.centerId || makeId("center")) : this.getCenterId(session));
     const centerName = String(canCreateCenter ? (payload.centerName || payload.businessName || username) : this.getCenterName(session));
     const now = nowIso();
