@@ -7327,14 +7327,14 @@ app.post("/api/nyra/read-only", async (req, res) => {
   try {
     await runNodeJson([
       "--experimental-strip-types",
-      "universal-core-2.0/tools/nyra-vector-memory.ts",
+      "universal-core/tools/nyra-vector-memory.ts",
       "refresh-if-stale",
       "--max-age-minutes",
       "180",
     ]);
     const result = await runNodeJson([
       "--experimental-strip-types",
-      "universal-core-2.0/tools/nyra-communication-adapter.ts",
+      "universal-core/tools/nyra-communication-adapter.ts",
       message
     ]);
     res.json({
