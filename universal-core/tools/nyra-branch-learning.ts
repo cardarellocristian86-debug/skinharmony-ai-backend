@@ -67,6 +67,11 @@ const BRANCH_LEARNING_REGISTRY: Record<NyraBranchId, RegistrySource[]> = {
     { source_id: "decision_clarity_pack", path: "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json", kind: "json_pack" },
     { source_id: "suite_branch_learning_report", path: "reports/wordpress/SUITE_5_3_18_NYRA_BRANCH_LEARNING_2026-06-01.md", kind: "markdown_report" },
   ],
+  translator_marketing: [
+    { source_id: "translator_marketing_seed", path: "reports/wordpress/TRANSLATOR_MARKETING_SEMANTIC_SEED_2026-07-06.md", kind: "markdown_report" },
+    { source_id: "translator_plugin_runtime_bridge", path: "reports/wordpress/TRANSLATOR_PLUGIN_RUNTIME_BRIDGE_2026-07-06.md", kind: "markdown_report" },
+    { source_id: "suite_branch_learning_report", path: "reports/wordpress/SUITE_5_3_18_NYRA_BRANCH_LEARNING_2026-06-01.md", kind: "markdown_report" },
+  ],
   financial: [
     { source_id: "financial_learning_pack", path: "universal-core/runtime/nyra-learning/nyra_financial_learning_pack_latest.json", kind: "json_pack" },
     { source_id: "financial_self_diagnosis", path: "universal-core/runtime/nyra-learning/nyra_financial_self_diagnosis_latest.json", kind: "json_pack" },

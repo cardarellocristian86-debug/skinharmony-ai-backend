@@ -9,6 +9,7 @@ export type NyraBranchId =
   | "render_boundary"
   | "smartdesk_product"
   | "suite_wordpress"
+  | "translator_marketing"
   | "financial"
   | "security";
 
@@ -108,6 +109,11 @@ const BRANCHES: BranchSpec[] = [
     id: "suite_wordpress",
     label: "Suite/WordPress",
     terms: ["suite", "wordpress", "site suite", "plugin", "waas", "sito", "template clone"],
+  },
+  {
+    id: "translator_marketing",
+    label: "Traduttore marketing / localizzazione app",
+    terms: ["traduttore", "translator", "traduzione", "translation", "localizzazione", "microcopy", "cta", "ui label", "help text", "onboarding", "plugin translator"],
   },
   {
     id: "financial",

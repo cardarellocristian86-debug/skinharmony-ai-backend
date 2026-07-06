@@ -139,6 +139,16 @@ assert(identityRuleResult.reply.includes("prima sopravvivenza, poi movimento off
 assert(identityRuleResult.reply.includes("Cristian conferma"), "identity reply should preserve owner confirmation boundary");
 assert(!identityRuleResult.reply.includes("troppo generico"), "identity reply should not fall back to generic diagnostic text");
 
+const translatorResult = buildNyraReadOnlyCommunication({
+  user_text: "Nyra, il traduttore plugin deve gestire microcopy marketing, CTA e localizzazione app senza rompere fallback e key path",
+  root_dir: process.cwd(),
+});
+
+assert.equal(translatorResult.mode, "read_only", "translator query should stay read-only");
+assert(translatorResult.branch_overlay?.active_branches?.some((branch) => branch.id === "translator_marketing"), "translator query should activate translator marketing branch");
+assert(translatorResult.branch_learning?.entries?.some((entry) => entry.branch_id === "translator_marketing"), "translator query should expose translator marketing learning");
+assert(translatorResult.branch_learning?.entries?.find((entry) => entry.branch_id === "translator_marketing")?.sources?.length, "translator branch should load learning sources");
+
 console.log(JSON.stringify({
   runner: "nyra_communication_adapter_test",
   result,
