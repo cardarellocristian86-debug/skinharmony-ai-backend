@@ -3796,7 +3796,6 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
   app.get("/v1/branches/taxonomy", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({
       ok: true,
@@ -3806,6 +3805,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
+  app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const report = branchMaturityReport();
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
