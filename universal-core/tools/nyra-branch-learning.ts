@@ -363,9 +363,9 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
       kind: "json_pack",
     },
     {
-      source_id: "analyzer_benchmark_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_benchmark_pack_latest.json",
-      kind: "json_pack",
+      source_id: "analyzer_branch_learning_seed",
+      path: "reports/nyra-analyzer/NYRA_ANALYZER_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
       source_id: "decision_clarity_pack",
@@ -380,9 +380,9 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
       kind: "json_pack",
     },
     {
-      source_id: "analyzer_benchmark_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_benchmark_pack_latest.json",
-      kind: "json_pack",
+      source_id: "analyzer_branch_learning_seed",
+      path: "reports/nyra-analyzer/NYRA_ANALYZER_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
       source_id: "marketing_activation_branch",
@@ -397,9 +397,9 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
       kind: "json_pack",
     },
     {
-      source_id: "analyzer_benchmark_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_benchmark_pack_latest.json",
-      kind: "json_pack",
+      source_id: "analyzer_branch_learning_seed",
+      path: "reports/nyra-analyzer/NYRA_ANALYZER_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
       source_id: "decision_clarity_pack",
@@ -537,6 +537,13 @@ function workspaceRootFrom(rootDir?: string): string {
   const base = resolve(rootDir || process.cwd());
   if (basename(base) === "universal-core-2.0") return dirname(base);
   if (basename(base) === "universal-core") return dirname(base);
+  let probe = base;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (existsSync(join(probe, "universal-core"))) return probe;
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
   return base;
 }
 
