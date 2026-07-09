@@ -17,6 +17,11 @@ function buildNyraBranchSummaryNotesData(bundle) {
     notes.push(
       `Cortex: profondita ${bundle.cortex_graph.max_depth}, rami ${bundle.cortex_graph.active_branch_count}/${bundle.cortex_graph.registry_branch_count}, fase ${bundle.cortex_graph.learning_cycle?.current_phase || "unknown"}`
     );
+    if (bundle.cortex_graph.adaptive_cognition) {
+      notes.push(
+        `Adattamento: ${bundle.cortex_graph.adaptive_cognition.mode}, memoria ${bundle.cortex_graph.adaptive_cognition.memory_stack.join("/")}, limiti ${bundle.cortex_graph.adaptive_cognition.autonomy_limits.slice(0, 3).join("/")}`
+      );
+    }
   }
   return notes;
 }

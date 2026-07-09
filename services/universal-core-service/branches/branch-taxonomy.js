@@ -312,6 +312,30 @@ export function buildBranchTaxonomyFromRegistry({ branches = [], groups = {} } =
         "no_production_write_without_gate",
       ],
     },
+    adaptive_model: {
+      mode: "governed_adaptive_cognition",
+      memory_stack: ["episodic", "semantic", "procedural", "policy"],
+      reasoning_primitives: [
+        "hypothesis_ranking",
+        "cross_branch_transfer",
+        "counterfactual_screening",
+        "verify_before_escalation",
+        "memory_consolidation",
+      ],
+      adaptation_actions: [
+        "reinforce_active_synapses",
+        "distill_success_patterns",
+        "downgrade_weak_paths",
+        "request_verify_for_new_policy",
+      ],
+      hard_limits: [
+        "no_weight_training",
+        "no_consciousness_claim",
+        "no_free_self_learning",
+        "no_policy_activation_without_verify",
+        "no_production_write_without_gate",
+      ],
+    },
   };
 }
 

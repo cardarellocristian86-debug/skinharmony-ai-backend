@@ -42,6 +42,36 @@ export type NyraLearningCycle = {
   hard_limits: string[];
 };
 
+export type NyraAdaptiveCognition = {
+  mode: "governed_adaptive_cognition";
+  self_model: {
+    type: "bounded_runtime_self_model";
+    identity_anchor: "core_nyra_runtime";
+    mutable_weights: false;
+    free_self_learning: false;
+  };
+  memory_stack: Array<"episodic" | "semantic" | "procedural" | "policy">;
+  reasoning_primitives: Array<
+    | "hypothesis_ranking"
+    | "cross_branch_transfer"
+    | "counterfactual_screening"
+    | "verify_before_escalation"
+    | "memory_consolidation"
+  >;
+  adaptation_actions: Array<
+    | "reinforce_active_synapses"
+    | "distill_success_patterns"
+    | "downgrade_weak_paths"
+    | "request_verify_for_new_policy"
+  >;
+  reinforcement_state: {
+    primary_branch_id: string;
+    active_branch_ids: string[];
+    active_synapse_sample: string[];
+  };
+  autonomy_limits: string[];
+};
+
 export type NyraCortexGraph = {
   mode: "cortex_graph";
   schema_version: string;
@@ -60,6 +90,7 @@ export type NyraCortexGraph = {
   }>;
   active_synapses: TaxonomySynapse[];
   learning_cycle: NyraLearningCycle;
+  adaptive_cognition: NyraAdaptiveCognition;
 };
 
 function unique<T>(values: T[]): T[] {
@@ -110,6 +141,47 @@ function buildLearningCycle(input: {
     ]).filter(Boolean),
     hard_limits: [
       "no_weight_training",
+      "no_policy_activation_without_verify",
+      "no_production_write_without_gate",
+    ],
+  };
+}
+
+function buildAdaptiveCognition(input: {
+  overlay: NyraBranchOverlay;
+  activeSynapses: TaxonomySynapse[];
+}): NyraAdaptiveCognition {
+  return {
+    mode: "governed_adaptive_cognition",
+    self_model: {
+      type: "bounded_runtime_self_model",
+      identity_anchor: "core_nyra_runtime",
+      mutable_weights: false,
+      free_self_learning: false,
+    },
+    memory_stack: ["episodic", "semantic", "procedural", "policy"],
+    reasoning_primitives: [
+      "hypothesis_ranking",
+      "cross_branch_transfer",
+      "counterfactual_screening",
+      "verify_before_escalation",
+      "memory_consolidation",
+    ],
+    adaptation_actions: [
+      "reinforce_active_synapses",
+      "distill_success_patterns",
+      "downgrade_weak_paths",
+      "request_verify_for_new_policy",
+    ],
+    reinforcement_state: {
+      primary_branch_id: input.overlay.primary_branch.id,
+      active_branch_ids: input.overlay.active_branches.slice(0, 6).map((branch) => branch.id),
+      active_synapse_sample: input.activeSynapses.slice(0, 8).map((synapse) => synapse.reason),
+    },
+    autonomy_limits: [
+      "no_weight_training",
+      "no_consciousness_claim",
+      "no_free_self_learning",
       "no_policy_activation_without_verify",
       "no_production_write_without_gate",
     ],
@@ -207,6 +279,10 @@ export function buildNyraCortexGraph(input: {
       overlay: input.branch_overlay,
       route: input.action_route,
       pipeline: input.core2_pipeline,
+    }),
+    adaptive_cognition: buildAdaptiveCognition({
+      overlay: input.branch_overlay,
+      activeSynapses: activeSynapses.slice(0, 48),
     }),
   };
 }

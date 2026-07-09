@@ -1,6 +1,7 @@
 import {
   deterministicBranchGroups,
   deterministicBranchRegistry,
+  deterministicBranchTaxonomy,
 } from "../../services/universal-core-service/branches/index.js";
 
 export type NyraBranchId = string;
@@ -51,6 +52,9 @@ type BranchSpec = {
 
 const CORE_BRANCH_REGISTRY = deterministicBranchRegistry() as Record<string, RegistryBranch>;
 const CORE_BRANCH_GROUPS = deterministicBranchGroups() as Record<string, { label?: string; description?: string; branches?: string[] }>;
+const CORE_BRANCH_TAXONOMY = deterministicBranchTaxonomy() as {
+  synapses?: Array<{ from_node_id?: string; to_node_id?: string; shared_branch_ids?: string[] }>;
+};
 
 const NYRA_META_BRANCHES: BranchSpec[] = [
   {
@@ -238,6 +242,44 @@ function buildCoreBranchSpecs(): BranchSpec[] {
 
 const BRANCHES: BranchSpec[] = [...buildCoreBranchSpecs(), ...NYRA_META_BRANCHES].sort((a, b) => a.id.localeCompare(b.id));
 
+function extractBranchIdFromNodeId(nodeId?: string): string {
+  const raw = String(nodeId || "");
+  const index = raw.indexOf("__");
+  return index >= 0 ? raw.slice(0, index) : raw;
+}
+
+function buildReinforcementGraph(): Map<string, Set<string>> {
+  const graph = new Map<string, Set<string>>();
+  const push = (fromId: string, toId: string) => {
+    if (!fromId || !toId || fromId === toId) return;
+    if (!graph.has(fromId)) graph.set(fromId, new Set<string>());
+    graph.get(fromId)!.add(toId);
+  };
+
+  for (const synapse of Array.isArray(CORE_BRANCH_TAXONOMY.synapses) ? CORE_BRANCH_TAXONOMY.synapses : []) {
+    const shared = Array.isArray(synapse.shared_branch_ids) ? synapse.shared_branch_ids.filter(Boolean) : [];
+    if (shared.length >= 2) {
+      for (let index = 0; index < shared.length; index += 1) {
+        for (let other = 0; other < shared.length; other += 1) {
+          if (index !== other) push(shared[index]!, shared[other]!);
+        }
+      }
+      continue;
+    }
+
+    const fromId = extractBranchIdFromNodeId(synapse.from_node_id);
+    const toId = extractBranchIdFromNodeId(synapse.to_node_id);
+    if (fromId && toId) {
+      push(fromId, toId);
+      push(toId, fromId);
+    }
+  }
+
+  return graph;
+}
+
+const BRANCH_REINFORCEMENT_GRAPH = buildReinforcementGraph();
+
 function scoreBranch(text: string, spec: BranchSpec): NyraBranchScore {
   const signals = spec.terms.filter((term) => text.includes(term));
   const groupedBonus = spec.group_ids.length ? 4 : 0;
@@ -260,12 +302,44 @@ function scoreBranch(text: string, spec: BranchSpec): NyraBranchScore {
   };
 }
 
+function reinforceBranchScores(scored: NyraBranchScore[]): NyraBranchScore[] {
+  const byId = new Map(scored.map((branch) => [branch.id, branch]));
+  const topIds = scored.slice(0, 8).map((branch) => branch.id);
+  return scored
+    .map((branch) => {
+      const neighbors = [...(BRANCH_REINFORCEMENT_GRAPH.get(branch.id) || new Set<string>())];
+      const activeNeighborIds = neighbors.filter((neighborId) => byId.has(neighborId));
+      const synapticBoost = activeNeighborIds.reduce((sum, neighborId) => {
+        const neighbor = byId.get(neighborId);
+        if (!neighbor) return sum;
+        return sum + Math.min(12, neighbor.score * 0.08);
+      }, 0);
+      const groupBoost = scored
+        .filter((candidate) => candidate.id !== branch.id)
+        .filter((candidate) => (candidate.group_ids || []).some((groupId) => (branch.group_ids || []).includes(groupId)))
+        .slice(0, 3)
+        .length * 2.5;
+      const primaryContextBoost = topIds.includes(branch.id) ? 3 : 0;
+      return {
+        ...branch,
+        score: Math.round((branch.score + synapticBoost + groupBoost + primaryContextBoost) * 1000) / 1000,
+        signals: unique([
+          ...branch.signals,
+          ...activeNeighborIds.slice(0, 2).map((neighborId) => `synapse:${neighborId}`),
+        ]),
+      };
+    })
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+}
+
 export function buildNyraBranchOverlay(userText: string): NyraBranchOverlay {
   const text = normalize(userText);
-  const scored = BRANCHES
+  const scored = reinforceBranchScores(
+    BRANCHES
     .map((spec) => scoreBranch(text, spec))
     .filter((branch) => branch.score > 0)
-    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)),
+  );
 
   const activeBranches = scored.length
     ? scored.slice(0, 12)
