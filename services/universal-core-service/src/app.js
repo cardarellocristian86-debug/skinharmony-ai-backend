@@ -48,7 +48,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.18-branch-taxonomy-cortex";
+const SERVICE_VERSION = "0.3.19-branch-taxonomy-cortex-routefix";
 
 function nowIso() {
   return new Date().toISOString();
