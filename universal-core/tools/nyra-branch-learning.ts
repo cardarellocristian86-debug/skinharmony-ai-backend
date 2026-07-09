@@ -130,31 +130,21 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
   ],
   runtime_deployment_scaling_guard: [
     {
-      source_id: "render_shadow_hardening",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
-      kind: "json_pack",
+      source_id: "developer_runtime_seed",
+      path: "reports/codex-core/NYRA_DEVELOPER_RUNTIME_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
-      source_id: "render_defense",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_defense_1000_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "runtime_robustness_lab",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_runtime_robustness_lab_latest.json",
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
       kind: "json_pack",
     },
   ],
   data_integration_orchestration: [
     {
-      source_id: "semantic_substrate",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_semantic_substrate_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "selector_autowrite_policy",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_selector_autowrite_policy_latest.json",
-      kind: "json_pack",
+      source_id: "developer_runtime_seed",
+      path: "reports/codex-core/NYRA_DEVELOPER_RUNTIME_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
       source_id: "decision_clarity_pack",
@@ -222,14 +212,9 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
   ],
   software_systems_intelligence: [
     {
-      source_id: "software_architecture_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_software_architecture_practice_pack_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "codex_operational_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_codex_operational_learning_pack_v1.json",
-      kind: "json_pack",
+      source_id: "developer_runtime_seed",
+      path: "reports/codex-core/NYRA_DEVELOPER_RUNTIME_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
       source_id: "decision_clarity_pack",
@@ -239,103 +224,73 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
   ],
   infrastructure_runtime_intelligence: [
     {
-      source_id: "runtime_robustness_lab",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_runtime_robustness_lab_latest.json",
-      kind: "json_pack",
+      source_id: "developer_runtime_seed",
+      path: "reports/codex-core/NYRA_DEVELOPER_RUNTIME_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
-      source_id: "semantic_substrate",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_semantic_substrate_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "render_shadow_hardening",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
       kind: "json_pack",
     },
   ],
   change_impact_orchestration: [
     {
+      source_id: "developer_runtime_seed",
+      path: "reports/codex-core/NYRA_DEVELOPER_RUNTIME_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
+    },
+    {
       source_id: "decision_clarity_pack",
       path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "domain_verify_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_domain_verify_exercise_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "codex_operational_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_codex_operational_learning_pack_v1.json",
       kind: "json_pack",
     },
   ],
   codex_security_guard: [
     {
-      source_id: "cyber_learning_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_cyber_learning_pack_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "privacy_defense_study",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "render_shadow_hardening",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
-      kind: "json_pack",
-    },
-  ],
-  software_security_intelligence: [
-    {
-      source_id: "cyber_learning_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_cyber_learning_pack_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "privacy_defense_study",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "codex_operational_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_codex_operational_learning_pack_v1.json",
-      kind: "json_pack",
-    },
-  ],
-  network_security_intelligence: [
-    {
-      source_id: "cyber_learning_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_cyber_learning_pack_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "privacy_defense_study",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
-      kind: "json_pack",
-    },
-    {
-      source_id: "render_defense",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_defense_1000_latest.json",
-      kind: "json_pack",
-    },
-  ],
-  legal_privacy_compliance_guard: [
-    {
-      source_id: "privacy_defense_study",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
-      kind: "json_pack",
+      source_id: "security_seed",
+      path: "reports/codex-core/NYRA_SECURITY_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
     },
     {
       source_id: "decision_clarity_pack",
       path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
       kind: "json_pack",
     },
+  ],
+  software_security_intelligence: [
     {
-      source_id: "domain_verify_pack",
-      path: "universal-core-2.0/runtime/nyra-learning/nyra_domain_verify_exercise_latest.json",
+      source_id: "security_seed",
+      path: "reports/codex-core/NYRA_SECURITY_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  network_security_intelligence: [
+    {
+      source_id: "security_seed",
+      path: "reports/codex-core/NYRA_SECURITY_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  legal_privacy_compliance_guard: [
+    {
+      source_id: "security_seed",
+      path: "reports/codex-core/NYRA_SECURITY_BRANCH_LEARNING_SEED_2026-07-09.md",
+      kind: "markdown_report",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
       kind: "json_pack",
     },
   ],
