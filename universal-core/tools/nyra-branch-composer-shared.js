@@ -21,6 +21,20 @@ function buildNyraBranchSummaryNotesData(bundle) {
       notes.push(
         `Adattamento: ${bundle.cortex_graph.adaptive_cognition.mode}, memoria ${bundle.cortex_graph.adaptive_cognition.memory_stack.join("/")}, limiti ${bundle.cortex_graph.adaptive_cognition.autonomy_limits.slice(0, 3).join("/")}`
       );
+      const topHypothesis = bundle.cortex_graph.adaptive_cognition.runtime_reasoning?.hypothesis_ranking?.[0];
+      const verifyGate = bundle.cortex_graph.adaptive_cognition.runtime_reasoning?.verify_before_escalation?.verification_gate;
+      const memoryCandidate = bundle.cortex_graph.adaptive_cognition.runtime_reasoning?.memory_consolidation?.candidates?.[0];
+      if (topHypothesis) {
+        notes.push(
+          `Ipotesi: ${topHypothesis.branch_id} ${topHypothesis.role} conf ${topHypothesis.confidence}`
+        );
+      }
+      if (verifyGate) {
+        notes.push(`Verify gate: ${verifyGate}`);
+      }
+      if (memoryCandidate) {
+        notes.push(`Consolidamento: ${memoryCandidate.source_branch_id} -> ${memoryCandidate.kind}`);
+      }
     }
   }
   return notes;

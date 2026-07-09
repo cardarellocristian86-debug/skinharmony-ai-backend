@@ -69,6 +69,45 @@ export type NyraAdaptiveCognition = {
     active_branch_ids: string[];
     active_synapse_sample: string[];
   };
+  runtime_reasoning: {
+    hypothesis_ranking: Array<{
+      branch_id: string;
+      label: string;
+      role: "primary" | "supporting" | "watch";
+      score: number;
+      confidence: number;
+      why: string[];
+    }>;
+    cross_branch_transfer: Array<{
+      from_branch_id: string;
+      to_branch_id: string;
+      transfer_kind: "constraint" | "tone" | "policy" | "execution";
+      reusable_signals: string[];
+      reason: string;
+    }>;
+    counterfactual_screening: Array<{
+      branch_id: string;
+      disposition: "rejected" | "deferred" | "fallback";
+      trigger: string;
+      reason: string;
+    }>;
+    verify_before_escalation: {
+      escalation_blocked: boolean;
+      verification_gate: "open" | "required" | "blocked";
+      required_checks: string[];
+      release_blockers: string[];
+      safe_scope: string[];
+    };
+    memory_consolidation: {
+      next_phase: "memory_distillation" | "policy_reweighting" | "synaptic_consolidation";
+      candidates: Array<{
+        source_branch_id: string;
+        kind: "policy" | "pattern" | "counterexample" | "playbook";
+        summary: string;
+        retention: "short" | "medium" | "long";
+      }>;
+    };
+  };
   autonomy_limits: string[];
 };
 
@@ -149,8 +188,124 @@ function buildLearningCycle(input: {
 
 function buildAdaptiveCognition(input: {
   overlay: NyraBranchOverlay;
+  route?: NyraActionRoute;
+  pipeline?: NyraCore2PipelineResult;
   activeSynapses: TaxonomySynapse[];
 }): NyraAdaptiveCognition {
+  const topBranches = input.overlay.active_branches.slice(0, 6);
+  const primaryBranch = input.overlay.primary_branch;
+  const routeIntent = input.route?.intent || "unknown";
+  const v7Path = input.pipeline?.stages?.v7?.path_label || "normal";
+  const renderProtected = Boolean(input.overlay.render_protected || input.route?.render_protected);
+  const verificationRequired =
+    input.route?.execution_mode === "dry_run" ||
+    input.route?.execution_mode === "plan_only" ||
+    input.route?.execution_mode === "blocked" ||
+    renderProtected ||
+    v7Path === "verify" ||
+    v7Path === "protect";
+  const verificationBlocked =
+    input.route?.execution_mode === "blocked" ||
+    input.pipeline?.winner?.control_level === "blocked";
+
+  const hypothesisRanking = topBranches.map((branch, index) => {
+    const role: "primary" | "supporting" | "watch" =
+      index === 0 ? "primary" : index <= 2 ? "supporting" : "watch";
+    const confidence = Math.max(0.15, Math.min(0.99, branch.score / 100));
+    const why = [
+      branch.domain ? `dominio:${branch.domain}` : "",
+      branch.tier ? `tier:${branch.tier}` : "",
+      ...(branch.signals || []).slice(0, 3),
+      role === "primary" ? `intent:${routeIntent}` : "",
+    ].filter(Boolean);
+    return {
+      branch_id: branch.id,
+      label: branch.label,
+      role,
+      score: branch.score,
+      confidence: Math.round(confidence * 1000) / 1000,
+      why,
+    };
+  });
+
+  const crossBranchTransfer = topBranches
+    .slice(1, 5)
+    .map((branch) => {
+      const sharedSignals = (branch.signals || []).filter((signal) => String(signal).startsWith("synapse:")).slice(0, 2);
+      const sameDomain = branch.domain && branch.domain === primaryBranch.domain;
+      return {
+        from_branch_id: primaryBranch.id,
+        to_branch_id: branch.id,
+        transfer_kind: sameDomain
+          ? "execution"
+          : (branch.group_ids || []).some((groupId) => (primaryBranch.group_ids || []).includes(groupId))
+            ? "policy"
+            : branch.domain === "assistant" || branch.domain === "governance"
+              ? "tone"
+              : "constraint",
+        reusable_signals: sharedSignals.length ? sharedSignals : (branch.signals || []).slice(0, 2),
+        reason: sameDomain
+          ? `${primaryBranch.id} puo riusare pattern operativi di ${branch.id}`
+          : `${branch.id} aggiunge vincoli o tono al ramo dominante ${primaryBranch.id}`,
+      };
+    });
+
+  const counterfactualScreening = [
+    renderProtected
+      ? {
+          branch_id: "render_boundary",
+          disposition: "rejected" as const,
+          trigger: "render_protected",
+          reason: "il testo tocca Render o produzione, quindi la scrittura live non entra nel perimetro locale",
+        }
+      : null,
+    input.overlay.cross_domain
+      ? {
+          branch_id: "multi_domain_overlay",
+          disposition: "deferred" as const,
+          trigger: "cross_domain_overlap",
+          reason: "piu domini sono attivi insieme, quindi il ramo secondario va verificato prima di assorbire policy nuove",
+        }
+      : null,
+    {
+      branch_id: primaryBranch.id,
+      disposition: verificationRequired ? "fallback" : "deferred",
+      trigger: `route:${routeIntent}`,
+      reason: verificationRequired
+        ? "si resta su risposta o dry-run finche verify, gate e perimetro non sono chiari"
+        : "il ramo principale resta attivo senza escalation operativa",
+    },
+  ].filter(Boolean) as NyraAdaptiveCognition["runtime_reasoning"]["counterfactual_screening"];
+
+  const requiredChecks = [
+    verificationRequired ? "confermare perimetro locale/render prima di escalation" : "",
+    v7Path === "protect" ? "passare dal path V7 protect e non aprire esecuzione" : "",
+    input.overlay.risk_flags.includes("security_surface_mentioned") ? "verificare surface security e segreti" : "",
+    input.overlay.risk_flags.includes("automation_surface_mentioned") ? "verificare effetto di automazione e blast radius" : "",
+  ].filter(Boolean);
+
+  const releaseBlockers = [
+    verificationBlocked ? "winner blocked dal Core 2.0" : "",
+    renderProtected ? "render/prod boundary attivo" : "",
+    input.route?.requires_owner_confirmation ? "owner confirmation richiesta" : "",
+  ].filter(Boolean);
+
+  const memoryCandidates = topBranches.slice(0, 4).map((branch, index) => ({
+    source_branch_id: branch.id,
+    kind: (index === 0
+      ? "playbook"
+      : branch.domain === "governance" || branch.domain === "security"
+        ? "policy"
+        : branch.signals.some((signal) => String(signal).startsWith("synapse:"))
+          ? "pattern"
+          : "counterexample") as "policy" | "pattern" | "counterexample" | "playbook",
+    summary:
+      index === 0
+        ? `tenere ${branch.id} come playbook dominante per richieste ${routeIntent}`
+        : `distillare ${branch.id} con segnali ${branch.signals.slice(0, 2).join(", ") || "deboli"}`,
+    retention: index === 0 ? "long" as const : index <= 2 ? "medium" as const : "short" as const,
+  }));
+
   return {
     mode: "governed_adaptive_cognition",
     self_model: {
@@ -177,6 +332,31 @@ function buildAdaptiveCognition(input: {
       primary_branch_id: input.overlay.primary_branch.id,
       active_branch_ids: input.overlay.active_branches.slice(0, 6).map((branch) => branch.id),
       active_synapse_sample: input.activeSynapses.slice(0, 8).map((synapse) => synapse.reason),
+    },
+    runtime_reasoning: {
+      hypothesis_ranking: hypothesisRanking,
+      cross_branch_transfer: crossBranchTransfer,
+      counterfactual_screening: counterfactualScreening,
+      verify_before_escalation: {
+        escalation_blocked: verificationBlocked,
+        verification_gate: verificationBlocked ? "blocked" : verificationRequired ? "required" : "open",
+        required_checks: requiredChecks,
+        release_blockers: releaseBlockers,
+        safe_scope: [
+          "reply_only",
+          "dry_run",
+          "memory_distillation",
+          verificationBlocked ? "" : "verified_local_execution",
+        ].filter(Boolean),
+      },
+      memory_consolidation: {
+        next_phase: verificationBlocked
+          ? "memory_distillation"
+          : verificationRequired
+            ? "policy_reweighting"
+            : "synaptic_consolidation",
+        candidates: memoryCandidates,
+      },
     },
     autonomy_limits: [
       "no_weight_training",
@@ -282,6 +462,8 @@ export function buildNyraCortexGraph(input: {
     }),
     adaptive_cognition: buildAdaptiveCognition({
       overlay: input.branch_overlay,
+      route: input.action_route,
+      pipeline: input.core2_pipeline,
       activeSynapses: activeSynapses.slice(0, 48),
     }),
   };
