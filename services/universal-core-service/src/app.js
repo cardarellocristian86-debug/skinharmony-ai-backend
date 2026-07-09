@@ -19,6 +19,7 @@ import {
   composeBranchContext,
   deterministicBranchGroups,
   deterministicBranchRegistry,
+  deterministicBranchTaxonomy,
   resolveBranchesForKey,
 } from "../branches/index.js";
 import { buildSuitePolicy } from "./suitePolicy.js";
@@ -47,7 +48,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.17-software-language-gate";
+const SERVICE_VERSION = "0.3.18-branch-taxonomy-cortex";
 
 function nowIso() {
   return new Date().toISOString();
@@ -3124,11 +3125,12 @@ export function createUniversalCoreService(options = {}) {
       key_type: req.coreKey.key_type,
       tier: branchResolution.tier,
       active_branches: branchResolution.allowed_branches,
+      active_branch_groups: branchResolution.allowed_groups,
       allowed_scopes: req.coreKey.allowed_scopes,
       status: req.coreKey.status,
       expires_at: req.coreKey.expires_at,
       last_used_at: req.coreKey.last_used_at,
-      mode: "local_first_render_ready",
+      mode: "render_first_cortex_ready",
       entitlement,
       suite_policy: suitePolicy,
     });
@@ -3787,6 +3789,7 @@ export function createUniversalCoreService(options = {}) {
       ok: true,
       branches: branchRegistry(),
       groups: deterministicBranchGroups(),
+      taxonomy: deterministicBranchTaxonomy(),
       packages: BRANCH_PACKAGES,
       tenant_package: resolution,
       rule: "Ogni ramo produce decisioni advisory/read-only. Azioni operative e pubblicazione richiedono conferma owner.",
@@ -3794,6 +3797,15 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/taxonomy", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({
+      ok: true,
+      taxonomy: deterministicBranchTaxonomy(),
+      groups: deterministicBranchGroups(),
+      packages: BRANCH_PACKAGES,
+    });
+  });
+
     const report = branchMaturityReport();
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
@@ -3809,6 +3821,7 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       branch_package: resolution,
       groups: deterministicBranchGroups(),
+      taxonomy: deterministicBranchTaxonomy(),
       branches: Object.fromEntries(resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value))),
     });
   });

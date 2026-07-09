@@ -48,6 +48,14 @@ import { branchProductInventoryGuard } from "./branch-product-inventory-guard.js
 import { branchSmartDeskOperationsGuard } from "./branch-smartdesk-operations-guard.js";
 import { branchBeautyProtocolGuard } from "./branch-beauty-protocol-guard.js";
 import { branchChangeImpactOrchestration } from "./branch-change-impact-orchestration.js";
+import { branchSoftwareSystemsIntelligence } from "./branch-software-systems-intelligence.js";
+import { branchHardwareSystemsIntelligence } from "./branch-hardware-systems-intelligence.js";
+import { branchSoftwareSecurityIntelligence } from "./branch-software-security-intelligence.js";
+import { branchNetworkSecurityIntelligence } from "./branch-network-security-intelligence.js";
+import { branchInfrastructureRuntimeIntelligence } from "./branch-infrastructure-runtime-intelligence.js";
+import { branchLearningKnowledgeIntelligence } from "./branch-learning-knowledge-intelligence.js";
+import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
+import { deterministicBranchTaxonomy } from "./branch-taxonomy.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -99,6 +107,13 @@ const BRANCHES = [
   branchProductInventoryGuard,
   branchSmartDeskOperationsGuard,
   branchBeautyProtocolGuard,
+  branchSoftwareSystemsIntelligence,
+  branchHardwareSystemsIntelligence,
+  branchSoftwareSecurityIntelligence,
+  branchNetworkSecurityIntelligence,
+  branchInfrastructureRuntimeIntelligence,
+  branchLearningKnowledgeIntelligence,
+  branchBeautyVerticalOrchestration,
   branchChangeImpactOrchestration,
 ];
 
@@ -143,6 +158,56 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
   "skinharmony_analyzer",
   "technology_market",
   "beauty_market",
+];
+
+const SOFTWARE_CORTEX_BRANCHES = [
+  "software_systems_intelligence",
+  "codex_code_safety",
+  "codex_architecture_guard",
+  "codex_test_strategy",
+  "codex_release_gate",
+  "codex_product_logic",
+  "codex_wordpress_platform_guard",
+  "change_impact_orchestration",
+];
+
+const HARDWARE_CORTEX_BRANCHES = [
+  "hardware_systems_intelligence",
+  "infrastructure_runtime_intelligence",
+  "runtime_deployment_scaling_guard",
+  "observability_roi_guard",
+  "change_impact_orchestration",
+];
+
+const SECURITY_CORTEX_BRANCHES = [
+  "software_security_intelligence",
+  "network_security_intelligence",
+  "codex_security_guard",
+  "legal_privacy_compliance_guard",
+  "agent_orchestration_guard",
+  "runtime_deployment_scaling_guard",
+];
+
+const LEARNING_CORTEX_BRANCHES = [
+  "learning_knowledge_intelligence",
+  "observability_roi_guard",
+  "change_impact_orchestration",
+  "agent_orchestration_guard",
+  "runtime_deployment_scaling_guard",
+];
+
+const BEAUTY_CORTEX_BRANCHES = [
+  "beauty_vertical_orchestration",
+  "skinharmony_analyzer",
+  "beauty_protocol_guard",
+  "beauty_market",
+  "cosmetic_chemistry",
+  "technology_market",
+  "marketing_copy",
+  "translator_marketing_governance",
+  "ramo_testo",
+  "customer_360_guard",
+  "smartdesk_operations_guard",
 ];
 
 export const BRANCH_GROUPS = Object.freeze({
@@ -198,6 +263,31 @@ export const BRANCH_GROUPS = Object.freeze({
     description: "Operativita centro, AI Gold, protocolli, agenda, cassa, magazzino, marketing e conferma operatore.",
     branches: ["smartdesk_operations_guard", "beauty_protocol_guard", "skinharmony_analyzer", "consent_ledger_guard", "customer_360_guard", "product_inventory_guard", "support_success_guard"],
   },
+  software_cortex: {
+    label: "Software Cortex",
+    description: "Gerarchia software profonda: architettura, contratti, test, release, rollback, audit e consolidamento.",
+    branches: SOFTWARE_CORTEX_BRANCHES,
+  },
+  hardware_cortex: {
+    label: "Hardware Cortex",
+    description: "Catena device-to-runtime: transport, sensor, pairing, readiness, safety, diagnostics e runtime feedback.",
+    branches: HARDWARE_CORTEX_BRANCHES,
+  },
+  security_cortex: {
+    label: "Security Cortex",
+    description: "Difesa software e rete: identity, secrets, tenant isolation, segmentation, containment e compliance.",
+    branches: SECURITY_CORTEX_BRANCHES,
+  },
+  learning_cortex: {
+    label: "Learning Cortex",
+    description: "Memoria viva, benchmark, distillazione, feedback loop, reweighting policy e consolidamento.",
+    branches: LEARNING_CORTEX_BRANCHES,
+  },
+  beauty_cortex: {
+    label: "Beauty Cortex",
+    description: "Loop verticale beauty: analyzer, protocolli, narrativa commerciale, recall e valore operativo del centro.",
+    branches: BEAUTY_CORTEX_BRANCHES,
+  },
   security_defense: {
     label: "Security / Defensive Intelligence",
     description: "Tenant isolation, segreti, audit, policy, hardening e difesa da automazioni rischiose.",
@@ -223,8 +313,9 @@ export const BRANCH_PACKAGES = Object.freeze({
   gold: ["front_desk_base", "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
   network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
   enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
-  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", ...CODEX_GUARD_BRANCHES],
+  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
   codex_guard: CODEX_GUARD_BRANCHES,
+  omni_360: BRANCHES.map((branch) => branch.id),
 });
 
 export function expandBranchIds(ids = []) {
@@ -267,6 +358,8 @@ export function deterministicBranchGroups() {
   return BRANCH_GROUPS;
 }
 
+export { deterministicBranchTaxonomy };
+
 export function getBranch(branchId) {
   return BRANCHES.find((branch) => branch.id === branchId) || null;
 }
@@ -285,7 +378,9 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
         ? "gold"
         : keyRecord?.preset === "codex_automation"
           ? "internal"
-          : "base";
+          : keyRecord?.preset === "nyra_core_360_connector"
+            ? "omni_360"
+            : "base";
   const tier = normalizeTier(metadata.tier || keyRecord?.tier || presetTier);
   const fromPackage = BRANCH_PACKAGES[tier] || BRANCH_PACKAGES.base;
   const explicitSource = Array.isArray(metadata.active_branch_groups) && metadata.active_branch_groups.length
@@ -344,6 +439,7 @@ export function composeBranchContext({ keyRecord, requestedBranches = [], task =
         .filter((groupId) => BRANCH_GROUPS[groupId])
         .map((groupId) => [groupId, BRANCH_GROUPS[groupId]]),
     ),
+    branch_taxonomy: deterministicBranchTaxonomy(),
     deterministic_context: {
       rule_count: rules.length,
       rules,

@@ -71,6 +71,11 @@ export function createKeyStore(storageRoot, audit) {
           : Array.isArray(input.metadata?.active_branches)
             ? input.metadata.active_branches.map(String)
             : undefined,
+        active_branch_groups: Array.isArray(input.active_branch_groups)
+          ? input.active_branch_groups.map(String)
+          : Array.isArray(input.metadata?.active_branch_groups)
+            ? input.metadata.active_branch_groups.map(String)
+            : undefined,
         suite_modules: sanitizeSuiteModules(
           Array.isArray(input.suite_modules)
             ? input.suite_modules
