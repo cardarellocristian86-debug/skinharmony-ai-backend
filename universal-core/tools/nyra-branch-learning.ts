@@ -128,6 +128,40 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
       kind: "json_pack",
     },
   ],
+  runtime_deployment_scaling_guard: [
+    {
+      source_id: "render_shadow_hardening",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "render_defense",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_defense_1000_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "runtime_robustness_lab",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_runtime_robustness_lab_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  data_integration_orchestration: [
+    {
+      source_id: "semantic_substrate",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_semantic_substrate_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "selector_autowrite_policy",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_selector_autowrite_policy_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
   smartdesk_product: [
     {
       source_id: "smartdesk_vertical_pack",
@@ -183,6 +217,210 @@ const BRANCH_LEARNING_REGISTRY: Record<string, RegistrySource[]> = {
     {
       source_id: "privacy_defense_study",
       path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  software_systems_intelligence: [
+    {
+      source_id: "software_architecture_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_software_architecture_practice_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "codex_operational_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_codex_operational_learning_pack_v1.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  infrastructure_runtime_intelligence: [
+    {
+      source_id: "runtime_robustness_lab",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_runtime_robustness_lab_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "semantic_substrate",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_semantic_substrate_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "render_shadow_hardening",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  change_impact_orchestration: [
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "domain_verify_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_domain_verify_exercise_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "codex_operational_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_codex_operational_learning_pack_v1.json",
+      kind: "json_pack",
+    },
+  ],
+  codex_security_guard: [
+    {
+      source_id: "cyber_learning_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_cyber_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "privacy_defense_study",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "render_shadow_hardening",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_shadow_hardening_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  software_security_intelligence: [
+    {
+      source_id: "cyber_learning_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_cyber_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "privacy_defense_study",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "codex_operational_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_codex_operational_learning_pack_v1.json",
+      kind: "json_pack",
+    },
+  ],
+  network_security_intelligence: [
+    {
+      source_id: "cyber_learning_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_cyber_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "privacy_defense_study",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "render_defense",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_render_defense_1000_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  legal_privacy_compliance_guard: [
+    {
+      source_id: "privacy_defense_study",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_privacy_defense_study_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "domain_verify_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_domain_verify_exercise_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  content_localization_guard: [
+    {
+      source_id: "marketing_activation_branch",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_marketing_activation_branch_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "expression_memory_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_expression_memory_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  skinharmony_analyzer: [
+    {
+      source_id: "analyzer_voice_library",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_voice_library_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "analyzer_benchmark_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_benchmark_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  beauty_vertical_orchestration: [
+    {
+      source_id: "analyzer_voice_library",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_voice_library_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "analyzer_benchmark_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_benchmark_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "marketing_activation_branch",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_marketing_activation_branch_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  beauty_protocol_guard: [
+    {
+      source_id: "analyzer_voice_library",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_voice_library_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "analyzer_benchmark_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_benchmark_pack_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
+      kind: "json_pack",
+    },
+  ],
+  cosmetic_chemistry: [
+    {
+      source_id: "analyzer_voice_library",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_skinharmony_analyzer_voice_library_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "marketing_activation_branch",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_marketing_activation_branch_latest.json",
+      kind: "json_pack",
+    },
+    {
+      source_id: "decision_clarity_pack",
+      path: "universal-core-2.0/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json",
       kind: "json_pack",
     },
   ],
