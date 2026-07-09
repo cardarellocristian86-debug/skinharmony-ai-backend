@@ -96,6 +96,7 @@ function buildTextOverlay(text: string): {
   branch_learning?: any;
   action_route: NyraActionRoute;
   core2_pipeline: NyraCore2PipelineResult;
+  cortex_graph?: any;
 } {
   return buildNyraRuntimeOverlayBundle(text, process.cwd());
 }
@@ -154,6 +155,7 @@ export async function runNyraTextBranch(partial: {
       branch_learning: params.output.branch_learning ?? overlay.branch_learning,
       action_route: params.output.action_route ?? overlay.action_route,
       core2_pipeline: params.output.core2_pipeline ?? overlay.core2_pipeline,
+      cortex_graph: params.output.cortex_graph ?? overlay.cortex_graph,
       memoryUpdated: params.output.memoryUpdated || params.memoryUpdated,
       ui: {
         ...(params.output.ui ?? {}),
@@ -215,6 +217,7 @@ export async function runNyraTextBranch(partial: {
       branch_learning: overlay.branch_learning,
       action_route: overlay.action_route,
       core2_pipeline: overlay.core2_pipeline,
+      cortex_graph: overlay.cortex_graph,
       memoryUpdated: true,
       ui: { notes: branchSummaryNotes(overlay) },
     };
@@ -233,6 +236,7 @@ export async function runNyraTextBranch(partial: {
       branch_learning: overlay.branch_learning,
       action_route: overlay.action_route,
       core2_pipeline: overlay.core2_pipeline,
+      cortex_graph: overlay.cortex_graph,
       memoryUpdated: false,
       ui: { notes: branchSummaryNotes(overlay) },
     };

@@ -371,6 +371,99 @@ export function summarizeNyraVectorMemory(rootDir = process.cwd()): string {
   return [`documents=${stats.documents}`, `chunks=${stats.chunks}`, stats.last_ingest_at ? `last_ingest_at=${stats.last_ingest_at}` : ""].filter(Boolean).join(" ");
 }
 
+
+export type NyraVectorRetrievalPolicy = {
+  query: string;
+  domain_allowlist?: NyraVectorDomain[];
+  preferred_domains?: NyraVectorDomain[];
+  scope_allowlist?: NyraVectorScope[];
+  tags_any?: string[];
+  min_score: number;
+};
+
+export function buildNyraVectorRetrievalPolicy(input: {
+  user_text: string;
+  branch_overlay?: { active_branches?: Array<{ id: string }>; primary_branch?: { id?: string | null } | null; render_protected?: boolean | null } | null;
+  action_route?: { intent?: string | null; render_protected?: boolean | null } | null;
+}): NyraVectorRetrievalPolicy {
+  const normalized = normalize(input.user_text);
+  const domains = new Set<NyraVectorDomain>(["nyra", "core"]);
+  const preferredDomains: NyraVectorDomain[] = [];
+  const scopes = new Set<NyraVectorScope>(["report", "event", "runtime_learning", "shared_memory"]);
+  const tags = new Set<string>();
+  const activeBranchIds = new Set(((input.branch_overlay && input.branch_overlay.active_branches) || []).map((branch) => branch.id));
+
+  const hasDeveloperBranch = activeBranchIds.has("developer_code");
+  if (hasDeveloperBranch) {
+    tags.add("local");
+    tags.add("fix");
+  }
+  if (normalized.includes("analyzer") || normalized.includes("ipad") || normalized.includes("rossore") || normalized.includes("payload")) {
+    domains.add("analyzer");
+    domains.add("ipad");
+    preferredDomains.push("analyzer", "ipad");
+    tags.add("analyzer");
+    tags.add("render");
+    tags.add("local");
+  }
+  if (normalized.includes("smartdesk") || normalized.includes("agenda") || normalized.includes("fleet")) {
+    domains.add("smartdesk");
+    preferredDomains.push("smartdesk");
+    tags.add("smartdesk");
+  }
+  if (normalized.includes("suite") || normalized.includes("crm") || normalized.includes("waas")) {
+    domains.add("suite");
+    domains.add("wordpress");
+    preferredDomains.push("suite", "wordpress");
+    tags.add("suite");
+  }
+  if (normalized.includes("wordpress") || normalized.includes("plugin") || normalized.includes("wp ")) {
+    domains.add("wordpress");
+    preferredDomains.push("wordpress");
+    tags.add("wordpress");
+  }
+  if (normalized.includes("finance") || normalized.includes("trading") || normalized.includes("mercato") || normalized.includes("qqq")) {
+    domains.add("finance");
+    preferredDomains.push("finance");
+    tags.add("finance");
+  }
+  if (normalized.includes("translator") || normalized.includes("traduttore") || normalized.includes("microcopy") || normalized.includes("localization") || normalized.includes("marketing")) {
+    domains.add("suite");
+    domains.add("wordpress");
+    preferredDomains.push("suite", "wordpress");
+    tags.add("suite");
+    tags.add("wordpress");
+  }
+  if (hasDeveloperBranch && preferredDomains.length === 0) {
+    domains.add("codex");
+    preferredDomains.push("codex");
+  }
+  if (
+    (input.action_route && input.action_route.render_protected) ||
+    (input.branch_overlay && input.branch_overlay.render_protected) ||
+    normalized.includes("render")
+  ) {
+    tags.add("render");
+    scopes.delete("shared_memory");
+  }
+
+  const query = [
+    input.user_text.trim(),
+    (((input.branch_overlay || {}).primary_branch || {}).id) || "",
+    ((input.action_route || {}).intent) || "",
+    ((input.action_route || {}).render_protected ? "render blocked local fix" : ""),
+  ].filter(Boolean).join(" | ");
+
+  return {
+    query,
+    domain_allowlist: Array.from(domains),
+    preferred_domains: Array.from(new Set(preferredDomains)),
+    scope_allowlist: Array.from(scopes),
+    tags_any: Array.from(tags),
+    min_score: 0.58,
+  };
+}
+
 export function summarizeNyraVectorRetrievalContext(input: NyraVectorSearchOptions): string {
   const results = searchNyraVectorMemory(input);
   if (!results.length) return "";

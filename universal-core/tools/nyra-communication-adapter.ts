@@ -13,8 +13,12 @@ import {
 import { buildNyraDialogueEngineResult } from "./nyra-dialogue-engine.ts";
 import { buildNyraActiveProtectionLine, NYRA_ACTIVE_PROTECTION_IDENTITY } from "./nyra-identity-principles.ts";
 import { buildNyraFrontDialogue } from "./nyra-front-dialogue-layer.ts";
-import { summarizeNyraVectorMemory, summarizeNyraVectorRetrievalContext } from "./nyra-vector-memory.ts";
-import { semanticDomainAllowlistForPrompt } from "./nyra-semantic-router.ts";
+import type { NyraCortexGraph } from "./nyra-cortex-graph.ts";
+import {
+  buildNyraVectorRetrievalPolicy,
+  summarizeNyraVectorMemory,
+  summarizeNyraVectorRetrievalContext,
+} from "./nyra-vector-memory.ts";
 
 export type NyraCommunicationSnapshot = {
   map_summary: string;
@@ -50,6 +54,7 @@ export type NyraCommunicationResult = {
   branch_learning?: NyraBranchLearningBundle;
   action_route?: NyraActionRoute;
   core2_pipeline?: NyraCore2PipelineResult;
+  cortex_graph?: NyraCortexGraph;
   writes_memory: false;
 };
 
@@ -497,6 +502,7 @@ function buildReadOnlyOverlay(userText: string, rootDir?: string): {
   branch_learning?: NyraBranchLearningBundle;
   action_route: NyraActionRoute;
   core2_pipeline: NyraCore2PipelineResult;
+  cortex_graph?: NyraCortexGraph;
 } {
   return buildNyraRuntimeOverlayBundle(userText, rootDir);
 }
@@ -504,13 +510,21 @@ function buildReadOnlyOverlay(userText: string, rootDir?: string): {
 export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): NyraCommunicationResult {
   const snapshots = loadNyraCommunicationSnapshot(input.root_dir);
   const overlay = buildReadOnlyOverlay(input.user_text, input.root_dir);
+  const vectorPolicy = buildNyraVectorRetrievalPolicy({
+    user_text: input.user_text,
+    branch_overlay: overlay.branch_overlay,
+    action_route: overlay.action_route,
+  });
   const semanticRetrieval = summarizeNyraVectorRetrievalContext({
     root_dir: input.root_dir,
-    query: input.user_text,
+    query: vectorPolicy.query,
     limit: 2,
-    domain_allowlist: semanticDomainAllowlistForPrompt(input.user_text),
+    domain_allowlist: vectorPolicy.domain_allowlist,
+    preferred_domains: vectorPolicy.preferred_domains,
+    scope_allowlist: vectorPolicy.scope_allowlist,
+    tags_any: vectorPolicy.tags_any,
     exclude_private: true,
-    min_score: 0.5,
+    min_score: vectorPolicy.min_score,
   });
   const directReply = buildDirectReadOnlyReply(input);
   if (directReply) {
@@ -526,6 +540,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
       branch_learning: overlay.branch_learning,
       action_route: overlay.action_route,
       core2_pipeline: overlay.core2_pipeline,
+      cortex_graph: overlay.cortex_graph,
       writes_memory: false,
     };
   }
@@ -570,6 +585,7 @@ export function buildNyraReadOnlyCommunication(input: NyraCommunicationInput): N
     branch_learning: overlay.branch_learning,
     action_route: overlay.action_route,
     core2_pipeline: overlay.core2_pipeline,
+    cortex_graph: overlay.cortex_graph,
     writes_memory: false,
   };
 }

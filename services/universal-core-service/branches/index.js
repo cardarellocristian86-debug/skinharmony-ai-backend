@@ -55,7 +55,7 @@ import { branchNetworkSecurityIntelligence } from "./branch-network-security-int
 import { branchInfrastructureRuntimeIntelligence } from "./branch-infrastructure-runtime-intelligence.js";
 import { branchLearningKnowledgeIntelligence } from "./branch-learning-knowledge-intelligence.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
-import { deterministicBranchTaxonomy } from "./branch-taxonomy.js";
+import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -358,7 +358,16 @@ export function deterministicBranchGroups() {
   return BRANCH_GROUPS;
 }
 
-export { deterministicBranchTaxonomy };
+let CACHED_BRANCH_TAXONOMY = null;
+
+export function deterministicBranchTaxonomy() {
+  if (CACHED_BRANCH_TAXONOMY) return CACHED_BRANCH_TAXONOMY;
+  CACHED_BRANCH_TAXONOMY = buildBranchTaxonomyFromRegistry({
+    branches: BRANCHES,
+    groups: BRANCH_GROUPS,
+  });
+  return CACHED_BRANCH_TAXONOMY;
+}
 
 export function getBranch(branchId) {
   return BRANCHES.find((branch) => branch.id === branchId) || null;

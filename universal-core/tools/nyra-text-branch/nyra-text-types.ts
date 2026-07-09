@@ -1,6 +1,7 @@
 import type { NyraBranchOverlay } from "../nyra-branch-overlay.ts";
 import type { NyraBranchLearningBundle } from "../nyra-branch-learning.ts";
 import type { NyraActionRoute } from "../nyra-action-router.ts";
+import type { NyraCortexGraph } from "../nyra-cortex-graph.ts";
 import type { NyraCore2PipelineResult } from "../nyra-core2-pipeline.ts";
 
 export type NyraTextRisk = "low" | "medium" | "high";
@@ -50,6 +51,7 @@ export type NyraTextOutput = {
   branch_learning?: NyraBranchLearningBundle;
   action_route?: NyraActionRoute;
   core2_pipeline?: NyraCore2PipelineResult;
+  cortex_graph?: NyraCortexGraph;
   memoryUpdated: boolean;
   ui?: {
     badges?: string[];

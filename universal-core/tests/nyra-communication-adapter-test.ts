@@ -145,9 +145,9 @@ const translatorResult = buildNyraReadOnlyCommunication({
 });
 
 assert.equal(translatorResult.mode, "read_only", "translator query should stay read-only");
-assert(translatorResult.branch_overlay?.active_branches?.some((branch) => branch.id === "translator_marketing"), "translator query should activate translator marketing branch");
-assert(translatorResult.branch_learning?.entries?.some((entry) => entry.branch_id === "translator_marketing"), "translator query should expose translator marketing learning");
-assert(translatorResult.branch_learning?.entries?.find((entry) => entry.branch_id === "translator_marketing")?.sources?.length, "translator branch should load learning sources");
+assert(translatorResult.branch_overlay?.active_branches?.some((branch) => branch.id === "translator_marketing_governance"), "translator query should activate translator marketing branch");
+assert(translatorResult.branch_learning?.entries?.some((entry) => entry.branch_id === "translator_marketing_governance"), "translator query should expose translator marketing learning");
+assert(translatorResult.branch_learning?.entries?.find((entry) => entry.branch_id === "translator_marketing_governance")?.sources?.length, "translator branch should load learning sources");
 
 console.log(JSON.stringify({
   runner: "nyra_communication_adapter_test",

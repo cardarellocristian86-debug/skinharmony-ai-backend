@@ -1,6 +1,7 @@
 import type { NyraActionRoute } from "./nyra-action-router.ts";
 import type { NyraBranchLearningBundle } from "./nyra-branch-learning.ts";
 import type { NyraBranchOverlay } from "./nyra-branch-overlay.ts";
+import type { NyraCortexGraph } from "./nyra-cortex-graph.ts";
 import type { NyraCore2PipelineResult } from "./nyra-core2-pipeline.ts";
 
 export type NyraTextChatCommand = ":memory" | ":forget" | ":exit" | ":help";
@@ -27,4 +28,5 @@ export type NyraTextChatOutput = {
   branch_learning?: NyraBranchLearningBundle;
   action_route?: NyraActionRoute;
   core2_pipeline?: NyraCore2PipelineResult;
+  cortex_graph?: NyraCortexGraph;
 };
