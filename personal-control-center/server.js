@@ -7016,6 +7016,50 @@ function buildAnalyzerCoreOverlay(input = {}) {
   });
 }
 
+function analyzerRuntimeTextFromResponse(base = {}, body = {}) {
+  const practiceProfileId = typeof base.practice_profile === "string"
+    ? base.practice_profile
+    : base.practice_profile?.id || "";
+  const profileSummary = Array.isArray(base.learning_insights?.profile_summary)
+    ? base.learning_insights.profile_summary.join(" | ")
+    : "";
+  const dominantKey = base.dominant_pattern?.key || "";
+  const dominantLabel = base.dominant_pattern?.label || "";
+  const relationshipLine = Array.isArray(base.relationships) ? base.relationships.join(" | ") : "";
+  const families = Array.isArray(base.active_logic)
+    ? base.active_logic.map((item) => item?.id).filter(Boolean).join(" | ")
+    : "";
+  const note = String(body.note || body.notes || body.message || "").trim();
+  const clientName = String(body.client?.name || body.clientName || body.data?.client_name || "").trim();
+  return [
+    "skin analyzer pro",
+    practiceProfileId,
+    clientName,
+    dominantKey,
+    dominantLabel,
+    note,
+    profileSummary,
+    relationshipLine,
+    families,
+    "analyzer",
+    "beauty",
+    "protocollo",
+    "percorso cliente",
+    "barriera",
+    "sensibilita",
+  ].filter(Boolean).join(" | ");
+}
+
+async function buildAnalyzerRuntimeOverlayBundle(body = {}, base = {}) {
+  const text = analyzerRuntimeTextFromResponse(base, body);
+  if (!text) return null;
+  return runNodeJson([
+    "--experimental-strip-types",
+    "universal-core/tools/nyra-runtime-overlay-api.ts",
+    JSON.stringify({ text, rootDir })
+  ], { timeoutMs: 20000 });
+}
+
 function buildNyraAnalyzerResponse(body = {}) {
   const pack = loadNyraAnalyzerLearningPack();
   const practiceProfile = normalizeAnalyzerPracticeProfile(body, pack);
@@ -7305,17 +7349,40 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
 });
 
 app.post("/api/nyra/analyzer/read-only", (req, res) => {
-  try {
-    res.json(buildNyraAnalyzerResponse(req.body || {}));
-  } catch (error) {
-    res.status(500).json({
-      ok: false,
-      service: "skinharmony-nyra-core",
-      endpoint: "/api/nyra/analyzer/read-only",
-      error: error.message || "Errore Nyra Analyzer.",
-      reply: "Nyra Analyzer non ha completato la lettura per un errore runtime."
-    });
-  }
+  (async () => {
+    try {
+      const base = buildNyraAnalyzerResponse(req.body || {});
+      if (!base?.ok) {
+        res.json(base);
+        return;
+      }
+      const overlayBundle = await buildAnalyzerRuntimeOverlayBundle(req.body || {}, base);
+      const learningEntries = Array.isArray(overlayBundle?.branch_learning?.entries) ? overlayBundle.branch_learning.entries : [];
+      const learningLine = learningEntries.length
+        ? `Learning rami: ${learningEntries.slice(0, 3).map((entry) => (
+            `${entry.branch_id}:${(Array.isArray(entry.sources) ? entry.sources.slice(0, 2).map((source) => source.title).filter(Boolean).join(" + ") : "")}`
+          )).join(" | ")}`
+        : "";
+      const reply = learningLine ? `${base.reply}\n${learningLine}` : base.reply;
+      res.json({
+        ...base,
+        branch_overlay: overlayBundle?.branch_overlay || null,
+        action_route: overlayBundle?.action_route || null,
+        core2_pipeline: overlayBundle?.core2_pipeline || null,
+        branch_learning: overlayBundle?.branch_learning || null,
+        cortex_graph: overlayBundle?.cortex_graph || null,
+        reply
+      });
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
+        service: "skinharmony-nyra-core",
+        endpoint: "/api/nyra/analyzer/read-only",
+        error: error.message || "Errore Nyra Analyzer.",
+        reply: "Nyra Analyzer non ha completato la lettura per un errore runtime."
+      });
+    }
+  })();
 });
 
 app.post("/api/nyra/read-only", async (req, res) => {

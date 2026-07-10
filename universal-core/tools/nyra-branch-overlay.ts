@@ -203,6 +203,21 @@ function unique(values: string[]): string[] {
 }
 
 function branchIntentBonus(text: string, branchId: string): number {
+  const hasDeveloperHybridIntent =
+    (text.includes("backend") || text.includes("runtime") || text.includes("sync") || text.includes("sincron")) &&
+    (text.includes("app mac") || text.includes("mac ") || text.includes("ipad") || text.includes("ios")) &&
+    (text.includes("codice") || text.includes("developer") || text.includes("patch") || text.includes("fix") || text.includes("nyra"));
+
+  if (hasDeveloperHybridIntent) {
+    if (branchId === "runtime_deployment_scaling_guard") return 74;
+    if (branchId === "software_systems_intelligence") return 58;
+    if (branchId === "data_integration_orchestration") return 42;
+    if (branchId === "change_impact_orchestration") return 34;
+    if (branchId === "developer_code") return 30;
+    if (branchId === "hardware_systems_intelligence") return 22;
+    if (branchId === "beauty_market") return -22;
+  }
+
   const hasTranslatorIntent =
     text.includes("traduttore") ||
     text.includes("traduzione") ||
