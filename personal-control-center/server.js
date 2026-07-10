@@ -7398,12 +7398,12 @@ app.post("/api/nyra/read-only", async (req, res) => {
       "refresh-if-stale",
       "--max-age-minutes",
       "180",
-    ]);
+    ], { timeoutMs: 20000 });
     const result = await runNodeJson([
       "--experimental-strip-types",
       "universal-core/tools/nyra-communication-adapter.ts",
       message
-    ]);
+    ], { timeoutMs: 20000 });
     res.json({
       ok: true,
       suit: chooseNyraSuit(message),
