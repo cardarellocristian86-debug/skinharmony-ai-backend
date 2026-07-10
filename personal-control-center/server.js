@@ -243,6 +243,38 @@ function runNodeJson(args, options = {}) {
   });
 }
 
+let nyraVectorMemoryRefreshPromise = null;
+let nyraVectorMemoryLastRefreshAt = 0;
+const NYRA_VECTOR_MEMORY_REFRESH_COOLDOWN_MS = Number(
+  process.env.NYRA_VECTOR_MEMORY_REFRESH_COOLDOWN_MS || 180000
+);
+
+async function refreshNyraVectorMemoryIfNeeded({ force = false, maxAgeMinutes = 180 } = {}) {
+  const now = Date.now();
+  if (!force && now - nyraVectorMemoryLastRefreshAt < NYRA_VECTOR_MEMORY_REFRESH_COOLDOWN_MS) {
+    return { ok: true, skipped: "cooldown_active" };
+  }
+  if (nyraVectorMemoryRefreshPromise) {
+    return nyraVectorMemoryRefreshPromise;
+  }
+  nyraVectorMemoryRefreshPromise = (async () => {
+    try {
+      const result = await runNodeJson([
+        "--experimental-strip-types",
+        "universal-core/tools/nyra-vector-memory.ts",
+        "refresh-if-stale",
+        "--max-age-minutes",
+        String(maxAgeMinutes),
+      ], { timeoutMs: 20000 });
+      nyraVectorMemoryLastRefreshAt = Date.now();
+      return result;
+    } finally {
+      nyraVectorMemoryRefreshPromise = null;
+    }
+  })();
+  return nyraVectorMemoryRefreshPromise;
+}
+
 function chooseNyraSuit(text = "") {
   const normalized = String(text || "").toLowerCase();
   if (/(comando|esegui|azione|subito|task|lavorare|assistente)/.test(normalized)) {
@@ -7392,13 +7424,7 @@ app.post("/api/nyra/read-only", async (req, res) => {
     return;
   }
   try {
-    await runNodeJson([
-      "--experimental-strip-types",
-      "universal-core/tools/nyra-vector-memory.ts",
-      "refresh-if-stale",
-      "--max-age-minutes",
-      "180",
-    ], { timeoutMs: 20000 });
+    await refreshNyraVectorMemoryIfNeeded({ maxAgeMinutes: 180 });
     const result = await runNodeJson([
       "--experimental-strip-types",
       "universal-core/tools/nyra-communication-adapter.ts",
