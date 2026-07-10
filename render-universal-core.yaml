@@ -13,6 +13,8 @@ services:
         value: /var/data/universal-core-service
       - key: CORE_SERVICE_ADMIN_KEY
         sync: false
+      - key: CORE_EVIDENCE_SIGNING_SECRET
+        sync: false
     disk:
       name: universal-core-service-data
       mountPath: /var/data

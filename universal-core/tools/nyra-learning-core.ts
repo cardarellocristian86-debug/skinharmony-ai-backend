@@ -61,7 +61,7 @@ const __dirname = dirname(__filename);
 
 function storagePath(...parts: string[]): string {
   const storageRoot = process.env.NYRA_STORAGE_ROOT?.trim();
-  if (storageRoot) return join(storageRoot, ...parts);
+  if (storageRoot) return join(storageRoot, "universal-core", ...parts);
   return join(__dirname, "..", ...parts);
 }
 

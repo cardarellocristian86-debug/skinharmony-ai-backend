@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -52,6 +53,8 @@ const nyraFinanceProfilePath = "personal-control-center/data/nyra-finance-profil
 const nyraSiteSuitePriceGuardSnapshotPath = "personal-control-center/data/nyra-site-suite-price-guard-snapshot.json";
 const nyraDecisionClarityPackPath = "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json";
 const nyraAnalyzerLearningPackPath = "personal-control-center/data/nyra-analyzer-learning-pack.json";
+const nyraSecurityAuditPath = "runtime/nyra-learning/nyra_security_audit.jsonl";
+const nyraVectorMemoryManifestPath = "universal-core/runtime/nyra-vector-memory/nyra_vector_memory_manifest.json";
 const nyraSiteSuitePriceGuardUrl = String(
   process.env.NYRA_SITE_SUITE_PRICE_GUARD_URL ||
   "https://www.skinharmony.it/wp-json/shss/v1/price-guard/nyra-snapshot"
@@ -61,14 +64,12 @@ const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
+const NYRA_SERVICE_VERSION = "0.4.0-secure-decision-to-value";
+const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
+const NYRA_BODY_LIMIT = String(process.env.NYRA_BODY_LIMIT || "1mb");
+const nyraRateBuckets = new Map();
 
 loadEnv();
-
-app.use(express.json());
-
-app.get("/healthz", (_req, res) => {
-  res.json({ ok: true, service: "skinharmony-nyra-core" });
-});
 
 function nyraPersistentPath(relativePath) {
   const normalized = String(relativePath || "").replaceAll("\\", "/");
@@ -76,6 +77,7 @@ function nyraPersistentPath(relativePath) {
     normalized.startsWith("personal-control-center/data/nyra-") ||
     normalized.startsWith("runtime/nyra-learning/nyra_") ||
     normalized.startsWith("universal-core/runtime/nyra/") ||
+    normalized.startsWith("universal-core/runtime/nyra-vector-memory/") ||
     normalized.startsWith("universal-core/runtime/nyra-learning/nyra_") ||
     normalized.startsWith("universal-core/data/world-market") ||
     normalized.startsWith("reports/universal-core/")
@@ -89,31 +91,153 @@ function resolveStoragePath(relativePath) {
   return path.join(rootDir, relativePath);
 }
 
+function envTruthy(name) {
+  return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
+}
+
+function nyraBearerKeys() {
+  return [process.env.NYRA_API_KEY, process.env.NYRA_API_KEYS]
+    .filter(Boolean)
+    .flatMap((value) => String(value).split(/[\s,]+/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function safeSecretEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function basicCredentialsConfigured() {
+  return Boolean(String(process.env.NYRA_BASIC_USER || "").trim() && String(process.env.NYRA_BASIC_PASSWORD || "").trim());
+}
+
+function basicAuthEnabled() {
+  if (envTruthy("NYRA_DISABLE_BASIC_AUTH")) return false;
+  return envTruthy("NYRA_ENABLE_BASIC_AUTH") || (process.env.NODE_ENV === "production" && basicCredentialsConfigured());
+}
+
+function requestIdFor(req) {
+  return String(req.get("x-request-id") || `nyra_${crypto.randomUUID()}`).slice(0, 120);
+}
+
+function clientIpFor(req) {
+  return String(req.get("x-forwarded-for") || req.ip || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
+}
+
+function appendNyraSecurityAudit(eventType, payload = {}) {
+  try {
+    const filePath = resolveStoragePath(nyraSecurityAuditPath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      event_id: `nyra_sec_${crypto.randomUUID()}`,
+      event_type: eventType,
+      created_at: new Date().toISOString(),
+      ...payload,
+    })}\n`, "utf8");
+  } catch {
+    // Security logging must never make the request fail.
+  }
+}
+
+function rateLimitAllowed(req) {
+  if (!req.path.startsWith("/api/")) return true;
+  const now = Date.now();
+  const key = clientIpFor(req);
+  const current = nyraRateBuckets.get(key) || { start: now, count: 0 };
+  if (now - current.start >= 60_000) {
+    current.start = now;
+    current.count = 0;
+  }
+  current.count += 1;
+  nyraRateBuckets.set(key, current);
+  if (nyraRateBuckets.size > 2000) {
+    for (const [bucketKey, bucket] of nyraRateBuckets) {
+      if (now - bucket.start >= 60_000) nyraRateBuckets.delete(bucketKey);
+    }
+  }
+  return current.count <= NYRA_RATE_LIMIT_PER_MINUTE;
+}
+
+function authenticateNyraRequest(req) {
+  const authorization = String(req.headers.authorization || "");
+  const bearer = bearerTokenFromHeader(authorization);
+  if (bearer && nyraBearerKeys().some((key) => safeSecretEqual(key, bearer))) {
+    return { ok: true, method: "bearer" };
+  }
+
+  if (basicAuthEnabled() && basicCredentialsConfigured()) {
+    const expected = basicAuth(String(process.env.NYRA_BASIC_USER).trim(), String(process.env.NYRA_BASIC_PASSWORD).trim());
+    if (safeSecretEqual(expected, authorization)) return { ok: true, method: "basic" };
+  }
+
+  const allowUnauthenticated = process.env.NODE_ENV !== "production" && envTruthy("NYRA_ALLOW_UNAUTHENTICATED");
+  if (!basicAuthEnabled() && !nyraBearerKeys().length && allowUnauthenticated) {
+    return { ok: true, method: "local_unauthed" };
+  }
+
+  return {
+    ok: false,
+    code: process.env.NODE_ENV === "production" && !basicCredentialsConfigured() && !nyraBearerKeys().length
+      ? "nyra_auth_not_configured"
+      : "nyra_auth_required",
+  };
+}
+
+app.disable("x-powered-by");
 app.use((req, res, next) => {
+  const requestId = requestIdFor(req);
+  req.nyraRequestId = requestId;
+  res.setHeader("X-Request-ID", requestId);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
+
   if (req.path === "/healthz") {
     next();
     return;
   }
-  const authEnabled = ["1", "true", "yes", "on"].includes(String(process.env.NYRA_ENABLE_BASIC_AUTH || "").trim().toLowerCase());
-  const authDisabled = ["1", "true", "yes", "on"].includes(String(process.env.NYRA_DISABLE_BASIC_AUTH || "").trim().toLowerCase());
-  if (!authEnabled || authDisabled) {
-    next();
+  if (!rateLimitAllowed(req)) {
+    appendNyraSecurityAudit("rate_limit_rejected", { request_id: requestId, method: req.method, path: req.path, ip: clientIpFor(req) });
+    res.setHeader("Retry-After", "60");
+    res.status(429).json({ ok: false, error: "rate_limit_exceeded", request_id: requestId });
     return;
   }
-  const expectedUser = String(process.env.NYRA_BASIC_USER || "").trim();
-  const expectedPassword = String(process.env.NYRA_BASIC_PASSWORD || "").trim();
-  if (!expectedUser || !expectedPassword) {
-    next();
+
+  const auth = authenticateNyraRequest(req);
+  if (!auth.ok) {
+    appendNyraSecurityAudit("auth_rejected", { request_id: requestId, method: req.method, path: req.path, ip: clientIpFor(req), reason: auth.code });
+    if (basicAuthEnabled()) res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
+    res.status(auth.code === "nyra_auth_not_configured" ? 503 : 401).json({ ok: false, error: auth.code, request_id: requestId });
     return;
   }
-  const header = String(req.headers.authorization || "");
-  const expected = basicAuth(expectedUser, expectedPassword);
-  if (header === expected) {
-    next();
-    return;
+
+  req.nyraAuth = auth;
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+    res.on("finish", () => appendNyraSecurityAudit("mutating_request", {
+      request_id: requestId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      auth_method: auth.method,
+      ip: clientIpFor(req),
+    }));
   }
-  res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
-  res.status(401).send("Authentication required");
+  next();
+});
+
+app.use(express.json({ limit: NYRA_BODY_LIMIT }));
+
+app.get("/healthz", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    version: NYRA_SERVICE_VERSION,
+    auth_required: process.env.NODE_ENV === "production",
+    auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
+    storage_persistent: Boolean(nyraStorageRoot),
+  });
 });
 
 function analyzerScopedKeys() {
@@ -1531,6 +1655,57 @@ async function fetchJson(url, options = {}) {
     throw new Error(`HTTP ${response.status} ${response.statusText}: ${text.slice(0, 300)}`);
   }
   return text ? JSON.parse(text) : {};
+}
+
+function nyraCoreConfig() {
+  const baseUrl = String(process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+  return {
+    baseUrl,
+    apiKey: String(process.env.NYRA_CORE_KEY || process.env.UNIVERSAL_CORE_KEY || "").trim(),
+    tenantId: String(process.env.NYRA_CORE_TENANT_ID || process.env.UNIVERSAL_CORE_TENANT_ID || "").trim(),
+  };
+}
+
+async function requestNyraCore(pathname, options = {}) {
+  const config = nyraCoreConfig();
+  if (!config.baseUrl || !config.apiKey || !config.tenantId) {
+    return { ok: false, status: 503, code: "core_not_configured" };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs || 8000));
+  try {
+    const response = await fetch(`${config.baseUrl}${pathname}`, {
+      method: options.method || "GET",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "X-SH-Tenant-ID": config.tenantId,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text.slice(0, 500) };
+    }
+    return { ok: response.ok, status: response.status, data };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      code: error?.name === "AbortError" ? "core_timeout" : "core_unreachable",
+      message: error?.message || "Core non raggiungibile",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function formatBytes(bytes) {
@@ -3577,6 +3752,103 @@ function localActionProposal({ prompt, scope, cardType, context }) {
   };
 }
 
+function buildNyraTextLearningStatus() {
+  const store = readJson("universal-core/runtime/nyra/nyra_learning_core.json", {
+    version: 1,
+    rules: [],
+    lastInteraction: null,
+    updatedAt: null
+  });
+  const sidecar = readJson("universal-core/runtime/nyra/text-branch-sidecar-memory.json", {
+    ownerPreferences: {},
+    ownerFacts: {},
+    dialogueNotes: [],
+    stableCorrections: [],
+    updatedAt: null
+  });
+  const vectorManifest = readJson(nyraVectorMemoryManifestPath, null);
+  return {
+    mode: "nyra_text_learning_sandbox",
+    persistent: Boolean(nyraStorageRoot),
+    learning_rules: Array.isArray(store.rules) ? store.rules.length : 0,
+    active_learning_rules: Array.isArray(store.rules) ? store.rules.filter((rule) => rule.status === "active").length : 0,
+    quarantined_learning_rules: Array.isArray(store.rules) ? store.rules.filter((rule) => rule.status === "quarantine").length : 0,
+    last_interaction: store.lastInteraction || null,
+    sidecar_notes: Array.isArray(sidecar.dialogueNotes) ? sidecar.dialogueNotes.length : 0,
+    stable_corrections: Array.isArray(sidecar.stableCorrections) ? sidecar.stableCorrections.length : 0,
+    updated_at: store.updatedAt || sidecar.updatedAt || null,
+    vector_memory: vectorManifest
+      ? {
+          generated_at: vectorManifest.generated_at || null,
+          documents: Number(vectorManifest.documents || 0),
+          chunks: Number(vectorManifest.chunks || 0),
+          source_groups: Array.isArray(vectorManifest.source_groups) ? vectorManifest.source_groups : [],
+        }
+      : { generated_at: null, documents: 0, chunks: 0, source_groups: [] },
+  };
+}
+
+function buildDecisionToValueReadiness(payload = {}) {
+  const supplied = payload.stage_status && typeof payload.stage_status === "object" ? payload.stage_status : {};
+  const stages = [
+    { id: "analyzer", label: "Analisi ed evidenze", ready: Boolean(payload.analyzer_ready || supplied.analyzer === "ready" || payload.analyzer?.ready) },
+    { id: "consent", label: "Consenso e contatto", ready: Boolean(payload.consent_status === "granted" || supplied.consent === "ready" || payload.consent?.status === "granted") },
+    { id: "protocol", label: "Protocollo personalizzato", ready: Boolean(payload.protocol_id || payload.protocol_ready || supplied.protocol === "ready") },
+    { id: "booking", label: "Prenotazione", ready: Boolean(payload.booking_id || payload.booking_ready || supplied.booking === "ready") },
+    { id: "treatment", label: "Trattamento registrato", ready: Boolean(payload.treatment_id || payload.treatment_completed || supplied.treatment === "ready") },
+    { id: "commerce", label: "Vendita e margine", ready: Boolean(payload.sale_id || payload.sale_amount || payload.commerce_ready || supplied.commerce === "ready") },
+    { id: "retention", label: "Recall e risultato", ready: Boolean(payload.recall_ready || payload.outcome_recorded || supplied.retention === "ready") },
+  ].map((stage) => ({ ...stage, status: stage.ready ? "ready" : "missing" }));
+  const readyCount = stages.filter((stage) => stage.ready).length;
+  return {
+    stages,
+    ready_count: readyCount,
+    total_stages: stages.length,
+    readiness_score: Number((readyCount / stages.length).toFixed(4)),
+    missing: stages.filter((stage) => !stage.ready).map((stage) => stage.id),
+  };
+}
+
+function buildDecisionToValueCorePayload(payload, readiness, tenantId) {
+  const missingPenalty = readiness.missing.length * 8;
+  const riskHint = Math.min(90, 30 + missingPenalty);
+  const confidenceHint = Math.max(25, Math.min(95, 45 + readiness.ready_count * 7));
+  return {
+    tenant_id: tenantId,
+    domain: "decision_to_value",
+    action_type: "workflow_decision",
+    action_label: "Preview decision-to-value SkinHarmony",
+    risk_hint: riskHint,
+    confidence_hint: confidenceHint,
+    data_quality: {
+      score: Number(payload.data_quality?.score ?? payload.data_quality_score ?? Math.round(readiness.readiness_score * 100)),
+      missing_fields: readiness.missing,
+    },
+    evidence: readiness.stages.map((stage) => ({ label: stage.label, value: stage.status })),
+    constraints: {
+      allow_automation: false,
+      require_confirmation: true,
+      safety_mode: true,
+    },
+    metadata: {
+      source: "nyra_decision_to_value_preview",
+      execution: "preview_only",
+      request_id: String(payload.request_id || `dtv_${crypto.randomUUID()}`),
+    },
+  };
+}
+
+function buildNyraDecisionToValueExplanation(coreContract, readiness) {
+  const state = String(coreContract?.state || coreContract?.decision_state || "attention").toLowerCase();
+  if (state === "blocked") {
+    return "Nyra ferma il percorso: prima vanno risolti i blocchi evidenziati dal Core.";
+  }
+  if (state === "attention" || state === "review") {
+    return `Nyra vede ${readiness.missing.length} passaggi incompleti: prepara il prossimo micro-step e richiede conferma prima di qualsiasi scrittura.`;
+  }
+  return "Nyra vede un percorso leggibile: il prossimo passo resta una preview verificata, senza esecuzione automatica.";
+}
+
 app.get("/api/overview", (_req, res) => {
   const context = buildControlContext();
   const report = readText("mail/ultimo_report_outreach.md", "Report non disponibile.");
@@ -3602,6 +3874,120 @@ app.get("/api/nyra/control", (_req, res) => {
   res.json({
     generatedAt: new Date().toISOString(),
     nyra: buildNyraControlDirective(context)
+  });
+});
+
+app.get("/api/nyra/runtime/readiness", async (_req, res) => {
+  const config = nyraCoreConfig();
+  const core = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`);
+  const learning = buildNyraTextLearningStatus();
+  const authConfigured = basicCredentialsConfigured() || nyraBearerKeys().length > 0;
+  const ready = Boolean(nyraStorageRoot && authConfigured && core.ok);
+  res.status(ready ? 200 : 503).json({
+    ok: ready,
+    service: "skinharmony-nyra-core",
+    version: NYRA_SERVICE_VERSION,
+    state: ready ? "ready" : "attention",
+    checked_at: new Date().toISOString(),
+    auth: {
+      enforced_in_production: true,
+      basic_enabled: basicAuthEnabled(),
+      bearer_keys_configured: nyraBearerKeys().length > 0,
+      credentials_configured: authConfigured,
+    },
+    storage: {
+      persistent: Boolean(nyraStorageRoot),
+      mode: nyraStorageRoot ? "render_disk" : "repo_local",
+    },
+    core: {
+      configured: Boolean(config.baseUrl && config.apiKey && config.tenantId),
+      reachable: core.ok,
+      status: core.ok ? "connected" : core.code || "unavailable",
+      tenant_id: config.tenantId || null,
+    },
+    learning,
+    paper: {
+      world_enabled: nyraWorldPaperAutoState.enabled,
+      world_running: nyraWorldPaperAutoState.running,
+      world_cycles: nyraWorldPaperAutoState.cyclesCompleted,
+      finance_enabled: nyraFinanceLiveState.enabled,
+      finance_running: nyraFinanceLiveState.running,
+    },
+    guardrails: {
+      no_real_orders: true,
+      no_automatic_customer_mutation: true,
+      decision_to_value_execution: "preview_only",
+    },
+  });
+});
+
+app.get("/api/nyra/core/status", async (_req, res) => {
+  const config = nyraCoreConfig();
+  const result = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`);
+  if (!result.ok) {
+    return res.status(result.status || 503).json({
+      ok: false,
+      service: "skinharmony-nyra-core",
+      core: {
+        configured: Boolean(config.baseUrl && config.apiKey && config.tenantId),
+        reachable: false,
+        status: result.code || "unavailable",
+        tenant_id: config.tenantId || null,
+      },
+    });
+  }
+  return res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    core: {
+      configured: true,
+      reachable: true,
+      status: result.data?.status || result.data?.mode || "connected",
+      service: result.data?.service || "universal-core",
+      version: result.data?.version || null,
+      tenant_id: result.data?.tenant_id || config.tenantId,
+      active_branches: Array.isArray(result.data?.active_branches) ? result.data.active_branches.length : null,
+    },
+    checked_at: new Date().toISOString(),
+  });
+});
+
+app.post("/api/nyra/decision-to-value/preview", async (req, res) => {
+  const config = nyraCoreConfig();
+  const readiness = buildDecisionToValueReadiness(req.body || {});
+  const coreRequest = buildDecisionToValueCorePayload(req.body || {}, readiness, config.tenantId);
+  const result = await requestNyraCore("/v1/action-evaluator", {
+    method: "POST",
+    body: coreRequest,
+  });
+  if (!result.ok) {
+    return res.status(result.status || 503).json({
+      ok: false,
+      mode: "preview_only",
+      error: result.code || "core_decision_unavailable",
+      message: result.message || "Core non ha restituito una decisione.",
+      readiness,
+      execution_allowed: false,
+    });
+  }
+
+  const decisionContract = result.data?.decision_contract || result.data?.verdict?.decision_contract || result.data?.output || null;
+  return res.json({
+    ok: true,
+    mode: "preview_only",
+    tenant_id: config.tenantId,
+    execution_allowed: false,
+    readiness,
+    core: {
+      decision_contract: decisionContract,
+      risk: result.data?.output?.risk || result.data?.verdict?.risk || null,
+      evidence: result.data?.evidence || null,
+    },
+    nyra: {
+      explanation: buildNyraDecisionToValueExplanation(decisionContract, readiness),
+      next_step: readiness.missing.length ? `completare: ${readiness.missing.join(", ")}` : "richiedere conferma owner per il micro-step successivo",
+      value_loop: ["analisi", "consenso", "protocollo", "prenotazione", "trattamento", "vendita_margine", "recall_risultato"],
+    },
   });
 });
 
@@ -5955,28 +6341,9 @@ app.get("/api/nyra/snapshot", (_req, res) => {
 });
 
 app.get("/api/nyra/text-learning/status", (_req, res) => {
-  const store = readJson("universal-core/runtime/nyra/nyra_learning_core.json", {
-    version: 1,
-    rules: [],
-    lastInteraction: null,
-    updatedAt: null
-  });
-  const sidecar = readJson("universal-core/runtime/nyra/text-branch-sidecar-memory.json", {
-    ownerPreferences: {},
-    ownerFacts: {},
-    dialogueNotes: [],
-    stableCorrections: [],
-    updatedAt: null
-  });
   res.json({
     ok: true,
-    mode: "nyra_text_learning_sandbox",
-    persistent: Boolean(nyraStorageRoot),
-    learning_rules: Array.isArray(store.rules) ? store.rules.length : 0,
-    last_interaction: store.lastInteraction || null,
-    sidecar_notes: Array.isArray(sidecar.dialogueNotes) ? sidecar.dialogueNotes.length : 0,
-    stable_corrections: Array.isArray(sidecar.stableCorrections) ? sidecar.stableCorrections.length : 0,
-    updated_at: store.updatedAt || sidecar.updatedAt || null
+    ...buildNyraTextLearningStatus()
   });
 });
 
@@ -7313,12 +7680,40 @@ app.post("/api/nyra/text-chat", async (req, res) => {
       "universal-core/tools/nyra-text-chat-api.ts",
       JSON.stringify({ text: message, sessionId })
     ], { timeoutMs: 20000 });
-    res.json(output);
+    res.json({ ...output, learning: buildNyraTextLearningStatus() });
   } catch (error) {
     res.status(500).json({
       ok: false,
       error: error.message || "Runtime Nyra text sandbox non disponibile."
     });
+  }
+});
+
+app.post("/api/nyra/text-feedback", async (req, res) => {
+  const feedback = String(req.body?.feedback || "").trim().toLowerCase();
+  const correction = String(req.body?.correction || "").trim();
+  const sessionId = String(req.body?.sessionId || "nyra-render-text-sandbox").trim();
+  const command = feedback === "good"
+    ? ":good"
+    : feedback === "bad"
+      ? ":bad"
+      : feedback === "wrong"
+        ? `:wrong ${correction || "Isola meglio il dominio e rendi la risposta piu concreta."}`
+        : feedback === "teach"
+          ? `:teach ${correction}`
+          : "";
+  if (!command || (feedback === "teach" && !correction)) {
+    return res.status(400).json({ ok: false, error: "feedback_invalid", allowed: ["good", "bad", "wrong", "teach"] });
+  }
+  try {
+    const output = await runNodeJson([
+      "--experimental-strip-types",
+      "universal-core/tools/nyra-text-chat-api.ts",
+      JSON.stringify({ text: command, sessionId })
+    ], { timeoutMs: 20000 });
+    return res.json({ ok: true, feedback, result: output, learning: buildNyraTextLearningStatus() });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message || "Nyra feedback non disponibile." });
   }
 });
 

@@ -318,7 +318,11 @@ function reviewStore(storageRoot) {
 function evidenceStore(storageRoot) {
   const file = path.join(storageRoot, "evidence", "events.jsonl");
   ensureDir(path.dirname(file));
-  const signingSecret = process.env.CORE_EVIDENCE_SIGNING_SECRET || "dev-evidence-signing-secret";
+  const configuredSigningSecret = String(process.env.CORE_EVIDENCE_SIGNING_SECRET || "").trim();
+  if (!configuredSigningSecret && process.env.NODE_ENV === "production") {
+    throw new Error("CORE_EVIDENCE_SIGNING_SECRET is required in production");
+  }
+  const signingSecret = configuredSigningSecret || "dev-evidence-signing-secret";
 
   function sign(record) {
     return crypto.createHmac("sha256", signingSecret).update(JSON.stringify(record)).digest("hex");
