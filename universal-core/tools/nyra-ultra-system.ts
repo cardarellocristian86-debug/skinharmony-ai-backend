@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../packages/core/src/index.ts";
@@ -87,16 +87,26 @@ function ensureRuntimeDir(): void {
   mkdirSync(ULTRA_RUNTIME_DIR, { recursive: true });
 }
 
+function readJsonFileSafe<T>(filePath: string, fallback: T): T {
+  if (!existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8")) as T;
+  } catch {
+    const quarantinePath = `${filePath}.corrupt-${Date.now()}.json`;
+    try {
+      copyFileSync(filePath, quarantinePath);
+    } catch {
+      // best effort quarantine only
+    }
+    return fallback;
+  }
+}
+
 function loadStore(): PersistedStore {
   ensureRuntimeDir();
 
-  const metrics = existsSync(ULTRA_METRICS_PATH)
-    ? JSON.parse(readFileSync(ULTRA_METRICS_PATH, "utf8")) as Metrics
-    : defaultMetrics();
-
-  const sessions = existsSync(ULTRA_SESSIONS_PATH)
-    ? JSON.parse(readFileSync(ULTRA_SESSIONS_PATH, "utf8")) as Session[]
-    : [];
+  const metrics = readJsonFileSafe<Metrics>(ULTRA_METRICS_PATH, defaultMetrics());
+  const sessions = readJsonFileSafe<Session[]>(ULTRA_SESSIONS_PATH, []);
 
   return {
     sessions: Array.isArray(sessions) ? sessions : [],
@@ -132,8 +142,12 @@ function loadStudyGrounding(): StudyGrounding {
 
 function persistStore(): void {
   ensureRuntimeDir();
-  writeFileSync(ULTRA_SESSIONS_PATH, JSON.stringify(Array.from(sessions.values()), null, 2));
-  writeFileSync(ULTRA_METRICS_PATH, JSON.stringify(metrics, null, 2));
+  const sessionsTempPath = `${ULTRA_SESSIONS_PATH}.tmp`;
+  const metricsTempPath = `${ULTRA_METRICS_PATH}.tmp`;
+  writeFileSync(sessionsTempPath, JSON.stringify(Array.from(sessions.values()), null, 2));
+  renameSync(sessionsTempPath, ULTRA_SESSIONS_PATH);
+  writeFileSync(metricsTempPath, JSON.stringify(metrics, null, 2));
+  renameSync(metricsTempPath, ULTRA_METRICS_PATH);
 }
 
 function clamp01(value: number): number {
