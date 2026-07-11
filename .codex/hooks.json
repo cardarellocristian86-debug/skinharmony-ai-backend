@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/core-gate-hook.mjs\"",
+            "timeout": 20,
+            "statusMessage": "Checking Universal Core policy"
+          }
+        ]
+      }
+    ]
+  }
+}
