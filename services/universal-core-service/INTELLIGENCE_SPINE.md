@@ -20,6 +20,7 @@ This phase adds a passive, fail-open experience ledger around Universal Core.
 - `SKINHARMONY_SPINE_RUNTIME_SAMPLE_RATE` samples non-decision requests (default `0.01`). Decisions, owner feedback, and server errors are always collected.
 
 In production, configure both secrets in the platform secret store. Never commit them.
+If the tenant-reference secret is missing, the service uses an ephemeral in-memory HMAC key. This remains private but prevents stable tenant correlation across restarts until the secret is configured.
 
 ## Stored fields
 
