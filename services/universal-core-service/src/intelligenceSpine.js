@@ -165,7 +165,8 @@ export function createExperienceLedger(storageRoot, options = {}) {
 
 export function createIntelligenceSpine(storageRoot, options = {}) {
   const enabled = options.enabled ?? process.env.SKINHARMONY_INTELLIGENCE_SPINE_ENABLED !== "false";
-  const refSecret = String(options.refSecret || process.env.CORE_EXPERIENCE_REF_SECRET || "").trim();
+  const configuredRefSecret = String(options.refSecret || process.env.CORE_EXPERIENCE_REF_SECRET || "").trim();
+  const refSecret = configuredRefSecret || crypto.randomBytes(32).toString("hex");
   const ledger = createExperienceLedger(storageRoot, {
     enabled,
     signingSecret: options.signingSecret,
@@ -227,7 +228,13 @@ export function createIntelligenceSpine(storageRoot, options = {}) {
 
   return {
     middleware,
-    status: ledger.status,
+    status() {
+      return {
+        ...ledger.status(),
+        tenant_ref_secret_configured: Boolean(configuredRefSecret),
+        tenant_ref_fallback: configuredRefSecret ? "stable_hmac" : "ephemeral_hmac",
+      };
+    },
   };
 }
 
