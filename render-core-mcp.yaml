@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: skinharmony-core-mcp
+    env: node
+    plan: starter
+    rootDir: services/skinharmony-core-mcp
+    buildCommand: npm ci --ignore-scripts
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORE_BASE_URL
+        value: https://skinharmony-universal-core.onrender.com
+      - key: NYRA_BASE_URL
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_MCP_TENANT_ID
+        value: codexai
+      - key: MCP_ALLOWED_HOSTS
+        value: skinharmony-core-mcp.onrender.com
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      - key: CORE_MCP_KEY
+        sync: false
+      - key: NYRA_MCP_API_KEY
+        sync: false
