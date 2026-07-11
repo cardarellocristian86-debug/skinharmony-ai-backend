@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --experimental-strip-types server.js",
-    "test": "node --experimental-strip-types test/core-service-smoke.js",
+    "start": "node --experimental-strip-types server.intelligence-spine.js",
+    "test": "node --experimental-strip-types test/intelligence-spine-test.js && node --experimental-strip-types test/core-service-smoke.js",
     "core:client": "node tools/core-service-client.js"
   },
   "dependencies": {
