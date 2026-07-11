@@ -17,6 +17,7 @@ This phase adds a passive, fail-open experience ledger around Universal Core.
 - `SKINHARMONY_INTELLIGENCE_SPINE_ENABLED=false` disables collection.
 - `CORE_EXPERIENCE_SIGNING_SECRET` signs the hash chain in production.
 - `CORE_EXPERIENCE_REF_SECRET` pseudonymizes tenant references.
+- `SKINHARMONY_SPINE_RUNTIME_SAMPLE_RATE` samples non-decision requests (default `0.01`). Decisions, owner feedback, and server errors are always collected.
 
 In production, configure both secrets in the platform secret store. Never commit them.
 
