@@ -84,6 +84,15 @@ function eventTypeFor(req, summary) {
   return "com.skinharmony.runtime.request.completed";
 }
 
+function shouldRecord(req, res, summary) {
+  if (summary || Number(res.statusCode || 0) >= 500) return true;
+  const route = String(req.originalUrl || req.url || "").split("?")[0];
+  if (route.includes("/review/action")) return true;
+  const configured = Number(process.env.SKINHARMONY_SPINE_RUNTIME_SAMPLE_RATE ?? 0.01);
+  const sampleRate = Math.max(0, Math.min(1, Number.isFinite(configured) ? configured : 0.01));
+  return Math.random() < sampleRate;
+}
+
 export function createCloudEvent({ type, subject, data, traceId, source = DEFAULT_SOURCE, time = new Date() }) {
   return {
     specversion: CLOUD_EVENT_SPEC_VERSION,
@@ -171,7 +180,6 @@ export function createIntelligenceSpine(storageRoot, options = {}) {
     const traceId = parseTraceId(req);
     const spanId = crypto.randomBytes(8).toString("hex");
     const requestId = clampText(req.get?.("x-request-id"), 120) || `req_${crypto.randomUUID()}`;
-    const tenantRef = requestTenantRef(req, refSecret);
     let responseSummary = null;
 
     res.setHeader("X-Request-ID", requestId);
@@ -185,7 +193,9 @@ export function createIntelligenceSpine(storageRoot, options = {}) {
 
     res.once("finish", () => {
       try {
+        if (!shouldRecord(req, res, responseSummary)) return;
         const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+        const tenantRef = requestTenantRef(req, refSecret);
         const event = createCloudEvent({
           type: eventTypeFor(req, responseSummary),
           subject: `${String(req.method || "GET").toUpperCase()} ${route}`,
