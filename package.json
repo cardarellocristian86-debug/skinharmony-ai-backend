@@ -22,8 +22,8 @@
     "postinstall": "bash scripts/build-rust-extractor-render.sh",
     "nyra:render": "node personal-control-center/server.js",
     "nyra:runtime:test": "node personal-control-center/test/nyra-runtime-smoke.js",
-    "core:service": "node --experimental-strip-types services/universal-core-service/server.js",
-    "core:service:test": "node --experimental-strip-types services/universal-core-service/test/core-service-smoke.js",
+    "core:service": "node --experimental-strip-types services/universal-core-service/server.intelligence-spine.js",
+    "core:service:test": "node --experimental-strip-types services/universal-core-service/test/intelligence-spine-test.js && node --experimental-strip-types services/universal-core-service/test/core-service-smoke.js",
     "core:client": "node services/universal-core-service/tools/core-service-client.js"
   },
   "dependencies": {
