@@ -1,0 +1,31 @@
+name: SkinHarmony Core MCP
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - ".codex/**"
+      - "render-core-mcp.yaml"
+      - "services/skinharmony-core-mcp/**"
+      - ".github/workflows/core-mcp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/skinharmony-core-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/skinharmony-core-mcp/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
