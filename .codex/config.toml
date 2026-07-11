@@ -1,0 +1,15 @@
+[mcp_servers.skinharmony_core]
+url = "https://skinharmony-core-mcp.onrender.com/mcp"
+bearer_token_env_var = "SKINHARMONY_MCP_TOKEN"
+required = false
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 45
+default_tools_approval_mode = "auto"
+enabled_tools = ["core_health", "core_gate_action", "nyra_runtime_context", "nyra_interpret_request"]
+
+[mcp_servers.skinharmony_core.tools.core_gate_action]
+approval_mode = "approve"
+
+[mcp_servers.skinharmony_core.tools.nyra_interpret_request]
+approval_mode = "prompt"
