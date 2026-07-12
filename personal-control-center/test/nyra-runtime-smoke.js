@@ -143,7 +143,7 @@ async function main() {
 
   try {
     const health = await waitForHealth(child);
-    assert.equal(health.json.version, "0.4.0-secure-decision-to-value");
+    assert.equal(health.json.version, "0.5.0-decision-journey");
 
     const unauthenticated = await request("/api/nyra/control");
     assert.equal(unauthenticated.status, 401);
@@ -157,6 +157,7 @@ async function main() {
     assert.equal(readiness.json.ok, true);
     assert.equal(readiness.json.core.status, "connected");
     assert.equal(readiness.json.storage.persistent, true);
+    assert.equal(readiness.json.journey.event_count, 0);
 
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });
     assert.equal(learningBefore.status, 200);
@@ -186,6 +187,72 @@ async function main() {
     assert.equal(coreStatus.status, 200);
     assert.equal(coreStatus.json.core.reachable, true);
 
+    const journeyPreview = await request("/api/nyra/decision-to-value/events", {
+      method: "POST",
+      auth: true,
+      body: {
+        mode: "preview",
+        lead_id: "journey-smoke-lead",
+        stage: "analyzer",
+        event_type: "analysis_completed",
+        status: "completed",
+        source: "smoke_analyzer",
+        external_event_id: "journey-smoke-analyzer-1",
+        evidence: [{ id: "evidence-smoke", type: "analysis", source: "smoke" }],
+      },
+    });
+    assert.equal(journeyPreview.status, 200);
+    assert.equal(journeyPreview.json.event_recorded, false);
+    assert.equal(journeyPreview.json.execution_allowed, false);
+
+    const journeyCommit = await request("/api/nyra/decision-to-value/events", {
+      method: "POST",
+      auth: true,
+      body: {
+        mode: "commit",
+        confirm: true,
+        lead_id: "journey-smoke-lead",
+        stage: "analyzer",
+        event_type: "analysis_completed",
+        status: "completed",
+        source: "smoke_analyzer",
+        external_event_id: "journey-smoke-analyzer-1",
+        evidence: [{ id: "evidence-smoke", type: "analysis", source: "smoke" }],
+      },
+    });
+    assert.equal(journeyCommit.status, 200);
+    assert.equal(journeyCommit.json.event_recorded, true);
+    assert.equal(journeyCommit.json.execution_allowed, false);
+    assert.equal(journeyCommit.json.profile.ready_count, 1);
+
+    const journeyDuplicate = await request("/api/nyra/decision-to-value/events", {
+      method: "POST",
+      auth: true,
+      body: {
+        mode: "commit",
+        confirm: true,
+        lead_id: "journey-smoke-lead",
+        stage: "analyzer",
+        event_type: "analysis_completed",
+        status: "completed",
+        source: "smoke_analyzer",
+        external_event_id: "journey-smoke-analyzer-1",
+      },
+    });
+    assert.equal(journeyDuplicate.status, 200);
+    assert.equal(journeyDuplicate.json.duplicate, true);
+    assert.equal(journeyDuplicate.json.event_recorded, false);
+
+    const journeyStatus = await request(`/api/nyra/decision-to-value/status?profile_id=${encodeURIComponent(journeyCommit.json.profile.profile_id)}`, { auth: true });
+    assert.equal(journeyStatus.status, 200);
+    assert.equal(journeyStatus.json.status.profile_id, journeyCommit.json.profile.profile_id);
+    assert.equal(journeyStatus.json.status.stages.find((stage) => stage.id === "analyzer").status, "ready");
+
+    const journeyReport = await request("/api/nyra/decision-to-value/report", { auth: true });
+    assert.equal(journeyReport.status, 200);
+    assert.equal(journeyReport.json.report.event_count, 1);
+    assert.equal(journeyReport.json.report.profile_count, 1);
+
     const preview = await request("/api/nyra/decision-to-value/preview", {
       method: "POST",
       auth: true,
@@ -210,9 +277,11 @@ async function main() {
         "authenticated_control",
         "runtime_readiness",
         "persistent_learning_path",
-        "feedback_endpoint",
-        "core_status_bridge",
-        "decision_to_value_preview",
+      "feedback_endpoint",
+      "core_status_bridge",
+      "decision_journey_preview_commit_idempotency",
+      "decision_journey_report",
+      "decision_to_value_preview",
       ],
       learning_rules: learningAfter.json.learning_rules,
       missing_preview_stages: preview.json.readiness.missing,

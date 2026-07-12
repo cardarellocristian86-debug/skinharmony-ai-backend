@@ -55,6 +55,7 @@ const nyraDecisionClarityPackPath = "universal-core/runtime/nyra-learning/nyra_d
 const nyraAnalyzerLearningPackPath = "personal-control-center/data/nyra-analyzer-learning-pack.json";
 const nyraSecurityAuditPath = "runtime/nyra-learning/nyra_security_audit.jsonl";
 const nyraVectorMemoryManifestPath = "universal-core/runtime/nyra-vector-memory/nyra_vector_memory_manifest.json";
+const nyraDecisionJourneyPath = "universal-core/runtime/nyra/nyra_decision_to_value_journey.json";
 const nyraSiteSuitePriceGuardUrl = String(
   process.env.NYRA_SITE_SUITE_PRICE_GUARD_URL ||
   "https://www.skinharmony.it/wp-json/shss/v1/price-guard/nyra-snapshot"
@@ -64,10 +65,44 @@ const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
-const NYRA_SERVICE_VERSION = "0.4.0-secure-decision-to-value";
+const NYRA_SERVICE_VERSION = "0.5.0-decision-journey";
 const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
 const NYRA_BODY_LIMIT = String(process.env.NYRA_BODY_LIMIT || "1mb");
 const nyraRateBuckets = new Map();
+const NYRA_JOURNEY_STAGES = [
+  { id: "analyzer", label: "Analisi ed evidenze" },
+  { id: "consent", label: "Consenso e contatto" },
+  { id: "protocol", label: "Protocollo personalizzato" },
+  { id: "booking", label: "Prenotazione" },
+  { id: "treatment", label: "Trattamento registrato" },
+  { id: "commerce", label: "Vendita e margine" },
+  { id: "retention", label: "Recall e risultato" },
+];
+const NYRA_JOURNEY_STAGE_ALIASES = {
+  analysis: "analyzer",
+  analyzer: "analyzer",
+  analisi: "analyzer",
+  evidence: "analyzer",
+  consent: "consent",
+  consenso: "consent",
+  contact: "consent",
+  protocol: "protocol",
+  protocollo: "protocol",
+  booking: "booking",
+  prenotazione: "booking",
+  treatment: "treatment",
+  trattamento: "treatment",
+  commerce: "commerce",
+  sale: "commerce",
+  vendita: "commerce",
+  margin: "commerce",
+  retention: "retention",
+  recall: "retention",
+  risultato: "retention",
+};
+const NYRA_JOURNEY_STAGE_STATUSES = new Set(["missing", "pending", "ready", "blocked"]);
+const NYRA_JOURNEY_READY_STATUSES = new Set(["ready", "completed", "granted", "booked", "recorded", "sold"]);
+const NYRA_JOURNEY_BLOCKED_STATUSES = new Set(["blocked", "revoked", "denied"]);
 
 loadEnv();
 
@@ -1773,6 +1808,270 @@ function writeJson(relativePath, data) {
   const filePath = resolveStoragePath(relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function normalizeJourneyStage(value) {
+  const key = String(value || "").trim().toLowerCase().replaceAll(" ", "_");
+  return NYRA_JOURNEY_STAGE_ALIASES[key] || "";
+}
+
+function journeyFingerprint(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 32);
+}
+
+function journeyProfileId(payload = {}) {
+  const explicit = String(payload.profile_id || "").trim();
+  if (/^p_[a-f0-9]{32}$/.test(explicit)) return explicit;
+  const identity = [
+    payload.customer_id,
+    payload.lead_id,
+    payload.external_id,
+    payload.email,
+    payload.phone,
+  ].map((value) => String(value || "").trim().toLowerCase()).find(Boolean);
+  if (!identity) return "";
+  return `p_${journeyFingerprint(`skinharmony:codexai:${identity}`)}`;
+}
+
+function emptyJourneyStages() {
+  return Object.fromEntries(NYRA_JOURNEY_STAGES.map((stage) => [stage.id, {
+    status: "missing",
+    event_count: 0,
+    evidence_count: 0,
+    last_event_at: null,
+    last_source: null,
+  }]));
+}
+
+function loadNyraDecisionJourney() {
+  const raw = readJson(nyraDecisionJourneyPath, {});
+  return {
+    version: 1,
+    updated_at: raw?.updated_at || null,
+    events: Array.isArray(raw?.events) ? raw.events : [],
+    profiles: raw?.profiles && typeof raw.profiles === "object" ? raw.profiles : {},
+  };
+}
+
+function saveNyraDecisionJourney(store) {
+  store.updated_at = new Date().toISOString();
+  writeJson(nyraDecisionJourneyPath, store);
+}
+
+function toNullableNumber(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function sanitizeJourneyMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const allowedKeys = [
+    "campaign_id",
+    "channel",
+    "product_id",
+    "protocol_id",
+    "booking_id",
+    "treatment_id",
+    "sale_id",
+    "sku",
+    "source_record_id",
+    "consent_basis",
+  ];
+  return Object.fromEntries(allowedKeys
+    .filter((key) => value[key] !== undefined && value[key] !== null)
+    .map((key) => [key, String(value[key]).slice(0, 160)]));
+}
+
+function normalizeJourneyEvidence(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 12).map((item) => {
+    const row = item && typeof item === "object" ? item : { id: item };
+    const captured = row.captured_at ? new Date(row.captured_at) : null;
+    return {
+      evidence_id: row.id || row.evidence_id ? journeyFingerprint(row.id || row.evidence_id) : null,
+      type: String(row.type || "record").slice(0, 60),
+      source: String(row.source || "unknown").slice(0, 80),
+      captured_at: captured && Number.isFinite(captured.getTime()) ? captured.toISOString() : null,
+    };
+  });
+}
+
+function normalizeJourneyEvent(payload = {}, idempotencyKey = "") {
+  const stage = normalizeJourneyStage(payload.stage || payload.stage_id);
+  if (!stage) return { error: "journey_stage_required", allowed_stages: NYRA_JOURNEY_STAGES.map((item) => item.id) };
+
+  const profileId = journeyProfileId(payload);
+  if (!profileId) return { error: "journey_identity_required", required: ["profile_id", "customer_id", "lead_id", "external_id", "email", "phone"] };
+
+  const source = String(payload.source || payload.source_system || "").trim().toLowerCase().replace(/[^a-z0-9_:-]/g, "_").slice(0, 80);
+  if (!source) return { error: "journey_source_required" };
+
+  const eventType = String(payload.event_type || payload.event || `${stage}_status`).trim().toLowerCase().slice(0, 100);
+  const rawStatus = String(payload.status || "").trim().toLowerCase();
+  const status = NYRA_JOURNEY_BLOCKED_STATUSES.has(rawStatus) || /blocked|revoked|denied/.test(eventType)
+    ? "blocked"
+    : NYRA_JOURNEY_READY_STATUSES.has(rawStatus) || /completed|granted|booked|recorded|sold|confirmed/.test(eventType)
+      ? "ready"
+      : NYRA_JOURNEY_STAGE_STATUSES.has(rawStatus)
+        ? rawStatus
+        : "pending";
+  const occurredAt = payload.occurred_at || payload.occurredAt || new Date().toISOString();
+  const parsedOccurredAt = new Date(occurredAt);
+  if (!Number.isFinite(parsedOccurredAt.getTime())) return { error: "journey_occurred_at_invalid" };
+
+  const valueSource = payload.value && typeof payload.value === "object" ? payload.value : payload;
+  const amount = toNullableNumber(valueSource.amount ?? valueSource.revenue ?? valueSource.price);
+  const cost = toNullableNumber(valueSource.cost ?? valueSource.estimated_cost);
+  const suppliedMargin = toNullableNumber(valueSource.margin);
+  const margin = suppliedMargin ?? (amount !== null && cost !== null ? amount - cost : null);
+  const evidence = normalizeJourneyEvidence(payload.evidence);
+  const externalEventId = String(payload.external_event_id || payload.externalEventId || "").trim();
+  const fallbackIdempotency = externalEventId
+    ? [source, externalEventId].join("|")
+    : [profileId, stage, source, eventType, parsedOccurredAt.toISOString()].join("|");
+  const normalizedIdempotency = String(idempotencyKey || payload.idempotency_key || fallbackIdempotency).trim().slice(0, 180);
+
+  return {
+    event_id: `journey_evt_${crypto.randomUUID()}`,
+    idempotency_key: journeyFingerprint(normalizedIdempotency),
+    profile_id: profileId,
+    stage,
+    stage_label: NYRA_JOURNEY_STAGES.find((item) => item.id === stage)?.label || stage,
+    event_type: eventType,
+    status,
+    source,
+    source_record_fingerprint: externalEventId ? journeyFingerprint(externalEventId) : null,
+    occurred_at: parsedOccurredAt.toISOString(),
+    received_at: new Date().toISOString(),
+    evidence,
+    value: {
+      currency: String(valueSource.currency || "EUR").slice(0, 8),
+      amount,
+      cost,
+      margin,
+    },
+    metadata: sanitizeJourneyMetadata(payload.metadata),
+  };
+}
+
+function journeyProfileSummary(profile) {
+  if (!profile) return null;
+  const stages = NYRA_JOURNEY_STAGES.map((stage) => ({
+    id: stage.id,
+    label: stage.label,
+    ...(profile.stages?.[stage.id] || { status: "missing", event_count: 0, evidence_count: 0 }),
+  }));
+  const readyCount = stages.filter((stage) => stage.status === "ready").length;
+  return {
+    profile_id: profile.profile_id,
+    event_count: Number(profile.event_count || 0),
+    first_seen_at: profile.first_seen_at || null,
+    last_event_at: profile.last_event_at || null,
+    consent_status: profile.consent_status || "unknown",
+    stages,
+    ready_count: readyCount,
+    total_stages: stages.length,
+    readiness_score: Number((readyCount / stages.length).toFixed(4)),
+    missing: stages.filter((stage) => stage.status !== "ready").map((stage) => stage.id),
+    value: profile.value || { currency: "EUR", revenue: 0, cost: 0, margin: 0 },
+    source_counts: profile.source_counts || {},
+  };
+}
+
+function recordNyraDecisionJourneyEvent(store, event) {
+  const duplicate = store.events.find((item) => item.idempotency_key === event.idempotency_key);
+  if (duplicate) {
+    return { event: duplicate, duplicate: true, profile: journeyProfileSummary(store.profiles[duplicate.profile_id]) };
+  }
+
+  const now = event.received_at;
+  const profile = store.profiles[event.profile_id] || {
+    profile_id: event.profile_id,
+    first_seen_at: now,
+    last_event_at: null,
+    event_count: 0,
+    consent_status: "unknown",
+    stages: emptyJourneyStages(),
+    value: { currency: event.value.currency, revenue: 0, cost: 0, margin: 0 },
+    source_counts: {},
+  };
+  const stage = profile.stages[event.stage] || emptyJourneyStages()[event.stage];
+  stage.event_count += 1;
+  stage.evidence_count += event.evidence.length;
+  stage.last_event_at = event.occurred_at;
+  stage.last_source = event.source;
+  if (event.status === "blocked" || (stage.status !== "ready" && event.status !== "pending")) {
+    stage.status = event.status;
+  }
+  profile.stages[event.stage] = stage;
+  profile.event_count += 1;
+  profile.last_event_at = event.occurred_at;
+  profile.source_counts[event.source] = Number(profile.source_counts[event.source] || 0) + 1;
+  if (event.stage === "consent") {
+    profile.consent_status = event.status === "ready" ? "granted" : event.status === "blocked" ? "revoked" : "unknown";
+  }
+  if (event.stage === "commerce") {
+    const amount = event.value.amount || 0;
+    const cost = event.value.cost || 0;
+    const margin = event.value.margin ?? (event.value.amount !== null && event.value.cost !== null ? amount - cost : 0);
+    profile.value.revenue += amount;
+    profile.value.cost += cost;
+    profile.value.margin += margin;
+    profile.value.currency = event.value.currency;
+  }
+  store.profiles[event.profile_id] = profile;
+  store.events.push(event);
+  return { event, duplicate: false, profile: journeyProfileSummary(profile) };
+}
+
+function buildJourneySourceReadiness(context = {}, store = loadNyraDecisionJourney()) {
+  const sources = context.sources || {};
+  const economics = context.economics || { sales: [] };
+  const manualInventory = context.manualInventory || { items: [] };
+  const journeyStages = new Set(store.events.map((event) => event.stage));
+  const salesWithCosts = (economics.sales || []).some((sale) => Number(sale.estimatedCost || 0) > 0)
+    || store.events.some((event) => event.stage === "commerce" && event.value?.cost !== null);
+  return [
+    { id: "analyzer", label: "Analisi ed evidenze", connected: journeyStages.has("analyzer"), detail: journeyStages.has("analyzer") ? "Eventi analisi ricevuti" : "Manca evento analisi con evidence" },
+    { id: "website", label: "Traffico sito", connected: Boolean(sources.website?.analytics || sources.website?.searchConsole || sources.website?.latest), detail: sources.website?.analytics ? "GA4 collegato" : sources.website?.searchConsole ? "Search Console collegata" : "Manca traffico sito" },
+    { id: "instagram", label: "Instagram", connected: sources.instagram?.status === "api_attivo", detail: sources.instagram?.status === "api_attivo" ? "Meta API attiva" : "Manca token Meta valido" },
+    { id: "smartdesk", label: "Smart Desk", connected: Boolean(sources.smartDesk?.latest), detail: sources.smartDesk?.latest ? "Snapshot gestionale disponibile" : "Manca sync Smart Desk" },
+    { id: "sales", label: "Vendite collegate", connected: Boolean((economics.sales || []).length || journeyStages.has("commerce")), detail: (economics.sales || []).length || journeyStages.has("commerce") ? "Vendite ricevute" : "Mancano vendite collegate ai lead" },
+    { id: "margin", label: "Margine", connected: salesWithCosts, detail: salesWithCosts ? "Costi e margini disponibili" : "Mancano costi stimati" },
+    { id: "inventory", label: "Magazzino", connected: Boolean((manualInventory.items || []).length), detail: (manualInventory.items || []).length ? "Anagrafica magazzino disponibile" : "Manca anagrafica magazzino" },
+    { id: "journey_events", label: "Registro journey", connected: store.events.length > 0, detail: store.events.length ? `${store.events.length} eventi normalizzati` : "Nessun evento normalizzato" },
+  ].map((source) => ({ ...source, state: source.connected ? "ready" : "missing" }));
+}
+
+function buildNyraDecisionJourneyReport({ profileId = "", context = null } = {}) {
+  const store = loadNyraDecisionJourney();
+  const profiles = Object.values(store.profiles || {});
+  const stageCoverage = NYRA_JOURNEY_STAGES.map((stage) => {
+    const ready = profiles.filter((profile) => profile.stages?.[stage.id]?.status === "ready").length;
+    return {
+      id: stage.id,
+      label: stage.label,
+      profiles_ready: ready,
+      profiles_missing: Math.max(profiles.length - ready, 0),
+    };
+  });
+  const resolvedProfileId = profileId ? journeyProfileId({ profile_id: profileId }) : "";
+  const profile = resolvedProfileId ? store.profiles[resolvedProfileId] : null;
+  return {
+    version: "decision_to_value_journey_v1",
+    generated_at: new Date().toISOString(),
+    persisted: Boolean(nyraStorageRoot),
+    profile_count: profiles.length,
+    event_count: store.events.length,
+    source_readiness: buildJourneySourceReadiness(context || {}, store),
+    stage_coverage: stageCoverage,
+    missing_stage_priority: stageCoverage
+      .slice()
+      .sort((a, b) => b.profiles_missing - a.profiles_missing)
+      .map((stage) => stage.id),
+    profile: journeyProfileSummary(profile),
+  };
 }
 
 function dateOnly(value) {
@@ -3789,7 +4088,15 @@ function buildNyraTextLearningStatus() {
 }
 
 function buildDecisionToValueReadiness(payload = {}) {
-  const supplied = payload.stage_status && typeof payload.stage_status === "object" ? payload.stage_status : {};
+  const profileId = payload.profile_id ? journeyProfileId(payload) : "";
+  const journeyStore = profileId ? loadNyraDecisionJourney() : null;
+  const persistedProfile = profileId ? journeyStore?.profiles?.[profileId] : null;
+  const supplied = {
+    ...(persistedProfile?.stages
+      ? Object.fromEntries(Object.entries(persistedProfile.stages).map(([id, stage]) => [id, stage.status]))
+      : {}),
+    ...(payload.stage_status && typeof payload.stage_status === "object" ? payload.stage_status : {}),
+  };
   const stages = [
     { id: "analyzer", label: "Analisi ed evidenze", ready: Boolean(payload.analyzer_ready || supplied.analyzer === "ready" || payload.analyzer?.ready) },
     { id: "consent", label: "Consenso e contatto", ready: Boolean(payload.consent_status === "granted" || supplied.consent === "ready" || payload.consent?.status === "granted") },
@@ -3801,6 +4108,7 @@ function buildDecisionToValueReadiness(payload = {}) {
   ].map((stage) => ({ ...stage, status: stage.ready ? "ready" : "missing" }));
   const readyCount = stages.filter((stage) => stage.ready).length;
   return {
+    profile_id: profileId || null,
     stages,
     ready_count: readyCount,
     total_stages: stages.length,
@@ -3833,6 +4141,7 @@ function buildDecisionToValueCorePayload(payload, readiness, tenantId) {
     metadata: {
       source: "nyra_decision_to_value_preview",
       execution: "preview_only",
+      profile_id: readiness.profile_id,
       request_id: String(payload.request_id || `dtv_${crypto.randomUUID()}`),
     },
   };
@@ -3881,6 +4190,7 @@ app.get("/api/nyra/runtime/readiness", async (_req, res) => {
   const config = nyraCoreConfig();
   const core = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`);
   const learning = buildNyraTextLearningStatus();
+  const journeyStore = loadNyraDecisionJourney();
   const authConfigured = basicCredentialsConfigured() || nyraBearerKeys().length > 0;
   const ready = Boolean(nyraStorageRoot && authConfigured && core.ok);
   res.status(ready ? 200 : 503).json({
@@ -3906,6 +4216,12 @@ app.get("/api/nyra/runtime/readiness", async (_req, res) => {
       tenant_id: config.tenantId || null,
     },
     learning,
+    journey: {
+      persisted: Boolean(nyraStorageRoot),
+      profile_count: Object.keys(journeyStore.profiles || {}).length,
+      event_count: journeyStore.events.length,
+      contract: "decision_to_value_journey_v1",
+    },
     paper: {
       world_enabled: nyraWorldPaperAutoState.enabled,
       world_running: nyraWorldPaperAutoState.running,
@@ -3988,6 +4304,89 @@ app.post("/api/nyra/decision-to-value/preview", async (req, res) => {
       next_step: readiness.missing.length ? `completare: ${readiness.missing.join(", ")}` : "richiedere conferma owner per il micro-step successivo",
       value_loop: ["analisi", "consenso", "protocollo", "prenotazione", "trattamento", "vendita_margine", "recall_risultato"],
     },
+  });
+});
+
+app.get("/api/nyra/decision-to-value/report", (_req, res) => {
+  const context = buildControlContext();
+  res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    mode: "read_only_report",
+    report: buildNyraDecisionJourneyReport({ context }),
+  });
+});
+
+app.get("/api/nyra/decision-to-value/status", (req, res) => {
+  const profileId = String(req.query.profile_id || "").trim();
+  const report = buildNyraDecisionJourneyReport({ profileId });
+  res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    mode: "read_only_status",
+    profile_id: report.profile?.profile_id || (profileId ? journeyProfileId({ profile_id: profileId }) : null),
+    status: report.profile || {
+      profile_id: null,
+      event_count: 0,
+      stages: NYRA_JOURNEY_STAGES.map((stage) => ({ id: stage.id, label: stage.label, status: "missing" })),
+      ready_count: 0,
+      total_stages: NYRA_JOURNEY_STAGES.length,
+      readiness_score: 0,
+      missing: NYRA_JOURNEY_STAGES.map((stage) => stage.id),
+    },
+  });
+});
+
+app.post("/api/nyra/decision-to-value/events", (req, res) => {
+  const normalized = normalizeJourneyEvent(req.body || {}, req.get("Idempotency-Key") || "");
+  if (normalized.error) {
+    res.status(400).json({ ok: false, ...normalized, execution_allowed: false });
+    return;
+  }
+
+  const mode = String(req.body?.mode || "preview").trim().toLowerCase();
+  if (mode === "commit" && req.body?.confirm !== true) {
+    res.status(409).json({
+      ok: false,
+      error: "journey_confirmation_required",
+      message: "Per registrare l'evento servono mode=commit e confirm=true.",
+      mode: "preview_only",
+      execution_allowed: false,
+      normalized_event: normalized,
+    });
+    return;
+  }
+  if (mode !== "commit") {
+    res.json({
+      ok: true,
+      mode: "preview_only",
+      execution_allowed: false,
+      event_recorded: false,
+      normalized_event: normalized,
+    });
+    return;
+  }
+
+  const store = loadNyraDecisionJourney();
+  const result = recordNyraDecisionJourneyEvent(store, normalized);
+  if (!result.duplicate) saveNyraDecisionJourney(store);
+  appendNyraSecurityAudit("journey_event_recorded", {
+    request_id: req.nyraRequestId,
+    event_id: result.event.event_id,
+    profile_id: result.event.profile_id,
+    stage: result.event.stage,
+    source: result.event.source,
+    duplicate: result.duplicate,
+  });
+  res.json({
+    ok: true,
+    mode: "recorded",
+    execution_allowed: false,
+    event_recorded: !result.duplicate,
+    duplicate: result.duplicate,
+    event_id: result.event.event_id,
+    profile: result.profile,
+    journey: buildNyraDecisionJourneyReport({ profileId: result.event.profile_id }),
   });
 });
 
