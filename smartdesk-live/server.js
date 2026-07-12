@@ -447,6 +447,7 @@ function buildNyraBridgeSnapshot(bridge) {
   const appointments = scoped(service.appointmentsRepository);
   const treatments = scoped(service.treatmentsRepository);
   const sales = scoped(service.salesRepository);
+  const payments = scoped(service.paymentsRepository);
   const inventory = scoped(service.inventoryRepository);
   const consentEvents = clients
     .filter((client) => client.consentStatus === "granted" || client.consentGiven === true || client.consentAt)
@@ -508,6 +509,28 @@ function buildNyraBridgeSnapshot(bridge) {
       value: { currency: sale.currency, amount: sale.amount, cost: sale.cost },
       metadata: { sale_id: sale.sale_id, product_id: sale.product_id, campaign_id: sale.campaign_id }
     }));
+  const paymentRows = payments.map((payment) => ({
+    payment_id: payment.id,
+    client_id: payment.clientId || "",
+    appointment_id: payment.appointmentId || "",
+    amount: bridgeMoney(payment, ["amountCents", "amount", "totalCents", "valueCents"]),
+    currency: payment.currency || "EUR",
+    method: payment.method || "",
+    occurred_at: payment.date || payment.paidAt || payment.createdAt || new Date().toISOString()
+  }));
+  const paymentEvents = paymentRows
+    .filter((payment) => payment.client_id && Number(payment.amount || 0) > 0)
+    .map((payment) => ({
+      stage: "commerce",
+      event_type: "payment_recorded",
+      status: "ready",
+      source: "smartdesk_payment",
+      external_event_id: `payment:${payment.payment_id}`,
+      profile_external_id: payment.client_id,
+      occurred_at: payment.occurred_at,
+      value: { currency: payment.currency, amount: payment.amount, cost: null },
+      metadata: { payment_id: payment.payment_id, appointment_id: payment.appointment_id, channel: payment.method }
+    }));
   const inventoryRows = inventory.map((item) => ({
     product_id: item.id || item.sku || "",
     sku: item.sku || "",
@@ -536,8 +559,9 @@ function buildNyraBridgeSnapshot(bridge) {
       metrics: dataQuality.metrics || {}
     },
     sales: saleRows,
+    payments: paymentRows,
     inventory: inventoryRows,
-    journey_events: [...consentEvents, ...bookingEvents, ...treatmentEvents, ...saleEvents]
+    journey_events: [...consentEvents, ...bookingEvents, ...treatmentEvents, ...(saleRows.length ? saleEvents : paymentEvents)]
   };
 }
 

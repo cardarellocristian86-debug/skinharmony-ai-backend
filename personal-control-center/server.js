@@ -3004,7 +3004,21 @@ async function syncSmartDeskSource() {
   const journeyIngest = { received: 0, recorded: 0, duplicates: 0, rejected: 0 };
   if (bridgeSnapshot?.ok) {
     const salesById = new Map(data.sales.map((sale) => [String(sale.id || ""), sale]));
-    (Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : []).forEach((sale) => {
+    const directSales = Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : [];
+    const paymentSales = directSales.length
+      ? []
+      : (Array.isArray(bridgeSnapshot.payments) ? bridgeSnapshot.payments : []).map((payment) => ({
+        sale_id: payment.payment_id,
+        client_id: payment.client_id,
+        product_id: "",
+        amount: payment.amount,
+        cost: null,
+        currency: payment.currency || "EUR",
+        occurred_at: payment.occurred_at,
+        campaign_id: "",
+        source: "smartdesk_payment_bridge"
+      }));
+    [...directSales, ...paymentSales].forEach((sale) => {
       if (!sale.sale_id) return;
       const profileId = sale.client_id ? journeyProfileId({ external_id: sale.client_id }) : "";
       salesById.set(String(sale.sale_id), {
@@ -3016,7 +3030,7 @@ async function syncSmartDeskSource() {
         product: String(sale.product_id || ""),
         campaignId: String(sale.campaign_id || ""),
         date: String(sale.occurred_at || new Date().toISOString()),
-        source: "smartdesk_bridge"
+        source: sale.source || "smartdesk_bridge"
       });
     });
     data.sales = [...salesById.values()];

@@ -82,4 +82,6 @@ La richiesta resta limitata al registro interno: non crea appuntamenti, non invi
 - Commerce: vendita, importo, costo e prodotto.
 - Retention: recall, risultato e data del follow-up.
 
+Se Smart Desk non ha record `sales` ma ha pagamenti riconciliati, il bridge puo' esporre i pagamenti come evidenza di revenue. Il costo resta `null` e Nyra mantiene il margine in stato incompleto: un incasso non viene mai trasformato automaticamente in profitto.
+
 Il report espone le sorgenti ancora mancanti senza trasformare dati stimati in dati reali.
