@@ -157,11 +157,12 @@ class ExternalAiGoldBridge {
   constructor(options = {}) {
     this.universalCoreBridge = options.universalCoreBridge || null;
     this.nyraBaseUrl = normalizeBaseUrl(options.nyraBaseUrl || process.env.NYRA_CORE_URL || process.env.NYRA_RENDER_URL || DEFAULT_NYRA_URL);
+    this.nyraApiKey = cleanText(options.nyraApiKey || process.env.NYRA_RENDER_KEY || "", "", 2000);
     this.timeoutMs = cleanNumber(options.timeoutMs || process.env.NYRA_CORE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
   }
 
   isNyraConfigured() {
-    return Boolean(this.nyraBaseUrl);
+    return Boolean(this.nyraBaseUrl && this.nyraApiKey);
   }
 
   status() {
@@ -171,6 +172,7 @@ class ExternalAiGoldBridge {
       core: this.universalCoreBridge?.status?.() || { configured: false },
       nyra: {
         configured: this.isNyraConfigured(),
+        authenticationConfigured: Boolean(this.nyraApiKey),
         providerUrl: this.nyraBaseUrl,
         endpoint: "/api/nyra/text-chat"
       },
@@ -228,7 +230,10 @@ class ExternalAiGoldBridge {
     try {
       const response = await fetch(`${this.nyraBaseUrl}/api/nyra/text-chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.nyraApiKey}`
+        },
         body: JSON.stringify({ text, sessionId: sessionId || "smartdesk-ai-gold" }),
         signal: controller.signal
       });

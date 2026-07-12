@@ -5,6 +5,7 @@ const { ExternalAiGoldBridge } = require("../src/ExternalAiGoldBridge");
 
 const bridge = new ExternalAiGoldBridge({
   nyraBaseUrl: "http://nyra.test",
+  nyraApiKey: "nyra-test-key",
   universalCoreBridge: {
     isConfigured: () => true,
     status: () => ({ configured: true, providerUrl: "http://core.test" }),
@@ -33,6 +34,7 @@ const bridge = new ExternalAiGoldBridge({
 const originalFetch = global.fetch;
 global.fetch = async (url, options = {}) => {
   assert.strictEqual(url, "http://nyra.test/api/nyra/text-chat");
+  assert.strictEqual(options.headers.Authorization, "Bearer nyra-test-key");
   const body = JSON.parse(options.body || "{}");
   assert(body.text.includes("AI Gold Smart Desk"));
   assert(body.text.includes("Smart Desk"));
