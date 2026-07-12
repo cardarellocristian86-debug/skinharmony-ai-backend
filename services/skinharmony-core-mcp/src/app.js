@@ -2,6 +2,8 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
+const SERVER_VERSION = "0.2.0";
+
 function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
 }
@@ -21,7 +23,7 @@ export function createApp(config, options = {}) {
   app.get("/healthz", (_req, res) => res.json({
     ok: true,
     service: "skinharmony-core-mcp",
-    version: "0.1.0",
+    version: SERVER_VERSION,
     mode: process.env.NODE_ENV || "development",
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
@@ -62,7 +64,7 @@ export function createApp(config, options = {}) {
     }
     const { id = null, method, params = {} } = req.body || {};
     try {
-      if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: "0.1.0" } } });
+      if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION } } });
       if (method === "notifications/initialized") return res.status(202).end();
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes } })) } });
       if (method === "tools/call") {
