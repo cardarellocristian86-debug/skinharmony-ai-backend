@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createAuthenticator, requireScopes } from "./auth.js";
+import { approvalRouter } from "./approval-routes.js";
 import { createSkinHarmonyMcpServer } from "./mcp.js";
 
 const SECURITY_SCHEMES = [
@@ -27,6 +28,9 @@ export function createApp(config, options = {}) {
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
   app.use(express.json({ limit: "1mb" }));
+  if (options.approvalService && options.authenticateApproval) {
+    app.use("/approval", approvalRouter({ service: options.approvalService, authenticate: options.authenticateApproval }));
+  }
 
   app.get("/.well-known/oauth-protected-resource", (_req, res) => res.json({
     resource: config.resource,
