@@ -1816,7 +1816,8 @@ function normalizeJourneyStage(value) {
 }
 
 function journeyFingerprint(value) {
-  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 32);
+  const key = String(process.env.NYRA_JOURNEY_ID_SECRET || process.env.NYRA_CORE_KEY || "skinharmony-journey-local");
+  return crypto.createHmac("sha256", key).update(String(value || "")).digest("hex").slice(0, 32);
 }
 
 function journeyProfileId(payload = {}) {
@@ -1880,7 +1881,7 @@ function sanitizeJourneyMetadata(value) {
   ];
   return Object.fromEntries(allowedKeys
     .filter((key) => value[key] !== undefined && value[key] !== null)
-    .map((key) => [key, String(value[key]).slice(0, 160)]));
+    .map((key) => [key, key === "source_record_id" ? journeyFingerprint(value[key]) : String(value[key]).slice(0, 160)]));
 }
 
 function normalizeJourneyEvidence(value) {

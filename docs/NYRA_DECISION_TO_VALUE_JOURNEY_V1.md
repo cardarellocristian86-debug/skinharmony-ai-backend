@@ -69,9 +69,9 @@ La richiesta resta limitata al registro interno: non crea appuntamenti, non invi
 
 ## Privacy e evidence
 
-- Gli identificativi cliente non vengono conservati in chiaro: diventano `p_<sha256 troncato>`.
+- Gli identificativi cliente non vengono conservati in chiaro: diventano `p_<HMAC-SHA256 troncato>` usando il segreto Core/Nyra.
 - Email, telefono, nome e token non sono ammessi nei metadata persistiti.
-- Le evidence conservano solo fingerprint, tipo, sorgente e timestamp.
+- Le evidence e gli ID di sorgente conservano solo fingerprint, tipo, sorgente e timestamp.
 - Gli eventi di commit vengono registrati nel security audit Nyra.
 
 ## Requisiti per completare il loop
