@@ -21,14 +21,32 @@ function jsonResponse(res, status, payload) {
 
 const coreServer = http.createServer((req, res) => {
   if (req.url.startsWith("/v1/tenant/status")) {
+    const requestedTenant = new URL(req.url, "http://core.test").searchParams.get("tenant_id") || "tenant-test";
+    const suiteRequest = req.headers.authorization === "Bearer suite-core-key";
+    assert.equal(req.headers.authorization, suiteRequest ? "Bearer suite-core-key" : "Bearer core-test-key");
     jsonResponse(res, 200, {
       ok: true,
-      tenant_id: "tenant-test",
+      tenant_id: suiteRequest ? "tenant-suite" : requestedTenant,
       status: "active",
       mode: "render_first_cortex_ready",
       service: "universal-core-test",
       version: "test-core",
+      key_type: "connector",
+      tier: suiteRequest ? "enterprise" : "internal",
+      allowed_scopes: ["read:decision", "policy:check"],
       active_branches: ["executive_gold", "customer_360_guard"],
+    });
+    return;
+  }
+  if (req.url.startsWith("/v1/customer-intelligence/contract")) {
+    assert.equal(req.headers.authorization, "Bearer suite-core-key");
+    jsonResponse(res, 200, {
+      ok: true,
+      contract: {
+        schema_version: "customer_intelligence_contract_v1",
+        tenant_id: "tenant-suite",
+        automation_limits: { automatic_send_allowed: false },
+      },
     });
     return;
   }
@@ -37,8 +55,9 @@ const coreServer = http.createServer((req, res) => {
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
       const payload = JSON.parse(body || "{}");
-      assert.equal(req.headers.authorization, "Bearer core-test-key");
-      assert.equal(req.headers["x-sh-tenant-id"], "tenant-test");
+      const suiteRequest = req.headers.authorization === "Bearer suite-core-key";
+      assert.equal(req.headers.authorization, suiteRequest ? "Bearer suite-core-key" : "Bearer core-test-key");
+      assert.equal(req.headers["x-sh-tenant-id"], suiteRequest ? "tenant-suite" : "tenant-test");
       assert.equal(payload.domain, "decision_to_value");
       jsonResponse(res, 200, {
         ok: true,
@@ -104,6 +123,7 @@ function request(pathname, options = {}) {
       headers: {
         ...(options.body ? { "content-type": "application/json" } : {}),
         ...(options.auth ? { authorization: auth } : {}),
+        ...(options.headers || {}),
       },
     }, (res) => {
       let body = "";
@@ -165,6 +185,10 @@ async function main() {
       NYRA_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_CORE_KEY: "core-test-key",
       NYRA_CORE_TENANT_ID: "tenant-test",
+      NYRA_SUITE_CORE_URL: `http://127.0.0.1:${corePort}`,
+      NYRA_SUITE_CORE_KEY: "suite-core-key",
+      NYRA_SUITE_CORE_TENANT_ID: "tenant-suite",
+      NYRA_SUITE_BRIDGE_KEY: "suite-bridge-key",
       SMARTDESK_URL: `http://127.0.0.1:${smartDeskPort}`,
       SMARTDESK_BRIDGE_API_KEY: "smartdesk-test-key",
       NYRA_WORLD_PAPER_AUTOSTART: "false",
@@ -222,6 +246,31 @@ async function main() {
     const coreStatus = await request("/api/nyra/core/status", { auth: true });
     assert.equal(coreStatus.status, 200);
     assert.equal(coreStatus.json.core.reachable, true);
+
+    const suiteUnauthenticated = await request("/api/nyra/suite/core/status");
+    assert.equal(suiteUnauthenticated.status, 401);
+
+    const suiteCoreStatus = await request("/api/nyra/suite/core/status", {
+      headers: { "x-nyra-suite-key": "suite-bridge-key" },
+    });
+    assert.equal(suiteCoreStatus.status, 200);
+    assert.equal(suiteCoreStatus.json.tenant_id, "tenant-suite");
+    assert.equal(suiteCoreStatus.json.core.tier, "enterprise");
+
+    const suiteContract = await request("/api/nyra/suite/customer-intelligence/contract", {
+      headers: { "x-nyra-suite-key": "suite-bridge-key" },
+    });
+    assert.equal(suiteContract.status, 200);
+    assert.equal(suiteContract.json.tenant_id, "tenant-suite");
+
+    const suitePreview = await request("/api/nyra/suite/decision-preview", {
+      method: "POST",
+      headers: { "x-nyra-suite-key": "suite-bridge-key" },
+      body: { current_state: "analysis", next_action: "suite_read_only_review" },
+    });
+    assert.equal(suitePreview.status, 200);
+    assert.equal(suitePreview.json.tenant_id, "tenant-suite");
+    assert.equal(suitePreview.json.execution_allowed, false);
 
     const smartDeskSync = await request("/api/sync/smartdesk", { method: "POST", auth: true, body: {} });
     assert.equal(smartDeskSync.status, 200);
@@ -332,6 +381,7 @@ async function main() {
         "persistent_learning_path",
         "feedback_endpoint",
         "core_status_bridge",
+        "suite_tenant_scoped_core_bridge",
         "smartdesk_bridge_sync",
         "decision_journey_preview_commit_idempotency",
         "decision_journey_report",

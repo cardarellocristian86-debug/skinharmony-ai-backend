@@ -32,6 +32,9 @@ POST /api/suite/commerce/snapshot
 GET  /api/suite/tenants/:tenantId/commerce/summary
 GET  /api/suite/runbooks
 GET  /api/suite/nyra/branch-map
+GET  /api/suite/nyra/core/status
+GET  /api/suite/nyra/customer-intelligence/contract
+POST /api/suite/nyra/decision-preview
 GET  /api/suite/customer-intelligence/contract
 POST /api/suite/customer-intelligence/readiness
 GET  /api/suite/integrations/google/status
@@ -113,6 +116,16 @@ UNIVERSAL_CORE_URL=https://skinharmony-universal-core.onrender.com
 UNIVERSAL_CORE_KEY=<chiave Core scoped>
 UNIVERSAL_CORE_TENANT_ID=<tenant default>
 ```
+
+Bridge Nyra Suite opzionale e tenant-scoped:
+
+```text
+NYRA_SUITE_URL=https://skinharmony-nyra-core.onrender.com
+NYRA_SUITE_BRIDGE_KEY=<chiave dedicata solo alle route /api/nyra/suite/*>
+NYRA_SUITE_TENANT_ID=skinharmony-suite
+```
+
+Il Control Plane usa Nyra solo per stato Core, contratto Customer Intelligence e preview decisionale. Nessuna route abilita invii, scritture cliente o esecuzione automatica.
 
 Storage persistente opzionale:
 

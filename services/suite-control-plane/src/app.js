@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.9-tenant-scoped-bridge-status";
+const SERVICE_VERSION = "0.5.0-nyra-suite-bridge";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const DEFAULT_NODE_STALE_AFTER_MS = 15 * 60 * 1000;
 const NODE_STALE_AFTER_MS = Math.max(
@@ -2395,10 +2395,75 @@ function createUniversalCoreClient(options = {}) {
   };
 }
 
+function createNyraSuiteClient(options = {}) {
+  const baseUrl = normalizeBaseUrl(options.baseUrl || process.env.NYRA_SUITE_URL);
+  const apiKey = String(options.apiKey || process.env.NYRA_SUITE_BRIDGE_KEY || "").trim();
+  const tenantId = sanitizeId(options.tenantId || process.env.NYRA_SUITE_TENANT_ID || "skinharmony-suite", "tenant");
+  const timeoutMs = Number(options.timeoutMs || process.env.NYRA_SUITE_TIMEOUT_MS || 8000);
+
+  async function request(method, route, body) {
+    if (!baseUrl || !apiKey) {
+      return { success: false, code: "nyra_suite_bridge_not_configured", core_route_path: route };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${baseUrl}${route}`, {
+        method,
+        headers: {
+          "content-type": "application/json",
+          "x-nyra-suite-key": apiKey,
+          "x-sh-tenant-id": tenantId,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let json = {};
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { raw: text.slice(0, 500) };
+      }
+      return {
+        success: response.ok && json.ok !== false,
+        http_status: response.status,
+        provider_url: baseUrl,
+        tenant_id: tenantId,
+        ...json,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        code: error?.name === "AbortError" ? "nyra_suite_bridge_timeout" : "nyra_suite_bridge_unreachable",
+        provider_url: baseUrl,
+        tenant_id: tenantId,
+        message: error instanceof Error ? error.message : "Nyra Suite non raggiungibile.",
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    status: () => ({
+      configured: Boolean(baseUrl && apiKey),
+      provider_url: baseUrl,
+      tenant_id: tenantId,
+      scope_status: baseUrl && apiKey ? "scoped" : "not_configured",
+    }),
+    coreStatus: () => request("GET", "/api/nyra/suite/core/status"),
+    customerIntelligenceContract: () => request("GET", "/api/nyra/suite/customer-intelligence/contract"),
+    decisionPreview: (payload = {}) => request("POST", "/api/nyra/suite/decision-preview", payload),
+  };
+}
+
 export function createSuiteControlPlane(options = {}) {
   const app = express();
   const storage = options.storage || createSuiteControlStorage();
   const coreClient = options.coreClient || createUniversalCoreClient(options.universalCore || {});
+  const nyraClient = options.nyraClient || createNyraSuiteClient(options.nyraSuite || {});
   const auth = createAuth();
 
   app.use(express.json({ limit: "1mb" }));
@@ -2415,6 +2480,7 @@ export function createSuiteControlPlane(options = {}) {
         stale_after_minutes: Number((NODE_STALE_AFTER_MS / 60000).toFixed(1)),
       },
       universal_core: coreClient.status(),
+      nyra_suite: nyraClient.status(),
       generated_at: nowIso(),
     });
   });
@@ -2495,6 +2561,65 @@ export function createSuiteControlPlane(options = {}) {
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       tracks: buildEcosystemTracks(overview, storage.runbookCatalog(), coreClient.status()),
+    });
+  });
+
+  app.get("/api/suite/nyra/core/status", auth, async (req, res) => {
+    const requestedTenant = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || nyraClient.status().tenant_id, "tenant");
+    if (requestedTenant !== nyraClient.status().tenant_id) {
+      return publicError(res, 403, "nyra_suite_tenant_scope_mismatch", "La route Nyra Suite e limitata al tenant configurato.");
+    }
+    const result = await nyraClient.coreStatus();
+    if (!result.success) {
+      return publicError(res, result.http_status || 503, result.code || "nyra_suite_core_status_unavailable", result.message || "Stato Nyra/Core Suite non disponibile.");
+    }
+    return res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      source: "nyra_suite_bridge",
+      tenant_id: requestedTenant,
+      nyra: result,
+    });
+  });
+
+  app.get("/api/suite/nyra/customer-intelligence/contract", auth, async (req, res) => {
+    const requestedTenant = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || nyraClient.status().tenant_id, "tenant");
+    if (requestedTenant !== nyraClient.status().tenant_id) {
+      return publicError(res, 403, "nyra_suite_tenant_scope_mismatch", "La route Nyra Suite e limitata al tenant configurato.");
+    }
+    const result = await nyraClient.customerIntelligenceContract();
+    if (!result.success) {
+      return publicError(res, result.http_status || 503, result.code || "nyra_suite_contract_unavailable", result.message || "Contratto Nyra/Core Suite non disponibile.");
+    }
+    return res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      source: "nyra_suite_bridge",
+      tenant_id: requestedTenant,
+      contract: result.contract || null,
+    });
+  });
+
+  app.post("/api/suite/nyra/decision-preview", auth, async (req, res) => {
+    const requestedTenant = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || nyraClient.status().tenant_id, "tenant");
+    if (requestedTenant !== nyraClient.status().tenant_id) {
+      return publicError(res, 403, "nyra_suite_tenant_scope_mismatch", "La route Nyra Suite e limitata al tenant configurato.");
+    }
+    const result = await nyraClient.decisionPreview({ ...(req.body || {}), tenant_id: requestedTenant });
+    if (!result.success) {
+      return publicError(res, result.http_status || 503, result.code || "nyra_suite_decision_preview_unavailable", result.message || "Preview Nyra/Core Suite non disponibile.");
+    }
+    return res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      source: "nyra_suite_bridge",
+      tenant_id: requestedTenant,
+      mode: "preview_only",
+      execution_allowed: false,
+      nyra: result,
     });
   });
 

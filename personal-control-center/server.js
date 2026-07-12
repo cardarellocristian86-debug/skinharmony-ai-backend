@@ -150,6 +150,10 @@ function basicCredentialsConfigured() {
   return Boolean(String(process.env.NYRA_BASIC_USER || "").trim() && String(process.env.NYRA_BASIC_PASSWORD || "").trim());
 }
 
+function suiteBridgeKeyConfigured() {
+  return Boolean(String(process.env.NYRA_SUITE_BRIDGE_KEY || "").trim());
+}
+
 function basicAuthEnabled() {
   if (envTruthy("NYRA_DISABLE_BASIC_AUTH")) return false;
   return envTruthy("NYRA_ENABLE_BASIC_AUTH") || (process.env.NODE_ENV === "production" && basicCredentialsConfigured());
@@ -200,6 +204,13 @@ function rateLimitAllowed(req) {
 function authenticateNyraRequest(req) {
   const authorization = String(req.headers.authorization || "");
   const bearer = bearerTokenFromHeader(authorization);
+  if (req.path.startsWith("/api/nyra/suite/")) {
+    const suiteBridgeKey = String(process.env.NYRA_SUITE_BRIDGE_KEY || "").trim();
+    const providedSuiteKey = String(req.get("x-nyra-suite-key") || "").trim();
+    if (suiteBridgeKey && safeSecretEqual(suiteBridgeKey, providedSuiteKey)) {
+      return { ok: true, method: "suite_scoped_key" };
+    }
+  }
   if (bearer && nyraBearerKeys().some((key) => safeSecretEqual(key, bearer))) {
     return { ok: true, method: "bearer" };
   }
@@ -274,6 +285,7 @@ app.get("/healthz", (_req, res) => {
     auth_required: process.env.NODE_ENV === "production",
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),
+    suite_bridge_configured: suiteBridgeKeyConfigured(),
   });
 });
 
@@ -1705,8 +1717,19 @@ function nyraCoreConfig() {
   };
 }
 
+function nyraSuiteCoreConfig() {
+  const baseUrl = String(process.env.NYRA_SUITE_CORE_URL || process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+  return {
+    baseUrl,
+    apiKey: String(process.env.NYRA_SUITE_CORE_KEY || "").trim(),
+    tenantId: String(process.env.NYRA_SUITE_CORE_TENANT_ID || "skinharmony-suite").trim(),
+  };
+}
+
 async function requestNyraCore(pathname, options = {}) {
-  const config = nyraCoreConfig();
+  const config = options.coreConfig || nyraCoreConfig();
   if (!config.baseUrl || !config.apiKey || !config.tenantId) {
     return { ok: false, status: 503, code: "core_not_configured" };
   }
@@ -4480,6 +4503,105 @@ app.get("/api/nyra/core/status", async (_req, res) => {
       active_branches: Array.isArray(result.data?.active_branches) ? result.data.active_branches.length : null,
     },
     checked_at: new Date().toISOString(),
+  });
+});
+
+app.get("/api/nyra/suite/core/status", async (_req, res) => {
+  const config = nyraSuiteCoreConfig();
+  const result = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`, { coreConfig: config });
+  if (!result.ok) {
+    return res.status(result.status || 503).json({
+      ok: false,
+      service: "skinharmony-nyra-core",
+      mode: "suite_tenant_scoped_read",
+      tenant_id: config.tenantId || null,
+      core: {
+        configured: Boolean(config.baseUrl && config.apiKey && config.tenantId),
+        reachable: false,
+        status: result.code || "unavailable",
+      },
+    });
+  }
+  return res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    mode: "suite_tenant_scoped_read",
+    tenant_id: config.tenantId,
+    core: {
+      configured: true,
+      reachable: true,
+      status: result.data?.status || result.data?.mode || "connected",
+      service: result.data?.service || "universal-core",
+      tier: result.data?.tier || null,
+      key_type: result.data?.key_type || null,
+      active_branches: Array.isArray(result.data?.active_branches) ? result.data.active_branches.length : null,
+      allowed_scopes: Array.isArray(result.data?.allowed_scopes) ? result.data.allowed_scopes : [],
+    },
+    checked_at: new Date().toISOString(),
+  });
+});
+
+app.get("/api/nyra/suite/customer-intelligence/contract", async (_req, res) => {
+  const config = nyraSuiteCoreConfig();
+  const result = await requestNyraCore(`/v1/customer-intelligence/contract?tenant_id=${encodeURIComponent(config.tenantId)}`, { coreConfig: config });
+  if (!result.ok) {
+    return res.status(result.status || 503).json({
+      ok: false,
+      service: "skinharmony-nyra-core",
+      mode: "suite_tenant_scoped_read",
+      tenant_id: config.tenantId || null,
+      error: result.code || "suite_customer_intelligence_unavailable",
+      message: result.message || "Contratto Suite Customer Intelligence non disponibile.",
+    });
+  }
+  return res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    mode: "suite_tenant_scoped_read",
+    tenant_id: config.tenantId,
+    source: "universal_core",
+    contract: result.data?.contract || null,
+  });
+});
+
+app.post("/api/nyra/suite/decision-preview", async (req, res) => {
+  const config = nyraSuiteCoreConfig();
+  const readiness = buildDecisionToValueReadiness(req.body || {});
+  const coreRequest = buildDecisionToValueCorePayload(req.body || {}, readiness, config.tenantId);
+  const result = await requestNyraCore("/v1/action-evaluator", {
+    method: "POST",
+    body: coreRequest,
+    coreConfig: config,
+  });
+  if (!result.ok) {
+    return res.status(result.status || 503).json({
+      ok: false,
+      mode: "preview_only",
+      tenant_id: config.tenantId || null,
+      error: result.code || "suite_core_decision_unavailable",
+      message: result.message || "Core non ha restituito una decisione Suite.",
+      readiness,
+      execution_allowed: false,
+    });
+  }
+
+  const decisionContract = result.data?.decision_contract || result.data?.verdict?.decision_contract || result.data?.output || null;
+  return res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    mode: "preview_only",
+    tenant_id: config.tenantId,
+    execution_allowed: false,
+    readiness,
+    core: {
+      decision_contract: decisionContract,
+      risk: result.data?.output?.risk || result.data?.verdict?.risk || null,
+      evidence: result.data?.evidence || null,
+    },
+    nyra: {
+      explanation: buildNyraDecisionToValueExplanation(decisionContract, readiness),
+      next_step: readiness.missing.length ? `completare: ${readiness.missing.join(", ")}` : "richiedere conferma owner per il micro-step successivo",
+    },
   });
 });
 
