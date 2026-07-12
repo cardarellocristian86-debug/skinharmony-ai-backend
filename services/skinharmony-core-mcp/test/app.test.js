@@ -21,6 +21,11 @@ async function serve(run) {
 }
 
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
+  const healthResponse = await fetch(`${base}/healthz`);
+  assert.equal(healthResponse.status, 200);
+  const health = await healthResponse.json();
+  assert.equal(health.ok, true);
+  assert.equal(health.codex_bearer_configured, true);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);

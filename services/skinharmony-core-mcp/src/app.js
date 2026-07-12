@@ -32,6 +32,16 @@ export function createApp(config, options = {}) {
     app.use("/approval", approvalRouter({ service: options.approvalService, authenticate: options.authenticateApproval }));
   }
 
+  app.get("/healthz", (_req, res) => res.json({
+    ok: true,
+    service: "skinharmony-core-mcp",
+    version: "0.1.0",
+    transport: "streamable_http",
+    authentication_required: true,
+    oauth_configured: Boolean(config.auth0Issuer),
+    codex_bearer_configured: config.codexKeys.length > 0
+  }));
+
   app.get("/.well-known/oauth-protected-resource", (_req, res) => res.json({
     resource: config.resource,
     authorization_servers: config.auth0Issuer ? [config.auth0Issuer] : [],
