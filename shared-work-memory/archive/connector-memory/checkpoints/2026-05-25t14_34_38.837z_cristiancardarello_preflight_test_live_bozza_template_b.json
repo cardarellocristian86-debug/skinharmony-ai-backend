@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-25t14_34_38.837z_cristiancardarello_preflight_test_live_bozza_template_b",
+  "generated_at": "2026-05-25T14:34:38.838Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779719503333",
+  "title": "Preflight test live bozza Template Builder",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Azione live limitata: creare una nuova bozza temporanea WordPress via script dedicato, salvare template builder, non pubblicare, non modificare pagine esistenti.",
+  "files": [
+    "scripts/test_wp_template_builder_live_draft.js"
+  ],
+  "tests": [
+    "README live espone Suite 5.2.43; REST shss protetto risponde 401 correttamente senza auth; pagina live carica senza fatal error pubblico."
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

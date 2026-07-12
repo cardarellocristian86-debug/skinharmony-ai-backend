@@ -1,0 +1,57 @@
+{
+  "checkpoint_id": "2026-06-06t18_50_21.944z_codex_03_lavoro_codex_03_preflight",
+  "generated_at": "2026-06-06T18:50:21.944Z",
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1780771821942",
+  "trace_id": "trace_codex_03_codex_03_1780771821942_1780771821942",
+  "title": "Lavoro codex_03 preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [
+    "SHARED_MEMORY/sessions",
+    "SHARED_MEMORY/supervision"
+  ],
+  "tests": [
+    "work-start: sessione, lock, intent, task contract, trace, preflight e pulse iniziale"
+  ],
+  "next": "Ricevere task owner, aggiornare pulse con file reali, test, rischio e report.",
+  "task_contract_id": "2026-06-06t18_50_21.943z_codex_03_lavoro_codex_03",
+  "checklist_id": "2026-06-06t18_50_21.944z_codex_03_lavoro_codex_03",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-06-06t18_50_21.944z_codex_03_lavoro_codex_03",
+    "title": "Lavoro codex_03",
+    "trace_id": "trace_codex_03_codex_03_1780771821942_1780771821942",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "allow_auto",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

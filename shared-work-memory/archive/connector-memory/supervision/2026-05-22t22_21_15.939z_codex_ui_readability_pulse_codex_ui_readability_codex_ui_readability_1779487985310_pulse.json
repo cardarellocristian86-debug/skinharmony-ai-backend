@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-22t22_21_15.939z_codex_ui_readability_pulse",
+  "generated_at": "2026-05-22T22:21:15.940Z",
+  "agent_id": "codex_ui_readability",
+  "session_id": "codex_ui_readability_1779487985310",
+  "title": "Pulse Codex",
+  "summary": "Dashboard testata: /api/state espone top_actions e agents; HTML mostra Cosa Guardare Adesso, Codex Attivi, cronologie e dettaglio tecnico. Pack locale 0.2.22 generato.",
+  "files": [],
+  "tests": [],
+  "next": "Scrivere report condiviso con fonti NASA/ServiceNow/UiPath/Workato e raccomandazioni Core-Codex.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-22t22_13_34.466z_codex_ui_readability_dashboard_core_comprensibile",
+    "title": "Dashboard Core comprensibile",
+    "request": "Rendere la UI locale Core-Codex piu leggibile per Cristian: cosa succede, cosa fare, quali Codex sono fuori traccia, tempi Core, report semplice. Usare ricerca su NASA/mission control e AI governance enterprise come guida concettuale.",
+    "success_criteria": "Dashboard con azioni chiare, agenti raggruppati, linguaggio umano, test locale e report condiviso aggiornato."
+  },
+  "core2_supervision": {
+    "verdict": "recover",
+    "flags": [
+      "mancano_file_o_test_di_evidenza",
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.125,
+    "correction": "Fermarsi, rileggere il comando owner, dichiarare evidenze mancanti e produrre un piano verificabile prima di continuare."
+  }
+}

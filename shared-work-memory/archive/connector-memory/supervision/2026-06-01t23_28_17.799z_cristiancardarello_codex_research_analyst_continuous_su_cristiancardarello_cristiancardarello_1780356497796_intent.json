@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-06-01t23_28_17.799z_cristiancardarello_codex_research_analyst_continuous_su",
+  "generated_at": "2026-06-01T23:28:17.799Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780356497796",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780356497796_1780356497796",
+  "title": "Codex research analyst continuous support",
+  "request": "Lavorare con gli altri Codex come ricercatore analista: leggere SHARED_WORK, rispettare lock, fare ricerca continua, creare probabilita/opzioni/eventi, passare decisioni al Core e alimentare implementatore senza modificare codice lockato",
+  "success_criteria": "Contesto multi-Codex aggiornato, finding/probabilita scritti in SHARED_WORK, Core consultato per decisioni, nessuna sovrapposizione con lock attivi",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

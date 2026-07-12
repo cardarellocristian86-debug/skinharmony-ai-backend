@@ -1,0 +1,59 @@
+{
+  "pulse_id": "2026-05-30t19_14_25.197z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "generated_at": "2026-05-30T19:14:25.197Z",
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "title": "Nyra deep scan Smart Desk initial pulse",
+  "summary": "Avvio lavoro governato: Fare leggere a Nyra tutto il codice Smart Desk su sorgente locale/mirror Render in modalita read-only: memoria volatile da inizio a fine codice, overlay rami/shortcode/code, eventi, intercettazione errori o pezzi non collegati profondi",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-30t19_14_25.197z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+    "title": "Nyra deep scan Smart Desk",
+    "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+    "title": "Nyra deep scan Smart Desk",
+    "request": "Fare leggere a Nyra tutto il codice Smart Desk su sorgente locale/mirror Render in modalita read-only: memoria volatile da inizio a fine codice, overlay rami/shortcode/code, eventi, intercettazione errori o pezzi non collegati profondi",
+    "success_criteria": "Scanner/report Nyra produce inventario codice, collegamenti route/componenti/API/simboli, warning su non collegati/sospetti, eventi locali/shared memory, nessun Render write/produzione/chiavi/clienti/prezzi"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+    "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+    "allowed_paths": [
+      "universal-core-2.0",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "reports/smartdesk",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.792,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

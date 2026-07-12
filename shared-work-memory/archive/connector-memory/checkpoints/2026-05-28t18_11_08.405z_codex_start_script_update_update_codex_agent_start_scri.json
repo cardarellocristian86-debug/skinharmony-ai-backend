@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-28t18_11_08.405z_codex_start_script_update_update_codex_agent_start_scri",
+  "generated_at": "2026-05-28T18:11:08.405Z",
+  "agent_id": "codex_start_script_update",
+  "session_id": "codex_start_script_update_1779991868402",
+  "trace_id": "trace_codex_start_script_update_codex_start_script_update_1779991868402_17799918",
+  "title": "Update Codex agent start script preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [
+    "scripts/start-codex-agent.sh",
+    "SHARED_MEMORY/README_FOR_CODEX.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md"
+  ],
+  "tests": [
+    "bash -n scripts/start-codex-agent.sh"
+  ],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-28t18_11_08.405z_codex_start_script_update_update_codex_agent_start_scri",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

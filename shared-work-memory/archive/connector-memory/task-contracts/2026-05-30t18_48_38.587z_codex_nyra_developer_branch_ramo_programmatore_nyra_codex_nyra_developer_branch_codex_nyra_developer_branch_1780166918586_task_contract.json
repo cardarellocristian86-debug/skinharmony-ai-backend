@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t18_48_38.587z_codex_nyra_developer_branch_ramo_programmatore_nyra",
+  "trace_id": "trace_codex_nyra_developer_branch_codex_nyra_developer_branch_1780166918586_1780",
+  "generated_at": "2026-05-30T18:48:38.587Z",
+  "updated_at": "2026-05-30T18:48:38.587Z",
+  "agent_id": "codex_nyra_developer_branch",
+  "session_id": "codex_nyra_developer_branch_1780166918586",
+  "title": "Ramo programmatore Nyra",
+  "request": "Rifinire Nyra locale aggiungendo un ramo programmatore esplicito in universal-core-2.0: riconoscimento richieste codice, debug, patch, test, refactor; supervisione Codex; nessuna scrittura autonoma senza Core",
+  "success_criteria": "Branch developer_code visibile nel branch overlay, testato, documentato negli snapshot/shared memory; nessun Render/produzione/chiavi/clienti/prezzi toccato",
+  "allowed_paths": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

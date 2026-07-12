@@ -1,0 +1,19 @@
+{
+  "agent_id": "codex_smartdesk_readonly_scan",
+  "session_id": "codex_smartdesk_readonly_scan_1780217496672",
+  "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "smartdesk-readonly-scan"
+  ],
+  "status": "active",
+  "started_at": "2026-05-31T08:51:36.672Z",
+  "updated_at": "2026-05-31T08:51:36.672Z",
+  "locks": [
+    "smartdesk-readonly-scan"
+  ],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199"
+}

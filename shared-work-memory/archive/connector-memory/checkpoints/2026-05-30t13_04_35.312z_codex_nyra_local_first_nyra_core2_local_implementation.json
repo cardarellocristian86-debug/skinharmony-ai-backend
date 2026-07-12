@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-30t13_04_35.312z_codex_nyra_local_first_nyra_core2_local_implementation",
+  "generated_at": "2026-05-30T13:04:35.312Z",
+  "agent_id": "codex_nyra_local_first",
+  "session_id": "codex_nyra_local_first_1780145310745",
+  "trace_id": "trace_codex_nyra_local_first_codex_nyra_local_first_1780145310745_1780145310745",
+  "title": "nyra core2 local implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementazione locale in universal-core-2.0: Chat Rich, provider generativo opzionale, event emitter redatto, branch overlay, Codex guidance, governance CLI e test dedicati.",
+  "files": [
+    "universal-core-2.0/tools/nyra-local-governance.ts",
+    "universal-core-2.0/tools/nyra-local-event-emitter.ts",
+    "universal-core-2.0/tools/nyra-branch-overlay.ts",
+    "universal-core-2.0/tools/nyra-codex-guidance.ts",
+    "universal-core-2.0/tools/nyra-rich-chat.ts"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t12_48_30.746z_codex_nyra_local_first_nyra_locale_prima_di_render",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

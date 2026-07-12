@@ -1,0 +1,18 @@
+{
+  "agent_id": "guard_setup_test_1779394191767",
+  "session_id": "guard_setup_test_1779394191767_1779394191819",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "guarded-setup-test"
+  ],
+  "status": "stale",
+  "started_at": "2026-05-21T20:09:51.819Z",
+  "updated_at": "2026-05-23T11:17:33.337Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199",
+  "stale_at": "2026-05-23T11:17:33.337Z",
+  "stale_reason": "session_cleanup_older_than_240_min"
+}

@@ -1,0 +1,18 @@
+{
+  "agent_id": "codex_enterprise_governance",
+  "session_id": "codex_enterprise_governance_1779390128428",
+  "role": "orchestrator",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "enterprise-governance"
+  ],
+  "status": "verified",
+  "started_at": "2026-05-21T19:02:08.428Z",
+  "updated_at": "2026-05-21T19:13:43.067Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-21t19_13_32.414z_codex_enterprise_governance_enterprise_governance_runti.json",
+  "core_url": "https://skinharmony-universal-core.onrender.com",
+  "finished_at": "2026-05-21T19:13:43.067Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/codex_enterprise_governance_1779390128428_final.md"
+}

@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-29t15_26_43.942z_codex_checklist_enforcement_checklist_enforcement_imple",
+  "generated_at": "2026-05-29T15:26:43.943Z",
+  "agent_id": "codex_checklist_enforcement",
+  "session_id": "codex_checklist_enforcement_1780067831280",
+  "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+  "title": "Checklist enforcement implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Aggiunti checklist storage, comandi, work-start, pulse, dashboard e gate finalize",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+    "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

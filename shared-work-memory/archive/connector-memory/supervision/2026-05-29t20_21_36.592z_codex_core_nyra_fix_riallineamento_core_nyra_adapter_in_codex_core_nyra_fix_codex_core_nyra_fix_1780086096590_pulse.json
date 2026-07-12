@@ -1,0 +1,59 @@
+{
+  "pulse_id": "2026-05-29t20_21_36.592z_codex_core_nyra_fix_riallineamento_core_nyra_adapter_in",
+  "generated_at": "2026-05-29T20:21:36.592Z",
+  "agent_id": "codex_core_nyra_fix",
+  "session_id": "codex_core_nyra_fix_1780086096590",
+  "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+  "title": "Riallineamento Core Nyra adapter initial pulse",
+  "summary": "Avvio lavoro governato: Procedere dopo audit: sistemare localmente disallineamenti Core/Nyra Render readiness senza deploy e senza cambiare chiavi; riallineare Suite endpoint moderni, rafforzare Nyra parlante dove possibile, documentare rischi chiavi/live",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t20_21_36.592z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+    "title": "Riallineamento Core Nyra adapter",
+    "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-29t20_21_36.591z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+    "title": "Riallineamento Core Nyra adapter",
+    "request": "Procedere dopo audit: sistemare localmente disallineamenti Core/Nyra Render readiness senza deploy e senza cambiare chiavi; riallineare Suite endpoint moderni, rafforzare Nyra parlante dove possibile, documentare rischi chiavi/live",
+    "success_criteria": "Patch locali sicure, test minimi verdi, nessun deploy/chiave cambiata, report e finalize Core Connector"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t20_21_36.591z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+    "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+    "allowed_paths": [
+      "services/universal-core-service",
+      "services/suite-control-plane",
+      "render-smartdesk-live",
+      "universal-core-2.0",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.792,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

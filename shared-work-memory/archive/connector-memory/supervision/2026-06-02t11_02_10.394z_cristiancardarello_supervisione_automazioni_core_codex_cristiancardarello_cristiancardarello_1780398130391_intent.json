@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-06-02t11_02_10.394z_cristiancardarello_supervisione_automazioni_core_codex_",
+  "generated_at": "2026-06-02T11:02:10.394Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780398130391",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+  "title": "Supervisione automazioni Core Codex Connector",
+  "request": "Collaborare con il Codex attivo sul Core Codex Connector per migliorare automazioni: leggere stato condiviso, individuare rischi, proporre varianti/probabilita, usare Core come giudice e Nyra come supporto di assorbimento/metodo, senza sovrapporsi a file lockati o modificare produzione.",
+  "success_criteria": "Codex connector supportato con findings utili, ranking varianti, controlli Core, eventuali rischi/bug segnalati in SHARED_WORK, lock rispettati, nessuna produzione toccata.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

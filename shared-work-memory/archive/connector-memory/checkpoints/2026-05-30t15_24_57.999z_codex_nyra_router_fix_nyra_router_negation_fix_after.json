@@ -1,0 +1,31 @@
+{
+  "checkpoint_id": "2026-05-30t15_24_57.999z_codex_nyra_router_fix_nyra_router_negation_fix_after",
+  "generated_at": "2026-05-30T15:24:58.000Z",
+  "agent_id": "codex_nyra_router_fix",
+  "session_id": "codex_nyra_router_fix_1780154382001",
+  "trace_id": "trace_codex_nyra_router_fix_codex_nyra_router_fix_1780154382001_1780154382001",
+  "title": "Nyra router negation fix after",
+  "phase": "after",
+  "status": "done",
+  "summary": "Verifica finale patch router: falsi positivi deploy/Render corretti, mappe/eventi aggiornati, Core gate finale ALLOWED.",
+  "files": [
+    "universal-core-2.0/tools/nyra-action-router.ts",
+    "universal-core-2.0/tests/nyra-action-router-test.ts",
+    "universal-core-2.0/tests/nyra-local-governance-test.ts",
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/universal-core/OPERATIONS.md",
+    "SHARED_MEMORY/snapshots/STATE_SNAPSHOT.md",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/events/EVENTS.jsonl"
+  ],
+  "tests": [
+    "npm run check:nyra:action-router",
+    "npm run check:nyra:local-governance",
+    "program-map-check READY",
+    "Core gate finale ALLOWED"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

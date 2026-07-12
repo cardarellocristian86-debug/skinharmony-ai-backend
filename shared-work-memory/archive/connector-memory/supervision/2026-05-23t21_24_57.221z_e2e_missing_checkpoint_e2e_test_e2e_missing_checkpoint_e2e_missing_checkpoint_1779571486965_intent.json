@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-23t21_24_57.221z_e2e_missing_checkpoint_e2e_test",
+  "generated_at": "2026-05-23T21:24:57.222Z",
+  "agent_id": "e2e_missing_checkpoint",
+  "session_id": "e2e_missing_checkpoint_1779571486965",
+  "title": "E2E test",
+  "request": "Verificare enforcement end-to-end",
+  "success_criteria": "Blocca se mancano evidenze",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

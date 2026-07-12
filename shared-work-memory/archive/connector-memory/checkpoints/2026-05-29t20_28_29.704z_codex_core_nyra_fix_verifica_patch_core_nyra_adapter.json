@@ -1,0 +1,23 @@
+{
+  "checkpoint_id": "2026-05-29t20_28_29.704z_codex_core_nyra_fix_verifica_patch_core_nyra_adapter",
+  "generated_at": "2026-05-29T20:28:29.705Z",
+  "agent_id": "codex_core_nyra_fix",
+  "session_id": "codex_core_nyra_fix_1780086096590",
+  "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+  "title": "Verifica patch Core Nyra adapter",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Smoke Suite OK, Core service OK, syntax OK, Nyra validator smoke OK. Nessun deploy e nessuna chiave live modificata.",
+  "files": [
+    "services/suite-control-plane/src/app.js",
+    "render-smartdesk-live/src/nyra/NyraDialogueAdapter.js"
+  ],
+  "tests": [
+    "npm --prefix services/suite-control-plane test",
+    "npm --prefix services/universal-core-service test",
+    "node --check servizi e Smart Desk"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t20_21_36.591z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

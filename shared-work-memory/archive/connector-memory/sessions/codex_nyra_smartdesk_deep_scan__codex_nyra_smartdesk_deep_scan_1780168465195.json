@@ -1,0 +1,26 @@
+{
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "reports/smartdesk"
+  ],
+  "status": "active",
+  "started_at": "2026-05-30T19:14:25.195Z",
+  "updated_at": "2026-05-30T19:28:23.829Z",
+  "locks": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "reports/smartdesk"
+  ],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-30t19_28_23.828z_codex_nyra_smartdesk_deep_scan_nyra_smart_desk_deep_sca.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress"
+}

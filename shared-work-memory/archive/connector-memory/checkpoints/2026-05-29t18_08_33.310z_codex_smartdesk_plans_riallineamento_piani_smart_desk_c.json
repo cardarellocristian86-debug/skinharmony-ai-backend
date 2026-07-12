@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t18_08_33.310z_codex_smartdesk_plans_riallineamento_piani_smart_desk_c",
+  "generated_at": "2026-05-29T18:08:33.311Z",
+  "agent_id": "codex_smartdesk_plans",
+  "session_id": "codex_smartdesk_plans_1780077983966",
+  "trace_id": "trace_codex_smartdesk_plans_codex_smartdesk_plans_1780077983966_1780077983966",
+  "title": "Riallineamento piani Smart Desk completato",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Base gestionale completo con report base; Silver controllo evoluto; Gold AI operativa; Protocolli AI fuori scope; test lint/vitest/js check/program-map-check OK; report SHARED_MEMORY/reports/SMARTDESK_PLAN_REALIGNMENT_2026-05-29.md",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t18_06_23.967z_codex_smartdesk_plans_riallineamento_piani_smart_desk",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,19 @@
+{
+  "checkpoint_id": "2026-05-24t13_47_56.279z_codex_beauty_commerce_full_site_beauty_commerce_full_si",
+  "generated_at": "2026-05-24T13:47:56.279Z",
+  "agent_id": "codex_beauty_commerce_full_site",
+  "session_id": "codex_beauty_commerce_full_site_1779630476137",
+  "title": "Beauty commerce full site preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Output atteso: non solo home. Servono mappa sito, pagine multiple/editabili, hero gallery e test locali.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json"
+  ],
+  "tests": [
+    "local code inspection"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

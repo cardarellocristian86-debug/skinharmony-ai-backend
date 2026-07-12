@@ -1,0 +1,36 @@
+{
+  "pulse_id": "2026-05-24t14_56_56.462z_codex_inline_template_builder_pulse",
+  "generated_at": "2026-05-24T14:56:56.462Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "title": "Pulse Codex",
+  "summary": "Gate esplicito eseguito: update locale Suite Template Builder ALLOWED, risk=low, owner_confirmation=false. Intento allineato: modifica diretta nella preview, testi inline, tile immagini cliccabili, nessun deploy/live.",
+  "files": [
+    "reports/codex-core/codex_core_gate_latest.json",
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite-admin.js",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+    "dist/skinharmony-site-suite-5.2.29.zip"
+  ],
+  "tests": [
+    "node scripts/test_template_builder_inline_editor.js",
+    "npm run suite:operational:closure"
+  ],
+  "next": "",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t14_55_55.386z_codex_inline_template_builder_template_builder_suite_mo",
+    "title": "Template Builder Suite modifica diretta nella preview",
+    "request": "",
+    "success_criteria": ""
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 1,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

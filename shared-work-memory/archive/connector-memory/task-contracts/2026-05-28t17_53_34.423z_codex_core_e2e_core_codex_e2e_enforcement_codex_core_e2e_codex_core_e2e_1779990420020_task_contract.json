@@ -1,0 +1,44 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+  "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+  "generated_at": "2026-05-28T17:53:34.423Z",
+  "updated_at": "2026-05-28T17:53:34.423Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "title": "Core Codex e2e enforcement",
+  "request": "Implementare controllo end-to-end obbligatorio mentre Codex lavora: task contract, trace, anti-deriva, cleanup e test ripetuti.",
+  "success_criteria": "Connector blocca lavori incoerenti o incompleti, mantiene trace/task contract e passa test ripetuti.",
+  "allowed_paths": [
+    "packages/core-codex-connector",
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

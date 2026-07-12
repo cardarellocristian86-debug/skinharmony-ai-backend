@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-04t21_50_20.483z_cristiancardarello_report_connector_link_scritto",
+  "generated_at": "2026-06-04T21:50:20.484Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609759412",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609759412_1780609759412",
+  "title": "Report connector link scritto",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Creato reports/codex-core/CONNECTOR_LINK_STATUS_2026-06-04.md come evidenza locale redatta del collegamento connector/Core.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t21_49_19.434z_cristiancardarello_codex_app_connector_link",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,21 @@
+{
+  "checkpoint_id": "2026-05-28t18_52_23.741z_codex_suite_analytics_ui_during_implementation",
+  "generated_at": "2026-05-28T18:52:23.742Z",
+  "agent_id": "codex_suite_analytics_ui",
+  "session_id": "codex_suite_analytics_ui_1779994305556",
+  "trace_id": "trace_codex_suite_analytics_ui_codex_suite_analytics_ui_1779994305556_1779994305",
+  "title": "during implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "UI/copy pass completato: hero control plane, badge governance, funnel drop-off, Next Controlled Moves, page decision queue compatta, version bump 5.2.87.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "scripts/check_wp_suite_runtime_data.js"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-28t18_51_45.566z_codex_suite_analytics_ui_suite_5.2.87_control_plane_ui_",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

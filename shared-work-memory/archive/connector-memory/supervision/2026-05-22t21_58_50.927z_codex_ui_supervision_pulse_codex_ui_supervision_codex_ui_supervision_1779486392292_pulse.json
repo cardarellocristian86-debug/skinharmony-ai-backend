@@ -1,0 +1,32 @@
+{
+  "pulse_id": "2026-05-22t21_58_50.927z_codex_ui_supervision_pulse",
+  "generated_at": "2026-05-22T21:58:50.933Z",
+  "agent_id": "codex_ui_supervision",
+  "session_id": "codex_ui_supervision_1779486392292",
+  "title": "Pulse Codex",
+  "summary": "Dashboard locale avviata e verificata. Endpoint /api/state risponde con sessioni, lock, eventi, verdict e ultimo Core report; HTML serve la UI con KPI, Verdict Live, Sessioni/Lock, Event Stream e Core Report. La UI mostra gia codex_02 in attention per mancanza di pulse operativo.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs",
+    "dashboard avviata su 127.0.0.1:4107",
+    "curl /api/state OK",
+    "curl / HTML OK"
+  ],
+  "next": "Pack 0.2.21 e report condiviso dashboard.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-22t21_47_17.265z_codex_ui_supervision_dashboard_eventi_core_codex",
+    "title": "Dashboard eventi Core Codex",
+    "request": "Creare una UI grafica locale che mostri in tempo quasi reale eventi Codex/Core, decisioni prese, tempi, sessioni, lock, pulse, verdict e report. Usare supervisione Core 2.0 durante il lavoro e prendere ispirazione da control room reali senza copiare branding.",
+    "success_criteria": "Dashboard funzionante da browser, dati letti da SHARED_MEMORY/reports, test/manuale inclusi, report condiviso salvato."
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.292,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

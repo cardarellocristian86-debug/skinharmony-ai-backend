@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-28t18_28_45.628z_codex_suite_analytics_ui_riallineamento_e2e",
+  "generated_at": "2026-05-28T18:28:45.628Z",
+  "agent_id": "codex_suite_analytics_ui",
+  "session_id": "codex_suite_analytics_ui_1779992925627",
+  "trace_id": "trace_codex_suite_analytics_ui_codex_suite_analytics_ui_1779992925627_1779992925",
+  "title": "Riallineamento e2e",
+  "request": "Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+  "success_criteria": "Ogni modifica resta nello scope, con pulse, test e finalize pulito",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

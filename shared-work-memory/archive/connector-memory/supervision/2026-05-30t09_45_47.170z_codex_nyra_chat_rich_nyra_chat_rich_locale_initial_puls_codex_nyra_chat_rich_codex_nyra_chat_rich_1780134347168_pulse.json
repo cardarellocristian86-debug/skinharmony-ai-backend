@@ -1,0 +1,56 @@
+{
+  "pulse_id": "2026-05-30t09_45_47.170z_codex_nyra_chat_rich_nyra_chat_rich_locale_initial_puls",
+  "generated_at": "2026-05-30T09:45:47.170Z",
+  "agent_id": "codex_nyra_chat_rich",
+  "session_id": "codex_nyra_chat_rich_1780134347168",
+  "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+  "title": "Nyra Chat Rich locale initial pulse",
+  "summary": "Avvio lavoro governato: Implementare un layer locale Nyra Chat Rich che usi apprendimento/snapshot in modo selettivo, migliori la voce naturale e resti governato da Core/validator senza produzione",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+    "title": "Nyra Chat Rich locale",
+    "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+    "title": "Nyra Chat Rich locale",
+    "request": "Implementare un layer locale Nyra Chat Rich che usi apprendimento/snapshot in modo selettivo, migliori la voce naturale e resti governato da Core/validator senza produzione",
+    "success_criteria": "Comando npm, test locali e prova diretta dimostrano risposta piu naturale, memoria contestuale e fallback sicuro"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+    "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+    "allowed_paths": [
+      "universal-core",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.545,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

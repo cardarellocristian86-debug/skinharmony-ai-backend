@@ -53,7 +53,9 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (!audiences.includes(config.auth0Audience)) throw new Error("jwt_audience_invalid");
   if (!Number.isFinite(payload.exp) || payload.exp <= now) throw new Error("jwt_expired");
   if (payload.nbf && payload.nbf > now + 30) throw new Error("jwt_not_active");
-  return { kind: "oauth", subject: String(payload.sub || ""), scopes: scopes(payload.scope || payload.permissions) };
+  const tenantId = String(payload[config.tenantClaim] || "").trim();
+  if (!tenantId) throw new Error("jwt_tenant_missing");
+  return { kind: "oauth", subject: String(payload.sub || ""), tenantId, scopes: scopes(payload.scope || payload.permissions) };
 }
 
 export function createAuthenticator(config, options = {}) {
@@ -63,7 +65,7 @@ export function createAuthenticator(config, options = {}) {
     if (!match) throw new Error("bearer_required");
     const token = match[1].trim();
     if (config.codexKeys.some((key) => safeEqual(key, token))) {
-      return { kind: "codex", subject: "codex", scopes: config.codexScopes };
+      return { kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes };
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
     return verifyAuth0Jwt(token, config, cache);

@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-21t19_13_32.414z_codex_enterprise_governance_enterprise_governance_runti",
+  "generated_at": "2026-05-21T19:13:32.414Z",
+  "agent_id": "codex_enterprise_governance",
+  "session_id": "codex_enterprise_governance_1779390128428",
+  "title": "Enterprise governance runtime enforcement",
+  "status": "verified",
+  "summary": "Agganciato enterprise runtime contract al Suite Control Plane locale: endpoint validate e blocco action-mediation sensibile senza runtime_contract valido. Test smoke OK.",
+  "files": [
+    "services/suite-control-plane/src/app.js",
+    "services/suite-control-plane/test/suite-control-plane-smoke.js",
+    "SHARED_MEMORY/reports/ENTERPRISE_GOVERNANCE_MICROBLOCK_4_CONTROL_PLANE_RUNTIME_ENFORCEMENT_2026-05-21.md"
+  ],
+  "tests": [
+    "npm --prefix services/suite-control-plane test",
+    "npm run enterprise:runtime-contracts:test"
+  ],
+  "next": "Implementare queue persistente reale, lock timeout/enforcement e audit/correlation id end-to-end",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

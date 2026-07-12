@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t16_45_23.499z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T16:45:23.499Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779641067526",
+  "title": "Pulse Codex",
+  "summary": "Suite 5.2.34: preview collegata agli slot template authority; test inline 23/23, plugin 5.2.34 pass, governance/page-factory pass.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_34_TEMPLATE_BUILDER_CONNECTED_PREVIEW_2026-05-24.md"
+  ],
+  "tests": [],
+  "next": "Eseguire closure package e verifica zip.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t16_45_23.004z_cristiancardarello_suite_template_builder_5.2.34_connec",
+    "title": "Suite Template Builder 5.2.34 connected preview",
+    "request": "Chiudere il difetto: preview Builder parziale e non completamente collegata agli slot template.",
+    "success_criteria": "Zip 5.2.34 generato, slot preview collegati e test passati."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.308,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

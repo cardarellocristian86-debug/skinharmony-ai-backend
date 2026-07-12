@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-01t13_03_37.258z_codex_google_suite_5.3.16_performance_cache",
+  "trace_id": "trace_codex_google_codex_google_1780319017256_1780319017256",
+  "contract_id": "2026-06-01t13_03_37.257z_codex_google_suite_5.3.16_performance_cache",
+  "generated_at": "2026-06-01T13:03:37.258Z",
+  "updated_at": "2026-06-01T13:07:27.538Z",
+  "agent_id": "codex_google",
+  "session_id": "codex_google_1780319017256",
+  "title": "Suite 5.3.16 performance cache",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_scan_live_read-only_5.3.15",
+      "label": "Scan live read-only 5.3.15",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:03:37.258Z",
+      "updated_at": "2026-06-01T13:06:29.942Z",
+      "evidence": [
+        "SHARED_MEMORY/reports/SUITE_5_3_15_LIVE_PERFORMANCE_SCAN_2026-06-01.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_patch_cache_read-only_5.3.16",
+      "label": "Patch cache read-only 5.3.16",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:03:37.258Z",
+      "updated_at": "2026-06-01T13:05:13.870Z",
+      "evidence": [
+        "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php; wordpress/plugins/skinharmony-site-suite/README.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_locali_e_closure",
+      "label": "Test locali e closure",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:03:37.258Z",
+      "updated_at": "2026-06-01T13:05:14.348Z",
+      "evidence": [
+        "php lint completo; SHSS_EXPECTED_VERSION=5.3.16 node scripts/test_skinharmony_site_suite_plugin.js; audit buttons; closure 22/22"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_report_e_memoria_condivisa",
+      "label": "Report e memoria condivisa",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:03:37.258Z",
+      "updated_at": "2026-06-01T13:07:27.537Z",
+      "evidence": [
+        "SHARED_MEMORY/reports/SUITE_5_3_16_PERFORMANCE_CACHE_LOCAL_2026-06-01.md; SHARED_MEMORY/events/EVENTS.jsonl; SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md"
+      ],
+      "note": ""
+    }
+  ]
+}

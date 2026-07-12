@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t13_58_56.340z_codex_beauty_commerce_full_site_suite_5.2.27_full-site_",
+  "generated_at": "2026-05-24T13:58:56.341Z",
+  "agent_id": "codex_beauty_commerce_full_site",
+  "session_id": "codex_beauty_commerce_full_site_1779630476137",
+  "title": "Suite 5.2.27 full-site editable packaged",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Zip 5.2.27 creato e verificato; report locale scritto; nessun deploy/live.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

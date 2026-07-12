@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-03t19_54_59.718z_codex_4_nyra_explain_bridge_preflight",
+  "generated_at": "2026-06-03T19:54:59.719Z",
+  "agent_id": "codex_4",
+  "session_id": "codex_4_1779535292197",
+  "trace_id": "trace_codex_4_codex_4_1779535292197_1780516429388",
+  "title": "Nyra Explain Bridge preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Patch locale su connector per generare spiegazione Nyra da report Core: nessuna produzione, nessun WordPress, test con fixture/report locale.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-03t19_53_49.388z_codex_4_nyra_explain_bridge_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

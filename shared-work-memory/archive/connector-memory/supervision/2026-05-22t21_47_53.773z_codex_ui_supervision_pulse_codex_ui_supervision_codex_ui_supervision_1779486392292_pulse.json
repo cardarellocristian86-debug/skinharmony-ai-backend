@@ -1,0 +1,31 @@
+{
+  "pulse_id": "2026-05-22t21_47_53.773z_codex_ui_supervision_pulse",
+  "generated_at": "2026-05-22T21:47:53.777Z",
+  "agent_id": "codex_ui_supervision",
+  "session_id": "codex_ui_supervision_1779486392292",
+  "title": "Pulse Codex",
+  "summary": "Avvio lavoro dashboard: prima raccolgo riferimenti control room e ispeziono la struttura del connettore per scegliere se inserire una pagina statica locale o un comando server dedicato.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [
+    "session-start e intent-start completati"
+  ],
+  "next": "Ricerca web e scelta architettura dashboard locale.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-22t21_47_17.265z_codex_ui_supervision_dashboard_eventi_core_codex",
+    "title": "Dashboard eventi Core Codex",
+    "request": "Creare una UI grafica locale che mostri in tempo quasi reale eventi Codex/Core, decisioni prese, tempi, sessioni, lock, pulse, verdict e report. Usare supervisione Core 2.0 durante il lavoro e prendere ispirazione da control room reali senza copiare branding.",
+    "success_criteria": "Dashboard funzionante da browser, dati letti da SHARED_MEMORY/reports, test/manuale inclusi, report condiviso salvato."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0.167,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

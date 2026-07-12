@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t19_57_01.675z_cristiancardarello_suite_genera_template_gutenberg_nati",
+  "generated_at": "2026-05-24T19:57:01.675Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779652592846",
+  "title": "Suite genera template Gutenberg nativi",
+  "request": "Spostare il flusso template: Suite crea/clona pagina in blocchi WordPress modificabili; WordPress modifica; Suite valida",
+  "success_criteria": "Beauty commerce genera blocchi Gutenberg nativi editabili, senza wp:html come contenuto principale, con test locale e zip progressivo",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

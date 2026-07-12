@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_14_38.479z_cristiancardarello_suite_5.2.37_packaged",
+  "generated_at": "2026-05-24T18:14:38.480Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779645317865",
+  "title": "Suite 5.2.37 packaged",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Fix visual output completato e zip locale generato. Test locali OK. Live 5.2.36 aveva fallito sulle immagini; 5.2.37 pronta da installare per ritest live.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

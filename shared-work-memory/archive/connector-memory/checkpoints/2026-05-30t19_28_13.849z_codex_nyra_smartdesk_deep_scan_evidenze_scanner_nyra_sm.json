@@ -1,0 +1,23 @@
+{
+  "checkpoint_id": "2026-05-30t19_28_13.849z_codex_nyra_smartdesk_deep_scan_evidenze_scanner_nyra_sm",
+  "generated_at": "2026-05-30T19:28:13.850Z",
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "title": "Evidenze scanner Nyra Smart Desk",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Creato scanner overlay codice e test dedicato; generati report su mirror Smart Desk Render in sola lettura.",
+  "files": [
+    "universal-core-2.0/tools/nyra-smartdesk-code-overlay-scan.ts",
+    "universal-core-2.0/tests/nyra-smartdesk-code-overlay-scan-test.ts",
+    "reports/smartdesk/nyra_smartdesk_render_code_overlay_latest.md"
+  ],
+  "tests": [
+    "npm --prefix universal-core-2.0 run check:nyra:smartdesk-code-overlay",
+    "node --check mirror Smart Desk JS"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

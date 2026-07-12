@@ -1,0 +1,17 @@
+{
+  "intent_id": "2026-05-24t14_55_55.386z_codex_inline_template_builder_template_builder_suite_mo",
+  "generated_at": "2026-05-24T14:55:55.387Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "title": "Template Builder Suite modifica diretta nella preview",
+  "request": "",
+  "success_criteria": "",
+  "expected_depth": "normal",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite-admin.js",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css"
+  ],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

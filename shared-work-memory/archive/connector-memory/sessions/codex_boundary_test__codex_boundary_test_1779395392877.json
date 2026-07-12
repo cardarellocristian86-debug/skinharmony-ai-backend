@@ -1,0 +1,19 @@
+{
+  "agent_id": "codex_boundary_test",
+  "session_id": "codex_boundary_test_1779395392877",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "connector",
+    "core"
+  ],
+  "status": "stale",
+  "started_at": "2026-05-21T20:29:52.877Z",
+  "updated_at": "2026-05-23T11:17:33.336Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199",
+  "stale_at": "2026-05-23T11:17:33.336Z",
+  "stale_reason": "session_cleanup_older_than_240_min"
+}

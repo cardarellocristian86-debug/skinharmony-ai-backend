@@ -1,0 +1,38 @@
+{
+  "intent_id": "2026-06-02t16_28_42.175z_codex_suite_research_support_supporto_analisi_suite_per",
+  "generated_at": "2026-06-02T16:28:42.175Z",
+  "agent_id": "codex_suite_research_support",
+  "session_id": "codex_suite_research_support_1780417722173",
+  "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+  "title": "Supporto analisi Suite per Codex attivo",
+  "request": "Collaborare con il Codex che sta lavorando su SkinHarmony Suite: leggere memoria condivisa, individuare stato lavoro, produrre supporto analitico e messaggi operativi senza modifiche sensibili",
+  "success_criteria": "Contesto Suite aggiornato, informazioni utili condivise in SHARED_WORK, nessuna modifica produzione, checkpoint/finalize eseguiti",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

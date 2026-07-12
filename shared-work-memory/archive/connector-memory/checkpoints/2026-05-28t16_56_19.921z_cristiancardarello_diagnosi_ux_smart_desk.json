@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-28t16_56_19.921z_cristiancardarello_diagnosi_ux_smart_desk",
+  "generated_at": "2026-05-28T16:56:19.922Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779987379846",
+  "title": "Diagnosi UX Smart Desk",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Prima lettura codice per UX report/cassa/semafori e demo loading",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

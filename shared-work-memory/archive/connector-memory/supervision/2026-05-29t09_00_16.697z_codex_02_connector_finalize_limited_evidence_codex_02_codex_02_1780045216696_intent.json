@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t09_00_16.697z_codex_02_connector_finalize_limited_evidence",
+  "generated_at": "2026-05-29T09:00:16.697Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1780045216696",
+  "trace_id": "trace_codex_02_codex_02_1780045216696_1780045216696",
+  "title": "Connector finalize limited evidence",
+  "request": "Aggiungere al Core Codex Connector una chiusura limitata documentata per lavori senza E2E completo applicabile, mantenendo vincolo prima/durante/dopo e prove sostitutive.",
+  "success_criteria": "Patch connettore testata, programma aggiornato, report condiviso salvato, cleanup e finalize verdi.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

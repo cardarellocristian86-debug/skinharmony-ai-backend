@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-23t21_39_30.753z_codex_suite_worker_diagnosi_suite_iniziale",
+  "generated_at": "2026-05-23T21:39:30.753Z",
+  "agent_id": "codex_suite_worker",
+  "session_id": "codex_suite_worker_1779572346164",
+  "title": "Diagnosi Suite iniziale",
+  "summary": "Sto leggendo plugin Suite, registry template, report precedenti e layer Render/Core per separare responsabilita: plugin locale, control plane, Core policy e template master.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite",
+    "services/universal-core-service"
+  ],
+  "tests": [],
+  "next": "Creare checkpoint preflight con evidenze e poi decidere le opzioni con Core",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t21_39_17.521z_codex_suite_worker_suite_template_closure",
+    "title": "Suite template closure",
+    "request": "Chiudere il punto Suite/template: capire cosa resta nel plugin, cosa va spostato su Suite/Render, e impedire template generici simili invece di cloni validati.",
+    "success_criteria": "Mappa operativa chiara, nessuna modifica live, prossima azione concreta con Core/checkpoint."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0.167,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

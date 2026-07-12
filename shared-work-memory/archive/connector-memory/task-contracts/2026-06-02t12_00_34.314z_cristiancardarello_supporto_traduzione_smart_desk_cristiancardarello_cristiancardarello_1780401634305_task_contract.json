@@ -1,0 +1,47 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-06-02t12_00_34.314z_cristiancardarello_supporto_traduzione_smart_desk",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780401634305_1780401634305",
+  "generated_at": "2026-06-02T12:00:34.314Z",
+  "updated_at": "2026-06-02T12:00:34.314Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780401634305",
+  "title": "Supporto traduzione Smart Desk",
+  "request": "Collaborare con il Codex attivo sulla traduzione Smart Desk: leggere stato condiviso, verificare lingua/traduzioni, produrre finding, ranking e probabilita, usare Core come giudice e Nyra come supporto distillato, senza modificare file del traduttore o produzione.",
+  "success_criteria": "Il Codex traduttore riceve evidenze aggiornate, aree prioritarie, rischi e decisione Core registrate in SHARED_WORK; nessuna sovrapposizione, nessun deploy, nessuna produzione toccata.",
+  "allowed_paths": [
+    "SHARED_WORK",
+    "SHARED_MEMORY",
+    "render-smartdesk-live",
+    "skin-harmony-web",
+    "smartdesk",
+    "reports/codex-core",
+    "reports/smartdesk",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

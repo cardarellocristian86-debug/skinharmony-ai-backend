@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-23t11_14_38.847z_codex_03_lavoro_codex_03",
+  "generated_at": "2026-05-23T11:14:38.848Z",
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1779534878773",
+  "title": "Lavoro Codex 03",
+  "request": "Descrivi qui il lavoro assegnato",
+  "success_criteria": "File, test, report e prossima azione devono essere dichiarati",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

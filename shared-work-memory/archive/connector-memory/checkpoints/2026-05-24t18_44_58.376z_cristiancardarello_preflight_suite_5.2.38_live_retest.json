@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_44_58.376z_cristiancardarello_preflight_suite_5.2.38_live_retest",
+  "generated_at": "2026-05-24T18:44:58.377Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779648282951",
+  "title": "Preflight Suite 5.2.38 live retest",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Core gate allowed; live test limited to non-published WordPress draft.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

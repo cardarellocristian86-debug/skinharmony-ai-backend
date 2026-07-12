@@ -1,0 +1,33 @@
+{
+  "pulse_id": "2026-05-23t21_51_14.043z_codex_suite_worker_template_authority_v2_implemented",
+  "generated_at": "2026-05-23T21:51:14.046Z",
+  "agent_id": "codex_suite_worker",
+  "session_id": "codex_suite_worker_1779572346164",
+  "title": "Template Authority V2 implemented",
+  "summary": "Implementato microblocco Suite richiesto: contratto agnostico Template Authority V2, copia locale plugin, enforcement governance Page Factory e test aggiornati. Non ho fatto deploy, zip o modifiche WordPress live.",
+  "files": [
+    "packages/shared-contracts/template_authority_v2.json",
+    "wordpress/plugins/skinharmony-site-suite/config/template-authority-v2.json",
+    "scripts/lib/suite_core_codex_governance.js",
+    "scripts/test_suite_core_codex_governance.js",
+    "reports/wordpress/fixtures/governance-runtime-valid-page-factory.json"
+  ],
+  "tests": [],
+  "next": "Scrivere report e finalizzare con test",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t21_39_17.521z_codex_suite_worker_suite_template_closure",
+    "title": "Suite template closure",
+    "request": "Chiudere il punto Suite/template: capire cosa resta nel plugin, cosa va spostato su Suite/Render, e impedire template generici simili invece di cloni validati.",
+    "success_criteria": "Mappa operativa chiara, nessuna modifica live, prossima azione concreta con Core/checkpoint."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0.125,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t18_23_19.533z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "trace_id": "trace_codex_nyra_codex_supervisor_codex_nyra_codex_supervisor_1780165399531_1780",
+  "contract_id": "2026-05-30t18_23_19.532z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "generated_at": "2026-05-30T18:23:19.533Z",
+  "updated_at": "2026-05-30T18:30:04.256Z",
+  "agent_id": "codex_nyra_codex_supervisor",
+  "session_id": "codex_nyra_codex_supervisor_1780165399531",
+  "title": "Nyra supervisore Codex",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_supervisor_runtime",
+      "label": "Supervisor runtime",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:23:19.533Z",
+      "updated_at": "2026-05-30T18:29:39.574Z",
+      "evidence": [
+        "universal-core-2.0/tools/nyra-codex-work-supervisor.ts; real session verdict recover->attention after evidence"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_code_correction_gated",
+      "label": "Code correction gated",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:23:19.533Z",
+      "updated_at": "2026-05-30T18:29:39.618Z",
+      "evidence": [
+        "code_correction.can_write_code_directly=false; mode core_required_patch_proposal on recover/blocked; apply_requires includes Core gate ALLOWED"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_smoke",
+      "label": "Test e smoke",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:23:19.533Z",
+      "updated_at": "2026-05-30T18:29:39.650Z",
+      "evidence": [
+        "npm run check:nyra:codex-supervisor; check:nyra:local-governance; check:nyra:action-router; program-map-check READY; real supervisor smoke"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_memoria_e_finalize",
+      "label": "Memoria e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:23:19.533Z",
+      "updated_at": "2026-05-30T18:30:04.254Z",
+      "evidence": [
+        "SHARED_MEMORY events/snapshots/program maps aggiornati; after checkpoint completato; pronto finalize"
+      ],
+      "note": ""
+    }
+  ]
+}

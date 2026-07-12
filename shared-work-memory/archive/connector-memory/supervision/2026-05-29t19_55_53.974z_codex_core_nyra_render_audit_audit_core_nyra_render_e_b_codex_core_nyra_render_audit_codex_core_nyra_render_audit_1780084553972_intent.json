@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t19_55_53.974z_codex_core_nyra_render_audit_audit_core_nyra_render_e_b",
+  "generated_at": "2026-05-29T19:55:53.974Z",
+  "agent_id": "codex_core_nyra_render_audit",
+  "session_id": "codex_core_nyra_render_audit_1780084553972",
+  "trace_id": "trace_codex_core_nyra_render_audit_codex_core_nyra_render_audit_1780084553972_17",
+  "title": "Audit Core/Nyra Render e bridge software",
+  "request": "Verificare Core/Nyra su Render, collegamento API key con traduttore SkinHarmony Core, Suite e Smart Desk; valutare rami decisionali, sovrapposizione rami e massimo sfruttamento cross-software; Nyra deve parlare in modo utile",
+  "success_criteria": "Mappa connessioni e stato funzionamento; test read-only disponibili; gap rami/overlap; raccomandazioni concrete senza deploy o cambi chiavi",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

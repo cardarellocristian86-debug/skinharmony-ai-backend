@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-05t19_11_47.563z_cristiancardarello_active_renew_pubblicata",
+  "generated_at": "2026-06-05T19:11:47.564Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780684387891",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780684387891_1780684387892",
+  "title": "ACTIVE RENEW pubblicata",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Pagina /active-renew/ creata da PDF verificato; asset caricati in WordPress/DAM; prodotto Suite quote-only; card Tecnologie aggiornata; controlli lingua e live completati.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-05t18_33_07.893z_cristiancardarello_codex_sessione_vincolata_al_connetto",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

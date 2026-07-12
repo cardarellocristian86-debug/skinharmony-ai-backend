@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-02t12_26_55.173z_cristiancardarello_audit_pagine_non_collegate_sito_skin",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780403215168_1780403215168",
+  "contract_id": "2026-06-02t12_26_55.171z_cristiancardarello_audit_pagine_non_collegate_sito_skin",
+  "generated_at": "2026-06-02T12:26:55.173Z",
+  "updated_at": "2026-06-02T13:22:50.530Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780403215168",
+  "title": "Audit pagine non collegate sito SkinHarmony",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T12:26:55.173Z",
+      "updated_at": "2026-06-02T13:22:01.990Z",
+      "evidence": [
+        "Core gate codex_automation ALLOWED; sitemap/REST/homepage letti; Core decide REVIEW_REQUIRED per strategia bozze."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "not_applicable",
+      "required": true,
+      "created_at": "2026-06-02T12:26:55.173Z",
+      "updated_at": "2026-06-02T13:22:27.979Z",
+      "evidence": [
+        "Task limitato ad audit read-only; mettere pagine in bozza e write_production e richiede owner/Core. Nessuna modifica WordPress eseguita."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T12:26:55.173Z",
+      "updated_at": "2026-06-02T13:22:36.025Z",
+      "evidence": [
+        "Verifiche: sitemap index/page/post OK; WP REST pages OK; homepage 24 link; second-level pass 24 ancora non collegate; report locali generati."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T12:26:55.173Z",
+      "updated_at": "2026-06-02T13:22:50.529Z",
+      "evidence": [
+        "Artifact, SHARED_WORK messages/decisions ed EVENTS scritti; checkpoint preflight/during/after completati."
+      ],
+      "note": ""
+    }
+  ]
+}

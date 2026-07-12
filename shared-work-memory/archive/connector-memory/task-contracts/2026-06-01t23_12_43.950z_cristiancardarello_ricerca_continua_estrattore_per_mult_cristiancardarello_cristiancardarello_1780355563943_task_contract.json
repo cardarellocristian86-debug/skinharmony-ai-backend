@@ -1,0 +1,45 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-06-01t23_12_43.950z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+  "generated_at": "2026-06-01T23:12:43.950Z",
+  "updated_at": "2026-06-01T23:12:43.951Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780355563943",
+  "title": "Ricerca continua estrattore per multi-Codex",
+  "request": "Lavorare in parallelo sull'estrattore creato da altro Codex: raccogliere contesto reale, fare ricerca continua, generare ipotesi/probabilita e passare informazioni al Core per decisioni senza modifiche finche non approvate",
+  "success_criteria": "Contesto estrattore compreso, ipotesi ordinate con probabilita, decisione Core registrata, informazioni utili pronte per Codex implementatore",
+  "allowed_paths": [
+    "SHARED_MEMORY",
+    "packages",
+    "scripts",
+    "universal-core-2.0",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t09_00_16.711z_codex_02_connector_finalize_limited_evidence_preflight",
+  "generated_at": "2026-05-29T09:00:16.711Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1780045216696",
+  "trace_id": "trace_codex_02_codex_02_1780045216696_1780045216696",
+  "title": "Connector finalize limited evidence preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-29t09_00_16.698z_codex_02_connector_finalize_limited_evidence",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

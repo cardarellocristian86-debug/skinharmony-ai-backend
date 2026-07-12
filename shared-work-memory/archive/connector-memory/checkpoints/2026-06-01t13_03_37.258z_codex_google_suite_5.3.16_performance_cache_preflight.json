@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-06-01t13_03_37.258z_codex_google_suite_5.3.16_performance_cache_preflight",
+  "generated_at": "2026-06-01T13:03:37.258Z",
+  "agent_id": "codex_google",
+  "session_id": "codex_google_1780319017256",
+  "trace_id": "trace_codex_google_codex_google_1780319017256_1780319017256",
+  "title": "Suite 5.3.16 performance cache preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-06-01t13_03_37.257z_codex_google_suite_5.3.16_performance_cache",
+  "checklist_id": "2026-06-01t13_03_37.258z_codex_google_suite_5.3.16_performance_cache",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-06-01t13_03_37.258z_codex_google_suite_5.3.16_performance_cache",
+    "title": "Suite 5.3.16 performance cache",
+    "trace_id": "trace_codex_google_codex_google_1780319017256_1780319017256",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

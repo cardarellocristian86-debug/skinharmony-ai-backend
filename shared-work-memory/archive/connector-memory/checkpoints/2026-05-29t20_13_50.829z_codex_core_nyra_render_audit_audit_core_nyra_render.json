@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-29t20_13_50.829z_codex_core_nyra_render_audit_audit_core_nyra_render",
+  "generated_at": "2026-05-29T20:13:50.830Z",
+  "agent_id": "codex_core_nyra_render_audit",
+  "session_id": "codex_core_nyra_render_audit_1780084553972",
+  "trace_id": "trace_codex_core_nyra_render_audit_codex_core_nyra_render_audit_1780084553972_17",
+  "title": "Audit Core/Nyra Render",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Verificati Core live, Suite live, Smart Desk bridge, chiavi Suite/Translator, rami autorizzati, endpoint gateway e Nyra dialogue adapter. Nessuna modifica codice.",
+  "files": [
+    "reports/codex-core/codex_core_gate_latest.json"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t19_55_53.975z_codex_core_nyra_render_audit_audit_core_nyra_render_e_b",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

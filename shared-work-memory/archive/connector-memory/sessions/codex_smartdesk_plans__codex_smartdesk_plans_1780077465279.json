@@ -1,0 +1,23 @@
+{
+  "agent_id": "codex_smartdesk_plans",
+  "session_id": "codex_smartdesk_plans_1780077465279",
+  "trace_id": "trace_codex_smartdesk_plans_codex_smartdesk_plans_1780077465279_1780077465279",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "smartdesk",
+    "services",
+    "SHARED_MEMORY"
+  ],
+  "status": "active",
+  "started_at": "2026-05-29T17:57:45.279Z",
+  "updated_at": "2026-05-29T17:57:45.280Z",
+  "locks": [
+    "smartdesk",
+    "services",
+    "SHARED_MEMORY"
+  ],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199"
+}

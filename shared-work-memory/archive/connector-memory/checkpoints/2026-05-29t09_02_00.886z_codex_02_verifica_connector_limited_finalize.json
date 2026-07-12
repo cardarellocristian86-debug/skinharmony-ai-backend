@@ -1,0 +1,24 @@
+{
+  "checkpoint_id": "2026-05-29t09_02_00.886z_codex_02_verifica_connector_limited_finalize",
+  "generated_at": "2026-05-29T09:02:00.892Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1780045216696",
+  "trace_id": "trace_codex_02_codex_02_1780045216696_1780045216696",
+  "title": "Verifica connector limited finalize",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Verifiche completate: node --check OK, Program Registry READY, e2e-self-test PASS. Nessun deploy, nessun Core v0/2.0 modificato.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/reports/core-codex-connector/E2E_FINALIZE_LIMITED_EVIDENCE_2026-05-29.md"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs",
+    "node scripts/program_registry_check.js",
+    "SH_CODEX_AGENT_ID=codex_02 node packages/core-codex-connector/src/cli.mjs e2e-self-test"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t09_00_16.698z_codex_02_connector_finalize_limited_evidence",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

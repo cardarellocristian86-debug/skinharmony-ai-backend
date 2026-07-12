@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-05-24T14:54:43.539Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1,
+  "interval_ms": 200,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-24t14_52_01.596z_codex_inline_template_builder_pulse_codex_inline_template_builder_codex_inline_template_builder_1779633724609_pulse.json",
+  "watched_files": [
+    {
+      "file": "wordpress/plugins/skinharmony-site-suite",
+      "mtime_ms": 1779630569966.1296,
+      "size": 480
+    }
+  ],
+  "assessment": {
+    "verdict": "recover",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato",
+      "pulse_scaduto_o_non_aggiornato",
+      "modifiche_senza_test_dichiarati"
+    ],
+    "intent_overlap": 0,
+    "correction": "Fermarsi e aggiornare subito pulse/checkpoint con file, test, ragione della modifica e prossima azione prima di continuare.",
+    "pulse_age_ms": 161941,
+    "changed_files": [
+      {
+        "file": "wordpress/plugins/skinharmony-site-suite",
+        "mtime_ms": 1779630569966.1296,
+        "size": 480
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "checkpoint_id": "2026-05-23t17_27_20.937z_codex_suite_wp_install_suite_wordpress_install_test_sta",
+  "generated_at": "2026-05-23T17:27:20.938Z",
+  "agent_id": "codex_suite_wp_install",
+  "session_id": "codex_suite_wp_install_1779557228109",
+  "title": "Suite WordPress install/test start",
+  "status": "in_progress",
+  "summary": "Owner ha chiesto di farlo: installare/verificare Suite aggiornata in WordPress e testare Template Builder Suite-first. Azione sensibile: usare Core gate, backup/rollback se disponibili, nessuna modifica chiavi/tenant.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

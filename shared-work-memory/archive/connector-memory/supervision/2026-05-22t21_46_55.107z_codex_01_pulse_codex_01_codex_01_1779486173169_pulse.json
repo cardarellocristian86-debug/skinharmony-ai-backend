@@ -1,0 +1,32 @@
+{
+  "pulse_id": "2026-05-22t21_46_55.107z_codex_01_pulse",
+  "generated_at": "2026-05-22T21:46:55.108Z",
+  "agent_id": "codex_01",
+  "session_id": "codex_01_1779486173169",
+  "title": "Pulse Codex",
+  "summary": "Check Smart Desk completato: UI Gold ripulita, bridge Core Render verificato, report condiviso aggiornato.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/SMARTDESK_RENDER_GOLD_COCKPIT_V1_2026-05-19.md"
+  ],
+  "tests": [
+    "npm run build OK",
+    "Render deploy live dep-d8899m9abt8s73b73p30",
+    "/api/universal-core/decision OK",
+    "/api/ai-gold/cockpit OK dataQualityScore 96"
+  ],
+  "next": "Continuare il lavoro Suite/Smart Desk con pulse aggiornato e test dichiarati.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-22t21_42_53.194z_codex_01_lavoro_codex_01",
+    "title": "Lavoro Codex 01",
+    "request": "Descrivi qui il lavoro assegnato",
+    "success_criteria": "File, test, report e prossima azione devono essere dichiarati"
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.333,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

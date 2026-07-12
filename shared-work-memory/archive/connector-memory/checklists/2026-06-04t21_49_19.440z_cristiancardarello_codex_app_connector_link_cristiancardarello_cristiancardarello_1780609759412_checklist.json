@@ -1,0 +1,50 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-04t21_49_19.440z_cristiancardarello_codex_app_connector_link",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609759412_1780609759412",
+  "contract_id": "2026-06-04t21_49_19.434z_cristiancardarello_codex_app_connector_link",
+  "generated_at": "2026-06-04T21:49:19.440Z",
+  "updated_at": "2026-06-04T21:50:20.000Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609759412",
+  "title": "Codex app connector link",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_doctor_connettore",
+      "label": "Doctor connettore",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T21:49:19.440Z",
+      "updated_at": "2026-06-04T21:49:33.669Z",
+      "evidence": [
+        "sh-core-codex doctor: config OK, core_connection tenant=codexai, shared_memory OK"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_stato_orchestratore",
+      "label": "Stato orchestratore",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T21:49:19.440Z",
+      "updated_at": "2026-06-04T21:50:20.000Z",
+      "evidence": [
+        "sh-core-codex orchestrator-status: sessions=145, active=35, locks=19"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_report_collegamento",
+      "label": "Report collegamento",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T21:49:19.440Z",
+      "updated_at": "2026-06-04T21:50:20.000Z",
+      "evidence": [
+        "sessione connector aperta: cristiancardarello_1780609759412; trace_id=trace_cristiancardarello_cristiancardarello_1780609759412_1780609759412"
+      ],
+      "note": ""
+    }
+  ]
+}

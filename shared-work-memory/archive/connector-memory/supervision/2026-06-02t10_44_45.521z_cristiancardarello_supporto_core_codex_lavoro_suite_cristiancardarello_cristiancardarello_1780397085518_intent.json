@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-06-02t10_44_45.521z_cristiancardarello_supporto_core_codex_lavoro_suite",
+  "generated_at": "2026-06-02T10:44:45.521Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780397085518",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780397085518_1780397085518",
+  "title": "Supporto Core/Codex lavoro Suite",
+  "request": "Lavorare fuori sandbox con Core sul lavoro Suite: leggere stato condiviso, lock, report e programma Suite; produrre analisi, probabilita, finding e decisioni Core senza modificare file lockati o produzione",
+  "success_criteria": "Contesto Suite aggiornato, lock rispettati, finding/priorita scritti nella memoria condivisa, Core consultato per decisioni, nessuna sovrapposizione con Codex attivi",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

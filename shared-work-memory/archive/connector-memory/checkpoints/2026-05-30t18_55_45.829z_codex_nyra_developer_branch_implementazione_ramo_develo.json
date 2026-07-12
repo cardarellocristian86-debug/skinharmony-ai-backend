@@ -1,0 +1,38 @@
+{
+  "checkpoint_id": "2026-05-30t18_55_45.829z_codex_nyra_developer_branch_implementazione_ramo_develo",
+  "generated_at": "2026-05-30T18:55:45.829Z",
+  "agent_id": "codex_nyra_developer_branch",
+  "session_id": "codex_nyra_developer_branch_1780166918586",
+  "trace_id": "trace_codex_nyra_developer_branch_codex_nyra_developer_branch_1780166918586_1780",
+  "title": "Implementazione ramo developer_code",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Aggiunto branch overlay developer_code, router/guidance aggiornati, falso positivo Codex/code corretto, documentazione/snapshot aggiornati",
+  "files": [
+    "universal-core-2.0/tools/nyra-branch-overlay.ts",
+    "universal-core-2.0/tools/nyra-action-router.ts",
+    "universal-core-2.0/tools/nyra-codex-guidance.ts",
+    "universal-core-2.0/tests/nyra-branch-overlay-test.ts",
+    "universal-core-2.0/tests/nyra-action-router-test.ts",
+    "universal-core-2.0/tests/nyra-local-governance-test.ts",
+    "universal-core-2.0/runtime/nyra/NYRA_MAP_SNAPSHOT.md",
+    "universal-core-2.0/runtime/nyra/NYRA_WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/universal-core/OPERATIONS.md",
+    "SHARED_MEMORY/snapshots/STATE_SNAPSHOT.md",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "universal-core-2.0/reports/universal-core/codex/nyra_developer_branch_decision_input.json",
+    "universal-core-2.0/reports/universal-core/codex/codex_core_decision_latest.json"
+  ],
+  "tests": [
+    "npm --prefix universal-core-2.0 run check:nyra:branch-overlay",
+    "npm --prefix universal-core-2.0 run check:nyra:action-router",
+    "npm --prefix universal-core-2.0 run check:nyra:local-governance",
+    "npm --prefix universal-core-2.0 run check:nyra:codex-supervisor",
+    "node packages/core-codex-connector/src/cli.mjs program-map-check --file SHARED_MEMORY/programs/universal-core/PROGRAM.md --file SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md --file SHARED_MEMORY/programs/universal-core/OPERATIONS.md"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t18_48_38.587z_codex_nyra_developer_branch_ramo_programmatore_nyra",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

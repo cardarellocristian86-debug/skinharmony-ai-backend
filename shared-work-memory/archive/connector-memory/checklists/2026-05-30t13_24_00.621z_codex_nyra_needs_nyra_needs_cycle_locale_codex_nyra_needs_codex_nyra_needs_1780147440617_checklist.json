@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "contract_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "generated_at": "2026-05-30T13:24:00.621Z",
+  "updated_at": "2026-05-30T13:53:12.694Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "title": "Nyra needs cycle locale",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_core_gate_e_selezione",
+      "label": "Core gate e selezione",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T13:24:00.621Z",
+      "updated_at": "2026-05-30T13:24:41.123Z",
+      "evidence": [
+        "Gate esterno ALLOWED; Core 2.0 locale ha scelto action_router_private_memory_diagnosis: universal-core-2.0/reports/universal-core/codex/codex_core_decision_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_router_e_memoria_sicura",
+      "label": "Router e memoria sicura",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T13:24:00.621Z",
+      "updated_at": "2026-05-30T13:29:29.926Z",
+      "evidence": [
+        "Implementati e testati: nyra-action-router, nyra-owner-private-memory, learning pack v1; test check:nyra:action-router e check:nyra:owner-private-memory passati"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_diagnosi_e_governance",
+      "label": "Diagnosi e governance",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T13:24:00.621Z",
+      "updated_at": "2026-05-30T13:31:46.833Z",
+      "evidence": [
+        "Governance locale aggiornata con action_route, owner_private_memory e operational_diagnosis; snapshot/docs aggiornati; test check:nyra:operational-diagnosis e check:nyra:local-governance passati"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_test_e_finalize",
+      "label": "Test e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T13:24:00.621Z",
+      "updated_at": "2026-05-30T13:53:12.692Z",
+      "evidence": [
+        "Passati test action-router, owner-private-memory, operational-diagnosis, local-governance, chat-rich, chat-rich-generative, branch-overlay, event-emitter, dialogue-engine, dialogue-runtime, communication-adapter, smoke governance e JSON parse."
+      ],
+      "note": ""
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-23t21_55_20.838z_codex_suite_registry_worker_template_authority_registry",
+  "generated_at": "2026-05-23T21:55:20.839Z",
+  "agent_id": "codex_suite_registry_worker",
+  "session_id": "codex_suite_registry_worker_1779573193147",
+  "title": "template authority registry binding implemented",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Creato script riusabile per calcolare fingerprint reali Home/WAAS e collegarli al registry. Master impostati a review, non validated, finche mancano screenshot visuali.",
+  "files": [
+    "scripts/bind_template_authority_v2.js",
+    "scripts/test_template_authority_v2_registry_binding.js",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "reports/wordpress/template-authority/template-authority-v2-registry-binding-latest.json"
+  ],
+  "tests": [
+    "node scripts/bind_template_authority_v2.js",
+    "node scripts/test_template_authority_v2_registry_binding.js"
+  ],
+  "next": "Scrivere report, checkpoint after e finalizzare",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

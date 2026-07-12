@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t18_23_19.533z_codex_nyra_codex_supervisor_nyra_supervisore_codex_pref",
+  "generated_at": "2026-05-30T18:23:19.533Z",
+  "agent_id": "codex_nyra_codex_supervisor",
+  "session_id": "codex_nyra_codex_supervisor_1780165399531",
+  "trace_id": "trace_codex_nyra_codex_supervisor_codex_nyra_codex_supervisor_1780165399531_1780",
+  "title": "Nyra supervisore Codex preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-30t18_23_19.532z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "checklist_id": "2026-05-30t18_23_19.533z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-30t18_23_19.533z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+    "title": "Nyra supervisore Codex",
+    "trace_id": "trace_codex_nyra_codex_supervisor_codex_nyra_codex_supervisor_1780165399531_1780",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

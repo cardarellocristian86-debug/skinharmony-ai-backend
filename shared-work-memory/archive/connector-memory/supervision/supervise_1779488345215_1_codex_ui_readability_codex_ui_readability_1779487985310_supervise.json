@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-05-22T22:19:05.211Z",
+  "agent_id": "codex_ui_readability",
+  "session_id": "codex_ui_readability_1779487985310",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1,
+  "interval_ms": 1000,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-22t22_17_13.167z_codex_ui_readability_pulse_codex_ui_readability_codex_ui_readability_1779487985310_pulse.json",
+  "watched_files": [],
+  "assessment": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza",
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.167,
+    "correction": "Aggiornare pulse e verifiche prima del prossimo blocco di lavoro.",
+    "pulse_age_ms": 112039,
+    "changed_files": []
+  }
+}

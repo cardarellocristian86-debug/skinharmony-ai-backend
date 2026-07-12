@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t15_26_08.790z_codex_checklist_enforcement_checklist_enforcement_conne",
+  "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+  "contract_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+  "generated_at": "2026-05-29T15:26:08.791Z",
+  "updated_at": "2026-05-29T15:26:28.599Z",
+  "agent_id": "codex_checklist_enforcement",
+  "session_id": "codex_checklist_enforcement_1780067831280",
+  "title": "Checklist enforcement connector",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_storage_e_comandi_checklist",
+      "label": "Storage e comandi checklist",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T15:26:08.791Z",
+      "updated_at": "2026-05-29T15:26:24.602Z",
+      "evidence": [
+        "packages/core-codex-connector/src/cli.mjs checklist-create/checklist-item/checklist-check"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_work-start_pulse_dashboard_e_finalize",
+      "label": "Work-start, pulse, dashboard e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T15:26:08.791Z",
+      "updated_at": "2026-05-29T15:26:19.910Z",
+      "evidence": [
+        "work-start creates checklist; finalize blocks incomplete checklist; dashboard exposes checklists"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_manuali_programma_aggiornati",
+      "label": "Manuali programma aggiornati",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T15:26:08.791Z",
+      "updated_at": "2026-05-29T15:26:19.914Z",
+      "evidence": [
+        "SHARED_MEMORY/programs/core-codex-connector docs updated"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_test_ripetuti_e_report_finale",
+      "label": "Test ripetuti e report finale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T15:26:08.791Z",
+      "updated_at": "2026-05-29T15:26:28.599Z",
+      "evidence": [
+        "node --check; e2e-self-test x3; checklist smoke block/pass; cleanup-check; program-map-check"
+      ],
+      "note": ""
+    }
+  ]
+}

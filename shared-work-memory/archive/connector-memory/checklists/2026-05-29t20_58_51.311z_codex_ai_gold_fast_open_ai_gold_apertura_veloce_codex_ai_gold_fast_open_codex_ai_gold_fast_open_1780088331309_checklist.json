@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t20_58_51.311z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+  "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+  "contract_id": "2026-05-29t20_58_51.310z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+  "generated_at": "2026-05-29T20:58:51.311Z",
+  "updated_at": "2026-05-29T21:15:10.426Z",
+  "agent_id": "codex_ai_gold_fast_open",
+  "session_id": "codex_ai_gold_fast_open_1780088331309",
+  "title": "AI Gold apertura veloce",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:58:51.311Z",
+      "updated_at": "2026-05-29T21:15:10.212Z",
+      "evidence": [
+        "Diagnosi load AiGoldPage: Promise.allSettled aspettava 7 endpoint; Core gate update/release ALLOWED"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:58:51.311Z",
+      "updated_at": "2026-05-29T21:15:10.283Z",
+      "evidence": [
+        "Commit 06f2d5a Speed up AI Gold page opening"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:58:51.311Z",
+      "updated_at": "2026-05-29T21:15:10.354Z",
+      "evidence": [
+        "npm --prefix skin-harmony-web run build OK; live index-Bb4ZEGa9.js"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:58:51.311Z",
+      "updated_at": "2026-05-29T21:15:10.426Z",
+      "evidence": [
+        "Untracked preesistenti lasciati intatti; finalize in corso"
+      ],
+      "note": ""
+    }
+  ]
+}

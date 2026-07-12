@@ -1,0 +1,21 @@
+{
+  "checkpoint_id": "2026-05-29t20_31_16.497z_codex_core_nyra_fix_documentazione_programma_aggiornata",
+  "generated_at": "2026-05-29T20:31:16.497Z",
+  "agent_id": "codex_core_nyra_fix",
+  "session_id": "codex_core_nyra_fix_1780086096590",
+  "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+  "title": "Documentazione programma aggiornata",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Aggiornate mappe programma Smart Desk e Suite per riflettere Nyra validator e endpoint Core moderni con fallback legacy.",
+  "files": [
+    "SHARED_MEMORY/programs/smartdesk/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/suite/ARCHITECTURE.md"
+  ],
+  "tests": [
+    "program map alignment"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t20_21_36.591z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

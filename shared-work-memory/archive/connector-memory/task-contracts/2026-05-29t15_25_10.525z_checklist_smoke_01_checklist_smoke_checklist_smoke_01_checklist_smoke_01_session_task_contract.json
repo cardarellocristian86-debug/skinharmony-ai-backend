@@ -1,0 +1,42 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t15_25_10.525z_checklist_smoke_01_checklist_smoke",
+  "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+  "generated_at": "2026-05-29T15:25:10.525Z",
+  "updated_at": "2026-05-29T15:25:10.525Z",
+  "agent_id": "checklist_smoke_01",
+  "session_id": "checklist_smoke_01_session",
+  "title": "Checklist smoke",
+  "request": "Verificare enforcement checklist",
+  "success_criteria": "Finalize blocca con checklist aperta e passa quando chiusa",
+  "allowed_paths": [
+    "reports/codex-core",
+    "SHARED_MEMORY",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

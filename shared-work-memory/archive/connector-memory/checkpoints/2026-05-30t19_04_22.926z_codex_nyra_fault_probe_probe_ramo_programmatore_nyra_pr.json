@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t19_04_22.926z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra_pr",
+  "generated_at": "2026-05-30T19:04:22.926Z",
+  "agent_id": "codex_nyra_fault_probe",
+  "session_id": "codex_nyra_fault_probe_1780167862924",
+  "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+  "title": "Probe ramo programmatore Nyra preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-30t19_04_22.925z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "checklist_id": "2026-05-30t19_04_22.926z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-30t19_04_22.926z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+    "title": "Probe ramo programmatore Nyra",
+    "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

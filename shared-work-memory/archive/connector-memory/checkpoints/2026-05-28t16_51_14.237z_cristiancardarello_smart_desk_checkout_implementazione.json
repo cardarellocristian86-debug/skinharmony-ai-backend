@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-28t16_51_14.237z_cristiancardarello_smart_desk_checkout_implementazione",
+  "generated_at": "2026-05-28T16:51:14.238Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779979473298",
+  "title": "Smart Desk checkout implementazione",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Durante implementazione: CashdeskPage aggiornata con righe conto; DesktopMirrorService aggiornato per serviceLines/productSales e rate tecnologie; CSS modal cassa aggiornato",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

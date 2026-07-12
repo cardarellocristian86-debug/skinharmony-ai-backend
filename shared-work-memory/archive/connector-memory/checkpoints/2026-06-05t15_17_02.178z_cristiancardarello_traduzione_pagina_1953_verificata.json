@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-05t15_17_02.178z_cristiancardarello_traduzione_pagina_1953_verificata",
+  "generated_at": "2026-06-05T15:17:02.179Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780671732020",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780671732020_1780671732021",
+  "title": "Traduzione pagina 1953 verificata",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Pagina 1953 tradotta e approvata per en/fr/de/es. Pending review 0 per tutte le lingue. Runtime lookup OK. Route pubbliche /en /fr /de /es 200 e senza residui italiani chiave. Report SHARED_MEMORY/reports/WP_PAGE_1953_CREAZIONE_SITI_TRANSLATION_2026-06-05.md.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-05t15_02_12.025z_cristiancardarello_laser_led_b_pagina_tecnologia_suite",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

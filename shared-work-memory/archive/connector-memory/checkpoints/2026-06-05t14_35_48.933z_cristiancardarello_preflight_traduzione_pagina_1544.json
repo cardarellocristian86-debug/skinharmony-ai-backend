@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-05t14_35_48.933z_cristiancardarello_preflight_traduzione_pagina_1544",
+  "generated_at": "2026-06-05T14:35:48.934Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609871683",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609871683_1780609871684",
+  "title": "Preflight traduzione pagina 1544",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Core gate publish ALLOWED; post_id 1544 verificato; provider OpenAI attivo; contratti SkinHarmony Core Translator letti; nessuna modifica a sorgente italiana o codice plugin prevista.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t21_51_11.685z_cristiancardarello_traduzione_pagina_suite_governance_f",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

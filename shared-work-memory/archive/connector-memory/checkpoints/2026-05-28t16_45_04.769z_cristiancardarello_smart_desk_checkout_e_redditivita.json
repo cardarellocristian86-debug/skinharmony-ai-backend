@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-28t16_45_04.769z_cristiancardarello_smart_desk_checkout_e_redditivita",
+  "generated_at": "2026-05-28T16:45:04.774Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779979473298",
+  "title": "Smart Desk checkout e redditivita",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Build OK; node --check OK; smoke dati OK su checkout, magazzino e rate tecnologia; report reports/smartdesk/smartdesk_checkout_redditivita_2026-05-28.md",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

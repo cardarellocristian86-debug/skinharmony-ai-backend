@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-30t09_52_58.115z_codex_nyra_chat_rich_program_map_updated",
+  "generated_at": "2026-05-30T09:52:58.116Z",
+  "agent_id": "codex_nyra_chat_rich",
+  "session_id": "codex_nyra_chat_rich_1780134347168",
+  "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+  "title": "program map updated",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Aggiornata mappa programma Universal Core richiesta dal finalize: PROGRAM e ARCHITECTURE descrivono Nyra Chat Rich locale.",
+  "files": [
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/events/EVENTS.jsonl"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-28t18_55_10.574z_codex_smartdesk_ai_gold_priority_filter_implementation",
+  "generated_at": "2026-05-28T18:55:10.575Z",
+  "agent_id": "codex_smartdesk",
+  "session_id": "codex_smartdesk_1779992943709",
+  "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+  "title": "AI Gold priority filter implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementato filtro priorita su decisionSections, autopilot, servizi critici e coda operativa; build locale superata",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

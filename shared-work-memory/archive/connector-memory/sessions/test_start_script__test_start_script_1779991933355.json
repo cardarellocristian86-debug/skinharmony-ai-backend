@@ -1,0 +1,17 @@
+{
+  "agent_id": "test_start_script",
+  "session_id": "test_start_script_1779991933355",
+  "trace_id": "trace_test_start_script_test_start_script_1779991933355_1779991933355",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "reports"
+  ],
+  "status": "active",
+  "started_at": "2026-05-28T18:12:13.355Z",
+  "updated_at": "2026-05-28T18:12:31.859Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199"
+}

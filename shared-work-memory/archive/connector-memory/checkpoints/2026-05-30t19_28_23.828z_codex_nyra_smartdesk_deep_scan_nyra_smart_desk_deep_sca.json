@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t19_28_23.828z_codex_nyra_smartdesk_deep_scan_nyra_smart_desk_deep_sca",
+  "generated_at": "2026-05-30T19:28:23.829Z",
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "title": "Nyra Smart Desk deep scan verificato",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Nyra ha letto il mirror Render locale, costruito memoria volatile e prodotto overlay route/import/asset/simboli. Esito: 12 high su endpoint/import non collegati, 54 low advisory, 40 info. Nessun write Render.",
+  "files": [
+    "SHARED_MEMORY/reports/codex-orchestrator/codex_nyra_smartdesk_deep_scan_1780168465195_final.md",
+    "reports/smartdesk/nyra_smartdesk_render_code_overlay_latest.json",
+    "reports/smartdesk/nyra_smartdesk_render_code_overlay_latest.md"
+  ],
+  "tests": [
+    "npm --prefix universal-core-2.0 run check:nyra:smartdesk-code-overlay",
+    "npm --prefix universal-core-2.0 run check:nyra:codex-supervisor",
+    "npm --prefix universal-core-2.0 run check:nyra:branch-overlay",
+    "npm --prefix universal-core-2.0 run check:nyra:action-router",
+    "npm --prefix universal-core-2.0 run check:nyra:local-governance",
+    "node packages/core-codex-connector/src/cli.mjs program-map-check --file ...",
+    "node --check Smart Desk mirror JS"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

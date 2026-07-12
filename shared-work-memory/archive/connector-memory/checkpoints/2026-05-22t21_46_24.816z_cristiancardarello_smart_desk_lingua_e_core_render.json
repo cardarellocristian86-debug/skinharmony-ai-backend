@@ -1,0 +1,13 @@
+{
+  "checkpoint_id": "2026-05-22t21_46_24.816z_cristiancardarello_smart_desk_lingua_e_core_render",
+  "generated_at": "2026-05-22T21:46:24.821Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779395408460",
+  "title": "Smart Desk lingua e Core Render",
+  "status": "in_progress",
+  "summary": "Sessione avviata come codex_01 scope suite. Verificato Smart Desk live: UI ripulita, Core Render collegato via bridge, test Gold OK data quality 96, report aggiornato. Test dichiarati: build web OK, deploy Render live, /login bundle nuovo, /api/ai-gold/cockpit OK, /api/universal-core/decision OK.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

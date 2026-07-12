@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t16_29_30.236z_cristiancardarello_preflight_suite_5.2.33_closure",
+  "generated_at": "2026-05-24T16:29:30.236Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779639922426",
+  "title": "Preflight Suite 5.2.33 closure",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: wordpress/plugins/skinharmony-site-suite. Test: inline 18/18, plugin 5.2.33 pass, governance 19/19, page-factory 5/5. File report presente.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

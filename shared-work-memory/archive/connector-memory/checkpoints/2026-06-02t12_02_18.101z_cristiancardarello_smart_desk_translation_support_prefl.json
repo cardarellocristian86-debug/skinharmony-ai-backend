@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t12_02_18.101z_cristiancardarello_smart_desk_translation_support_prefl",
+  "generated_at": "2026-06-02T12:02:18.102Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780401634305",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780401634305_1780401634305",
+  "title": "Smart Desk translation support preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Core gate ALLOWED per audit lingua read-only. Nyra sidecar attivo. Scopo: supportare traduttore con evidenze aggiornate senza modificare file o produzione.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t12_00_34.314z_cristiancardarello_supporto_traduzione_smart_desk",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

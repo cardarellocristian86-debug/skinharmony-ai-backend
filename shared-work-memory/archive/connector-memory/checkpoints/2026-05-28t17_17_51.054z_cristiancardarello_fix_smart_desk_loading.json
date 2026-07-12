@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-28t17_17_51.054z_cristiancardarello_fix_smart_desk_loading",
+  "generated_at": "2026-05-28T17:17:51.054Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779987379846",
+  "title": "Fix Smart Desk loading",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Trovata causa probabile: AiGoldPage usa Promise.all su endpoint Gold senza timeout/fallback; se un endpoint pende, UI resta in analisi",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,16 @@
+{
+  "intent_id": "2026-05-23t21_39_17.521z_codex_suite_worker_suite_template_closure",
+  "generated_at": "2026-05-23T21:39:17.522Z",
+  "agent_id": "codex_suite_worker",
+  "session_id": "codex_suite_worker_1779572346164",
+  "title": "Suite template closure",
+  "request": "Chiudere il punto Suite/template: capire cosa resta nel plugin, cosa va spostato su Suite/Render, e impedire template generici simili invece di cloni validati.",
+  "success_criteria": "Mappa operativa chiara, nessuna modifica live, prossima azione concreta con Core/checkpoint.",
+  "expected_depth": "normal",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite",
+    "services/universal-core-service"
+  ],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

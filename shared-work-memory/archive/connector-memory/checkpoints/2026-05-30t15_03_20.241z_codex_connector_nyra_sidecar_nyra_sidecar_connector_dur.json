@@ -1,0 +1,26 @@
+{
+  "checkpoint_id": "2026-05-30t15_03_20.241z_codex_connector_nyra_sidecar_nyra_sidecar_connector_dur",
+  "generated_at": "2026-05-30T15:03:20.242Z",
+  "agent_id": "codex_connector_nyra_sidecar",
+  "session_id": "codex_connector_nyra_sidecar_1780152750168",
+  "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+  "title": "Nyra sidecar connector during",
+  "phase": "during",
+  "status": "done",
+  "summary": "Implementazione e test completati: sidecar agganciato a lifecycle connector, path importer corretto verso universal-core-2.0, verifiche locali passate.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs",
+    "packages/core-codex-connector/README.md",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md"
+  ],
+  "tests": [
+    "node packages/core-codex-connector/src/cli.mjs --help",
+    "npm run check:nyra:codex-memory-importer",
+    "sidecar report refreshed on checkpoint"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

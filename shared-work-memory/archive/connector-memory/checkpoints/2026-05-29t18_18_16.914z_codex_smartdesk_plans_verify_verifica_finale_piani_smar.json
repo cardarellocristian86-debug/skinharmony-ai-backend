@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-29t18_18_16.914z_codex_smartdesk_plans_verify_verifica_finale_piani_smar",
+  "generated_at": "2026-05-29T18:18:16.915Z",
+  "agent_id": "codex_smartdesk_plans_verify",
+  "session_id": "codex_smartdesk_plans_verify_1780078466653",
+  "trace_id": "trace_codex_smartdesk_plans_verify_codex_smartdesk_plans_verify_1780078466653_17",
+  "title": "Verifica finale piani Smart Desk",
+  "phase": "verification",
+  "status": "in_progress",
+  "summary": "Verifica completa completata: Base gestionale completo, Silver controllo evoluto, Gold AI operativa senza Protocolli AI; prenotazione online fuori scope; prezzi/checkout/superadmin/trial/legacy non modificati; test minimi OK; preview desktop corretta.",
+  "files": [
+    "SHARED_MEMORY/reports/SMARTDESK_PLAN_REALIGNMENT_VERIFICATION_2026-05-29.md"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t18_14_26.654z_codex_smartdesk_plans_verify_verifica_riallineamento_pi",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,57 @@
+{
+  "pulse_id": "2026-05-29t20_58_51.311z_codex_ai_gold_fast_open_ai_gold_apertura_veloce_initial",
+  "generated_at": "2026-05-29T20:58:51.311Z",
+  "agent_id": "codex_ai_gold_fast_open",
+  "session_id": "codex_ai_gold_fast_open_1780088331309",
+  "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+  "title": "AI Gold apertura veloce initial pulse",
+  "summary": "Avvio lavoro governato: AI Gold live resta lento perche la pagina aspetta troppi endpoint pesanti e genera autopilot in automatico. Rendere apertura veloce: caricare subito solo dati essenziali, poi leggere blocchi pesanti in background senza bloccare UI.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t20_58_51.311z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+    "title": "AI Gold apertura veloce",
+    "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-29t20_58_51.310z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+    "title": "AI Gold apertura veloce",
+    "request": "AI Gold live resta lento perche la pagina aspetta troppi endpoint pesanti e genera autopilot in automatico. Rendere apertura veloce: caricare subito solo dati essenziali, poi leggere blocchi pesanti in background senza bloccare UI.",
+    "success_criteria": "AI Gold mostra contenuto utile rapidamente; niente generazione autopilot automatica in apertura; blocchi pesanti degradano con messaggio pulito"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t20_58_51.310z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+    "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+    "allowed_paths": [
+      "skin-harmony-web",
+      "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.875,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

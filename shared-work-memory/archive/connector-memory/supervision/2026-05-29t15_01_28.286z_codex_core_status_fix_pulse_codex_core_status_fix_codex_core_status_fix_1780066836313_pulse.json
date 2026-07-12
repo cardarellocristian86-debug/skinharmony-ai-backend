@@ -1,0 +1,61 @@
+{
+  "pulse_id": "2026-05-29t15_01_28.286z_codex_core_status_fix_pulse",
+  "generated_at": "2026-05-29T15:01:28.287Z",
+  "agent_id": "codex_core_status_fix",
+  "session_id": "codex_core_status_fix_1780066836313",
+  "trace_id": "trace_codex_core_status_fix_codex_core_status_fix_1780066836313_1780066836313",
+  "title": "Pulse Codex",
+  "summary": "Corretto WORK_SNAPSHOT: Core 2.0 risulta attivo e la segnalazione Core giù va trattata come problema di sessione/ambiente del Codex. Riparato anche JSON sessione corrotto.",
+  "files": [
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/sessions/codex_suite_analytics_ui__codex_suite_analytics_ui_1779994305556.json"
+  ],
+  "tests": [
+    "curl http://127.0.0.1:3199/health",
+    "JSON parse SHARED_MEMORY/sessions"
+  ],
+  "next": "Checkpoint after e finalize.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-29t15_00_36.314z_codex_core_status_fix_fix_false_core_down_status",
+    "title": "Fix false Core down status",
+    "request": "Correggere memoria condivisa che dichiara Core 2.0 giù mentre health/decision sono attivi e riparare sessione JSON corrotta.",
+    "success_criteria": "WORK_SNAPSHOT non contiene piu stato falso Core down; session JSON valida; test core health e JSON parse passano."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t15_00_36.315z_codex_core_status_fix_fix_false_core_down_status",
+    "trace_id": "trace_codex_core_status_fix_codex_core_status_fix_1780066836313_1780066836313",
+    "allowed_paths": [
+      "SHARED_MEMORY",
+      "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+      "SHARED_MEMORY/sessions/codex_suite_analytics_ui__codex_suite_analytics_ui_1779994305556.json",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0.095,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-29t15_00_36.315z_codex_core_status_fix_fix_false_core_down_status",
+      "trace_id": "trace_codex_core_status_fix_codex_core_status_fix_1780066836313_1780066836313",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

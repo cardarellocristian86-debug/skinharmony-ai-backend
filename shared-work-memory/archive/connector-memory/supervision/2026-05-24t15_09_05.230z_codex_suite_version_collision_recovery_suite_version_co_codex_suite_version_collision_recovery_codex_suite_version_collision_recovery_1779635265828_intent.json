@@ -1,0 +1,18 @@
+{
+  "intent_id": "2026-05-24t15_09_05.230z_codex_suite_version_collision_recovery_suite_version_co",
+  "generated_at": "2026-05-24T15:09:05.230Z",
+  "agent_id": "codex_suite_version_collision_recovery",
+  "session_id": "codex_suite_version_collision_recovery_1779635265828",
+  "title": "Suite version collision recovery 5.2.30",
+  "request": "",
+  "success_criteria": "",
+  "expected_depth": "normal",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "wordpress/plugins/skinharmony-site-suite/templates/manifests/release-canary-evidence.json",
+    "scripts/suite_operational_closure.js"
+  ],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

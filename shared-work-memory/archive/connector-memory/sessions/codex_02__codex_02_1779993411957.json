@@ -1,0 +1,20 @@
+{
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1779993411957",
+  "trace_id": "trace_codex_02_codex_02_1779993411957_1779993411957",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "traduttore-core-software"
+  ],
+  "status": "active",
+  "started_at": "2026-05-28T18:36:51.957Z",
+  "updated_at": "2026-05-29T08:53:52.718Z",
+  "locks": [
+    "traduttore-core-software"
+  ],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-29t08_53_52.713z_codex_02_connector_finalize_evidence_policy.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress"
+}

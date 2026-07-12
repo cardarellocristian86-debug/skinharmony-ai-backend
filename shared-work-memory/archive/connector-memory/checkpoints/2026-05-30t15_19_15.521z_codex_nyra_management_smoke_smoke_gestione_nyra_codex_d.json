@@ -1,0 +1,21 @@
+{
+  "checkpoint_id": "2026-05-30t15_19_15.521z_codex_nyra_management_smoke_smoke_gestione_nyra_codex_d",
+  "generated_at": "2026-05-30T15:19:15.522Z",
+  "agent_id": "codex_nyra_management_smoke",
+  "session_id": "codex_nyra_management_smoke_1780154041390",
+  "trace_id": "trace_codex_nyra_management_smoke_codex_nyra_management_smoke_1780154041390_1780",
+  "title": "Smoke gestione Nyra Codex during",
+  "phase": "during",
+  "status": "done",
+  "summary": "Durante lo smoke: verificato report sidecar e prova governance; nessun file applicativo cambiato da questo smoke.",
+  "files": [
+    "reports/codex-core/nyra_sidecar_latest.json"
+  ],
+  "tests": [
+    "sidecar refreshed=true render_touched=false",
+    "nyra governance route locale corretta"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t15_14_01.391z_codex_nyra_management_smoke_smoke_gestione_nyra_codex",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

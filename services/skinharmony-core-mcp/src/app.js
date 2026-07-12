@@ -1,16 +1,20 @@
 import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 
-const SECURITY_SCHEMES = [
-  { type: "http", scheme: "bearer", description: "Scoped SkinHarmony Codex bearer token" },
-  { type: "oauth2", scopes: ["core:read", "core:govern"] }
-];
+function securitySchemes(scopes) {
+  return [
+    { type: "http", scheme: "bearer", description: "Scoped SkinHarmony Codex bearer token" },
+    { type: "oauth2", scopes }
+  ];
+}
 
 const TOOLS = [
-  { name: "core_health", description: "Read Universal Core service health.", inputSchema: { type: "object", additionalProperties: false }, scopes: ["core:read"] },
-  { name: "nyra_runtime_context", description: "Read Nyra readiness and control context.", inputSchema: { type: "object", properties: { include_control_snapshot: { type: "boolean" } }, additionalProperties: false }, scopes: ["core:read"] },
-  { name: "nyra_interpret_request", description: "Interpret a request; this does not authorize execution.", inputSchema: { type: "object", required: ["message"], properties: { message: { type: "string" }, session_id: { type: "string" } }, additionalProperties: false }, scopes: ["core:read"] },
-  { name: "core_gate_action", description: "Evaluate an action through Universal Core; this never executes it.", inputSchema: { type: "object", required: ["action_label", "action_type"], additionalProperties: true }, scopes: ["core:govern"] }
+  { name: "core_health", title: "Check Core health", description: "Use this when you need to read Universal Core service health.", inputSchema: { type: "object", additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
+  { name: "nyra_runtime_context", title: "Read Nyra runtime context", description: "Use this when you need Nyra readiness and control context.", inputSchema: { type: "object", properties: { include_control_snapshot: { type: "boolean" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
+  { name: "nyra_interpret_request", title: "Interpret a Nyra request", description: "Use this when you need to interpret a request without authorizing or executing it.", inputSchema: { type: "object", required: ["message"], properties: { message: { type: "string", minLength: 1 }, session_id: { type: "string" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
+  { name: "core_gate_action", title: "Evaluate an action", description: "Use this when you need Universal Core to evaluate an action; this never executes the action.", inputSchema: { type: "object", required: ["action_label", "action_type"], properties: { action_label: { type: "string", minLength: 1 }, action_type: { type: "string", minLength: 1 } }, additionalProperties: true }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:govern"] },
+  { name: "search", title: "Search shared work memory", description: "Use this when you need to search the authenticated tenant's redacted SkinHarmony work memory.", inputSchema: { type: "object", required: ["query"], properties: { query: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
+  { name: "fetch", title: "Fetch shared work memory document", description: "Use this when you need to read one search result from the authenticated tenant's redacted work memory.", inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string", pattern: "^[a-f0-9]{24}$" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] }
 ];
 
 function challenge(config, error = "invalid_token", scope = "") {
@@ -24,13 +28,25 @@ export function createApp(config, options = {}) {
   const handlers = options.handlers || {};
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/.well-known/oauth-protected-resource", (_req, res) => res.json({
+  app.get("/healthz", (_req, res) => res.json({
+    ok: true,
+    service: "skinharmony-core-mcp",
+    version: "0.1.0",
+    mode: process.env.NODE_ENV || "development",
+    auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
+    core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
+    shared_memory_configured: Boolean(config.sharedMemoryRoot)
+  }));
+
+  const protectedResourceMetadata = (_req, res) => res.json({
     resource: config.resource,
     authorization_servers: config.auth0Issuer ? [config.auth0Issuer] : [],
     scopes_supported: config.supportedScopes,
     bearer_methods_supported: ["header"],
     resource_documentation: `${config.publicUrl}/docs/auth`
-  }));
+  });
+  app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
+  app.get("/.well-known/oauth-protected-resource/mcp", protectedResourceMetadata);
   app.get("/.well-known/oauth-authorization-server", (_req, res) => {
     if (!config.auth0Issuer) return res.status(404).json({ error: "oauth_not_configured" });
     return res.json({
@@ -57,7 +73,7 @@ export function createApp(config, options = {}) {
     try {
       if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: "0.1.0" } } });
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ scopes, ...tool }) => ({ ...tool, _meta: { securitySchemes: SECURITY_SCHEMES, "skinharmony/scopes": scopes } })) } });
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes } })) } });
       if (method === "tools/call") {
         const tool = TOOLS.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
@@ -78,4 +94,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { SECURITY_SCHEMES, TOOLS };
+export { securitySchemes, TOOLS };

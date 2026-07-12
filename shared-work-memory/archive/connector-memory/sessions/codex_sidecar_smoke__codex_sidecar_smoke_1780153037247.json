@@ -1,0 +1,20 @@
+{
+  "agent_id": "codex_sidecar_smoke",
+  "session_id": "codex_sidecar_smoke_1780153037247",
+  "trace_id": "trace_codex_sidecar_smoke_codex_sidecar_smoke_1780153037247_1780153037247",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "reports/codex-core"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-30T14:57:17.247Z",
+  "updated_at": "2026-05-30T14:57:49.707Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-30t14_57_40.628z_codex_sidecar_smoke_nyra_sidecar_smoke_after.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "done",
+  "finished_at": "2026-05-30T14:57:45.998Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/codex_sidecar_smoke_1780153037247_final.md"
+}

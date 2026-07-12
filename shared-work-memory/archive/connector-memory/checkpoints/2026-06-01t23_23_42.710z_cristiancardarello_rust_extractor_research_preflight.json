@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-01t23_23_42.710z_cristiancardarello_rust_extractor_research_preflight",
+  "generated_at": "2026-06-01T23:23:42.716Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780355563943",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+  "title": "Rust extractor research preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope confirmed as research analyst only: respect active codex-main lock, no locked code edits, read Smart Desk fixture and produce Core-decision options.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-01t23_12_43.950z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

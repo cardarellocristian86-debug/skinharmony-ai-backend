@@ -1,0 +1,46 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-06-02t10_03_58.076z_cristiancardarello_supporto_research_analyst_traduzione",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "generated_at": "2026-06-02T10:03:58.076Z",
+  "updated_at": "2026-06-02T10:03:58.077Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "title": "Supporto research analyst traduzione Smart Desk",
+  "request": "Lavorare con il Codex che traduce Smart Desk: leggere SHARED_WORK e memoria, rispettare lock, verificare stato traduzioni, produrre finding/probabilita/opzioni e passare decisioni al Core senza modificare file lockati",
+  "success_criteria": "Stato traduzione Smart Desk compreso, finding e priorita scritti in SHARED_WORK, Core consultato se serve, implementatore alimentato con evidenze concrete",
+  "allowed_paths": [
+    "SHARED_WORK",
+    "SHARED_MEMORY",
+    "smartdesk",
+    "render-smartdesk-live",
+    "skin-harmony-web",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

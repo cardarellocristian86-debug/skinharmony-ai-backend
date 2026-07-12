@@ -1,0 +1,24 @@
+{
+  "checkpoint_id": "2026-05-24t10_02_34.059z_codex_nika_source_clone_nika_source_guard_tests_passed",
+  "generated_at": "2026-05-24T10:02:34.060Z",
+  "agent_id": "codex_nika_source_clone",
+  "session_id": "codex_nika_source_clone_1779616508892",
+  "title": "Nika source guard tests passed",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Nika ora richiede source clone evidence, non interpreta Nika; version bump 5.2.25; test nika/registry/governance/page-factory OK.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "scripts/test_nika_source_clone_governance.js"
+  ],
+  "tests": [
+    "node scripts/test_nika_source_clone_governance.js",
+    "node scripts/test_template_authority_v2_registry_binding.js",
+    "npm run suite:governance:test",
+    "npm run suite:page-factory:test"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

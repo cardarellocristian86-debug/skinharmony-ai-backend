@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t18_28_45.629z_codex_suite_analytics_ui_riallineamento_e2e",
+  "trace_id": "trace_codex_suite_analytics_ui_codex_suite_analytics_ui_1779992925627_1779992925",
+  "generated_at": "2026-05-28T18:28:45.629Z",
+  "updated_at": "2026-05-28T18:28:45.629Z",
+  "agent_id": "codex_suite_analytics_ui",
+  "session_id": "codex_suite_analytics_ui_1779992925627",
+  "title": "Riallineamento e2e",
+  "request": "Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+  "success_criteria": "Ogni modifica resta nello scope, con pulse, test e finalize pulito",
+  "allowed_paths": [
+    "suite-analytics-control-plane-ui",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

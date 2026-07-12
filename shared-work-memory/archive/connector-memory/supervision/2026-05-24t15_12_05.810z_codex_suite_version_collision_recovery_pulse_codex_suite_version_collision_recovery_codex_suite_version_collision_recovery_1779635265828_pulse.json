@@ -1,0 +1,34 @@
+{
+  "pulse_id": "2026-05-24t15_12_05.810z_codex_suite_version_collision_recovery_pulse",
+  "generated_at": "2026-05-24T15:12:05.810Z",
+  "agent_id": "codex_suite_version_collision_recovery",
+  "session_id": "codex_suite_version_collision_recovery_1779635265828",
+  "title": "Pulse Codex",
+  "summary": "Recovery 5.2.30 pronta al packaging: collisione 5.2.29 corretta localmente, test versione e Builder inline passati, nessun deploy/live.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "SHARED_MEMORY/reports/SUITE_5_2_30_TEMPLATE_BUILDER_VISUAL_INLINE_RECOVERY_2026-05-24.md"
+  ],
+  "tests": [
+    "SHSS_EXPECTED_VERSION=5.2.30 node scripts/test_skinharmony_site_suite_plugin.js",
+    "node scripts/test_template_builder_inline_editor.js"
+  ],
+  "next": "",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t15_09_05.230z_codex_suite_version_collision_recovery_suite_version_co",
+    "title": "Suite version collision recovery 5.2.30",
+    "request": "",
+    "success_criteria": ""
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.25,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

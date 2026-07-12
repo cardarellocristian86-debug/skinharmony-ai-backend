@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_25_22.377z_cristiancardarello_ritest_5.2.37_partial_fail",
+  "generated_at": "2026-05-24T18:25:22.378Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779646943236",
+  "title": "Ritest 5.2.37 partial fail",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Live 5.2.37: immagini OK, bozza/save OK, testo/CTA check KO per priorita campi. Causa probabile: template_slots product_title/primary_cta sovrascrivono campi Builder principali nel runtime profile.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

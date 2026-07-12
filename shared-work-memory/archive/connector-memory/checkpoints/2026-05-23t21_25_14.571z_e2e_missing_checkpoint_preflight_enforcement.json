@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-23t21_25_14.571z_e2e_missing_checkpoint_preflight_enforcement",
+  "generated_at": "2026-05-23T21:25:14.571Z",
+  "agent_id": "e2e_missing_checkpoint",
+  "session_id": "e2e_missing_checkpoint_1779571486965",
+  "title": "preflight enforcement",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope locale connettore, nessun deploy, comando mutante solo dry-run, evidenza preflight presente.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [],
+  "next": "Provare exec dry-run con Core 2.0",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

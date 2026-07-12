@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t11_06_20.051z_cristiancardarello_connector_automations_supervision_pr",
+  "generated_at": "2026-06-02T11:06:20.052Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780398130391",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+  "title": "Connector automations supervision preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Core gate ALLOWED per test locali read-only del connettore. Nyra sidecar attivo via work-start. Nessun lock SHARED_WORK rilevato sul connettore; nessuna produzione o deploy nel perimetro.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t11_02_10.396z_cristiancardarello_supervisione_automazioni_core_codex_",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

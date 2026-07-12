@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-02t11_02_10.398z_cristiancardarello_supervisione_automazioni_core_codex_",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+  "contract_id": "2026-06-02t11_02_10.396z_cristiancardarello_supervisione_automazioni_core_codex_",
+  "generated_at": "2026-06-02T11:02:10.398Z",
+  "updated_at": "2026-06-02T11:11:25.112Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780398130391",
+  "title": "Supervisione automazioni Core Codex Connector",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T11:02:10.398Z",
+      "updated_at": "2026-06-02T11:11:23.291Z",
+      "evidence": [
+        "Core gate codex_automation ALLOWED; README/package/cli/report Nyra/E2E letti; stato orchestratore e lock analizzati."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "not_applicable",
+      "required": true,
+      "created_at": "2026-06-02T11:02:10.398Z",
+      "updated_at": "2026-06-02T11:11:25.109Z",
+      "evidence": [
+        "Task svolto come supervisore/ricercatore; Core decide REVIEW_REQUIRED senza selected_option_id, quindi nessuna implementazione codice."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T11:02:10.398Z",
+      "updated_at": "2026-06-02T11:11:24.665Z",
+      "evidence": [
+        "Verifiche OK: npm test, semantic-selection smoke, sh-core-codex test, doctor, e2e-self-test; lock/session cleanup dry-run analizzato."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T11:02:10.398Z",
+      "updated_at": "2026-06-02T11:11:24.266Z",
+      "evidence": [
+        "Scritti SHARED_WORK/findings/connector_automation_supervision.jsonl, messaggio Codex, decisione Core ed evento SHARED_MEMORY; checkpoint preflight/during/after creati."
+      ],
+      "note": ""
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "schema": "skinharmony_program_registry_v1",
+  "updated_at": "2026-05-24T17:45:00+02:00",
+  "rule": "Ogni programma deve avere PROGRAM.md, ARCHITECTURE.md, USER_MANUAL.md e OPERATIONS.md aggiornati quando cambia comportamento, architettura, server/runtime, UI, API, vendita o workflow.",
+  "programs": [
+    {
+      "id": "suite",
+      "name": "SkinHarmony Site Suite",
+      "path": "SHARED_MEMORY/programs/suite",
+      "owned_paths": [
+        "wordpress/plugins/skinharmony-site-suite",
+        "dist/skinharmony-site-suite",
+        "reports/site-suite",
+        "reports/wordpress"
+      ],
+      "server_runtime": [
+        "WordPress plugin",
+        "WooCommerce",
+        "Render via API/manifest/update server quando configurato"
+      ],
+      "required_docs": ["PROGRAM.md", "ARCHITECTURE.md", "USER_MANUAL.md", "OPERATIONS.md"]
+    },
+    {
+      "id": "skinharmony-core",
+      "name": "SkinHarmony Translation Hub",
+      "path": "SHARED_MEMORY/programs/skinharmony-core",
+      "owned_paths": [
+        "wordpress/plugins/skinharmony-core",
+        "dist/skinharmony-core",
+        "reports/core-translator"
+      ],
+      "server_runtime": [
+        "WordPress plugin",
+        "Universal Core Render opzionale per decisioni/rami",
+        "OpenAI/provider se configurato"
+      ],
+      "required_docs": ["PROGRAM.md", "ARCHITECTURE.md", "USER_MANUAL.md", "OPERATIONS.md"]
+    },
+    {
+      "id": "universal-core",
+      "name": "Universal Core / Core 2.0",
+      "path": "SHARED_MEMORY/programs/universal-core",
+      "owned_paths": [
+        "universal-core",
+        "universal-core-2.0",
+        "services/universal-core-service",
+        "reports/universal-core"
+      ],
+      "server_runtime": [
+        "Render/Core service per tenant e prodotto",
+        "Core 2.0 locale per workflow Codex"
+      ],
+      "required_docs": ["PROGRAM.md", "ARCHITECTURE.md", "USER_MANUAL.md", "OPERATIONS.md"]
+    },
+    {
+      "id": "smartdesk",
+      "name": "SkinHarmony Smart Desk",
+      "path": "SHARED_MEMORY/programs/smartdesk",
+      "owned_paths": [
+        "smartdesk",
+        "skin-harmony-desktop",
+        "render-smartdesk-live",
+        "smartdesk-live",
+        "services/api-server",
+        "services/ai-service",
+        "SHARED_MEMORY/programs/smartdesk"
+      ],
+      "server_runtime": [
+        "Desktop app offline-first",
+        "Web app/Render live",
+        "API server",
+        "AI service via backend"
+      ],
+      "required_docs": ["PROGRAM.md", "ARCHITECTURE.md", "USER_MANUAL.md", "OPERATIONS.md"]
+    },
+    {
+      "id": "core-codex-connector",
+      "name": "Core Codex Connector",
+      "path": "SHARED_MEMORY/programs/core-codex-connector",
+      "owned_paths": [
+        "packages/core-codex-connector",
+        "runtime/codex-core-workflow",
+        "SHARED_MEMORY/programs/core-codex-connector",
+        "SHARED_MEMORY/checkpoints",
+        "SHARED_MEMORY/reports/codex-orchestrator",
+        "scripts/codex_shared_memory_preflight.js",
+        "scripts/program_registry_check.js"
+      ],
+      "server_runtime": [
+        "Locale nel workspace",
+        "Core 2.0 locale",
+        "Core Render solo per prodotto/tenant quando richiesto"
+      ],
+      "required_docs": ["PROGRAM.md", "ARCHITECTURE.md", "USER_MANUAL.md", "OPERATIONS.md"]
+    }
+  ]
+}

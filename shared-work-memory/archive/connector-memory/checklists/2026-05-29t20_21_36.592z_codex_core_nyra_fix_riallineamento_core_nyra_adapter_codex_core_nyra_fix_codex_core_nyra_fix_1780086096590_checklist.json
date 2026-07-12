@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t20_21_36.592z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+  "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+  "contract_id": "2026-05-29t20_21_36.591z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+  "generated_at": "2026-05-29T20:21:36.592Z",
+  "updated_at": "2026-05-29T20:28:35.776Z",
+  "agent_id": "codex_core_nyra_fix",
+  "session_id": "codex_core_nyra_fix_1780086096590",
+  "title": "Riallineamento Core Nyra adapter",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:21:36.592Z",
+      "updated_at": "2026-05-29T20:28:10.332Z",
+      "evidence": [
+        "reports/codex-core/codex_core_gate_latest.json; universal-core-2.0/reports/universal-core/codex/codex_core_decision_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:21:36.592Z",
+      "updated_at": "2026-05-29T20:28:14.957Z",
+      "evidence": [
+        "services/suite-control-plane/src/app.js; services/suite-control-plane/test/suite-control-plane-smoke.js; render-smartdesk-live/src/nyra/NyraDialogueAdapter.js"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:21:36.592Z",
+      "updated_at": "2026-05-29T20:28:19.876Z",
+      "evidence": [
+        "npm --prefix services/suite-control-plane test; npm --prefix services/universal-core-service test; node --check; Nyra adapter validator smoke"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:21:36.592Z",
+      "updated_at": "2026-05-29T20:28:35.775Z",
+      "evidence": [
+        "Checkpoint during/after scritti; finalize in corso; locks da rilasciare dopo finalize"
+      ],
+      "note": ""
+    }
+  ]
+}

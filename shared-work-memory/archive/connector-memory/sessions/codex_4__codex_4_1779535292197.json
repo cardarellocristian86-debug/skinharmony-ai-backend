@@ -1,0 +1,19 @@
+{
+  "agent_id": "codex_4",
+  "session_id": "codex_4_1779535292197",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "suite"
+  ],
+  "status": "active",
+  "started_at": "2026-05-23T11:21:32.197Z",
+  "updated_at": "2026-06-03T20:31:11.002Z",
+  "locks": [
+    "packages/core-codex-connector"
+  ],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-06-03t20_31_11.000z_codex_4_nyra_explain_bridge_complex_case.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress"
+}

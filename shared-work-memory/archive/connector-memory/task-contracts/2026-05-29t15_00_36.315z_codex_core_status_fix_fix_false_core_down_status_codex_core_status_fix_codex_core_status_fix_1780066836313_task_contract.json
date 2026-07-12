@@ -1,0 +1,44 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t15_00_36.315z_codex_core_status_fix_fix_false_core_down_status",
+  "trace_id": "trace_codex_core_status_fix_codex_core_status_fix_1780066836313_1780066836313",
+  "generated_at": "2026-05-29T15:00:36.315Z",
+  "updated_at": "2026-05-29T15:00:36.315Z",
+  "agent_id": "codex_core_status_fix",
+  "session_id": "codex_core_status_fix_1780066836313",
+  "title": "Fix false Core down status",
+  "request": "Correggere memoria condivisa che dichiara Core 2.0 giù mentre health/decision sono attivi e riparare sessione JSON corrotta.",
+  "success_criteria": "WORK_SNAPSHOT non contiene piu stato falso Core down; session JSON valida; test core health e JSON parse passano.",
+  "allowed_paths": [
+    "SHARED_MEMORY",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/sessions/codex_suite_analytics_ui__codex_suite_analytics_ui_1779994305556.json",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

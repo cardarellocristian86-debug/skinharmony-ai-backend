@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-30t19_27_41.413z_codex_nyra_smartdesk_deep_scan_nyra_smart_desk_deep_sca",
+  "generated_at": "2026-05-30T19:27:41.413Z",
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "title": "Nyra Smart Desk deep scan completato",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Scanner locale creato in universal-core-2.0; mirror Smart Desk Render letto in sola lettura; report overlay prodotto con 105 file, 120 route, 2097 chiamate API, 106 findings, 12 high; nessuna scrittura Render o produzione.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

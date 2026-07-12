@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t13_55_38.279z_codex_beauty_commerce_full_site_suite_5.2.27_packaging_",
+  "generated_at": "2026-05-24T13:55:38.279Z",
+  "agent_id": "codex_beauty_commerce_full_site",
+  "session_id": "codex_beauty_commerce_full_site_1779630476137",
+  "title": "Suite 5.2.27 packaging preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Modifiche locali: version bump, mappa sei pagine, hero gallery editabile, slot data-suite-editable e test governance/page-factory verdi.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

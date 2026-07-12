@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t18_50_35.592z_core2_readiness_91921_core_2.0_codex_readiness_self-tes",
+  "generated_at": "2026-05-29T18:50:35.592Z",
+  "agent_id": "core2_readiness_91921",
+  "session_id": "core2_readiness_91921_1780080635592",
+  "trace_id": "trace_core2_readiness_91921_core2_readiness_91921_1780080635592_1780080635592",
+  "title": "Core 2.0 Codex readiness self-test",
+  "request": "Verificare localmente il canale Core 2.0 Codex con gate e guarded exec dry-run.",
+  "success_criteria": "Readiness matrix completa con ALLOWED/REVIEW/BLOCK attesi e spiegazione Core/Nyra presente.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

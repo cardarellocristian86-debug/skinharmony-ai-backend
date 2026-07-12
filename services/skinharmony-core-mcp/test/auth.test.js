@@ -11,8 +11,8 @@ function jwt(privateKey, kid, payload) {
 }
 
 test("accepts a scoped Codex bearer without exposing it", async () => {
-  const auth = createAuthenticator({ codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "" });
-  assert.deepEqual(await auth("Bearer secret"), { kind: "codex", subject: "codex", scopes: ["core:read"] });
+  const auth = createAuthenticator({ codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "", defaultTenantId: "owner-private" });
+  assert.deepEqual(await auth("Bearer secret"), { kind: "codex", subject: "codex", tenantId: "owner-private", scopes: ["core:read"] });
   await assert.rejects(auth("Bearer wrong"), /bearer_invalid/);
 });
 
@@ -20,10 +20,10 @@ test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "test-key";
-  const config = { auth0Issuer: "https://tenant.auth0.com", auth0Audience: "https://core", jwksUri: "https://tenant.auth0.com/.well-known/jwks.json" };
-  const token = jwt(privateKey, jwk.kid, { iss: `${config.auth0Issuer}/`, aud: config.auth0Audience, sub: "chatgpt", exp: Math.floor(Date.now() / 1000) + 60, scope: "core:read" });
+  const config = { auth0Issuer: "https://tenant.auth0.com", auth0Audience: "https://core", jwksUri: "https://tenant.auth0.com/.well-known/jwks.json", tenantClaim: "https://skinharmony.it/tenant_id" };
+  const token = jwt(privateKey, jwk.kid, { iss: `${config.auth0Issuer}/`, aud: config.auth0Audience, sub: "chatgpt", exp: Math.floor(Date.now() / 1000) + 60, scope: "core:read", "https://skinharmony.it/tenant_id": "tenant-a" });
   const cache = { get: async () => jwk };
-  assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", scopes: ["core:read"] });
+  assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });
 });
 
 test("enforces tool scopes", () => {

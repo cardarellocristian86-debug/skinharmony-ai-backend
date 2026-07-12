@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy_",
+  "generated_at": "2026-05-30T15:19:42.003Z",
+  "agent_id": "codex_nyra_router_fix",
+  "session_id": "codex_nyra_router_fix_1780154382001",
+  "trace_id": "trace_codex_nyra_router_fix_codex_nyra_router_fix_1780154382001_1780154382001",
+  "title": "Fix router Nyra negazioni deploy preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+  "checklist_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+    "title": "Fix router Nyra negazioni deploy",
+    "trace_id": "trace_codex_nyra_router_fix_codex_nyra_router_fix_1780154382001_1780154382001",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

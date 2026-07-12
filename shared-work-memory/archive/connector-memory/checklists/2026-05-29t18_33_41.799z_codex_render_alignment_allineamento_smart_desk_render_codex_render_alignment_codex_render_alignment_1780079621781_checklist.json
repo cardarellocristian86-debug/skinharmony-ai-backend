@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t18_33_41.799z_codex_render_alignment_allineamento_smart_desk_render",
+  "trace_id": "trace_codex_render_alignment_codex_render_alignment_1780079621781_1780079621781",
+  "contract_id": "2026-05-29t18_33_41.799z_codex_render_alignment_allineamento_smart_desk_render",
+  "generated_at": "2026-05-29T18:33:41.799Z",
+  "updated_at": "2026-05-29T18:59:42.323Z",
+  "agent_id": "codex_render_alignment",
+  "session_id": "codex_render_alignment_1780079621781",
+  "title": "Allineamento Smart Desk Render",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:33:41.799Z",
+      "updated_at": "2026-05-29T18:54:32.316Z",
+      "evidence": [
+        "Core gate update/deploy ALLOWED; repo Render identificata in /Users/cristiancardarello/skinharmony-ai-backend; live URL controllato"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:33:41.799Z",
+      "updated_at": "2026-05-29T18:55:11.510Z",
+      "evidence": [
+        "Commit 6c08ec1 su skinharmony-ai-backend: solo smartdesk-live/public/index.html e asset index-Dn39nSOC.js"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:33:41.799Z",
+      "updated_at": "2026-05-29T18:54:32.942Z",
+      "evidence": [
+        "node --check server.js OK; smoke locale asset 200; live Render index punta a index-Dn39nSOC.js; asset live 200; testi Protocolli AI fuori scope presenti"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:33:41.799Z",
+      "updated_at": "2026-05-29T18:59:42.322Z",
+      "evidence": [
+        "cleanup-check READY; checkpoint after scritto; finalize in corso"
+      ],
+      "note": ""
+    }
+  ]
+}

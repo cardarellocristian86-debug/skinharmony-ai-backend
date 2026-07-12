@@ -1,0 +1,60 @@
+{
+  "pulse_id": "2026-05-28t18_51_32.372z_codex_smartdesk_pulse",
+  "generated_at": "2026-05-28T18:51:32.372Z",
+  "agent_id": "codex_smartdesk",
+  "session_id": "codex_smartdesk_1779992943709",
+  "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+  "title": "Pulse Codex",
+  "summary": "AI Gold priority filter deployed live",
+  "files": [
+    "skin-harmony-web/src/renderer/pages/AiGoldPage.tsx"
+  ],
+  "tests": [],
+  "next": "Prossimo blocco: rendere le azioni aperte ancora piu guidate dentro servizio/cassa/redditivita",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t18_29_03.709z_codex_smartdesk_riallineamento_e2e",
+    "title": "Riallineamento e2e",
+    "request": "Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+    "success_criteria": "Ogni modifica resta nello scope, con pulse, test e finalize pulito"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+    "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+    "allowed_paths": [
+      "smartdesk-ai-gold-priority-ui",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "recover",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato",
+      "file_fuori_scope_task_contract"
+    ],
+    "intent_overlap": 0,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+      "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+      "outside_scope_files": [
+        "skin-harmony-web/src/renderer/pages/AiGoldPage.tsx"
+      ],
+      "forbidden_files": []
+    }
+  }
+}

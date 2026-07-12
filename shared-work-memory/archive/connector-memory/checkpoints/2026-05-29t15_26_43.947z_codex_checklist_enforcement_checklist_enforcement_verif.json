@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-29t15_26_43.947z_codex_checklist_enforcement_checklist_enforcement_verif",
+  "generated_at": "2026-05-29T15:26:43.947Z",
+  "agent_id": "codex_checklist_enforcement",
+  "session_id": "codex_checklist_enforcement_1780067831280",
+  "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+  "title": "Checklist enforcement verification",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Sintassi, self-test triplo, smoke checklist, cleanup e program map passati",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+    "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs",
+    "e2e-self-test x3",
+    "checklist smoke block/pass",
+    "cleanup-check",
+    "program-map-check"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

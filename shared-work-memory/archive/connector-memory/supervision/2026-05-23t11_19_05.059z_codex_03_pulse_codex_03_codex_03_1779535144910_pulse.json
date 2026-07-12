@@ -1,0 +1,31 @@
+{
+  "pulse_id": "2026-05-23t11_19_05.059z_codex_03_pulse",
+  "generated_at": "2026-05-23T11:19:05.059Z",
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1779535144910",
+  "title": "Pulse Codex",
+  "summary": "Sessione Codex 03 avviata e pronta. In attesa del task operativo specifico.",
+  "files": [
+    "/Users/cristiancardarello/\n  skinharmony-codex/SHARED_MEMORY/sessions"
+  ],
+  "tests": [
+    "Avvio sessione, intent e pulse iniziale"
+  ],
+  "next": "Ricevere task owner, aggiornare pulse con file reali, test e report",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t11_19_04.984z_codex_03_lavoro_codex_03",
+    "title": "Lavoro Codex 03",
+    "request": "Lavoro WordPress assegnato da Cristian Cardarello",
+    "success_criteria": "File, test, report e prossima azione devono\n  essere dichiarati"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0.091,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

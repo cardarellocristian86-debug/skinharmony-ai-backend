@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-25t14_38_09.367z_cristiancardarello_after_test_live_suite_5.2.43",
+  "generated_at": "2026-05-25T14:38:09.368Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779719503333",
+  "title": "After test live Suite 5.2.43",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Verifica raw bozza 1874 completata: contenuto Gutenberg-native con wp:group, wp:columns, wp:image, wp:button; nessun wp:html nel contenuto generato; bozza non pubblicata.",
+  "files": [
+    "reports/wordpress/template-builder/template-builder-live-draft-latest.json"
+  ],
+  "tests": [
+    "raw check: has_wp_group=true; has_wp_columns=true; has_wp_image=true; has_wp_button=true; has_wp_html=false; status=draft"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

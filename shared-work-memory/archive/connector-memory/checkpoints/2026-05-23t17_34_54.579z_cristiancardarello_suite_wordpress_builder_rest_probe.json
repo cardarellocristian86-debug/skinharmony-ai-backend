@@ -1,0 +1,13 @@
+{
+  "checkpoint_id": "2026-05-23t17_34_54.579z_cristiancardarello_suite_wordpress_builder_rest_probe",
+  "generated_at": "2026-05-23T17:34:54.580Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779395408460",
+  "title": "Suite WordPress builder REST probe",
+  "status": "in_progress",
+  "summary": "Suite live 5.2.19 verificata; ora provo endpoint REST Template WaaS in bozza/draft, senza publish e senza modifiche tenant/chiavi.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-24t17_42_12.556z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T17:42:12.557Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779643670114",
+  "title": "Pulse Codex",
+  "summary": "Finale Suite 5.2.36: zip pronto, report scritto, verifica manuale richiesta su WordPress autenticato.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_36_TEMPLATE_BUILDER_MEDIA_FIELD_FIX_2026-05-24.md"
+  ],
+  "tests": [],
+  "next": "Installare 5.2.36 e cliccare riquadri immagine nel Builder.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t17_31_08.794z_cristiancardarello_suite_5.2.36_template_builder_media_",
+    "title": "Suite 5.2.36 Template Builder media field fix",
+    "request": "Chiudere bug Campo immagine non trovato e rendere il Builder comprensibile per modifica da preview.",
+    "success_criteria": "Zip 5.2.36 generato, errore rimosso, campi media creati automaticamente, test passati."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.15,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

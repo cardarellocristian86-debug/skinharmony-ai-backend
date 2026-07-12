@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t16_25_41.716z_cristiancardarello_preflight_suite_5.2.33",
+  "generated_at": "2026-05-24T16:25:41.717Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779639922426",
+  "title": "Preflight Suite 5.2.33",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope Suite plugin. Evidenze: inline editor 18/18, plugin expected version 5.2.33 pass, governance 19/19, page factory 5/5. Prossimo passo closure locale e zip.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,50 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-05t18_33_07.893z_cristiancardarello_codex_sessione_vincolata_al_connetto",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780684387891_1780684387892",
+  "contract_id": "2026-06-05t18_33_07.893z_cristiancardarello_codex_sessione_vincolata_al_connetto",
+  "generated_at": "2026-06-05T18:33:07.893Z",
+  "updated_at": "2026-06-05T18:33:27.924Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780684387891",
+  "title": "Codex sessione vincolata al connettore locale",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_leggere_shared_memory_index_e_snapshot",
+      "label": "Leggere SHARED_MEMORY index e snapshot",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T18:33:07.893Z",
+      "updated_at": "2026-06-05T18:33:17.528Z",
+      "evidence": [
+        "Letti INDEX.md, MAP_SNAPSHOT.md, STATE_SNAPSHOT.md, WORK_SNAPSHOT.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_verificare_doctor_connettore_locale",
+      "label": "Verificare doctor connettore locale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T18:33:07.893Z",
+      "updated_at": "2026-06-05T18:33:23.366Z",
+      "evidence": [
+        "sh-core-codex doctor OK: shared_memory/config/profile/core_connection tenant codexai"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_usare_core_gate_per_file_edit_deploy_release_update_publish_produzione_cl",
+      "label": "Usare Core gate per file edit, deploy, release, update, publish, produzione, clienti, tenant, pricing e automazioni",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T18:33:07.894Z",
+      "updated_at": "2026-06-05T18:33:27.917Z",
+      "evidence": [
+        "Core gate codex_automation ALLOWED, report reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": ""
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "checkpoint_id": "2026-05-30t18_29_55.016z_codex_nyra_codex_supervisor_nyra_codex_supervisor_after",
+  "generated_at": "2026-05-30T18:29:55.016Z",
+  "agent_id": "codex_nyra_codex_supervisor",
+  "session_id": "codex_nyra_codex_supervisor_1780165399531",
+  "trace_id": "trace_codex_nyra_codex_supervisor_codex_nyra_codex_supervisor_1780165399531_1780",
+  "title": "Nyra Codex supervisor after",
+  "phase": "after",
+  "status": "done",
+  "summary": "Verifica finale: supervisor locale legge evidenze Codex, identifica superficialita/deriva/fuori scope e produce correzione/code proposal solo tramite Core; mappe Nyra/Universal Core aggiornate.",
+  "files": [
+    "universal-core-2.0/tools/nyra-codex-work-supervisor.ts",
+    "universal-core-2.0/tests/nyra-codex-work-supervisor-test.ts",
+    "universal-core-2.0/tools/nyra-local-event-emitter.ts",
+    "universal-core-2.0/package.json",
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/universal-core/OPERATIONS.md",
+    "SHARED_MEMORY/snapshots/STATE_SNAPSHOT.md",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/events/EVENTS.jsonl",
+    "universal-core-2.0/runtime/nyra/NYRA_MAP_SNAPSHOT.md",
+    "universal-core-2.0/runtime/nyra/NYRA_WORK_SNAPSHOT.md",
+    "universal-core-2.0/reports/universal-core/nyra-codex-supervisor/nyra_codex_supervisor_latest.json"
+  ],
+  "tests": [
+    "npm run check:nyra:codex-supervisor",
+    "npm run check:nyra:local-governance",
+    "npm run check:nyra:action-router",
+    "program-map-check READY",
+    "real supervisor smoke recover->attention"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t18_23_19.532z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

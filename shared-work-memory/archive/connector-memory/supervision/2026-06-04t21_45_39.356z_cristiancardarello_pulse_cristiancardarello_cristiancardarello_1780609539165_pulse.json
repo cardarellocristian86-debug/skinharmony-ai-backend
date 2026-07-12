@@ -1,0 +1,90 @@
+{
+  "pulse_id": "2026-06-04t21_45_39.356z_cristiancardarello_pulse",
+  "generated_at": "2026-06-04T21:45:39.357Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609539165",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609539165_1780609539165",
+  "title": "Pulse Codex",
+  "summary": "Sessione Codex locale collegata al Core Codex Connector; nessuna modifica codice o produzione eseguita.",
+  "files": [],
+  "tests": [],
+  "next": "Attendere il prossimo task operativo dell owner; usare Core gate prima di edit/deploy/update.",
+  "risk": "unknown",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-04t21_45_39.167z_cristiancardarello_collegamento_connettore_locale",
+    "title": "Collegamento connettore locale",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780609539165_1780609539165",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-06-04t21_45_39.166z_cristiancardarello_collegamento_connettore_locale",
+    "title": "Collegamento connettore locale",
+    "request": "Collegare questa sessione Codex al connettore locale SkinHarmony",
+    "success_criteria": "Sessione locale attiva, Core raggiungibile, doctor ok e stato orchestratore letto"
+  },
+  "task_contract": {
+    "contract_id": "2026-06-04t21_45_39.166z_cristiancardarello_collegamento_connettore_locale",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780609539165_1780609539165",
+    "allowed_paths": [
+      "skinharmony-codex",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.154,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-06-04t21_45_39.166z_cristiancardarello_collegamento_connettore_locale",
+      "trace_id": "trace_cristiancardarello_cristiancardarello_1780609539165_1780609539165",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

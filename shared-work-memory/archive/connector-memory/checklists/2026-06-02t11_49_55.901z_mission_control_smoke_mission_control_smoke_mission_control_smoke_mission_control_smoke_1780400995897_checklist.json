@@ -1,0 +1,38 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-02t11_49_55.901z_mission_control_smoke_mission_control_smoke",
+  "trace_id": "trace_mission_control_smoke_mission_control_smoke_1780400995897_1780400995897",
+  "contract_id": "2026-06-02t11_49_55.900z_mission_control_smoke_mission_control_smoke",
+  "generated_at": "2026-06-02T11:49:55.901Z",
+  "updated_at": "2026-06-02T11:50:49.302Z",
+  "agent_id": "mission_control_smoke",
+  "session_id": "mission_control_smoke_1780400995897",
+  "title": "Mission Control smoke",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_syntactic_check",
+      "label": "Syntactic check",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T11:49:55.901Z",
+      "updated_at": "2026-06-02T11:50:48.740Z",
+      "evidence": [
+        "node --check packages/core-codex-connector/src/cli.mjs"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_mission_control_metadata",
+      "label": "Mission Control metadata",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T11:49:55.901Z",
+      "updated_at": "2026-06-02T11:50:49.302Z",
+      "evidence": [
+        "work-start output: mission_control=allow_with_audit role=researcher owner_default=false"
+      ],
+      "note": ""
+    }
+  ]
+}

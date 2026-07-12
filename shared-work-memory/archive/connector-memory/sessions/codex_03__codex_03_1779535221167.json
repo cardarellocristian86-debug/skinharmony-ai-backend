@@ -1,0 +1,16 @@
+{
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1779535221167",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "wordpress"
+  ],
+  "status": "active",
+  "started_at": "2026-05-23T11:20:21.167Z",
+  "updated_at": "2026-05-23T11:20:21.167Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199"
+}

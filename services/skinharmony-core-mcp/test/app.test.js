@@ -21,9 +21,13 @@ async function serve(run) {
 }
 
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
+  const health = await fetch(`${base}/healthz`).then((r) => r.json());
+  assert.equal(health.ok, true);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
+  const pathResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
+  assert.deepEqual(pathResource, resource);
   const oauth = await fetch(`${base}/.well-known/oauth-authorization-server`).then((r) => r.json());
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
 }));
@@ -39,4 +43,8 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));
+  assert(body.result.tools.every((tool) => tool.annotations.readOnlyHint === true));
+  const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
+  assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
+  assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
 }));

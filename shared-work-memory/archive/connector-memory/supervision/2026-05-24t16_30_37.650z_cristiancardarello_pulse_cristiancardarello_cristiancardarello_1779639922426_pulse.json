@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t16_30_37.650z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T16:30:37.651Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779639922426",
+  "title": "Pulse Codex",
+  "summary": "Finale Suite 5.2.33: package pronto; l'utente deve installare lo zip e lavorare su Anteprima modificabile, non su iframe WordPress.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_33_TEMPLATE_BUILDER_EDITABLE_PREVIEW_2026-05-24.md"
+  ],
+  "tests": [],
+  "next": "Installazione WordPress manuale e verifica UI.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t16_28_45.963z_cristiancardarello_suite_template_builder_5.2.33_closur",
+    "title": "Suite Template Builder 5.2.33 closure",
+    "request": "Closure locale dopo correzione editable preview: Builder senza iframe WordPress interno.",
+    "success_criteria": "Zip 5.2.33 generato e verificato."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.231,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

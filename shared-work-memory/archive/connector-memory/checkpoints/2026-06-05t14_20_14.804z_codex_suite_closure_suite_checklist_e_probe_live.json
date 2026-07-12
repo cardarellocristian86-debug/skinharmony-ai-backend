@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-05t14_20_14.804z_codex_suite_closure_suite_checklist_e_probe_live",
+  "generated_at": "2026-06-05T14:20:14.805Z",
+  "agent_id": "codex_suite_closure",
+  "session_id": "codex_suite_closure_1780611047015",
+  "trace_id": "trace_codex_suite_closure_codex_suite_closure_1780611047015_1780611047015",
+  "title": "Suite checklist e probe live",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Checklist creata, runtime live 5.3.35 verificato, performance scan e probe mirato eseguiti, colli identificati e patch locale delegata alla traccia codex_suite_patch.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t22_10_47.021z_codex_suite_closure_suite_closure_checklist_5.3.35",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

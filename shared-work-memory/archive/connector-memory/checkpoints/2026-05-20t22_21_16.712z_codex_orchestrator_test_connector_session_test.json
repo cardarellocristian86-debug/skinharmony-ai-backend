@@ -1,0 +1,17 @@
+{
+  "checkpoint_id": "2026-05-20t22_21_16.712z_codex_orchestrator_test_connector_session_test",
+  "generated_at": "2026-05-20T22:21:16.713Z",
+  "agent_id": "codex_orchestrator_test",
+  "session_id": "codex_orchestrator_test_1779315629006",
+  "title": "Connector session test",
+  "status": "verified",
+  "summary": "Test nuovi comandi sessione lock checkpoint",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

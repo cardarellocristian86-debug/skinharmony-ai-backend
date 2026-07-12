@@ -1,0 +1,42 @@
+{
+  "intent_id": "2026-06-04t22_10_47.016z_codex_suite_closure_suite_closure_checklist_5.3.35",
+  "generated_at": "2026-06-04T22:10:47.016Z",
+  "agent_id": "codex_suite_closure",
+  "session_id": "codex_suite_closure_1780611047015",
+  "trace_id": "trace_codex_suite_closure_codex_suite_closure_1780611047015_1780611047015",
+  "title": "Suite closure checklist 5.3.35",
+  "request": "Chiudere progressivamente Suite partendo da checklist e verifiche read-only/locali",
+  "success_criteria": "Checklist chiara, primo blocco verificato, gap ordinati per priorita, nessun deploy senza gate dedicato",
+  "expected_depth": "normal",
+  "files": [
+    "SHARED_MEMORY/programs/suite",
+    "SHARED_MEMORY/reports",
+    "reports/wordpress"
+  ],
+  "status": "active",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

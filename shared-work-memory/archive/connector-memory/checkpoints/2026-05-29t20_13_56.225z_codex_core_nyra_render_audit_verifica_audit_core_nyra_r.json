@@ -1,0 +1,21 @@
+{
+  "checkpoint_id": "2026-05-29t20_13_56.225z_codex_core_nyra_render_audit_verifica_audit_core_nyra_r",
+  "generated_at": "2026-05-29T20:13:56.225Z",
+  "agent_id": "codex_core_nyra_render_audit",
+  "session_id": "codex_core_nyra_render_audit_1780084553972",
+  "trace_id": "trace_codex_core_nyra_render_audit_codex_core_nyra_render_audit_1780084553972_17",
+  "title": "Verifica audit Core/Nyra Render",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Test locali e live completati. Rischi principali: repo locale dietro Render, Suite Codex automation key invalida, Smart Desk end-to-end auth non provato senza sessione, Nyra live parla ma non ha ancora il validator Core 2.0 appena migliorato.",
+  "files": [
+    "reports/codex-core/codex_core_gate_latest.json"
+  ],
+  "tests": [
+    "npm --prefix services/universal-core-service test",
+    "npm run core-plugin:check"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t19_55_53.975z_codex_core_nyra_render_audit_audit_core_nyra_render_e_b",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

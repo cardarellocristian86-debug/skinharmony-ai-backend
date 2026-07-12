@@ -1,0 +1,79 @@
+{
+  "generated_at": "2026-05-28T18:06:30.052Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1,
+  "interval_ms": 100,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-28t18_06_06.075z_codex_core_e2e_pulse_codex_core_e2e_codex_core_e2e_1779990420020_pulse.json",
+  "watched_files": [
+    {
+      "file": "packages/core-codex-connector/src/cli.mjs",
+      "mtime_ms": 1779991007854.686,
+      "size": 215037
+    },
+    {
+      "file": "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+      "mtime_ms": 1779991012166.9158,
+      "size": 1867
+    },
+    {
+      "file": "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+      "mtime_ms": 1779991019817.9763,
+      "size": 2482
+    },
+    {
+      "file": "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+      "mtime_ms": 1779991032362.2842,
+      "size": 2048
+    },
+    {
+      "file": "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md",
+      "mtime_ms": 1779991047464.9346,
+      "size": 1766
+    }
+  ],
+  "assessment": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.5,
+    "correction": "Supervisione persistente ok: continuare con pulse brevi.",
+    "pulse_age_ms": 23975,
+    "changed_files": [
+      {
+        "file": "packages/core-codex-connector/src/cli.mjs",
+        "mtime_ms": 1779991007854.686,
+        "size": 215037
+      },
+      {
+        "file": "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+        "mtime_ms": 1779991012166.9158,
+        "size": 1867
+      },
+      {
+        "file": "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+        "mtime_ms": 1779991019817.9763,
+        "size": 2482
+      },
+      {
+        "file": "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+        "mtime_ms": 1779991032362.2842,
+        "size": 2048
+      },
+      {
+        "file": "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md",
+        "mtime_ms": 1779991047464.9346,
+        "size": 1766
+      }
+    ],
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+      "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "checkpoint_id": "2026-05-30t13_04_28.250z_codex_nyra_local_first_nyra_core2_local_scope_corrected",
+  "generated_at": "2026-05-30T13:04:28.251Z",
+  "agent_id": "codex_nyra_local_first",
+  "session_id": "codex_nyra_local_first_1780145310745",
+  "trace_id": "trace_codex_nyra_local_first_codex_nyra_local_first_1780145310745_1780145310745",
+  "title": "nyra core2 local scope corrected",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Owner ha chiarito: lavorare prima su universal-core-2.0 locale, non Render. Contratto corretto con scope universal-core-2.0; Core gate locale gia ALLOWED e Core 2.0 ha selezionato local_governance_overlay_events.",
+  "files": [
+    "SHARED_MEMORY/task-contracts/2026-05-30t12_48_30.746z_codex_nyra_local_first_nyra_locale_prima_di_render_codex_nyra_local_first_codex_nyra_local_first_1780145310745_task_contract.json",
+    "universal-core-2.0/reports/universal-core/codex/codex_core_decision_latest.json"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t12_48_30.746z_codex_nyra_local_first_nyra_locale_prima_di_render",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

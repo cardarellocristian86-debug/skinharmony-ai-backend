@@ -1,0 +1,24 @@
+{
+  "checkpoint_id": "2026-05-23t21_55_44.921z_codex_suite_registry_worker_template_authority_registry",
+  "generated_at": "2026-05-23T21:55:44.927Z",
+  "agent_id": "codex_suite_registry_worker",
+  "session_id": "codex_suite_registry_worker_1779573193147",
+  "title": "template authority registry binding verified",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Binding registry verificato. Home/WAAS hanno fingerprint reali e restano review fino a prova visuale. Governance e Page Factory restano verdi.",
+  "files": [
+    "scripts/bind_template_authority_v2.js",
+    "scripts/test_template_authority_v2_registry_binding.js",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "SHARED_MEMORY/reports/SUITE_TEMPLATE_AUTHORITY_V2_REGISTRY_BINDING_2026-05-23.md"
+  ],
+  "tests": [
+    "node scripts/bind_template_authority_v2.js",
+    "node scripts/test_template_authority_v2_registry_binding.js",
+    "npm run suite:governance:test",
+    "npm run suite:page-factory:test"
+  ],
+  "next": "Prossimo microblocco: visual evidence desktop/tablet/mobile o release locale Suite",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

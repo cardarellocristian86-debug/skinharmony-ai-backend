@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-04t22_10_47.023z_codex_suite_closure_suite_closure_checklist_5.3.35",
+  "trace_id": "trace_codex_suite_closure_codex_suite_closure_1780611047015_1780611047015",
+  "contract_id": "2026-06-04t22_10_47.021z_codex_suite_closure_suite_closure_checklist_5.3.35",
+  "generated_at": "2026-06-04T22:10:47.023Z",
+  "updated_at": "2026-06-05T14:19:56.055Z",
+  "agent_id": "codex_suite_closure",
+  "session_id": "codex_suite_closure_1780611047015",
+  "title": "Suite closure checklist 5.3.35",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T22:10:47.023Z",
+      "updated_at": "2026-06-05T08:20:05.267Z",
+      "evidence": [
+        "reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T22:10:47.023Z",
+      "updated_at": "2026-06-05T14:19:42.995Z",
+      "evidence": [
+        "SHARED_MEMORY/reports/SUITE_CLOSURE_CHECKLIST_5_3_35_2026-06-05.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T22:10:47.023Z",
+      "updated_at": "2026-06-05T08:20:05.296Z",
+      "evidence": [
+        "reports/wordpress/SUITE_OPERATIONAL_CLOSURE_5_3_36_LOCAL_2026-05-19.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-04T22:10:47.023Z",
+      "updated_at": "2026-06-05T14:19:56.054Z",
+      "evidence": [
+        "reports/codex-core/codex_e2e_cleanup_latest.json"
+      ],
+      "note": ""
+    }
+  ]
+}

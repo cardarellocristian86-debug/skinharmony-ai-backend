@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t20_25_17.098z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+  "trace_id": "trace_codex_ai_gold_safe_mode_fix_codex_ai_gold_safe_mode_fix_1780086317096_1780",
+  "contract_id": "2026-05-29t20_25_17.098z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+  "generated_at": "2026-05-29T20:25:17.098Z",
+  "updated_at": "2026-05-29T20:53:27.046Z",
+  "agent_id": "codex_ai_gold_safe_mode_fix",
+  "session_id": "codex_ai_gold_safe_mode_fix_1780086317096",
+  "title": "Fix AI Gold safe mode UX e latenza",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:25:17.098Z",
+      "updated_at": "2026-05-29T20:53:26.830Z",
+      "evidence": [
+        "Core gate release ALLOWED report=/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:25:17.098Z",
+      "updated_at": "2026-05-29T20:53:26.901Z",
+      "evidence": [
+        "Commit Render 2b0a74e Fix AI Gold safe mode cockpit UX"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:25:17.098Z",
+      "updated_at": "2026-05-29T20:53:26.971Z",
+      "evidence": [
+        "node --check DesktopMirrorService.js; node --check server.js; npm --prefix skin-harmony-web run build; live index=index-ygiA2_nN.js"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:25:17.098Z",
+      "updated_at": "2026-05-29T20:53:27.045Z",
+      "evidence": [
+        "Finalize in corso; untracked preesistenti lasciati intatti"
+      ],
+      "note": ""
+    }
+  ]
+}

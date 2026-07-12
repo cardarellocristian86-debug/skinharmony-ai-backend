@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-24t17_38_48.255z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T17:38:48.256Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779643670114",
+  "title": "Pulse Codex",
+  "summary": "Pulse fresco 5.2.36: test passati, lock attivo, preflight/during presenti; pronto per closure package.",
+  "files": [
+    "reports/wordpress/template-authority/template-builder-inline-editor-test-latest.json"
+  ],
+  "tests": [],
+  "next": "Eseguire suite:operational:closure.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t17_31_08.794z_cristiancardarello_suite_5.2.36_template_builder_media_",
+    "title": "Suite 5.2.36 Template Builder media field fix",
+    "request": "Chiudere bug Campo immagine non trovato e rendere il Builder comprensibile per modifica da preview.",
+    "success_criteria": "Zip 5.2.36 generato, errore rimosso, campi media creati automaticamente, test passati."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.1,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

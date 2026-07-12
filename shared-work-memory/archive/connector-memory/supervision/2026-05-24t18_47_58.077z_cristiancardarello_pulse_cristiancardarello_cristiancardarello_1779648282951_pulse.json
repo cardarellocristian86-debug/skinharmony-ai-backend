@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t18_47_58.077z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T18:47:58.077Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779648282951",
+  "title": "Pulse Codex",
+  "summary": "Pronto per test live Suite 5.2.38: bozza non pubblicata, check testo CTA immagini, nessun publish.",
+  "files": [
+    "scripts/test_wp_template_builder_live_draft.js"
+  ],
+  "tests": [],
+  "next": "Eseguire sh-core-codex exec su script test_wp_template_builder_live_draft.js",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t18_44_58.376z_cristiancardarello_retest_suite_5.2.38_template_builder",
+    "title": "Retest Suite 5.2.38 Template Builder live",
+    "request": "Verificare che la 5.2.38 installata su WordPress salvi e renderizzi testo, CTA e immagini da Template Builder",
+    "success_criteria": "Bozza non pubblicata creata con tutti i check true: draft, save, status non publish, hero title, CTA, gallery image, detail image"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.435,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

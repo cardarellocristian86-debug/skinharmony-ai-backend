@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-06-02t10_44_45.525z_cristiancardarello_supporto_core_codex_lavoro_suite_pre",
+  "generated_at": "2026-06-02T10:44:45.525Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780397085518",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780397085518_1780397085518",
+  "title": "Supporto Core/Codex lavoro Suite preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-06-02t10_44_45.522z_cristiancardarello_supporto_core_codex_lavoro_suite",
+  "checklist_id": "2026-06-02t10_44_45.523z_cristiancardarello_supporto_core_codex_lavoro_suite",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-06-02t10_44_45.523z_cristiancardarello_supporto_core_codex_lavoro_suite",
+    "title": "Supporto Core/Codex lavoro Suite",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780397085518_1780397085518",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

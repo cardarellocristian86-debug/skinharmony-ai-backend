@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-30t13_54_04.336z_codex_nyra_needs_nyra_needs_cycle_verified",
+  "generated_at": "2026-05-30T13:54:04.336Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "title": "nyra needs cycle verified",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Nyra Needs Cycle locale verificato: action router, memoria owner privata locale, diagnosi operativa, learning pack e governance passano i test; evento condiviso scritto; Render non toccato.",
+  "files": [
+    "universal-core-2.0/tools/nyra-action-router.ts",
+    "universal-core-2.0/tools/nyra-owner-private-memory.ts",
+    "universal-core-2.0/tools/nyra-operational-diagnosis.ts",
+    "universal-core-2.0/tools/nyra-local-governance.ts",
+    "SHARED_MEMORY/events/EVENTS.jsonl"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

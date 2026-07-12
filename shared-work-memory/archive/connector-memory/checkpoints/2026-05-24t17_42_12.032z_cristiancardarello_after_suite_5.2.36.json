@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t17_42_12.032z_cristiancardarello_after_suite_5.2.36",
+  "generated_at": "2026-05-24T17:42:12.033Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779643670114",
+  "title": "After Suite 5.2.36",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Closure 5.2.36 passata; zip verificato; fix media field e istruzioni Builder presenti.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

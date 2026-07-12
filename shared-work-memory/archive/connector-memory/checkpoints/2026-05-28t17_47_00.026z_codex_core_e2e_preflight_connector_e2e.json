@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-28t17_47_00.026z_codex_core_e2e_preflight_connector_e2e",
+  "generated_at": "2026-05-28T17:47:00.026Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "title": "Preflight connector e2e",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Letti memoria, report connector/Core 2.0 e richiesta owner; preparo task contract, trace e cleanup gate.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

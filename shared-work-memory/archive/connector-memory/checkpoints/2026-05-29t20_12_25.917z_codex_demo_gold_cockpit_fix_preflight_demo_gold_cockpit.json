@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-29t20_12_25.917z_codex_demo_gold_cockpit_fix_preflight_demo_gold_cockpit",
+  "generated_at": "2026-05-29T20:12:25.918Z",
+  "agent_id": "codex_demo_gold_cockpit_fix",
+  "session_id": "codex_demo_gold_cockpit_fix_1780084190790",
+  "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+  "title": "preflight demo_gold_cockpit",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Contesto: login live demo era rotto, poi ripristinato; cockpit restava in fallback con Maximum call stack size exceeded; ipotesi verificata: ricorsione Data Quality seeded demo -> getGoldState -> refresh -> Data Quality.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live/src/DesktopMirrorService.js"
+  ],
+  "tests": [
+    "live cockpit prima del fix: fallback=true error=Maximum call stack size exceeded"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t18_23_19.532z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "generated_at": "2026-05-30T18:23:19.532Z",
+  "agent_id": "codex_nyra_codex_supervisor",
+  "session_id": "codex_nyra_codex_supervisor_1780165399531",
+  "trace_id": "trace_codex_nyra_codex_supervisor_codex_nyra_codex_supervisor_1780165399531_1780",
+  "title": "Nyra supervisore Codex",
+  "request": "Far imparare a Nyra a leggere quando Codex lavora: verificare se esegue davvero il comando owner o lavora in superficie, rilevare deviazioni, e produrre correzioni/codice sempre mediati da Core",
+  "success_criteria": "Tool locale Nyra Codex supervisor con verdict, flags, correzione operativa, code correction proposal gated; test locali; mappe/eventi aggiornati; nessun Render/produzione",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t18_36_51.959z_codex_02_traduttore_vendibile",
+  "trace_id": "trace_codex_02_codex_02_1779993411957_1779993411957",
+  "generated_at": "2026-05-28T18:36:51.959Z",
+  "updated_at": "2026-05-28T18:36:51.959Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1779993411957",
+  "title": "Traduttore vendibile",
+  "request": "Definire e preparare il flusso vendibile del traduttore SkinHarmony Core: demo, chiave SkinHarmony, piani, pagina marketing e setup pratico senza duplicare Suite.",
+  "success_criteria": "Scope rispettato, mappa aggiornata, proposta operativa chiara e prossima azione pronta.",
+  "allowed_paths": [
+    "traduttore-core-software",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

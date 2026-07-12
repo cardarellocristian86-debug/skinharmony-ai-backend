@@ -1,0 +1,28 @@
+{
+  "pulse_id": "2026-05-24t14_21_16.615z_codex_showcase_template_pulse",
+  "generated_at": "2026-05-24T14:21:16.616Z",
+  "agent_id": "codex_showcase_template",
+  "session_id": "codex_showcase_template_1779631696376",
+  "title": "Pulse Codex",
+  "summary": "Pulse fresco: avvio packaging locale Suite 5.2.28 ora.",
+  "files": [],
+  "tests": [],
+  "next": "npm run suite:operational:closure",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t14_08_39.403z_codex_showcase_template_beauty_showcase_website_templat",
+    "title": "Beauty showcase website template",
+    "request": "Creare in Suite un template sito vetrina beauty/wellness agnostico, modificabile e basato su ricerca, senza deploy/live.",
+    "success_criteria": "Template registry e generatore locali creati, test verdi, zip progressivo pronto."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.05,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

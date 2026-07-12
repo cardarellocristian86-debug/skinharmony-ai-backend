@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t12_48_30.746z_codex_nyra_local_first_nyra_locale_prima_di_render",
+  "generated_at": "2026-05-30T12:48:30.746Z",
+  "agent_id": "codex_nyra_local_first",
+  "session_id": "codex_nyra_local_first_1780145310745",
+  "trace_id": "trace_codex_nyra_local_first_codex_nyra_local_first_1780145310745_1780145310745",
+  "title": "Nyra locale prima di Render",
+  "request": "Rendere Nyra locale piu completa: eventi locali, branch overlay, guida Codex AI, test end-to-end locale; Core Render non va toccato",
+  "success_criteria": "Nyra locale crea eventi, sovrappone rami, produce guida per Codex, usa memoria/learning locale e passa test; documentato che Render resta intoccato",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

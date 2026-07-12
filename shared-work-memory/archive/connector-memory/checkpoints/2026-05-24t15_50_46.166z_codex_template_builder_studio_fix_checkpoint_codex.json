@@ -1,0 +1,26 @@
+{
+  "checkpoint_id": "2026-05-24t15_50_46.166z_codex_template_builder_studio_fix_checkpoint_codex",
+  "generated_at": "2026-05-24T15:50:46.167Z",
+  "agent_id": "codex_template_builder_studio_fix",
+  "session_id": "codex_template_builder_studio_fix_1779637250187",
+  "title": "Checkpoint Codex",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementato Template Builder Studio 5.2.31: canvas-first, save nel canvas, campi tecnici collassabili, dirty state, tile immagine non catturato dal focus handler. Test locali OK.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite-admin.js",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "scripts/test_template_builder_inline_editor.js",
+    "SHARED_MEMORY/reports/SUITE_5_2_31_TEMPLATE_BUILDER_STUDIO_FIX_2026-05-24.md"
+  ],
+  "tests": [
+    "node scripts/test_template_builder_inline_editor.js",
+    "SHSS_EXPECTED_VERSION=5.2.31 node scripts/test_skinharmony_site_suite_plugin.js",
+    "npm run suite:governance:test",
+    "npm run suite:page-factory:test"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t19_45_41.638z_codex_nyra_improve_nyra_reply_validator_v2",
+  "generated_at": "2026-05-29T19:45:41.639Z",
+  "agent_id": "codex_nyra_improve",
+  "session_id": "codex_nyra_improve_1780083460543",
+  "trace_id": "trace_codex_nyra_improve_codex_nyra_improve_1780083460543_1780083460543",
+  "title": "Nyra reply validator v2",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Runtime dialogico Nyra migliorato: validator anti-generico, guarded repair su bozze rifiutate, test dialogici 2.0 e base passati.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t19_37_40.545z_codex_nyra_improve_miglioramento_nyra_runtime_dialogico",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

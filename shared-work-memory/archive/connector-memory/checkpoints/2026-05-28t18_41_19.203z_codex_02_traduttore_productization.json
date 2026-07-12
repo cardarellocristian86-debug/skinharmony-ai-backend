@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-28t18_41_19.203z_codex_02_traduttore_productization",
+  "generated_at": "2026-05-28T18:41:19.203Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1779993411957",
+  "trace_id": "trace_codex_02_codex_02_1779993411957_1779993411957",
+  "title": "Traduttore productization",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Creato piano vendibile e aggiornata mappa skinharmony-core; nessuna modifica WordPress live; test registry pronto.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-28t18_36_51.959z_codex_02_traduttore_vendibile",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t17_31_09.555z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T17:31:09.555Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779643670114",
+  "title": "Pulse Codex",
+  "summary": "Suite 5.2.36: fix Template Builder media field. Tests: inline 27/27, plugin 5.2.36 pass, governance 19/19, page-factory 5/5.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite-admin.js"
+  ],
+  "tests": [],
+  "next": "Closure locale e verifica zip.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t17_31_08.794z_cristiancardarello_suite_5.2.36_template_builder_media_",
+    "title": "Suite 5.2.36 Template Builder media field fix",
+    "request": "Chiudere bug Campo immagine non trovato e rendere il Builder comprensibile per modifica da preview.",
+    "success_criteria": "Zip 5.2.36 generato, errore rimosso, campi media creati automaticamente, test passati."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.25,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

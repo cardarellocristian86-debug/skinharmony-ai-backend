@@ -1,0 +1,29 @@
+{
+  "checkpoint_id": "2026-05-28t18_06_48.023z_codex_core_e2e_after_e2e_connector_verification",
+  "generated_at": "2026-05-28T18:06:48.028Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+  "title": "After e2e connector verification",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Verifica finale: syntax OK, workspace-init idempotente, self-test ripetuti PASS, work-start smoke, cleanup positivo/negativo, program registry, supervise on_track e dashboard API testata.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+    "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs",
+    "node packages/core-codex-connector/src/cli.mjs e2e-self-test x6",
+    "node packages/core-codex-connector/src/cli.mjs workspace-init",
+    "work-start smoke + finalize block/pass",
+    "cleanup-check positive/negative",
+    "dashboard /api/state"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

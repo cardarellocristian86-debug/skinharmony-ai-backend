@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t15_14_01.390z_codex_nyra_management_smoke_smoke_gestione_nyra_codex",
+  "generated_at": "2026-05-30T15:14:01.390Z",
+  "agent_id": "codex_nyra_management_smoke",
+  "session_id": "codex_nyra_management_smoke_1780154041390",
+  "trace_id": "trace_codex_nyra_management_smoke_codex_nyra_management_smoke_1780154041390_1780",
+  "title": "Smoke gestione Nyra Codex",
+  "request": "Verificare se Nyra locale gestisce meglio Codex: aggiorna memoria dal connector, legge contesto, produce guida operativa e mantiene confini Core/Render",
+  "success_criteria": "Sidecar refreshed, Nyra governance usa memoria Codex e produce guida verificabile senza toccare Render",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

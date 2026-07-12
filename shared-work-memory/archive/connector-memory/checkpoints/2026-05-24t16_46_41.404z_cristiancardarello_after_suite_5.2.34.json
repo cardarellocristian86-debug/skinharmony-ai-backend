@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t16_46_41.404z_cristiancardarello_after_suite_5.2.34",
+  "generated_at": "2026-05-24T16:46:41.405Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779641067526",
+  "title": "After Suite 5.2.34",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Closure 5.2.34 passata, zip verificato, preview collegata a family_slots e controllo WordPress finale chiuso.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

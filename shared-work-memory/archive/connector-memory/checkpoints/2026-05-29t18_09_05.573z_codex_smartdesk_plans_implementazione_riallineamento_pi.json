@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t18_09_05.573z_codex_smartdesk_plans_implementazione_riallineamento_pi",
+  "generated_at": "2026-05-29T18:09:05.574Z",
+  "agent_id": "codex_smartdesk_plans",
+  "session_id": "codex_smartdesk_plans_1780077983966",
+  "trace_id": "trace_codex_smartdesk_plans_codex_smartdesk_plans_1780077983966_1780077983966",
+  "title": "Implementazione riallineamento piani",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Aggiornati gating desktop/web: report base accessibili, Protocolli AI disabilitati su tutti i piani, capability Gold suggerisce solo su Gold/Enterprise, copy web/desktop e mappe programma allineate.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t18_06_23.967z_codex_smartdesk_plans_riallineamento_piani_smart_desk",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

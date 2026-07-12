@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-25t13_26_08.564z_cristiancardarello_suite_5.2.43_gutenberg_native_pronta",
+  "generated_at": "2026-05-25T13:26:08.565Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779652592846",
+  "title": "Suite 5.2.43 Gutenberg native pronta",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Zip locale generato e verificato. Template beauty commerce ora nasce come blocchi Gutenberg nativi; WordPress modifica, Suite valida.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_43_GUTENBERG_NATIVE_TEMPLATE_2026-05-25.md"
+  ],
+  "tests": [
+    "gutenberg native 11/11; inline editor 31/31; suite local expected 5.2.43 OK; closure preflight 22/22 local 1583/1583; unzip -t OK"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t19_04_22.926z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+  "contract_id": "2026-05-30t19_04_22.925z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "generated_at": "2026-05-30T19:04:22.926Z",
+  "updated_at": "2026-05-30T19:07:51.176Z",
+  "agent_id": "codex_nyra_fault_probe",
+  "session_id": "codex_nyra_fault_probe_1780167862924",
+  "title": "Probe ramo programmatore Nyra",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:04:22.926Z",
+      "updated_at": "2026-05-30T19:07:34.461Z",
+      "evidence": [
+        "Core gate ALLOWED reports/codex-core/codex_core_gate_latest.json; letto supervisor/test esistenti"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:04:22.926Z",
+      "updated_at": "2026-05-30T19:07:40.611Z",
+      "evidence": [
+        "Solo universal-core-2.0/SHARED_MEMORY/reports; nessun Render/produzione/chiavi/clienti/prezzi"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:04:22.926Z",
+      "updated_at": "2026-05-30T19:07:46.080Z",
+      "evidence": [
+        "PASS: codex-supervisor fault probe expected 6 got 3 -> recover/test_failure_reported; branch-overlay/action-router/local-governance/program-map OK"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:04:22.926Z",
+      "updated_at": "2026-05-30T19:07:51.175Z",
+      "evidence": [
+        "Snapshot/programmi/events aggiornati; finalize dopo checkpoint after"
+      ],
+      "note": ""
+    }
+  ]
+}

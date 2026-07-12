@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t14_43_09.771z_codex_inline_template_builder_template_builder_visual_i",
+  "generated_at": "2026-05-24T14:43:09.771Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "title": "Template Builder visual inline",
+  "request": "Rendere la preview del Template Builder modificabile cliccando direttamente su testi, CTA e immagini, senza deploy/live.",
+  "success_criteria": "Builder inline locale implementato, test verdi, zip progressivo pronto.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

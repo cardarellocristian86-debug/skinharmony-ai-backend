@@ -1,0 +1,13 @@
+{
+  "checkpoint_id": "2026-05-23t17_18_50.029z_codex_suite_operationalize_connector_sync_and_suite_bui",
+  "generated_at": "2026-05-23T17:18:50.030Z",
+  "agent_id": "codex_suite_operationalize",
+  "session_id": "codex_suite_operationalize_1779556253826",
+  "title": "Connector sync and Suite builder validation start",
+  "status": "in_progress",
+  "summary": "Microblocco: riallineare connettore Desktop alla versione repo 0.2.24 e validare localmente Template Builder Suite-first. Scope locale, nessun deploy, nessuna produzione, nessuna modifica WordPress live, nessuna chiave/tenant.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

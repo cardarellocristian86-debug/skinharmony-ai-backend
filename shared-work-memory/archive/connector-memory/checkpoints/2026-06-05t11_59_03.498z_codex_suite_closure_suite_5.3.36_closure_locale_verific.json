@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-05t11_59_03.498z_codex_suite_closure_suite_5.3.36_closure_locale_verific",
+  "generated_at": "2026-06-05T11:59:03.503Z",
+  "agent_id": "codex_suite_closure",
+  "session_id": "codex_suite_closure_1780611047015",
+  "trace_id": "trace_codex_suite_closure_codex_suite_closure_1780611047015_1780611047015",
+  "title": "Suite 5.3.36 closure locale verificata",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Zip locale 5.3.36 generato; preflight 22/22; test Suite 1688/1688; audit bottoni missing 0; program registry READY; nessun deploy/upload/sync/install live.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t22_10_47.021z_codex_suite_closure_suite_closure_checklist_5.3.35",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

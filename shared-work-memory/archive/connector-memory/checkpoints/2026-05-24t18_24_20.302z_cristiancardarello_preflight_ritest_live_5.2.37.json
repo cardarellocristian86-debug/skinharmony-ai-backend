@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_24_20.302z_cristiancardarello_preflight_ritest_live_5.2.37",
+  "generated_at": "2026-05-24T18:24:20.303Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779646943236",
+  "title": "Preflight ritest live 5.2.37",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: solo bozza WordPress non pubblica e report locale. Nessun publish, deploy, chiavi, tenant o modifica pagine esistenti.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

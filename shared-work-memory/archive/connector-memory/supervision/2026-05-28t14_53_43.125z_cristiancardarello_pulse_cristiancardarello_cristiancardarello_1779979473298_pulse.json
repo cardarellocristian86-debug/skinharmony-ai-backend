@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-28t14_53_43.125z_cristiancardarello_pulse",
+  "generated_at": "2026-05-28T14:53:43.126Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779979473298",
+  "title": "Pulse Codex",
+  "summary": "Patch in corso su cassa Smart Desk: pagina cassa completa con righe servizio/prodotto modificabili e backend pronto a salvare dettaglio pagamento e scaricare prodotti.",
+  "files": [
+    "skin-harmony-web/src/renderer/pages/CashdeskPage.tsx",
+    "render-smartdesk-live/src/DesktopMirrorService.js"
+  ],
+  "tests": [],
+  "next": "Allineo sorgente live, buildo frontend, copio bundle e testo flussi pagamento.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t14_44_33.337z_cristiancardarello_smart_desk_checkout_e_report_leggibi",
+    "title": "Smart Desk checkout e report leggibili",
+    "request": "Rendere checkout e report Smart Desk piu comprensibili: override prezzo solo nel pagamento, prodotti/servizi in cassa, pagina cassa completa, semafori, testi umani, tecnologia con rate/data inizio/fine e report separati Base Silver Gold.",
+    "success_criteria": "Patch locale Smart Desk testata: cassa non si allunga male, pagamento salva linee e scarica prodotti, servizi/tecnologie/operatori hanno testi chiari e report/azioni indicano cosa fare senza termini interni."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.292,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

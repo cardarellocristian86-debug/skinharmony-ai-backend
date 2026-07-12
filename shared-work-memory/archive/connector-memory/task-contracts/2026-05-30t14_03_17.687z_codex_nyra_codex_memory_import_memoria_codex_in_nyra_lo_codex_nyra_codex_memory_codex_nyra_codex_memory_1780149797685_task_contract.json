@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t14_03_17.687z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "trace_id": "trace_codex_nyra_codex_memory_codex_nyra_codex_memory_1780149797685_178014979768",
+  "generated_at": "2026-05-30T14:03:17.687Z",
+  "updated_at": "2026-05-30T14:03:17.687Z",
+  "agent_id": "codex_nyra_codex_memory",
+  "session_id": "codex_nyra_codex_memory_1780149797685",
+  "title": "Import memoria Codex in Nyra locale",
+  "request": "Importare in Nyra locale la memoria Codex da SHARED_MEMORY con distillazione redatta e apprendimento mentre si lavora; solo universal-core-2.0 e SHARED_MEMORY; niente Render, produzione, chiavi, clienti o prezzi",
+  "success_criteria": "Nyra ha memoria di lavoro Codex popolata, importer incrementale testato, governance/read-only leggono il summary; snapshot/eventi/finalize aggiornati",
+  "allowed_paths": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

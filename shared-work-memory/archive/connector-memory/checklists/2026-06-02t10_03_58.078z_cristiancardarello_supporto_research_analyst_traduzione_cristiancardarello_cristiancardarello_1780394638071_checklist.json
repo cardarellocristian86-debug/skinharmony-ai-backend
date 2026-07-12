@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-02t10_03_58.078z_cristiancardarello_supporto_research_analyst_traduzione",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "contract_id": "2026-06-02t10_03_58.076z_cristiancardarello_supporto_research_analyst_traduzione",
+  "generated_at": "2026-06-02T10:03:58.078Z",
+  "updated_at": "2026-06-02T10:10:00.376Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "title": "Supporto research analyst traduzione Smart Desk",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T10:03:58.078Z",
+      "updated_at": "2026-06-02T10:09:02.247Z",
+      "evidence": [
+        "Core gate ALLOWED; letti SHARED_WORK, report lingua Smart Desk e radar precedenti"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T10:03:58.078Z",
+      "updated_at": "2026-06-02T10:09:14.920Z",
+      "evidence": [
+        "Nessuna patch codice; scritti SHARED_WORK messages/findings/decisions ed evento memoria lunga"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T10:03:58.078Z",
+      "updated_at": "2026-06-02T10:09:22.274Z",
+      "evidence": [
+        "software radar DE: findings=1403 high=649; runtime radar extracted=600 high=56; desktop radar extracted=600 high=30; Core decide REVIEW_REQUIRED"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T10:03:58.078Z",
+      "updated_at": "2026-06-02T10:10:00.376Z",
+      "evidence": [
+        "SHARED_WORK, EVENTS e checkpoint preflight/during/after aggiornati; pronto finalize"
+      ],
+      "note": ""
+    }
+  ]
+}

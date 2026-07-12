@@ -1,0 +1,57 @@
+{
+  "pulse_id": "2026-05-29t20_25_17.099z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+  "generated_at": "2026-05-29T20:25:17.099Z",
+  "agent_id": "codex_ai_gold_safe_mode_fix",
+  "session_id": "codex_ai_gold_safe_mode_fix_1780086317096",
+  "trace_id": "trace_codex_ai_gold_safe_mode_fix_codex_ai_gold_safe_mode_fix_1780086317096_1780",
+  "title": "Fix AI Gold safe mode UX e latenza initial pulse",
+  "summary": "Avvio lavoro governato: La pagina AI Gold su Render per utente parrucchiere mostra safe_mode_active JSON grezzo e alcune chiamate Gold sono lente: cockpit 59s, decision-context 28s. Rendere cockpit piu veloce e messaggi safe mode puliti.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t20_25_17.098z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+    "title": "Fix AI Gold safe mode UX e latenza",
+    "trace_id": "trace_codex_ai_gold_safe_mode_fix_codex_ai_gold_safe_mode_fix_1780086317096_1780",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-29t20_25_17.098z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+    "title": "Fix AI Gold safe mode UX e latenza",
+    "request": "La pagina AI Gold su Render per utente parrucchiere mostra safe_mode_active JSON grezzo e alcune chiamate Gold sono lente: cockpit 59s, decision-context 28s. Rendere cockpit piu veloce e messaggi safe mode puliti.",
+    "success_criteria": "AI Gold non mostra JSON grezzo; endpoint principali sotto timeout frontend; cockpit/decision-context live rispondono rapidamente o con fallback leggibile"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t20_25_17.098z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+    "trace_id": "trace_codex_ai_gold_safe_mode_fix_codex_ai_gold_safe_mode_fix_1780086317096_1780",
+    "allowed_paths": [
+      "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live",
+      "skin-harmony-web",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.708,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

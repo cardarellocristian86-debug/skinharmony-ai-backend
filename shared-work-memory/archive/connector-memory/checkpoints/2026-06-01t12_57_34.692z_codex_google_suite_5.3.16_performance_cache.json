@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-01t12_57_34.692z_codex_google_suite_5.3.16_performance_cache",
+  "generated_at": "2026-06-01T12:57:34.693Z",
+  "agent_id": "codex_google",
+  "session_id": "codex_google_1779720326302",
+  "trace_id": null,
+  "title": "Suite 5.3.16 performance cache",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Core gate allowed; scan live 5.3.15 available; scope local read-only cache patch, no deploy/upload/sync.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": null,
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

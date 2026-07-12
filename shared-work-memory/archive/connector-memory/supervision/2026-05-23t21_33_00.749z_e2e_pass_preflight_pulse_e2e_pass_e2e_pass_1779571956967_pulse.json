@@ -1,0 +1,27 @@
+{
+  "pulse_id": "2026-05-23t21_33_00.749z_e2e_pass_preflight_pulse",
+  "generated_at": "2026-05-23T21:33:00.750Z",
+  "agent_id": "e2e_pass",
+  "session_id": "e2e_pass_1779571956967",
+  "title": "Preflight pulse",
+  "summary": "Workflow completo in test locale: sessione, lock e intento sono attivi; preparo checkpoint preflight prima del dry-run mutante.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [],
+  "next": "Scrivere checkpoint preflight e provare exec dry-run",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t21_32_44.232z_e2e_pass_e2e_enforcement_pass",
+    "title": "E2E enforcement pass",
+    "request": "Verificare che il connettore consenta dry-run mutante solo con workflow completo",
+    "success_criteria": "Sessione lock intento pulse e checkpoint preflight presenti"
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.538,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

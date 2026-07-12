@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-04t21_46_19.913z_cristiancardarello_verifiche_connettore_locale",
+  "generated_at": "2026-06-04T21:46:19.914Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609539165",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609539165_1780609539165",
+  "title": "Verifiche connettore locale",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Eseguiti doctor, orchestrator-status e core2-watch; Core locale raggiungibile e gate operativo.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t21_45_39.166z_cristiancardarello_collegamento_connettore_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

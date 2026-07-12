@@ -1,0 +1,58 @@
+{
+  "pulse_id": "2026-05-29t15_25_10.527z_checklist_smoke_01_checklist_smoke_initial_pulse",
+  "generated_at": "2026-05-29T15:25:10.527Z",
+  "agent_id": "checklist_smoke_01",
+  "session_id": "checklist_smoke_01_session",
+  "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+  "title": "Checklist smoke initial pulse",
+  "summary": "Avvio lavoro governato: Verificare enforcement checklist",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t15_25_10.525z_checklist_smoke_01_checklist_smoke",
+    "title": "Checklist smoke",
+    "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+    "open": 2,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 2
+  },
+  "intent": {
+    "intent_id": "2026-05-29t15_25_10.523z_checklist_smoke_01_checklist_smoke",
+    "title": "Checklist smoke",
+    "request": "Verificare enforcement checklist",
+    "success_criteria": "Finalize blocca con checklist aperta e passa quando chiusa"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t15_25_10.525z_checklist_smoke_01_checklist_smoke",
+    "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+    "allowed_paths": [
+      "reports/codex-core",
+      "SHARED_MEMORY",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "summary_troppo_superficiale_per_intento_ampio",
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.3,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

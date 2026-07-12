@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-29t20_34_46.046z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "generated_at": "2026-05-29T20:34:46.046Z",
+  "agent_id": "codex_core_nyra_deploy_key",
+  "session_id": "codex_core_nyra_deploy_key_1780086886044",
+  "trace_id": "trace_codex_core_nyra_deploy_key_codex_core_nyra_deploy_key_1780086886044_178008",
+  "title": "Deploy Core Nyra adapter e rotazione Suite Codex key preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-29t20_34_46.045z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "checklist_id": "2026-05-29t20_34_46.046z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-29t20_34_46.046z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+    "title": "Deploy Core Nyra adapter e rotazione Suite Codex key",
+    "trace_id": "trace_codex_core_nyra_deploy_key_codex_core_nyra_deploy_key_1780086886044_178008",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,44 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "generated_at": "2026-05-30T19:14:25.196Z",
+  "updated_at": "2026-05-30T19:14:25.196Z",
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "title": "Nyra deep scan Smart Desk",
+  "request": "Fare leggere a Nyra tutto il codice Smart Desk su sorgente locale/mirror Render in modalita read-only: memoria volatile da inizio a fine codice, overlay rami/shortcode/code, eventi, intercettazione errori o pezzi non collegati profondi",
+  "success_criteria": "Scanner/report Nyra produce inventario codice, collegamenti route/componenti/API/simboli, warning su non collegati/sospetti, eventi locali/shared memory, nessun Render write/produzione/chiavi/clienti/prezzi",
+  "allowed_paths": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "reports/smartdesk",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

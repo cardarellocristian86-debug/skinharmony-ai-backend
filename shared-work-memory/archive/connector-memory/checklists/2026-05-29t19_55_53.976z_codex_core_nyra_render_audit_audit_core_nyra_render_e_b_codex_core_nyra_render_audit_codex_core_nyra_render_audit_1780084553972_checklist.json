@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t19_55_53.976z_codex_core_nyra_render_audit_audit_core_nyra_render_e_b",
+  "trace_id": "trace_codex_core_nyra_render_audit_codex_core_nyra_render_audit_1780084553972_17",
+  "contract_id": "2026-05-29t19_55_53.975z_codex_core_nyra_render_audit_audit_core_nyra_render_e_b",
+  "generated_at": "2026-05-29T19:55:53.976Z",
+  "updated_at": "2026-05-29T20:14:01.299Z",
+  "agent_id": "codex_core_nyra_render_audit",
+  "session_id": "codex_core_nyra_render_audit_1780084553972",
+  "title": "Audit Core/Nyra Render e bridge software",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:55:53.976Z",
+      "updated_at": "2026-05-29T20:13:36.898Z",
+      "evidence": [
+        "reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:55:53.976Z",
+      "updated_at": "2026-05-29T20:13:40.991Z",
+      "evidence": [
+        "Audit read-only: nessuna modifica codice, nessun deploy, nessuna chiave cambiata"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:55:53.976Z",
+      "updated_at": "2026-05-29T20:13:45.045Z",
+      "evidence": [
+        "npm --prefix services/universal-core-service test; node --check servizi; live health/gateway probes; npm run core-plugin:check"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:55:53.976Z",
+      "updated_at": "2026-05-29T20:14:01.298Z",
+      "evidence": [
+        "Checkpoint during/after scritto; finalize in esecuzione; evento SHARED_MEMORY generato dal connector"
+      ],
+      "note": ""
+    }
+  ]
+}

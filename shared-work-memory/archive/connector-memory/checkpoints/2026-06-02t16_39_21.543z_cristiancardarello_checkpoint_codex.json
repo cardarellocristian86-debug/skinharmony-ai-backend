@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t16_39_21.543z_cristiancardarello_checkpoint_codex",
+  "generated_at": "2026-06-02T16:39:21.543Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780403215168",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780403215168_1780403215168",
+  "title": "Checkpoint Codex",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Letti snapshot e report Suite 5.3.19. Stato: live/install/manifest e sync Render completati; Core API Contract pronto. Necessario solo supporto analitico e messaggio a Codex Suite, nessuna patch.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t12_26_55.171z_cristiancardarello_audit_pagine_non_collegate_sito_skin",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

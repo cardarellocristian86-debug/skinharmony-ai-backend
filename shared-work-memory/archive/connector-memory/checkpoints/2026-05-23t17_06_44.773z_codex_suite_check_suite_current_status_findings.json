@@ -1,0 +1,17 @@
+{
+  "checkpoint_id": "2026-05-23t17_06_44.773z_codex_suite_check_suite_current_status_findings",
+  "generated_at": "2026-05-23T17:06:44.774Z",
+  "agent_id": "codex_suite_check",
+  "session_id": "codex_suite_check_1779555865840",
+  "title": "Suite current status findings",
+  "status": "in_progress",
+  "summary": "Check Suite completato: Suite 5.2.19 locale sana; page factory pass; template authority presente; prossima priorita consigliata: riallineare connettore installato 0.2.19->0.2.24 e poi testare flusso Template Builder Suite-first end-to-end. Immagini/DAM e nuovi template restano standby fino a validazione builder.",
+  "files": [
+    "reports/wordpress/suite_operational_closure_latest.json",
+    "reports/wordpress/page-factory/page-factory-accelerator-latest.json",
+    "SHARED_MEMORY/reports/SUITE_TEMPLATE_BUILDER_SUITE_FIRST_5_2_11_2026-05-22.md"
+  ],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: skinharmony-core-mcp
+    env: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm run core:mcp
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MCP_PUBLIC_URL
+        value: https://skinharmony-core-mcp.onrender.com
+      - key: AUTH0_ISSUER
+        sync: false
+      - key: AUTH0_AUDIENCE
+        value: https://skinharmony-core-mcp.onrender.com/mcp
+      - key: MCP_TENANT_CLAIM
+        value: https://skinharmony.it/tenant_id
+      - key: MCP_DEFAULT_TENANT_ID
+        value: owner-private
+      - key: MCP_SUPPORTED_SCOPES
+        value: core:read,core:govern
+      - key: UNIVERSAL_CORE_URL
+        value: https://skinharmony-universal-core.onrender.com
+      - key: UNIVERSAL_CORE_KEYS_JSON
+        sync: false
+      - key: UNIVERSAL_CORE_KEY
+        sync: false
+      - key: SHARED_WORK_MEMORY_ROOT
+        value: ./shared-work-memory

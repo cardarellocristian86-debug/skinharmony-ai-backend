@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-05-24T14:45:48.568Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779630880057",
+  "mode": "core2_local_supervision_once",
+  "intent_present": false,
+  "latest_pulse": null,
+  "assessment": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 1,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  },
+  "note": "Questo watcher non legge pensieri privati del modello. Legge intento, pulse, checkpoint, file dichiarati e report per richiamare Codex durante il lavoro."
+}

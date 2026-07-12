@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-24t20_13_50.139z_cristiancardarello_preflight_suite_5.2.43_zip_locale",
+  "generated_at": "2026-05-24T20:13:50.143Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779652592846",
+  "title": "Preflight Suite 5.2.43 zip locale",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Generazione zip locale Suite 5.2.43 con template beauty commerce Gutenberg-native; nessun deploy, nessuna modifica live WordPress.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php"
+  ],
+  "tests": [
+    "node scripts/test_template_builder_gutenberg_native.js: 11/11 OK; node scripts/test_template_builder_inline_editor.js: 31/31 OK; SHSS_EXPECTED_VERSION=5.2.43 node scripts/test_skinharmony_site_suite_plugin.js: OK"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

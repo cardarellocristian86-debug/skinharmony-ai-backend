@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t16_52_17.556z_codex_suite_research_support_checkpoint_codex",
+  "generated_at": "2026-06-02T16:52:17.557Z",
+  "agent_id": "codex_suite_research_support",
+  "session_id": "codex_suite_research_support_1780417722173",
+  "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+  "title": "Checkpoint Codex",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Preflight supporto Suite: task read-only/memoria condivisa, nessun codice o produzione. Obiettivo: leggere stato 5.3.19 e lasciare handoff al Codex Suite.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t16_28_42.176z_codex_suite_research_support_supporto_analisi_suite_per",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

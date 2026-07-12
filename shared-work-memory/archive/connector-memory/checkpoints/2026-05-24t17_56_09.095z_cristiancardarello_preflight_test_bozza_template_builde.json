@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t17_56_09.095z_cristiancardarello_preflight_test_bozza_template_builde",
+  "generated_at": "2026-05-24T17:56:09.095Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779645317865",
+  "title": "Preflight test bozza Template Builder",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: solo draft WordPress temporaneo e report locale. Endpoint: WP REST pages/media e Suite template-builder/save. Vietati publish, deploy, chiavi, tenant, modifica pagine live esistenti.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-04t21_46_10.948z_cristiancardarello_connettore_locale_verificato",
+  "generated_at": "2026-06-04T21:46:10.948Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609539165",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609539165_1780609539165",
+  "title": "Connettore locale verificato",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Doctor OK, Core connection tenant codexai OK, orchestrator-status letto, core2-watch on_track; nessuna modifica codice/produzione.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t21_45_39.166z_cristiancardarello_collegamento_connettore_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

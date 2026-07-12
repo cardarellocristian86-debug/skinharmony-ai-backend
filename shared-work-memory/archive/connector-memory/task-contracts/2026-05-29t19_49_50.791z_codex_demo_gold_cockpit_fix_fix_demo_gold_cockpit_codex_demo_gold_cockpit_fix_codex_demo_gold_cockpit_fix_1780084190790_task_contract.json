@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+  "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+  "generated_at": "2026-05-29T19:49:50.791Z",
+  "updated_at": "2026-05-29T19:49:50.791Z",
+  "agent_id": "codex_demo_gold_cockpit_fix",
+  "session_id": "codex_demo_gold_cockpit_fix_1780084190790",
+  "title": "Fix demo_gold_cockpit",
+  "request": "Correggere ricorsione Gold State/Data Quality che rompe demo_gold_cockpit live: login ok ma cockpit fallback e data-quality/profitability 500",
+  "success_criteria": "Endpoint demo_gold_cockpit live tornano senza stack overflow: data-quality 200, profitability 200, cockpit con sezioni",
+  "allowed_paths": [
+    "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live/src/DesktopMirrorService.js",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

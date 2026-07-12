@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-28t18_51_32.322z_codex_smartdesk_ai_gold_priority_filter_deployed",
+  "generated_at": "2026-05-28T18:51:32.325Z",
+  "agent_id": "codex_smartdesk",
+  "session_id": "codex_smartdesk_1779992943709",
+  "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+  "title": "AI Gold priority filter deployed",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Filtro priorita pubblicato: UI principale mostra solo priorita vere, stato pulito senza urgenze, build e live verificati",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

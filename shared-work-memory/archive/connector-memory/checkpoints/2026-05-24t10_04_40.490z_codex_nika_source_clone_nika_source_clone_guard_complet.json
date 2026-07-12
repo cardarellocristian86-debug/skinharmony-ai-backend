@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-24t10_04_40.490z_codex_nika_source_clone_nika_source_clone_guard_complet",
+  "generated_at": "2026-05-24T10:04:40.491Z",
+  "agent_id": "codex_nika_source_clone",
+  "session_id": "codex_nika_source_clone_1779616508892",
+  "title": "Nika source clone guard completed",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Suite 5.2.25 pronta: Nika non interpreta piu, richiede source clone evidence; zip e manifest verificati.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "scripts/test_nika_source_clone_governance.js",
+    "dist/skinharmony-site-suite-5.2.25.zip",
+    "SHARED_MEMORY/reports/SUITE_5_2_25_NIKA_SOURCE_CLONE_GUARD_2026-05-24.md"
+  ],
+  "tests": [
+    "node scripts/test_nika_source_clone_governance.js",
+    "node scripts/test_template_authority_v2_registry_binding.js",
+    "npm run suite:governance:test",
+    "npm run suite:page-factory:test",
+    "npm run suite:operational:closure"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

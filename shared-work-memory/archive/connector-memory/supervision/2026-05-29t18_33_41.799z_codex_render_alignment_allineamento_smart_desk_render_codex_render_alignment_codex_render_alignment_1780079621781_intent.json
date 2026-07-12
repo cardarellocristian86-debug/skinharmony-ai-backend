@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t18_33_41.799z_codex_render_alignment_allineamento_smart_desk_render",
+  "generated_at": "2026-05-29T18:33:41.799Z",
+  "agent_id": "codex_render_alignment",
+  "session_id": "codex_render_alignment_1780079621781",
+  "trace_id": "trace_codex_render_alignment_codex_render_alignment_1780079621781_1780079621781",
+  "title": "Allineamento Smart Desk Render",
+  "request": "Capire quali modifiche Smart Desk locali devono passare nella repo Git/Render e preparare allineamento senza deploy cieco",
+  "success_criteria": "Mappa locale vs Render chiara, nessuna copia indiscriminata, eventuali file aggiornati nella repo Render con test e report",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

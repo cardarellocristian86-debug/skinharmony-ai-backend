@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-23t11_21_32.350z_codex_4_pulse",
+  "generated_at": "2026-05-23T11:21:32.351Z",
+  "agent_id": "codex_4",
+  "session_id": "codex_4_1779535292197",
+  "title": "Pulse Codex",
+  "summary": "Sessione codex_4 avviata per suite. Intent: Lavoro suite assegnato da Cristian Cardarello. Stato: pronta, nessuna modifica eseguita prima del task operativo.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/sessions",
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision"
+  ],
+  "tests": [
+    "Avvio sessione, intent e pulse iniziale"
+  ],
+  "next": "Ricevere task owner, aggiornare pulse con file reali, test, rischio e report.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t11_21_32.274z_codex_4_lavoro_codex_4",
+    "title": "Lavoro codex_4",
+    "request": "Lavoro suite assegnato da Cristian Cardarello",
+    "success_criteria": "File, test, report e prossima azione devono essere dichiarati"
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.545,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}
