@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadConfig } from "../src/config.js";
 
+test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => {
+  const config = loadConfig({
+    CORE_BASE_URL: "https://core.example.test/"
+  });
+
+  assert.equal(config.universalCoreUrl, "https://core.example.test");
+});
+
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {
   const config = loadConfig({
     NODE_ENV: "production",
