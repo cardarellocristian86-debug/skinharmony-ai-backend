@@ -1984,7 +1984,40 @@ function journeyProfileSummary(profile) {
 function recordNyraDecisionJourneyEvent(store, event) {
   const duplicate = store.events.find((item) => item.idempotency_key === event.idempotency_key);
   if (duplicate) {
-    return { event: duplicate, duplicate: true, profile: journeyProfileSummary(store.profiles[duplicate.profile_id]) };
+    const profile = store.profiles[duplicate.profile_id];
+    let updated = false;
+    if (profile && duplicate.stage === "commerce") {
+      const oldAmount = Number(duplicate.value?.amount || 0);
+      const oldCost = duplicate.value?.cost === null || duplicate.value?.cost === undefined ? 0 : Number(duplicate.value.cost || 0);
+      const oldMargin = duplicate.value?.margin === null || duplicate.value?.margin === undefined
+        ? 0
+        : Number(duplicate.value.margin || 0);
+      const newAmount = Number(event.value?.amount || 0);
+      const newCost = event.value?.cost === null || event.value?.cost === undefined ? 0 : Number(event.value.cost || 0);
+      const newMargin = event.value?.margin === null || event.value?.margin === undefined
+        ? 0
+        : Number(event.value.margin || 0);
+      if (newCost > oldCost || newMargin !== oldMargin || newAmount !== oldAmount) {
+        profile.value.revenue += newAmount - oldAmount;
+        profile.value.cost += newCost - oldCost;
+        profile.value.margin += newMargin - oldMargin;
+        updated = true;
+      }
+    }
+    if (duplicate.status !== "ready" && event.status === "ready") {
+      duplicate.status = "ready";
+      const stage = profile?.stages?.[duplicate.stage];
+      if (stage) stage.status = "ready";
+      updated = true;
+    }
+    if (event.value && JSON.stringify(duplicate.value) !== JSON.stringify(event.value)) {
+      duplicate.value = event.value;
+      updated = true;
+    }
+    if (event.metadata && Object.keys(event.metadata).length) {
+      duplicate.metadata = { ...(duplicate.metadata || {}), ...event.metadata };
+    }
+    return { event: duplicate, duplicate: true, updated, profile: journeyProfileSummary(profile || store.profiles[duplicate.profile_id]) };
   }
 
   const now = event.received_at;
@@ -3001,7 +3034,7 @@ async function syncSmartDeskSource() {
   }
 
   const data = loadControlData();
-  const journeyIngest = { received: 0, recorded: 0, duplicates: 0, rejected: 0 };
+  const journeyIngest = { received: 0, recorded: 0, updated: 0, duplicates: 0, rejected: 0 };
   if (bridgeSnapshot?.ok) {
     const salesById = new Map(data.sales.map((sale) => [String(sale.id || ""), sale]));
     const directSales = Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : [];
@@ -3064,10 +3097,12 @@ async function syncSmartDeskSource() {
         return;
       }
       const result = recordNyraDecisionJourneyEvent(journeyStore, normalized);
-      if (result.duplicate) journeyIngest.duplicates += 1;
-      else journeyIngest.recorded += 1;
+      if (result.duplicate) {
+        if (result.updated) journeyIngest.updated += 1;
+        else journeyIngest.duplicates += 1;
+      } else journeyIngest.recorded += 1;
     });
-    if (journeyIngest.recorded > 0) saveNyraDecisionJourney(journeyStore);
+    if (journeyIngest.recorded > 0 || journeyIngest.updated > 0) saveNyraDecisionJourney(journeyStore);
   }
 
   const snapshot = {
