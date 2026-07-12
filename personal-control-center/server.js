@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -1835,6 +1836,13 @@ function journeyProfileId(payload = {}) {
   return `p_${journeyFingerprint(`skinharmony:codexai:${identity}`)}`;
 }
 
+function journeyTenantScope(payload = {}) {
+  return resolveTenantScope(payload, {
+    tenantId: process.env.NYRA_CORE_TENANT_ID || "codexai",
+    centerId: "center_admin"
+  });
+}
+
 function emptyJourneyStages() {
   return Object.fromEntries(NYRA_JOURNEY_STAGES.map((stage) => [stage.id, {
     status: "missing",
@@ -1905,6 +1913,7 @@ function normalizeJourneyEvent(payload = {}, idempotencyKey = "") {
 
   const profileId = journeyProfileId(payload);
   if (!profileId) return { error: "journey_identity_required", required: ["profile_id", "customer_id", "lead_id", "external_id", "email", "phone"] };
+  const tenantScope = journeyTenantScope(payload);
 
   const source = String(payload.source || payload.source_system || "").trim().toLowerCase().replace(/[^a-z0-9_:-]/g, "_").slice(0, 80);
   if (!source) return { error: "journey_source_required" };
@@ -1930,14 +1939,17 @@ function normalizeJourneyEvent(payload = {}, idempotencyKey = "") {
   const evidence = normalizeJourneyEvidence(payload.evidence);
   const externalEventId = String(payload.external_event_id || payload.externalEventId || "").trim();
   const fallbackIdempotency = externalEventId
-    ? [source, externalEventId].join("|")
-    : [profileId, stage, source, eventType, parsedOccurredAt.toISOString()].join("|");
+    ? [tenantScope.namespace, source, externalEventId].join("|")
+    : [tenantScope.namespace, profileId, stage, source, eventType, parsedOccurredAt.toISOString()].join("|");
   const normalizedIdempotency = String(idempotencyKey || payload.idempotency_key || fallbackIdempotency).trim().slice(0, 180);
 
   return {
     event_id: `journey_evt_${crypto.randomUUID()}`,
     idempotency_key: journeyFingerprint(normalizedIdempotency),
     profile_id: profileId,
+    profile_store_key: profileStoreKey(profileId, tenantScope),
+    tenant_id: tenantScope.tenantId,
+    center_id: tenantScope.centerId,
     stage,
     stage_label: NYRA_JOURNEY_STAGES.find((item) => item.id === stage)?.label || stage,
     event_type: eventType,
@@ -1967,6 +1979,8 @@ function journeyProfileSummary(profile) {
   const readyCount = stages.filter((stage) => stage.status === "ready").length;
   return {
     profile_id: profile.profile_id,
+    tenant_id: profile.tenant_id || null,
+    center_id: profile.center_id || null,
     event_count: Number(profile.event_count || 0),
     first_seen_at: profile.first_seen_at || null,
     last_event_at: profile.last_event_at || null,
@@ -1982,10 +1996,34 @@ function journeyProfileSummary(profile) {
 }
 
 function recordNyraDecisionJourneyEvent(store, event) {
-  const duplicate = store.events.find((item) => item.idempotency_key === event.idempotency_key);
+  let duplicate = store.events.find((item) => item.idempotency_key === event.idempotency_key);
+  let scopeAdopted = false;
+  if (!duplicate && event.source_record_fingerprint) {
+    duplicate = store.events.find((item) => !item.tenant_id
+      && item.profile_id === event.profile_id
+      && item.stage === event.stage
+      && item.source === event.source
+      && item.source_record_fingerprint === event.source_record_fingerprint);
+    if (duplicate) {
+      duplicate.tenant_id = event.tenant_id;
+      duplicate.center_id = event.center_id;
+      duplicate.profile_store_key = event.profile_store_key;
+      duplicate.idempotency_key = event.idempotency_key;
+      scopeAdopted = true;
+    }
+  }
   if (duplicate) {
-    const profile = store.profiles[duplicate.profile_id];
-    let updated = false;
+    const duplicateProfileKey = duplicate.profile_store_key || profileStoreKey(duplicate.profile_id, duplicate);
+    let profile = store.profiles[duplicateProfileKey];
+    if (!profile && store.profiles[duplicate.profile_id] && !store.profiles[duplicate.profile_id].tenant_id) {
+      profile = store.profiles[duplicate.profile_id];
+      delete store.profiles[duplicate.profile_id];
+      profile.tenant_id = duplicate.tenant_id;
+      profile.center_id = duplicate.center_id;
+      profile.profile_store_key = duplicateProfileKey;
+      store.profiles[duplicateProfileKey] = profile;
+    }
+    let updated = scopeAdopted;
     if (profile && duplicate.stage === "commerce") {
       const oldAmount = Number(duplicate.value?.amount || 0);
       const oldCost = duplicate.value?.cost === null || duplicate.value?.cost === undefined ? 0 : Number(duplicate.value.cost || 0);
@@ -2017,12 +2055,16 @@ function recordNyraDecisionJourneyEvent(store, event) {
     if (event.metadata && Object.keys(event.metadata).length) {
       duplicate.metadata = { ...(duplicate.metadata || {}), ...event.metadata };
     }
-    return { event: duplicate, duplicate: true, updated, profile: journeyProfileSummary(profile || store.profiles[duplicate.profile_id]) };
+    return { event: duplicate, duplicate: true, updated, profile: journeyProfileSummary(profile) };
   }
 
   const now = event.received_at;
-  const profile = store.profiles[event.profile_id] || {
+  const eventProfileKey = event.profile_store_key || profileStoreKey(event.profile_id, event);
+  const profile = store.profiles[eventProfileKey] || {
     profile_id: event.profile_id,
+    profile_store_key: eventProfileKey,
+    tenant_id: event.tenant_id,
+    center_id: event.center_id,
     first_seen_at: now,
     last_event_at: null,
     event_count: 0,
@@ -2055,7 +2097,7 @@ function recordNyraDecisionJourneyEvent(store, event) {
     profile.value.margin += margin;
     profile.value.currency = event.value.currency;
   }
-  store.profiles[event.profile_id] = profile;
+  store.profiles[eventProfileKey] = profile;
   store.events.push(event);
   return { event, duplicate: false, profile: journeyProfileSummary(profile) };
 }
@@ -2080,9 +2122,22 @@ function buildJourneySourceReadiness(context = {}, store = loadNyraDecisionJourn
   ].map((source) => ({ ...source, state: source.connected ? "ready" : "missing" }));
 }
 
-function buildNyraDecisionJourneyReport({ profileId = "", context = null } = {}) {
+function buildNyraDecisionJourneyReport({ profileId = "", context = null, tenantId = "", centerId = "" } = {}) {
   const store = loadNyraDecisionJourney();
-  const profiles = Object.values(store.profiles || {});
+  const scope = journeyTenantScope({ tenant_id: tenantId, center_id: centerId });
+  const profiles = Object.values(store.profiles || {}).filter((profile) => (
+    String(profile.tenant_id || "") === scope.tenantId
+    && String(profile.center_id || "") === scope.centerId
+  ));
+  const events = store.events.filter((event) => (
+    String(event.tenant_id || "") === scope.tenantId
+    && String(event.center_id || "") === scope.centerId
+  ));
+  const scopedStore = {
+    ...store,
+    events,
+    profiles: Object.fromEntries(profiles.map((profile) => [profile.profile_store_key || profileStoreKey(profile.profile_id, scope), profile]))
+  };
   const stageCoverage = NYRA_JOURNEY_STAGES.map((stage) => {
     const ready = profiles.filter((profile) => profile.stages?.[stage.id]?.status === "ready").length;
     return {
@@ -2093,14 +2148,14 @@ function buildNyraDecisionJourneyReport({ profileId = "", context = null } = {})
     };
   });
   const resolvedProfileId = profileId ? journeyProfileId({ profile_id: profileId }) : "";
-  const profile = resolvedProfileId ? store.profiles[resolvedProfileId] : null;
+  const profile = resolvedProfileId ? store.profiles[profileStoreKey(resolvedProfileId, scope)] : null;
   return {
     version: "decision_to_value_journey_v1",
     generated_at: new Date().toISOString(),
     persisted: Boolean(nyraStorageRoot),
     profile_count: profiles.length,
-    event_count: store.events.length,
-    source_readiness: buildJourneySourceReadiness(context || {}, store),
+    event_count: events.length,
+    source_readiness: buildJourneySourceReadiness(context || {}, scopedStore),
     stage_coverage: stageCoverage,
     missing_stage_priority: stageCoverage
       .slice()
@@ -3036,6 +3091,10 @@ async function syncSmartDeskSource() {
   const data = loadControlData();
   const journeyIngest = { received: 0, recorded: 0, updated: 0, duplicates: 0, rejected: 0 };
   if (bridgeSnapshot?.ok) {
+    const tenantScope = resolveTenantScope(bridgeSnapshot, {
+      tenantId: process.env.NYRA_CORE_TENANT_ID || "codexai",
+      centerId: "center_admin"
+    });
     const salesById = new Map(data.sales.map((sale) => [String(sale.id || ""), sale]));
     const directSales = Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : [];
     const paymentSales = directSales.length
@@ -3054,8 +3113,14 @@ async function syncSmartDeskSource() {
     [...directSales, ...paymentSales].forEach((sale) => {
       if (!sale.sale_id) return;
       const profileId = sale.client_id ? journeyProfileId({ external_id: sale.client_id }) : "";
-      salesById.set(String(sale.sale_id), {
-        id: String(sale.sale_id),
+      const scopedSaleId = scopedEntityId("sale", sale.sale_id, tenantScope);
+      const legacySaleId = String(sale.sale_id);
+      if (salesById.has(legacySaleId) && !salesById.get(legacySaleId)?.tenant_id) salesById.delete(legacySaleId);
+      salesById.set(scopedSaleId, {
+        id: scopedSaleId,
+        sourceId: String(sale.sale_id),
+        tenant_id: tenantScope.tenantId,
+        center_id: tenantScope.centerId,
         profileId,
         price: Number(sale.amount || 0),
         estimatedCost: sale.cost === null || sale.cost === undefined ? 0 : Number(sale.cost),
@@ -3071,8 +3136,14 @@ async function syncSmartDeskSource() {
     const inventoryById = new Map(data.inventoryItems.map((item) => [String(item.id || ""), item]));
     (Array.isArray(bridgeSnapshot.inventory) ? bridgeSnapshot.inventory : []).forEach((item) => {
       if (!item.product_id) return;
-      inventoryById.set(String(item.product_id), {
-        id: String(item.product_id),
+      const scopedProductId = scopedEntityId("inventory", item.product_id, tenantScope);
+      const legacyProductId = String(item.product_id);
+      if (inventoryById.has(legacyProductId) && !inventoryById.get(legacyProductId)?.tenant_id) inventoryById.delete(legacyProductId);
+      inventoryById.set(scopedProductId, {
+        id: scopedProductId,
+        sourceId: String(item.product_id),
+        tenant_id: tenantScope.tenantId,
+        center_id: tenantScope.centerId,
         sku: String(item.sku || ""),
         initialQuantity: Number(item.quantity || 0),
         minQuantity: Number(item.min_quantity || 0),
@@ -3089,6 +3160,8 @@ async function syncSmartDeskSource() {
       journeyIngest.received += 1;
       const normalized = normalizeJourneyEvent({
         ...event,
+        tenant_id: tenantScope.tenantId,
+        center_id: tenantScope.centerId,
         external_id: event.profile_external_id,
         source: event.source || "smartdesk"
       });
@@ -3109,6 +3182,8 @@ async function syncSmartDeskSource() {
     id: `smartdesk_api_${Date.now()}`,
     source: bridgeSnapshot?.ok ? "smartdesk_live_bridge" : "smartdesk_local_live",
     date: new Date().toISOString(),
+    tenant_id: bridgeSnapshot?.tenant_id || null,
+    center_id: bridgeSnapshot?.center_id || null,
     ...(bridgeSnapshot?.counts || localCounts),
     liveHealth,
     bridge: {
@@ -4440,17 +4515,21 @@ app.post("/api/nyra/decision-to-value/preview", async (req, res) => {
 
 app.get("/api/nyra/decision-to-value/report", (_req, res) => {
   const context = buildControlContext();
+  const tenantId = String(_req.query.tenant_id || "").trim();
+  const centerId = String(_req.query.center_id || "").trim();
   res.json({
     ok: true,
     service: "skinharmony-nyra-core",
     mode: "read_only_report",
-    report: buildNyraDecisionJourneyReport({ context }),
+    report: buildNyraDecisionJourneyReport({ context, tenantId, centerId }),
   });
 });
 
 app.get("/api/nyra/decision-to-value/status", (req, res) => {
   const profileId = String(req.query.profile_id || "").trim();
-  const report = buildNyraDecisionJourneyReport({ profileId });
+  const tenantId = String(req.query.tenant_id || "").trim();
+  const centerId = String(req.query.center_id || "").trim();
+  const report = buildNyraDecisionJourneyReport({ profileId, tenantId, centerId });
   res.json({
     ok: true,
     service: "skinharmony-nyra-core",
@@ -4517,7 +4596,11 @@ app.post("/api/nyra/decision-to-value/events", (req, res) => {
     duplicate: result.duplicate,
     event_id: result.event.event_id,
     profile: result.profile,
-    journey: buildNyraDecisionJourneyReport({ profileId: result.event.profile_id }),
+    journey: buildNyraDecisionJourneyReport({
+      profileId: result.event.profile_id,
+      tenantId: result.event.tenant_id,
+      centerId: result.event.center_id
+    }),
   });
 });
 

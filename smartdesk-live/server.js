@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
+const { resolveBridgeScope, hasExplicitBridgeScope } = require("./src/TenantIsolation");
 const nodemailer = require("nodemailer");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
@@ -401,6 +402,9 @@ function findBridgeAccess(req) {
     if (expiresAt && Number.isFinite(Date.parse(expiresAt)) && new Date(expiresAt) < now) {
       return { ok: false, code: "bridge_key_expired", id: record.id || "" };
     }
+    if (String(process.env.SMARTDESK_REQUIRE_SCOPED_BRIDGE_KEYS || "").toLowerCase() === "true" && !hasExplicitBridgeScope(record)) {
+      return { ok: false, code: "bridge_scope_required", id: record.id || "" };
+    }
 
     return {
       ok: true,
@@ -408,19 +412,31 @@ function findBridgeAccess(req) {
       label: record.label || record.name || "Smart Desk Bridge",
       plan: record.plan || "annual",
       expiresAt,
-      scopes: Array.isArray(record.scopes) ? record.scopes : ["health", "waas_bridge"]
+      scopes: Array.isArray(record.scopes) ? record.scopes : ["health", "waas_bridge"],
+      scopeBound: hasExplicitBridgeScope(record),
+      ...resolveBridgeScope(record, {
+        tenantId: process.env.UNIVERSAL_CORE_TENANT_ID || "smartdesk-skinharmony",
+        centerId: service?.getCenterId?.() || "center_admin",
+        centerName: service?.getCenterName?.() || "Privilege Parrucchieri"
+      })
     };
   }
 
   return { ok: false, code: "invalid_bridge_key" };
 }
 
-function bridgeSession() {
+function bridgeSession(bridge = {}) {
+  const scope = resolveBridgeScope(bridge, {
+    tenantId: process.env.UNIVERSAL_CORE_TENANT_ID || "smartdesk-skinharmony",
+    centerId: service?.getCenterId?.() || "center_admin",
+    centerName: service?.getCenterName?.() || "Privilege Parrucchieri"
+  });
   return {
     role: "superadmin",
     username: "nyra_bridge",
-    centerId: service?.getCenterId?.() || "center_admin",
-    centerName: service?.getCenterName?.() || "Privilege Parrucchieri",
+    tenantId: scope.tenantId,
+    centerId: scope.centerId,
+    centerName: scope.centerName,
     subscriptionPlan: "gold",
     accessState: "active"
   };
@@ -441,8 +457,10 @@ function bridgeMoney(row, keys = []) {
 }
 
 function buildNyraBridgeSnapshot(bridge) {
-  const session = bridgeSession();
+  const session = bridgeSession(bridge);
+  const tenantId = session.tenantId;
   const centerId = session.centerId;
+  const scope = { tenant_id: tenantId, center_id: centerId };
   const scoped = (repository) => service.getCenterRepositoryItems(repository, centerId);
   const clients = scoped(service.clientsRepository);
   const appointments = scoped(service.appointmentsRepository);
@@ -456,6 +474,7 @@ function buildNyraBridgeSnapshot(bridge) {
   const consentEvents = clients
     .filter((client) => client.consentStatus === "granted" || client.consentGiven === true || client.consentAt)
     .map((client) => ({
+      ...scope,
       stage: "consent",
       event_type: "consent_granted",
       status: "ready",
@@ -469,6 +488,7 @@ function buildNyraBridgeSnapshot(bridge) {
     .filter((appointment) => appointment.clientId)
     .filter((appointment) => !["cancelled", "no_show"].includes(String(appointment.status || "").toLowerCase()))
     .map((appointment) => ({
+      ...scope,
       stage: "booking",
       event_type: "booking_recorded",
       status: ["completed", "confirmed", "booked", "scheduled"].includes(String(appointment.status || "").toLowerCase()) ? "ready" : "pending",
@@ -481,6 +501,7 @@ function buildNyraBridgeSnapshot(bridge) {
   const treatmentEvents = treatments
     .filter((treatment) => treatment.clientId)
     .map((treatment) => ({
+      ...scope,
       stage: "treatment",
       event_type: "treatment_recorded",
       status: ["completed", "done", "closed"].includes(String(treatment.status || "").toLowerCase()) ? "ready" : "pending",
@@ -491,6 +512,7 @@ function buildNyraBridgeSnapshot(bridge) {
       metadata: { treatment_id: treatment.id, protocol_id: treatment.protocolId || "" }
     }));
   const saleRows = sales.map((sale) => ({
+    ...scope,
     sale_id: sale.id,
     client_id: sale.clientId || "",
     product_id: sale.productId || sale.product || "",
@@ -503,6 +525,7 @@ function buildNyraBridgeSnapshot(bridge) {
   const saleEvents = saleRows
     .filter((sale) => sale.client_id)
     .map((sale) => ({
+      ...scope,
       stage: "commerce",
       event_type: "sale_recorded",
       status: "ready",
@@ -550,6 +573,7 @@ function buildNyraBridgeSnapshot(bridge) {
     }
   });
   const paymentRows = payments.map((payment) => ({
+    ...scope,
     payment_id: payment.id,
     client_id: payment.clientId || "",
     appointment_id: payment.appointmentId || "",
@@ -563,6 +587,7 @@ function buildNyraBridgeSnapshot(bridge) {
   const paymentEvents = paymentRows
     .filter((payment) => payment.client_id && Number(payment.amount || 0) > 0)
     .map((payment) => ({
+      ...scope,
       stage: "commerce",
       event_type: "payment_recorded",
       status: "ready",
@@ -574,6 +599,7 @@ function buildNyraBridgeSnapshot(bridge) {
       metadata: { payment_id: payment.payment_id, appointment_id: payment.appointment_id, channel: payment.method, cost_source: payment.cost_source }
     }));
   const inventoryRows = inventory.map((item) => ({
+    ...scope,
     product_id: item.id || item.sku || "",
     sku: item.sku || "",
     quantity: bridgeNumber(item.quantity ?? item.stockQuantity ?? item.stock) || 0,
@@ -590,8 +616,10 @@ function buildNyraBridgeSnapshot(bridge) {
       id: bridge.id,
       label: bridge.label,
       plan: bridge.plan,
-      scopes: bridge.scopes
+      scopes: bridge.scopes,
+      scope_bound: Boolean(bridge.scopeBound)
     },
+    tenant_id: tenantId,
     center_id: centerId,
     counts: service.getCenterControlStats(centerId),
     data_quality: {
