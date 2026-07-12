@@ -19,6 +19,8 @@ services:
         value: https://skinharmony.it/tenant_id
       - key: MCP_DEFAULT_TENANT_ID
         value: owner-private
+      - key: MCP_CHATGPT_TENANT_ID
+        value: codexai
       - key: MCP_SUPPORTED_SCOPES
         value: core:read,core:govern
       - key: UNIVERSAL_CORE_URL

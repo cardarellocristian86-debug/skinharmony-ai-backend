@@ -21,6 +21,8 @@ MCP_SUPPORTED_SCOPES=core:read,core:govern
 UNIVERSAL_CORE_URL=https://your-universal-core.example.com
 UNIVERSAL_CORE_KEY=<server-side scoped Core key>
 UNIVERSAL_CORE_KEYS_JSON={"tenant-a":"server-side-key-a","tenant-b":"server-side-key-b"}
+MCP_CHATGPT_TENANT_ID=tenant-a
+CORE_MCP_KEY=<server-side scoped Core key for MCP_CHATGPT_TENANT_ID>
 MCP_DEFAULT_TENANT_ID=owner-private
 MCP_TENANT_CLAIM=https://skinharmony.it/tenant_id
 SHARED_WORK_MEMORY_ROOT=/app/shared-work-memory
@@ -44,3 +46,5 @@ The MCP service calls Universal Core server-to-server with `UNIVERSAL_CORE_KEY`;
 ## Multi-tenant boundary
 
 OAuth identities must contain the namespaced custom claim configured by `MCP_TENANT_CLAIM`. Requests without it are rejected. Tool inputs never accept a tenant override: the MCP derives `tenant_id` only from the verified identity and forwards it to Core. `UNIVERSAL_CORE_KEYS_JSON` maps each tenant to a separate server-side scoped Core key; an unmapped tenant is rejected. Legacy Codex bearer access is pinned to `MCP_DEFAULT_TENANT_ID` and may use `UNIVERSAL_CORE_KEY` as its compatibility key.
+
+For a single ChatGPT tenant, `MCP_CHATGPT_TENANT_ID` can associate the existing `CORE_MCP_KEY` secret with that exact tenant. An explicit entry in `UNIVERSAL_CORE_KEYS_JSON` always takes precedence.
