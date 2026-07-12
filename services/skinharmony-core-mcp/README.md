@@ -7,7 +7,7 @@ Remote MCP endpoint compatible with existing scoped Codex bearer tokens and Chat
 - Codex: `Authorization: Bearer <key>` from `CODEX_BEARER_KEYS`; scopes come only from trusted server configuration.
 - ChatGPT: Auth0 RS256 access token verified against JWKS, exact issuer, audience, expiry and optional `nbf`.
 - OAuth discovery: `/.well-known/oauth-protected-resource` and the RFC 9728 path-specific `/.well-known/oauth-protected-resource/mcp` advertise the protected resource. The compatibility authorization-server endpoint advertises authorization-code flow with PKCE `S256` only.
-- MCP tools expose OAuth and bearer `securitySchemes`, minimum per-tool scopes, titles, descriptions and read-only/idempotent impact annotations.
+- MCP tools expose OAuth `securitySchemes`, minimum per-tool scopes, titles, descriptions and read-only/idempotent impact annotations. Preconfigured Codex bearer tokens remain supported at the transport layer without advertising an unsupported tool-level scheme.
 
 Required configuration:
 
