@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.8-live-node-readiness";
+const SERVICE_VERSION = "0.4.9-tenant-scoped-bridge-status";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const DEFAULT_NODE_STALE_AFTER_MS = 15 * 60 * 1000;
 const NODE_STALE_AFTER_MS = Math.max(
@@ -2363,16 +2363,24 @@ function createUniversalCoreClient(options = {}) {
 
   return {
     isConfigured: () => Boolean(baseUrl && apiKey),
-    status: () => ({
-      configured: Boolean(baseUrl && apiKey),
+    status: (tenantId = defaultTenantId) => {
+      const configured = Boolean(baseUrl && apiKey);
+      const requestedTenantId = sanitizeId(tenantId || defaultTenantId, "tenant");
+      const scopeMatch = configured && requestedTenantId === defaultTenantId;
+      return {
+      configured,
       provider_url: baseUrl,
-      tenant_id: defaultTenantId,
+      tenant_id: requestedTenantId,
+      configured_tenant_id: defaultTenantId,
+      scope_match: scopeMatch,
+      scope_status: !configured ? "not_configured" : scopeMatch ? "scoped" : "tenant_scope_mismatch",
       routes: {
         action_evaluator: "/v1/action-evaluator",
         action_mediation: "/v1/action-evaluator",
         legacy_action_mediation: "/v1/action-mediation/evaluate",
       },
-    }),
+      };
+    },
     customerIntelligenceContract: (tenantId = defaultTenantId) => request("GET", `/v1/customer-intelligence/contract?tenant_id=${encodeURIComponent(tenantId)}`, undefined, tenantId),
     customerIntelligenceReadiness: (payload = {}, tenantId = defaultTenantId) => request("POST", "/v1/customer-intelligence/readiness", {
       tenant_id: tenantId,
@@ -2431,7 +2439,7 @@ export function createSuiteControlPlane(options = {}) {
         ...dashboard,
         tenants: dashboard.tenants.map((tenant) => ({
           ...tenant,
-          core_bridge: coreClient.status(),
+          core_bridge: coreClient.status(tenant.tenant_id),
         })),
       },
     });
@@ -2445,7 +2453,7 @@ export function createSuiteControlPlane(options = {}) {
       version: SERVICE_VERSION,
       dashboard: {
         ...dashboard,
-        core_bridge: coreClient.status(),
+        core_bridge: coreClient.status(req.params.tenantId),
       },
     });
   });
