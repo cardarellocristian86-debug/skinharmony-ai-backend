@@ -1,0 +1,44 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t17_57_45.282z_codex_smartdesk_plans_riallineamento_piani_smart_desk",
+  "trace_id": "trace_codex_smartdesk_plans_codex_smartdesk_plans_1780077465279_1780077465279",
+  "generated_at": "2026-05-29T17:57:45.282Z",
+  "updated_at": "2026-05-29T17:57:45.282Z",
+  "agent_id": "codex_smartdesk_plans",
+  "session_id": "codex_smartdesk_plans_1780077465279",
+  "title": "Riallineamento piani Smart Desk",
+  "request": "Riallineare la struttura piani Smart Desk: Base gestionale completo competitivo tipo AgileHair esclusa prenotazione online; Silver controllo evoluto; Gold AI operativa; Protocolli AI fuori finché non testati",
+  "success_criteria": "Feature gating, copy, capability map e documentazione coerenti; nessuna regressione superadmin/trial/legacy; test e report finali",
+  "allowed_paths": [
+    "smartdesk",
+    "services",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

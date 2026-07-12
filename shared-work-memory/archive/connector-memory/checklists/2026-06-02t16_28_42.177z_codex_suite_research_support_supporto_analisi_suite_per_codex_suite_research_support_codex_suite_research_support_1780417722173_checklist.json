@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-02t16_28_42.177z_codex_suite_research_support_supporto_analisi_suite_per",
+  "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+  "contract_id": "2026-06-02t16_28_42.176z_codex_suite_research_support_supporto_analisi_suite_per",
+  "generated_at": "2026-06-02T16:28:42.177Z",
+  "updated_at": "2026-06-02T17:02:51.061Z",
+  "agent_id": "codex_suite_research_support",
+  "session_id": "codex_suite_research_support_1780417722173",
+  "title": "Supporto analisi Suite per Codex attivo",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T16:28:42.177Z",
+      "updated_at": "2026-06-02T17:01:51.014Z",
+      "evidence": [
+        "work-start Core completato; snapshot e report Suite 5.3.19 letti"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T16:28:42.177Z",
+      "updated_at": "2026-06-02T17:02:10.798Z",
+      "evidence": [
+        "Supporto implementato come writeback non-codice: SHARED_WORK/messages/codex_to_codex.jsonl e SHARED_WORK/handoffs/suite_active_codex_support_2026-06-02.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T16:28:42.177Z",
+      "updated_at": "2026-06-02T17:02:44.806Z",
+      "evidence": [
+        "Verifica applicativa non applicabile: nessun codice modificato; verifica read-only su report Suite 5.3.19 e SHARED_WORK"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T16:28:42.177Z",
+      "updated_at": "2026-06-02T17:02:51.060Z",
+      "evidence": [
+        "Evento scritto in SHARED_MEMORY/events/EVENTS.jsonl; finalize in corso"
+      ],
+      "note": ""
+    }
+  ]
+}

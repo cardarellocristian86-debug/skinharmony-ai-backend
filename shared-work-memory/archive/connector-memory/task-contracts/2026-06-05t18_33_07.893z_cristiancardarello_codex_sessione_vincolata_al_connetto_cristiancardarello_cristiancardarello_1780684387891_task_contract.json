@@ -1,0 +1,67 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-06-05t18_33_07.893z_cristiancardarello_codex_sessione_vincolata_al_connetto",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780684387891_1780684387892",
+  "generated_at": "2026-06-05T18:33:07.893Z",
+  "updated_at": "2026-06-05T18:33:07.893Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780684387891",
+  "title": "Codex sessione vincolata al connettore locale",
+  "request": "Collegati e vincolati al connettore locale",
+  "success_criteria": "Sessione Codex collegata al Core Codex Connector locale, con gate obbligatorio per azioni sensibili e memoria condivisa letta",
+  "allowed_paths": [
+    "/Users/cristiancardarello/skinharmony-codex",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "allow_with_audit",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

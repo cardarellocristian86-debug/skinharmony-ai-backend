@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t14_27_45.969z_codex_showcase_template_showcase_template_packaged",
+  "generated_at": "2026-05-24T14:27:45.970Z",
+  "agent_id": "codex_showcase_template",
+  "session_id": "codex_showcase_template_1779631696376",
+  "title": "Showcase template packaged",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Suite 5.2.28 zip creato e verificato: template beauty_showcase_studio presente in registry e PHP, sei pagine, sezioni editabili, test locali verdi.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

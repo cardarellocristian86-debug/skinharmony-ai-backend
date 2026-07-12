@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t18_22_53.094z_cristiancardarello_ritest_live_suite_5.2.37",
+  "generated_at": "2026-05-24T18:22:53.094Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779646943236",
+  "title": "Ritest live Suite 5.2.37",
+  "request": "Verificare che la versione installata salvi testo CTA e immagini nel Template Builder",
+  "success_criteria": "Bozza creata non pubblica, Suite 5.2.37 rilevata, immagini renderizzate, report locale scritto",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

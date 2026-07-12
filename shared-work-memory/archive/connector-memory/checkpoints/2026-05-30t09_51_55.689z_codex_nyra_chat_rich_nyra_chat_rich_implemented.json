@@ -1,0 +1,23 @@
+{
+  "checkpoint_id": "2026-05-30t09_51_55.689z_codex_nyra_chat_rich_nyra_chat_rich_implemented",
+  "generated_at": "2026-05-30T09:51:55.690Z",
+  "agent_id": "codex_nyra_chat_rich",
+  "session_id": "codex_nyra_chat_rich_1780134347168",
+  "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+  "title": "nyra chat rich implemented",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementato layer locale Nyra Chat Rich con recupero selettivo snapshot/learning pack, comando npm e fallback offline; nessuna produzione toccata.",
+  "files": [
+    "universal-core/tools/nyra-rich-chat.ts",
+    "universal-core/tests/nyra-rich-chat-test.ts",
+    "universal-core/package.json",
+    "universal-core/runtime/nyra/NYRA_MAP_SNAPSHOT.md",
+    "universal-core/runtime/nyra/NYRA_STATE_SNAPSHOT.json",
+    "universal-core/runtime/nyra/NYRA_WORK_SNAPSHOT.md"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

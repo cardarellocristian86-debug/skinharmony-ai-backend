@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t13_56_19.407z_codex_main_pulse",
+  "generated_at": "2026-05-24T13:56:19.407Z",
+  "agent_id": "codex_main",
+  "session_id": "codex_main_1779630979397",
+  "title": "Pulse Codex",
+  "summary": "Analisi commerce Suite completata: verificati moduli esistenti, diagnosi Core Render, confermato che Suite ha gia Commerce Layer incompleto e serve Commerce Control Room prima di creare un nuovo plugin commerce.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/SITE_SUITE_COMMERCE_LAYER_REALITY_CHECK_2026-05-24.md",
+    "/Users/cristiancardarello/skinharmony-codex/wordpress/plugins/skinharmony-site-suite/docs/SITE_SUITE_B2B_COMMERCE_CRM_STRUCTURE_V1.md",
+    "/Users/cristiancardarello/skinharmony-codex/wordpress/plugins/skinharmony-site-suite/modules/commerce-core/class-module.php",
+    "/Users/cristiancardarello/skinharmony-codex/wordpress/plugins/skinharmony-site-suite/modules/woocommerce-bridge/class-module.php"
+  ],
+  "tests": [
+    "Core doctor con rete reale OK tenant=skinharmony-suite",
+    "Core decide eseguito con 30 varianti: REVIEW_REQUIRED senza selected_option_id",
+    "Analisi file moduli Suite commerce completata"
+  ],
+  "next": "Prossimo blocco: se owner conferma, creare Commerce Control Room read-only in Suite prima di qualsiasi mutazione checkout/ordini.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": null,
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 1,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

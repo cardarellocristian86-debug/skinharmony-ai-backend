@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-23t21_33_00.750z_e2e_pass_preflight_enforcement_pass",
+  "generated_at": "2026-05-23T21:33:00.750Z",
+  "agent_id": "e2e_pass",
+  "session_id": "e2e_pass_1779571956967",
+  "title": "preflight enforcement pass",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope locale, evidenza sorgente CLI, nessun deploy, comando mutante solo dry-run.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [],
+  "next": "Provare exec dry-run",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

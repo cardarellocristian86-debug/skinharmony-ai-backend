@@ -1,0 +1,44 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t20_58_51.310z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+  "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+  "generated_at": "2026-05-29T20:58:51.310Z",
+  "updated_at": "2026-05-29T20:58:51.310Z",
+  "agent_id": "codex_ai_gold_fast_open",
+  "session_id": "codex_ai_gold_fast_open_1780088331309",
+  "title": "AI Gold apertura veloce",
+  "request": "AI Gold live resta lento perche la pagina aspetta troppi endpoint pesanti e genera autopilot in automatico. Rendere apertura veloce: caricare subito solo dati essenziali, poi leggere blocchi pesanti in background senza bloccare UI.",
+  "success_criteria": "AI Gold mostra contenuto utile rapidamente; niente generazione autopilot automatica in apertura; blocchi pesanti degradano con messaggio pulito",
+  "allowed_paths": [
+    "skin-harmony-web",
+    "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

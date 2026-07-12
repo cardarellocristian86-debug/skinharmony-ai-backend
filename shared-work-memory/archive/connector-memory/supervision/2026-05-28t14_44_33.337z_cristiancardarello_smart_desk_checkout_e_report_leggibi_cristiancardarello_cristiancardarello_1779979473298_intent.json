@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-28t14_44_33.337z_cristiancardarello_smart_desk_checkout_e_report_leggibi",
+  "generated_at": "2026-05-28T14:44:33.338Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779979473298",
+  "title": "Smart Desk checkout e report leggibili",
+  "request": "Rendere checkout e report Smart Desk piu comprensibili: override prezzo solo nel pagamento, prodotti/servizi in cassa, pagina cassa completa, semafori, testi umani, tecnologia con rate/data inizio/fine e report separati Base Silver Gold.",
+  "success_criteria": "Patch locale Smart Desk testata: cassa non si allunga male, pagamento salva linee e scarica prodotti, servizi/tecnologie/operatori hanno testi chiari e report/azioni indicano cosa fare senza termini interni.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

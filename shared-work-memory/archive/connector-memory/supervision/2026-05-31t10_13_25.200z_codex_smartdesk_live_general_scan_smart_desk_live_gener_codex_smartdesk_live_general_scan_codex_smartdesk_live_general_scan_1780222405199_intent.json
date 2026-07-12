@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-31t10_13_25.200z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+  "generated_at": "2026-05-31T10:13:25.200Z",
+  "agent_id": "codex_smartdesk_live_general_scan",
+  "session_id": "codex_smartdesk_live_general_scan_1780222405199",
+  "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+  "title": "Smart Desk live general readonly scan",
+  "request": "Controllare Smart Desk live su Render e codice locale in sola lettura, intercettando errori generali UX, moduli, gating, report, AI Gold, cassa, piani, senza modifiche e senza deploy",
+  "success_criteria": "Lista errori generali verificati o rischi concreti del prodotto live, nessuna modifica applicata",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

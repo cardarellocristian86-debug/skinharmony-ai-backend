@@ -1,0 +1,54 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t19_05_31.642z_codex_start_runtime_selftest_runtime_core-first_codex",
+  "trace_id": "trace_codex_start_runtime_selftest_codex_start_runtime_selftest_1780081531640_17",
+  "contract_id": "2026-05-29t19_05_31.641z_codex_start_runtime_selftest_runtime_core-first_codex",
+  "generated_at": "2026-05-29T19:05:31.642Z",
+  "updated_at": "2026-05-29T19:05:31.642Z",
+  "agent_id": "codex_start_runtime_selftest",
+  "session_id": "codex_start_runtime_selftest_1780081531640",
+  "title": "Runtime Core-first Codex",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-29T19:05:31.642Z",
+      "updated_at": "2026-05-29T19:05:31.642Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-29T19:05:31.642Z",
+      "updated_at": "2026-05-29T19:05:31.642Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-29T19:05:31.642Z",
+      "updated_at": "2026-05-29T19:05:31.642Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-29T19:05:31.642Z",
+      "updated_at": "2026-05-29T19:05:31.642Z",
+      "evidence": [],
+      "note": ""
+    }
+  ]
+}

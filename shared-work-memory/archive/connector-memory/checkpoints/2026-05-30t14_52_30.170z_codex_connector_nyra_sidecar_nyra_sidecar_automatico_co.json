@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t14_52_30.170z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+  "generated_at": "2026-05-30T14:52:30.170Z",
+  "agent_id": "codex_connector_nyra_sidecar",
+  "session_id": "codex_connector_nyra_sidecar_1780152750168",
+  "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+  "title": "Nyra sidecar automatico connector preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+  "checklist_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+    "title": "Nyra sidecar automatico connector",
+    "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,63 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+  "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+  "contract_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+  "generated_at": "2026-05-29T19:49:50.791Z",
+  "updated_at": "2026-05-29T20:14:40.864Z",
+  "agent_id": "codex_demo_gold_cockpit_fix",
+  "session_id": "codex_demo_gold_cockpit_fix_1780084190790",
+  "title": "Fix demo_gold_cockpit",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:49:50.791Z",
+      "updated_at": "2026-05-29T20:14:09.171Z",
+      "evidence": [
+        "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+        "node --check; local recursion test; live cockpit/data-quality/profitability HTTP 200"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:49:50.791Z",
+      "updated_at": "2026-05-29T20:14:09.168Z",
+      "evidence": [
+        "commit 47341b8"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:49:50.791Z",
+      "updated_at": "2026-05-29T20:14:40.863Z",
+      "evidence": [
+        "node --check; local recursion test; live cockpit sections=6; live data-quality HTTP 200; live profitability HTTP 200"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T19:49:50.791Z",
+      "updated_at": "2026-05-29T20:14:09.176Z",
+      "evidence": [
+        "git status pulito per file tracciati; untracked preesistenti lasciati fuori"
+      ],
+      "note": ""
+    }
+  ]
+}

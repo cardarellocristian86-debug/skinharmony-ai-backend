@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t19_00_54.321z_codex_render_alignment_preflight_render_smart_desk",
+  "generated_at": "2026-05-29T19:00:54.321Z",
+  "agent_id": "codex_render_alignment",
+  "session_id": "codex_render_alignment_1780079621781",
+  "trace_id": "trace_codex_render_alignment_codex_render_alignment_1780079621781_1780079621781",
+  "title": "Preflight Render Smart Desk",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Repo Render identificata in skinharmony-ai-backend; commit limitato al bundle web; nessun dato cliente/prezzi incluso",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t18_33_41.799z_codex_render_alignment_allineamento_smart_desk_render",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

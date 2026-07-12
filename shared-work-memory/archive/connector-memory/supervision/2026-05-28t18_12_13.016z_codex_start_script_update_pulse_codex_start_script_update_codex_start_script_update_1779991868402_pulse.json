@@ -1,0 +1,62 @@
+{
+  "pulse_id": "2026-05-28t18_12_13.016z_codex_start_script_update_pulse",
+  "generated_at": "2026-05-28T18:12:13.023Z",
+  "agent_id": "codex_start_script_update",
+  "session_id": "codex_start_script_update_1779991868402",
+  "trace_id": "trace_codex_start_script_update_codex_start_script_update_1779991868402_17799918",
+  "title": "Pulse Codex",
+  "summary": "Aggiornato script di avvio Codex per usare work-start invece di session-start manuale; README condiviso aggiornato.",
+  "files": [
+    "scripts/start-codex-agent.sh",
+    "SHARED_MEMORY/README_FOR_CODEX.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md"
+  ],
+  "tests": [
+    "bash -n scripts/start-codex-agent.sh",
+    "./scripts/start-codex-agent.sh ... --check-only"
+  ],
+  "next": "Checkpoint after e finalize.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t18_11_08.403z_codex_start_script_update_update_codex_agent_start_scri",
+    "title": "Update Codex agent start script",
+    "request": "Aggiornare scripts/start-codex-agent.sh e README condiviso per usare work-start al primo avvio degli agenti Codex.",
+    "success_criteria": "Nuovi Codex partono con workspace-init, task contract, trace, lock, checkpoint e pulse tramite work-start."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-28t18_11_08.405z_codex_start_script_update_update_codex_agent_start_scri",
+    "trace_id": "trace_codex_start_script_update_codex_start_script_update_1779991868402_17799918",
+    "allowed_paths": [
+      "scripts",
+      "SHARED_MEMORY/README_FOR_CODEX.md",
+      "scripts/start-codex-agent.sh",
+      "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.35,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-28t18_11_08.405z_codex_start_script_update_update_codex_agent_start_scri",
+      "trace_id": "trace_codex_start_script_update_codex_start_script_update_1779991868402_17799918",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

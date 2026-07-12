@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t10_04_40.454z_codex_nika_source_clone_nika_source_guard_final",
+  "generated_at": "2026-05-24T10:04:40.455Z",
+  "agent_id": "codex_nika_source_clone",
+  "session_id": "codex_nika_source_clone_1779616508892",
+  "title": "Nika source guard final",
+  "summary": "Zip 5.2.25 creato e verificato; preparo finalize e unlock.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_25_NIKA_SOURCE_CLONE_GUARD_2026-05-24.md"
+  ],
+  "tests": [],
+  "next": "Finalizzare sessione.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t09_55_08.963z_codex_nika_source_clone_nika_source_clone_governance",
+    "title": "Nika source clone governance",
+    "request": "Separare template interpretato da clone sorgente: Nika deve richiedere source evidence e non dichiararsi clone/stile se non validato.",
+    "success_criteria": "Registry e governance impediscono template Nika interpretativo; test locali OK; nessun deploy/live."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

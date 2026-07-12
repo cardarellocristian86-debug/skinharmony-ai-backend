@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t15_25_10.523z_checklist_smoke_01_checklist_smoke",
+  "generated_at": "2026-05-29T15:25:10.523Z",
+  "agent_id": "checklist_smoke_01",
+  "session_id": "checklist_smoke_01_session",
+  "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+  "title": "Checklist smoke",
+  "request": "Verificare enforcement checklist",
+  "success_criteria": "Finalize blocca con checklist aperta e passa quando chiusa",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

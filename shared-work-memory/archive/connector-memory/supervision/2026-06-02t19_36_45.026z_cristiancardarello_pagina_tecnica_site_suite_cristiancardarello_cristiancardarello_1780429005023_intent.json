@@ -1,0 +1,40 @@
+{
+  "intent_id": "2026-06-02t19_36_45.026z_cristiancardarello_pagina_tecnica_site_suite",
+  "generated_at": "2026-06-02T19:36:45.026Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780429005023",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780429005023_1780429005024",
+  "title": "Pagina tecnica Site Suite",
+  "request": "Creare pagina web dedicata SkinHarmony Site Suite con scheda tecnica approfondita, stile WaaS, mappa Suite a check, testo premium e confini governati",
+  "success_criteria": "Pagina locale pronta, mappa funzionale chiusa, testi client-facing, controlli Core/traduttore/verifica eseguiti, nessun deploy o publish live",
+  "expected_depth": "normal",
+  "files": [
+    "wordpress/skinharmony-site-suite-technical-page.html"
+  ],
+  "status": "active",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

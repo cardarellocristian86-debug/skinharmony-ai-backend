@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-25t14_45_26.377z_codex_google_lavoro_codex_google",
+  "generated_at": "2026-05-25T14:45:26.377Z",
+  "agent_id": "codex_google",
+  "session_id": "codex_google_1779720326302",
+  "title": "Lavoro codex_google",
+  "request": "Lavoro suite assegnato da Cristian Cardarello",
+  "success_criteria": "File, test, report e prossima azione devono essere dichiarati",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

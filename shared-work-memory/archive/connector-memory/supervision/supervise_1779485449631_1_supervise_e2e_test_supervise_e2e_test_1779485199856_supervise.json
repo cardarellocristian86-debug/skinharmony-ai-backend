@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-05-22T21:30:49.628Z",
+  "agent_id": "supervise_e2e_test",
+  "session_id": "supervise_e2e_test_1779485199856",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1,
+  "interval_ms": 200,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-22t21_30_04.769z_supervise_e2e_test_pulse_supervise_e2e_test_supervise_e2e_test_1779485199856_pulse.json",
+  "watched_files": [
+    {
+      "file": "packages/core-codex-connector/src/cli.mjs",
+      "mtime_ms": 1779485124012.7039,
+      "size": 142251
+    }
+  ],
+  "assessment": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.435,
+    "correction": "Supervisione persistente ok: continuare con pulse brevi.",
+    "pulse_age_ms": 44853,
+    "changed_files": [
+      {
+        "file": "packages/core-codex-connector/src/cli.mjs",
+        "mtime_ms": 1779485124012.7039,
+        "size": 142251
+      }
+    ]
+  }
+}

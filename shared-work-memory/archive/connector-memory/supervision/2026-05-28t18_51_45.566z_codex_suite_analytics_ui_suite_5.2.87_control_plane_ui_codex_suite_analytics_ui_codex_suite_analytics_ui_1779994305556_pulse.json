@@ -1,0 +1,63 @@
+{
+  "pulse_id": "2026-05-28t18_51_45.566z_codex_suite_analytics_ui_suite_5.2.87_control_plane_ui_",
+  "generated_at": "2026-05-28T18:51:45.566Z",
+  "agent_id": "codex_suite_analytics_ui",
+  "session_id": "codex_suite_analytics_ui_1779994305556",
+  "trace_id": "trace_codex_suite_analytics_ui_codex_suite_analytics_ui_1779994305556_1779994305",
+  "title": "Suite 5.2.87 Control Plane UI closure initial pulse",
+  "summary": "Avvio lavoro governato: Chiudere e registrare il pass UI Analytics WaaS AI Operational Control Plane 5.2.87 gia implementato, testato e caricato",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "scripts/check_wp_suite_runtime_data.js",
+    "SHARED_MEMORY/events/EVENTS.jsonl",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md"
+  ],
+  "tests": [
+    "php -l wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "SHSS_EXPECTED_VERSION=5.2.87 node scripts/test_skinharmony_site_suite_plugin.js",
+    "node scripts/suite_operational_closure.js --version=5.2.87",
+    "node scripts/program_registry_check.js"
+  ],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t18_51_45.558z_codex_suite_analytics_ui_suite_5.2.87_control_plane_ui_",
+    "title": "Suite 5.2.87 Control Plane UI closure",
+    "request": "Chiudere e registrare il pass UI Analytics WaaS AI Operational Control Plane 5.2.87 gia implementato, testato e caricato",
+    "success_criteria": "Scope reale dichiarato, checkpoint during/after, test e finalize pulito"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-28t18_51_45.566z_codex_suite_analytics_ui_suite_5.2.87_control_plane_ui_",
+    "trace_id": "trace_codex_suite_analytics_ui_codex_suite_analytics_ui_1779994305556_1779994305",
+    "allowed_paths": [
+      "wordpress/plugins/skinharmony-site-suite",
+      "scripts/check_wp_suite_runtime_data.js",
+      "SHARED_MEMORY",
+      "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+      "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+      "wordpress/plugins/skinharmony-site-suite/README.md",
+      "SHARED_MEMORY/events/EVENTS.jsonl",
+      "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.579,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

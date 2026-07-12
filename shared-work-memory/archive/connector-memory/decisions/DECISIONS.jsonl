@@ -1,0 +1,1 @@
+{"ts":"2026-05-17T20:27:28.752Z","source":"core+market_research","type":"architecture_decision","decision":"Usare event log append-only + snapshot curati + namespace e handoff espliciti per memoria multi-Codex.","reason":"Riduce perdita passaggi, conflitti e rumore tra piu assistenti."}

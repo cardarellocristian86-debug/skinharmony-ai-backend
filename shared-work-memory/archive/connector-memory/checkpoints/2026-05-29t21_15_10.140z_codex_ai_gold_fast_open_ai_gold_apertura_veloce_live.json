@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t21_15_10.140z_codex_ai_gold_fast_open_ai_gold_apertura_veloce_live",
+  "generated_at": "2026-05-29T21:15:10.141Z",
+  "agent_id": "codex_ai_gold_fast_open",
+  "session_id": "codex_ai_gold_fast_open_1780088331309",
+  "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+  "title": "AI Gold apertura veloce live",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Fix frontend deployato: live serve index-Bb4ZEGa9.js. La pagina ora carica subito state/cockpit/capabilities/decision-context e sposta profitability/autopilot/decision-center in background; autopilot generate non parte piu automaticamente all'apertura.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t20_58_51.310z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

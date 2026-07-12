@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t14_08_38.257z_codex_showcase_template_showcase_template_preflight",
+  "generated_at": "2026-05-24T14:08:38.258Z",
+  "agent_id": "codex_showcase_template",
+  "session_id": "codex_showcase_template_1779631696376",
+  "title": "Showcase template preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Ricerca completata su pattern vetrina: servizi, gallery, team, social proof, booking, pricing/listino, local SEO. Procedo solo su file locali Suite.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

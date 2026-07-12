@@ -1,0 +1,16 @@
+{
+  "intent_id": "2026-05-28t17_53_58.316z_e2e_work_smoke_e2e_work_smoke",
+  "generated_at": "2026-05-28T17:53:58.316Z",
+  "agent_id": "e2e_work_smoke",
+  "session_id": "e2e_work_smoke_1779990838315",
+  "trace_id": "trace_e2e_work_smoke_e2e_work_smoke_1779990838315_1779990838315",
+  "title": "E2E work smoke",
+  "request": "Verificare che work-start crei sessione lock intent task contract checkpoint e pulse.",
+  "success_criteria": "Tutti gli artifact vengono creati con trace id.",
+  "expected_depth": "normal",
+  "files": [
+    "reports/codex-core/codex_e2e_self_test_latest.json"
+  ],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

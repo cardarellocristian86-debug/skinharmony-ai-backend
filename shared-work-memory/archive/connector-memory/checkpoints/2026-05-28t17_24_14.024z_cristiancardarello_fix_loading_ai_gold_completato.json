@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-28t17_24_14.024z_cristiancardarello_fix_loading_ai_gold_completato",
+  "generated_at": "2026-05-28T17:24:14.025Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779987379846",
+  "title": "Fix loading AI Gold completato",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Aggiunti timeout HTTP, Promise.allSettled su AiGoldPage, fallback dati parziali e build OK",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

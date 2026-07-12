@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_54_56.657z_cristiancardarello_preflight_suite_5.2.39_zip_locale",
+  "generated_at": "2026-05-24T18:54:56.657Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779648282951",
+  "title": "Preflight Suite 5.2.39 zip locale",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: build locale dist only. Evidence: local tests passed before packaging; no deploy/publish/live writes in closure command.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

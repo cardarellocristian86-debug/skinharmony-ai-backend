@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t14_57_17.247z_codex_sidecar_smoke_nyra_sidecar_smoke",
+  "generated_at": "2026-05-30T14:57:17.247Z",
+  "agent_id": "codex_sidecar_smoke",
+  "session_id": "codex_sidecar_smoke_1780153037247",
+  "trace_id": "trace_codex_sidecar_smoke_codex_sidecar_smoke_1780153037247_1780153037247",
+  "title": "Nyra sidecar smoke",
+  "request": "Smoke test sidecar interno connector senza cambiare CLI",
+  "success_criteria": "sidecar report refreshed",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

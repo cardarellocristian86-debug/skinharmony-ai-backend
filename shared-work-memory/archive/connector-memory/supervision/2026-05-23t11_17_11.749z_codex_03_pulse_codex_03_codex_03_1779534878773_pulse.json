@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-23t11_17_11.749z_codex_03_pulse",
+  "generated_at": "2026-05-23T11:17:11.749Z",
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1779534878773",
+  "title": "Pulse Codex",
+  "summary": "Sessione Codex 03 avviata per lavoro WordPress. In attesa di task specifico owner; nessuna modifica eseguita.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/sessions/codex_03__codex_03_1779534878773.json",
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-23t11_14_38.847z_codex_03_lavoro_codex_03_codex_03_codex_03_1779534878773_intent.json"
+  ],
+  "tests": [
+    "Nessuna modifica eseguita: solo avvio sessione e supervisione"
+  ],
+  "next": "Assegnare a Codex 03 un task WordPress concreto; poi aggiornare pulse con file reali, test e report.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t11_14_38.847z_codex_03_lavoro_codex_03",
+    "title": "Lavoro Codex 03",
+    "request": "Descrivi qui il lavoro assegnato",
+    "success_criteria": "File, test, report e prossima azione devono essere dichiarati"
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.222,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

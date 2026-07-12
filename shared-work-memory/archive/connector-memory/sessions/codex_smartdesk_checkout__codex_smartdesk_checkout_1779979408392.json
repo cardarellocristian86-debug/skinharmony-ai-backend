@@ -1,0 +1,16 @@
+{
+  "agent_id": "codex_smartdesk_checkout",
+  "session_id": "codex_smartdesk_checkout_1779979408392",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "smartdesk"
+  ],
+  "status": "active",
+  "started_at": "2026-05-28T14:43:28.392Z",
+  "updated_at": "2026-05-28T14:43:28.392Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199"
+}

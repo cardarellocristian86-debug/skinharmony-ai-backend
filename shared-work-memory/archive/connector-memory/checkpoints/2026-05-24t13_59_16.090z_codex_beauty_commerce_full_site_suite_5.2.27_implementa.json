@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t13_59_16.090z_codex_beauty_commerce_full_site_suite_5.2.27_implementa",
+  "generated_at": "2026-05-24T13:59:16.091Z",
+  "agent_id": "codex_beauty_commerce_full_site",
+  "session_id": "codex_beauty_commerce_full_site_1779630476137",
+  "title": "Suite 5.2.27 implementation evidence",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementati version bump, registry 6 pagine, manifest PHP 6 pagine, hero gallery, slot data-suite-editable, test mirati e preview locale.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

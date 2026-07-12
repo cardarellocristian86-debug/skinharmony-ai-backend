@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t14_14_01.711z_codex_showcase_template_showcase_template_implementatio",
+  "generated_at": "2026-05-24T14:14:01.711Z",
+  "agent_id": "codex_showcase_template",
+  "session_id": "codex_showcase_template_1779631696376",
+  "title": "Showcase template implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Creato template registry/PHP beauty_showcase_studio, profilo design, builder dedicato, test dedicato 11/11 e test Suite base verdi.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

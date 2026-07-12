@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t16_52_55.485z_codex_suite_research_support_checkpoint_codex",
+  "generated_at": "2026-06-02T16:52:55.485Z",
+  "agent_id": "codex_suite_research_support",
+  "session_id": "codex_suite_research_support_1780417722173",
+  "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+  "title": "Checkpoint Codex",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "During supporto Suite: verificato stato 5.3.19 live/sync dai report, individuata necessita di handoff e nessuna patch.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t16_28_42.176z_codex_suite_research_support_supporto_analisi_suite_per",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

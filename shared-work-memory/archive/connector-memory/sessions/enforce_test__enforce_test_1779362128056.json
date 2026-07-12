@@ -1,0 +1,17 @@
+{
+  "agent_id": "enforce_test",
+  "session_id": "enforce_test_1779362128056",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "connector-enforcement"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-21T11:15:28.056Z",
+  "updated_at": "2026-05-21T12:08:00.000Z",
+  "finished_at": "2026-05-21T12:08:00.000Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "https://skinharmony-universal-core.onrender.com"
+}

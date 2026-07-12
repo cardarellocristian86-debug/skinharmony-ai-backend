@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t10_09_39.793z_cristiancardarello_smart_desk_de_radar_measured",
+  "generated_at": "2026-06-02T10:09:39.794Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "title": "Smart Desk DE radar measured",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Measured DE radar: 1403 findings, 649 high; runtime radar 56 high; desktop radar 30 high; bundle index-BIY9g2uX.js is main UI residue.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t10_03_58.076z_cristiancardarello_supporto_research_analyst_traduzione",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

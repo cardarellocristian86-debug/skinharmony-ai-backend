@@ -1,0 +1,30 @@
+{
+  "checkpoint_id": "2026-05-30t10_15_36.435z_codex_nyra_generative_nyra_generative_verified",
+  "generated_at": "2026-05-30T10:15:36.436Z",
+  "agent_id": "codex_nyra_generative",
+  "session_id": "codex_nyra_generative_1780135661803",
+  "trace_id": "trace_codex_nyra_generative_codex_nyra_generative_1780135661803_1780135661803",
+  "title": "nyra generative verified",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Test mock generativo, fallback locale, regressioni dialogue/adapter e smoke CLI passati; provider non stampa segreti e audit redige solo preview.",
+  "files": [
+    "universal-core/tools/nyra-generative-provider.ts",
+    "universal-core/tools/nyra-rich-chat.ts",
+    "universal-core/tests/nyra-rich-chat-generative-test.ts",
+    "universal-core/reports/universal-core/nyra-chat-rich/nyra_chat_rich_latest.json"
+  ],
+  "tests": [
+    "npm run check:nyra:chat-rich",
+    "npm run check:nyra:chat-rich-generative",
+    "npm run check:nyra:dialogue-engine",
+    "node --experimental-strip-types tests/nyra-communication-adapter-test.ts",
+    "npm run check:nyra:dialogue-runtime",
+    "npm run check:nyra:dialogue-humanizer",
+    "npm run check:nyra:dialogue-formatter",
+    "NYRA_RICH_CHAT_USE_OPENAI=0 npm run nyra:chat-rich -- sample"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t10_07_41.804z_codex_nyra_generative_nyra_generativa_governata_da_core",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,28 @@
+{
+  "pulse_id": "2026-05-24t14_52_01.596z_codex_inline_template_builder_pulse",
+  "generated_at": "2026-05-24T14:52:01.597Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "title": "Pulse Codex",
+  "summary": "",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t14_43_09.771z_codex_inline_template_builder_template_builder_visual_i",
+    "title": "Template Builder visual inline",
+    "request": "Rendere la preview del Template Builder modificabile cliccando direttamente su testi, CTA e immagini, senza deploy/live.",
+    "success_criteria": "Builder inline locale implementato, test verdi, zip progressivo pronto."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

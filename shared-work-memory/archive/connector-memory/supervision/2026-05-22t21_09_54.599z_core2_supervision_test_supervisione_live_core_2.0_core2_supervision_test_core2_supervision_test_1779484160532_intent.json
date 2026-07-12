@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-22t21_09_54.599z_core2_supervision_test_supervisione_live_core_2.0",
+  "generated_at": "2026-05-22T21:09:54.600Z",
+  "agent_id": "core2_supervision_test",
+  "session_id": "core2_supervision_test_1779484160532",
+  "title": "Supervisione live Core 2.0",
+  "request": "Codex deve essere controllato durante il lavoro: se sta facendo lavoro superficiale o devia dal comando owner, Core 2.0 deve richiamarlo prima della fine.",
+  "success_criteria": "Il sistema segnala recover quando mancano evidenze, file, test o prossima azione verificabile.",
+  "expected_depth": "deep",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

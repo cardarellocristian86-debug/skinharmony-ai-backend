@@ -1,0 +1,47 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t19_55_53.975z_codex_core_nyra_render_audit_audit_core_nyra_render_e_b",
+  "trace_id": "trace_codex_core_nyra_render_audit_codex_core_nyra_render_audit_1780084553972_17",
+  "generated_at": "2026-05-29T19:55:53.975Z",
+  "updated_at": "2026-05-29T19:55:53.975Z",
+  "agent_id": "codex_core_nyra_render_audit",
+  "session_id": "codex_core_nyra_render_audit_1780084553972",
+  "title": "Audit Core/Nyra Render e bridge software",
+  "request": "Verificare Core/Nyra su Render, collegamento API key con traduttore SkinHarmony Core, Suite e Smart Desk; valutare rami decisionali, sovrapposizione rami e massimo sfruttamento cross-software; Nyra deve parlare in modo utile",
+  "success_criteria": "Mappa connessioni e stato funzionamento; test read-only disponibili; gap rami/overlap; raccomandazioni concrete senza deploy o cambi chiavi",
+  "allowed_paths": [
+    "universal-core",
+    "services",
+    "wordpress/plugins/skinharmony-core",
+    "wordpress/plugins/skinharmony-site-suite",
+    "render-smartdesk-live",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "generated_at": "2026-05-30T13:24:00.621Z",
+  "updated_at": "2026-05-30T13:24:00.621Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "title": "Nyra needs cycle locale",
+  "request": "Dare a Nyra locale cio che le manca: action router command-risk-confirm-verify, memoria owner privata sicura, self-diagnosis operativa, learning pack e test locali; Render non toccato",
+  "success_criteria": "Nyra locale produce guida Codex piu concreta, legge/scrive solo memoria privata sicura locale quando consentito, diagnostica lacune e passa test; snapshot/eventi/finalize aggiornati",
+  "allowed_paths": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

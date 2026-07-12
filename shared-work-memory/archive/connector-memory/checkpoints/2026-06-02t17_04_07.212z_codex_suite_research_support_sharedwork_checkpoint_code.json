@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t17_04_07.212z_codex_suite_research_support_sharedwork_checkpoint_code",
+  "generated_at": "2026-06-02T17:04:07.212Z",
+  "agent_id": "codex_suite_research_support_sharedwork",
+  "session_id": "codex_suite_research_support_sharedwork_1780419837271",
+  "trace_id": "trace_codex_suite_research_support_sharedwork_codex_suite_research_support_share",
+  "title": "Checkpoint Codex",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Preflight: chiusura tracciamento Shared Work per supporto Codex Suite, nessun codice/produzione.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t17_03_57.273z_codex_suite_research_support_sharedwork_chiusura_suppor",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

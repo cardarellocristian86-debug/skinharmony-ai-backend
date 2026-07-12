@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t16_06_03.777z_cristiancardarello_suite_template_builder_5.2.32",
+  "generated_at": "2026-05-24T16:06:03.778Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779630880057",
+  "title": "Suite Template Builder 5.2.32",
+  "request": "Verificare e chiudere localmente la correzione UX del Template Builder: canvas modificabile primario, preview WordPress solo verifica finale.",
+  "success_criteria": "Zip Suite 5.2.32 generato, test locali passati, nessun deploy e nessuna modifica live.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

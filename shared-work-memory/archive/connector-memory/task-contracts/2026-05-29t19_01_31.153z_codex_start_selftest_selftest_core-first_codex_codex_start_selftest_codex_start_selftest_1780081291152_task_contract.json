@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t19_01_31.153z_codex_start_selftest_selftest_core-first_codex",
+  "trace_id": "trace_codex_start_selftest_codex_start_selftest_1780081291152_1780081291152",
+  "generated_at": "2026-05-29T19:01:31.153Z",
+  "updated_at": "2026-05-29T19:01:31.153Z",
+  "agent_id": "codex_start_selftest",
+  "session_id": "codex_start_selftest_1780081291152",
+  "title": "Selftest Core-first Codex",
+  "request": "Verificare wrapper automatico",
+  "success_criteria": "Work-start creato e Codex finto avviato",
+  "allowed_paths": [
+    "packages/core-codex-connector",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

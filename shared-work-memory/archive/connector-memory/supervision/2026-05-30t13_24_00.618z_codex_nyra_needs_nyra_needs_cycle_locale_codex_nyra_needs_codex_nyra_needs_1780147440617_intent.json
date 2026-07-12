@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t13_24_00.618z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "generated_at": "2026-05-30T13:24:00.618Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "title": "Nyra needs cycle locale",
+  "request": "Dare a Nyra locale cio che le manca: action router command-risk-confirm-verify, memoria owner privata sicura, self-diagnosis operativa, learning pack e test locali; Render non toccato",
+  "success_criteria": "Nyra locale produce guida Codex piu concreta, legge/scrive solo memoria privata sicura locale quando consentito, diagnostica lacune e passa test; snapshot/eventi/finalize aggiornati",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

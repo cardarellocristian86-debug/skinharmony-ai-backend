@@ -1,0 +1,95 @@
+{
+  "generated_at": "2026-05-24T14:55:29.529Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1,
+  "interval_ms": 200,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-24t14_55_15.970z_codex_inline_template_builder_pulse_codex_inline_template_builder_codex_inline_template_builder_1779633724609_pulse.json",
+  "watched_files": [
+    {
+      "file": "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+      "mtime_ms": 1779634016805.4758,
+      "size": 2768517
+    },
+    {
+      "file": "wordpress/plugins/skinharmony-site-suite/assets/site-suite-admin.js",
+      "mtime_ms": 1779634055243.3074,
+      "size": 6994
+    },
+    {
+      "file": "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+      "mtime_ms": 1779634333956.532,
+      "size": 124542
+    },
+    {
+      "file": "scripts/test_template_builder_inline_editor.js",
+      "mtime_ms": 1779634055371.7476,
+      "size": 2662
+    },
+    {
+      "file": "dist/skinharmony-site-suite-5.2.29.zip",
+      "mtime_ms": 1779634334405.8645,
+      "size": 740027
+    },
+    {
+      "file": "SHARED_MEMORY/reports/SUITE_5_2_29_TEMPLATE_BUILDER_VISUAL_INLINE_2026-05-24.md",
+      "mtime_ms": 1779634378380.3914,
+      "size": 2321
+    },
+    {
+      "file": "wordpress/plugins/skinharmony-site-suite",
+      "mtime_ms": 1779630569966.1296,
+      "size": 480
+    }
+  ],
+  "assessment": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.059,
+    "correction": "Aggiornare pulse e verifiche prima del prossimo blocco di lavoro.",
+    "pulse_age_ms": 13557,
+    "changed_files": [
+      {
+        "file": "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+        "mtime_ms": 1779634016805.4758,
+        "size": 2768517
+      },
+      {
+        "file": "wordpress/plugins/skinharmony-site-suite/assets/site-suite-admin.js",
+        "mtime_ms": 1779634055243.3074,
+        "size": 6994
+      },
+      {
+        "file": "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+        "mtime_ms": 1779634333956.532,
+        "size": 124542
+      },
+      {
+        "file": "scripts/test_template_builder_inline_editor.js",
+        "mtime_ms": 1779634055371.7476,
+        "size": 2662
+      },
+      {
+        "file": "dist/skinharmony-site-suite-5.2.29.zip",
+        "mtime_ms": 1779634334405.8645,
+        "size": 740027
+      },
+      {
+        "file": "SHARED_MEMORY/reports/SUITE_5_2_29_TEMPLATE_BUILDER_VISUAL_INLINE_2026-05-24.md",
+        "mtime_ms": 1779634378380.3914,
+        "size": 2321
+      },
+      {
+        "file": "wordpress/plugins/skinharmony-site-suite",
+        "mtime_ms": 1779630569966.1296,
+        "size": 480
+      }
+    ]
+  }
+}

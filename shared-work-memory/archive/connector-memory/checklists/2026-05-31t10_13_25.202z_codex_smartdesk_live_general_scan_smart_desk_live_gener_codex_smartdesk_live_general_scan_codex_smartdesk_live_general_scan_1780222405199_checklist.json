@@ -1,0 +1,54 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-31t10_13_25.202z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+  "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+  "contract_id": "2026-05-31t10_13_25.201z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+  "generated_at": "2026-05-31T10:13:25.202Z",
+  "updated_at": "2026-05-31T10:13:25.202Z",
+  "agent_id": "codex_smartdesk_live_general_scan",
+  "session_id": "codex_smartdesk_live_general_scan_1780222405199",
+  "title": "Smart Desk live general readonly scan",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T10:13:25.202Z",
+      "updated_at": "2026-05-31T10:13:25.202Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T10:13:25.202Z",
+      "updated_at": "2026-05-31T10:13:25.202Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T10:13:25.202Z",
+      "updated_at": "2026-05-31T10:13:25.202Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T10:13:25.202Z",
+      "updated_at": "2026-05-31T10:13:25.202Z",
+      "evidence": [],
+      "note": ""
+    }
+  ]
+}

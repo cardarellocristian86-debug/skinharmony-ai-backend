@@ -1,0 +1,65 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t19_14_25.197z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "trace_id": "trace_codex_nyra_smartdesk_deep_scan_codex_nyra_smartdesk_deep_scan_178016846519",
+  "contract_id": "2026-05-30t19_14_25.196z_codex_nyra_smartdesk_deep_scan_nyra_deep_scan_smart_des",
+  "generated_at": "2026-05-30T19:14:25.197Z",
+  "updated_at": "2026-05-30T19:33:28Z",
+  "agent_id": "codex_nyra_smartdesk_deep_scan",
+  "session_id": "codex_nyra_smartdesk_deep_scan_1780168465195",
+  "title": "Nyra deep scan Smart Desk",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:14:25.197Z",
+      "updated_at": "2026-05-30T19:26:23.446Z",
+      "evidence": [
+        "reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:14:25.197Z",
+      "updated_at": "2026-05-30T19:26:23.454Z",
+      "evidence": [
+        "universal-core-2.0/tools/nyra-smartdesk-code-overlay-scan.ts"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:14:25.197Z",
+      "updated_at": "2026-05-30T19:27:03.596Z",
+      "evidence": [
+        "reports/smartdesk/nyra_smartdesk_render_code_overlay_latest.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T19:14:25.197Z",
+      "updated_at": "2026-05-30T19:33:28Z",
+      "evidence": [
+        "SHARED_MEMORY/reports/codex-orchestrator/codex_nyra_smartdesk_deep_scan_1780168465195_final.md",
+        "reports/smartdesk/nyra_smartdesk_render_code_overlay_latest.json",
+        "reports/smartdesk/nyra_smartdesk_render_code_overlay_latest.md",
+        "reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": "Finalizzato dopo rerun test Nyra overlay/supervisor/branch/action/local-governance, scan reale mirror Smart Desk e node --check mirror senza errori."
+    }
+  ]
+}

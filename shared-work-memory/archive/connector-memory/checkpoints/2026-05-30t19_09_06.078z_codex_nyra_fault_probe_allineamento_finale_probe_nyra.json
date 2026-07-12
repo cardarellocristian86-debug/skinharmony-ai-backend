@@ -1,0 +1,32 @@
+{
+  "checkpoint_id": "2026-05-30t19_09_06.078z_codex_nyra_fault_probe_allineamento_finale_probe_nyra",
+  "generated_at": "2026-05-30T19:09:06.079Z",
+  "agent_id": "codex_nyra_fault_probe",
+  "session_id": "codex_nyra_fault_probe_1780167862924",
+  "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+  "title": "Allineamento finale probe Nyra",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Testare developer_code con codice leggermente sbagliato completato: Nyra intercetta il difetto del codice difettoso tramite guard locale mirato, segnala recover/attenzione per Codex, nessun Render produzione chiavi clienti prezzi toccato",
+  "files": [
+    "universal-core-2.0/tools/nyra-codex-work-supervisor.ts",
+    "universal-core-2.0/tests/nyra-codex-work-supervisor-test.ts",
+    "universal-core-2.0/runtime/nyra/NYRA_WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/universal-core/OPERATIONS.md",
+    "SHARED_MEMORY/snapshots/STATE_SNAPSHOT.md",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/events/EVENTS.jsonl"
+  ],
+  "tests": [
+    "npm --prefix universal-core-2.0 run check:nyra:codex-supervisor",
+    "npm --prefix universal-core-2.0 run check:nyra:branch-overlay",
+    "npm --prefix universal-core-2.0 run check:nyra:action-router",
+    "npm --prefix universal-core-2.0 run check:nyra:local-governance",
+    "node packages/core-codex-connector/src/cli.mjs program-map-check --file SHARED_MEMORY/programs/universal-core/PROGRAM.md --file SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md --file SHARED_MEMORY/programs/universal-core/OPERATIONS.md"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t19_04_22.925z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

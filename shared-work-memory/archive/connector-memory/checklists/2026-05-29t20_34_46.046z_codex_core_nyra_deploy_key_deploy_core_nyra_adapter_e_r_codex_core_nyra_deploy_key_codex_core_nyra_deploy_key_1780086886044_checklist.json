@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t20_34_46.046z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "trace_id": "trace_codex_core_nyra_deploy_key_codex_core_nyra_deploy_key_1780086886044_178008",
+  "contract_id": "2026-05-29t20_34_46.045z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "generated_at": "2026-05-29T20:34:46.046Z",
+  "updated_at": "2026-05-29T21:15:06.107Z",
+  "agent_id": "codex_core_nyra_deploy_key",
+  "session_id": "codex_core_nyra_deploy_key_1780086886044",
+  "title": "Deploy Core Nyra adapter e rotazione Suite Codex key",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:34:46.046Z",
+      "updated_at": "2026-05-29T21:14:05.196Z",
+      "evidence": [
+        "Core gate deploy allowed; Core gate rotazione update allowed; write_production review_required con owner request; report reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:34:46.046Z",
+      "updated_at": "2026-05-29T21:14:11.051Z",
+      "evidence": [
+        "GitHub deploy commits 2c4c620aedd2fa7858595579ba3959dc8b8ba4a8 e 209942bdb0da69a77d3a5ab91e32658d3c7afdcf; Render Suite live dep-d8d00g4p3tds73f179pg; Smart Desk live dep-d8cvmkks7cbc73bnaong; SUITE_CODEX_AUTOMATION_KEY ruotata e vecchie key revocate"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:34:46.046Z",
+      "updated_at": "2026-05-29T21:14:16.024Z",
+      "evidence": [
+        "Suite temp smoke OK; node --check patched suite app/test OK; live health Suite OK; live action_mediation smoke core_route=action_evaluator OK; Smart Desk /health and /api/universal-core/status OK; Suite key verify with nocache OK"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T20:34:46.046Z",
+      "updated_at": "2026-05-29T21:15:06.106Z",
+      "evidence": [
+        "Report SHARED_MEMORY/reports/codex-orchestrator/codex_core_nyra_deploy_key_1780086886044_final.md; evento deploy_and_key_rotation_completed in SHARED_MEMORY/events/EVENTS.jsonl"
+      ],
+      "note": ""
+    }
+  ]
+}

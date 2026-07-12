@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t12_48_30.747z_codex_nyra_local_first_nyra_locale_prima_di_render",
+  "trace_id": "trace_codex_nyra_local_first_codex_nyra_local_first_1780145310745_1780145310745",
+  "contract_id": "2026-05-30t12_48_30.746z_codex_nyra_local_first_nyra_locale_prima_di_render",
+  "generated_at": "2026-05-30T12:48:30.747Z",
+  "updated_at": "2026-05-30T13:02:00.242Z",
+  "agent_id": "codex_nyra_local_first",
+  "session_id": "codex_nyra_local_first_1780145310745",
+  "title": "Nyra locale prima di Render",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_core_gate_locale",
+      "label": "Core gate locale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T12:48:30.747Z",
+      "updated_at": "2026-05-30T12:52:23.912Z",
+      "evidence": [
+        "Core gate ALLOWED fuori sandbox; Core 2.0 locale ha scelto variante local_governance_overlay_events: universal-core-2.0/reports/universal-core/codex/codex_core_decision_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_runtime_locale_nyra",
+      "label": "Runtime locale Nyra",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T12:48:30.747Z",
+      "updated_at": "2026-05-30T12:57:44.364Z",
+      "evidence": [
+        "Implementati in universal-core-2.0: nyra-rich-chat, generative provider, local event emitter, branch overlay, codex guidance, local governance CLI; smoke locale scrive runtime/nyra/events/NYRA_EVENTS.jsonl"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e2e_locale",
+      "label": "Test E2E locale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T12:48:30.747Z",
+      "updated_at": "2026-05-30T13:01:33.729Z",
+      "evidence": [
+        "Passati: npm run check:nyra:event-emitter, branch-overlay, chat-rich, chat-rich-generative, local-governance, dialogue-engine, dialogue-runtime; node tests/nyra-communication-adapter-test.ts; smoke NYRA_RICH_CHAT_USE_OPENAI=0 npm run nyra:governance"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_snapshot_docs_finalize",
+      "label": "Snapshot/docs/finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T12:48:30.747Z",
+      "updated_at": "2026-05-30T13:02:00.240Z",
+      "evidence": [
+        "Aggiornati snapshot universal-core-2.0 e SHARED_MEMORY, programmi universal-core, evento EVENTS.jsonl; checkpoint after 2026-05-30t13_01_51.305z; finalize in corso"
+      ],
+      "note": ""
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-06-02t10_03_58.078z_cristiancardarello_supporto_research_analyst_traduzione",
+  "generated_at": "2026-06-02T10:03:58.078Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "title": "Supporto research analyst traduzione Smart Desk preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-06-02t10_03_58.076z_cristiancardarello_supporto_research_analyst_traduzione",
+  "checklist_id": "2026-06-02t10_03_58.078z_cristiancardarello_supporto_research_analyst_traduzione",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-06-02t10_03_58.078z_cristiancardarello_supporto_research_analyst_traduzione",
+    "title": "Supporto research analyst traduzione Smart Desk",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

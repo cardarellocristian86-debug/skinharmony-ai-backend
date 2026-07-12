@@ -1,0 +1,23 @@
+{
+  "agent_id": "codex_core_nyra_deploy_key",
+  "session_id": "codex_core_nyra_deploy_key_1780086886044",
+  "trace_id": "trace_codex_core_nyra_deploy_key_codex_core_nyra_deploy_key_1780086886044_178008",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "services/suite-control-plane",
+    "render-smartdesk-live",
+    "SHARED_MEMORY",
+    "reports"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-29T20:34:46.044Z",
+  "updated_at": "2026-05-29T21:16:58.543Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-29t21_15_34.276z_codex_core_nyra_deploy_key_deploy_e_rotazione_in_verifi.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress",
+  "finished_at": "2026-05-29T21:16:37.442Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/codex_core_nyra_deploy_key_1780086886044_final.md"
+}

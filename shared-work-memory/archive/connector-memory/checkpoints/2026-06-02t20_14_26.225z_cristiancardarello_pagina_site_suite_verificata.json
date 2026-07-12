@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-06-02t20_14_26.225z_cristiancardarello_pagina_site_suite_verificata",
+  "generated_at": "2026-06-02T20:14:26.226Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780429005023",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780429005023_1780429005024",
+  "title": "Pagina Site Suite verificata",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Audit traduttore/localize pulito, client-facing clean, program-map ready, struttura WordPress e confini claim verificati.",
+  "files": [
+    "wordpress/skinharmony-site-suite-technical-page.html"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t19_36_45.028z_cristiancardarello_pagina_tecnica_site_suite",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

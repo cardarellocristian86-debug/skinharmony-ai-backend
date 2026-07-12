@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-31t10_13_25.202z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+  "generated_at": "2026-05-31T10:13:25.202Z",
+  "agent_id": "codex_smartdesk_live_general_scan",
+  "session_id": "codex_smartdesk_live_general_scan_1780222405199",
+  "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+  "title": "Smart Desk live general readonly scan preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-31t10_13_25.201z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+  "checklist_id": "2026-05-31t10_13_25.202z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-31t10_13_25.202z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+    "title": "Smart Desk live general readonly scan",
+    "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

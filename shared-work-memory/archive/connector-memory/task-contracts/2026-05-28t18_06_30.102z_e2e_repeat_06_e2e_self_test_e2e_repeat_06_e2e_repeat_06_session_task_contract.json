@@ -1,0 +1,45 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t18_06_30.102z_e2e_repeat_06_e2e_self_test",
+  "trace_id": "trace_e2e_repeat_06_e2e_repeat_06_session_1779991590099",
+  "generated_at": "2026-05-28T18:06:30.102Z",
+  "updated_at": "2026-05-28T18:06:30.102Z",
+  "agent_id": "e2e_repeat_06",
+  "session_id": "e2e_repeat_06_session",
+  "title": "E2E self test",
+  "request": "Verify task contract coherence.",
+  "success_criteria": "Blocks outside scope and allows declared in-scope work.",
+  "allowed_paths": [
+    "packages/core-codex-connector",
+    "packages/core-codex-connector/e2e-self-test",
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

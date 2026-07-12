@@ -1,0 +1,74 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-01t13_11_04.338z_codex_google_suite_5.3.16_performance_cache_closure",
+  "trace_id": "trace_codex_google_codex_google_1780319464336_1780319464336",
+  "contract_id": "2026-06-01t13_11_04.338z_codex_google_suite_5.3.16_performance_cache_closure",
+  "generated_at": "2026-06-01T13:11:04.338Z",
+  "updated_at": "2026-06-01T13:11:46.338Z",
+  "agent_id": "codex_google",
+  "session_id": "codex_google_1780319464336",
+  "title": "Suite 5.3.16 performance cache closure",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_report_scan_live_5.3.15",
+      "label": "Report scan live 5.3.15",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:11:04.338Z",
+      "updated_at": "2026-06-01T13:11:46.049Z",
+      "evidence": [
+        "SHARED_MEMORY/reports/SUITE_5_3_15_LIVE_PERFORMANCE_SCAN_2026-06-01.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_patch_plugin_5.3.16",
+      "label": "Patch plugin 5.3.16",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:11:04.338Z",
+      "updated_at": "2026-06-01T13:11:46.122Z",
+      "evidence": [
+        "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_scanner_performance_riusabile",
+      "label": "Scanner performance riusabile",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:11:04.338Z",
+      "updated_at": "2026-06-01T13:11:46.192Z",
+      "evidence": [
+        "scripts/scan_suite_live_performance.js"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_test_e_zip_5.3.16",
+      "label": "Test e zip 5.3.16",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:11:04.338Z",
+      "updated_at": "2026-06-01T13:11:46.264Z",
+      "evidence": [
+        "dist/skinharmony-site-suite-5.3.16.zip; closure 22/22; suite local 1688/1688"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_5_memoria_condivisa",
+      "label": "Memoria condivisa",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-01T13:11:04.338Z",
+      "updated_at": "2026-06-01T13:11:46.337Z",
+      "evidence": [
+        "SHARED_MEMORY/reports/SUITE_5_3_16_PERFORMANCE_CACHE_LOCAL_2026-06-01.md; SHARED_MEMORY/events/EVENTS.jsonl; WORK_SNAPSHOT.md"
+      ],
+      "note": ""
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t14_03_17.686z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "generated_at": "2026-05-30T14:03:17.686Z",
+  "agent_id": "codex_nyra_codex_memory",
+  "session_id": "codex_nyra_codex_memory_1780149797685",
+  "trace_id": "trace_codex_nyra_codex_memory_codex_nyra_codex_memory_1780149797685_178014979768",
+  "title": "Import memoria Codex in Nyra locale",
+  "request": "Importare in Nyra locale la memoria Codex da SHARED_MEMORY con distillazione redatta e apprendimento mentre si lavora; solo universal-core-2.0 e SHARED_MEMORY; niente Render, produzione, chiavi, clienti o prezzi",
+  "success_criteria": "Nyra ha memoria di lavoro Codex popolata, importer incrementale testato, governance/read-only leggono il summary; snapshot/eventi/finalize aggiornati",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

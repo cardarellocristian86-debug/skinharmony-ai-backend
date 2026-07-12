@@ -1,0 +1,38 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t15_25_10.525z_checklist_smoke_01_checklist_smoke",
+  "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+  "contract_id": "2026-05-29t15_25_10.525z_checklist_smoke_01_checklist_smoke",
+  "generated_at": "2026-05-29T15:25:10.525Z",
+  "updated_at": "2026-05-29T15:25:36.070Z",
+  "agent_id": "checklist_smoke_01",
+  "session_id": "checklist_smoke_01_session",
+  "title": "Checklist smoke",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_punto_uno",
+      "label": "Punto uno",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T15:25:10.525Z",
+      "updated_at": "2026-05-29T15:25:19.570Z",
+      "evidence": [
+        "smoke evidence one"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_punto_due",
+      "label": "Punto due",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T15:25:10.525Z",
+      "updated_at": "2026-05-29T15:25:36.070Z",
+      "evidence": [
+        "smoke evidence two"
+      ],
+      "note": ""
+    }
+  ]
+}

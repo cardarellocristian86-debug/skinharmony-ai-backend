@@ -1,0 +1,21 @@
+{
+  "checkpoint_id": "2026-05-28t18_12_13.358z_test_start_script_test_start_script_work-start_prefligh",
+  "generated_at": "2026-05-28T18:12:13.358Z",
+  "agent_id": "test_start_script",
+  "session_id": "test_start_script_1779991933355",
+  "trace_id": "trace_test_start_script_test_start_script_1779991933355_1779991933355",
+  "title": "Test start script work-start preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [
+    "SHARED_MEMORY/sessions",
+    "SHARED_MEMORY/supervision"
+  ],
+  "tests": [
+    "work-start: sessione, lock, intent, task contract, trace, preflight e pulse iniziale"
+  ],
+  "next": "Ricevere task owner, aggiornare pulse con file reali, test, rischio e report.",
+  "task_contract_id": "2026-05-28t18_12_13.357z_test_start_script_test_start_script_work-start",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

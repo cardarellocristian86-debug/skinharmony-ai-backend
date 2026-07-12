@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-23t17_22_41.171z_codex_suite_operationalize_connector_and_suite_package_",
+  "generated_at": "2026-05-23T17:22:41.171Z",
+  "agent_id": "codex_suite_operationalize",
+  "session_id": "codex_suite_operationalize_1779556253826",
+  "title": "Connector and Suite package drift closed",
+  "status": "in_progress",
+  "summary": "Connettore Desktop riallineato a 0.2.24; test enterprise version drift aggiornato per seguire versione Suite reale; operational closure ora aggiorna anche skinharmony-site-suite-latest.zip; Suite 5.2.19 package hashes allineati; governance e guarded setup OK.",
+  "files": [
+    "scripts/test_enterprise_version_drift.js",
+    "scripts/suite_operational_closure.js",
+    "reports/wordpress/suite_operational_closure_latest.json",
+    "dist/skinharmony-site-suite-5.2.19.zip",
+    "dist/skinharmony-site-suite.zip",
+    "dist/skinharmony-site-suite-latest.zip"
+  ],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

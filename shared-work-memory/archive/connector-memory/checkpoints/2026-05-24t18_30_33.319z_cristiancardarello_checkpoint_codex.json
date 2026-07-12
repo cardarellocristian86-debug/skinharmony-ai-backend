@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_30_33.319z_cristiancardarello_checkpoint_codex",
+  "generated_at": "2026-05-24T18:30:33.320Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779646943236",
+  "title": "Checkpoint Codex",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

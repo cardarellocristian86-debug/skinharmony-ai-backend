@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t13_23_02.196z_codex_nika_clone_preview_mostrare_clone_sorgente_nika",
+  "generated_at": "2026-05-24T13:23:02.197Z",
+  "agent_id": "codex_nika_clone_preview",
+  "session_id": "codex_nika_clone_preview_1779628982157",
+  "title": "Mostrare clone sorgente Nika",
+  "request": "Utente: ora mostrami il clone. Output atteso: aprire una preview locale visiva del clone sorgente Nika, non un blocco sicurezza e non un template generico.",
+  "success_criteria": "Preview locale aperta che riproduce struttura visuale Nika da source, senza installazione WordPress e senza deploy.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

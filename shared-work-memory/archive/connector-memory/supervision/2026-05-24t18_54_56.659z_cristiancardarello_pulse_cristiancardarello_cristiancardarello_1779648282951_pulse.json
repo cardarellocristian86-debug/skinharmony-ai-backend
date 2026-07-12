@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-24t18_54_56.659z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T18:54:56.659Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779648282951",
+  "title": "Pulse Codex",
+  "summary": "Preparazione zip locale Suite 5.2.39: solo build locale dist, nessun deploy, nessuna modifica WordPress live.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php"
+  ],
+  "tests": [],
+  "next": "Eseguire suite:operational:closure per generare zip 5.2.39",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t18_44_58.376z_cristiancardarello_retest_suite_5.2.38_template_builder",
+    "title": "Retest Suite 5.2.38 Template Builder live",
+    "request": "Verificare che la 5.2.38 installata su WordPress salvi e renderizzi testo, CTA e immagini da Template Builder",
+    "success_criteria": "Bozza non pubblicata creata con tutti i check true: draft, save, status non publish, hero title, CTA, gallery image, detail image"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.087,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

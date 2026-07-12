@@ -1,0 +1,49 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+  "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+  "generated_at": "2026-05-29T15:17:11.281Z",
+  "updated_at": "2026-05-29T15:17:11.281Z",
+  "agent_id": "codex_checklist_enforcement",
+  "session_id": "codex_checklist_enforcement_1780067831280",
+  "title": "Connector checklist enforcement",
+  "request": "Rendere obbligatoria una checklist progressiva per ogni lavoro Codex: creare lista, spuntare punti chiusi, bloccare finalize se restano punti aperti senza motivo.",
+  "success_criteria": "Il connettore supporta checklist-create/checklist-check, work-start puo creare checklist, finalize la verifica, dashboard/report la mostrano e i test passano.",
+  "allowed_paths": [
+    "packages/core-codex-connector",
+    "SHARED_MEMORY/programs/core-codex-connector",
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+    "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

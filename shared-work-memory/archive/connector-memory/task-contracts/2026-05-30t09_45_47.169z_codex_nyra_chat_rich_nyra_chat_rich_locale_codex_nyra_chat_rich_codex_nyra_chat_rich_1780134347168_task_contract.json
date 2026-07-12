@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+  "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+  "generated_at": "2026-05-30T09:45:47.169Z",
+  "updated_at": "2026-05-30T09:45:47.169Z",
+  "agent_id": "codex_nyra_chat_rich",
+  "session_id": "codex_nyra_chat_rich_1780134347168",
+  "title": "Nyra Chat Rich locale",
+  "request": "Implementare un layer locale Nyra Chat Rich che usi apprendimento/snapshot in modo selettivo, migliori la voce naturale e resti governato da Core/validator senza produzione",
+  "success_criteria": "Comando npm, test locali e prova diretta dimostrano risposta piu naturale, memoria contestuale e fallback sicuro",
+  "allowed_paths": [
+    "universal-core",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-04t21_49_47.388z_cristiancardarello_connector_collegato",
+  "generated_at": "2026-06-04T21:49:47.388Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609759412",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609759412_1780609759412",
+  "title": "Connector collegato",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Doctor OK, tenant codexai raggiungibile, orchestrator-status letto, Core gate codex_automation ALLOWED, core2-watch eseguito con attention per assenza file/test prodotto.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-04t21_49_19.434z_cristiancardarello_codex_app_connector_link",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

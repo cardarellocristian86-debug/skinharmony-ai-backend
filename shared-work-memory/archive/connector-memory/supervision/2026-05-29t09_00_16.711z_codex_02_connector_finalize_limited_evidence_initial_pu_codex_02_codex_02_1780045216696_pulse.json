@@ -1,0 +1,49 @@
+{
+  "pulse_id": "2026-05-29t09_00_16.711z_codex_02_connector_finalize_limited_evidence_initial_pu",
+  "generated_at": "2026-05-29T09:00:16.711Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1780045216696",
+  "trace_id": "trace_codex_02_codex_02_1780045216696_1780045216696",
+  "title": "Connector finalize limited evidence initial pulse",
+  "summary": "Avvio lavoro governato: Aggiungere al Core Codex Connector una chiusura limitata documentata per lavori senza E2E completo applicabile, mantenendo vincolo prima/durante/dopo e prove sostitutive.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-29t09_00_16.697z_codex_02_connector_finalize_limited_evidence",
+    "title": "Connector finalize limited evidence",
+    "request": "Aggiungere al Core Codex Connector una chiusura limitata documentata per lavori senza E2E completo applicabile, mantenendo vincolo prima/durante/dopo e prove sostitutive.",
+    "success_criteria": "Patch connettore testata, programma aggiornato, report condiviso salvato, cleanup e finalize verdi."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t09_00_16.698z_codex_02_connector_finalize_limited_evidence",
+    "trace_id": "trace_codex_02_codex_02_1780045216696_1780045216696",
+    "allowed_paths": [
+      "packages/core-codex-connector",
+      "SHARED_MEMORY/programs/core-codex-connector",
+      "SHARED_MEMORY/reports/core-codex-connector",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.542,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t18_14_26.654z_codex_smartdesk_plans_verify_verifica_riallineamento_pi",
+  "trace_id": "trace_codex_smartdesk_plans_verify_codex_smartdesk_plans_verify_1780078466653_17",
+  "contract_id": "2026-05-29t18_14_26.654z_codex_smartdesk_plans_verify_verifica_riallineamento_pi",
+  "generated_at": "2026-05-29T18:14:26.654Z",
+  "updated_at": "2026-05-29T18:19:34.327Z",
+  "agent_id": "codex_smartdesk_plans_verify",
+  "session_id": "codex_smartdesk_plans_verify_1780078466653",
+  "title": "Verifica riallineamento piani Smart Desk",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:14:26.654Z",
+      "updated_at": "2026-05-29T18:19:27.030Z",
+      "evidence": [
+        "Gate Core ALLOWED: reports/codex-core/codex_core_gate_latest.json; contesto verificato su desktop/web/API/docs"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:14:26.654Z",
+      "updated_at": "2026-05-29T18:19:30.746Z",
+      "evidence": [
+        "Modifica mirata preview route desktop in skin-harmony-desktop/src/renderer/App.tsx; nessuna modifica pricing/checkout/produzione"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:14:26.654Z",
+      "updated_at": "2026-05-29T18:19:34.327Z",
+      "evidence": [
+        "lint OK; vitest OK 10 test; node --check web/API OK; static plan checks OK"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-29T18:14:26.654Z",
+      "updated_at": "2026-05-29T18:19:22.235Z",
+      "evidence": [
+        "Report SHARED_MEMORY/reports/SMARTDESK_PLAN_REALIGNMENT_VERIFICATION_2026-05-29.md ed evento EVENTS.jsonl scritti; finalize in corso"
+      ],
+      "note": ""
+    }
+  ]
+}

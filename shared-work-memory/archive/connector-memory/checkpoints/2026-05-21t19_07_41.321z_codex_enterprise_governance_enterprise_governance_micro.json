@@ -1,0 +1,21 @@
+{
+  "checkpoint_id": "2026-05-21t19_07_41.321z_codex_enterprise_governance_enterprise_governance_micro",
+  "generated_at": "2026-05-21T19:07:41.321Z",
+  "agent_id": "codex_enterprise_governance",
+  "session_id": "codex_enterprise_governance_1779390128428",
+  "title": "Enterprise governance microblocchi 1-3",
+  "status": "verified",
+  "summary": "Chiusi localmente SSOT registry, drift connettore/Suite e runtime contracts job/lock/audit/rollback/conflict. Nessun deploy, nessuna produzione.",
+  "files": [
+    "SHARED_MEMORY/handoffs/ENTERPRISE_GOVERNANCE_CLOSURE_CHECKLIST_2026-05-21.md",
+    "runtime/enterprise-governance/enterprise_governance_ssot_registry_v1.json",
+    "runtime/enterprise-governance/enterprise_runtime_contracts_v1.json"
+  ],
+  "tests": [
+    "npm run enterprise:governance:ssot:test",
+    "npm run enterprise:version-drift:test",
+    "npm run enterprise:runtime-contracts:test"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

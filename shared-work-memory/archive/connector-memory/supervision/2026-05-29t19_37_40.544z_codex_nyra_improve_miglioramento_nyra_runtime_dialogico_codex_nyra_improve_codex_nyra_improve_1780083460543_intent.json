@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t19_37_40.544z_codex_nyra_improve_miglioramento_nyra_runtime_dialogico",
+  "generated_at": "2026-05-29T19:37:40.544Z",
+  "agent_id": "codex_nyra_improve",
+  "session_id": "codex_nyra_improve_1780083460543",
+  "trace_id": "trace_codex_nyra_improve_codex_nyra_improve_1780083460543_1780083460543",
+  "title": "Miglioramento Nyra runtime dialogico",
+  "request": "Analizzare il codice Nyra e migliorarla come IA in modo concreto: più comprensione intenti, meno risposta generica, self-diagnosis e owner-only coerenti, senza claim di coscienza o autonomia generale",
+  "success_criteria": "Miglioramento piccolo ma testabile su runtime dialogico Nyra; Core seleziona variante; test Nyra minimi passati; report evento memoria aggiornato",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

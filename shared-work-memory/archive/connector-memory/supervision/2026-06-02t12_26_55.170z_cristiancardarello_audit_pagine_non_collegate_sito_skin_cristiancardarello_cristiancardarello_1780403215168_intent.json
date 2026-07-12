@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-06-02t12_26_55.170z_cristiancardarello_audit_pagine_non_collegate_sito_skin",
+  "generated_at": "2026-06-02T12:26:55.170Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780403215168",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780403215168_1780403215168",
+  "title": "Audit pagine non collegate sito SkinHarmony",
+  "request": "Controllare www.skinharmony.it: mappare pagine online, link interni raggiungibili dai pulsanti/menu/contenuti, individuare pagine pubbliche non collegate che sporcano Suite e preparare candidati da mettere in bozza. Prima fase read-only, nessuna modifica WordPress/produzione.",
+  "success_criteria": "Report con pagine pubbliche, grafo link interni, pagine orfane/candidate bozza, rischi e prossimo passo Core; nessuna produzione modificata senza gate e conferma owner.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

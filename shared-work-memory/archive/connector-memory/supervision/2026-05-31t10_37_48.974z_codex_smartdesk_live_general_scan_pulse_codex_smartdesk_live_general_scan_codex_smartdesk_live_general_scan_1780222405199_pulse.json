@@ -1,0 +1,66 @@
+{
+  "pulse_id": "2026-05-31t10_37_48.974z_codex_smartdesk_live_general_scan_pulse",
+  "generated_at": "2026-05-31T10:37:48.974Z",
+  "agent_id": "codex_smartdesk_live_general_scan",
+  "session_id": "codex_smartdesk_live_general_scan_1780222405199",
+  "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+  "title": "Pulse Codex",
+  "summary": "Scansione read-only Smart Desk live completata: endpoint live autenticati, Gold State, report, redditivita, data-quality e test locali Core/Nyra controllati; nessuna modifica a Render.",
+  "files": [],
+  "tests": [],
+  "next": "Restituire lista errori generali verificati, senza patch.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-31t10_13_25.202z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+    "title": "Smart Desk live general readonly scan",
+    "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-31t10_13_25.200z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+    "title": "Smart Desk live general readonly scan",
+    "request": "Controllare Smart Desk live su Render e codice locale in sola lettura, intercettando errori generali UX, moduli, gating, report, AI Gold, cassa, piani, senza modifiche e senza deploy",
+    "success_criteria": "Lista errori generali verificati o rischi concreti del prodotto live, nessuna modifica applicata"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-31t10_13_25.201z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+    "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+    "allowed_paths": [
+      "smartdesk-live-general-readonly",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.333,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-31t10_13_25.201z_codex_smartdesk_live_general_scan_smart_desk_live_gener",
+      "trace_id": "trace_codex_smartdesk_live_general_scan_codex_smartdesk_live_general_scan_178022",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t18_48_38.587z_codex_nyra_developer_branch_ramo_programmatore_nyra",
+  "generated_at": "2026-05-30T18:48:38.587Z",
+  "agent_id": "codex_nyra_developer_branch",
+  "session_id": "codex_nyra_developer_branch_1780166918586",
+  "trace_id": "trace_codex_nyra_developer_branch_codex_nyra_developer_branch_1780166918586_1780",
+  "title": "Ramo programmatore Nyra",
+  "request": "Rifinire Nyra locale aggiungendo un ramo programmatore esplicito in universal-core-2.0: riconoscimento richieste codice, debug, patch, test, refactor; supervisione Codex; nessuna scrittura autonoma senza Core",
+  "success_criteria": "Branch developer_code visibile nel branch overlay, testato, documentato negli snapshot/shared memory; nessun Render/produzione/chiavi/clienti/prezzi toccato",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

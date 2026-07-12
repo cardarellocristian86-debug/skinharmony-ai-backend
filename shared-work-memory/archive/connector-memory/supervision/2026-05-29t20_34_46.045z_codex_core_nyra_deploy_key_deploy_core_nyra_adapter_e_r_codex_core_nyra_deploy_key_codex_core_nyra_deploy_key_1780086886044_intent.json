@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t20_34_46.045z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "generated_at": "2026-05-29T20:34:46.045Z",
+  "agent_id": "codex_core_nyra_deploy_key",
+  "session_id": "codex_core_nyra_deploy_key_1780086886044",
+  "trace_id": "trace_codex_core_nyra_deploy_key_codex_core_nyra_deploy_key_1780086886044_178008",
+  "title": "Deploy Core Nyra adapter e rotazione Suite Codex key",
+  "request": "Deployare la patch locale Core/Nyra adapter e poi ruotare SUITE_CODEX_AUTOMATION_KEY in modo sicuro, senza stampare segreti; verificare stato Render e aggiornare report",
+  "success_criteria": "Deploy completato o blocker documentato; SUITE_CODEX_AUTOMATION_KEY ruotata o blocker documentato; test/live check e finalize Core Connector",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

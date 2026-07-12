@@ -1,0 +1,81 @@
+{
+  "pulse_id": "2026-06-02t16_28_42.180z_codex_suite_research_support_supporto_analisi_suite_per",
+  "generated_at": "2026-06-02T16:28:42.180Z",
+  "agent_id": "codex_suite_research_support",
+  "session_id": "codex_suite_research_support_1780417722173",
+  "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+  "title": "Supporto analisi Suite per Codex attivo initial pulse",
+  "summary": "Avvio lavoro governato: Collaborare con il Codex che sta lavorando su SkinHarmony Suite: leggere memoria condivisa, individuare stato lavoro, produrre supporto analitico e messaggi operativi senza modifiche sensibili",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-02t16_28_42.177z_codex_suite_research_support_supporto_analisi_suite_per",
+    "title": "Supporto analisi Suite per Codex attivo",
+    "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-06-02t16_28_42.175z_codex_suite_research_support_supporto_analisi_suite_per",
+    "title": "Supporto analisi Suite per Codex attivo",
+    "request": "Collaborare con il Codex che sta lavorando su SkinHarmony Suite: leggere memoria condivisa, individuare stato lavoro, produrre supporto analitico e messaggi operativi senza modifiche sensibili",
+    "success_criteria": "Contesto Suite aggiornato, informazioni utili condivise in SHARED_WORK, nessuna modifica produzione, checkpoint/finalize eseguiti"
+  },
+  "task_contract": {
+    "contract_id": "2026-06-02t16_28_42.176z_codex_suite_research_support_supporto_analisi_suite_per",
+    "trace_id": "trace_codex_suite_research_support_codex_suite_research_support_1780417722173_17",
+    "allowed_paths": [
+      "services",
+      "wordpress",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.708,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-30t14_14_33.333z_codex_nyra_codex_memory_nyra_codex_memory_implementatio",
+  "generated_at": "2026-05-30T14:14:33.334Z",
+  "agent_id": "codex_nyra_codex_memory",
+  "session_id": "codex_nyra_codex_memory_1780149797685",
+  "trace_id": "trace_codex_nyra_codex_memory_codex_nyra_codex_memory_1780149797685_178014979768",
+  "title": "nyra codex memory implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementati importer memoria Codex, pack locale redatto, integrazione governance/read-only/rich chat e snapshot condivisi; Render/produzione non toccati.",
+  "files": [
+    "universal-core-2.0/tools/nyra-codex-memory-importer.ts",
+    "universal-core-2.0/tools/nyra-local-governance.ts",
+    "universal-core-2.0/tools/nyra-communication-adapter.ts",
+    "universal-core-2.0/tools/nyra-rich-chat.ts",
+    "universal-core-2.0/runtime/nyra-learning/nyra_codex_work_memory_latest.json"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t14_03_17.687z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

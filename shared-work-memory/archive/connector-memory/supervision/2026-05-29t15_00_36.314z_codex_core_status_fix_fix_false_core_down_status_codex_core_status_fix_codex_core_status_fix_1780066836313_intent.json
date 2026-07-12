@@ -1,0 +1,17 @@
+{
+  "intent_id": "2026-05-29t15_00_36.314z_codex_core_status_fix_fix_false_core_down_status",
+  "generated_at": "2026-05-29T15:00:36.314Z",
+  "agent_id": "codex_core_status_fix",
+  "session_id": "codex_core_status_fix_1780066836313",
+  "trace_id": "trace_codex_core_status_fix_codex_core_status_fix_1780066836313_1780066836313",
+  "title": "Fix false Core down status",
+  "request": "Correggere memoria condivisa che dichiara Core 2.0 giù mentre health/decision sono attivi e riparare sessione JSON corrotta.",
+  "success_criteria": "WORK_SNAPSHOT non contiene piu stato falso Core down; session JSON valida; test core health e JSON parse passano.",
+  "expected_depth": "normal",
+  "files": [
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/sessions/codex_suite_analytics_ui__codex_suite_analytics_ui_1779994305556.json"
+  ],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

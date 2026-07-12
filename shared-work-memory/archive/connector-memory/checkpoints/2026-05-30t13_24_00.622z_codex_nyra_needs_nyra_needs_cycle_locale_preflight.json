@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t13_24_00.622z_codex_nyra_needs_nyra_needs_cycle_locale_preflight",
+  "generated_at": "2026-05-30T13:24:00.622Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "title": "Nyra needs cycle locale preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "checklist_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+    "title": "Nyra needs cycle locale",
+    "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

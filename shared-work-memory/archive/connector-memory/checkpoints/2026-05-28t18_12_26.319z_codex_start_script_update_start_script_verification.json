@@ -1,0 +1,23 @@
+{
+  "checkpoint_id": "2026-05-28t18_12_26.319z_codex_start_script_update_start_script_verification",
+  "generated_at": "2026-05-28T18:12:26.319Z",
+  "agent_id": "codex_start_script_update",
+  "session_id": "codex_start_script_update_1779991868402",
+  "trace_id": "trace_codex_start_script_update_codex_start_script_update_1779991868402_17799918",
+  "title": "Start script verification",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Verifica finale script avvio: bash syntax OK e smoke work-start ha creato trace/task_contract con watch on_track.",
+  "files": [
+    "scripts/start-codex-agent.sh",
+    "SHARED_MEMORY/README_FOR_CODEX.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md"
+  ],
+  "tests": [
+    "bash -n scripts/start-codex-agent.sh",
+    "Core2 watch | verdict=on_track"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-28t18_11_08.405z_codex_start_script_update_update_codex_agent_start_scri",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t10_51_09.930z_cristiancardarello_suite_5.3.19_support_preflight",
+  "generated_at": "2026-06-02T10:51:09.930Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780397085518",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780397085518_1780397085518",
+  "title": "Suite 5.3.19 support preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Contesto letto da report Suite 5.3.19 live/install/manifest, Render sync e Core API contract. Lavoro limitato a ricerca/coordinamento fuori sandbox; nessun deploy, sync, produzione o ledger work.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t10_44_45.522z_cristiancardarello_supporto_core_codex_lavoro_suite",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

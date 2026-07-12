@@ -1,0 +1,29 @@
+{
+  "checkpoint_id": "2026-05-24t09_40_49.541z_codex_suite_release_worker_suite_5.2.24_zip_completed",
+  "generated_at": "2026-05-24T09:40:49.542Z",
+  "agent_id": "codex_suite_release_worker",
+  "session_id": "codex_suite_release_worker_1779573444659",
+  "title": "Suite 5.2.24 zip completed",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Creato zip 5.2.24, registry Home/WAAS validato con visual evidence, manifest aggiornato e test finali OK.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "scripts/generate_template_authority_visual_evidence.js",
+    "dist/skinharmony-site-suite-5.2.24.zip",
+    "dist/skinharmony-site-suite-update-manifest.json",
+    "SHARED_MEMORY/reports/SUITE_5_2_24_TEMPLATE_AUTHORITY_VISUAL_ZIP_2026-05-24.md"
+  ],
+  "tests": [
+    "node scripts/test_template_authority_v2_registry_binding.js",
+    "npm run suite:governance:test",
+    "npm run suite:page-factory:test",
+    "npm run suite:operational:closure",
+    "npm run connector:test",
+    "sh-core-codex test"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,45 @@
+{
+  "pulse_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e_initial_pulse",
+  "generated_at": "2026-05-28T18:29:03.714Z",
+  "agent_id": "codex_smartdesk",
+  "session_id": "codex_smartdesk_1779992943709",
+  "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+  "title": "Riallineamento e2e initial pulse",
+  "summary": "Avvio lavoro governato: Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t18_29_03.709z_codex_smartdesk_riallineamento_e2e",
+    "title": "Riallineamento e2e",
+    "request": "Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+    "success_criteria": "Ogni modifica resta nello scope, con pulse, test e finalize pulito"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+    "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+    "allowed_paths": [
+      "smartdesk-ai-gold-priority-ui",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.667,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

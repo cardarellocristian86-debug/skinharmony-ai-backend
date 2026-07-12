@@ -1,0 +1,58 @@
+{
+  "pulse_id": "2026-05-29t18_52_01.543z_core2_readiness_92425_core_2.0_codex_readiness_self-tes",
+  "generated_at": "2026-05-29T18:52:01.543Z",
+  "agent_id": "core2_readiness_92425",
+  "session_id": "core2_readiness_92425_1780080721541",
+  "trace_id": "trace_core2_readiness_92425_core2_readiness_92425_1780080721541_1780080721541",
+  "title": "Core 2.0 Codex readiness self-test initial pulse",
+  "summary": "Avvio lavoro governato: Verificare localmente il canale Core 2.0 Codex con gate e guarded exec dry-run.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t18_52_01.542z_core2_readiness_92425_core_2.0_codex_readiness_self-tes",
+    "title": "Core 2.0 Codex readiness self-test",
+    "trace_id": "trace_core2_readiness_92425_core2_readiness_92425_1780080721541_1780080721541",
+    "open": 1,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 1
+  },
+  "intent": {
+    "intent_id": "2026-05-29t18_52_01.541z_core2_readiness_92425_core_2.0_codex_readiness_self-tes",
+    "title": "Core 2.0 Codex readiness self-test",
+    "request": "Verificare localmente il canale Core 2.0 Codex con gate e guarded exec dry-run.",
+    "success_criteria": "Readiness matrix completa con ALLOWED/REVIEW/BLOCK attesi e spiegazione Core/Nyra presente."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t18_52_01.542z_core2_readiness_92425_core_2.0_codex_readiness_self-tes",
+    "trace_id": "trace_core2_readiness_92425_core2_readiness_92425_1780080721541_1780080721541",
+    "allowed_paths": [
+      "core2-readiness-92425",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.308,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

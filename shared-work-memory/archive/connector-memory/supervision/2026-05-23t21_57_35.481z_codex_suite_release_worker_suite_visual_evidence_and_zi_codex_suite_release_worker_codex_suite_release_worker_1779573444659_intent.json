@@ -1,0 +1,17 @@
+{
+  "intent_id": "2026-05-23t21_57_35.481z_codex_suite_release_worker_suite_visual_evidence_and_zi",
+  "generated_at": "2026-05-23T21:57:35.481Z",
+  "agent_id": "codex_suite_release_worker",
+  "session_id": "codex_suite_release_worker_1779573444659",
+  "title": "Suite visual evidence and zip",
+  "request": "Generare evidenza visuale Home/WAAS, promuovere solo se passa, preparare zip Suite progressivo e report connettore.",
+  "success_criteria": "Screenshot/evidence locali, test verdi, zip creato, report connettore funzionante, nessun deploy live.",
+  "expected_depth": "normal",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite",
+    "wordpress/home-page.html",
+    "wordpress/waas-page.html"
+  ],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

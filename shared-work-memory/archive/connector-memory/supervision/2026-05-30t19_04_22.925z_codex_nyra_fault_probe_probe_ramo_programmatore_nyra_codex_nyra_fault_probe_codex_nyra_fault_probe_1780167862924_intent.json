@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t19_04_22.925z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "generated_at": "2026-05-30T19:04:22.925Z",
+  "agent_id": "codex_nyra_fault_probe",
+  "session_id": "codex_nyra_fault_probe_1780167862924",
+  "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+  "title": "Probe ramo programmatore Nyra",
+  "request": "Testare developer_code con codice leggermente sbagliato: Nyra deve intercettare il difetto o almeno segnalare che serve guard/test; se manca, aggiungere guard locale mirato",
+  "success_criteria": "Caso bug leggero coperto da test; Nyra produce segnale di attenzione/fail per codice difettoso; nessun Render/produzione/chiavi/clienti/prezzi toccato; checkpoint/finalize",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

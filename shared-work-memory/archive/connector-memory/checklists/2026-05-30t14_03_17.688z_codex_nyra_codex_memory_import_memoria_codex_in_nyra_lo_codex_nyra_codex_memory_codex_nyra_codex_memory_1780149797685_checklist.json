@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t14_03_17.688z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "trace_id": "trace_codex_nyra_codex_memory_codex_nyra_codex_memory_1780149797685_178014979768",
+  "contract_id": "2026-05-30t14_03_17.687z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "generated_at": "2026-05-30T14:03:17.688Z",
+  "updated_at": "2026-05-30T14:14:42.934Z",
+  "agent_id": "codex_nyra_codex_memory",
+  "session_id": "codex_nyra_codex_memory_1780149797685",
+  "title": "Import memoria Codex in Nyra locale",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_core_gate_e_selezione",
+      "label": "Core gate e selezione",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T14:03:17.688Z",
+      "updated_at": "2026-05-30T14:04:34.944Z",
+      "evidence": [
+        "Gate esterno REVIEW_REQUIRED confermato dall'owner; Core 2.0 locale ha scelto distilled_incremental_work_memory: universal-core-2.0/reports/universal-core/codex/codex_core_decision_latest.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_importer_memoria_codex",
+      "label": "Importer memoria Codex",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T14:03:17.688Z",
+      "updated_at": "2026-05-30T14:09:12.650Z",
+      "evidence": [
+        "Creato nyra-codex-memory-importer, script npm nyra:import-codex-memory, test dedicato passato; import reale: 3264 eventi visti, 120 importati, 48 task contract, 60 report finali, owner private seed prudente."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_learning_while_working",
+      "label": "Learning while working",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T14:03:17.688Z",
+      "updated_at": "2026-05-30T14:10:45.885Z",
+      "evidence": [
+        "Governance locale ora aggiorna nyra_codex_work_memory_latest.json prima di rispondere, include summary in reply/eventi, e read-only/rich chat leggono codex_work_memory_summary. Smoke governance locale passato: events=3265/120, contracts=48, reports=40."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_test_e_finalize",
+      "label": "Test e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T14:03:17.688Z",
+      "updated_at": "2026-05-30T14:14:42.934Z",
+      "evidence": [
+        "Passati: check:nyra:codex-memory-importer, local-governance, communication-adapter, chat-rich, chat-rich-generative, owner-private-memory, action-router, operational-diagnosis, branch-overlay, event-emitter, dialogue-engine, dialogue-runtime, JSON checks, program registry/map checks, smoke governance."
+      ],
+      "note": ""
+    }
+  ]
+}

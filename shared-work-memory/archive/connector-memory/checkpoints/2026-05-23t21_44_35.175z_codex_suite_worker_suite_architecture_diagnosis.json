@@ -1,0 +1,22 @@
+{
+  "checkpoint_id": "2026-05-23t21_44_35.175z_codex_suite_worker_suite_architecture_diagnosis",
+  "generated_at": "2026-05-23T21:44:35.176Z",
+  "agent_id": "codex_suite_worker",
+  "session_id": "codex_suite_worker_1779572346164",
+  "title": "suite architecture diagnosis",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Letti registry template, waas-templates, template-design-system, Page Factory accelerator, Suite Control Plane, rami Core site_factory/visual_guard e governance preflight. Core decide ha ricevuto 10 opzioni ma non ha restituito selected_option_id, quindi niente implementazione automatica senza review.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "wordpress/plugins/skinharmony-site-suite/modules/waas-templates/class-module.php",
+    "services/suite-control-plane/src/app.js",
+    "services/universal-core-service/branches/branch-codex-site-factory-guard.js",
+    "services/universal-core-service/branches/branch-codex-website-visual-guard.js"
+  ],
+  "tests": [
+    "Core decide REVIEW_REQUIRED: no selected_option_id"
+  ],
+  "next": "Esporre al owner la scelta consigliata e il prossimo microblocco",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

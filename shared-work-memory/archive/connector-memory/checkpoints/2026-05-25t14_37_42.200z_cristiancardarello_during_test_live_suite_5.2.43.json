@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-25t14_37_42.200z_cristiancardarello_during_test_live_suite_5.2.43",
+  "generated_at": "2026-05-25T14:37:42.201Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779719503333",
+  "title": "During test live Suite 5.2.43",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Eseguito script live: creata bozza 1874, salvataggio Template Builder OK, suite_version 5.2.43, status draft, CTA e immagini presenti.",
+  "files": [
+    "reports/wordpress/template-builder/template-builder-live-draft-latest.json"
+  ],
+  "tests": [
+    "draft_created=true; save_ok=true; status_is_not_publish=true; has_hero_title=true; has_primary_cta=true; has_gallery_image=true; has_detail_image=true"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

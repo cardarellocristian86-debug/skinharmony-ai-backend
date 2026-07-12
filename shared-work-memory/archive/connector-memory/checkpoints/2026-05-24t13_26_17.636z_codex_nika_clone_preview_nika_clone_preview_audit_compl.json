@@ -1,0 +1,19 @@
+{
+  "checkpoint_id": "2026-05-24t13_26_17.636z_codex_nika_clone_preview_nika_clone_preview_audit_compl",
+  "generated_at": "2026-05-24T13:26:17.637Z",
+  "agent_id": "codex_nika_clone_preview",
+  "session_id": "codex_nika_clone_preview_1779628982157",
+  "title": "Nika clone preview audit complete",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Preview locale aperta e report scritto; pronto finalize.",
+  "files": [
+    "/private/tmp/nika-clone-preview.html",
+    "SHARED_MEMORY/reports/NIKA_CLONE_PREVIEW_LOCAL_2026-05-24.md"
+  ],
+  "tests": [
+    "manual visual preview opened"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

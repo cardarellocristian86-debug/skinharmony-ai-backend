@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t18_09_00.554z_codex_smartdesk_plans_preflight_riallineamento_piani_sm",
+  "generated_at": "2026-05-29T18:09:00.554Z",
+  "agent_id": "codex_smartdesk_plans",
+  "session_id": "codex_smartdesk_plans_1780077983966",
+  "trace_id": "trace_codex_smartdesk_plans_codex_smartdesk_plans_1780077983966_1780077983966",
+  "title": "Preflight riallineamento piani Smart Desk",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Letti AGENTS.md, SHARED_MEMORY INDEX/MAP/STATE/WORK e SMARTDESK_LOGICA_COMANDI.md; aperto work-start; Core gate update ALLOWED prima degli edit; contesto reale individuato in subscriptionPlan, Protocolli, report, web shell e Gold capabilities.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t18_06_23.967z_codex_smartdesk_plans_riallineamento_piani_smart_desk",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

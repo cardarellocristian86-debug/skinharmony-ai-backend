@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t19_04_22.925z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+  "generated_at": "2026-05-30T19:04:22.925Z",
+  "updated_at": "2026-05-30T19:04:22.925Z",
+  "agent_id": "codex_nyra_fault_probe",
+  "session_id": "codex_nyra_fault_probe_1780167862924",
+  "title": "Probe ramo programmatore Nyra",
+  "request": "Testare developer_code con codice leggermente sbagliato: Nyra deve intercettare il difetto o almeno segnalare che serve guard/test; se manca, aggiungere guard locale mirato",
+  "success_criteria": "Caso bug leggero coperto da test; Nyra produce segnale di attenzione/fail per codice difettoso; nessun Render/produzione/chiavi/clienti/prezzi toccato; checkpoint/finalize",
+  "allowed_paths": [
+    "universal-core-2.0",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

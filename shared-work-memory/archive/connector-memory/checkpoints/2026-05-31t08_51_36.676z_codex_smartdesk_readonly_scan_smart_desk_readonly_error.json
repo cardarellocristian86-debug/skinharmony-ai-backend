@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-31t08_51_36.676z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+  "generated_at": "2026-05-31T08:51:36.676Z",
+  "agent_id": "codex_smartdesk_readonly_scan",
+  "session_id": "codex_smartdesk_readonly_scan_1780217496672",
+  "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+  "title": "Smart Desk readonly error scan preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-31t08_51_36.674z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+  "checklist_id": "2026-05-31t08_51_36.675z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-31t08_51_36.675z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+    "title": "Smart Desk readonly error scan",
+    "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

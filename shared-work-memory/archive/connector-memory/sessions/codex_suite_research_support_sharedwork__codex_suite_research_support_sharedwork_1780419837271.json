@@ -1,0 +1,45 @@
+{
+  "agent_id": "codex_suite_research_support_sharedwork",
+  "session_id": "codex_suite_research_support_sharedwork_1780419837271",
+  "trace_id": "trace_codex_suite_research_support_sharedwork_codex_suite_research_support_share",
+  "role": "worker",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "SHARED_WORK",
+    "SHARED_MEMORY"
+  ],
+  "status": "finished",
+  "started_at": "2026-06-02T17:03:57.271Z",
+  "updated_at": "2026-06-02T17:08:12.761Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-06-02t17_05_28.835z_codex_suite_research_support_sharedwork_checkpoint_code.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress",
+  "finished_at": "2026-06-02T17:07:40.912Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/codex_suite_research_support_sharedwork_1780419837271_final.md"
+}

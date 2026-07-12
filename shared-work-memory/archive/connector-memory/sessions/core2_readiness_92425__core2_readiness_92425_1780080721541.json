@@ -1,0 +1,17 @@
+{
+  "agent_id": "core2_readiness_92425",
+  "session_id": "core2_readiness_92425_1780080721541",
+  "trace_id": "trace_core2_readiness_92425_core2_readiness_92425_1780080721541_1780080721541",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "core2-readiness-92425"
+  ],
+  "status": "active",
+  "started_at": "2026-05-29T18:52:01.541Z",
+  "updated_at": "2026-05-29T18:52:02.450Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199"
+}

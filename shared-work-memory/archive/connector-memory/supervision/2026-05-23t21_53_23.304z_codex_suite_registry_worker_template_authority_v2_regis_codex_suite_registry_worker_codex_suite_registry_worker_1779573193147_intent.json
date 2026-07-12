@@ -1,0 +1,17 @@
+{
+  "intent_id": "2026-05-23t21_53_23.304z_codex_suite_registry_worker_template_authority_v2_regis",
+  "generated_at": "2026-05-23T21:53:23.304Z",
+  "agent_id": "codex_suite_registry_worker",
+  "session_id": "codex_suite_registry_worker_1779573193147",
+  "title": "Template Authority V2 Registry Binding",
+  "request": "Collegare Home e WAAS master al contratto Template Authority V2 con fingerprint reali e validazione locale, senza deploy, senza zip e senza WordPress live.",
+  "success_criteria": "Registry distingue template validati/review, Home e WAAS hanno autorita/fingerprint, test locali bloccano metadata-only e passano i validati.",
+  "expected_depth": "normal",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "wordpress/home-page.html",
+    "wordpress/waas-page.html"
+  ],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

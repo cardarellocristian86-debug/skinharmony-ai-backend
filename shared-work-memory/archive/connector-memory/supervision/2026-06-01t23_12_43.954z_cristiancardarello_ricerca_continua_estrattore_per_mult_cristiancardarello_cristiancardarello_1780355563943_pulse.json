@@ -1,0 +1,58 @@
+{
+  "pulse_id": "2026-06-01t23_12_43.954z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "generated_at": "2026-06-01T23:12:43.954Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780355563943",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+  "title": "Ricerca continua estrattore per multi-Codex initial pulse",
+  "summary": "Avvio lavoro governato: Lavorare in parallelo sull'estrattore creato da altro Codex: raccogliere contesto reale, fare ricerca continua, generare ipotesi/probabilita e passare informazioni al Core per decisioni senza modifiche finche non approvate",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-01t23_12_43.952z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+    "title": "Ricerca continua estrattore per multi-Codex",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-06-01t23_12_43.948z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+    "title": "Ricerca continua estrattore per multi-Codex",
+    "request": "Lavorare in parallelo sull'estrattore creato da altro Codex: raccogliere contesto reale, fare ricerca continua, generare ipotesi/probabilita e passare informazioni al Core per decisioni senza modifiche finche non approvate",
+    "success_criteria": "Contesto estrattore compreso, ipotesi ordinate con probabilita, decisione Core registrata, informazioni utili pronte per Codex implementatore"
+  },
+  "task_contract": {
+    "contract_id": "2026-06-01t23_12_43.950z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+    "allowed_paths": [
+      "SHARED_MEMORY",
+      "packages",
+      "scripts",
+      "universal-core-2.0",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.792,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

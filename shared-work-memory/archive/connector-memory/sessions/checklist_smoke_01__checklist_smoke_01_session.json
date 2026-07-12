@@ -1,0 +1,20 @@
+{
+  "agent_id": "checklist_smoke_01",
+  "session_id": "checklist_smoke_01_session",
+  "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "reports/codex-core"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-29T15:25:10.521Z",
+  "updated_at": "2026-05-29T15:25:49.849Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-29t15_25_19.578z_checklist_smoke_01_checklist_smoke_during.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress",
+  "finished_at": "2026-05-29T15:25:44.878Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/checklist_smoke_01_session_final.md"
+}

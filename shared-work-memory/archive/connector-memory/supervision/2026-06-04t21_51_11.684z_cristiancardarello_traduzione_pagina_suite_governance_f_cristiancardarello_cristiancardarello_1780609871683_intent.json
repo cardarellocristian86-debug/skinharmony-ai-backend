@@ -1,0 +1,38 @@
+{
+  "intent_id": "2026-06-04t21_51_11.684z_cristiancardarello_traduzione_pagina_suite_governance_f",
+  "generated_at": "2026-06-04T21:51:11.684Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780609871683",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780609871683_1780609871684",
+  "title": "Traduzione pagina Suite governance filiera",
+  "request": "Tradurre la pagina WordPress live https://www.skinharmony.it/suite-governance-filiera-beauty/ usando SkinHarmony Core Translator, Core/Nyra via connettore locale e verifiche runtime",
+  "success_criteria": "Pagina 1544 tradotta nelle lingue target tramite traduttore governato, review/approval gestite se richieste, runtime pubblico verificato",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

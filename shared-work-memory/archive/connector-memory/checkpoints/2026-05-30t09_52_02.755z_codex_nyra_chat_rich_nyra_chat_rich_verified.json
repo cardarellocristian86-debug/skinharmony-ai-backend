@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t09_52_02.755z_codex_nyra_chat_rich_nyra_chat_rich_verified",
+  "generated_at": "2026-05-30T09:52:02.755Z",
+  "agent_id": "codex_nyra_chat_rich",
+  "session_id": "codex_nyra_chat_rich_1780134347168",
+  "trace_id": "trace_codex_nyra_chat_rich_codex_nyra_chat_rich_1780134347168_1780134347168",
+  "title": "nyra chat rich verified",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Test dedicato, regressioni dialogo/adapter e smoke CLI passati; output Chat Rich usa memoria selettiva e non espone segreti o produzione.",
+  "files": [
+    "universal-core/reports/universal-core/codex/nyra_chat_rich_core_selection_latest.json",
+    "universal-core/tools/nyra-rich-chat.ts",
+    "universal-core/tests/nyra-rich-chat-test.ts"
+  ],
+  "tests": [
+    "npm run check:nyra:chat-rich",
+    "npm run check:nyra:dialogue-engine",
+    "node --experimental-strip-types tests/nyra-communication-adapter-test.ts",
+    "npm run check:nyra:dialogue-runtime",
+    "npm run check:nyra:dialogue-humanizer",
+    "npm run check:nyra:dialogue-formatter",
+    "npm run nyra:chat-rich -- sample prompts"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t09_45_47.169z_codex_nyra_chat_rich_nyra_chat_rich_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

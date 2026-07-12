@@ -1,0 +1,61 @@
+{
+  "pulse_id": "2026-06-02t10_03_58.079z_cristiancardarello_supporto_research_analyst_traduzione",
+  "generated_at": "2026-06-02T10:03:58.079Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "title": "Supporto research analyst traduzione Smart Desk initial pulse",
+  "summary": "Avvio lavoro governato: Lavorare con il Codex che traduce Smart Desk: leggere SHARED_WORK e memoria, rispettare lock, verificare stato traduzioni, produrre finding/probabilita/opzioni e passare decisioni al Core senza modificare file lockati",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-02t10_03_58.078z_cristiancardarello_supporto_research_analyst_traduzione",
+    "title": "Supporto research analyst traduzione Smart Desk",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-06-02t10_03_58.075z_cristiancardarello_supporto_research_analyst_traduzione",
+    "title": "Supporto research analyst traduzione Smart Desk",
+    "request": "Lavorare con il Codex che traduce Smart Desk: leggere SHARED_WORK e memoria, rispettare lock, verificare stato traduzioni, produrre finding/probabilita/opzioni e passare decisioni al Core senza modificare file lockati",
+    "success_criteria": "Stato traduzione Smart Desk compreso, finding e priorita scritti in SHARED_WORK, Core consultato se serve, implementatore alimentato con evidenze concrete"
+  },
+  "task_contract": {
+    "contract_id": "2026-06-02t10_03_58.076z_cristiancardarello_supporto_research_analyst_traduzione",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+    "allowed_paths": [
+      "SHARED_WORK",
+      "SHARED_MEMORY",
+      "smartdesk",
+      "render-smartdesk-live",
+      "skin-harmony-web",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.75,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

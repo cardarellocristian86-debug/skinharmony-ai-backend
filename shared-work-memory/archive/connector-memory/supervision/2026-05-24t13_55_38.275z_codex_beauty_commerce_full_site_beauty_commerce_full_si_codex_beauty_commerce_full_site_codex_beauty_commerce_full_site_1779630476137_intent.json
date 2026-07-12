@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t13_55_38.275z_codex_beauty_commerce_full_site_beauty_commerce_full_si",
+  "generated_at": "2026-05-24T13:55:38.276Z",
+  "agent_id": "codex_beauty_commerce_full_site",
+  "session_id": "codex_beauty_commerce_full_site_1779630476137",
+  "title": "Beauty commerce full site editable packaging",
+  "request": "Generare zip locale Suite 5.2.27 con template full-site editable e hero gallery, senza deploy e senza produzione.",
+  "success_criteria": "Zip locale creato e test locali verdi",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

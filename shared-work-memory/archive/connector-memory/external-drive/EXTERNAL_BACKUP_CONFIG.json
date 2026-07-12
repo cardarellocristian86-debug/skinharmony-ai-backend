@@ -1,0 +1,43 @@
+{
+  "workspace_root": "/Users/cristiancardarello/skinharmony-codex",
+  "external_root": "/Volumes/Esterno/MEC",
+  "interval_hours": 48,
+  "automated_backup_root": "CODEX_EXTERNAL_CHANNEL/automated-backups/latest",
+  "automated_backup_log_root": "CODEX_EXTERNAL_CHANNEL/automated-backups/logs",
+  "map_max_depth": 3,
+  "sources": [
+    {
+      "label": "skinharmony-codex",
+      "path": "/Users/cristiancardarello/skinharmony-codex",
+      "required": true
+    },
+    {
+      "label": "skinharmony-ai-backend",
+      "path": "/Users/cristiancardarello/skinharmony-ai-backend",
+      "required": false
+    },
+    {
+      "label": "assistente",
+      "path": "/Users/cristiancardarello/assistente",
+      "required": false
+    },
+    {
+      "label": "Desktop",
+      "path": "/Users/cristiancardarello/Desktop",
+      "required": false
+    },
+    {
+      "label": "Documents",
+      "path": "/Users/cristiancardarello/Documents",
+      "required": false
+    },
+    {
+      "label": ".codex",
+      "path": "/Users/cristiancardarello/.codex",
+      "required": false,
+      "excludes": [
+        "sessions"
+      ]
+    }
+  ]
+}

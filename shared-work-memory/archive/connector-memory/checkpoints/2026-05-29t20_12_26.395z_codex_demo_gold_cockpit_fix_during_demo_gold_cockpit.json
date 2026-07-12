@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-29t20_12_26.395z_codex_demo_gold_cockpit_fix_during_demo_gold_cockpit",
+  "generated_at": "2026-05-29T20:12:26.396Z",
+  "agent_id": "codex_demo_gold_cockpit_fix",
+  "session_id": "codex_demo_gold_cockpit_fix_1780084190790",
+  "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+  "title": "during demo_gold_cockpit",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementata patch minima: getSeededGoldDemoDataQuality legge gold_state repository direttamente e non richiama getGoldState durante il calcolo Data Quality.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live/src/DesktopMirrorService.js"
+  ],
+  "tests": [
+    "git diff: 2 insertions 1 deletion in getSeededGoldDemoDataQuality"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

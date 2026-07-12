@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t16_08_22.174z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T16:08:22.175Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779630880057",
+  "title": "Pulse Codex",
+  "summary": "Verifica finale Suite 5.2.32 completata: closure 1583/1583, zip integro, markup preview corretto, nessun deploy live.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_32_TEMPLATE_BUILDER_STUDIO_UX_FIX_2026-05-24.md"
+  ],
+  "tests": [],
+  "next": "Installare lo zip 5.2.32 su WordPress per verifica manuale UI.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t16_06_03.777z_cristiancardarello_suite_template_builder_5.2.32",
+    "title": "Suite Template Builder 5.2.32",
+    "request": "Verificare e chiudere localmente la correzione UX del Template Builder: canvas modificabile primario, preview WordPress solo verifica finale.",
+    "success_criteria": "Zip Suite 5.2.32 generato, test locali passati, nessun deploy e nessuna modifica live."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.333,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t18_51_45.566z_codex_suite_analytics_ui_suite_5.2.87_control_plane_ui_",
+  "trace_id": "trace_codex_suite_analytics_ui_codex_suite_analytics_ui_1779994305556_1779994305",
+  "generated_at": "2026-05-28T18:51:45.566Z",
+  "updated_at": "2026-05-28T18:51:45.566Z",
+  "agent_id": "codex_suite_analytics_ui",
+  "session_id": "codex_suite_analytics_ui_1779994305556",
+  "title": "Suite 5.2.87 Control Plane UI closure",
+  "request": "Chiudere e registrare il pass UI Analytics WaaS AI Operational Control Plane 5.2.87 gia implementato, testato e caricato",
+  "success_criteria": "Scope reale dichiarato, checkpoint during/after, test e finalize pulito",
+  "allowed_paths": [
+    "wordpress/plugins/skinharmony-site-suite",
+    "scripts/check_wp_suite_runtime_data.js",
+    "SHARED_MEMORY",
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/assets/site-suite.css",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "SHARED_MEMORY/events/EVENTS.jsonl",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

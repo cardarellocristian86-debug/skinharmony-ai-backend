@@ -1,0 +1,81 @@
+{
+  "pulse_id": "2026-05-29t15_26_43.942z_codex_checklist_enforcement_pulse",
+  "generated_at": "2026-05-29T15:26:43.943Z",
+  "agent_id": "codex_checklist_enforcement",
+  "session_id": "codex_checklist_enforcement_1780067831280",
+  "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+  "title": "Pulse Codex",
+  "summary": "Checklist enforcement completato nel connector: comandi CLI, work-start, finalize, dashboard e docs aggiornati",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs",
+    "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+    "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+    "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs",
+    "e2e-self-test x3",
+    "checklist smoke block/pass"
+  ],
+  "next": "checkpoint after, finalize e unlock",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t15_26_08.790z_codex_checklist_enforcement_checklist_enforcement_conne",
+    "title": "Checklist enforcement connector",
+    "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+    "open": 0,
+    "done": 4,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+    "title": "Connector checklist enforcement",
+    "request": "Rendere obbligatoria una checklist progressiva per ogni lavoro Codex: creare lista, spuntare punti chiusi, bloccare finalize se restano punti aperti senza motivo.",
+    "success_criteria": "Il connettore supporta checklist-create/checklist-check, work-start puo creare checklist, finalize la verifica, dashboard/report la mostrano e i test passano."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+    "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+    "allowed_paths": [
+      "packages/core-codex-connector",
+      "SHARED_MEMORY/programs/core-codex-connector",
+      "packages/core-codex-connector/src/cli.mjs",
+      "SHARED_MEMORY/programs/core-codex-connector/PROGRAM.md",
+      "SHARED_MEMORY/programs/core-codex-connector/ARCHITECTURE.md",
+      "SHARED_MEMORY/programs/core-codex-connector/USER_MANUAL.md",
+      "SHARED_MEMORY/programs/core-codex-connector/OPERATIONS.md",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.25,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-29t15_17_11.281z_codex_checklist_enforcement_connector_checklist_enforce",
+      "trace_id": "trace_codex_checklist_enforcement_codex_checklist_enforcement_1780067831280_1780",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

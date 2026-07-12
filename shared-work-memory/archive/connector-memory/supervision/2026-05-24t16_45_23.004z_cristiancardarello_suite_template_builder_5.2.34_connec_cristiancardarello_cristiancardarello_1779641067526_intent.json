@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-24t16_45_23.004z_cristiancardarello_suite_template_builder_5.2.34_connec",
+  "generated_at": "2026-05-24T16:45:23.004Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779641067526",
+  "title": "Suite Template Builder 5.2.34 connected preview",
+  "request": "Chiudere il difetto: preview Builder parziale e non completamente collegata agli slot template.",
+  "success_criteria": "Zip 5.2.34 generato, slot preview collegati e test passati.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

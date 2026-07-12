@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-24t13_23_02.266z_codex_nika_clone_preview_nika_clone_preview_preflight",
+  "generated_at": "2026-05-24T13:23:02.267Z",
+  "agent_id": "codex_nika_clone_preview",
+  "session_id": "codex_nika_clone_preview_1779628982157",
+  "title": "Nika clone preview preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "La richiesta letterale e mostrare il clone. Non basta guardrail; creo preview visuale locale. Nessun deploy, nessuna installazione WordPress.",
+  "files": [
+    "/private/tmp/nika-clone-preview.html"
+  ],
+  "tests": [
+    "manual visual preview"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

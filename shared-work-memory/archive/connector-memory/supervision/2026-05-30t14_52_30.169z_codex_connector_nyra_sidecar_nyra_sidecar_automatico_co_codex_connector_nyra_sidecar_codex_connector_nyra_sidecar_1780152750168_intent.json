@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+  "generated_at": "2026-05-30T14:52:30.169Z",
+  "agent_id": "codex_connector_nyra_sidecar",
+  "session_id": "codex_connector_nyra_sidecar_1780152750168",
+  "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+  "title": "Nyra sidecar automatico connector",
+  "request": "Agganciare Nyra locale/Core 2.0 al Core Codex Connector senza cambiare i comandi esistenti: work-start/checkpoint/finalize devono poter aggiornare/consultare memoria Nyra locale in modo no-op se assente; niente Render/produzione/chiavi/clienti/prezzi",
+  "success_criteria": "Stessa CLI del connector; sidecar Nyra locale attivo e testato; memoria Codex/Nyra aggiornata automaticamente; nessuna regressione connector; snapshot/eventi/finalize aggiornati",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

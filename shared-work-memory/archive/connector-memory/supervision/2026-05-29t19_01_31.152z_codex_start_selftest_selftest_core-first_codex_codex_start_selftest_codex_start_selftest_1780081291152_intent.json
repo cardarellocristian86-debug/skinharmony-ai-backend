@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t19_01_31.152z_codex_start_selftest_selftest_core-first_codex",
+  "generated_at": "2026-05-29T19:01:31.152Z",
+  "agent_id": "codex_start_selftest",
+  "session_id": "codex_start_selftest_1780081291152",
+  "trace_id": "trace_codex_start_selftest_codex_start_selftest_1780081291152_1780081291152",
+  "title": "Selftest Core-first Codex",
+  "request": "Verificare wrapper automatico",
+  "success_criteria": "Work-start creato e Codex finto avviato",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

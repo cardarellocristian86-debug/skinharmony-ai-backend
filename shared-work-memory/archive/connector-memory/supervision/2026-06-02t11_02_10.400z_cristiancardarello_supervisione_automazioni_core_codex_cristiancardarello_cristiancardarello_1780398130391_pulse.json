@@ -1,0 +1,57 @@
+{
+  "pulse_id": "2026-06-02t11_02_10.400z_cristiancardarello_supervisione_automazioni_core_codex_",
+  "generated_at": "2026-06-02T11:02:10.400Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780398130391",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+  "title": "Supervisione automazioni Core Codex Connector initial pulse",
+  "summary": "Avvio lavoro governato: Collaborare con il Codex attivo sul Core Codex Connector per migliorare automazioni: leggere stato condiviso, individuare rischi, proporre varianti/probabilita, usare Core come giudice e Nyra come supporto di assorbimento/metodo, senza sovrapporsi a file lockati o modificare produzione.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-02t11_02_10.398z_cristiancardarello_supervisione_automazioni_core_codex_",
+    "title": "Supervisione automazioni Core Codex Connector",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-06-02t11_02_10.394z_cristiancardarello_supervisione_automazioni_core_codex_",
+    "title": "Supervisione automazioni Core Codex Connector",
+    "request": "Collaborare con il Codex attivo sul Core Codex Connector per migliorare automazioni: leggere stato condiviso, individuare rischi, proporre varianti/probabilita, usare Core come giudice e Nyra come supporto di assorbimento/metodo, senza sovrapporsi a file lockati o modificare produzione.",
+    "success_criteria": "Codex connector supportato con findings utili, ranking varianti, controlli Core, eventuali rischi/bug segnalati in SHARED_WORK, lock rispettati, nessuna produzione toccata."
+  },
+  "task_contract": {
+    "contract_id": "2026-06-02t11_02_10.396z_cristiancardarello_supervisione_automazioni_core_codex_",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+    "allowed_paths": [
+      "SHARED_WORK",
+      "SHARED_MEMORY",
+      "packages/core-codex-connector",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.917,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

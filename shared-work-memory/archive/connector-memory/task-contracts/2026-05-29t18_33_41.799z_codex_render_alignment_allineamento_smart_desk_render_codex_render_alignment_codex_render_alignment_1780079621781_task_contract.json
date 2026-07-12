@@ -1,0 +1,46 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t18_33_41.799z_codex_render_alignment_allineamento_smart_desk_render",
+  "trace_id": "trace_codex_render_alignment_codex_render_alignment_1780079621781_1780079621781",
+  "generated_at": "2026-05-29T18:33:41.799Z",
+  "updated_at": "2026-05-29T18:33:41.799Z",
+  "agent_id": "codex_render_alignment",
+  "session_id": "codex_render_alignment_1780079621781",
+  "title": "Allineamento Smart Desk Render",
+  "request": "Capire quali modifiche Smart Desk locali devono passare nella repo Git/Render e preparare allineamento senza deploy cieco",
+  "success_criteria": "Mappa locale vs Render chiara, nessuna copia indiscriminata, eventuali file aggiornati nella repo Render con test e report",
+  "allowed_paths": [
+    "SHARED_MEMORY",
+    "reports",
+    "/Users/cristiancardarello/skinharmony-ai-backend",
+    "smartdesk",
+    "skin-harmony-desktop",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

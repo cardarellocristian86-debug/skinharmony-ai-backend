@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-05-22T21:45:33.431Z",
+  "agent_id": "codex_01",
+  "session_id": "codex_01_1779486173169",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 81,
+  "interval_ms": 2000,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-22t21_44_18.984z_codex_01_pulse_codex_01_codex_01_1779486173169_pulse.json",
+  "watched_files": [
+    {
+      "file": "SHARED_MEMORY/reports/SMARTDESK_RENDER_GOLD_COCKPIT_V1_2026-05-19.md",
+      "mtime_ms": 1779472038680.5898,
+      "size": 25821
+    }
+  ],
+  "assessment": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.333,
+    "correction": "Aggiornare pulse e verifiche prima del prossimo blocco di lavoro.",
+    "pulse_age_ms": 74446,
+    "changed_files": []
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-28t17_54_06.286z_e2e_work_smoke_e2e_work_smoke_cleanup",
+  "generated_at": "2026-05-28T17:54:06.287Z",
+  "agent_id": "e2e_work_smoke",
+  "session_id": "e2e_work_smoke_1779990838315",
+  "trace_id": "trace_e2e_work_smoke_e2e_work_smoke_1779990838315_1779990838315",
+  "title": "E2E work smoke cleanup",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Smoke work-start verified and lock released.",
+  "files": [
+    "reports/codex-core/codex_e2e_self_test_latest.json"
+  ],
+  "tests": [
+    "work-start artifact creation"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-28t17_53_58.317z_e2e_work_smoke_e2e_work_smoke",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

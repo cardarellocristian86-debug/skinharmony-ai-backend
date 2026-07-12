@@ -1,0 +1,17 @@
+{
+  "agent_id": "codex_google",
+  "session_id": "codex_google_1779720326302",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "suite"
+  ],
+  "status": "active",
+  "started_at": "2026-05-25T14:45:26.302Z",
+  "updated_at": "2026-06-01T12:57:37.981Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-06-01t12_57_37.980z_codex_google_suite_5.3.16_package_ready.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress"
+}

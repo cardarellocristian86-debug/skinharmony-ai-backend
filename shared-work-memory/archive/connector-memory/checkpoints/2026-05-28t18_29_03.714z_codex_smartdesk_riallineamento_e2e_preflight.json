@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e_preflight",
+  "generated_at": "2026-05-28T18:29:03.714Z",
+  "agent_id": "codex_smartdesk",
+  "session_id": "codex_smartdesk_1779992943709",
+  "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+  "title": "Riallineamento e2e preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

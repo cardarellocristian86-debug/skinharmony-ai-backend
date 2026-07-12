@@ -1,0 +1,57 @@
+{
+  "pulse_id": "2026-05-28t17_53_47.379z_codex_core_e2e_pulse",
+  "generated_at": "2026-05-28T17:53:47.379Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+  "title": "Pulse Codex",
+  "summary": "Task contract rigenerato e collegato al trace; ora testo blocco file fuori scope, cleanup e self-test ripetuti del connettore.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [
+    "node packages/core-codex-connector/src/cli.mjs e2e-self-test"
+  ],
+  "next": "Eseguire cleanup-check, supervise e finalize con checkpoint after.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t17_53_34.422z_codex_core_e2e_core_codex_e2e_enforcement",
+    "title": "Core Codex e2e enforcement",
+    "request": "Implementare controllo end-to-end obbligatorio mentre Codex lavora: task contract, trace, anti-deriva, cleanup e test ripetuti.",
+    "success_criteria": "Connector blocca lavori incoerenti o incompleti, mantiene trace/task contract e passa test ripetuti."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+    "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+    "allowed_paths": [
+      "packages/core-codex-connector",
+      "packages/core-codex-connector/src/cli.mjs",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.222,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili.",
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+      "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

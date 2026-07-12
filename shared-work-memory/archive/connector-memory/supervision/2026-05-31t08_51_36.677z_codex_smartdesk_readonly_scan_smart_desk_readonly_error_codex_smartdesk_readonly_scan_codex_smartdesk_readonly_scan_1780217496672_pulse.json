@@ -1,0 +1,58 @@
+{
+  "pulse_id": "2026-05-31t08_51_36.677z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+  "generated_at": "2026-05-31T08:51:36.677Z",
+  "agent_id": "codex_smartdesk_readonly_scan",
+  "session_id": "codex_smartdesk_readonly_scan_1780217496672",
+  "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+  "title": "Smart Desk readonly error scan initial pulse",
+  "summary": "Avvio lavoro governato: Leggere tutto il codice Smart Desk Render locale e intercettare errori senza modificare file, senza deploy e senza produzione",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-31t08_51_36.675z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+    "title": "Smart Desk readonly error scan",
+    "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-31t08_51_36.673z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+    "title": "Smart Desk readonly error scan",
+    "request": "Leggere tutto il codice Smart Desk Render locale e intercettare errori senza modificare file, senza deploy e senza produzione",
+    "success_criteria": "Lista errori verificati o rischi concreti, nessuna modifica applicata"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-31t08_51_36.674z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+    "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+    "allowed_paths": [
+      "smartdesk-readonly-scan",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.526,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

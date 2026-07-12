@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-05t14_56_47.183z_cristiancardarello_traduzione_pagina_creazione_siti",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780671407181_1780671407181",
+  "contract_id": "2026-06-05t14_56_47.183z_cristiancardarello_traduzione_pagina_creazione_siti",
+  "generated_at": "2026-06-05T14:56:47.183Z",
+  "updated_at": "2026-06-05T15:17:30.000Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780671407181",
+  "title": "Traduzione pagina creazione siti",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T14:56:47.183Z",
+      "updated_at": "2026-06-05T15:17:30.000Z",
+      "evidence": [
+        "Core gate ALLOWED; pagina 1953 verificata; provider OpenAI can_connect true; contratti SkinHarmony Core Translator letti"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T14:56:47.183Z",
+      "updated_at": "2026-06-05T15:17:30.000Z",
+      "evidence": [
+        "Traduzione live pagina 1953 eseguita via SkinHarmony Core Translator: reports/wp_site_translation_stepwise_2026-06-05.json"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T14:56:47.183Z",
+      "updated_at": "2026-06-05T15:17:30.000Z",
+      "evidence": [
+        "Pending review 0 per en/fr/de/es; runtime lookup OK; public routes 200; report SHARED_MEMORY/reports/WP_PAGE_1953_CREAZIONE_SITI_TRANSLATION_2026-06-05.md"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T14:56:47.183Z",
+      "updated_at": "2026-06-05T15:17:30.000Z",
+      "evidence": [
+        "Report finale traduzione creato; lock da rilasciare dopo finalize"
+      ],
+      "note": ""
+    }
+  ]
+}

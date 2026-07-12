@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-23t21_25_05.442z_e2e_missing_checkpoint_preflight_pulse",
+  "generated_at": "2026-05-23T21:25:05.442Z",
+  "agent_id": "e2e_missing_checkpoint",
+  "session_id": "e2e_missing_checkpoint_1779571486965",
+  "title": "Preflight pulse",
+  "summary": "Sto verificando il blocco prima di una scrittura mutante; sessione e lock esistono ma manca apposta il checkpoint preflight.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [],
+  "next": "Provare exec e aspettarsi blocco E2E",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t21_24_57.221z_e2e_missing_checkpoint_e2e_test",
+    "title": "E2E test",
+    "request": "Verificare enforcement end-to-end",
+    "success_criteria": "Blocca se mancano evidenze"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner"
+    ],
+    "intent_overlap": 0,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

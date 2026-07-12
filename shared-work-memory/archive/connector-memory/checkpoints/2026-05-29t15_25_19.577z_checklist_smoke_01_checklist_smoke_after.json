@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-29t15_25_19.577z_checklist_smoke_01_checklist_smoke_after",
+  "generated_at": "2026-05-29T15:25:19.577Z",
+  "agent_id": "checklist_smoke_01",
+  "session_id": "checklist_smoke_01_session",
+  "trace_id": "trace_checklist_smoke_01_checklist_smoke_01_session_1780068310521",
+  "title": "Checklist smoke after",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Verifica finale smoke checklist",
+  "files": [
+    "reports/codex-core/codex_e2e_self_test_latest.json"
+  ],
+  "tests": [
+    "node --check packages/core-codex-connector/src/cli.mjs"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-29t15_25_10.525z_checklist_smoke_01_checklist_smoke",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

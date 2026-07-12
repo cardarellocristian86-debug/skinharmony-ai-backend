@@ -1,0 +1,41 @@
+{
+  "intent_id": "2026-06-06t18_50_10.894z_codex_03_lavoro_codex_03",
+  "generated_at": "2026-06-06T18:50:10.894Z",
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1780771810891",
+  "trace_id": "trace_codex_03_codex_03_1780771810891_1780771810892",
+  "title": "Lavoro codex_03",
+  "request": "Lavoro wordpress assegnato da Cristian Cardarello",
+  "success_criteria": "File, test, report e prossima azione devono essere dichiarati",
+  "expected_depth": "normal",
+  "files": [
+    "SHARED_MEMORY/sessions",
+    "SHARED_MEMORY/supervision"
+  ],
+  "status": "active",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "allow_auto",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

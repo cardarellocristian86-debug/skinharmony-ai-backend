@@ -1,0 +1,59 @@
+{
+  "pulse_id": "2026-05-30t14_52_30.170z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+  "generated_at": "2026-05-30T14:52:30.170Z",
+  "agent_id": "codex_connector_nyra_sidecar",
+  "session_id": "codex_connector_nyra_sidecar_1780152750168",
+  "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+  "title": "Nyra sidecar automatico connector initial pulse",
+  "summary": "Avvio lavoro governato: Agganciare Nyra locale/Core 2.0 al Core Codex Connector senza cambiare i comandi esistenti: work-start/checkpoint/finalize devono poter aggiornare/consultare memoria Nyra locale in modo no-op se assente; niente Render/produzione/chiavi/clienti/prezzi",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+    "title": "Nyra sidecar automatico connector",
+    "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+    "title": "Nyra sidecar automatico connector",
+    "request": "Agganciare Nyra locale/Core 2.0 al Core Codex Connector senza cambiare i comandi esistenti: work-start/checkpoint/finalize devono poter aggiornare/consultare memoria Nyra locale in modo no-op se assente; niente Render/produzione/chiavi/clienti/prezzi",
+    "success_criteria": "Stessa CLI del connector; sidecar Nyra locale attivo e testato; memoria Codex/Nyra aggiornata automaticamente; nessuna regressione connector; snapshot/eventi/finalize aggiornati"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-30t14_52_30.169z_codex_connector_nyra_sidecar_nyra_sidecar_automatico_co",
+    "trace_id": "trace_codex_connector_nyra_sidecar_codex_connector_nyra_sidecar_1780152750168_17",
+    "allowed_paths": [
+      "packages/core-codex-connector",
+      "universal-core-2.0",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "mancano_file_o_test_di_evidenza"
+    ],
+    "intent_overlap": 0.875,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

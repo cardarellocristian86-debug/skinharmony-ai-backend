@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-29t20_58_51.311z_codex_ai_gold_fast_open_ai_gold_apertura_veloce_preflig",
+  "generated_at": "2026-05-29T20:58:51.311Z",
+  "agent_id": "codex_ai_gold_fast_open",
+  "session_id": "codex_ai_gold_fast_open_1780088331309",
+  "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+  "title": "AI Gold apertura veloce preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-29t20_58_51.310z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+  "checklist_id": "2026-05-29t20_58_51.311z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-29t20_58_51.311z_codex_ai_gold_fast_open_ai_gold_apertura_veloce",
+    "title": "AI Gold apertura veloce",
+    "trace_id": "trace_codex_ai_gold_fast_open_codex_ai_gold_fast_open_1780088331309_178008833130",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

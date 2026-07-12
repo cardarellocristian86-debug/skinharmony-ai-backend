@@ -1,0 +1,19 @@
+{
+  "checkpoint_id": "2026-05-24t14_57_50.332z_codex_inline_template_builder_checkpoint_codex",
+  "generated_at": "2026-05-24T14:57:50.333Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "title": "Checkpoint Codex",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Chiusura con memoria condivisa letta: INDEX/snapshot/failure report/eventi verificati. Gate update locale ALLOWED risk=low. Limite registrato: supervise resta attention per rischio_non_classificato anche con gate risk=low. Nessun deploy/live.",
+  "files": [
+    "SHARED_MEMORY/reports/codex-core/CORE_2_0_CODEX_USAGE_REPORT.md",
+    "reports/codex-core/codex_core_gate_latest.json",
+    "SHARED_MEMORY/supervision/supervise_1779634635335_1_codex_inline_template_builder_codex_inline_template_builder_1779633724609_supervise.json",
+    "dist/skinharmony-site-suite-5.2.29.zip"
+  ],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

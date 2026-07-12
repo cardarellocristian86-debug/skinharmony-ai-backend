@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-22t21_44_18.984z_codex_01_pulse",
+  "generated_at": "2026-05-22T21:44:18.984Z",
+  "agent_id": "codex_01",
+  "session_id": "codex_01_1779486173169",
+  "title": "Pulse Codex",
+  "summary": "Check Smart Desk: linguaggio UI pulito, bridge Core Render verificato, report aggiornato.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/SMARTDESK_RENDER_GOLD_COCKPIT_V1_2026-05-19.md"
+  ],
+  "tests": [],
+  "next": "Prossima azione: continuare da Suite/Smart Desk solo con pulse aggiornati e report dichiarato.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-22t21_42_53.194z_codex_01_lavoro_codex_01",
+    "title": "Lavoro Codex 01",
+    "request": "Descrivi qui il lavoro assegnato",
+    "success_criteria": "File, test, report e prossima azione devono essere dichiarati"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.333,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

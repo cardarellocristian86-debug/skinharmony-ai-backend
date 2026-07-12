@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-30t14_03_17.689z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "generated_at": "2026-05-30T14:03:17.689Z",
+  "agent_id": "codex_nyra_codex_memory",
+  "session_id": "codex_nyra_codex_memory_1780149797685",
+  "trace_id": "trace_codex_nyra_codex_memory_codex_nyra_codex_memory_1780149797685_178014979768",
+  "title": "Import memoria Codex in Nyra locale preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-30t14_03_17.687z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "checklist_id": "2026-05-30t14_03_17.688z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-30t14_03_17.688z_codex_nyra_codex_memory_import_memoria_codex_in_nyra_lo",
+    "title": "Import memoria Codex in Nyra locale",
+    "trace_id": "trace_codex_nyra_codex_memory_codex_nyra_codex_memory_1780149797685_178014979768",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-06-02t20_14_26.139z_cristiancardarello_pagina_site_suite_scritta",
+  "generated_at": "2026-06-02T20:14:26.140Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780429005023",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780429005023_1780429005024",
+  "title": "Pagina Site Suite scritta",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Creato asset WordPress locale in stile WAAS con scheda tecnica e mappa a check Suite; nessun publish live.",
+  "files": [
+    "wordpress/skinharmony-site-suite-technical-page.html"
+  ],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t19_36_45.028z_cristiancardarello_pagina_tecnica_site_suite",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

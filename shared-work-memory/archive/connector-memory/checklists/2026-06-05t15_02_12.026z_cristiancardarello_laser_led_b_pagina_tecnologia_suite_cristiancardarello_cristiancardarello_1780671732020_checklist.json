@@ -1,0 +1,98 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-05t15_02_12.026z_cristiancardarello_laser_led_b_pagina_tecnologia_suite",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780671732020_1780671732021",
+  "contract_id": "2026-06-05t15_02_12.025z_cristiancardarello_laser_led_b_pagina_tecnologia_suite",
+  "generated_at": "2026-06-05T15:02:12.026Z",
+  "updated_at": "2026-06-05T15:27:24.222Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780671732020",
+  "title": "Laser LED B pagina tecnologia Suite",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_contesto_pdf_e_pagine_esistenti",
+      "label": "Contesto PDF e pagine esistenti",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:26:54.183Z",
+      "evidence": [
+        "assets/technologies/laser-led-b/pdf_text_extracted.txt"
+      ],
+      "note": "PDF estratto e pagine riferimento lette."
+    },
+    {
+      "id": "item_2_ricerca_online_e_benchmark_lusso",
+      "label": "Ricerca online e benchmark lusso",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:26:32.849Z",
+      "evidence": [
+        "reports/wordpress/LASER_LED_B_PAGE_WORK_MAP_2026-06-05.md"
+      ],
+      "note": "Benchmark ufficiale su Alma, Cynosure e Lumenis usato per struttura marketing, senza copiare specifiche."
+    },
+    {
+      "id": "item_3_decisione_core_nyra_e_mappa_lavoro",
+      "label": "Decisione Core/Nyra e mappa lavoro",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:27:01.979Z",
+      "evidence": [
+        "reports/codex-core/codex_core_gate_latest.json"
+      ],
+      "note": "Core gate ALLOWED; mappa lavoro salvata."
+    },
+    {
+      "id": "item_4_asset_immagini_skinharmony",
+      "label": "Asset immagini SkinHarmony",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:26:43.114Z",
+      "evidence": [
+        "reports/wordpress/laser_led_b_page_suite_publish_latest.json"
+      ],
+      "note": "Asset prodotto, risultati e dettagli generati e caricati."
+    },
+    {
+      "id": "item_5_suite_dam_e_inventario_tecnologia",
+      "label": "Suite DAM e inventario tecnologia",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:27:09.399Z",
+      "evidence": [
+        "reports/wordpress/laser_led_b_page_suite_publish_latest.json"
+      ],
+      "note": "Asset registrati in DAM; Product Inventory quote_only con prezzo 0 temporaneo, non WooCommerce."
+    },
+    {
+      "id": "item_6_pagina_wordpress_e_link_tecnologie",
+      "label": "Pagina WordPress e link Tecnologie",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:27:16.770Z",
+      "evidence": [
+        "reports/wordpress/wp_page_laser-led-b_inspect_latest.json"
+      ],
+      "note": "Pagina 2144 pubblicata e link card Tecnologie aggiornato."
+    },
+    {
+      "id": "item_7_verifiche_e_report",
+      "label": "Verifiche e report",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-05T15:02:12.026Z",
+      "updated_at": "2026-06-05T15:27:24.221Z",
+      "evidence": [
+        "reports/wordpress/LASER_LED_B_PAGE_WORK_MAP_2026-06-05.md"
+      ],
+      "note": "HTTP 200, screenshot desktop/mobile, Product Inventory verificato, report e memoria aggiornati."
+    }
+  ]
+}

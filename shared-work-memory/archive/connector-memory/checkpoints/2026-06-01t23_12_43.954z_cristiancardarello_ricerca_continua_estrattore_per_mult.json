@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-06-01t23_12_43.954z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "generated_at": "2026-06-01T23:12:43.954Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780355563943",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+  "title": "Ricerca continua estrattore per multi-Codex preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-06-01t23_12_43.950z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "checklist_id": "2026-06-01t23_12_43.952z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-06-01t23_12_43.952z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+    "title": "Ricerca continua estrattore per multi-Codex",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_27_27.951z_cristiancardarello_preflight_zip_suite_5.2.38",
+  "generated_at": "2026-05-24T18:27:27.951Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779646943236",
+  "title": "Preflight zip Suite 5.2.38",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: package locale 5.2.38 con fix priorita campi Builder. Nessun deploy, nessun upload, nessuna modifica WordPress live.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

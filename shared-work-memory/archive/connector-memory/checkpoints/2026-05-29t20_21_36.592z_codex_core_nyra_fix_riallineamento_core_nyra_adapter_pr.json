@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-29t20_21_36.592z_codex_core_nyra_fix_riallineamento_core_nyra_adapter_pr",
+  "generated_at": "2026-05-29T20:21:36.592Z",
+  "agent_id": "codex_core_nyra_fix",
+  "session_id": "codex_core_nyra_fix_1780086096590",
+  "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+  "title": "Riallineamento Core Nyra adapter preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-29t20_21_36.591z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+  "checklist_id": "2026-05-29t20_21_36.592z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-29t20_21_36.592z_codex_core_nyra_fix_riallineamento_core_nyra_adapter",
+    "title": "Riallineamento Core Nyra adapter",
+    "trace_id": "trace_codex_core_nyra_fix_codex_core_nyra_fix_1780086096590_1780086096590",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

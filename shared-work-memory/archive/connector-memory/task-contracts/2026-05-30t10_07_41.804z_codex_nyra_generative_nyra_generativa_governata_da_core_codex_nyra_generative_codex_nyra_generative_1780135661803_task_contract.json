@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t10_07_41.804z_codex_nyra_generative_nyra_generativa_governata_da_core",
+  "trace_id": "trace_codex_nyra_generative_codex_nyra_generative_1780135661803_1780135661803",
+  "generated_at": "2026-05-30T10:07:41.804Z",
+  "updated_at": "2026-05-30T10:07:41.804Z",
+  "agent_id": "codex_nyra_generative",
+  "session_id": "codex_nyra_generative_1780135661803",
+  "title": "Nyra generativa governata da Core",
+  "request": "Rendere Nyra Chat Rich generativa con modello opzionale, Core come decision engine, validator/repair/audit e fallback locale",
+  "success_criteria": "Nyra puo usare provider generativo quando configurato, senza decidere da sola, senza esporre segreti, con test mock e smoke locale passati",
+  "allowed_paths": [
+    "universal-core",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

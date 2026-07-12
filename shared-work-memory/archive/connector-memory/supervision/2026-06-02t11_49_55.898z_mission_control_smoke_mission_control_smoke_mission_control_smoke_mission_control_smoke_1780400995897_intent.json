@@ -1,0 +1,40 @@
+{
+  "intent_id": "2026-06-02t11_49_55.898z_mission_control_smoke_mission_control_smoke",
+  "generated_at": "2026-06-02T11:49:55.898Z",
+  "agent_id": "mission_control_smoke",
+  "session_id": "mission_control_smoke_1780400995897",
+  "trace_id": "trace_mission_control_smoke_mission_control_smoke_1780400995897_1780400995897",
+  "title": "Mission Control smoke",
+  "request": "Verificare metadata Mission Control multi-Codex senza deploy e senza produzione",
+  "success_criteria": "Il comando stampa livello autonomia e ruolo normalizzato",
+  "expected_depth": "normal",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "status": "active",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "researcher",
+    "role_raw": "researcher",
+    "role_valid": true,
+    "autonomy_level": "allow_with_audit",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-28t17_47_00.023z_codex_core_e2e_core_codex_e2e_enforcement",
+  "generated_at": "2026-05-28T17:47:00.023Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "title": "Core Codex e2e enforcement",
+  "request": "Implementare controllo end-to-end obbligatorio mentre Codex lavora: task contract, trace, anti-deriva, cleanup e test ripetuti.",
+  "success_criteria": "Connector blocca lavori incoerenti o incompleti, mantiene trace/task contract e passa test ripetuti.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

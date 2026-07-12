@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_11_58.361z_cristiancardarello_preflight_zip_suite_5.2.37",
+  "generated_at": "2026-05-24T18:11:58.361Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779645317865",
+  "title": "Preflight zip Suite 5.2.37",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: package locale Suite 5.2.37, test locali, manifest dist. Nessun deploy, nessun upload, nessuna modifica WordPress live.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

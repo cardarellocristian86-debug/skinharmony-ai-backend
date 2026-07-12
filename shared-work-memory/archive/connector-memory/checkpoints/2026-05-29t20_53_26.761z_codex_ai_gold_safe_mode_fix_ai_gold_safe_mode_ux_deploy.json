@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t20_53_26.761z_codex_ai_gold_safe_mode_fix_ai_gold_safe_mode_ux_deploy",
+  "generated_at": "2026-05-29T20:53:26.762Z",
+  "agent_id": "codex_ai_gold_safe_mode_fix",
+  "session_id": "codex_ai_gold_safe_mode_fix_1780086317096",
+  "trace_id": "trace_codex_ai_gold_safe_mode_fix_codex_ai_gold_safe_mode_fix_1780086317096_1780",
+  "title": "AI Gold safe mode UX deploy verificato",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Commit 2b0a74e pushato. Live index usa index-ygiA2_nN.js. Backend syntax OK, build web OK. Verifica autenticata completa non eseguita per mancanza credenziali live valide nella sessione; fix applicato su flusso generale.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t20_25_17.098z_codex_ai_gold_safe_mode_fix_fix_ai_gold_safe_mode_ux_e_",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,54 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-31t08_51_36.675z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+  "trace_id": "trace_codex_smartdesk_readonly_scan_codex_smartdesk_readonly_scan_1780217496672_",
+  "contract_id": "2026-05-31t08_51_36.674z_codex_smartdesk_readonly_scan_smart_desk_readonly_error",
+  "generated_at": "2026-05-31T08:51:36.675Z",
+  "updated_at": "2026-05-31T08:51:36.675Z",
+  "agent_id": "codex_smartdesk_readonly_scan",
+  "session_id": "codex_smartdesk_readonly_scan_1780217496672",
+  "title": "Smart Desk readonly error scan",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T08:51:36.675Z",
+      "updated_at": "2026-05-31T08:51:36.675Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T08:51:36.675Z",
+      "updated_at": "2026-05-31T08:51:36.675Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T08:51:36.675Z",
+      "updated_at": "2026-05-31T08:51:36.675Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-31T08:51:36.675Z",
+      "updated_at": "2026-05-31T08:51:36.675Z",
+      "evidence": [],
+      "note": ""
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "checkpoint_id": "2026-05-23t21_39_40.369z_codex_suite_worker_suite_template_preflight",
+  "generated_at": "2026-05-23T21:39:40.369Z",
+  "agent_id": "codex_suite_worker",
+  "session_id": "codex_suite_worker_1779572346164",
+  "title": "suite template preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Preflight sola lettura: analisi architettura Suite/template senza deploy, senza WordPress live, senza modifica produzione. Evidenze: plugin Suite, registry, control plane, report precedenti.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite",
+    "services/universal-core-service",
+    "SHARED_MEMORY/reports"
+  ],
+  "tests": [],
+  "next": "Leggere dettagli registry/module e generare opzioni con Core",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

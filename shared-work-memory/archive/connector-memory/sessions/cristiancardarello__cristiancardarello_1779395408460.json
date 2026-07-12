@@ -1,0 +1,21 @@
+{
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779395408460",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "connector",
+    "core"
+  ],
+  "status": "in_progress",
+  "started_at": "2026-05-21T20:30:08.460Z",
+  "updated_at": "2026-05-23T17:34:54.581Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-23t17_34_54.579z_cristiancardarello_suite_wordpress_builder_rest_probe.json",
+  "core_url": "http://127.0.0.1:3199",
+  "finished_at": "2026-05-21T20:35:59.821Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/cristiancardarello_1779395408460_final.md",
+  "stale_at": "2026-05-23T11:17:33.337Z",
+  "stale_reason": "session_cleanup_older_than_240_min"
+}

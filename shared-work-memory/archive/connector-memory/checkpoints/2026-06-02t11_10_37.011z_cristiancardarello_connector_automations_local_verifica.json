@@ -1,0 +1,24 @@
+{
+  "checkpoint_id": "2026-06-02t11_10_37.011z_cristiancardarello_connector_automations_local_verifica",
+  "generated_at": "2026-06-02T11:10:37.015Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780398130391",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780398130391_1780398130391",
+  "title": "Connector automations local verification",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Test locali completati: npm test, semantic-selection smoke, sh-core-codex test, doctor, e2e-self-test. Analisi lock: 26 lock attivi, session-cleanup dry-run trova 35 sessioni stale; finding scritto in SHARED_WORK.",
+  "files": [
+    "SHARED_WORK/findings/connector_automation_supervision.jsonl"
+  ],
+  "tests": [
+    "npm --prefix packages/core-codex-connector test: OK",
+    "npm --prefix packages/core-codex-connector run test:semantic-selection: OK",
+    "sh-core-codex test: OK",
+    "sh-core-codex doctor: OK with 26 active locks",
+    "sh-core-codex e2e-self-test: PASS"
+  ],
+  "next": "",
+  "task_contract_id": "2026-06-02t11_02_10.396z_cristiancardarello_supervisione_automazioni_core_codex_",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

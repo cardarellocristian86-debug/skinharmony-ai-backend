@@ -1,0 +1,45 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-29t09_00_16.698z_codex_02_connector_finalize_limited_evidence",
+  "trace_id": "trace_codex_02_codex_02_1780045216696_1780045216696",
+  "generated_at": "2026-05-29T09:00:16.698Z",
+  "updated_at": "2026-05-29T09:00:16.710Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1780045216696",
+  "title": "Connector finalize limited evidence",
+  "request": "Aggiungere al Core Codex Connector una chiusura limitata documentata per lavori senza E2E completo applicabile, mantenendo vincolo prima/durante/dopo e prove sostitutive.",
+  "success_criteria": "Patch connettore testata, programma aggiornato, report condiviso salvato, cleanup e finalize verdi.",
+  "allowed_paths": [
+    "packages/core-codex-connector",
+    "SHARED_MEMORY/programs/core-codex-connector",
+    "SHARED_MEMORY/reports/core-codex-connector",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

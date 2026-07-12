@@ -1,0 +1,20 @@
+{
+  "agent_id": "e2e_work_smoke",
+  "session_id": "e2e_work_smoke_1779990838315",
+  "trace_id": "trace_e2e_work_smoke_e2e_work_smoke_1779990838315_1779990838315",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "reports/codex-core"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-28T17:53:58.315Z",
+  "updated_at": "2026-05-28T17:54:17.061Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-28t17_54_16.946z_e2e_work_smoke_e2e_work_smoke_during.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress",
+  "finished_at": "2026-05-28T17:54:17.061Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/e2e_work_smoke_1779990838315_final.md"
+}

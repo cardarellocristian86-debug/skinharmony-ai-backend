@@ -1,0 +1,30 @@
+{
+  "checkpoint_id": "2026-05-30t18_29_03.017z_codex_nyra_codex_supervisor_nyra_codex_supervisor_durin",
+  "generated_at": "2026-05-30T18:29:03.019Z",
+  "agent_id": "codex_nyra_codex_supervisor",
+  "session_id": "codex_nyra_codex_supervisor_1780165399531",
+  "trace_id": "trace_codex_nyra_codex_supervisor_codex_nyra_codex_supervisor_1780165399531_1780",
+  "title": "Nyra Codex supervisor during",
+  "phase": "during",
+  "status": "done",
+  "summary": "Implementato tool locale Nyra Codex Work Supervisor: legge task contract, checkpoint, checklist, file/test; rileva lavoro superficiale, drift/fuori scope e produce correzione o code proposal mediata da Core.",
+  "files": [
+    "universal-core-2.0/tools/nyra-codex-work-supervisor.ts",
+    "universal-core-2.0/tests/nyra-codex-work-supervisor-test.ts",
+    "universal-core-2.0/tools/nyra-local-event-emitter.ts",
+    "universal-core-2.0/package.json",
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/universal-core/OPERATIONS.md",
+    "universal-core-2.0/runtime/nyra/NYRA_MAP_SNAPSHOT.md",
+    "universal-core-2.0/runtime/nyra/NYRA_WORK_SNAPSHOT.md"
+  ],
+  "tests": [
+    "npm run check:nyra:codex-supervisor",
+    "npm run check:nyra:local-governance",
+    "npm run check:nyra:action-router"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t18_23_19.532z_codex_nyra_codex_supervisor_nyra_supervisore_codex",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

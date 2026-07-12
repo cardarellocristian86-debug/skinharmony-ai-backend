@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-28t18_51_28.274z_codex_social_core_visual_generazione_visual_core_2.0",
+  "generated_at": "2026-05-28T18:51:28.275Z",
+  "agent_id": "codex_social_core_visual",
+  "session_id": "codex_social_core_visual_1779993366037",
+  "trace_id": "trace_codex_social_core_visual_codex_social_core_visual_1779993366037_1779993366",
+  "title": "Generazione visual Core 2.0",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Creata immagine bitmap AI/Core diversa dalle versioni precedenti e salvata in social/core-2-linkedin-ai-control-layer.png",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-28t18_36_06.041z_codex_social_core_visual_riallineamento_e2e",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

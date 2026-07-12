@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-05-22T21:11:01.434Z",
+  "agent_id": "core2_supervision_test",
+  "session_id": "core2_supervision_test_1779484160532",
+  "mode": "core2_local_supervision_once",
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-22t21_10_28.556z_core2_supervision_test_pulse_core2_supervision_test_core2_supervision_test_1779484160532_pulse.json",
+  "assessment": {
+    "verdict": "recover",
+    "flags": [
+      "summary_troppo_superficiale_per_intento_ampio",
+      "mancano_file_o_test_di_evidenza",
+      "manca_prossima_azione_verificabile",
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0,
+    "correction": "Fermarsi, rileggere il comando owner, dichiarare evidenze mancanti e produrre un piano verificabile prima di continuare."
+  },
+  "note": "Questo watcher non legge pensieri privati del modello. Legge intento, pulse, checkpoint, file dichiarati e report per richiamare Codex durante il lavoro."
+}

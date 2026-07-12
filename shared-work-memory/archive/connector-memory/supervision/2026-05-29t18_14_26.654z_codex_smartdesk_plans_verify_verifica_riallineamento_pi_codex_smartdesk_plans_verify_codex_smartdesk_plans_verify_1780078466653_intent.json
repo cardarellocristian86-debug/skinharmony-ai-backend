@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t18_14_26.654z_codex_smartdesk_plans_verify_verifica_riallineamento_pi",
+  "generated_at": "2026-05-29T18:14:26.654Z",
+  "agent_id": "codex_smartdesk_plans_verify",
+  "session_id": "codex_smartdesk_plans_verify_1780078466653",
+  "trace_id": "trace_codex_smartdesk_plans_verify_codex_smartdesk_plans_verify_1780078466653_17",
+  "title": "Verifica riallineamento piani Smart Desk",
+  "request": "Verificare integralmente le modifiche al riallineamento piani Smart Desk: Base completo competitivo, prenotazione online fuori scope, Protocolli AI fuori da tutti i piani, protocolli manuali nel Base, Silver controllo evoluto, Gold AI operativa senza Protocolli AI, superadmin/trial/legacy/prezzi/preview upgrade non rotti",
+  "success_criteria": "Controlli e test minimi eseguiti; eventuali problemi corretti o dichiarati; checkpoint/finalize completati; report finale semplice in italiano",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

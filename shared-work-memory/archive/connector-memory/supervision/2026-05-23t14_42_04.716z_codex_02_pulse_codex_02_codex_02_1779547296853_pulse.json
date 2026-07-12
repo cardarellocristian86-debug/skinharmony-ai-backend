@@ -1,0 +1,22 @@
+{
+  "pulse_id": "2026-05-23t14_42_04.716z_codex_02_pulse",
+  "generated_at": "2026-05-23T14:42:04.717Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1779547296853",
+  "title": "Pulse Codex",
+  "summary": "",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": null,
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 1,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

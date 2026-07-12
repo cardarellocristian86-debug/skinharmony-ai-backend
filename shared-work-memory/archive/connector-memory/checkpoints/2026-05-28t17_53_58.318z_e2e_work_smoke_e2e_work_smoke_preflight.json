@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-28t17_53_58.318z_e2e_work_smoke_e2e_work_smoke_preflight",
+  "generated_at": "2026-05-28T17:53:58.318Z",
+  "agent_id": "e2e_work_smoke",
+  "session_id": "e2e_work_smoke_1779990838315",
+  "trace_id": "trace_e2e_work_smoke_e2e_work_smoke_1779990838315_1779990838315",
+  "title": "E2E work smoke preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [
+    "reports/codex-core/codex_e2e_self_test_latest.json"
+  ],
+  "tests": [
+    "node packages/core-codex-connector/src/cli.mjs e2e-self-test"
+  ],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-28t17_53_58.317z_e2e_work_smoke_e2e_work_smoke",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

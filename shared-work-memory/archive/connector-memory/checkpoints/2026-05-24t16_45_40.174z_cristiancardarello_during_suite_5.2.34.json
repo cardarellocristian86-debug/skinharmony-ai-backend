@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t16_45_40.174z_cristiancardarello_during_suite_5.2.34",
+  "generated_at": "2026-05-24T16:45:40.175Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779641067526",
+  "title": "During Suite 5.2.34",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementata preview collegata: loop family_slots, data-builder-field template_slots dinamico, media/text slot editabili, preview WordPress finale ripristinata chiusa.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

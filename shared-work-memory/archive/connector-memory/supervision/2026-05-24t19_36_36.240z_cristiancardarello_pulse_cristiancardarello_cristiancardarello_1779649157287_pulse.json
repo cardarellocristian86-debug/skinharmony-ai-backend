@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-24t19_36_36.240z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T19:36:36.243Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779649157287",
+  "title": "Pulse Codex",
+  "summary": "Evidenza test live Suite 5.2.39: draft 1863 creato, save ok, hero title CTA gallery image detail image tutti true.",
+  "files": [
+    "reports/wordpress/template-builder/template-builder-live-draft-latest.json"
+  ],
+  "tests": [],
+  "next": "Finalizzare sessione e riportare esito a Cristian",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t19_00_08.257z_cristiancardarello_test_live_suite_5.2.39_crea_pagina_d",
+    "title": "Test live Suite 5.2.39 crea pagina da template",
+    "request": "Verificare che Suite 5.2.39 installata crei una pagina WordPress draft da Template Builder e salvi testo CTA immagini",
+    "success_criteria": "Draft creata, Suite version 5.2.39, save ok, status draft, hero title CTA e immagini presenti"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.188,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-02t12_00_34.315z_cristiancardarello_supporto_traduzione_smart_desk",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780401634305_1780401634305",
+  "contract_id": "2026-06-02t12_00_34.314z_cristiancardarello_supporto_traduzione_smart_desk",
+  "generated_at": "2026-06-02T12:00:34.315Z",
+  "updated_at": "2026-06-02T12:08:51.483Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780401634305",
+  "title": "Supporto traduzione Smart Desk",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T12:00:34.315Z",
+      "updated_at": "2026-06-02T12:08:07.130Z",
+      "evidence": [
+        "Core gate codex_automation ALLOWED; Nyra sidecar attivo; SHARED_WORK, locks e report lingua letti."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "not_applicable",
+      "required": true,
+      "created_at": "2026-06-02T12:00:34.315Z",
+      "updated_at": "2026-06-02T12:08:32.106Z",
+      "evidence": [
+        "Task di supporto/ricerca: Core decide REVIEW_REQUIRED senza selected_option_id; nessuna implementazione, nessun deploy, nessuna produzione."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T12:00:34.315Z",
+      "updated_at": "2026-06-02T12:08:44.293Z",
+      "evidence": [
+        "Audit eseguiti: language radar DE 1467/707 high; runtime catalog 800/84 high; source catalog 800/58 high; localize-ui-audit source 614; runtime localize failure Invalid string length documentata."
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-06-02T12:00:34.315Z",
+      "updated_at": "2026-06-02T12:08:51.482Z",
+      "evidence": [
+        "Artifact e memoria condivisa scritti: SHARED_WORK/artifacts/smartdesk_translation_de_research_2026-06-02.json, findings, messages, decisions, EVENTS; checkpoint preflight/during/after creati."
+      ],
+      "note": ""
+    }
+  ]
+}

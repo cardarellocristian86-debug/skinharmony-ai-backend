@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t18_48_38.588z_codex_nyra_developer_branch_ramo_programmatore_nyra",
+  "trace_id": "trace_codex_nyra_developer_branch_codex_nyra_developer_branch_1780166918586_1780",
+  "contract_id": "2026-05-30t18_48_38.587z_codex_nyra_developer_branch_ramo_programmatore_nyra",
+  "generated_at": "2026-05-30T18:48:38.588Z",
+  "updated_at": "2026-05-30T18:56:32.093Z",
+  "agent_id": "codex_nyra_developer_branch",
+  "session_id": "codex_nyra_developer_branch_1780166918586",
+  "title": "Ramo programmatore Nyra",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:48:38.588Z",
+      "updated_at": "2026-05-30T18:56:02.377Z",
+      "evidence": [
+        "Core gate ALLOWED reports/codex-core/codex_core_gate_latest.json; Core 2.0 decision winner explicit_branch_overlay_plus_tests"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:48:38.588Z",
+      "updated_at": "2026-05-30T18:56:08.448Z",
+      "evidence": [
+        "Modificati solo universal-core-2.0, SHARED_MEMORY e reports/codex-core; nessun Render/produzione/chiavi/clienti/prezzi"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:48:38.588Z",
+      "updated_at": "2026-05-30T18:56:26.504Z",
+      "evidence": [
+        "PASS: check:nyra:branch-overlay, check:nyra:action-router, check:nyra:local-governance, check:nyra:codex-supervisor, nyra:governance smoke, program-map-check"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T18:48:38.588Z",
+      "updated_at": "2026-05-30T18:56:32.092Z",
+      "evidence": [
+        "Snapshot/programmi aggiornati; EVENTS.jsonl da appendere; finalize subito dopo checkpoint after"
+      ],
+      "note": ""
+    }
+  ]
+}

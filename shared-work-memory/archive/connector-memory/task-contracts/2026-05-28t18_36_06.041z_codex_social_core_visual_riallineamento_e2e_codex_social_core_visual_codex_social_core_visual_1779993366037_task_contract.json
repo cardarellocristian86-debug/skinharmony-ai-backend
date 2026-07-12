@@ -1,0 +1,43 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t18_36_06.041z_codex_social_core_visual_riallineamento_e2e",
+  "trace_id": "trace_codex_social_core_visual_codex_social_core_visual_1779993366037_1779993366",
+  "generated_at": "2026-05-28T18:36:06.041Z",
+  "updated_at": "2026-05-28T18:36:06.041Z",
+  "agent_id": "codex_social_core_visual",
+  "session_id": "codex_social_core_visual_1779993366037",
+  "title": "Riallineamento e2e",
+  "request": "Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+  "success_criteria": "Ogni modifica resta nello scope, con pulse, test e finalize pulito",
+  "allowed_paths": [
+    "social",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

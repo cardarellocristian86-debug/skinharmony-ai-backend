@@ -1,0 +1,56 @@
+{
+  "pulse_id": "2026-05-30t13_24_00.623z_codex_nyra_needs_nyra_needs_cycle_locale_initial_pulse",
+  "generated_at": "2026-05-30T13:24:00.623Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "title": "Nyra needs cycle locale initial pulse",
+  "summary": "Avvio lavoro governato: Dare a Nyra locale cio che le manca: action router command-risk-confirm-verify, memoria owner privata sicura, self-diagnosis operativa, learning pack e test locali; Render non toccato",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+    "title": "Nyra needs cycle locale",
+    "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-30t13_24_00.618z_codex_nyra_needs_nyra_needs_cycle_locale",
+    "title": "Nyra needs cycle locale",
+    "request": "Dare a Nyra locale cio che le manca: action router command-risk-confirm-verify, memoria owner privata sicura, self-diagnosis operativa, learning pack e test locali; Render non toccato",
+    "success_criteria": "Nyra locale produce guida Codex piu concreta, legge/scrive solo memoria privata sicura locale quando consentito, diagnostica lacune e passa test; snapshot/eventi/finalize aggiornati"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+    "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+    "allowed_paths": [
+      "universal-core-2.0",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.708,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

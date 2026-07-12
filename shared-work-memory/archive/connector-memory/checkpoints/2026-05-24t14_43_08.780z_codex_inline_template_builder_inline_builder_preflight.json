@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t14_43_08.780z_codex_inline_template_builder_inline_builder_preflight",
+  "generated_at": "2026-05-24T14:43:08.781Z",
+  "agent_id": "codex_inline_template_builder",
+  "session_id": "codex_inline_template_builder_1779633724609",
+  "title": "Inline builder preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Obiettivo locale: aggiungere editing inline su preview Template Builder; campi tecnici restano fallback; nessuna pubblicazione live.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

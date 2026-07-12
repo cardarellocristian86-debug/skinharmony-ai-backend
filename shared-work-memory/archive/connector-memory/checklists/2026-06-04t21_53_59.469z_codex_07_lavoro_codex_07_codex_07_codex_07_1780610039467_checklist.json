@@ -1,0 +1,54 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-06-04t21_53_59.469z_codex_07_lavoro_codex_07",
+  "trace_id": "trace_codex_07_codex_07_1780610039467_1780610039467",
+  "contract_id": "2026-06-04t21_53_59.468z_codex_07_lavoro_codex_07",
+  "generated_at": "2026-06-04T21:53:59.469Z",
+  "updated_at": "2026-06-04T21:53:59.469Z",
+  "agent_id": "codex_07",
+  "session_id": "codex_07_1780610039467",
+  "title": "Lavoro codex_07",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_gate_core_e_lettura_contesto_reale",
+      "label": "Gate Core e lettura contesto reale",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-06-04T21:53:59.469Z",
+      "updated_at": "2026-06-04T21:53:59.469Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_2_implementazione_nello_scope_del_task_contract",
+      "label": "Implementazione nello scope del task contract",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-06-04T21:53:59.469Z",
+      "updated_at": "2026-06-04T21:53:59.469Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_3_test_e_verifiche_dichiarate",
+      "label": "Test e verifiche dichiarate",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-06-04T21:53:59.469Z",
+      "updated_at": "2026-06-04T21:53:59.469Z",
+      "evidence": [],
+      "note": ""
+    },
+    {
+      "id": "item_4_cleanup_memoria_condivisa_e_finalize",
+      "label": "Cleanup, memoria condivisa e finalize",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-06-04T21:53:59.469Z",
+      "updated_at": "2026-06-04T21:53:59.469Z",
+      "evidence": [],
+      "note": ""
+    }
+  ]
+}

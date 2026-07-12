@@ -1,0 +1,24 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-29t19_02_50.239z_core2_readiness_95459_core_2.0_codex_readiness_self-tes",
+  "trace_id": "trace_core2_readiness_95459_core2_readiness_95459_1780081370237_1780081370237",
+  "contract_id": "2026-05-29t19_02_50.238z_core2_readiness_95459_core_2.0_codex_readiness_self-tes",
+  "generated_at": "2026-05-29T19:02:50.239Z",
+  "updated_at": "2026-05-29T19:02:50.239Z",
+  "agent_id": "core2_readiness_95459",
+  "session_id": "core2_readiness_95459_1780081370237",
+  "title": "Core 2.0 Codex readiness self-test",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_eseguire_matrice_readiness_core_2.0",
+      "label": "Eseguire matrice readiness Core 2.0",
+      "status": "open",
+      "required": true,
+      "created_at": "2026-05-29T19:02:50.239Z",
+      "updated_at": "2026-05-29T19:02:50.239Z",
+      "evidence": [],
+      "note": ""
+    }
+  ]
+}

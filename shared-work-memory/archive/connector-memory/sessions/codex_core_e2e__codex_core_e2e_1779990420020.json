@@ -1,0 +1,19 @@
+{
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "packages/core-codex-connector"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-28T17:47:00.020Z",
+  "updated_at": "2026-05-28T18:06:53.632Z",
+  "locks": [],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-28t18_06_48.023z_codex_core_e2e_after_e2e_connector_verification.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress",
+  "finished_at": "2026-05-28T18:06:48.152Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/codex_core_e2e_1779990420020_final.md"
+}

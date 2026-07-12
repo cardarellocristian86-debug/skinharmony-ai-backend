@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-30t13_34_41.831z_codex_nyra_needs_nyra_needs_implementation",
+  "generated_at": "2026-05-30T13:34:41.832Z",
+  "agent_id": "codex_nyra_needs",
+  "session_id": "codex_nyra_needs_1780147440617",
+  "trace_id": "trace_codex_nyra_needs_codex_nyra_needs_1780147440617_1780147440617",
+  "title": "nyra needs implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Implementati in locale action router, memoria owner privata locale, diagnosi operativa e governance Nyra; Render non toccato.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-30t13_24_00.621z_codex_nyra_needs_nyra_needs_cycle_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

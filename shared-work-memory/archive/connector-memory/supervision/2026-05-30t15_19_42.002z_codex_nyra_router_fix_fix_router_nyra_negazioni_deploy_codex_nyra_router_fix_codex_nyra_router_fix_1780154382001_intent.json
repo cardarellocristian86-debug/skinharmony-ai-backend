@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-30t15_19_42.002z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+  "generated_at": "2026-05-30T15:19:42.002Z",
+  "agent_id": "codex_nyra_router_fix",
+  "session_id": "codex_nyra_router_fix_1780154382001",
+  "trace_id": "trace_codex_nyra_router_fix_codex_nyra_router_fix_1780154382001_1780154382001",
+  "title": "Fix router Nyra negazioni deploy",
+  "request": "Correggere e verificare in locale Nyra/Core 2.0: il router deve bloccare richieste reali di deploy/Render ma non falsi positivi come 'nessun deploy richiesto' o 'non toccare Render'.",
+  "success_criteria": "Action router e local governance distinguono negazioni/confini da azioni reali; test locali passano; mappe e memoria aggiornate; nessun Render/produzione toccato",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

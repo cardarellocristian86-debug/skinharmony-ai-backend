@@ -1,0 +1,23 @@
+{
+  "agent_id": "codex_nyra_generative",
+  "session_id": "codex_nyra_generative_1780135661803",
+  "trace_id": "trace_codex_nyra_generative_codex_nyra_generative_1780135661803_1780135661803",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "universal-core",
+    "SHARED_MEMORY"
+  ],
+  "status": "finished",
+  "started_at": "2026-05-30T10:07:41.803Z",
+  "updated_at": "2026-05-30T10:15:54.968Z",
+  "locks": [
+    "universal-core"
+  ],
+  "last_checkpoint": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/checkpoints/2026-05-30t10_15_36.435z_codex_nyra_generative_nyra_generative_verified.json",
+  "core_url": "http://127.0.0.1:3199",
+  "last_checkpoint_status": "in_progress",
+  "finished_at": "2026-05-30T10:15:48.393Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/codex_nyra_generative_1780135661803_final.md"
+}

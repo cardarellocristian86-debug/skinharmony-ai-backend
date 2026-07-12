@@ -1,0 +1,30 @@
+{
+  "checkpoint_id": "2026-05-24t13_44_51.385z_codex_beauty_commerce_clone_beauty_commerce_source_arch",
+  "generated_at": "2026-05-24T13:44:51.385Z",
+  "agent_id": "codex_beauty_commerce_clone",
+  "session_id": "codex_beauty_commerce_clone_1779629464084",
+  "title": "Beauty commerce source architecture completed",
+  "phase": "after",
+  "status": "in_progress",
+  "summary": "Template generico e-commerce beauty completato, preview aperta, zip 5.2.26 creato e verificato.",
+  "files": [
+    "wordpress/plugins/skinharmony-site-suite/skinharmony-site-suite.php",
+    "wordpress/plugins/skinharmony-site-suite/README.md",
+    "wordpress/plugins/skinharmony-site-suite/templates/registry/suite-template-registry.json",
+    "wordpress/plugins/skinharmony-site-suite/config/template-core-authority.json",
+    "scripts/test_nika_source_clone_governance.js",
+    "/private/tmp/beauty-commerce-source-template-preview.html",
+    "dist/skinharmony-site-suite-5.2.26.zip",
+    "SHARED_MEMORY/reports/SUITE_5_2_26_BEAUTY_COMMERCE_SOURCE_ARCHITECTURE_2026-05-24.md"
+  ],
+  "tests": [
+    "node scripts/test_nika_source_clone_governance.js",
+    "node scripts/test_template_authority_v2_registry_binding.js",
+    "npm run suite:governance:test",
+    "npm run suite:page-factory:test",
+    "npm run suite:operational:closure",
+    "zip has no old brand name in registry/php"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

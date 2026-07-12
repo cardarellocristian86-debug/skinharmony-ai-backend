@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-05-29t18_04_39.703z_codex_smartdesk_plans_riallineamento_piani_smart_desk",
+  "generated_at": "2026-05-29T18:04:39.703Z",
+  "agent_id": "codex_smartdesk_plans",
+  "session_id": "codex_smartdesk_plans_1780077879701",
+  "trace_id": "trace_codex_smartdesk_plans_codex_smartdesk_plans_1780077879701_1780077879701",
+  "title": "Riallineamento piani Smart Desk",
+  "request": "Riallineare struttura piani Smart Desk: Base gestionale completo competitivo tipo AgileHair esclusa prenotazione online; Silver controllo evoluto; Gold AI operativa; Protocolli AI fuori finché\n  non testati",
+  "success_criteria": "Feature gating, copy, capability map e documentazione coerenti; nessuna regressione superadmin/trial/legacy; test e report finali",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

@@ -1,0 +1,84 @@
+{
+  "pulse_id": "2026-06-02t19_36_45.032z_cristiancardarello_pagina_tecnica_site_suite_initial_pu",
+  "generated_at": "2026-06-02T19:36:45.032Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780429005023",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780429005023_1780429005024",
+  "title": "Pagina tecnica Site Suite initial pulse",
+  "summary": "Avvio lavoro governato: Creare pagina web dedicata SkinHarmony Site Suite con scheda tecnica approfondita, stile WaaS, mappa Suite a check, testo premium e confini governati",
+  "files": [
+    "wordpress/skinharmony-site-suite-technical-page.html"
+  ],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "owner_required",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-02t19_36_45.029z_cristiancardarello_pagina_tecnica_site_suite",
+    "title": "Pagina tecnica Site Suite",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780429005023_1780429005024",
+    "open": 6,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 6
+  },
+  "intent": {
+    "intent_id": "2026-06-02t19_36_45.026z_cristiancardarello_pagina_tecnica_site_suite",
+    "title": "Pagina tecnica Site Suite",
+    "request": "Creare pagina web dedicata SkinHarmony Site Suite con scheda tecnica approfondita, stile WaaS, mappa Suite a check, testo premium e confini governati",
+    "success_criteria": "Pagina locale pronta, mappa funzionale chiusa, testi client-facing, controlli Core/traduttore/verifica eseguiti, nessun deploy o publish live"
+  },
+  "task_contract": {
+    "contract_id": "2026-06-02t19_36_45.028z_cristiancardarello_pagina_tecnica_site_suite",
+    "trace_id": "trace_cristiancardarello_cristiancardarello_1780429005023_1780429005024",
+    "allowed_paths": [
+      "wordpress",
+      "SHARED_MEMORY/programs/suite",
+      "wordpress/skinharmony-site-suite-technical-page.html",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.625,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

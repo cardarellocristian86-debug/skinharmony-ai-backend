@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-05-28T18:12:13.467Z",
+  "agent_id": "test_start_script",
+  "session_id": "test_start_script_1779991933355",
+  "mode": "core2_local_supervision_once",
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-28t18_12_13.358z_test_start_script_test_start_script_work-start_initial_test_start_script_test_start_script_1779991933355_pulse.json",
+  "assessment": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.75,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  },
+  "note": "Questo watcher non legge pensieri privati del modello. Legge intento, pulse, checkpoint, file dichiarati e report per richiamare Codex durante il lavoro."
+}

@@ -1,0 +1,20 @@
+{
+  "checkpoint_id": "2026-05-28t17_53_58.314z_codex_core_e2e_during_e2e_connector_implementation",
+  "generated_at": "2026-05-28T17:53:58.315Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+  "title": "During e2e connector implementation",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Aggiunti task contract, trace timeline, cleanup gate, work-start ed e2e-self-test; self-test passato tre volte.",
+  "files": [
+    "packages/core-codex-connector/src/cli.mjs"
+  ],
+  "tests": [
+    "node packages/core-codex-connector/src/cli.mjs e2e-self-test"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

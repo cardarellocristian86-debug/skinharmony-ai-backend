@@ -1,0 +1,50 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t15_14_01.391z_codex_nyra_management_smoke_smoke_gestione_nyra_codex",
+  "trace_id": "trace_codex_nyra_management_smoke_codex_nyra_management_smoke_1780154041390_1780",
+  "contract_id": "2026-05-30t15_14_01.391z_codex_nyra_management_smoke_smoke_gestione_nyra_codex",
+  "generated_at": "2026-05-30T15:14:01.391Z",
+  "updated_at": "2026-05-30T15:18:42.990Z",
+  "agent_id": "codex_nyra_management_smoke",
+  "session_id": "codex_nyra_management_smoke_1780154041390",
+  "title": "Smoke gestione Nyra Codex",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_sidecar_refresh",
+      "label": "Sidecar refresh",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:14:01.391Z",
+      "updated_at": "2026-05-30T15:18:24.171Z",
+      "evidence": [
+        "reports/codex-core/nyra_sidecar_latest.json: phase=work-start refreshed=true cli_contract_unchanged=true render_touched=false"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_nyra_governance",
+      "label": "Nyra governance",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:14:01.391Z",
+      "updated_at": "2026-05-30T15:18:30.210Z",
+      "evidence": [
+        "nyra:governance usa memoria Codex aggiornata; route locale=run_local_tests; non toccare Render=guide_codex"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_finalize_smoke",
+      "label": "Finalize smoke",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:14:01.391Z",
+      "updated_at": "2026-05-30T15:18:42.990Z",
+      "evidence": [
+        "Checkpoint after completato e smoke pronto per finalize"
+      ],
+      "note": ""
+    }
+  ]
+}

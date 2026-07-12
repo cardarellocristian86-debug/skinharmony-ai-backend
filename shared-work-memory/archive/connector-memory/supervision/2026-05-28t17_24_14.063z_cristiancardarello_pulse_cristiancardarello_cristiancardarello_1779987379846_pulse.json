@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-28t17_24_14.063z_cristiancardarello_pulse",
+  "generated_at": "2026-05-28T17:24:14.064Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779987379846",
+  "title": "Pulse Codex",
+  "summary": "Smart Desk non deve restare bloccato su Sto analizzando il centro: timeout 15s e caricamento parziale AI Gold implementati",
+  "files": [
+    "reports/smartdesk/smartdesk_loading_ai_gold_2026-05-28.md"
+  ],
+  "tests": [],
+  "next": "Verifica manuale live dopo install/deploy e poi UX semafori/report",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t16_56_19.884z_cristiancardarello_smart_desk_ux_report_e_demo_loading",
+    "title": "Smart Desk UX report e demo loading",
+    "request": "Rendere Smart Desk piu comprensibile con semafori/testi umani e poi verificare demo che resta in caricamento",
+    "success_criteria": "UX migliorata localmente, build/test OK, causa demo loading diagnosticata o corretta"
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.235,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

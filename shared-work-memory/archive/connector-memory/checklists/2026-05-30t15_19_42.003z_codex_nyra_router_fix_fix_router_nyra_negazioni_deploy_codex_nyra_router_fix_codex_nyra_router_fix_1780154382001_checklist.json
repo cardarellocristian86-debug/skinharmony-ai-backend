@@ -1,0 +1,62 @@
+{
+  "schema": "codex_progress_checklist_v1",
+  "checklist_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+  "trace_id": "trace_codex_nyra_router_fix_codex_nyra_router_fix_1780154382001_1780154382001",
+  "contract_id": "2026-05-30t15_19_42.003z_codex_nyra_router_fix_fix_router_nyra_negazioni_deploy",
+  "generated_at": "2026-05-30T15:19:42.003Z",
+  "updated_at": "2026-05-30T15:25:07.574Z",
+  "agent_id": "codex_nyra_router_fix",
+  "session_id": "codex_nyra_router_fix_1780154382001",
+  "title": "Fix router Nyra negazioni deploy",
+  "rule": "Codex deve aggiornare questa checklist man mano che chiude i punti. Finalize blocca se restano item required open.",
+  "items": [
+    {
+      "id": "item_1_router_negazioni",
+      "label": "Router negazioni",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:19:42.003Z",
+      "updated_at": "2026-05-30T15:24:35.265Z",
+      "evidence": [
+        "universal-core-2.0/tools/nyra-action-router.ts distingue token sensibili negati da azioni reali"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_2_test_governance",
+      "label": "Test governance",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:19:42.003Z",
+      "updated_at": "2026-05-30T15:24:26.676Z",
+      "evidence": [
+        "npm run check:nyra:action-router; npm run check:nyra:local-governance; prove nyra:governance JSON: run_local_tests e guide_codex"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_3_mappe_eventi",
+      "label": "Mappe/eventi",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:19:42.003Z",
+      "updated_at": "2026-05-30T15:24:41.425Z",
+      "evidence": [
+        "SHARED_MEMORY/programs/universal-core aggiornato; STATE/WORK snapshots aggiornati; EVENTS.jsonl valido; program-map-check READY"
+      ],
+      "note": ""
+    },
+    {
+      "id": "item_4_finalize",
+      "label": "Finalize",
+      "status": "done",
+      "required": true,
+      "created_at": "2026-05-30T15:19:42.003Z",
+      "updated_at": "2026-05-30T15:25:07.573Z",
+      "evidence": [
+        "Checkpoint during/after completati; Core gate ALLOWED; cleanup/finalize pronti"
+      ],
+      "note": ""
+    }
+  ]
+}

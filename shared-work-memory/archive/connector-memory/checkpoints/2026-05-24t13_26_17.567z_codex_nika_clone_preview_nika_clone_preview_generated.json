@@ -1,0 +1,19 @@
+{
+  "checkpoint_id": "2026-05-24t13_26_17.567z_codex_nika_clone_preview_nika_clone_preview_generated",
+  "generated_at": "2026-05-24T13:26:17.567Z",
+  "agent_id": "codex_nika_clone_preview",
+  "session_id": "codex_nika_clone_preview_1779628982157",
+  "title": "Nika clone preview generated",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Generato file HTML locale del clone strutturale Nika da mostrare all'utente.",
+  "files": [
+    "/private/tmp/nika-clone-preview.html",
+    "SHARED_MEMORY/reports/NIKA_CLONE_PREVIEW_LOCAL_2026-05-24.md"
+  ],
+  "tests": [
+    "open /private/tmp/nika-clone-preview.html"
+  ],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

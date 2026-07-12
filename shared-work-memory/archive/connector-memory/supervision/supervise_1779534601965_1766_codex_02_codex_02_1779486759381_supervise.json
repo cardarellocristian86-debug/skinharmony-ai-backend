@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-05-23T11:10:01.965Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1779486759381",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1766,
+  "interval_ms": 2000,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": null,
+  "watched_files": [],
+  "assessment": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "manca_pulse_operativo",
+      "pulse_scaduto_o_non_aggiornato"
+    ],
+    "intent_overlap": 0,
+    "correction": "Aggiornare pulse e verifiche prima del prossimo blocco di lavoro.",
+    "pulse_age_ms": null,
+    "changed_files": []
+  }
+}

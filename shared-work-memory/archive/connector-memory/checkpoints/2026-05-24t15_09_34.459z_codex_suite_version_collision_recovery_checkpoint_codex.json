@@ -1,0 +1,17 @@
+{
+  "checkpoint_id": "2026-05-24t15_09_34.459z_codex_suite_version_collision_recovery_checkpoint_codex",
+  "generated_at": "2026-05-24T15:09:34.459Z",
+  "agent_id": "codex_suite_version_collision_recovery",
+  "session_id": "codex_suite_version_collision_recovery_1779635265828",
+  "title": "Checkpoint Codex",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Preflight recovery: memoria eventi conferma 5.2.29 gia live/verificata per Commerce Control Room; zip 5.2.29 locale e stato sovrascritto dal Builder inline. Piano: bump a 5.2.30, report collisione, rebuild zip, test.",
+  "files": [
+    "SHARED_MEMORY/events/EVENTS.jsonl",
+    "reports/codex-core/codex_core_gate_latest.json"
+  ],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

@@ -1,0 +1,26 @@
+{
+  "pulse_id": "2026-05-23t11_42_07.305z_codex_main_pulse",
+  "generated_at": "2026-05-23T11:42:07.305Z",
+  "agent_id": "codex_main",
+  "session_id": "codex_main_1779536527246",
+  "title": "Pulse Codex",
+  "summary": "Aggiornata memoria condivisa con comando stabile per avviare nuovi Codex collegati al Core Codex Connector. Aggiunto riferimento in README_FOR_CODEX e INDEX.",
+  "files": [
+    "/Users/cristiancardarello/skinharmony-codex/scripts/start-codex-agent.sh",
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/README_FOR_CODEX.md",
+    "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/INDEX.md"
+  ],
+  "tests": [
+    "Script gia testato: session-start, intent-start, pulse e core2-watch on_track"
+  ],
+  "next": "Usare sempre scripts/start-codex-agent.sh per nuove sessioni Codex invece di incollare comandi lunghi.",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": null,
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 1,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

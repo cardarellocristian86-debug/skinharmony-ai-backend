@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t17_59_41.444z_cristiancardarello_fix_template_builder_visual_output",
+  "generated_at": "2026-05-24T17:59:41.445Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779645317865",
+  "title": "Fix Template Builder visual output",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Evidenza live: testo/CTA salvati, immagini non renderizzate. Causa: Builder save usa editor content generico e beauty commerce renderer ha early return prima del blocco slot-driven. Intervento locale: fare usare al Builder il renderer visuale per source templates e collegare hero/gallery/detail asset al markup.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

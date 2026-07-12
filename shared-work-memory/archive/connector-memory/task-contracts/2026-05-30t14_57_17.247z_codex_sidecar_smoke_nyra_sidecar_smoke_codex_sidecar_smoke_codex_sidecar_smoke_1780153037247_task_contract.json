@@ -1,0 +1,42 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-30t14_57_17.247z_codex_sidecar_smoke_nyra_sidecar_smoke",
+  "trace_id": "trace_codex_sidecar_smoke_codex_sidecar_smoke_1780153037247_1780153037247",
+  "generated_at": "2026-05-30T14:57:17.247Z",
+  "updated_at": "2026-05-30T14:57:17.248Z",
+  "agent_id": "codex_sidecar_smoke",
+  "session_id": "codex_sidecar_smoke_1780153037247",
+  "title": "Nyra sidecar smoke",
+  "request": "Smoke test sidecar interno connector senza cambiare CLI",
+  "success_criteria": "sidecar report refreshed",
+  "allowed_paths": [
+    "reports/codex-core",
+    "SHARED_MEMORY",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

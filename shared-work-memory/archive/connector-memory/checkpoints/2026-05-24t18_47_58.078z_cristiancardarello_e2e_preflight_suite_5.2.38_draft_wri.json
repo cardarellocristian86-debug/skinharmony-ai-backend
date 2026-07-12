@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t18_47_58.078z_cristiancardarello_e2e_preflight_suite_5.2.38_draft_wri",
+  "generated_at": "2026-05-24T18:47:58.078Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779648282951",
+  "title": "E2E preflight Suite 5.2.38 draft write",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope: WordPress draft only. Evidence: test script creates draft status=draft and checks status_is_not_publish.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

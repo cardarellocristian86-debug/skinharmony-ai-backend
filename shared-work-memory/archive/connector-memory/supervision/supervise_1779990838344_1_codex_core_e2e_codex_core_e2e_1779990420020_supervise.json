@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-05-28T17:53:58.343Z",
+  "agent_id": "codex_core_e2e",
+  "session_id": "codex_core_e2e_1779990420020",
+  "mode": "core2_local_supervision_persistent",
+  "iteration": 1,
+  "interval_ms": 100,
+  "max_pulse_age_ms": 120000,
+  "intent_present": true,
+  "latest_pulse": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/supervision/2026-05-28t17_53_47.379z_codex_core_e2e_pulse_codex_core_e2e_codex_core_e2e_1779990420020_pulse.json",
+  "watched_files": [
+    {
+      "file": "packages/core-codex-connector/src/cli.mjs",
+      "mtime_ms": 1779990792575.5227,
+      "size": 211758
+    }
+  ],
+  "assessment": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.222,
+    "correction": "Supervisione persistente ok: continuare con pulse brevi.",
+    "pulse_age_ms": 10962,
+    "changed_files": [
+      {
+        "file": "packages/core-codex-connector/src/cli.mjs",
+        "mtime_ms": 1779990792575.5227,
+        "size": 211758
+      }
+    ],
+    "task_contract": {
+      "present": true,
+      "contract_id": "2026-05-28t17_53_34.423z_codex_core_e2e_core_codex_e2e_enforcement",
+      "trace_id": "trace_codex_core_e2e_codex_core_e2e_1779990420020_1779990814423",
+      "outside_scope_files": [],
+      "forbidden_files": []
+    }
+  }
+}

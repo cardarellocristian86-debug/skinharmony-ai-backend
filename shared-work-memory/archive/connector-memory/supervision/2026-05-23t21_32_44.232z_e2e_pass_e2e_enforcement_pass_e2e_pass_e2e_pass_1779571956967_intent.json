@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-23t21_32_44.232z_e2e_pass_e2e_enforcement_pass",
+  "generated_at": "2026-05-23T21:32:44.233Z",
+  "agent_id": "e2e_pass",
+  "session_id": "e2e_pass_1779571956967",
+  "title": "E2E enforcement pass",
+  "request": "Verificare che il connettore consenta dry-run mutante solo con workflow completo",
+  "success_criteria": "Sessione lock intento pulse e checkpoint preflight presenti",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

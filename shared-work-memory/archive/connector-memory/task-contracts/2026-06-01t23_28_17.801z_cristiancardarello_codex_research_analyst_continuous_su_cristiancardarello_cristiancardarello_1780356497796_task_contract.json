@@ -1,0 +1,44 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-06-01t23_28_17.801z_cristiancardarello_codex_research_analyst_continuous_su",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780356497796_1780356497796",
+  "generated_at": "2026-06-01T23:28:17.801Z",
+  "updated_at": "2026-06-01T23:28:17.801Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780356497796",
+  "title": "Codex research analyst continuous support",
+  "request": "Lavorare con gli altri Codex come ricercatore analista: leggere SHARED_WORK, rispettare lock, fare ricerca continua, creare probabilita/opzioni/eventi, passare decisioni al Core e alimentare implementatore senza modificare codice lockato",
+  "success_criteria": "Contesto multi-Codex aggiornato, finding/probabilita scritti in SHARED_WORK, Core consultato per decisioni, nessuna sovrapposizione con lock attivi",
+  "allowed_paths": [
+    "SHARED_WORK",
+    "SHARED_MEMORY",
+    "skinharmony-rust-extractor-governor",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

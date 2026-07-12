@@ -1,0 +1,14 @@
+{
+  "checkpoint_id": "2026-05-24t19_36_36.240z_cristiancardarello_suite_5.2.39_test_evidence",
+  "generated_at": "2026-05-24T19:36:36.243Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779649157287",
+  "title": "Suite 5.2.39 test evidence",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Evidence file template-builder-live-draft-latest.json reports ok=true, version 5.2.39, draft 1863, all checks true.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

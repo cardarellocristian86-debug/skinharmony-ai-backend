@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-06-02t10_03_58.075z_cristiancardarello_supporto_research_analyst_traduzione",
+  "generated_at": "2026-06-02T10:03:58.075Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "title": "Supporto research analyst traduzione Smart Desk",
+  "request": "Lavorare con il Codex che traduce Smart Desk: leggere SHARED_WORK e memoria, rispettare lock, verificare stato traduzioni, produrre finding/probabilita/opzioni e passare decisioni al Core senza modificare file lockati",
+  "success_criteria": "Stato traduzione Smart Desk compreso, finding e priorita scritti in SHARED_WORK, Core consultato se serve, implementatore alimentato con evidenze concrete",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

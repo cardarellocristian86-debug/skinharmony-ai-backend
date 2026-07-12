@@ -1,0 +1,14 @@
+{
+  "intent_id": "2026-06-01t23_12_43.948z_cristiancardarello_ricerca_continua_estrattore_per_mult",
+  "generated_at": "2026-06-01T23:12:43.948Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780355563943",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780355563943_1780355563943",
+  "title": "Ricerca continua estrattore per multi-Codex",
+  "request": "Lavorare in parallelo sull'estrattore creato da altro Codex: raccogliere contesto reale, fare ricerca continua, generare ipotesi/probabilita e passare informazioni al Core per decisioni senza modifiche finche non approvate",
+  "success_criteria": "Contesto estrattore compreso, ipotesi ordinate con probabilita, decisione Core registrata, informazioni utili pronte per Codex implementatore",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-28t16_46_08.118z_cristiancardarello_pulse",
+  "generated_at": "2026-05-28T16:46:08.118Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779979473298",
+  "title": "Pulse Codex",
+  "summary": "Smart Desk checkout: cassa completa, righe servizio/prodotto, override prezzo solo pagamento, scarico magazzino e rate tecnologie validate localmente",
+  "files": [
+    "reports/smartdesk/smartdesk_checkout_redditivita_2026-05-28.md"
+  ],
+  "tests": [],
+  "next": "Rifinire UX report/semafori e testi Gold/Silver/Base",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t14_44_33.337z_cristiancardarello_smart_desk_checkout_e_report_leggibi",
+    "title": "Smart Desk checkout e report leggibili",
+    "request": "Rendere checkout e report Smart Desk piu comprensibili: override prezzo solo nel pagamento, prodotti/servizi in cassa, pagina cassa completa, semafori, testi umani, tecnologia con rate/data inizio/fine e report separati Base Silver Gold.",
+    "success_criteria": "Patch locale Smart Desk testata: cassa non si allunga male, pagamento salva linee e scarica prodotti, servizi/tecnologie/operatori hanno testi chiari e report/azioni indicano cosa fare senza termini interni."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.458,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

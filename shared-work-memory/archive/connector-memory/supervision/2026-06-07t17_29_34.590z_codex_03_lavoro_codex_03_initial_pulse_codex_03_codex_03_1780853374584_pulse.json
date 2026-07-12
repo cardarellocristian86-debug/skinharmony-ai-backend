@@ -1,0 +1,87 @@
+{
+  "pulse_id": "2026-06-07t17_29_34.590z_codex_03_lavoro_codex_03_initial_pulse",
+  "generated_at": "2026-06-07T17:29:34.590Z",
+  "agent_id": "codex_03",
+  "session_id": "codex_03_1780853374584",
+  "trace_id": "trace_codex_03_codex_03_1780853374584_1780853374585",
+  "title": "Lavoro codex_03 initial pulse",
+  "summary": "Avvio lavoro governato: Lavoro wordpress assegnato da Cristian Cardarello",
+  "files": [
+    "SHARED_MEMORY/sessions",
+    "SHARED_MEMORY/supervision"
+  ],
+  "tests": [
+    "work-start: sessione, lock, intent, task contract, trace, preflight e pulse iniziale"
+  ],
+  "next": "Ricevere task owner, aggiornare pulse con file reali, test, rischio e report.",
+  "risk": "low",
+  "mission_control": {
+    "schema": "mission_control_autonomy_v1",
+    "enabled": true,
+    "policy_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_MISSION_CONTROL_AUTONOMY_POLICY_V1.md",
+    "shared_work_present": true,
+    "shared_work_dir": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK",
+    "artifact_registry_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/artifacts/README.md",
+    "researcher_command_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/policies/CODEX_RESEARCHER_COMMAND_RUST_EXTRACTOR.md",
+    "messages_path": "/Users/cristiancardarello/skinharmony-codex/SHARED_WORK/messages/codex_to_codex.jsonl",
+    "role": "worker",
+    "role_raw": "worker",
+    "role_valid": true,
+    "autonomy_level": "allow_auto",
+    "autonomy_levels": [
+      "allow_auto",
+      "allow_with_audit",
+      "review_required",
+      "owner_required",
+      "blocked"
+    ],
+    "owner_confirmation_default": false,
+    "owner_confirmation_rule": "Cristian va richiesto solo per owner_required o blocco esplicito Core/Nyra.",
+    "e2e_rule": "Ricercatore trova, Core decide, worker/correttore implementa, supporto verifica, connector traccia, Nyra ricorda."
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-06-07t17_29_34.589z_codex_03_lavoro_codex_03",
+    "title": "Lavoro codex_03",
+    "trace_id": "trace_codex_03_codex_03_1780853374584_1780853374585",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-06-07t17_29_34.586z_codex_03_lavoro_codex_03",
+    "title": "Lavoro codex_03",
+    "request": "Lavoro wordpress assegnato da Cristian Cardarello",
+    "success_criteria": "File, test, report e prossima azione devono essere dichiarati"
+  },
+  "task_contract": {
+    "contract_id": "2026-06-07t17_29_34.588z_codex_03_lavoro_codex_03",
+    "trace_id": "trace_codex_03_codex_03_1780853374584_1780853374585",
+    "allowed_paths": [
+      "wordpress",
+      "SHARED_MEMORY/sessions",
+      "SHARED_MEMORY/supervision",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.545,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

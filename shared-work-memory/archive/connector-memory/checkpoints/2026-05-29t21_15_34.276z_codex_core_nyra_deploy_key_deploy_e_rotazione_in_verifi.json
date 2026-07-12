@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-05-29t21_15_34.276z_codex_core_nyra_deploy_key_deploy_e_rotazione_in_verifi",
+  "generated_at": "2026-05-29T21:15:34.276Z",
+  "agent_id": "codex_core_nyra_deploy_key",
+  "session_id": "codex_core_nyra_deploy_key_1780086886044",
+  "trace_id": "trace_codex_core_nyra_deploy_key_codex_core_nyra_deploy_key_1780086886044_178008",
+  "title": "Deploy e rotazione in verifica",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "GitHub commit pubblicati, Render deploy verificati, rotazione key completata con verifica nocache e revoca vecchie chiavi.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-05-29t20_34_46.045z_codex_core_nyra_deploy_key_deploy_core_nyra_adapter_e_r",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

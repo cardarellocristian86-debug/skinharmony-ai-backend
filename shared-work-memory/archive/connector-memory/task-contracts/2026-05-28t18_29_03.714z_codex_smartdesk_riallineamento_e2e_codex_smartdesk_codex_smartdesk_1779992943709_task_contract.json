@@ -1,0 +1,46 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-05-28t18_29_03.714z_codex_smartdesk_riallineamento_e2e",
+  "trace_id": "trace_codex_smartdesk_codex_smartdesk_1779992943709_1779992943709",
+  "generated_at": "2026-05-28T18:29:03.714Z",
+  "updated_at": "2026-05-28T18:29:03.714Z",
+  "agent_id": "codex_smartdesk",
+  "session_id": "codex_smartdesk_1779992943709",
+  "title": "Riallineamento e2e",
+  "request": "Continuare il lavoro corrente sotto task contract, trace e cleanup gate",
+  "success_criteria": "Ogni modifica resta nello scope, con pulse, test e finalize pulito",
+  "allowed_paths": [
+    "smartdesk-ai-gold-priority-ui",
+    "skin-harmony-web/src/renderer/pages/AiGoldPage.tsx",
+    "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live/public/index.html",
+    "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live/public/assets/index-CiFpAkrt.js",
+    "SHARED_MEMORY",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

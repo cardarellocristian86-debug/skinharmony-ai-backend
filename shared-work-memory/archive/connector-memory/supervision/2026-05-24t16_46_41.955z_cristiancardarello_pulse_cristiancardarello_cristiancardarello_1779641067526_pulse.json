@@ -1,0 +1,30 @@
+{
+  "pulse_id": "2026-05-24t16_46_41.955z_cristiancardarello_pulse",
+  "generated_at": "2026-05-24T16:46:41.956Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779641067526",
+  "title": "Pulse Codex",
+  "summary": "Finale 5.2.34: package pronto, test passati, limite residuo: non posso entrare nell'admin live senza sessione WordPress; admin live risponde con redirect login.",
+  "files": [
+    "SHARED_MEMORY/reports/SUITE_5_2_34_TEMPLATE_BUILDER_CONNECTED_PREVIEW_2026-05-24.md"
+  ],
+  "tests": [],
+  "next": "Installazione manuale e verifica UI autenticata su WordPress.",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-24t16_45_23.004z_cristiancardarello_suite_template_builder_5.2.34_connec",
+    "title": "Suite Template Builder 5.2.34 connected preview",
+    "request": "Chiudere il difetto: preview Builder parziale e non completamente collegata agli slot template.",
+    "success_criteria": "Zip 5.2.34 generato, slot preview collegati e test passati."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "possibile_deriva_dal_comando_owner",
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.077,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

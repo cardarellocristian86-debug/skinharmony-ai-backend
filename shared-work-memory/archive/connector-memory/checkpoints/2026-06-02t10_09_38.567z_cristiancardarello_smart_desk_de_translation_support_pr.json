@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-02t10_09_38.567z_cristiancardarello_smart_desk_de_translation_support_pr",
+  "generated_at": "2026-06-02T10:09:38.568Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780394638071",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780394638071_1780394638071",
+  "title": "Smart Desk DE translation support preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "Scope research analyst only: read reports, run local read-only radars, write findings for translator Codex; no code patch or deploy.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-02t10_03_58.076z_cristiancardarello_supporto_research_analyst_traduzione",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

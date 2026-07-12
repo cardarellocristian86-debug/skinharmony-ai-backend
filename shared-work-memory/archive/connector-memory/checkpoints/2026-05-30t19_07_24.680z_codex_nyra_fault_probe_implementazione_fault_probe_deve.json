@@ -1,0 +1,32 @@
+{
+  "checkpoint_id": "2026-05-30t19_07_24.680z_codex_nyra_fault_probe_implementazione_fault_probe_deve",
+  "generated_at": "2026-05-30T19:07:24.682Z",
+  "agent_id": "codex_nyra_fault_probe",
+  "session_id": "codex_nyra_fault_probe_1780167862924",
+  "trace_id": "trace_codex_nyra_fault_probe_codex_nyra_fault_probe_1780167862924_1780167862924",
+  "title": "Implementazione fault probe developer_code",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Aggiunto rilevamento test_failure_reported nel supervisor; creato caso codice sbagliato total expected 6 got 3 nel test; aggiornate regole operative e memoria",
+  "files": [
+    "universal-core-2.0/tools/nyra-codex-work-supervisor.ts",
+    "universal-core-2.0/tests/nyra-codex-work-supervisor-test.ts",
+    "universal-core-2.0/runtime/nyra/NYRA_WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/programs/universal-core/PROGRAM.md",
+    "SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md",
+    "SHARED_MEMORY/programs/universal-core/OPERATIONS.md",
+    "SHARED_MEMORY/snapshots/STATE_SNAPSHOT.md",
+    "SHARED_MEMORY/snapshots/WORK_SNAPSHOT.md",
+    "SHARED_MEMORY/events/EVENTS.jsonl"
+  ],
+  "tests": [
+    "npm --prefix universal-core-2.0 run check:nyra:codex-supervisor",
+    "npm --prefix universal-core-2.0 run check:nyra:branch-overlay",
+    "npm --prefix universal-core-2.0 run check:nyra:action-router",
+    "npm --prefix universal-core-2.0 run check:nyra:local-governance",
+    "node packages/core-codex-connector/src/cli.mjs program-map-check --file SHARED_MEMORY/programs/universal-core/PROGRAM.md --file SHARED_MEMORY/programs/universal-core/ARCHITECTURE.md --file SHARED_MEMORY/programs/universal-core/OPERATIONS.md"
+  ],
+  "next": "",
+  "task_contract_id": "2026-05-30t19_04_22.925z_codex_nyra_fault_probe_probe_ramo_programmatore_nyra",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

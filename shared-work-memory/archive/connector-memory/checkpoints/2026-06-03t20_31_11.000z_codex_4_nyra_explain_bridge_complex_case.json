@@ -1,0 +1,16 @@
+{
+  "checkpoint_id": "2026-06-03t20_31_11.000z_codex_4_nyra_explain_bridge_complex_case",
+  "generated_at": "2026-06-03T20:31:11.002Z",
+  "agent_id": "codex_4",
+  "session_id": "codex_4_1779535292197",
+  "trace_id": "trace_codex_4_codex_4_1779535292197_1780516429388",
+  "title": "Nyra Explain Bridge complex case",
+  "phase": "during",
+  "status": "in_progress",
+  "summary": "Aggiungo test locale complesso pricing/claim per verificare classificazione diversa da WordPress.",
+  "files": [],
+  "tests": [],
+  "next": "",
+  "task_contract_id": "2026-06-03t19_53_49.388z_codex_4_nyra_explain_bridge_locale",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

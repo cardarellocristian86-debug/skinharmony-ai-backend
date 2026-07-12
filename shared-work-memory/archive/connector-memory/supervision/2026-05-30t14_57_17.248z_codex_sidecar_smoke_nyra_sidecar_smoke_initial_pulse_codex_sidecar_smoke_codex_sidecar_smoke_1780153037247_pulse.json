@@ -1,0 +1,55 @@
+{
+  "pulse_id": "2026-05-30t14_57_17.248z_codex_sidecar_smoke_nyra_sidecar_smoke_initial_pulse",
+  "generated_at": "2026-05-30T14:57:17.248Z",
+  "agent_id": "codex_sidecar_smoke",
+  "session_id": "codex_sidecar_smoke_1780153037247",
+  "trace_id": "trace_codex_sidecar_smoke_codex_sidecar_smoke_1780153037247_1780153037247",
+  "title": "Nyra sidecar smoke initial pulse",
+  "summary": "Avvio lavoro governato: Smoke test sidecar interno connector senza cambiare CLI",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-30t14_57_17.248z_codex_sidecar_smoke_nyra_sidecar_smoke",
+    "title": "Nyra sidecar smoke",
+    "trace_id": "trace_codex_sidecar_smoke_codex_sidecar_smoke_1780153037247_1780153037247",
+    "open": 1,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 1
+  },
+  "intent": {
+    "intent_id": "2026-05-30t14_57_17.247z_codex_sidecar_smoke_nyra_sidecar_smoke",
+    "title": "Nyra sidecar smoke",
+    "request": "Smoke test sidecar interno connector senza cambiare CLI",
+    "success_criteria": "sidecar report refreshed"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-30t14_57_17.247z_codex_sidecar_smoke_nyra_sidecar_smoke",
+    "trace_id": "trace_codex_sidecar_smoke_codex_sidecar_smoke_1780153037247_1780153037247",
+    "allowed_paths": [
+      "reports/codex-core",
+      "SHARED_MEMORY",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.714,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

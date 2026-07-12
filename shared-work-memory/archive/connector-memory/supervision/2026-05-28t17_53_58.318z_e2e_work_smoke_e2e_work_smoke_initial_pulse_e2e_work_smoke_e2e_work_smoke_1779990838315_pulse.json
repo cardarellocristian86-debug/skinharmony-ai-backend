@@ -1,0 +1,49 @@
+{
+  "pulse_id": "2026-05-28t17_53_58.318z_e2e_work_smoke_e2e_work_smoke_initial_pulse",
+  "generated_at": "2026-05-28T17:53:58.318Z",
+  "agent_id": "e2e_work_smoke",
+  "session_id": "e2e_work_smoke_1779990838315",
+  "trace_id": "trace_e2e_work_smoke_e2e_work_smoke_1779990838315_1779990838315",
+  "title": "E2E work smoke initial pulse",
+  "summary": "Avvio lavoro governato: Verificare che work-start crei sessione lock intent task contract checkpoint e pulse.",
+  "files": [
+    "reports/codex-core/codex_e2e_self_test_latest.json"
+  ],
+  "tests": [
+    "node packages/core-codex-connector/src/cli.mjs e2e-self-test"
+  ],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-28t17_53_58.316z_e2e_work_smoke_e2e_work_smoke",
+    "title": "E2E work smoke",
+    "request": "Verificare che work-start crei sessione lock intent task contract checkpoint e pulse.",
+    "success_criteria": "Tutti gli artifact vengono creati con trace id."
+  },
+  "task_contract": {
+    "contract_id": "2026-05-28t17_53_58.317z_e2e_work_smoke_e2e_work_smoke",
+    "trace_id": "trace_e2e_work_smoke_e2e_work_smoke_1779990838315_1779990838315",
+    "allowed_paths": [
+      "reports/codex-core",
+      "reports/codex-core/codex_e2e_self_test_latest.json",
+      "SHARED_MEMORY",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.538,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

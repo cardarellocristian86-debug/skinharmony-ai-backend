@@ -1,0 +1,56 @@
+{
+  "pulse_id": "2026-05-29t19_49_50.792z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit_initi",
+  "generated_at": "2026-05-29T19:49:50.792Z",
+  "agent_id": "codex_demo_gold_cockpit_fix",
+  "session_id": "codex_demo_gold_cockpit_fix_1780084190790",
+  "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+  "title": "Fix demo_gold_cockpit initial pulse",
+  "summary": "Avvio lavoro governato: Correggere ricorsione Gold State/Data Quality che rompe demo_gold_cockpit live: login ok ma cockpit fallback e data-quality/profitability 500",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "risk": "classified_low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "checklist": {
+    "present": true,
+    "checklist_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+    "title": "Fix demo_gold_cockpit",
+    "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "intent": {
+    "intent_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+    "title": "Fix demo_gold_cockpit",
+    "request": "Correggere ricorsione Gold State/Data Quality che rompe demo_gold_cockpit live: login ok ma cockpit fallback e data-quality/profitability 500",
+    "success_criteria": "Endpoint demo_gold_cockpit live tornano senza stack overflow: data-quality 200, profitability 200, cockpit con sezioni"
+  },
+  "task_contract": {
+    "contract_id": "2026-05-29t19_49_50.791z_codex_demo_gold_cockpit_fix_fix_demo_gold_cockpit",
+    "trace_id": "trace_codex_demo_gold_cockpit_fix_codex_demo_gold_cockpit_fix_1780084190790_1780",
+    "allowed_paths": [
+      "/Users/cristiancardarello/skinharmony-ai-backend/smartdesk-live/src/DesktopMirrorService.js",
+      "SHARED_MEMORY",
+      "reports/codex-core",
+      "runtime/codex-core-workflow"
+    ],
+    "forbidden_paths": [
+      ".env",
+      "wp-config.php",
+      "runtime/private",
+      "secrets",
+      "private",
+      "node_modules",
+      ".git"
+    ]
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.643,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

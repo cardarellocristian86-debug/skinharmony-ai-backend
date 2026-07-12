@@ -1,0 +1,28 @@
+{
+  "checkpoint_id": "2026-05-29t19_37_40.545z_codex_nyra_improve_miglioramento_nyra_runtime_dialogico",
+  "generated_at": "2026-05-29T19:37:40.545Z",
+  "agent_id": "codex_nyra_improve",
+  "session_id": "codex_nyra_improve_1780083460543",
+  "trace_id": "trace_codex_nyra_improve_codex_nyra_improve_1780083460543_1780083460543",
+  "title": "Miglioramento Nyra runtime dialogico preflight",
+  "phase": "preflight",
+  "status": "in_progress",
+  "summary": "work-start ha creato sessione, lock, intent, task contract e pulse iniziale.",
+  "files": [],
+  "tests": [],
+  "next": "Implementare solo nello scope del task contract, poi aggiornare pulse/checkpoint e test.",
+  "task_contract_id": "2026-05-29t19_37_40.545z_codex_nyra_improve_miglioramento_nyra_runtime_dialogico",
+  "checklist_id": "2026-05-29t19_37_40.545z_codex_nyra_improve_miglioramento_nyra_runtime_dialogico",
+  "checklist_summary": {
+    "present": true,
+    "checklist_id": "2026-05-29t19_37_40.545z_codex_nyra_improve_miglioramento_nyra_runtime_dialogico",
+    "title": "Miglioramento Nyra runtime dialogico",
+    "trace_id": "trace_codex_nyra_improve_codex_nyra_improve_1780083460543_1780083460543",
+    "open": 4,
+    "done": 0,
+    "blocked": 0,
+    "not_applicable": 0,
+    "total": 4
+  },
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json"
+}

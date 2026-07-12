@@ -1,0 +1,29 @@
+{
+  "pulse_id": "2026-05-25t14_35_37.269z_cristiancardarello_pulse",
+  "generated_at": "2026-05-25T14:35:37.270Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1779719503333",
+  "title": "Pulse Codex",
+  "summary": "Immediate pre-exec test live Suite 5.2.43: crea bozza temporanea Template Builder, salva e verifica, no publish.",
+  "files": [
+    "scripts/test_wp_template_builder_live_draft.js"
+  ],
+  "tests": [],
+  "next": "Exec immediato node scripts/test_wp_template_builder_live_draft.js",
+  "risk": "unknown",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-25t14_33_10.842z_cristiancardarello_test_live_suite_5.2.43_template_buil",
+    "title": "Test live Suite 5.2.43 Template Builder",
+    "request": "Verificare plugin Suite 5.2.43 installato su WordPress creando solo una bozza temporanea dal template beauty commerce, senza pubblicare e senza modificare pagine esistenti.",
+    "success_criteria": "Bozza creata, template-builder/save OK, contenuto recuperabile, status non publish, report locale scritto."
+  },
+  "core2_supervision": {
+    "verdict": "attention",
+    "flags": [
+      "rischio_non_classificato"
+    ],
+    "intent_overlap": 0.25,
+    "correction": "Aggiungere evidenze concrete: file, test, prossima azione e confronto con l'intento."
+  }
+}

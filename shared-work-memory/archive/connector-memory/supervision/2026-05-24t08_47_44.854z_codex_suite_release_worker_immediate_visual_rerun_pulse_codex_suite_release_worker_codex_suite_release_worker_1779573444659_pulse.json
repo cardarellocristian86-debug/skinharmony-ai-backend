@@ -1,0 +1,27 @@
+{
+  "pulse_id": "2026-05-24t08_47_44.854z_codex_suite_release_worker_immediate_visual_rerun_pulse",
+  "generated_at": "2026-05-24T08:47:44.856Z",
+  "agent_id": "codex_suite_release_worker",
+  "session_id": "codex_suite_release_worker_1779573444659",
+  "title": "Immediate visual rerun pulse",
+  "summary": "Pulse immediato: rilancio ora lo script visual evidence dopo filtro overlay/hidden; scope locale e nessun deploy.",
+  "files": [
+    "scripts/generate_template_authority_visual_evidence.js"
+  ],
+  "tests": [],
+  "next": "exec immediato visual evidence",
+  "risk": "low",
+  "latest_core_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_core_gate_latest.json",
+  "intent": {
+    "intent_id": "2026-05-23t21_57_35.481z_codex_suite_release_worker_suite_visual_evidence_and_zi",
+    "title": "Suite visual evidence and zip",
+    "request": "Generare evidenza visuale Home/WAAS, promuovere solo se passa, preparare zip Suite progressivo e report connettore.",
+    "success_criteria": "Screenshot/evidence locali, test verdi, zip creato, report connettore funzionante, nessun deploy live."
+  },
+  "core2_supervision": {
+    "verdict": "on_track",
+    "flags": [],
+    "intent_overlap": 0.211,
+    "correction": "Continuare, mantenendo checkpoint brevi e verificabili."
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "intent_id": "2026-05-23t14_41_36.850z_codex_02_connector_core_2.0_gate_alignment",
+  "generated_at": "2026-05-23T14:41:36.852Z",
+  "agent_id": "codex_02",
+  "session_id": "codex_02_1779538541695",
+  "title": "Connector Core 2.0 gate alignment",
+  "request": "Allineare il connettore a Core 2.0 locale, rendere la conferma owner eseguibile e mostrare codex_02 nella dashboard.",
+  "success_criteria": "Gate Core 2.0 ALLOWED, report condiviso creato, dashboard aggiornata.",
+  "expected_depth": "normal",
+  "files": [],
+  "status": "active",
+  "rule": "Codex deve confrontare ogni pulse con questo intento. Se il lavoro diventa superficiale o devia, Core 2.0 deve richiamarlo prima che continui."
+}

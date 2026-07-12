@@ -1,0 +1,17 @@
+{
+  "intent_id": "2026-05-28t18_12_13.356z_test_start_script_test_start_script_work-start",
+  "generated_at": "2026-05-28T18:12:13.356Z",
+  "agent_id": "test_start_script",
+  "session_id": "test_start_script_1779991933355",
+  "trace_id": "trace_test_start_script_test_start_script_1779991933355_1779991933355",
+  "title": "Test start script work-start",
+  "request": "Verificare che lo script usi work-start e apra contratto e trace",
+  "success_criteria": "Avvio check-only completato",
+  "expected_depth": "normal",
+  "files": [
+    "SHARED_MEMORY/sessions",
+    "SHARED_MEMORY/supervision"
+  ],
+  "status": "active",
+  "rule": "Codex deve lavorare dentro task contract, aggiornare pulse e non chiudere senza cleanup/test/report."
+}

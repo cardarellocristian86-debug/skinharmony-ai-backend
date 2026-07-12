@@ -1,0 +1,18 @@
+{
+  "agent_id": "e2e_self_test_1780398438744",
+  "session_id": "e2e_self_test_1780398438744_session",
+  "trace_id": "trace_e2e_self_test_1780398438744_e2e_self_test_1780398438744_session_1780398438",
+  "role": "tester",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "packages/core-codex-connector"
+  ],
+  "status": "finished",
+  "started_at": "2026-06-02T11:07:18.744Z",
+  "updated_at": "2026-06-02T11:07:18.758Z",
+  "locks": [],
+  "core_url": "http://127.0.0.1:3199",
+  "finished_at": "2026-06-02T11:07:18.757Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/reports/codex-core/codex_e2e_self_test_latest.json"
+}

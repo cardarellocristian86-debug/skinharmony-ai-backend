@@ -1,0 +1,46 @@
+{
+  "schema": "codex_task_contract_v1",
+  "contract_id": "2026-06-02t10_44_45.522z_cristiancardarello_supporto_core_codex_lavoro_suite",
+  "trace_id": "trace_cristiancardarello_cristiancardarello_1780397085518_1780397085518",
+  "generated_at": "2026-06-02T10:44:45.522Z",
+  "updated_at": "2026-06-02T10:44:45.522Z",
+  "agent_id": "cristiancardarello",
+  "session_id": "cristiancardarello_1780397085518",
+  "title": "Supporto Core/Codex lavoro Suite",
+  "request": "Lavorare fuori sandbox con Core sul lavoro Suite: leggere stato condiviso, lock, report e programma Suite; produrre analisi, probabilita, finding e decisioni Core senza modificare file lockati o produzione",
+  "success_criteria": "Contesto Suite aggiornato, lock rispettati, finding/priorita scritti nella memoria condivisa, Core consultato per decisioni, nessuna sovrapposizione con Codex attivi",
+  "allowed_paths": [
+    "SHARED_WORK",
+    "SHARED_MEMORY",
+    "wordpress/plugins/skinharmony-site-suite",
+    "services/suite-control-plane",
+    "reports/wordpress",
+    "reports/codex-core",
+    "runtime/codex-core-workflow"
+  ],
+  "forbidden_paths": [
+    ".env",
+    "wp-config.php",
+    "runtime/private",
+    "secrets",
+    "private",
+    "node_modules",
+    ".git"
+  ],
+  "required_phases": [
+    "intent",
+    "preflight",
+    "during",
+    "after",
+    "finalize"
+  ],
+  "required_evidence": [
+    "core_gate_report",
+    "declared_files",
+    "tests_or_reason",
+    "cleanup_check",
+    "program_registry_when_needed"
+  ],
+  "drift_rule": "Ogni pulse deve restare coerente con request, success_criteria e allowed_paths. Se cambia scope, aggiornare task contract o fermarsi.",
+  "cleanup_rule": "Finalize deve bloccare file fuori scope, lock aperti non gestiti, checkpoint mancanti, report Core mancante e mapping programma mancante."
+}

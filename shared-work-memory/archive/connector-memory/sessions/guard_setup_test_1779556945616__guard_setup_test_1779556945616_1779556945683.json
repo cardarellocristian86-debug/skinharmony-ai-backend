@@ -1,0 +1,18 @@
+{
+  "agent_id": "guard_setup_test_1779556945616",
+  "session_id": "guard_setup_test_1779556945616_1779556945683",
+  "role": "worker",
+  "tenant_id": "codexai",
+  "workspace": "/Users/cristiancardarello/skinharmony-codex",
+  "scope": [
+    "guarded-setup-test"
+  ],
+  "status": "verified",
+  "started_at": "2026-05-23T17:22:25.683Z",
+  "updated_at": "2026-05-23T17:22:25.856Z",
+  "locks": [],
+  "last_checkpoint": null,
+  "core_url": "http://127.0.0.1:3199",
+  "finished_at": "2026-05-23T17:22:25.856Z",
+  "final_report": "/Users/cristiancardarello/skinharmony-codex/SHARED_MEMORY/reports/codex-orchestrator/guard_setup_test_1779556945616_1779556945683_final.md"
+}
