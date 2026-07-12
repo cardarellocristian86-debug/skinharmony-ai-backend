@@ -3012,11 +3012,11 @@ async function syncSmartDeskSource() {
         client_id: payment.client_id,
         product_id: "",
         amount: payment.amount,
-        cost: null,
+        cost: payment.cost,
         currency: payment.currency || "EUR",
         occurred_at: payment.occurred_at,
         campaign_id: "",
-        source: "smartdesk_payment_bridge"
+        source: payment.cost_source === "missing" ? "smartdesk_payment_bridge" : "smartdesk_payment_profitability_bridge"
       }));
     [...directSales, ...paymentSales].forEach((sale) => {
       if (!sale.sale_id) return;

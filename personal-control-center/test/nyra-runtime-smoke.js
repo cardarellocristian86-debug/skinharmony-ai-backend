@@ -72,20 +72,21 @@ const smartDeskServer = http.createServer((req, res) => {
     jsonResponse(res, 200, {
       ok: true,
       source: "smartdesk_live_bridge",
-      counts: { clients: 1, appointments: 1, sales: 1, inventoryItems: 1 },
+      counts: { clients: 1, appointments: 1, sales: 0, payments: 1, inventoryItems: 1 },
       data_quality: { score: 0.8, state: "alto", status: "buono", metrics: {} },
-      sales: [{ sale_id: "sale-smoke", client_id: "client-smoke", product_id: "product-smoke", amount: 120, cost: 35, currency: "EUR", occurred_at: "2026-07-11T10:00:00Z" }],
+      sales: [],
+      payments: [{ payment_id: "payment-smoke", client_id: "client-smoke", appointment_id: "appointment-smoke", amount: 120, cost: 35, cost_source: "smoke_profitability", currency: "EUR", occurred_at: "2026-07-11T10:00:00Z" }],
       inventory: [{ product_id: "product-smoke", sku: "SMOKE-1", quantity: 4, min_quantity: 1, cost: 35, sale_price: 120 }],
       journey_events: [{
         stage: "commerce",
-        event_type: "sale_recorded",
+        event_type: "payment_recorded",
         status: "ready",
-        source: "smartdesk",
-        external_event_id: "sale:sale-smoke",
+        source: "smartdesk_payment",
+        external_event_id: "payment:payment-smoke",
         profile_external_id: "client-smoke",
         occurred_at: "2026-07-11T10:00:00Z",
         value: { currency: "EUR", amount: 120, cost: 35 },
-        metadata: { sale_id: "sale-smoke", product_id: "product-smoke" },
+        metadata: { payment_id: "payment-smoke", appointment_id: "appointment-smoke" },
       }],
     });
     return;
@@ -226,7 +227,13 @@ async function main() {
     assert.equal(smartDeskSync.status, 200);
     assert.equal(smartDeskSync.json.snapshot.bridge.connected, true);
     assert.equal(smartDeskSync.json.snapshot.bridge.journeyIngest.recorded, 1);
-    assert.equal(smartDeskSync.json.snapshot.sales, 1);
+    assert.equal(smartDeskSync.json.snapshot.sales, 0);
+
+    const syncedOverview = await request("/api/overview", { auth: true });
+    assert.equal(syncedOverview.status, 200);
+    assert.equal(syncedOverview.json.economics.sales.length, 1);
+    assert.equal(syncedOverview.json.economics.totalRevenue, 120);
+    assert.equal(syncedOverview.json.economics.totalMargin, 85);
 
     const syncedJourneyReport = await request("/api/nyra/decision-to-value/report", { auth: true });
     assert.equal(syncedJourneyReport.status, 200);

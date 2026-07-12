@@ -10,6 +10,7 @@ const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter
 const { WhatsappService } = require("./src/WhatsappService");
 const { SuiteAppKeyBridge } = require("./src/SuiteAppKeyBridge");
 const { UniversalCoreBridge } = require("./src/UniversalCoreBridge");
+const { computeAppointmentProfitability } = require("./src/core/profitability/ProfitabilityCore");
 
 const app = express();
 let service = null;
@@ -448,6 +449,9 @@ function buildNyraBridgeSnapshot(bridge) {
   const treatments = scoped(service.treatmentsRepository);
   const sales = scoped(service.salesRepository);
   const payments = scoped(service.paymentsRepository);
+  const services = scoped(service.servicesRepository);
+  const staff = scoped(service.staffRepository);
+  const resources = scoped(service.resourcesRepository);
   const inventory = scoped(service.inventoryRepository);
   const consentEvents = clients
     .filter((client) => client.consentStatus === "granted" || client.consentGiven === true || client.consentAt)
@@ -509,11 +513,49 @@ function buildNyraBridgeSnapshot(bridge) {
       value: { currency: sale.currency, amount: sale.amount, cost: sale.cost },
       metadata: { sale_id: sale.sale_id, product_id: sale.product_id, campaign_id: sale.campaign_id }
     }));
+  const servicesById = new Map(services.map((item) => [String(item.id || ""), item]));
+  const staffById = new Map(staff.map((item) => [String(item.id || ""), item]));
+  const inventoryById = new Map(inventory.map((item) => [String(item.id || ""), item]));
+  const resourcesById = new Map(resources.map((item) => [String(item.id || ""), item]));
+  const paymentsByAppointment = new Map();
+  payments.forEach((payment) => {
+    const appointmentId = String(payment.appointmentId || "");
+    if (!appointmentId) return;
+    if (!paymentsByAppointment.has(appointmentId)) paymentsByAppointment.set(appointmentId, []);
+    paymentsByAppointment.get(appointmentId).push(payment);
+  });
+  const appointmentById = new Map(appointments.map((item) => [String(item.id || ""), item]));
+  const paymentCostById = new Map();
+  payments.forEach((payment) => {
+    const appointment = appointmentById.get(String(payment.appointmentId || ""));
+    if (!appointment) return;
+    try {
+      const profitability = computeAppointmentProfitability({
+        appointment,
+        servicesById,
+        staffById,
+        inventoryById,
+        resourcesById,
+        linkedPayments: paymentsByAppointment.get(String(appointment.id || "")) || [payment]
+      });
+      if (Number(profitability.directCostCents || 0) > 0) {
+        paymentCostById.set(String(payment.id || ""), {
+          cost: Number(profitability.directCostCents || 0) / 100,
+          source: "smartdesk_profitability_core",
+          confidence: profitability.confidence || "unknown"
+        });
+      }
+    } catch (_error) {
+      // A malformed appointment must not block the read-only bridge.
+    }
+  });
   const paymentRows = payments.map((payment) => ({
     payment_id: payment.id,
     client_id: payment.clientId || "",
     appointment_id: payment.appointmentId || "",
     amount: bridgeMoney(payment, ["amountCents", "amount", "totalCents", "valueCents"]),
+    cost: paymentCostById.get(String(payment.id || ""))?.cost ?? null,
+    cost_source: paymentCostById.get(String(payment.id || ""))?.source || "missing",
     currency: payment.currency || "EUR",
     method: payment.method || "",
     occurred_at: payment.date || payment.paidAt || payment.createdAt || new Date().toISOString()
@@ -528,8 +570,8 @@ function buildNyraBridgeSnapshot(bridge) {
       external_event_id: `payment:${payment.payment_id}`,
       profile_external_id: payment.client_id,
       occurred_at: payment.occurred_at,
-      value: { currency: payment.currency, amount: payment.amount, cost: null },
-      metadata: { payment_id: payment.payment_id, appointment_id: payment.appointment_id, channel: payment.method }
+      value: { currency: payment.currency, amount: payment.amount, cost: payment.cost },
+      metadata: { payment_id: payment.payment_id, appointment_id: payment.appointment_id, channel: payment.method, cost_source: payment.cost_source }
     }));
   const inventoryRows = inventory.map((item) => ({
     product_id: item.id || item.sku || "",
