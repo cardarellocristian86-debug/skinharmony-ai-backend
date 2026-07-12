@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCoreHandlers } from "../src/core-handlers.js";
+import { createCoreHandlers, createCoreWriteGuard } from "../src/core-handlers.js";
 
 test("maps MCP tools to Universal Core without forwarding the ChatGPT token", async () => {
   const calls = [];
@@ -23,4 +23,17 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
 test("rejects a tenant without its own Core key", async () => {
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: {}, defaultTenantId: "owner-private", universalCoreKey: "owner-key" });
   await assert.rejects(handlers.core_health({}, { tenantId: "tenant-b" }), /core_tenant_key_missing/);
+});
+
+test("write guard fails closed on hard blocks and allows controlled writes", async () => {
+  const replies = [
+    { verdict: { decision: "block", action_mediation: { state: "hard_block" } } },
+    { verdict: { decision: "allow_controlled", action_mediation: { state: "allow" } } }
+  ];
+  const guard = createCoreWriteGuard({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key" }, {
+    fetchImpl: async () => new Response(JSON.stringify(replies.shift()), { status: 200, headers: { "content-type": "application/json" } })
+  });
+  const identity = { tenantId: "tenant-a" };
+  assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, identity)).allowed, false);
+  assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, identity)).allowed, true);
 });

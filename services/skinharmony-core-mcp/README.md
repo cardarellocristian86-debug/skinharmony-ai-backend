@@ -17,7 +17,7 @@ AUTH0_ISSUER=https://YOUR_TENANT.auth0.com
 AUTH0_AUDIENCE=https://mcp.example.com/mcp
 CODEX_BEARER_KEYS=<comma-separated secrets>
 CODEX_BEARER_SCOPES=core:read,core:govern
-MCP_SUPPORTED_SCOPES=core:read,core:govern
+MCP_SUPPORTED_SCOPES=core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
 UNIVERSAL_CORE_URL=https://your-universal-core.example.com
 UNIVERSAL_CORE_KEY=<server-side scoped Core key>
 UNIVERSAL_CORE_KEYS_JSON={"tenant-a":"server-side-key-a","tenant-b":"server-side-key-b"}
@@ -26,6 +26,7 @@ CORE_MCP_KEY=<server-side scoped Core key for MCP_CHATGPT_TENANT_ID>
 MCP_DEFAULT_TENANT_ID=owner-private
 MCP_TENANT_CLAIM=https://skinharmony.it/tenant_id
 SHARED_WORK_MEMORY_ROOT=/app/shared-work-memory
+AGENT_WORKSPACE_ROOT=/var/data/skinharmony-core-mcp
 ```
 
 `CORE_BASE_URL` is also accepted as a compatibility fallback when
@@ -42,9 +43,32 @@ MCP_PUBLIC_URL=http://localhost:8790 CODEX_BEARER_KEYS=local-test-key npm start 
 
 For MCP Inspector, connect to `http://localhost:8790/mcp` and set `Authorization: Bearer local-test-key`. OAuth discovery can be validated without Auth0 credentials; an end-to-end ChatGPT login requires a separately configured Auth0 development tenant.
 
+## Tenant agent workspace
+
+Agent collaboration is fail-closed and opt-in. The collaboration tools are not
+advertised until `AGENT_WORKSPACE_ROOT` is configured. In production this path
+must point to persistent storage; do not point it at the deploy filesystem.
+
+Available collaboration capabilities:
+
+- logical shared folders and versioned documents;
+- optimistic task creation, claim and status updates;
+- registered agent heartbeats and tenant-scoped discovery;
+- direct or broadcast agent messages with acknowledgements;
+- atomic state updates, idempotency keys and a bounded audit trail.
+
+All collaboration state is stored below
+`AGENT_WORKSPACE_ROOT/tenants/<tenant_id>/agent-workspace`. The tenant is always
+derived from the verified identity. Agent identifiers are additionally bound to
+the Auth0 subject that registered them, preventing intra-tenant impersonation.
+
+Write tools require both their resource scope and `core:govern`. Before changing
+state they call Universal Core's action evaluator. Hard-block verdicts fail
+closed. Documents and tasks use expected versions to prevent lost updates.
+
 ## Production boundary
 
-The MCP service calls Universal Core server-to-server with `UNIVERSAL_CORE_KEY`; it never forwards the ChatGPT OAuth token to Core. The exposed tools only read, interpret, or evaluate. They do not merge, deploy, publish, modify customer data, or grant cross-tenant access.
+The MCP service calls Universal Core server-to-server with `UNIVERSAL_CORE_KEY`; it never forwards the ChatGPT OAuth token to Core. Core and memory tools remain read-only. Optional collaboration writes affect only the authenticated tenant's internal agent workspace; they do not merge, deploy, publish, modify customer records, or grant cross-tenant access.
 
 ## Multi-tenant boundary
 

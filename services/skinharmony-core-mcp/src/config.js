@@ -38,6 +38,7 @@ export function loadConfig(env = process.env) {
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
+  const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
@@ -51,12 +52,13 @@ export function loadConfig(env = process.env) {
     jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
     codexKeys,
     codexScopes: csv(env.CODEX_BEARER_SCOPES || "core:read,core:govern"),
-    supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern"),
+    supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate"),
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
     defaultTenantId,
     tenantClaim,
-    sharedMemoryRoot
+    sharedMemoryRoot,
+    agentWorkspaceRoot
   };
 }

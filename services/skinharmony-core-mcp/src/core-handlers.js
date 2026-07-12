@@ -49,3 +49,23 @@ export function createCoreHandlers(config, options = {}) {
     }))
   };
 }
+
+export function createCoreWriteGuard(config, options = {}) {
+  const handlers = createCoreHandlers(config, options);
+  return async function governWrite(action, identity) {
+    const result = await handlers.core_gate_action({
+      action_label: action.action_label,
+      action_type: action.action_type,
+      target: action.target,
+      operation_class: "reversible_internal_collaboration_write",
+      external_side_effect: false,
+      contains_customer_data: false
+    }, identity);
+    const payload = result.structuredContent || {};
+    const verdict = payload.verdict || payload;
+    const decision = String(verdict.decision || verdict.decision_state || "unknown");
+    const mediation = String(verdict.action_mediation?.state || verdict.mediation || "unknown");
+    const blocked = decision === "block" || decision === "blocked" || mediation === "hard_block";
+    return { allowed: !blocked, decision, mediation };
+  };
+}

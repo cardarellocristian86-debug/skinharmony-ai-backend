@@ -1,18 +1,10 @@
 import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
+import { TOOLS } from "./tool-definitions.js";
 
 function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
 }
-
-const TOOLS = [
-  { name: "core_health", title: "Check Core health", description: "Use this when you need to read Universal Core service health.", inputSchema: { type: "object", additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
-  { name: "nyra_runtime_context", title: "Read Nyra runtime context", description: "Use this when you need Nyra readiness and control context.", inputSchema: { type: "object", properties: { include_control_snapshot: { type: "boolean" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
-  { name: "nyra_interpret_request", title: "Interpret a Nyra request", description: "Use this when you need to interpret a request without authorizing or executing it.", inputSchema: { type: "object", required: ["message"], properties: { message: { type: "string", minLength: 1 }, session_id: { type: "string" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
-  { name: "core_gate_action", title: "Evaluate an action", description: "Use this when you need Universal Core to evaluate an action; this never executes the action.", inputSchema: { type: "object", required: ["action_label", "action_type"], properties: { action_label: { type: "string", minLength: 1 }, action_type: { type: "string", minLength: 1 } }, additionalProperties: true }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:govern"] },
-  { name: "search", title: "Search shared work memory", description: "Use this when you need to search the authenticated tenant's redacted SkinHarmony work memory.", inputSchema: { type: "object", required: ["query"], properties: { query: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] },
-  { name: "fetch", title: "Fetch shared work memory document", description: "Use this when you need to read one search result from the authenticated tenant's redacted work memory.", inputSchema: { type: "object", required: ["id"], properties: { id: { type: "string", pattern: "^[a-f0-9]{24}$" } }, additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true }, scopes: ["core:read"] }
-];
 
 function challenge(config, error = "invalid_token", scope = "") {
   const metadata = `${config.publicUrl}/.well-known/oauth-protected-resource`;
@@ -23,6 +15,7 @@ export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
+  const visibleTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/healthz", (_req, res) => res.json({
@@ -32,7 +25,8 @@ export function createApp(config, options = {}) {
     mode: process.env.NODE_ENV || "development",
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
-    shared_memory_configured: Boolean(config.sharedMemoryRoot)
+    shared_memory_configured: Boolean(config.sharedMemoryRoot),
+    agent_workspace_configured: Boolean(config.agentWorkspaceRoot)
   }));
 
   const protectedResourceMetadata = (_req, res) => res.json({
@@ -70,7 +64,7 @@ export function createApp(config, options = {}) {
     try {
       if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: "0.1.0" } } });
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes } })) } });
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes } })) } });
       if (method === "tools/call") {
         const tool = TOOLS.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });

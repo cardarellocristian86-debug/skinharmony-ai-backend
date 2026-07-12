@@ -10,6 +10,15 @@ test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => 
   assert.equal(config.universalCoreUrl, "https://core.example.test");
 });
 
+test("keeps agent collaboration disabled until a persistent root is configured", () => {
+  const disabled = loadConfig({});
+  assert.equal(disabled.agentWorkspaceRoot, "");
+  const enabled = loadConfig({ AGENT_WORKSPACE_ROOT: "/var/data/skinharmony-core-mcp" });
+  assert.equal(enabled.agentWorkspaceRoot, "/var/data/skinharmony-core-mcp");
+  assert(enabled.supportedScopes.includes("workspace:write"));
+  assert(enabled.supportedScopes.includes("agent:coordinate"));
+});
+
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {
   const config = loadConfig({
     NODE_ENV: "production",

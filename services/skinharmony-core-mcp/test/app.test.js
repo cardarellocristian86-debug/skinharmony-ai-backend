@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createApp } from "../src/app.js";
+import { createApp, TOOLS } from "../src/app.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -14,7 +14,8 @@ const config = {
 };
 
 async function serve(run) {
-  const app = createApp(config, { handlers: { core_health: async () => ({ content: [{ type: "text", text: "ok" }] }) } });
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
+  const app = createApp(config, { handlers });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
@@ -44,8 +45,26 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   const body = await response.json();
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));
   assert(body.result.tools.every((tool) => tool.securitySchemes.every((scheme) => scheme.type === "oauth2")));
-  assert(body.result.tools.every((tool) => tool.annotations.readOnlyHint === true));
+  const readTools = body.result.tools.filter((tool) => tool.annotations.readOnlyHint === true);
+  const writeTools = body.result.tools.filter((tool) => tool.annotations.readOnlyHint === false);
+  assert(readTools.length > 0);
+  assert(writeTools.length > 0);
+  assert(writeTools.every((tool) => tool.securitySchemes[0].scopes.includes("core:govern")));
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
   assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
 }));
+
+test("does not advertise collaboration tools without registered handlers", async () => {
+  const app = createApp(config, { handlers: { core_health: async () => ({ content: [{ type: "text", text: "ok" }] }) } });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }) });
+    const body = await response.json();
+    assert.deepEqual(body.result.tools.map((tool) => tool.name), ["core_health"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
