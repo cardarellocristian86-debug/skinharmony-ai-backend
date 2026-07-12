@@ -30,6 +30,11 @@ export function loadConfig(env = process.env) {
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
+  const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
+  const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
+  if (chatgptTenantId && chatgptCoreKey && !universalCoreKeys[chatgptTenantId]) {
+    universalCoreKeys[chatgptTenantId] = chatgptCoreKey;
+  }
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
