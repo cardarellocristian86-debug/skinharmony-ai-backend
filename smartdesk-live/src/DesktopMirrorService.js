@@ -24,7 +24,7 @@ const EXPORTS_DIR = path.resolve(process.cwd(), "public", "exports");
 const DEFAULT_CENTER_ID = "center_admin";
 const DEFAULT_CENTER_NAME = "Privilege Parrucchieri";
 const DEFAULT_ADMIN_USERNAME = "cristian";
-const DEFAULT_ADMIN_PASSWORD = "fabiana88!";
+const BOOTSTRAP_ADMIN_PASSWORD = String(process.env.SMARTDESK_ADMIN_PASSWORD || "").trim();
 const DEFAULT_TRIAL_DAYS = 7;
 const DEFAULT_TRIAL_VERIFICATION_MINUTES = 30;
 const ANALYTICS_CACHE_TTL_MS = 120000;
@@ -6308,10 +6308,14 @@ class DesktopMirrorService {
     const users = this.usersRepository.list();
     const admin = users.find((item) => String(item.role || "").toLowerCase() === "superadmin");
     if (!admin) {
+      if (!BOOTSTRAP_ADMIN_PASSWORD) {
+        console.error("[SmartDesk] Nessun superadmin presente: configura SMARTDESK_ADMIN_PASSWORD per il bootstrap iniziale.");
+        return;
+      }
       this.usersRepository.create({
         id: makeId("user"),
         username: DEFAULT_ADMIN_USERNAME,
-        passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
+        passwordHash: hashPassword(BOOTSTRAP_ADMIN_PASSWORD),
         role: "superadmin",
         active: true,
         centerId: DEFAULT_CENTER_ID,
@@ -6324,20 +6328,22 @@ class DesktopMirrorService {
       });
       return;
     }
-    this.usersRepository.update(admin.id, (current) => ({
+    const current = admin;
+    const next = {
       ...current,
-      username: DEFAULT_ADMIN_USERNAME,
-      passwordHash: hashPassword(DEFAULT_ADMIN_PASSWORD),
       role: "superadmin",
-      active: true,
-      centerId: DEFAULT_CENTER_ID,
-      centerName: DEFAULT_CENTER_NAME,
-      planType: "active",
-      accountStatus: "active",
-      paymentStatus: "paid",
+      username: current.username || DEFAULT_ADMIN_USERNAME,
+      active: current.active !== false,
+      centerId: current.centerId || DEFAULT_CENTER_ID,
+      centerName: current.centerName || DEFAULT_CENTER_NAME,
+      planType: current.planType || "active",
+      accountStatus: current.accountStatus || "active",
+      paymentStatus: current.paymentStatus || "paid",
       activatedAt: current.activatedAt || nowIso(),
       updatedAt: nowIso()
-    }));
+    };
+    const changed = Object.entries(next).some(([key, value]) => current[key] !== value);
+    if (changed) this.usersRepository.update(admin.id, () => next);
   }
 
   ensureDefaultStaffForCenter(centerId, centerName = DEFAULT_CENTER_NAME) {

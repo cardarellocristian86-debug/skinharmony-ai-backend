@@ -1371,6 +1371,12 @@
 
   async function refreshUiLanguage(settingsPayload = null, options = {}) {
     const now = Date.now();
+    if (!settingsPayload && isPublicAuthRoute()) {
+      uiLanguage = normalizeLanguage(getStoredPublicLanguage() || document.documentElement.getAttribute("lang") || navigator.language || "it");
+      document.documentElement.setAttribute("lang", uiLanguage);
+      uiLanguageReady = true;
+      return uiLanguage;
+    }
     if (!settingsPayload && !options.force && uiLanguageRefreshPromise) return uiLanguageRefreshPromise;
     if (!settingsPayload && !options.force && now - uiLanguageLastRefreshAt < 4500) return Promise.resolve(uiLanguage);
     uiLanguageRefreshPromise = (async () => {
