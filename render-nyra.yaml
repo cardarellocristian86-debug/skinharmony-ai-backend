@@ -45,6 +45,16 @@ services:
         sync: false
       - key: NYRA_CORE_TENANT_ID
         value: "codexai"
+      - key: SMARTDESK_URL
+        value: "https://skinharmony-smartdesk-live.onrender.com"
+      - key: SMARTDESK_BRIDGE_API_KEY
+        sync: false
+      - key: WP_URL
+        value: "https://www.skinharmony.it"
+      - key: WP_USER
+        sync: false
+      - key: WP_APP_PASSWORD
+        sync: false
     disk:
       name: nyra-core-data
       mountPath: /var/data

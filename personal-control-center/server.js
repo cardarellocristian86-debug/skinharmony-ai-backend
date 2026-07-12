@@ -109,6 +109,7 @@ loadEnv();
 function nyraPersistentPath(relativePath) {
   const normalized = String(relativePath || "").replaceAll("\\", "/");
   return (
+    normalized === controlDataPath ||
     normalized.startsWith("personal-control-center/data/nyra-") ||
     normalized.startsWith("runtime/nyra-learning/nyra_") ||
     normalized.startsWith("universal-core/runtime/nyra/") ||
@@ -2035,9 +2036,10 @@ function buildJourneySourceReadiness(context = {}, store = loadNyraDecisionJourn
     || store.events.some((event) => event.stage === "commerce" && event.value?.cost !== null);
   return [
     { id: "analyzer", label: "Analisi ed evidenze", connected: journeyStages.has("analyzer"), detail: journeyStages.has("analyzer") ? "Eventi analisi ricevuti" : "Manca evento analisi con evidence" },
-    { id: "website", label: "Traffico sito", connected: Boolean(sources.website?.analytics || sources.website?.searchConsole || sources.website?.latest), detail: sources.website?.analytics ? "GA4 collegato" : sources.website?.searchConsole ? "Search Console collegata" : "Manca traffico sito" },
+    { id: "website", label: "Traffico sito", connected: Boolean(sources.website?.analytics || sources.website?.searchConsole), detail: sources.website?.analytics ? "GA4 collegato" : sources.website?.searchConsole ? "Search Console collegata" : "Manca traffico sito" },
+    { id: "website_content", label: "Contenuti WordPress", connected: Boolean(sources.website?.latest), detail: sources.website?.latest ? "WordPress collegato" : "Manca snapshot WordPress" },
     { id: "instagram", label: "Instagram", connected: sources.instagram?.status === "api_attivo", detail: sources.instagram?.status === "api_attivo" ? "Meta API attiva" : "Manca token Meta valido" },
-    { id: "smartdesk", label: "Smart Desk", connected: Boolean(sources.smartDesk?.latest), detail: sources.smartDesk?.latest ? "Snapshot gestionale disponibile" : "Manca sync Smart Desk" },
+    { id: "smartdesk", label: "Smart Desk", connected: Boolean(sources.smartDesk?.latest?.bridge?.connected), detail: sources.smartDesk?.latest?.bridge?.connected ? "Bridge dati Smart Desk attivo" : sources.smartDesk?.latest ? "Smart Desk raggiungibile ma bridge dati non attivo" : "Manca sync Smart Desk" },
     { id: "sales", label: "Vendite collegate", connected: Boolean((economics.sales || []).length || journeyStages.has("commerce")), detail: (economics.sales || []).length || journeyStages.has("commerce") ? "Vendite ricevute" : "Mancano vendite collegate ai lead" },
     { id: "margin", label: "Margine", connected: salesWithCosts, detail: salesWithCosts ? "Costi e margini disponibili" : "Mancano costi stimati" },
     { id: "inventory", label: "Magazzino", connected: Boolean((manualInventory.items || []).length), detail: (manualInventory.items || []).length ? "Anagrafica magazzino disponibile" : "Manca anagrafica magazzino" },
@@ -2545,7 +2547,7 @@ function summarizeDataSources() {
 
   return {
     website: {
-      status: website || searchConsole || ga4 ? "api_attivo" : "da_collegare",
+      status: ga4 || searchConsole ? "api_attivo" : website ? "contenuto_collegato" : "da_collegare",
       mode: "wordpress_search_console_ga4",
       latest: website,
       analytics: ga4,
@@ -2561,8 +2563,8 @@ function summarizeDataSources() {
       history: data.instagramSnapshots.slice(-20)
     },
     smartDesk: {
-      status: smartDesk ? "manuale_attivo" : "da_collegare_api",
-      mode: "snapshot_manuale_ora_api_dopo",
+      status: smartDesk?.bridge?.connected ? "api_attivo" : smartDesk ? "manuale_attivo" : "da_collegare_api",
+      mode: smartDesk?.bridge?.connected ? "smartdesk_bridge_read_only" : "snapshot_manuale_ora_api_dopo",
       liveUrl: "https://skinharmony-smartdesk-live.onrender.com",
       latest: smartDesk,
       history: data.smartDeskSnapshots.slice(-20)
@@ -2971,28 +2973,107 @@ function smartDeskLocalCounts() {
 
 async function syncSmartDeskSource() {
   const localCounts = smartDeskLocalCounts();
+  const smartDeskUrl = String(process.env.SMARTDESK_URL || "https://skinharmony-smartdesk-live.onrender.com").replace(/\/$/, "");
+  const bridgeKey = String(process.env.SMARTDESK_BRIDGE_API_KEY || process.env.SMARTDESK_BRIDGE_KEY || "").trim();
+  const bridgeHeaders = bridgeKey ? { "X-SkinHarmony-Bridge-Key": bridgeKey } : {};
   let liveHealth = null;
+  let bridgeSnapshot = null;
+  let bridgeError = "";
   try {
-    liveHealth = await fetchJson("https://skinharmony-smartdesk-live.onrender.com/api/health");
+    liveHealth = await fetchJson(`${smartDeskUrl}/api/health`, { headers: bridgeHeaders });
   } catch (_error) {
     try {
-      const response = await fetch("https://skinharmony-smartdesk-live.onrender.com/login");
+      const response = await fetch(`${smartDeskUrl}/login`);
       liveHealth = { loginStatus: response.status };
     } catch (error) {
       liveHealth = { error: error.message };
     }
   }
 
-  const snapshot = {
-    id: `smartdesk_api_${Date.now()}`,
-    source: "smartdesk_local_live",
-    date: new Date().toISOString(),
-    ...localCounts,
-    liveHealth,
-    note: "Conteggi locali Smart Desk + controllo raggiungibilita live. Dati tenant live completi richiedono endpoint autenticato."
-  };
+  if (bridgeKey) {
+    try {
+      bridgeSnapshot = await fetchJson(`${smartDeskUrl}/api/bridge/nyra-snapshot`, { headers: bridgeHeaders });
+    } catch (error) {
+      bridgeError = error.message;
+    }
+  } else {
+    bridgeError = "SMARTDESK_BRIDGE_API_KEY non configurata.";
+  }
 
   const data = loadControlData();
+  const journeyIngest = { received: 0, recorded: 0, duplicates: 0, rejected: 0 };
+  if (bridgeSnapshot?.ok) {
+    const salesById = new Map(data.sales.map((sale) => [String(sale.id || ""), sale]));
+    (Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : []).forEach((sale) => {
+      if (!sale.sale_id) return;
+      const profileId = sale.client_id ? journeyProfileId({ external_id: sale.client_id }) : "";
+      salesById.set(String(sale.sale_id), {
+        id: String(sale.sale_id),
+        profileId,
+        price: Number(sale.amount || 0),
+        estimatedCost: sale.cost === null || sale.cost === undefined ? 0 : Number(sale.cost),
+        margin: sale.amount !== null && sale.cost !== null ? Number(sale.amount || 0) - Number(sale.cost || 0) : null,
+        product: String(sale.product_id || ""),
+        campaignId: String(sale.campaign_id || ""),
+        date: String(sale.occurred_at || new Date().toISOString()),
+        source: "smartdesk_bridge"
+      });
+    });
+    data.sales = [...salesById.values()];
+
+    const inventoryById = new Map(data.inventoryItems.map((item) => [String(item.id || ""), item]));
+    (Array.isArray(bridgeSnapshot.inventory) ? bridgeSnapshot.inventory : []).forEach((item) => {
+      if (!item.product_id) return;
+      inventoryById.set(String(item.product_id), {
+        id: String(item.product_id),
+        sku: String(item.sku || ""),
+        initialQuantity: Number(item.quantity || 0),
+        minQuantity: Number(item.min_quantity || 0),
+        unitCost: item.cost === null || item.cost === undefined ? 0 : Number(item.cost),
+        salePrice: item.sale_price === null || item.sale_price === undefined ? 0 : Number(item.sale_price),
+        source: "smartdesk_bridge",
+        updatedAt: new Date().toISOString()
+      });
+    });
+    data.inventoryItems = [...inventoryById.values()];
+
+    const journeyStore = loadNyraDecisionJourney();
+    (Array.isArray(bridgeSnapshot.journey_events) ? bridgeSnapshot.journey_events : []).forEach((event) => {
+      journeyIngest.received += 1;
+      const normalized = normalizeJourneyEvent({
+        ...event,
+        external_id: event.profile_external_id,
+        source: event.source || "smartdesk"
+      });
+      if (normalized.error) {
+        journeyIngest.rejected += 1;
+        return;
+      }
+      const result = recordNyraDecisionJourneyEvent(journeyStore, normalized);
+      if (result.duplicate) journeyIngest.duplicates += 1;
+      else journeyIngest.recorded += 1;
+    });
+    if (journeyIngest.recorded > 0) saveNyraDecisionJourney(journeyStore);
+  }
+
+  const snapshot = {
+    id: `smartdesk_api_${Date.now()}`,
+    source: bridgeSnapshot?.ok ? "smartdesk_live_bridge" : "smartdesk_local_live",
+    date: new Date().toISOString(),
+    ...(bridgeSnapshot?.counts || localCounts),
+    liveHealth,
+    bridge: {
+      configured: Boolean(bridgeKey),
+      connected: Boolean(bridgeSnapshot?.ok),
+      error: bridgeError,
+      dataQuality: bridgeSnapshot?.data_quality || null,
+      journeyIngest
+    },
+    note: bridgeSnapshot?.ok
+      ? "Snapshot Smart Desk letto tramite bridge autorizzato, senza dati personali in chiaro."
+      : "Conteggi locali Smart Desk + controllo raggiungibilita live. Bridge tenant non disponibile."
+  };
+
   data.smartDeskSnapshots.push(snapshot);
   saveControlData(data);
   return snapshot;
@@ -3274,9 +3355,9 @@ function buildDailySeries(items, dateGetter, reducer) {
 
 function summarizeDataQuality(sources, economics, manualInventory) {
   const checks = [
-    { key: "website", label: "Sito", ok: Boolean(sources.website?.analytics || sources.website?.searchConsole || sources.website?.latest), detail: sources.website?.analytics ? "GA4 collegato" : sources.website?.searchConsole ? "Search Console collegata" : sources.website?.latest ? "WordPress collegato" : "Manca traffico sito" },
+    { key: "website", label: "Sito", ok: Boolean(sources.website?.analytics || sources.website?.searchConsole), detail: sources.website?.analytics ? "GA4 collegato" : sources.website?.searchConsole ? "Search Console collegata" : sources.website?.latest ? "WordPress collegato, traffico non ancora disponibile" : "Manca traffico sito" },
     { key: "instagram", label: "Instagram", ok: sources.instagram?.status === "api_attivo", detail: sources.instagram?.status === "api_attivo" ? "Meta API attiva" : "Manca token Meta valido" },
-    { key: "smartdesk", label: "Gestionale", ok: Boolean(sources.smartDesk?.latest), detail: sources.smartDesk?.latest ? "Smart Desk letto" : "Manca sync Smart Desk" },
+    { key: "smartdesk", label: "Gestionale", ok: Boolean(sources.smartDesk?.latest?.bridge?.connected), detail: sources.smartDesk?.latest?.bridge?.connected ? "Smart Desk bridge letto" : sources.smartDesk?.latest ? "Smart Desk raggiungibile ma bridge dati non attivo" : "Manca sync Smart Desk" },
     { key: "sales", label: "Vendite", ok: economics.sales.length > 0, detail: economics.sales.length ? `${economics.sales.length} vendite collegate` : "Mancano vendite collegate ai lead" },
     { key: "margin", label: "Margine", ok: economics.sales.some((sale) => Number(sale.estimatedCost || 0) > 0), detail: economics.sales.some((sale) => Number(sale.estimatedCost || 0) > 0) ? "Costi stimati presenti" : "Mancano costi stimati" },
     { key: "inventory", label: "Magazzino", ok: manualInventory.items.length > 0, detail: manualInventory.items.length ? `${manualInventory.items.length} prodotti caricati` : "Manca anagrafica magazzino" }
@@ -3600,8 +3681,8 @@ function buildNyraConfidenceLayer(context = buildControlContext()) {
     },
     {
       label: "Smart Desk",
-      state: context.sources.smartDesk?.latest ? "reale" : "incompleto",
-      detail: context.sources.smartDesk?.latest ? "Snapshot gestionale disponibile." : "Manca snapshot recente del gestionale."
+      state: context.sources.smartDesk?.latest?.bridge?.connected ? "reale" : "incompleto",
+      detail: context.sources.smartDesk?.latest?.bridge?.connected ? "Bridge gestionale disponibile." : "Manca bridge dati recente del gestionale."
     },
     {
       label: "Revenue",
@@ -3688,7 +3769,7 @@ function buildNyraControlDirective(context = buildControlContext()) {
     segmented,
     financeDockReadiness: {
       economicFeedReady: context.economics.sales.length > 0,
-      runtimeFeedReady: Boolean(context.sources.render?.latest && context.sources.smartDesk?.latest),
+      runtimeFeedReady: Boolean(context.sources.render?.latest && context.sources.smartDesk?.latest?.bridge?.connected),
       flowFeedReady: Boolean(context.campaigns.length && context.funnel?.total),
       note: "Il desk finanziario deve entrare come workspace separato, non come card dispersa nella home."
     }

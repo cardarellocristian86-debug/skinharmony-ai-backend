@@ -10,6 +10,7 @@ const { spawn } = require("node:child_process");
 const repoRoot = path.resolve(__dirname, "../..");
 const nyraPort = 33000 + Math.floor(Math.random() * 1000);
 const corePort = nyraPort + 1;
+const smartDeskPort = nyraPort + 2;
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-nyra-runtime-")).replace(/\\/g, "/");
 const auth = `Basic ${Buffer.from("test-user:test-password").toString("base64")}`;
 
@@ -55,6 +56,37 @@ const coreServer = http.createServer((req, res) => {
         output: { risk: { band: "medium", score: 55 } },
         evidence: { evidence_id: "ev_test_preview" },
       });
+    });
+    return;
+  }
+  jsonResponse(res, 404, { ok: false, error: "not_found" });
+});
+
+const smartDeskServer = http.createServer((req, res) => {
+  assert.equal(req.headers["x-skinharmony-bridge-key"], "smartdesk-test-key");
+  if (req.url === "/api/health") {
+    jsonResponse(res, 200, { ok: true, service: "smartdesk-test", bridge: { scopes: ["stats"] } });
+    return;
+  }
+  if (req.url === "/api/bridge/nyra-snapshot") {
+    jsonResponse(res, 200, {
+      ok: true,
+      source: "smartdesk_live_bridge",
+      counts: { clients: 1, appointments: 1, sales: 1, inventoryItems: 1 },
+      data_quality: { score: 0.8, state: "alto", status: "buono", metrics: {} },
+      sales: [{ sale_id: "sale-smoke", client_id: "client-smoke", product_id: "product-smoke", amount: 120, cost: 35, currency: "EUR", occurred_at: "2026-07-11T10:00:00Z" }],
+      inventory: [{ product_id: "product-smoke", sku: "SMOKE-1", quantity: 4, min_quantity: 1, cost: 35, sale_price: 120 }],
+      journey_events: [{
+        stage: "commerce",
+        event_type: "sale_recorded",
+        status: "ready",
+        source: "smartdesk",
+        external_event_id: "sale:sale-smoke",
+        profile_external_id: "client-smoke",
+        occurred_at: "2026-07-11T10:00:00Z",
+        value: { currency: "EUR", amount: 120, cost: 35 },
+        metadata: { sale_id: "sale-smoke", product_id: "product-smoke" },
+      }],
     });
     return;
   }
@@ -115,6 +147,7 @@ function waitForHealth(child) {
 
 async function main() {
   await new Promise((resolve) => coreServer.listen(corePort, "127.0.0.1", resolve));
+  await new Promise((resolve) => smartDeskServer.listen(smartDeskPort, "127.0.0.1", resolve));
   const child = spawn(process.execPath, ["personal-control-center/server.js"], {
     cwd: repoRoot,
     env: {
@@ -131,6 +164,8 @@ async function main() {
       NYRA_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_CORE_KEY: "core-test-key",
       NYRA_CORE_TENANT_ID: "tenant-test",
+      SMARTDESK_URL: `http://127.0.0.1:${smartDeskPort}`,
+      SMARTDESK_BRIDGE_API_KEY: "smartdesk-test-key",
       NYRA_WORLD_PAPER_AUTOSTART: "false",
       NYRA_FINANCE_LIVE_AUTOSTART: "false",
     },
@@ -186,6 +221,17 @@ async function main() {
     const coreStatus = await request("/api/nyra/core/status", { auth: true });
     assert.equal(coreStatus.status, 200);
     assert.equal(coreStatus.json.core.reachable, true);
+
+    const smartDeskSync = await request("/api/sync/smartdesk", { method: "POST", auth: true, body: {} });
+    assert.equal(smartDeskSync.status, 200);
+    assert.equal(smartDeskSync.json.snapshot.bridge.connected, true);
+    assert.equal(smartDeskSync.json.snapshot.bridge.journeyIngest.recorded, 1);
+    assert.equal(smartDeskSync.json.snapshot.sales, 1);
+
+    const syncedJourneyReport = await request("/api/nyra/decision-to-value/report", { auth: true });
+    assert.equal(syncedJourneyReport.status, 200);
+    assert.equal(syncedJourneyReport.json.report.event_count, 1);
+    assert.equal(syncedJourneyReport.json.report.profile_count, 1);
 
     const journeyPreview = await request("/api/nyra/decision-to-value/events", {
       method: "POST",
@@ -250,8 +296,8 @@ async function main() {
 
     const journeyReport = await request("/api/nyra/decision-to-value/report", { auth: true });
     assert.equal(journeyReport.status, 200);
-    assert.equal(journeyReport.json.report.event_count, 1);
-    assert.equal(journeyReport.json.report.profile_count, 1);
+    assert.equal(journeyReport.json.report.event_count, 2);
+    assert.equal(journeyReport.json.report.profile_count, 2);
 
     const preview = await request("/api/nyra/decision-to-value/preview", {
       method: "POST",
@@ -277,11 +323,12 @@ async function main() {
         "authenticated_control",
         "runtime_readiness",
         "persistent_learning_path",
-      "feedback_endpoint",
-      "core_status_bridge",
-      "decision_journey_preview_commit_idempotency",
-      "decision_journey_report",
-      "decision_to_value_preview",
+        "feedback_endpoint",
+        "core_status_bridge",
+        "smartdesk_bridge_sync",
+        "decision_journey_preview_commit_idempotency",
+        "decision_journey_report",
+        "decision_to_value_preview",
       ],
       learning_rules: learningAfter.json.learning_rules,
       missing_preview_stages: preview.json.readiness.missing,
@@ -295,6 +342,7 @@ async function main() {
       ]);
     }
     await new Promise((resolve) => coreServer.close(resolve));
+    await new Promise((resolve) => smartDeskServer.close(resolve));
     if (stdout.trim()) process.stdout.write(stdout);
     if (stderr.trim()) process.stderr.write(stderr);
   }

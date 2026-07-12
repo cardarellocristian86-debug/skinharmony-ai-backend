@@ -414,6 +414,133 @@ function findBridgeAccess(req) {
   return { ok: false, code: "invalid_bridge_key" };
 }
 
+function bridgeSession() {
+  return {
+    role: "superadmin",
+    username: "nyra_bridge",
+    centerId: service?.getCenterId?.() || "center_admin",
+    centerName: service?.getCenterName?.() || "Privilege Parrucchieri",
+    subscriptionPlan: "gold",
+    accessState: "active"
+  };
+}
+
+function bridgeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function bridgeMoney(row, keys = []) {
+  for (const key of keys) {
+    const value = bridgeNumber(row?.[key]);
+    if (value === null) continue;
+    return key.toLowerCase().endsWith("cents") ? value / 100 : value;
+  }
+  return null;
+}
+
+function buildNyraBridgeSnapshot(bridge) {
+  const session = bridgeSession();
+  const centerId = session.centerId;
+  const scoped = (repository) => service.getCenterRepositoryItems(repository, centerId);
+  const clients = scoped(service.clientsRepository);
+  const appointments = scoped(service.appointmentsRepository);
+  const treatments = scoped(service.treatmentsRepository);
+  const sales = scoped(service.salesRepository);
+  const inventory = scoped(service.inventoryRepository);
+  const consentEvents = clients
+    .filter((client) => client.consentStatus === "granted" || client.consentGiven === true || client.consentAt)
+    .map((client) => ({
+      stage: "consent",
+      event_type: "consent_granted",
+      status: "ready",
+      source: "smartdesk",
+      external_event_id: `consent:${client.id}`,
+      profile_external_id: client.id,
+      occurred_at: client.consentAt || client.updatedAt || client.createdAt || new Date().toISOString(),
+      metadata: { consent_basis: client.consentBasis || "smartdesk_record" }
+    }));
+  const bookingEvents = appointments
+    .filter((appointment) => appointment.clientId)
+    .filter((appointment) => !["cancelled", "no_show"].includes(String(appointment.status || "").toLowerCase()))
+    .map((appointment) => ({
+      stage: "booking",
+      event_type: "booking_recorded",
+      status: ["completed", "confirmed", "booked", "scheduled"].includes(String(appointment.status || "").toLowerCase()) ? "ready" : "pending",
+      source: "smartdesk",
+      external_event_id: `booking:${appointment.id}`,
+      profile_external_id: appointment.clientId,
+      occurred_at: appointment.startAt || appointment.createdAt || new Date().toISOString(),
+      metadata: { booking_id: appointment.id, protocol_id: appointment.protocolId || "" }
+    }));
+  const treatmentEvents = treatments
+    .filter((treatment) => treatment.clientId)
+    .map((treatment) => ({
+      stage: "treatment",
+      event_type: "treatment_recorded",
+      status: ["completed", "done", "closed"].includes(String(treatment.status || "").toLowerCase()) ? "ready" : "pending",
+      source: "smartdesk",
+      external_event_id: `treatment:${treatment.id}`,
+      profile_external_id: treatment.clientId,
+      occurred_at: treatment.completedAt || treatment.updatedAt || treatment.createdAt || new Date().toISOString(),
+      metadata: { treatment_id: treatment.id, protocol_id: treatment.protocolId || "" }
+    }));
+  const saleRows = sales.map((sale) => ({
+    sale_id: sale.id,
+    client_id: sale.clientId || "",
+    product_id: sale.productId || sale.product || "",
+    amount: bridgeMoney(sale, ["amount", "price", "priceCents", "amountCents"]),
+    cost: bridgeMoney(sale, ["cost", "estimatedCost", "costCents", "estimatedCostCents"]),
+    currency: sale.currency || "EUR",
+    occurred_at: sale.date || sale.paidAt || sale.createdAt || new Date().toISOString(),
+    campaign_id: sale.campaignId || ""
+  }));
+  const saleEvents = saleRows
+    .filter((sale) => sale.client_id)
+    .map((sale) => ({
+      stage: "commerce",
+      event_type: "sale_recorded",
+      status: "ready",
+      source: "smartdesk",
+      external_event_id: `sale:${sale.sale_id}`,
+      profile_external_id: sale.client_id,
+      occurred_at: sale.occurred_at,
+      value: { currency: sale.currency, amount: sale.amount, cost: sale.cost },
+      metadata: { sale_id: sale.sale_id, product_id: sale.product_id, campaign_id: sale.campaign_id }
+    }));
+  const inventoryRows = inventory.map((item) => ({
+    product_id: item.id || item.sku || "",
+    sku: item.sku || "",
+    quantity: bridgeNumber(item.quantity ?? item.stockQuantity ?? item.stock) || 0,
+    min_quantity: bridgeNumber(item.minQuantity ?? item.thresholdQuantity) || 0,
+    cost: bridgeMoney(item, ["costCents", "unitCostCents", "purchaseCostCents", "cost"]),
+    sale_price: bridgeMoney(item, ["salePriceCents", "retailPriceCents", "salePrice"])
+  }));
+  const dataQuality = service.getDataQuality(session, { summaryOnly: true });
+  return {
+    ok: true,
+    source: "smartdesk_live_bridge",
+    generated_at: new Date().toISOString(),
+    bridge: {
+      id: bridge.id,
+      label: bridge.label,
+      plan: bridge.plan,
+      scopes: bridge.scopes
+    },
+    center_id: centerId,
+    counts: service.getCenterControlStats(centerId),
+    data_quality: {
+      score: Number(dataQuality.score || 0),
+      state: dataQuality.state || "unknown",
+      status: dataQuality.status || "unknown",
+      metrics: dataQuality.metrics || {}
+    },
+    sales: saleRows,
+    inventory: inventoryRows,
+    journey_events: [...consentEvents, ...bookingEvents, ...treatmentEvents, ...saleEvents]
+  };
+}
+
 function requireAuth(req, res, next) {
   const session = service.getSession(readToken(req));
   if (!session) {
@@ -630,6 +757,37 @@ app.get("/api/health", (req, res) => {
       scopes: bridge.scopes
     }
   });
+});
+
+app.get("/api/bridge/nyra-snapshot", (req, res) => {
+  const bridge = findBridgeAccess(req);
+  if (!bridge.ok) {
+    return res.status(401).json({
+      success: false,
+      ok: false,
+      code: bridge.code,
+      message: "Smart Desk Bridge non autorizzato."
+    });
+  }
+  if (!bridge.scopes.includes("stats")) {
+    return res.status(403).json({
+      success: false,
+      ok: false,
+      code: "bridge_scope_missing",
+      requiredScope: "stats"
+    });
+  }
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    return res.json(buildNyraBridgeSnapshot(bridge));
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      ok: false,
+      code: "nyra_snapshot_failed",
+      message: error instanceof Error ? error.message : "Snapshot Smart Desk non disponibile."
+    });
+  }
 });
 
 app.get("/", (_req, res) => {
