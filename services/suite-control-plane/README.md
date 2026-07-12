@@ -122,6 +122,14 @@ SUITE_CONTROL_STORAGE_ROOT=/var/data/suite-control-plane
 
 Se `SUITE_CONTROL_STORAGE_ROOT` non è presente, il servizio usa memoria volatile. Con disco Render montato su `/var/data`, nodi, snapshot, evidence, dispatch runbook e artifact restano disponibili dopo restart.
 
+Liveness nodi:
+
+```text
+SUITE_NODE_STALE_AFTER_MS=900000
+```
+
+Un nodo con ultimo heartbeat più vecchio della soglia viene esposto come `stale`, abbassa la readiness e blocca i preview/dispatch dei runbook finché non arriva un nuovo heartbeat. L'attività storica, uno snapshot o un artifact non sostituiscono il heartbeat.
+
 Health check:
 
 ```text

@@ -656,6 +656,31 @@ try {
   assert.equal(overview.body.overview.dispatches_total, 4);
   assert.equal(overview.body.overview.runbook_artifacts_total, 1);
 
+  const staleNode = storage.dashboard("wp_test_node").node;
+  const staleAt = new Date(Date.now() - (16 * 60 * 1000)).toISOString();
+  staleNode.status = "online";
+  staleNode.last_seen_at = staleAt;
+  staleNode.latest_heartbeat.received_at = staleAt;
+  const staleDashboard = await request("/api/suite/control-plane/dashboard", { headers });
+  assert.equal(staleDashboard.response.status, 200);
+  assert.equal(staleDashboard.body.dashboard.totals.ready, 0);
+  assert.equal(staleDashboard.body.dashboard.totals.warning, 1);
+  assert.equal(staleDashboard.body.dashboard.tenants[0].nodes[0].status, "stale");
+  assert.equal(staleDashboard.body.dashboard.tenants[0].nodes[0].readiness.status, "warning");
+  assert.ok(staleDashboard.body.dashboard.tenants[0].nodes[0].readiness.missing.includes("heartbeat_fresh"));
+
+  const stalePreview = await request("/api/suite/runbooks/preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "plugin_update_preflight",
+      node_id: "wp_test_node",
+    }),
+  });
+  assert.equal(stalePreview.response.status, 200);
+  assert.equal(stalePreview.body.preview.state, "blocked_until_node_ready");
+  assert.deepEqual(stalePreview.body.preview.blocking, ["node_not_online"]);
+
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-suite-control-"));
   process.env.SUITE_CONTROL_STORAGE_ROOT = storageRoot;
   const persistedOne = createSuiteControlPlane();

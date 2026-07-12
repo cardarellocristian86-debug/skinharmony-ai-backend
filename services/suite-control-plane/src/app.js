@@ -4,8 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 
-const SERVICE_VERSION = "0.4.7-marketing-journey-dispatch";
+const SERVICE_VERSION = "0.4.8-live-node-readiness";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
+const DEFAULT_NODE_STALE_AFTER_MS = 15 * 60 * 1000;
+const NODE_STALE_AFTER_MS = Math.max(
+  60 * 1000,
+  Number(process.env.SUITE_NODE_STALE_AFTER_MS || DEFAULT_NODE_STALE_AFTER_MS),
+);
 const GOOGLE_CONNECTOR_SCOPES = [
   "google_ads.readonly",
   "analytics.readonly",
@@ -222,6 +227,16 @@ function uniqueValues(values) {
   return [...new Set(values.map(String).map((item) => item.trim()).filter(Boolean))];
 }
 
+function nodeHeartbeatFresh(node, now = Date.now()) {
+  const heartbeatAt = Date.parse(node?.latest_heartbeat?.received_at || node?.last_seen_at || "");
+  return Number.isFinite(heartbeatAt) && now - heartbeatAt <= NODE_STALE_AFTER_MS;
+}
+
+function nodeStatus(node) {
+  const status = String(node?.status || "registered");
+  return status === "online" && !nodeHeartbeatFresh(node) ? "stale" : status;
+}
+
 function loadNyraSuiteBranchMap() {
   try {
     if (fs.existsSync(NYRA_SUITE_BRANCH_MAP_PATH)) {
@@ -254,6 +269,7 @@ function nodeReadiness(node) {
   const controlPlane = node?.latest_snapshot?.control_plane || {};
   const checks = {
     heartbeat: Boolean(node?.latest_heartbeat),
+    heartbeat_fresh: nodeHeartbeatFresh(node),
     snapshot: Boolean(node?.latest_snapshot),
     evidence: Number(node?.evidence_count || 0) > 0,
     change_impact_contract: Boolean(node?.latest_snapshot?.change_impact_orchestration),
@@ -275,7 +291,7 @@ function nodeReadiness(node) {
     missing,
     critical_issues: criticalIssues,
     next_actions: [
-      ...(checks.heartbeat ? [] : ["send_node_heartbeat"]),
+      ...(checks.heartbeat && checks.heartbeat_fresh ? [] : ["send_node_heartbeat"]),
       ...(checks.snapshot ? [] : ["send_node_snapshot"]),
       ...(checks.change_impact_contract ? [] : ["attach_change_impact_contract"]),
       ...(checks.manifest_integrity ? [] : ["verify_release_manifest_integrity"]),
@@ -686,7 +702,7 @@ function getRunbook(runbookId) {
 }
 
 function buildRunbookPreview(runbook, node) {
-  const nodeOnline = node && node.status === "online";
+  const nodeOnline = node && nodeStatus(node) === "online";
   const hasSnapshot = Boolean(node && node.latest_snapshot);
   const blocking = [];
   if (!node) blocking.push("node_not_registered");
@@ -2062,7 +2078,11 @@ function createMemoryStorage(options = {}) {
       const node = nodes.get(sanitizeId(nodeId, "node"));
       if (!node) return null;
       return {
-        node,
+        node: {
+          ...node,
+          status: nodeStatus(node),
+          heartbeat_fresh: nodeHeartbeatFresh(node),
+        },
         recent_events: node.events.slice(0, 50),
         evidence: evidence.filter((item) => item.node_id === node.node_id).slice(0, 50),
         dispatches: dispatches.filter((item) => item.node_id === node.node_id).slice(0, 50),
@@ -2073,7 +2093,7 @@ function createMemoryStorage(options = {}) {
       const allNodes = Array.from(nodes.values());
       return {
         nodes_total: allNodes.length,
-        nodes_online: allNodes.filter((node) => node.status === "online").length,
+        nodes_online: allNodes.filter((node) => nodeStatus(node) === "online").length,
         evidence_total: evidence.length,
         dispatches_total: dispatches.length,
         runbook_artifacts_total: artifacts.length,
@@ -2082,7 +2102,8 @@ function createMemoryStorage(options = {}) {
           .map((node) => ({
             node_id: node.node_id,
             tenant_id: node.tenant_id,
-            status: node.status,
+            status: nodeStatus(node),
+            heartbeat_fresh: nodeHeartbeatFresh(node),
             last_seen_at: node.last_seen_at,
             heartbeat_count: node.heartbeat_count,
             snapshot_count: node.snapshot_count,
@@ -2099,7 +2120,8 @@ function createMemoryStorage(options = {}) {
       const readiness = tenantNodes.map((node) => ({
         node_id: node.node_id,
         tenant_id: node.tenant_id,
-        status: node.status,
+        status: nodeStatus(node),
+        heartbeat_fresh: nodeHeartbeatFresh(node),
         runtime_mode: node.runtime_mode,
         topology: node.topology,
         last_seen_at: node.last_seen_at,
@@ -2117,7 +2139,7 @@ function createMemoryStorage(options = {}) {
         tenant_id: tenantKey,
         generated_at: nowIso(),
         nodes_total: tenantNodes.length,
-        nodes_online: tenantNodes.filter((node) => node.status === "online").length,
+        nodes_online: tenantNodes.filter((node) => nodeStatus(node) === "online").length,
         site_events: this.siteEventsSummary(tenantKey, 30),
         commerce: this.commerceSummary(tenantKey),
         readiness_status: blocked ? "blocked" : warnings || !tenantNodes.length ? "warning" : "ready",
@@ -2380,6 +2402,10 @@ export function createSuiteControlPlane(options = {}) {
       version: SERVICE_VERSION,
       storage_mode: storage.mode,
       storage_persistent: storage.mode === "file",
+      node_liveness: {
+        stale_after_ms: NODE_STALE_AFTER_MS,
+        stale_after_minutes: Number((NODE_STALE_AFTER_MS / 60000).toFixed(1)),
+      },
       universal_core: coreClient.status(),
       generated_at: nowIso(),
     });

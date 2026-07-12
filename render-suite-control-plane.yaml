@@ -15,5 +15,11 @@ services:
         value: production
       - key: SUITE_CONTROL_STORAGE_ROOT
         value: /var/data/suite-control-plane
+      - key: SUITE_NODE_STALE_AFTER_MS
+        value: "900000"
+      - key: UNIVERSAL_CORE_TENANT_ID
+        value: skinharmony-suite
+      - key: UNIVERSAL_CORE_KEY
+        sync: false
       - key: SUITE_CONTROL_PLANE_API_KEY
         sync: false
