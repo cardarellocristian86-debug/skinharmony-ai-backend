@@ -3095,6 +3095,15 @@ async function syncSmartDeskSource() {
       tenantId: process.env.NYRA_CORE_TENANT_ID || "codexai",
       centerId: "center_admin"
     });
+    data.smartDeskSnapshots = data.smartDeskSnapshots.map((snapshot) => (
+      snapshot?.source === "smartdesk_live_bridge" && (!snapshot.tenant_id || !snapshot.center_id)
+        ? {
+          ...snapshot,
+          tenant_id: tenantScope.tenantId,
+          center_id: tenantScope.centerId,
+        }
+        : snapshot
+    ));
     const salesById = new Map(data.sales.map((sale) => [String(sale.id || ""), sale]));
     const directSales = Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : [];
     const paymentSales = directSales.length
