@@ -1,13 +1,6 @@
-import { createCoreMcpApp } from "./app.js";
+import { createApp } from "./app.js";
+import { loadConfig } from "./config.js";
 
-const port = Number(process.env.PORT || 8790);
-const host = String(process.env.HOST || "0.0.0.0");
-const app = createCoreMcpApp({ host });
-
-const server = app.listen(port, host, () => {
-  console.log(`[SkinHarmonyCoreMCP] listening on ${host}:${port}`);
-});
-
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
-}
+const config = loadConfig();
+const app = createApp(config);
+app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));
