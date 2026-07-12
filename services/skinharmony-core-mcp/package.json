@@ -1,6 +1,7 @@
 {
   "name": "@skinharmony/core-mcp",
   "version": "0.1.0",
+  "description": "SkinHarmony MCP gateway with scoped Bearer and OAuth 2.1 authentication",
   "private": true,
   "type": "module",
   "engines": {
