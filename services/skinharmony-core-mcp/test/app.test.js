@@ -43,6 +43,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));
+  assert(body.result.tools.every((tool) => tool.securitySchemes.every((scheme) => scheme.type === "oauth2")));
   assert(body.result.tools.every((tool) => tool.annotations.readOnlyHint === true));
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);

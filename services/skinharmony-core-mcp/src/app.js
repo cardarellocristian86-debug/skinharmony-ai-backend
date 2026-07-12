@@ -2,10 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 
 function securitySchemes(scopes) {
-  return [
-    { type: "http", scheme: "bearer", description: "Scoped SkinHarmony Codex bearer token" },
-    { type: "oauth2", scopes }
-  ];
+  return [{ type: "oauth2", scopes }];
 }
 
 const TOOLS = [
