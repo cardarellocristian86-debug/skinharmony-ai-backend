@@ -45,6 +45,14 @@ services:
         sync: false
       - key: NYRA_CORE_TENANT_ID
         value: "codexai"
+      - key: NYRA_SUITE_CORE_URL
+        value: "https://skinharmony-universal-core.onrender.com"
+      - key: NYRA_SUITE_CORE_KEY
+        sync: false
+      - key: NYRA_SUITE_CORE_TENANT_ID
+        value: "skinharmony-suite"
+      - key: NYRA_SUITE_BRIDGE_KEY
+        sync: false
       - key: SMARTDESK_URL
         value: "https://skinharmony-smartdesk-live.onrender.com"
       - key: SMARTDESK_BRIDGE_API_KEY

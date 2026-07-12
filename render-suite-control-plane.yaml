@@ -21,5 +21,11 @@ services:
         value: skinharmony-suite
       - key: UNIVERSAL_CORE_KEY
         sync: false
+      - key: NYRA_SUITE_URL
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: NYRA_SUITE_TENANT_ID
+        value: skinharmony-suite
+      - key: NYRA_SUITE_BRIDGE_KEY
+        sync: false
       - key: SUITE_CONTROL_PLANE_API_KEY
         sync: false

@@ -55,7 +55,42 @@ const mockCoreClient = {
   },
 };
 
-const { app, storage } = createSuiteControlPlane({ coreClient: mockCoreClient });
+const mockNyraClient = {
+  status: () => ({
+    configured: true,
+    provider_url: "mock://nyra-suite",
+    tenant_id: "tenant_demo",
+    scope_status: "scoped",
+  }),
+  async coreStatus() {
+    return {
+      success: true,
+      http_status: 200,
+      tenant_id: "tenant_demo",
+      core: { reachable: true, status: "active", tier: "enterprise", active_branches: 4 },
+    };
+  },
+  async customerIntelligenceContract() {
+    return {
+      success: true,
+      http_status: 200,
+      contract: { schema_version: "customer_intelligence_contract_v1", tenant_id: "tenant_demo" },
+    };
+  },
+  async decisionPreview(payload) {
+    return {
+      success: true,
+      http_status: 200,
+      mode: "preview_only",
+      tenant_id: payload.tenant_id,
+      execution_allowed: false,
+      readiness: { missing: [] },
+      core: { decision_contract: { state: "attention" } },
+    };
+  },
+};
+
+const { app, storage } = createSuiteControlPlane({ coreClient: mockCoreClient, nyraClient: mockNyraClient });
 const server = app.listen(0);
 await new Promise((resolve) => server.once("listening", resolve));
 const port = server.address().port;
@@ -117,6 +152,7 @@ try {
   assert.equal(health.response.status, 200);
   assert.equal(health.body.ok, true);
   assert.equal(health.body.service, "skinharmony-suite-control-plane");
+  assert.equal(health.body.nyra_suite.scope_status, "scoped");
 
   const unauthorized = await request("/api/suite/overview");
   assert.equal(unauthorized.response.status, 401);
@@ -374,6 +410,25 @@ try {
   assert.ok(branchMap.body.branch_keys.includes("analytics_insight"));
   assert.ok(branchMap.body.branch_keys.includes("crm_sales"));
   assert.ok(branchMap.body.branch_keys.includes("render_operations"));
+
+  const nyraCoreStatus = await request("/api/suite/nyra/core/status", { headers });
+  assert.equal(nyraCoreStatus.response.status, 200);
+  assert.equal(nyraCoreStatus.body.source, "nyra_suite_bridge");
+  assert.equal(nyraCoreStatus.body.tenant_id, "tenant_demo");
+  assert.equal(nyraCoreStatus.body.nyra.core.tier, "enterprise");
+
+  const nyraContract = await request("/api/suite/nyra/customer-intelligence/contract", { headers });
+  assert.equal(nyraContract.response.status, 200);
+  assert.equal(nyraContract.body.contract.schema_version, "customer_intelligence_contract_v1");
+
+  const nyraPreview = await request("/api/suite/nyra/decision-preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ tenant_id: "tenant_demo", current_state: "analysis", next_action: "suite_review" }),
+  });
+  assert.equal(nyraPreview.response.status, 200);
+  assert.equal(nyraPreview.body.mode, "preview_only");
+  assert.equal(nyraPreview.body.execution_allowed, false);
 
   const googleStatus = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
   assert.equal(googleStatus.response.status, 200);
