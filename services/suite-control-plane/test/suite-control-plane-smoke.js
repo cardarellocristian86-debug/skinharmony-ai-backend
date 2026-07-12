@@ -5,7 +5,14 @@ import path from "node:path";
 import { createSuiteControlPlane } from "../src/app.js";
 
 const mockCoreClient = {
-  status: () => ({ configured: true, provider_url: "mock://universal-core", tenant_id: "tenant_demo" }),
+  status: (tenantId = "tenant_demo") => ({
+    configured: true,
+    provider_url: "mock://universal-core",
+    tenant_id: tenantId,
+    configured_tenant_id: "tenant_demo",
+    scope_match: tenantId === "tenant_demo",
+    scope_status: tenantId === "tenant_demo" ? "scoped" : "tenant_scope_mismatch",
+  }),
   async customerIntelligenceContract(tenantId) {
     return {
       success: true,
@@ -326,6 +333,7 @@ try {
   assert.equal(controlPlaneDashboard.body.dashboard.totals.nodes, 1);
   assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].tenant_id, "tenant_demo");
   assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].core_bridge.configured, true);
+  assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].core_bridge.scope_match, true);
   assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].readiness_status, "ready");
   assert.equal(controlPlaneDashboard.body.dashboard.tenants[0].readiness_summary.average_score, 100);
 
@@ -333,6 +341,7 @@ try {
   assert.equal(tenantDashboard.response.status, 200);
   assert.equal(tenantDashboard.body.dashboard.tenant_id, "tenant_demo");
   assert.equal(tenantDashboard.body.dashboard.core_bridge.configured, true);
+  assert.equal(tenantDashboard.body.dashboard.core_bridge.scope_match, true);
   assert.equal(tenantDashboard.body.dashboard.evidence.total, 1);
   assert.equal(tenantDashboard.body.dashboard.evidence.by_type.core_gate, 1);
   assert.equal(tenantDashboard.body.dashboard.nodes[0].readiness.status, "ready");
