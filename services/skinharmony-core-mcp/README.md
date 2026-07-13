@@ -149,3 +149,9 @@ The MCP service calls Universal Core server-to-server with a tenant-scoped key; 
 OAuth identities must contain the namespaced custom claim configured by `MCP_TENANT_CLAIM`. Requests without it are rejected. Tool inputs never accept a tenant override: the MCP derives `tenant_id` only from the verified identity and forwards it to Core. `UNIVERSAL_CORE_KEYS_JSON` maps each tenant to a separate server-side scoped Core key; an unmapped tenant is rejected. Legacy Codex bearer access is pinned to `MCP_DEFAULT_TENANT_ID` and may use `UNIVERSAL_CORE_KEY` as its compatibility key.
 
 For a single ChatGPT tenant, `MCP_CHATGPT_TENANT_ID` can associate the existing `CORE_MCP_KEY` secret with that exact tenant. An explicit entry in `UNIVERSAL_CORE_KEYS_JSON` always takes precedence.
+
+## Intelligence consolidation 0.5.1
+
+The full intelligence workflow now performs a Core analysis and then invokes the tenant-scoped Nyra bridge for interpretation. The response exposes an `intelligence_path` object showing whether Core analyzed and Nyra interpreted the result. Nyra interpretation never authorizes execution and degrades safely if the interpretation route is unavailable.
+
+Outcome tools accept optional `domain` and `horizon` fields so calibration can be compared by operating context.
