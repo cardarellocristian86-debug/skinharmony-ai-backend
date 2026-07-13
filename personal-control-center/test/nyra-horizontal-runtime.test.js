@@ -17,8 +17,12 @@ test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   assert.equal(contract.governed_learning.memory_source, "tenant_memory_fabric");
   assert.equal(contract.governed_learning.policy_activation_requires_verify, true);
   assert.equal(contract.governed_learning.free_weight_training, false);
+  assert.equal(contract.realtime_research.primary_provider, "host_chatgpt_or_codex_web");
+  assert.equal(contract.realtime_research.mcp_entrypoint, "nyra_research_plan");
+  assert.equal(contract.realtime_research.automatic_global_promotion, false);
   assert.equal(contract.authority.may_open_branches, false);
   assert.equal(contract.authority.may_begin_work_without_preflight, false);
+  assert.equal(contract.authority.may_promote_unreviewed_research, false);
   assert.equal(contract.authority.core_is_final_router, true);
   assert.equal(contract.mandatory_preflight.connected_tool_first, true);
 });
@@ -48,6 +52,9 @@ test("Nyra proposes work, parallel verification and learning branches as an agno
   assert(result.local_interpretation.parallel_proposal.waves.every((wave) => wave.length <= 6));
   assert.equal(result.local_interpretation.governed_learning.state, "proposed_waiting_for_core_verify");
   assert.equal(result.local_interpretation.governed_learning.policy_activation_requires_verify, true);
+  assert.equal(result.core_request.research_required, true);
+  assert.equal(result.local_interpretation.realtime_research.state, "proposed_waiting_for_core_plan");
+  assert.equal(result.local_interpretation.realtime_research.automatic_promotion, false);
   assert.equal(result.local_interpretation.execution_allowed, false);
 });
 

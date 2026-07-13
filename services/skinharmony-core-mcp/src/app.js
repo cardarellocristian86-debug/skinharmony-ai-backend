@@ -2,7 +2,8 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.5.1-intelligence-consolidation";
+const SERVER_VERSION = "0.6.0-full-intelligence-research-cortex";
+const SERVER_INSTRUCTIONS = "Call work_preflight before connected work. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function resolveWorkPreflight(result, payload) {
   const gate = result?.structuredContent?.gate;
@@ -81,7 +82,10 @@ export function createApp(config, options = {}) {
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
     agent_workspace_configured: Boolean(config.agentWorkspaceRoot),
-    memory_fabric_configured: Boolean(config.memoryFabricRoot)
+    memory_fabric_configured: Boolean(config.memoryFabricRoot),
+    research_cortex_configured: Boolean(config.researchCortexRoot),
+    openai_research_fallback_enabled: config.openaiResearchEnabled === true,
+    openai_research_fallback_configured: Boolean(config.openaiApiKey)
   }));
 
   const protectedResourceMetadata = (_req, res) => res.json({
@@ -117,9 +121,9 @@ export function createApp(config, options = {}) {
     }
     const { id = null, method, params = {} } = req.body || {};
     try {
-      if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: "work_preflight is the mandatory first step before connected AI work; Nyra interprets and Universal Core routes before execution." } });
+      if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes, "skinharmony/mandatory_first_tool": "work_preflight", "skinharmony/preflight_entrypoint": tool.name === "work_preflight" } })) } });
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes, "skinharmony/mandatory_first_tool": "work_preflight", "skinharmony/preflight_entrypoint": tool.name === "work_preflight", "skinharmony/research_entrypoint": tool.name === "nyra_research_plan", "skinharmony/research_sequence": "plan -> host web -> ingest -> query -> feedback" } })) } });
       if (method === "tools/call") {
         const tool = TOOLS.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });

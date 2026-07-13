@@ -1733,6 +1733,41 @@ function nyraSuiteCoreConfig() {
   };
 }
 
+function nyraResearchMcpConfig() {
+  return {
+    baseUrl: String(process.env.NYRA_RESEARCH_MCP_URL || "").trim().replace(/\/+$/, ""),
+  };
+}
+
+async function requestNyraResearchHealth(options = {}) {
+  const config = nyraResearchMcpConfig();
+  if (!config.baseUrl) return { ok: false, status: 503, code: "research_mcp_not_configured" };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs || 5000));
+  try {
+    const response = await fetch(`${config.baseUrl}/healthz`, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+    return { ok: response.ok && data.ok === true, status: response.status, data };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      code: error?.name === "AbortError" ? "research_mcp_timeout" : "research_mcp_unreachable",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function requestNyraCore(pathname, options = {}) {
   const config = options.coreConfig || nyraCoreConfig();
   if (!config.baseUrl || !config.apiKey || !config.tenantId) {
@@ -4466,9 +4501,17 @@ app.post("/api/nyra/runtime/interpret", async (req, res) => {
 
 app.get("/api/nyra/runtime/readiness", async (_req, res) => {
   const config = nyraCoreConfig();
-  const core = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`);
+  const researchConfig = nyraResearchMcpConfig();
+  const [core, researchHealth] = await Promise.all([
+    requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`),
+    requestNyraResearchHealth(),
+  ]);
   const learning = buildNyraTextLearningStatus();
-  const journeyStore = loadNyraDecisionJourney();
+  const journeyScope = journeyTenantScope({ tenant_id: config.tenantId });
+  const journeyReport = buildNyraDecisionJourneyReport({
+    tenantId: journeyScope.tenantId,
+    centerId: journeyScope.centerId,
+  });
   const authConfigured = basicCredentialsConfigured() || nyraBearerKeys().length > 0;
   const ready = Boolean(nyraStorageRoot && authConfigured && core.ok);
   res.status(ready ? 200 : 503).json({
@@ -4494,11 +4537,25 @@ app.get("/api/nyra/runtime/readiness", async (_req, res) => {
       status: core.ok ? "connected" : core.code || "unavailable",
       tenant_id: config.tenantId || null,
     },
+    research: {
+      configured: Boolean(researchConfig.baseUrl),
+      reachable: researchHealth.ok,
+      status: researchHealth.ok ? "connected" : researchHealth.code || `http_${researchHealth.status || 503}`,
+      service: researchHealth.ok ? researchHealth.data?.service || null : null,
+      version: researchHealth.ok ? researchHealth.data?.version || null : null,
+      primary_mode: "connected_ai_mcp_bridge",
+      primary_provider: "host_chatgpt_or_codex_web",
+      openai_fallback_enabled: researchHealth.ok && researchHealth.data?.openai_research_fallback_enabled === true,
+      openai_fallback_configured: researchHealth.ok && researchHealth.data?.openai_research_fallback_configured === true,
+      automatic_unreviewed_learning: false,
+    },
     learning,
     journey: {
       persisted: Boolean(nyraStorageRoot),
-      profile_count: Object.keys(journeyStore.profiles || {}).length,
-      event_count: journeyStore.events.length,
+      tenant_id: journeyScope.tenantId,
+      center_id: journeyScope.centerId,
+      profile_count: journeyReport.profile_count,
+      event_count: journeyReport.event_count,
       contract: "decision_to_value_journey_v1",
     },
     paper: {

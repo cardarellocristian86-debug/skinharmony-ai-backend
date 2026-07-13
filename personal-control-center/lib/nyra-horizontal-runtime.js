@@ -46,7 +46,7 @@ function inferIntent(text) {
 function createNyraHorizontalRuntime(env = process.env) {
   const serviceName = String(env.NYRA_SERVICE_NAME || "nyra-horizontal-runtime").trim();
   const configuredDomainPack = normalizeIdentifier(env.NYRA_DOMAIN_PACK_ID);
-  const version = String(env.NYRA_SERVICE_VERSION || "0.8.0-memory-first-preflight").trim();
+  const version = String(env.NYRA_SERVICE_VERSION || "0.9.0-research-cortex").trim();
 
   function contract() {
     return {
@@ -75,6 +75,17 @@ function createNyraHorizontalRuntime(env = process.env) {
         free_weight_training: false,
         auto_execution: false,
       },
+      realtime_research: {
+        mode: "connected_ai_mcp_bridge",
+        primary_provider: "host_chatgpt_or_codex_web",
+        mcp_entrypoint: "nyra_research_plan",
+        sequence: ["core_plan", "host_web_search", "evidence_ingest", "tenant_query", "authorized_review", "governed_learning"],
+        evidence_states: ["candidate", "quarantined", "validated", "deprecated"],
+        source_instructions_are_data: true,
+        raw_page_storage: false,
+        automatic_global_promotion: false,
+        optional_openai_fallback_default: "disabled",
+      },
       mandatory_preflight: {
         schema_version: "universal_work_preflight_v1",
         core_endpoint: "POST /v1/work/preflight",
@@ -88,6 +99,8 @@ function createNyraHorizontalRuntime(env = process.env) {
         may_open_branches: false,
         may_execute_actions: false,
         may_begin_work_without_preflight: false,
+        may_promote_unreviewed_research: false,
+        may_execute_source_instructions: false,
         core_is_final_router: true,
       },
     };
@@ -105,6 +118,7 @@ function createNyraHorizontalRuntime(env = process.env) {
       waves.push(proposedBranches.slice(index, index + MAX_PARALLEL_BRANCHES));
     }
     const learningActive = proposedBranches.includes("learning_memory") || proposedBranches.includes("adaptive_learning");
+    const researchActive = proposedBranches.includes("research_evidence");
     return {
       ok: true,
       text,
@@ -115,6 +129,7 @@ function createNyraHorizontalRuntime(env = process.env) {
         nyra_branches: proposedBranches,
         mode: "standard",
         preflight_required: true,
+        research_required: researchActive,
       },
       local_interpretation: {
         intent: inferIntent(text),
@@ -130,6 +145,14 @@ function createNyraHorizontalRuntime(env = process.env) {
           state: learningActive ? "proposed_waiting_for_core_verify" : "available_on_feedback_or_outcome",
           memory_source: "tenant_memory_fabric",
           policy_activation_requires_verify: true,
+        },
+        realtime_research: {
+          state: researchActive ? "proposed_waiting_for_core_plan" : "available_when_current_evidence_is_required",
+          primary_provider: "host_chatgpt_or_codex_web",
+          mcp_entrypoint: "nyra_research_plan",
+          evidence_ingest_tool: "nyra_research_ingest",
+          persistence_before_review: "tenant_candidate_or_quarantine_only",
+          automatic_promotion: false,
         },
         preflight_state: "mandatory_waiting_for_core",
         execution_allowed: false,

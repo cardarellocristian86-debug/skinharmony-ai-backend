@@ -63,7 +63,6 @@ test("Nyra network respects limits and exposes only explicit product branches", 
       assert.equal(item.subbranches.length, item.subbranch_count);
     }
   }
-
   const genericIds = nyraBranchCatalog("generic").branches.map((item) => item.id);
   assert.equal(genericIds.includes("suite_domain"), false);
   assert.equal(genericIds.includes("smartdesk_domain"), false);
@@ -72,6 +71,12 @@ test("Nyra network respects limits and exposes only explicit product branches", 
   assert(nyraBranchCatalog("suite").branches.some((item) => item.id === "suite_domain"));
   assert(nyraBranchCatalog("smartdesk").branches.some((item) => item.id === "smartdesk_domain"));
   assert(nyraBranchCatalog("analyzer").branches.some((item) => item.id === "analyzer_domain"));
+  const research = nyraBranchCatalog("generic").branches.find((item) => item.id === "research_evidence");
+  assert.equal(research.subbranch_count, 20);
+  assert(research.subbranches.includes("claim_evidence_graph"));
+  assert(research.subbranches.includes("temporal_truth"));
+  assert(research.subbranches.includes("knowledge_release_gate"));
+  assert(research.subbranches.includes("source_injection_defense"));
 });
 
 test("Core opens horizontal Nyra branches and isolates product-specific branches", () => {
@@ -205,4 +210,3 @@ test("domain and branch routing remains deterministic under repeated load", () =
   }
   assert(performance.now() - start < 2_000);
 });
-

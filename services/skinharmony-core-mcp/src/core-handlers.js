@@ -132,6 +132,24 @@ export function createCoreHandlers(config, options = {}) {
       }));
     },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    research_plan: async (args, identity) => textResult(await coreRequest("/v1/research/plan", identity.tenantId, {
+      method: "POST",
+      body: {
+        question: args.question || args.query,
+        decision_context: args.decision_context,
+        allowed_domains: args.allowed_domains,
+        ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
+        tenant_id: identity.tenantId,
+      },
+    })),
+    research_validate: async (args, identity) => textResult(await coreRequest("/v1/research/validate", identity.tenantId, {
+      method: "POST",
+      body: {
+        evidence_pack: args.evidence_pack || args,
+        ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
+        tenant_id: identity.tenantId,
+      },
+    })),
     nyra_interpret_request: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: args.message,
@@ -184,10 +202,10 @@ export function createCoreWriteGuard(config, options = {}) {
       action_label: action.action_label,
       action_type: action.action_type,
       target: action.target,
-      operation_class: "reversible_internal_collaboration_write",
-      external_side_effect: false,
-      contains_customer_data: false,
-      rollback_ready: true,
+      operation_class: action.operation_class || "reversible_internal_collaboration_write",
+      external_side_effect: action.external_side_effect === true,
+      contains_customer_data: action.contains_customer_data === true,
+      rollback_ready: action.rollback_ready === undefined ? action.external_side_effect !== true : action.rollback_ready === true,
       owner_confirmed: identity.ownerConfirmed === true,
       ...(identity.confirmationReference ? { confirmation_reference: identity.confirmationReference } : {})
     }, identity);
@@ -203,9 +221,11 @@ export function createCoreWriteGuard(config, options = {}) {
       (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
     const confirmationSatisfied = authorization.confirmation_satisfied === true ||
       (identity.ownerConfirmed === true && confirmationRequired);
+    const legacyExplicitlyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decision)
+      || mediation === "allow";
     const allowed = payload.authorization
-      ? authorization.allowed === true
-      : !blocked && (!confirmationRequired || confirmationSatisfied);
+      ? authorization.allowed === true && !blocked
+      : legacyExplicitlyAllowed && !blocked && (!confirmationRequired || confirmationSatisfied);
     return {
       allowed,
       decision,

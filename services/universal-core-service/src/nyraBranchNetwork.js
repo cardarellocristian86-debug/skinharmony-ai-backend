@@ -24,7 +24,8 @@ const NYRA_BRANCHES = Object.freeze([
   branch("research_evidence", "Research & Evidence", ["ricerca", "fonti", "evidenz", "verifica dati", "documentazione", "paper", "benchmark", "source"], [
     "research_question", "source_discovery", "source_authority", "source_freshness", "triangulation",
     "fact_extraction", "contradiction_detection", "uncertainty_register", "provenance_capture", "missing_evidence",
-    "dataset_relevance", "citation_constraints", "evidence_synthesis", "research_handoff",
+    "dataset_relevance", "citation_constraints", "evidence_synthesis", "research_handoff", "claim_evidence_graph",
+    "temporal_truth", "adversarial_source_review", "uncertainty_calibration", "knowledge_release_gate", "source_injection_defense",
   ], ["*"], { workPhase: "research", coreBranchBindings: ["research_evidence_intelligence"] }),
   branch("decision_reasoning", "Decision Reasoning", ["decidi", "scegli", "priorita", "opzioni", "strategia", "valuta"], [
     "intent_inference", "hypothesis_generation", "option_generation", "tradeoff_analysis", "priority_ranking",

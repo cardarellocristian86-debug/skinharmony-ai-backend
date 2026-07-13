@@ -1,5 +1,5 @@
-function annotations(readOnly, idempotent = false) {
-  return { readOnlyHint: readOnly, destructiveHint: false, openWorldHint: false, idempotentHint: idempotent };
+function annotations(readOnly, idempotent = false, openWorld = false) {
+  return { readOnlyHint: readOnly, destructiveHint: false, openWorldHint: openWorld, idempotentHint: idempotent };
 }
 
 const ownerConfirmationProperties = {
@@ -14,11 +14,19 @@ const ownerConfirmationProperties = {
   },
 };
 
-function tool(name, title, description, inputSchema, scopes, readOnly = true, idempotent = true) {
+function tool(name, title, description, inputSchema, scopes, readOnly = true, idempotent = true, options = {}) {
   const schema = !readOnly && inputSchema?.type === "object"
     ? { ...inputSchema, properties: { ...inputSchema.properties, ...ownerConfirmationProperties } }
     : inputSchema;
-  return { name, title, description, inputSchema: schema, scopes, annotations: annotations(readOnly, idempotent) };
+  return {
+    name,
+    title,
+    description,
+    inputSchema: schema,
+    ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
+    scopes,
+    annotations: annotations(readOnly, idempotent, options.openWorld === true),
+  };
 }
 
 const object = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
@@ -111,6 +119,50 @@ const intelligenceContext = {
   session_id: identifier,
   agent_id: identifier,
 };
+const sourceType = { type: "string", enum: ["official", "regulator", "academic", "standards", "manufacturer", "news", "industry", "community", "other"] };
+const researchSource = object({
+  id: identifier,
+  url: { type: "string", format: "uri", maxLength: 2_048 },
+  title: text(500),
+  publisher: { type: "string", maxLength: 240 },
+  source_type: sourceType,
+  published_at: { type: "string", format: "date-time" },
+  fetched_at: { type: "string", format: "date-time" },
+  excerpt: { type: "string", maxLength: 1_200 },
+  summary: { type: "string", maxLength: 1_200 },
+}, ["id", "url", "title", "source_type"]);
+const researchClaim = object({
+  id: identifier,
+  kind: { type: "string", enum: ["fact", "inference", "hypothesis"] },
+  text: text(2_000),
+  source_ids: { type: "array", maxItems: 20, items: identifier },
+  contradicts_claim_ids: { type: "array", maxItems: 20, items: identifier },
+  confidence: { type: "number", minimum: 0, maximum: 1 },
+}, ["id", "kind", "text", "source_ids"]);
+const researchPlanPolicy = object({
+  source_policy: object({
+    minimum_independent_sources: { type: "integer", minimum: 1, maximum: 10 },
+    freshness_days: { type: "integer", minimum: 1, maximum: 3_650 },
+    allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
+  }, ["minimum_independent_sources", "freshness_days"]),
+}, ["source_policy"]);
+const searchOutputSchema = object({
+  results: {
+    type: "array",
+    items: object({
+      id: { type: "string" },
+      title: { type: "string" },
+      url: { type: "string" },
+    }, ["id", "title", "url"]),
+  },
+}, ["results"]);
+const fetchOutputSchema = object({
+  id: { type: "string" },
+  title: { type: "string" },
+  text: { type: "string" },
+  url: { type: "string" },
+  metadata: { type: "object", additionalProperties: { type: "string" } },
+}, ["id", "title", "text", "url"]);
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
@@ -150,14 +202,48 @@ export const TOOLS = [
   tool("outcome_verify", "Verify a predicted outcome", "Compare a prediction with the observed result and compute Brier score, calibration error, surprise and lessons without storing it.", object({ prediction_id: { type: "string", maxLength: 120 }, outcome_id: { type: "string", maxLength: 120 }, domain: identifier, horizon: { type: "string", maxLength: 240 }, predicted_probability: probability, actual_outcome: { anyOf: [{ type: "boolean" }, { type: "string", enum: ["occurred", "not_occurred"] }] }, lessons: { type: "array", maxItems: 20, items: text(1_000) }, ...memoryScopeProperties }, ["predicted_probability", "actual_outcome"]), ["core:read"]),
   tool("outcome_record", "Record a verified outcome", "Persist a tenant-scoped verified outcome after Core governance so calibration can improve from real results. This never changes live weights automatically.", object({ prediction_id: { type: "string", maxLength: 120 }, outcome_id: { type: "string", maxLength: 120 }, domain: identifier, horizon: { type: "string", maxLength: 240 }, predicted_probability: probability, actual_outcome: { anyOf: [{ type: "boolean" }, { type: "string", enum: ["occurred", "not_occurred"] }] }, lessons: { type: "array", maxItems: 20, items: text(1_000) }, ...memoryScopeProperties }, ["outcome_id", "predicted_probability", "actual_outcome"]), ["core:govern"], false, true),
   tool("calibration_status", "Read tenant intelligence calibration", "Read tenant-scoped prediction quality, recent verified outcomes and calibration recommendation. Live weight mutation remains disabled.", object({ limit: { type: "integer", minimum: 1, maximum: 100 } }), ["core:read"]),
+  tool("nyra_research_plan", "Plan governed web research", "Use this when Nyra needs current external evidence. Core returns source, freshness, citation and safety constraints; then use the host ChatGPT or Codex web tool before ingesting evidence.", object({
+    question: text(2_000),
+    decision_context: { type: "string", maxLength: 1_000 },
+    allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
+    domain_pack: identifier,
+  }, ["question"]), ["core:read"], true, false),
+  tool("nyra_research_ingest", "Ingest governed research evidence", "Use this after web research to submit short excerpts, source metadata and claim-source links. Secrets are rejected, personal data is redacted and content is stored only inside the authenticated tenant as a candidate or quarantine.", object({
+    plan_id: identifier,
+    question: text(2_000),
+    decision_context: { type: "string", maxLength: 1_000 },
+    plan: researchPlanPolicy,
+    sources: { type: "array", minItems: 1, maxItems: 20, items: researchSource },
+    claims: { type: "array", minItems: 1, maxItems: 30, items: researchClaim },
+    project_id: identifier,
+    session_id: identifier,
+    domain_pack: identifier,
+    idempotency_key: text(120),
+  }, ["plan_id", "question", "plan", "sources", "claims", "idempotency_key"]), ["core:govern"], false, true),
+  tool("nyra_research_query", "Query tenant research evidence", "Use this when Nyra needs previously captured evidence for the authenticated tenant. Quarantined content is excluded unless a governor explicitly requests its metadata.", object({
+    query: { type: "string", maxLength: 500 },
+    state: { type: "string", enum: ["candidate", "quarantined", "validated", "deprecated"] },
+    limit: { type: "integer", minimum: 1, maximum: 50 },
+  }), ["core:read"]),
+  tool("nyra_research_status", "Read research cortex status", "Use this to inspect tenant evidence counts, learning policy and provider availability without exposing provider credentials.", object(), ["core:read"]),
+  tool("nyra_research_feedback", "Review research evidence", "Use this when an authorized reviewer confirms, challenges or deprecates a research record. Only eligible confirmed evidence is promoted to tenant memory.", object({
+    record_id: { type: "string", pattern: "^research_[a-f0-9-]{36}$" },
+    verdict: { type: "string", enum: ["confirm", "challenge", "deprecate"] },
+    rationale: text(2_000),
+  }, ["record_id", "verdict", "rationale"]), ["core:govern"], false, false),
+  tool("nyra_research_execute", "Run optional OpenAI web research", "Use this only when host browsing is unavailable and the optional server-side OpenAI fallback is enabled. It performs billable live web search but does not persist results; review and ingest the returned evidence template separately.", object({
+    query: text(2_000),
+    allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
+    search_context_size: { type: "string", enum: ["low", "medium", "high"] },
+  }, ["query"]), ["core:govern"], false, false, { openWorld: true }),
   tool("memory_context", "Read tenant AI context", "Read the authenticated tenant's current checkpoint, relevant memories, pending handoffs and recent redacted activity.", object({ ...memoryScopeProperties, activity_limit: { type: "integer", minimum: 1, maximum: 50 } }), ["core:read"]),
   tool("memory_search", "Search tenant AI memory", "Search durable, redacted memory belonging only to the authenticated tenant.", object(memoryScopeProperties), ["core:read"]),
   tool("memory_append", "Append tenant AI memory", "Store an explicit durable memory after Core governance, consent checks and secret redaction.", object({ kind: memoryKind, ...memoryProperties }, ["title", "summary"]), ["core:govern"], false, true),
   tool("memory_checkpoint", "Create tenant AI checkpoint", "Save a durable checkpoint so another AI can resume the authenticated tenant's work.", object(memoryProperties, ["summary"]), ["core:govern"], false, true),
   tool("memory_handoff", "Create tenant AI handoff", "Create a durable handoff for another AI inside the authenticated tenant.", object({ ...memoryProperties, to_agent_id: { anyOf: [identifier, { const: "all" }] } }, ["summary", "to_agent_id"]), ["core:govern"], false, true),
   tool("memory_handoff_acknowledge", "Acknowledge tenant AI handoff", "Acknowledge a handoff addressed to this AI inside the authenticated tenant.", object({ handoff_id: { type: "string", pattern: "^mem_[a-f0-9-]{36}$" }, agent_id: identifier }, ["handoff_id", "agent_id"]), ["core:govern"], false, true),
-  tool("search", "Search shared work memory", "Search the authenticated tenant's redacted SkinHarmony work memory.", object({ query: text(500) }, ["query"]), ["core:read"]),
-  tool("fetch", "Fetch shared work memory document", "Read one search result from the authenticated tenant's redacted work memory.", object({ id: { type: "string", pattern: "^[a-f0-9]{24}$" } }, ["id"]), ["core:read"]),
+  tool("search", "Search tenant knowledge", "Use this when ChatGPT, Codex, company knowledge or deep research needs validated tenant documents and research evidence.", object({ query: text(500) }, ["query"]), ["core:read"], true, true, { outputSchema: searchOutputSchema }),
+  tool("fetch", "Fetch tenant knowledge document", "Use this after search to read one tenant-scoped document or validated research source with a canonical citation URL.", object({ id: { type: "string", pattern: "^[a-f0-9]{24}$" } }, ["id"]), ["core:read"], true, true, { outputSchema: fetchOutputSchema }),
 
   tool("workspace_list", "List shared workspace", "List folders and document metadata inside the authenticated tenant workspace.", object({ prefix: { type: "string", maxLength: 240 } }), ["core:read"]),
   tool("workspace_create_folder", "Create shared folder", "Create a tenant-scoped logical folder after Core governance.", object({ path: text(240) }, ["path"]), ["core:govern"], false, true),

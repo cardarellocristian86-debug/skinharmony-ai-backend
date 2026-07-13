@@ -39,3 +39,17 @@ services:
         value: "365"
       - key: MEMORY_PERSONAL_RETENTION_DAYS
         value: "90"
+      - key: RESEARCH_CORTEX_ROOT
+        sync: false
+      - key: RESEARCH_RETENTION_DAYS
+        value: "365"
+      - key: NYRA_OPENAI_RESEARCH_ENABLED
+        value: "false"
+      - key: NYRA_OPENAI_RESEARCH_MODEL
+        value: gpt-5.6
+      - key: NYRA_OPENAI_RESEARCH_TIMEOUT_MS
+        value: "90000"
+      - key: NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR
+        value: "10"
+      - key: OPENAI_API_KEY
+        sync: false

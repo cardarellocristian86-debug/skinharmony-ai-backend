@@ -24,8 +24,11 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.5.1-intelligence-consolidation");
+  assert.equal(health.version, "0.6.0-full-intelligence-research-cortex");
   assert.equal(health.memory_fabric_configured, false);
+  assert.equal(health.research_cortex_configured, false);
+  assert.equal(health.openai_research_fallback_enabled, false);
+  assert.equal(health.openai_research_fallback_configured, false);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
@@ -61,6 +64,30 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
   assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
+  const plan = body.result.tools.find((tool) => tool.name === "nyra_research_plan");
+  const ingest = body.result.tools.find((tool) => tool.name === "nyra_research_ingest");
+  const execute = body.result.tools.find((tool) => tool.name === "nyra_research_execute");
+  assert.equal(plan.annotations.readOnlyHint, true);
+  assert.deepEqual(plan.securitySchemes[0].scopes, ["core:read"]);
+  assert.equal(ingest.annotations.readOnlyHint, false);
+  assert.deepEqual(ingest.securitySchemes[0].scopes, ["core:govern"]);
+  assert.equal(execute.annotations.openWorldHint, true);
+  assert.deepEqual(execute.securitySchemes[0].scopes, ["core:govern"]);
+  for (const name of ["search", "fetch"]) {
+    assert(body.result.tools.find((tool) => tool.name === name).outputSchema);
+  }
+}));
+
+test("publishes the governed host-browsing research sequence", async () => serve(async (base) => {
+  const response = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "initialize" }),
+  });
+  const body = await response.json();
+  assert.match(body.result.instructions, /nyra_research_plan/);
+  assert.match(body.result.instructions, /host ChatGPT or Codex web tool/);
+  assert.match(body.result.instructions, /Never include secrets/);
 }));
 
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {

@@ -32,6 +32,13 @@ AGENT_WORKSPACE_ROOT=/var/data/skinharmony-core-mcp
 MEMORY_FABRIC_ROOT=/var/data/skinharmony-core-mcp
 MEMORY_RETENTION_DAYS=365
 MEMORY_PERSONAL_RETENTION_DAYS=90
+RESEARCH_CORTEX_ROOT=/var/data/skinharmony-core-mcp
+RESEARCH_RETENTION_DAYS=365
+NYRA_OPENAI_RESEARCH_ENABLED=false
+NYRA_OPENAI_RESEARCH_MODEL=gpt-5.6
+NYRA_OPENAI_RESEARCH_TIMEOUT_MS=90000
+NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR=10
+OPENAI_API_KEY=<optional server-side secret>
 ```
 
 `CORE_BASE_URL` is also accepted as a compatibility fallback when
@@ -90,6 +97,27 @@ automatically persisted.
 Restricted records are rejected. `customer_personal` records require a consent
 reference and use the shorter personal retention ceiling. Known credentials,
 tokens and email addresses are redacted before the atomic write.
+
+## Governed realtime research
+
+`nyra_research_plan` asks Universal Core for source, freshness, citation and
+safety constraints. ChatGPT or Codex then uses its host-managed web capability
+and submits short evidence through `nyra_research_ingest`. Evidence remains a
+tenant candidate or quarantine record until `nyra_research_feedback` confirms an
+eligible record. Only validated evidence enters `search`/`fetch` and the Tenant
+Memory Fabric.
+
+The MCP keeps the issued plan for 24 hours and rejects fabricated, expired,
+cross-tenant or policy-modified plan IDs. A repeated confirmation can safely
+retry an interrupted memory promotion through the existing idempotency key.
+
+Tool input never accepts a tenant override. Allowed domains, HTTPS, private-host
+rejection, secret/PII handling, prompt-injection quarantine, idempotency and
+freshness retention are enforced server-side. The optional OpenAI Responses web
+search fallback is not advertised unless both its key and explicit enable flag
+are present. It is disabled by default and every invocation requires a billable
+external-read verdict from Core. Provider responses use `store:false` and a
+three-call web-search ceiling. See `../../docs/NYRA_RESEARCH_CORTEX.md`.
 
 ## Mandatory memory-first work preflight
 

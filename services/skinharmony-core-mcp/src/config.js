@@ -28,6 +28,11 @@ function integer(value, fallback, min, max) {
   return Math.min(Math.max(parsed, min), max);
 }
 
+function flag(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
 export function loadConfig(env = process.env) {
   const publicUrl = url(env.MCP_PUBLIC_URL || "http://localhost:8790", "MCP_PUBLIC_URL");
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
@@ -46,6 +51,7 @@ export function loadConfig(env = process.env) {
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
+  const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
@@ -68,7 +74,14 @@ export function loadConfig(env = process.env) {
     sharedMemoryRoot,
     agentWorkspaceRoot,
     memoryFabricRoot,
+    researchCortexRoot,
     memoryRetentionDays: integer(env.MEMORY_RETENTION_DAYS, 365, 1, 3_650),
-    personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365)
+    personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365),
+    researchRetentionDays: integer(env.RESEARCH_RETENTION_DAYS, 365, 1, 3_650),
+    openaiApiKey: String(env.OPENAI_API_KEY || "").trim(),
+    openaiResearchEnabled: flag(env.NYRA_OPENAI_RESEARCH_ENABLED, false),
+    openaiResearchModel: String(env.NYRA_OPENAI_RESEARCH_MODEL || "gpt-5.6").trim(),
+    openaiResearchTimeoutMs: integer(env.NYRA_OPENAI_RESEARCH_TIMEOUT_MS, 90_000, 5_000, 300_000),
+    openaiResearchMaxCallsPerHour: integer(env.NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR, 10, 1, 100)
   };
 }

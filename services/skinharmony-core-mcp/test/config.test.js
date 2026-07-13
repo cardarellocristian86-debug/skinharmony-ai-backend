@@ -19,6 +19,7 @@ test("keeps agent collaboration disabled until a persistent root is configured",
   assert.equal(enabled.memoryFabricRoot, "/var/data/skinharmony-core-mcp");
   assert(enabled.supportedScopes.includes("core:read"));
   assert(enabled.supportedScopes.includes("core:govern"));
+  assert.equal(enabled.researchCortexRoot, "/var/data/skinharmony-core-mcp");
 });
 
 test("configures independent memory storage and bounded retention", () => {
@@ -31,6 +32,25 @@ test("configures independent memory storage and bounded retention", () => {
   assert.equal(config.memoryFabricRoot, "/memory");
   assert.equal(config.memoryRetentionDays, 3650);
   assert.equal(config.personalMemoryRetentionDays, 120);
+  assert.equal(config.researchCortexRoot, "/memory");
+  assert.equal(config.openaiResearchEnabled, false);
+  assert.equal(config.openaiResearchModel, "gpt-5.6");
+});
+
+test("keeps the OpenAI research fallback opt-in and bounded", () => {
+  const config = loadConfig({
+    OPENAI_API_KEY: "configured-but-never-returned",
+    NYRA_OPENAI_RESEARCH_ENABLED: "true",
+    NYRA_OPENAI_RESEARCH_MODEL: "gpt-5.6",
+    NYRA_OPENAI_RESEARCH_TIMEOUT_MS: "999999",
+    NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR: "999",
+    RESEARCH_RETENTION_DAYS: "99999",
+  });
+  assert.equal(config.openaiResearchEnabled, true);
+  assert.equal(config.openaiApiKey, "configured-but-never-returned");
+  assert.equal(config.openaiResearchTimeoutMs, 300000);
+  assert.equal(config.openaiResearchMaxCallsPerHour, 100);
+  assert.equal(config.researchRetentionDays, 3650);
 });
 
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {

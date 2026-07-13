@@ -124,6 +124,15 @@ const NYRA_META_BRANCHES: BranchSpec[] = [
     terms: ["memoria", "learning", "apprendimento", "impara", "snapshot", "pack", "studio", "feedback"],
   },
   {
+    id: "research_cortex",
+    label: "Ricerca web governata",
+    domain: "research",
+    tier: "meta",
+    group_ids: ["learning_cortex", "security_cortex"],
+    source_kind: "nyra_meta",
+    terms: ["ricerca web", "fonti", "evidenze", "citazioni", "freshness", "fact check", "deep research"],
+  },
+  {
     id: "event_audit",
     label: "Eventi e audit",
     domain: "governance",
@@ -150,6 +159,7 @@ const MANUAL_HINTS: Record<string, string[]> = {
   network_security_intelligence: ["rete", "network", "segmentazione", "firewall", "lan", "wifi", "routing"],
   infrastructure_runtime_intelligence: ["runtime", "deploy", "render", "infra", "observability", "rollback"],
   learning_knowledge_intelligence: ["learning", "memoria", "knowledge", "snapshot", "apprendimento", "distillazione"],
+  research_evidence_intelligence: ["ricerca", "ricerca web", "fonti", "evidenze", "citazioni", "paper", "documentazione", "fact check", "freshness"],
   beauty_vertical_orchestration: ["beauty", "protocollo", "analyzer", "smart desk", "suite", "centro", "marketing beauty"],
   translator_marketing_governance: ["traduttore", "traduzione", "microcopy", "cta", "localizzazione", "marketing copy"],
   translation_governance: ["traduzione", "translation", "chiavi", "stringhe", "fallback", "review linguistica"],
@@ -203,6 +213,31 @@ function unique(values: string[]): string[] {
 }
 
 function branchIntentBonus(text: string, branchId: string): number {
+  const hasResearchIntent =
+    text.includes("ricerca") ||
+    text.includes("cerca sul web") ||
+    text.includes("fonti") ||
+    text.includes("evidenz") ||
+    text.includes("citazion") ||
+    text.includes("fact check") ||
+    text.includes("deep research") ||
+    text.includes("documentazione aggiornata") ||
+    text.includes("dati aggiornati");
+  const hasMarketingIntent =
+    text.includes("marketing") ||
+    text.includes("headline") ||
+    text.includes("landing") ||
+    text.includes("cta") ||
+    text.includes("copy commercial");
+
+  if (hasResearchIntent) {
+    if (branchId === "research_evidence_intelligence") return 110;
+    if (branchId === "research_cortex") return 88;
+    if (branchId === "learning_knowledge_intelligence") return 30;
+    if (branchId === "event_audit") return 18;
+    if (branchId === "marketing_copy" && !hasMarketingIntent) return -48;
+  }
+
   const hasDeveloperHybridIntent =
     (text.includes("backend") || text.includes("runtime") || text.includes("sync") || text.includes("sincron")) &&
     (text.includes("app mac") || text.includes("mac ") || text.includes("ipad") || text.includes("ios")) &&

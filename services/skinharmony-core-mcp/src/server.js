@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
+import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 
 const config = loadConfig();
 const govern = createCoreWriteGuard(config);
@@ -14,6 +15,14 @@ const collaborationHandlers = config.agentWorkspaceRoot
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
 });
+const researchCortex = config.researchCortexRoot
+  ? createResearchCortex(config, {
+      govern,
+      planProvider: coreHandlers.research_plan,
+      validateProvider: coreHandlers.research_validate,
+      memoryFabric,
+    })
+  : null;
 
 const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
   "core_health",
@@ -29,15 +38,16 @@ const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
 function summarizeToolRequest(toolName, args = {}) {
   return String(
     args.request || args.message || args.action_label || args.title || args.query || args.description ||
-    args.body || args.path || `Use SkinHarmony MCP tool ${toolName}`,
+    args.question || args.body || args.path || `Use SkinHarmony MCP tool ${toolName}`,
   ).slice(0, 20_000);
 }
 
 const app = createApp(config, {
   handlers: {
     ...coreHandlers,
-    ...createMemoryHandlers(config),
+    ...createMemoryHandlers(config, { researchCortex }),
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
+    ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
     ...collaborationHandlers,
   },
   beforeToolCall: async ({ identity, toolName, args }) => {

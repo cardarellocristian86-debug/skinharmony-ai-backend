@@ -62,6 +62,12 @@ L'apprendimento usa il Tenant Memory Fabric e segue il ciclo `capture -> compare
 policy non vengono promossi senza evidenza e verifica. Non sono previsti training
 libero dei pesi, auto-modifica del runtime o apprendimento tra tenant.
 
+La ricerca realtime segue un contratto separato: Core pianifica, ChatGPT/Codex
+usa la ricerca web disponibile nell'host, il MCP valida e conserva evidenza
+tenant-scoped, Nyra la interroga. Solo una conferma governata promuove evidenza
+idonea nella memoria tenant. Il fallback OpenAI server-side resta disabilitato di
+default e non e necessario per il flusso primario.
+
 ## Continuita tra AI
 
 Quando il Tenant Memory Fabric e configurato, il MCP carica automaticamente
@@ -77,8 +83,11 @@ operativo redatto, senza salvare automaticamente il prompt originale.
 - `GET /v1/domain-packs/current`
 - `GET /v1/nira/branches`
 - `POST /v1/nira/core-bridge`
+- `POST /v1/research/plan`
+- `POST /v1/research/validate`
 - `GET /api/nyra/runtime/contract`
 - `POST /api/nyra/runtime/interpret`
+- `GET /api/nyra/runtime/readiness`
 
 Gli endpoint Core richiedono `read:decision`; gli endpoint Nyra sotto `/api/` usano l'autenticazione Nyra e rate limiting esistenti.
 
@@ -88,5 +97,6 @@ Gli endpoint Core richiedono `read:decision`; gli endpoint Nyra sotto `/api/` us
 - `NYRA_SERVICE_NAME`: identita interna di Nyra; default `nyra-horizontal-runtime`.
 - `NYRA_SERVICE_VERSION`: override della versione runtime.
 - `NYRA_DOMAIN_PACK_ID`: pack atteso da Nyra. Se assente, il Core lo risolve dal tenant; se presente, il Core deve convalidarlo.
+- `NYRA_RESEARCH_MCP_URL`: endpoint MCP usato da Nyra solo per la readiness pubblica del ponte ricerca.
 
 Il nome del servizio Render puo restare quello storico: identifica un'istanza/deployment, non il tipo del motore.

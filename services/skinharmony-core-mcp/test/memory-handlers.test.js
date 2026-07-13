@@ -14,11 +14,17 @@ test("search and fetch stay inside the authenticated tenant", async (t) => {
     fs.writeFileSync(path.join(dir, "aaaaaaaaaaaaaaaaaaaaaaaa.json"), JSON.stringify({ id: "aaaaaaaaaaaaaaaaaaaaaaaa", title: `${tenant}.md`, source_path: "report.md", text }));
   }
   const handlers = createMemoryHandlers({ sharedMemoryRoot: root, publicUrl: "https://mcp.test" });
-  const search = JSON.parse((await handlers.search({ query: "work" }, { tenantId: "tenant-a" })).content[0].text);
+  const searchResponse = await handlers.search({ query: "work" }, { tenantId: "tenant-a" });
+  const search = JSON.parse(searchResponse.content[0].text);
+  assert.deepEqual(searchResponse.structuredContent, search);
   assert.equal(search.results.length, 1);
   assert.equal(search.results[0].title, "tenant-a.md");
-  const fetched = JSON.parse((await handlers.fetch({ id: search.results[0].id }, { tenantId: "tenant-a" })).content[0].text);
+  assert.equal(search.results[0].url, "");
+  const fetchResponse = await handlers.fetch({ id: search.results[0].id }, { tenantId: "tenant-a" });
+  const fetched = JSON.parse(fetchResponse.content[0].text);
+  assert.deepEqual(fetchResponse.structuredContent, fetched);
   assert.match(fetched.text, /alpha/);
+  assert.equal(fetched.url, "");
   const isolated = JSON.parse((await handlers.search({ query: "beta" }, { tenantId: "tenant-a" })).content[0].text);
   assert.deepEqual(isolated.results, []);
 });

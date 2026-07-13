@@ -192,6 +192,47 @@ try {
   assert(workPreflight.json.work_preflight.tool_routing.release_policy.merge_requires_owner_confirmation === true, "merge does not require owner confirmation");
   assert(workPreflight.json.work_preflight.governance.execution_allowed_by_preflight === false, "preflight unexpectedly authorized execution");
 
+  const researchPlan = await api(base, "POST", "/v1/research/plan", {
+    question: "Quali prove autorevoli supportano questa decisione?",
+    allowed_domains: ["example.org", "example.edu"],
+  }, horizontalKey);
+  assert(researchPlan.status === 200 && researchPlan.json.tenant_id === "tenant_horizontal_acme", "research plan tenant scope failed");
+  assert(researchPlan.json.research_plan?.provider_order?.[0] === "connected_ai_web", "research plan did not prefer connected AI web");
+  assert(researchPlan.json.nyra_neural_network?.opened_branches?.some((branch) => branch.id === "research_evidence"), "research plan did not route Nyra evidence branch");
+  assert(researchPlan.json.guardrail?.browsing_performed === false, "Core research plan unexpectedly browsed");
+
+  const researchValidation = await api(base, "POST", "/v1/research/validate", {
+    evidence_pack: {
+      question: "Quali prove autorevoli supportano questa decisione?",
+      plan: researchPlan.json.research_plan,
+      sources: [
+        { id: "source_a", url: "https://example.org/evidence-a", title: "Primary evidence", source_type: "official" },
+        { id: "source_b", url: "https://example.edu/evidence-b", title: "Independent evidence", source_type: "academic" },
+      ],
+      claims: [
+        { id: "claim_a", kind: "fact", text: "The two independent sources support the bounded claim.", source_ids: ["source_a", "source_b"], confidence: 0.82 },
+      ],
+    },
+  }, horizontalKey);
+  assert(researchValidation.status === 200 && researchValidation.json.validation?.state === "candidate", "research evidence validation failed");
+  assert(researchValidation.json.validation.release_readiness?.eligible_for_tenant_review === true, "research evidence was not eligible for review");
+  assert(researchValidation.json.guardrail?.persistence_performed === false, "Core validation unexpectedly persisted evidence");
+
+  const rejectedResearch = await api(base, "POST", "/v1/research/validate", {
+    evidence_pack: {
+      question: "Validate evidence",
+      sources: [{ id: "source_a", url: "https://example.org/evidence", title: "api_key=secret-value", source_type: "official" }],
+      claims: [{ id: "claim_a", kind: "fact", text: "Claim", source_ids: ["source_a"] }],
+    },
+  }, horizontalKey);
+  assert(rejectedResearch.status === 400 && rejectedResearch.json.error === "research_sensitive_content_rejected", "research validation accepted a secret");
+  mark("research_cortex_http", true, {
+    plan_id: researchPlan.json.research_plan.plan_id,
+    validation_state: researchValidation.json.validation.state,
+    quality_score: researchValidation.json.validation.quality_score,
+    rejected_case: rejectedResearch.json.error,
+  });
+
   const missingMemoryPreflight = await api(base, "POST", "/v1/work/preflight", { request: "Analizza il lavoro" }, horizontalKey);
   assert(missingMemoryPreflight.status === 200 && missingMemoryPreflight.json.work_preflight.state === "memory_recall_required", "preflight did not fail closed without memory context");
   const crossTenantPreflight = await api(base, "POST", "/v1/work/preflight", {

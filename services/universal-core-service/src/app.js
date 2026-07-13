@@ -64,10 +64,11 @@ import {
   embeddedComponentManifest,
   MAX_EMBEDDED_ARTIFACT_BYTES,
 } from "./embeddedSoftwareIntelligence.js";
+import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.8.1-intelligence-consolidation";
+const SERVICE_VERSION = "0.9.0-full-intelligence-research-cortex";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -3385,6 +3386,77 @@ export function createUniversalCoreService(options = {}) {
       branch_count: catalog.branches.length,
     });
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
+  });
+
+  app.post("/v1/research/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    try {
+      const plan = buildResearchPlan(req.body || {});
+      const nyraNetwork = routeNyraBranches({
+        text: plan.question,
+        requestedBranches: plan.nyra_branches,
+        domainPackId: domainPackAccess.pack.id,
+      });
+      audit.append("core_research_plan_created", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        plan_id: plan.plan_id,
+        risk: plan.classification.risk,
+        temporal: plan.classification.temporal,
+        allowed_domain_count: plan.source_policy.allowed_domains.length,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        domain_pack: publicDomainPack(domainPackAccess.pack),
+        research_plan: plan,
+        nyra_neural_network: nyraNetwork,
+        guardrail: {
+          execution_allowed: false,
+          browsing_performed: false,
+          tenant_scoped_ingest_required: true,
+          automatic_knowledge_promotion: false,
+        },
+      });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_plan_invalid");
+    }
+  });
+
+  app.post("/v1/research/validate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    try {
+      const evidencePack = req.body?.evidence_pack && typeof req.body.evidence_pack === "object"
+        ? req.body.evidence_pack
+        : req.body || {};
+      const validation = validateResearchEvidence(evidencePack);
+      audit.append("core_research_evidence_validated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        validation_id: validation.validation_id,
+        state: validation.state,
+        quality_score: validation.quality_score,
+        source_count: validation.source_count,
+        claim_count: validation.claim_assessments.length,
+        prompt_injection_count: validation.threat_assessment.prompt_injection_count,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        domain_pack: publicDomainPack(domainPackAccess.pack),
+        validation,
+        guardrail: {
+          execution_allowed: false,
+          persistence_performed: false,
+          automatic_validation_allowed: false,
+          global_promotion_allowed: false,
+        },
+      });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_evidence_invalid");
+    }
   });
 
   app.post("/v1/work/preflight", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
