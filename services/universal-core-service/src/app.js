@@ -47,10 +47,11 @@ import {
   SOFTWARE_LANGUAGE_GATE_VERSION,
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
+import { buildWorkPreflight } from "./workPreflight.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.6.0-horizontal-work-learning";
+const SERVICE_VERSION = "0.7.0-memory-first-preflight";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -746,6 +747,65 @@ function inferNiraBranchRequest(body = {}) {
   return [...new Set(requested)];
 }
 
+const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
+  "context_intelligence",
+  "work_intake",
+  "research_evidence",
+  "decision_reasoning",
+  "planning_prioritization",
+  "risk_governance",
+  "execution_planning",
+  "parallel_coordination",
+  "quality_verification",
+  "learning_memory",
+  "adaptive_learning",
+]);
+
+function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, branchContext = null, nyraNetwork = null } = {}) {
+  const body = req.body || {};
+  const requestText = String(
+    body.request || body.message || body.text || body.task || body.user_request || body.user_input || body.input || body.action_label ||
+    body.requested_action?.label || body.requested_action?.type ||
+    `Core controlled ${body.action_type || body.operation_type || "work"}`,
+  ).trim();
+  const requestedCoreBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(body)])];
+  const mandatoryBranchContext = composeBranchContext({
+    keyRecord: req.coreKey,
+    requestedBranches: requestedCoreBranches,
+    task: String(body.task || body.action_label || requestText),
+    userInput: requestText,
+    locale: body.locale || "it",
+  });
+  const resolvedBranchContext = branchContext ? {
+    ...mandatoryBranchContext,
+    selected_branches: [...new Set([...(mandatoryBranchContext.selected_branches || []), ...(branchContext.selected_branches || [])])],
+    denied_branches: [...new Set([...(mandatoryBranchContext.denied_branches || []), ...(branchContext.denied_branches || [])])]
+      .filter((id) => !(mandatoryBranchContext.selected_branches || []).includes(id) && !(branchContext.selected_branches || []).includes(id)),
+    selected_groups: [...new Set([...(mandatoryBranchContext.selected_groups || []), ...(branchContext.selected_groups || [])])],
+  } : mandatoryBranchContext;
+  const requestedNyraBranches = [
+    ...MANDATORY_NYRA_WORK_BRANCHES,
+    ...normalizeList(body.nyra_branches, 20),
+  ];
+  const resolvedNyraNetwork = nyraNetwork || routeNyraBranches({
+    text: requestText,
+    requestedBranches: requestedNyraBranches,
+    domainPackId: domainPack.id,
+  });
+  return buildWorkPreflight({
+    tenantId: req.tenantId,
+    requestText,
+    targetSystem: body.target_system || "universal_core",
+    operationType: body.operation_type || body.action_type || body.requested_action?.type || "advisory_work",
+    toolName: body.source_tool || body.tool_name || "",
+    availableCapabilities: body.available_capabilities || body.available_tools || body.connected_capabilities || [],
+    memoryContext,
+    branchContext: resolvedBranchContext,
+    nyraNetwork: resolvedNyraNetwork,
+    domainPack: publicDomainPack(domainPack),
+  });
+}
+
 function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy = {}, context = {} }) {
   const actionType = String(action.action_type || action.type || policy.action_type || "advisory").toLowerCase();
   const mode = String(policy.mode || policy.gateway_mode || "hard-gating");
@@ -900,12 +960,15 @@ function buildConnectorSdkManifest() {
     },
     adapters: ["wordpress", "site_suite", "smart_desk", "crm", "ecommerce", "files", "external_api"],
     required_client_behaviour: [
+      "call_work_preflight_before_any_ai_work",
+      "recall_tenant_memory_before_planning",
       "send_tenant_id_on_every_request",
       "never_execute_when_executionAllowed_false",
       "ask_owner_when_requiresOwnerConfirmation_true",
       "store_evidence_id_for_sensitive_actions",
     ],
     core_routes: {
+      work_preflight: "/v1/work/preflight",
       gate: "/v1/ai-gateway/evaluate",
       software_language_gate: "/v1/software-language-gate/evaluate",
       control_plane: "/v1/control-plane/overview",
@@ -3227,6 +3290,46 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
   });
 
+  app.post("/v1/work/preflight", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const requestText = String(req.body?.request || req.body?.message || req.body?.text || req.body?.task || req.body?.action_label || "").trim();
+    if (!requestText) return publicError(res, 400, "work_preflight_request_required");
+    if (requestText.length > 20_000) return publicError(res, 413, "work_preflight_request_too_long");
+    if (req.body?.nyra_branches !== undefined && !Array.isArray(req.body.nyra_branches)) {
+      return publicError(res, 400, "nyra_branches_must_be_array");
+    }
+    if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > 20) {
+      return publicError(res, 400, "nyra_branch_request_limit_exceeded");
+    }
+    const preflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+    });
+    audit.append("core_work_preflight_completed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      preflight_id: preflight.preflight_id,
+      state: preflight.state,
+      memory_revision: preflight.memory_first.revision,
+      selected_branches: preflight.core_route.selected_branches,
+      preferred_route: preflight.tool_routing.preferred_route.id,
+      owner_confirmation_required: preflight.governance.owner_confirmation_required,
+    });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      work_preflight: preflight,
+      guardrail: {
+        mandatory_before_work: true,
+        execution_allowed: false,
+        fail_closed_when_unavailable: true,
+      },
+    });
+  });
+
   app.post("/v1/tenants/upsert", requireAdmin, (req, res) => {
     try {
       const tenant = tenants.upsert(req.body || {});
@@ -3626,6 +3729,14 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+    });
     const input = buildActionEvaluatorInput(req, req.coreKey);
     const output = runUniversalCore(input);
     const decisionContract = normalizeDecisionContract(output, {
@@ -3640,15 +3751,18 @@ export function createUniversalCoreService(options = {}) {
       state: decisionContract.state,
       control_level: decisionContract.control_level,
       publish_safe: decisionContract.publish_safe,
+      preflight_id: workPreflight.preflight_id,
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       decision_contract: decisionContract,
       output,
+      work_preflight: workPreflight,
       guardrail: {
         destructive_automation: false,
         execution_allowed: false,
+        mandatory_preflight_completed: true,
         owner_confirmation_required: decisionContract.control_level !== "observe",
         mode: "core_action_gate",
       },
@@ -3792,6 +3906,15 @@ export function createUniversalCoreService(options = {}) {
       return publicError(res, 400, "ai_gateway_payload_invalid", validation.errors.join(", "));
     }
 
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+    });
+
     const input = buildAiGatewayCoreInput({
       payload: req.body || {},
       tenantId: req.tenantId,
@@ -3819,6 +3942,7 @@ export function createUniversalCoreService(options = {}) {
       execution_allowed: verdict.executionAllowed,
       owner_confirmation_required: verdict.requiresOwnerConfirmation,
       next_step: verdict.action_mediation?.next_step,
+      preflight_id: workPreflight.preflight_id,
     });
     return res.json({
       ok: true,
@@ -3828,8 +3952,10 @@ export function createUniversalCoreService(options = {}) {
         adapters_separated: true,
         no_duplicated_logic: true,
         openai_call_executed: false,
+        mandatory_preflight_completed: true,
         audit_event: "core_ai_gateway_evaluated",
       },
+      work_preflight: workPreflight,
       verdict,
       benchmark,
     });
@@ -3971,6 +4097,11 @@ export function createUniversalCoreService(options = {}) {
       brandScope: req.coreKey?.brand_scope,
       metadata: req.coreKey?.metadata,
     });
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+      branchContext: context,
+    });
     audit.append("core_codex_context_composed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -3978,12 +4109,14 @@ export function createUniversalCoreService(options = {}) {
       selected_branches: context.selected_branches,
       denied_branches: context.denied_branches,
       memory_revision: memoryContext.value?.revision || 0,
+      preflight_id: workPreflight.preflight_id,
     });
     res.json({
       ok: true,
       domain_pack: publicDomainPack(domainPackAccess.pack),
       context,
       memory_context: memoryContext.value,
+      work_preflight: workPreflight,
       tenant_policy: tenantPolicy,
       decision_contract: normalizeDecisionContract(runUniversalCore({
         request_id: req.body?.request_id || `codex_context_${crypto.randomUUID()}`,
@@ -4019,6 +4152,7 @@ export function createUniversalCoreService(options = {}) {
         destructive_automation: false,
         execution_allowed: false,
         openai_call_executed: false,
+        mandatory_preflight_completed: true,
         mode: "context_composition_only",
       },
     });
@@ -4027,6 +4161,8 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/codex/guard", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -4070,6 +4206,11 @@ export function createUniversalCoreService(options = {}) {
       actionType: req.body?.action_type || "codex_automation",
     });
     response.tenant_policy = tenantPolicy;
+    response.work_preflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+      branchContext: context,
+    });
     audit.append("core_codex_guard_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -4079,6 +4220,7 @@ export function createUniversalCoreService(options = {}) {
       control_level: response.decision_contract.control_level,
       selected_branches: response.codex_guard.selected_branches,
       denied_branches: response.codex_guard.denied_branches,
+      preflight_id: response.work_preflight.preflight_id,
     });
     res.json({ ok: true, ...response });
   });
@@ -4104,7 +4246,7 @@ export function createUniversalCoreService(options = {}) {
     const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
     const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
-    const requestedBranches = inferNiraBranchRequest(req.body || {});
+    const requestedBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(req.body || {})])];
     const branchContext = composeBranchContext({
       keyRecord: req.coreKey,
       requestedBranches,
@@ -4114,8 +4256,17 @@ export function createUniversalCoreService(options = {}) {
     });
     const nyraNetwork = routeNyraBranches({
       text: niraText,
-      requestedBranches: Array.isArray(requestedNyraBranches) ? requestedNyraBranches : [],
+      requestedBranches: [
+        ...MANDATORY_NYRA_WORK_BRANCHES,
+        ...(Array.isArray(requestedNyraBranches) ? requestedNyraBranches : []),
+      ],
       domainPackId: domainPackAccess.pack.id,
+    });
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+      branchContext,
+      nyraNetwork,
     });
     const result = runNiraUniversalCoreBridge({
       request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
@@ -4165,6 +4316,7 @@ export function createUniversalCoreService(options = {}) {
       domain_pack: publicDomainPack(domainPackAccess.pack),
       nyra_neural_network: nyraNetwork,
       memory_context: memoryContext.value,
+      work_preflight: workPreflight,
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -4178,6 +4330,7 @@ export function createUniversalCoreService(options = {}) {
       denied_branches: guardedResult.core_branch_diagnostics.actual_denied_branches,
       nyra_opened_branches: nyraNetwork.opened_branches.map((item) => item.id),
       memory_revision: memoryContext.value?.revision || 0,
+      preflight_id: workPreflight.preflight_id,
     });
     res.json({
       ok: true,
@@ -4185,6 +4338,7 @@ export function createUniversalCoreService(options = {}) {
       domain_pack: publicDomainPack(domainPackAccess.pack),
       result: guardedResult,
       memory_context: memoryContext.value,
+      work_preflight: workPreflight,
       branch_context: {
         selected_branches: branchContext.selected_branches,
         denied_branches: branchContext.denied_branches,
@@ -4194,6 +4348,7 @@ export function createUniversalCoreService(options = {}) {
       },
       guardrail: {
         execution_allowed: false,
+        mandatory_preflight_completed: true,
         owner_confirmation_required: true,
         audit_required: true,
         mode: "nira_prepare_core_select_no_auto_execute",

@@ -16,7 +16,9 @@ test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   assert.equal(contract.governed_learning.policy_activation_requires_verify, true);
   assert.equal(contract.governed_learning.free_weight_training, false);
   assert.equal(contract.authority.may_open_branches, false);
+  assert.equal(contract.authority.may_begin_work_without_preflight, false);
   assert.equal(contract.authority.core_is_final_router, true);
+  assert.equal(contract.mandatory_preflight.connected_tool_first, true);
 });
 
 test("Nyra proposes relevant branches but never opens or executes them locally", () => {
@@ -26,6 +28,8 @@ test("Nyra proposes relevant branches but never opens or executes them locally",
   assert(result.core_request.nyra_branches.includes("risk_governance"));
   assert(result.core_request.nyra_branches.includes("execution_planning"));
   assert.equal(result.local_interpretation.branch_state, "proposed_waiting_for_core");
+  assert.equal(result.local_interpretation.preflight_state, "mandatory_waiting_for_core");
+  assert.equal(result.core_request.preflight_required, true);
   assert(result.local_interpretation.parallel_proposal.waves.every((wave) => wave.length <= MAX_PARALLEL_BRANCHES));
   assert.equal(result.local_interpretation.execution_allowed, false);
 });

@@ -40,9 +40,21 @@ const memoryScopeProperties = {
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
+  tool("work_preflight", "Route work through Nyra and Core", "Mandatory first step before any connected AI begins work. Recalls tenant memory, assigns roles, opens Nyra/Core branches, builds the task graph, selects connected tools and returns non-executing governance gates.", object({
+    request: text(),
+    target_system: { type: "string", maxLength: 100 },
+    operation_type: { type: "string", maxLength: 100 },
+    tool_name: { type: "string", maxLength: 100 },
+    session_id: identifier,
+    project_id: identifier,
+    agent_id: identifier,
+    domain_pack: identifier,
+    nyra_branches: { type: "array", maxItems: 20, items: identifier },
+    available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } },
+  }, ["request"]), ["core:read"]),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context.", object({ include_control_snapshot: { type: "boolean" }, domain_pack: identifier, ...memoryScopeProperties }), ["core:read"]),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
-  tool("nyra_interpret_request", "Interpret a Nyra request", "Ask Universal Core to recall tenant memory, open the relevant Nyra branches and interpret a request without executing it.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, domain_pack: identifier, nyra_branches: { type: "array", maxItems: 20, items: identifier } }, ["message"]), ["core:read"]),
+  tool("nyra_interpret_request", "Interpret a Nyra request", "Run the mandatory memory-first Nyra/Core preflight, open the relevant branches and interpret a request without executing it.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, domain_pack: identifier, nyra_branches: { type: "array", maxItems: 20, items: identifier }, available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } } }, ["message"]), ["core:read"]),
   tool("core_gate_action", "Evaluate an action", "Ask Universal Core to evaluate an action; this never executes it.", { type: "object", required: ["action_label", "action_type"], properties: { action_label: text(500), action_type: text(120) }, additionalProperties: true }, ["core:govern"]),
   tool("memory_context", "Read tenant AI context", "Read the authenticated tenant's current checkpoint, relevant memories, pending handoffs and recent redacted activity.", object({ ...memoryScopeProperties, activity_limit: { type: "integer", minimum: 1, maximum: 50 } }), ["core:read"]),
   tool("memory_search", "Search tenant AI memory", "Search durable, redacted memory belonging only to the authenticated tenant.", object(memoryScopeProperties), ["core:read"]),
