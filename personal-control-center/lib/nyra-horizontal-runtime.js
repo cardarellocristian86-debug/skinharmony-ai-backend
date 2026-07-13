@@ -13,7 +13,6 @@ const BRANCH_TRIGGERS = Object.freeze({
   learning_memory: ["impara", "memoria", "feedback", "correzione", "benchmark", "lezione"],
   adaptive_learning: ["apprendi", "migliora", "retrospettiva", "outcome", "errore", "lezione", "pattern", "feedback"],
   communication_explanation: ["spiega", "riassumi", "scrivi", "comunica", "traduci"],
-  skinharmony_domain: ["skinharmony", "beauty", "salone", "smartdesk", "protocollo", "cosmet"],
 });
 
 const MAX_PARALLEL_BRANCHES = 6;
@@ -46,7 +45,7 @@ function inferIntent(text) {
 
 function createNyraHorizontalRuntime(env = process.env) {
   const serviceName = String(env.NYRA_SERVICE_NAME || "nyra-horizontal-runtime").trim();
-  const expectedDomainPack = normalizeIdentifier(env.NYRA_DOMAIN_PACK_ID);
+  const configuredDomainPack = normalizeIdentifier(env.NYRA_DOMAIN_PACK_ID);
   const version = String(env.NYRA_SERVICE_VERSION || "0.8.0-memory-first-preflight").trim();
 
   function contract() {
@@ -55,8 +54,10 @@ function createNyraHorizontalRuntime(env = process.env) {
       service: serviceName,
       version,
       runtime_kind: "horizontal_neural_branch_runtime",
-      domain_pack_resolution: expectedDomainPack ? "core_validated_expected_pack" : "core_resolved_from_tenant",
-      expected_domain_pack_id: expectedDomainPack || null,
+      domain_pack_resolution: "universal_core_key_metadata_only",
+      expected_domain_pack_id: null,
+      vertical_pack_selection: "forbidden_in_horizontal_runtime",
+      legacy_domain_pack_env_ignored: Boolean(configuredDomainPack),
       neural_network: {
         catalog_source: "universal_core",
         catalog_endpoint: "GET /v1/nira/branches",
@@ -75,7 +76,7 @@ function createNyraHorizontalRuntime(env = process.env) {
         auto_execution: false,
       },
       mandatory_preflight: {
-        schema_version: "skinharmony_work_preflight_v1",
+        schema_version: "universal_work_preflight_v1",
         core_endpoint: "POST /v1/work/preflight",
         enforced_by_router_endpoint: "POST /v1/nira/core-bridge",
         sequence: ["recall_tenant_memory", "nyra_interpret_request", "core_open_and_join_branches", "core_verdict", "owner_confirmation_when_required", "execute", "verify", "learn"],
@@ -97,9 +98,7 @@ function createNyraHorizontalRuntime(env = process.env) {
     if (!text) return { ok: false, status: 400, error: "message_required" };
     if (text.length > 20_000) return { ok: false, status: 413, error: "message_too_long" };
     const requestedPack = normalizeIdentifier(payload.domain_pack || payload.domain_pack_id);
-    if (expectedDomainPack && requestedPack && requestedPack !== expectedDomainPack) {
-      return { ok: false, status: 403, error: "domain_pack_override_denied" };
-    }
+    if (requestedPack) return { ok: false, status: 403, error: "domain_pack_selection_forbidden" };
     const proposedBranches = proposeBranches(text);
     const waves = [];
     for (let index = 0; index < proposedBranches.length; index += MAX_PARALLEL_BRANCHES) {
@@ -114,7 +113,6 @@ function createNyraHorizontalRuntime(env = process.env) {
         request_id: String(payload.request_id || payload.session_id || "").slice(0, 120) || undefined,
         target_system: normalizeIdentifier(payload.target_system) || "universal_core",
         nyra_branches: proposedBranches,
-        ...(requestedPack || expectedDomainPack ? { domain_pack: requestedPack || expectedDomainPack } : {}),
         mode: "standard",
         preflight_required: true,
       },
@@ -139,7 +137,14 @@ function createNyraHorizontalRuntime(env = process.env) {
     };
   }
 
-  return { serviceName, version, expectedDomainPack, contract, prepareInterpretation };
+  return {
+    serviceName,
+    version,
+    expectedDomainPack: null,
+    configuredDomainPackIgnored: configuredDomainPack || null,
+    contract,
+    prepareInterpretation,
+  };
 }
 
 module.exports = { MAX_PARALLEL_BRANCHES, createNyraHorizontalRuntime, proposeBranches };
