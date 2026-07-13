@@ -8,12 +8,18 @@ import {
   validateDomainPack,
 } from "../src/domainPacks.js";
 import {
+  MAX_PARALLEL_BRANCHES,
   MAX_SUBBRANCHES_PER_BRANCH,
   nyraBranchCatalog,
   routeNyraBranches,
   validateNyraBranchNetwork,
 } from "../src/nyraBranchNetwork.js";
-import { resolveBranchesForKey } from "../branches/index.js";
+import {
+  HORIZONTAL_WORK_BRANCHES,
+  deterministicBranchGroups,
+  deterministicBranchRegistry,
+  resolveBranchesForKey,
+} from "../branches/index.js";
 
 test("domain packs are valid and generic is the horizontal default", () => {
   const packs = listDomainPacks();
@@ -57,9 +63,44 @@ test("Core opens horizontal Nyra branches and denies unentitled vertical branche
   assert(generic.opened_branches.some((item) => item.id === "execution_planning"));
   assert.deepEqual(generic.denied_branches, ["skinharmony_domain", "unknown_branch"]);
   assert.equal(generic.execution_authorized, false);
+  assert(generic.parallel_analysis.waves.every((wave) => wave.length <= MAX_PARALLEL_BRANCHES));
+  assert.equal(generic.parallel_analysis.join_authority, "universal_core");
 
   const vertical = routeNyraBranches({ text: "Valuta protocollo SkinHarmony", requestedBranches: ["skinharmony_domain"], domainPackId: "skinharmony" });
   assert(vertical.opened_branches.some((item) => item.id === "skinharmony_domain"));
+});
+
+test("Nyra proposes a complete horizontal work graph and Core opens it in bounded waves", () => {
+  const route = routeNyraBranches({
+    text: "Ricerca fonti, pianifica priorita, coordina il lavoro in parallelo, testa qualita e impara dal feedback",
+    domainPackId: "generic",
+  });
+  const opened = route.opened_branches.map((item) => item.id);
+  for (const id of ["work_intake", "research_evidence", "planning_prioritization", "parallel_coordination", "quality_verification", "adaptive_learning"]) {
+    assert(opened.includes(id), `missing Nyra work branch ${id}`);
+  }
+  assert.equal(route.parallel_analysis.maximum_parallel_branches, 6);
+  assert(route.parallel_analysis.waves.length >= 2);
+  assert(route.parallel_analysis.waves.every((wave) => wave.length <= 6));
+  assert.equal(route.parallel_analysis.conflict_policy, "core_reconciles_evidence_before_action");
+  assert.equal(route.governed_learning.state, "active");
+  assert.equal(route.governed_learning.memory_source, "tenant_memory_fabric");
+  assert.equal(route.governed_learning.policy_activation_requires_verify, true);
+  assert.equal(route.governed_learning.free_weight_training, false);
+  assert.equal(route.execution_authorized, false);
+});
+
+test("every Nyra Core binding resolves to an agnostic registered work branch", () => {
+  const registry = deterministicBranchRegistry();
+  const catalog = nyraBranchCatalog("generic");
+  for (const item of catalog.branches) {
+    for (const binding of item.core_branch_bindings) {
+      assert(registry[binding], `missing Core binding ${binding}`);
+      assert.equal(registry[binding].domain, "horizontal_work");
+      assert(registry[binding].subbranches.length <= 20);
+    }
+  }
+  assert.deepEqual(deterministicBranchGroups().work_cortex.branches, HORIZONTAL_WORK_BRANCHES);
 });
 
 test("generic Core packages exclude vertical branches while SkinHarmony remains compatible", () => {
@@ -68,10 +109,12 @@ test("generic Core packages exclude vertical branches while SkinHarmony remains 
   assert.equal(generic.allowed_branches.includes("skinharmony_analyzer"), false);
   assert.equal(generic.allowed_branches.includes("beauty_vertical_orchestration"), false);
   assert.equal(generic.allowed_branches.includes("codex_security_guard"), true);
+  for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(generic.allowed_branches.includes(branchId));
 
   const skinHarmony = resolveBranchesForKey({ tenant_id: "tenant_demo_skinharmony", brand_scope: "skinharmony", preset: "nyra_core_360_connector", metadata: {} });
   assert.equal(skinHarmony.domain_pack.id, "skinharmony");
   assert.equal(skinHarmony.allowed_branches.includes("skinharmony_analyzer"), true);
+  for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(skinHarmony.allowed_branches.includes(branchId));
 });
 
 test("domain and branch routing remains deterministic under repeated load", () => {

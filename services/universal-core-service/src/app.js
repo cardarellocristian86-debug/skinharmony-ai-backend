@@ -50,7 +50,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.5.0-tenant-memory-fabric";
+const SERVICE_VERSION = "0.6.0-horizontal-work-learning";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -666,6 +666,9 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
       governance: "core_opens_nyra_branches",
       catalog_endpoint: "GET /v1/nira/branches",
       maximum_subbranches_per_branch: 20,
+      maximum_parallel_branches: 6,
+      parallel_mode: "bounded_parallel_advisory",
+      learning_mode: "tenant_scoped_verify_before_consolidate",
     },
     limits: resolvedEntitlement.limits,
     recommended_folders: {
@@ -703,7 +706,23 @@ function inferNiraBranchRequest(body = {}) {
 
   const target = String(body.target_system || "").toLowerCase();
   const text = String(body.text || body.request || body.task || "").toLowerCase();
-  const requested = ["automation_control"];
+  const requested = ["automation_control", "work_intake_intelligence"];
+
+  if (/(ricerca|fonti|evidenz|documentazione|paper|benchmark|source|dati verificati)/.test(text)) {
+    requested.push("research_evidence_intelligence");
+  }
+  if (/(pianifica|piano|priorit|roadmap|sequenza|milestone|dipenden|stima)/.test(text)) {
+    requested.push("planning_priority_intelligence");
+  }
+  if (/(parallelo|coordina|delega|agenti|handoff|concorren|sincron|collabora|esegui|implementa)/.test(text)) {
+    requested.push("execution_coordination_intelligence");
+  }
+  if (/(test|qualita|verifica|collaudo|accettazione|regression|evidence|qa)/.test(text)) {
+    requested.push("quality_verification_intelligence");
+  }
+  if (/(apprendi|impara|migliora|retrospettiva|outcome|feedback|lezione|pattern|memoria)/.test(text)) {
+    requested.push("adaptive_learning_intelligence");
+  }
 
   if (target === "suite" || target === "wordpress" || /(suite|wordpress|wp|plugin|waas|sito|template)/.test(text)) {
     requested.push("platform_engineering", "site_factory");

@@ -1,44 +1,78 @@
 const MAX_SUBBRANCHES_PER_BRANCH = 20;
+const MAX_PARALLEL_BRANCHES = 6;
 
-const branch = (id, label, triggers, subbranches, domainPacks = ["*"]) => Object.freeze({
+const branch = (id, label, triggers, subbranches, domainPacks = ["*"], options = {}) => Object.freeze({
   id,
   label,
   triggers: Object.freeze(triggers),
   domain_packs: Object.freeze(domainPacks),
   subbranches: Object.freeze(subbranches.map((subbranch) => Object.freeze(subbranch))),
+  work_phase: String(options.workPhase || "general"),
+  core_branch_bindings: Object.freeze(Array.isArray(options.coreBranchBindings) ? options.coreBranchBindings : []),
 });
 
 const NYRA_BRANCHES = Object.freeze([
   branch("context_intelligence", "Context Intelligence", ["contesto", "stato", "dati", "input", "mappa"], [
     "request_normalization", "actor_context", "tenant_context", "system_context", "temporal_context",
     "data_quality", "missing_information", "source_reliability", "constraint_mapping", "language_context",
-  ]),
+  ], ["*"], { workPhase: "intake", coreBranchBindings: ["work_intake_intelligence"] }),
+  branch("work_intake", "Work Intake", ["obiettivo", "requisit", "deliverable", "risultato", "vincol", "scope", "lavoro", "task"], [
+    "goal_clarification", "deliverable_definition", "success_criteria", "scope_boundary", "constraint_inventory",
+    "stakeholder_context", "urgency_assessment", "resource_context", "dependency_discovery", "ambiguity_detection",
+    "assumption_register", "missing_input_request", "decomposition_boundary", "intake_summary",
+  ], ["*"], { workPhase: "intake", coreBranchBindings: ["work_intake_intelligence"] }),
+  branch("research_evidence", "Research & Evidence", ["ricerca", "fonti", "evidenz", "verifica dati", "documentazione", "paper", "benchmark", "source"], [
+    "research_question", "source_discovery", "source_authority", "source_freshness", "triangulation",
+    "fact_extraction", "contradiction_detection", "uncertainty_register", "provenance_capture", "missing_evidence",
+    "dataset_relevance", "citation_constraints", "evidence_synthesis", "research_handoff",
+  ], ["*"], { workPhase: "research", coreBranchBindings: ["research_evidence_intelligence"] }),
   branch("decision_reasoning", "Decision Reasoning", ["decidi", "scegli", "priorita", "opzioni", "strategia", "valuta"], [
     "intent_inference", "hypothesis_generation", "option_generation", "tradeoff_analysis", "priority_ranking",
     "causal_reasoning", "counterfactual_reasoning", "confidence_calibration", "decision_summary", "next_best_action",
-  ]),
+  ], ["*"], { workPhase: "planning", coreBranchBindings: ["planning_priority_intelligence"] }),
+  branch("planning_prioritization", "Planning & Prioritization", ["pianifica", "priorit", "roadmap", "sequenza", "milestone", "dipenden", "stima"], [
+    "work_breakdown", "priority_matrix", "dependency_graph", "critical_path", "effort_estimation",
+    "value_estimation", "risk_adjusted_order", "milestone_design", "capacity_fit", "timebox_design",
+    "decision_points", "fallback_sequence", "definition_of_ready", "next_action_selection", "plan_summary",
+  ], ["*"], { workPhase: "planning", coreBranchBindings: ["planning_priority_intelligence"] }),
   branch("risk_governance", "Risk & Governance", ["rischio", "sicurezza", "privacy", "policy", "audit", "tenant", "permessi"], [
     "risk_detection", "policy_alignment", "tenant_isolation", "scope_validation", "privacy_review",
     "security_review", "compliance_review", "claim_review", "pricing_review", "audit_evidence",
     "confirmation_gate", "rollback_readiness",
-  ]),
+  ], ["*"], { workPhase: "governance", coreBranchBindings: ["quality_verification_intelligence"] }),
   branch("execution_planning", "Execution Planning", ["piano", "esegui", "runbook", "deploy", "render", "automat", "implementa"], [
     "goal_decomposition", "dependency_mapping", "runbook_design", "resource_estimation", "failure_mode_analysis",
     "test_strategy", "release_strategy", "rollback_plan", "human_confirmation", "evidence_plan",
-  ]),
-  branch("learning_memory", "Learning & Memory", ["impara", "memoria", "feedback", "correzione", "benchmark"], [
+  ], ["*"], { workPhase: "execution", coreBranchBindings: ["execution_coordination_intelligence"] }),
+  branch("parallel_coordination", "Parallel Coordination", ["parallelo", "coordina", "delega", "agenti", "handoff", "concorren", "sincron", "collabora"], [
+    "lane_partitioning", "agent_capability_match", "task_ownership", "shared_context_contract", "dependency_barrier",
+    "concurrency_limit", "handoff_protocol", "progress_checkpoint", "conflict_detection", "merge_strategy",
+    "duplicate_work_prevention", "blocked_lane_recovery", "cross_lane_evidence", "join_readiness", "coordination_summary",
+  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["execution_coordination_intelligence"] }),
+  branch("quality_verification", "Quality & Verification", ["test", "qualita", "verifica", "collaudo", "accettazione", "regression", "evidence", "qa"], [
+    "acceptance_criteria", "test_scope", "happy_path", "negative_path", "boundary_cases", "security_checks",
+    "tenant_isolation_checks", "regression_matrix", "performance_checks", "observability_checks", "evidence_capture",
+    "defect_triage", "root_cause_check", "fix_verification", "release_readiness", "quality_summary",
+  ], ["*"], { workPhase: "verification", coreBranchBindings: ["quality_verification_intelligence"] }),
+  branch("learning_memory", "Learning & Memory", ["impara", "memoria", "feedback", "correzione", "benchmark", "lezione"], [
     "episodic_recall", "semantic_recall", "feedback_interpretation", "pattern_detection", "knowledge_gap",
     "correction_proposal", "benchmark_comparison", "retention_policy", "memory_safety", "learning_summary",
-  ]),
+  ], ["*"], { workPhase: "learning", coreBranchBindings: ["adaptive_learning_intelligence"] }),
+  branch("adaptive_learning", "Adaptive Learning", ["apprendi", "migliora", "retrospettiva", "outcome", "errore", "lezione", "pattern", "feedback"], [
+    "outcome_capture", "expected_actual_delta", "success_pattern", "failure_pattern", "feedback_weighting",
+    "noise_filtering", "lesson_distillation", "procedural_memory_candidate", "semantic_memory_candidate", "knowledge_gap_update",
+    "benchmark_update_candidate", "policy_change_candidate", "regression_requirement", "human_review_gate",
+    "verified_consolidation", "learning_handoff",
+  ], ["*"], { workPhase: "learning", coreBranchBindings: ["adaptive_learning_intelligence"] }),
   branch("communication_explanation", "Communication & Explanation", ["spiega", "riassumi", "scrivi", "comunica", "traduci"], [
     "audience_model", "language_selection", "tone_selection", "fact_hypothesis_split", "evidence_citation",
     "plain_language", "structured_summary", "action_explanation", "uncertainty_disclosure", "localization",
-  ]),
+  ], ["*"], { workPhase: "communication", coreBranchBindings: ["execution_coordination_intelligence"] }),
   branch("skinharmony_domain", "SkinHarmony Domain", ["skinharmony", "beauty", "salone", "smartdesk", "protocollo", "cosmet"], [
     "analyzer_interpretation", "beauty_protocol", "cosmetic_claims", "center_operations", "customer_journey",
     "product_inventory", "beauty_value_chain", "brand_network", "site_suite", "smartdesk_bridge",
     "pricing_guard", "retention_recall",
-  ], ["skinharmony"]),
+  ], ["skinharmony"], { workPhase: "domain", coreBranchBindings: [] }),
 ]);
 
 function normalizeList(value, max = 50) {
@@ -60,6 +94,8 @@ export function validateNyraBranchNetwork(branches = NYRA_BRANCHES) {
     if (!Array.isArray(item.subbranches) || item.subbranches.length === 0) errors.push(`subbranches_required:${item.id}`);
     if (item.subbranches.length > MAX_SUBBRANCHES_PER_BRANCH) errors.push(`subbranch_limit_exceeded:${item.id}`);
     if (new Set(item.subbranches).size !== item.subbranches.length) errors.push(`duplicate_subbranch:${item.id}`);
+    if (item.subbranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(id))) errors.push(`invalid_subbranch_id:${item.id}`);
+    if (item.core_branch_bindings.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(id))) errors.push(`invalid_core_binding:${item.id}`);
   }
   return { ok: errors.length === 0, errors, max_subbranches_per_branch: MAX_SUBBRANCHES_PER_BRANCH };
 }
@@ -73,8 +109,10 @@ export function nyraBranchCatalog(packId = "generic") {
     branches: NYRA_BRANCHES.filter((item) => availableForPack(item, packId)).map((item) => ({
       id: item.id,
       label: item.label,
+      work_phase: item.work_phase,
       subbranch_count: item.subbranches.length,
       subbranches: [...item.subbranches],
+      core_branch_bindings: [...item.core_branch_bindings],
     })),
   };
 }
@@ -86,20 +124,46 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
   const inferred = available
     .filter((item) => item.triggers.some((trigger) => String(text || "").toLowerCase().includes(trigger)))
     .map((item) => item.id);
-  const candidates = [...new Set(["context_intelligence", "risk_governance", ...requested, ...inferred])];
+  const candidates = [...new Set(["context_intelligence", "work_intake", "risk_governance", ...requested, ...inferred])];
   const opened = candidates.filter((id) => availableIds.has(id));
   const denied = requested.filter((id) => !availableIds.has(id));
+  const openedRecords = opened.map((id) => available.find((candidate) => candidate.id === id));
+  const waves = [];
+  for (let index = 0; index < openedRecords.length; index += MAX_PARALLEL_BRANCHES) {
+    waves.push(openedRecords.slice(index, index + MAX_PARALLEL_BRANCHES).map((item) => item.id));
+  }
+  const learningActive = opened.includes("learning_memory") || opened.includes("adaptive_learning");
   return {
     schema_version: "nyra_neural_branch_route_v1",
     domain_pack_id: domainPackId,
     opened_by: "universal_core",
     proposal_source: "nyra_request_plus_core_inference",
-    opened_branches: opened.map((id) => {
-      const item = available.find((candidate) => candidate.id === id);
-      return { id, status: "opened", subbranches: [...item.subbranches] };
-    }),
+    opened_branches: openedRecords.map((item) => ({
+      id: item.id,
+      status: "opened",
+      work_phase: item.work_phase,
+      subbranches: [...item.subbranches],
+      core_branch_bindings: [...item.core_branch_bindings],
+    })),
     denied_branches: denied,
     unknown_or_unentitled_branch_count: denied.length,
+    parallel_analysis: {
+      enabled: opened.length > 1,
+      mode: "bounded_parallel_advisory",
+      maximum_parallel_branches: MAX_PARALLEL_BRANCHES,
+      waves,
+      join_authority: "universal_core",
+      conflict_policy: "core_reconciles_evidence_before_action",
+    },
+    governed_learning: {
+      state: learningActive ? "active" : "available_on_feedback_or_outcome",
+      memory_source: "tenant_memory_fabric",
+      stages: ["capture", "compare", "distill", "propose", "verify", "consolidate"],
+      activation_requires: ["evidence", "outcome_or_feedback", "tenant_scope"],
+      policy_activation_requires_verify: true,
+      free_weight_training: false,
+      auto_execution: false,
+    },
     execution_authorized: false,
   };
 }
@@ -107,5 +171,4 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
 const NETWORK_VALIDATION = validateNyraBranchNetwork();
 if (!NETWORK_VALIDATION.ok) throw new Error(`invalid_nyra_branch_network:${NETWORK_VALIDATION.errors.join(",")}`);
 
-export { MAX_SUBBRANCHES_PER_BRANCH };
-
+export { MAX_PARALLEL_BRANCHES, MAX_SUBBRANCHES_PER_BRANCH };

@@ -15,11 +15,17 @@ Nyra usa una rete dichiarativa di rami cognitivi. Ogni ramo contiene da 1 a 20 s
 Rami orizzontali:
 
 1. `context_intelligence`
-2. `decision_reasoning`
-3. `risk_governance`
-4. `execution_planning`
-5. `learning_memory`
-6. `communication_explanation`
+2. `work_intake`
+3. `research_evidence`
+4. `decision_reasoning`
+5. `planning_prioritization`
+6. `risk_governance`
+7. `execution_planning`
+8. `parallel_coordination`
+9. `quality_verification`
+10. `learning_memory`
+11. `adaptive_learning`
+12. `communication_explanation`
 
 Il pack SkinHarmony aggiunge `skinharmony_domain` con i propri sotto-rami verticali.
 
@@ -34,6 +40,27 @@ Nyra interpreta la richiesta e propone i rami. Universal Core:
 5. mantiene l'esecuzione disabilitata finche policy, scope e conferma non la consentono in un flusso separato.
 
 Nyra non apre autonomamente i rami e l'endpoint di interpretazione non esegue scritture.
+
+## Lavoro parallelo e apprendimento
+
+Il work cortex orizzontale di Core espone sei rami agnostici in tutti i package:
+
+1. `work_intake_intelligence`
+2. `research_evidence_intelligence`
+3. `planning_priority_intelligence`
+4. `execution_coordination_intelligence`
+5. `quality_verification_intelligence`
+6. `adaptive_learning_intelligence`
+
+Nyra puo proporre piu rami nella stessa richiesta. Core li apre in onde con un
+massimo di sei rami analitici simultanei, verifica dipendenze e conflitti e resta
+l'unica autorita di join. Questo parallelismo prepara e verifica lavoro: non
+autorizza automaticamente deploy, pubblicazioni, scritture o azioni distruttive.
+
+L'apprendimento usa il Tenant Memory Fabric e segue il ciclo `capture -> compare
+-> distill -> propose -> verify -> consolidate`. Memorie, benchmark, default e
+policy non vengono promossi senza evidenza e verifica. Non sono previsti training
+libero dei pesi, auto-modifica del runtime o apprendimento tra tenant.
 
 ## Continuita tra AI
 
