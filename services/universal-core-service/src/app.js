@@ -49,6 +49,11 @@ import {
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
+import {
+  analyzeEmbeddedSoftwareArtifact,
+  embeddedComponentManifest,
+  MAX_EMBEDDED_ARTIFACT_BYTES,
+} from "./embeddedSoftwareIntelligence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -710,6 +715,10 @@ function inferNiraBranchRequest(body = {}) {
   const text = String(body.text || body.request || body.task || "").toLowerCase();
   const requested = ["automation_control", "work_intake_intelligence"];
 
+  if (/(software|codice|binari|eseguibil|debug|disassembl|decompil|ghidra|frida|reverse engineering|interoperabil|personalizz)/.test(`${target} ${text}`)) {
+    requested.push("software_intelligence_lab");
+  }
+
   if (/(ricerca|fonti|evidenz|documentazione|paper|benchmark|source|dati verificati)/.test(text)) {
     requested.push("research_evidence_intelligence");
   }
@@ -982,6 +991,8 @@ function buildConnectorSdkManifest() {
       evidence: "/v1/evidence/recent",
       customer_intelligence_contract: "/v1/customer-intelligence/contract",
       customer_intelligence_readiness: "/v1/customer-intelligence/readiness",
+      software_intelligence_components: "/v1/software-intelligence/components",
+      software_intelligence_analyze: "/v1/software-intelligence/analyze",
     },
   };
 }
@@ -4409,6 +4420,83 @@ export function createUniversalCoreService(options = {}) {
         languagetool_enabled: process.env.LANGUAGETOOL_DISABLED === "1" || process.env.NODE_ENV === "test" ? false : true,
       },
     });
+  });
+
+  app.get("/v1/software-intelligence/components", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) {
+      audit.append("core_branch_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+      });
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      branch: "software_binary_intelligence",
+      maximum_artifact_bytes: MAX_EMBEDDED_ARTIFACT_BYTES,
+      manifest: embeddedComponentManifest(),
+      authorization_required: true,
+      execution_supported: false,
+    });
+  });
+
+  app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) {
+      audit.append("core_branch_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+      });
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
+
+    try {
+      const analysis = analyzeEmbeddedSoftwareArtifact({
+        artifact: req.body?.artifact,
+        authorization: req.body?.authorization,
+        options: req.body?.options,
+      });
+      audit.append("core_software_artifact_analyzed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+        analysis_id: analysis.analysis_id,
+        artifact_sha256: analysis.artifact.sha256,
+        artifact_bytes: analysis.artifact.byte_length,
+        artifact_format: analysis.executable.format,
+        artifact_architecture: analysis.executable.architecture,
+        authorization_basis: analysis.authorization.basis,
+        purpose: analysis.authorization.purpose,
+        raw_content_persisted: false,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        branch: "software_binary_intelligence",
+        analysis,
+        guardrail: {
+          execution_allowed: false,
+          static_observation_only: true,
+          raw_content_persisted: false,
+          patch_requires_separate_core_verdict: true,
+          mode: "embedded_authorized_static_analysis",
+        },
+      });
+    } catch (error) {
+      const code = String(error?.message || "software_analysis_failed");
+      const status = code === "software_artifact_too_large" ? 413 : 400;
+      audit.append("core_software_artifact_analysis_rejected", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+        reason: code,
+      });
+      return publicError(res, status, code);
+    }
   });
 
   app.post("/v1/branches/:branch/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
