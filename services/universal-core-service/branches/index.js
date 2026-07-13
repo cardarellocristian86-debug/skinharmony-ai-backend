@@ -424,9 +424,9 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
   const tier = normalizeTier(metadata.tier || keyRecord?.tier || presetTier);
   const fromPackage = BRANCH_PACKAGES[tier] || BRANCH_PACKAGES.base;
   const explicitSource = Array.isArray(metadata.active_branch_groups) && metadata.active_branch_groups.length
-    ? [...metadata.active_branch_groups, ...(Array.isArray(metadata.active_branches) ? metadata.active_branches : [])]
+    ? [...HORIZONTAL_WORK_BRANCHES, ...metadata.active_branch_groups, ...(Array.isArray(metadata.active_branches) ? metadata.active_branches : [])]
     : Array.isArray(metadata.active_branches)
-      ? metadata.active_branches.map(String)
+      ? [...HORIZONTAL_WORK_BRANCHES, ...metadata.active_branches.map(String)]
       : fromPackage;
   const expandedAllowed = expandBranchIds(explicitSource);
   const allowed = [...new Set(expandedAllowed.expanded)]
