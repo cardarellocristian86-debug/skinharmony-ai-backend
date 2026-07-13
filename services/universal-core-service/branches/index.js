@@ -49,6 +49,7 @@ import { branchSmartDeskOperationsGuard } from "./branch-smartdesk-operations-gu
 import { branchBeautyProtocolGuard } from "./branch-beauty-protocol-guard.js";
 import { branchChangeImpactOrchestration } from "./branch-change-impact-orchestration.js";
 import { branchSoftwareSystemsIntelligence } from "./branch-software-systems-intelligence.js";
+import { branchSoftwareBinaryIntelligence } from "./branch-software-binary-intelligence.js";
 import { branchHardwareSystemsIntelligence } from "./branch-hardware-systems-intelligence.js";
 import { branchSoftwareSecurityIntelligence } from "./branch-software-security-intelligence.js";
 import { branchNetworkSecurityIntelligence } from "./branch-network-security-intelligence.js";
@@ -115,6 +116,7 @@ const BRANCHES = [
   branchSmartDeskOperationsGuard,
   branchBeautyProtocolGuard,
   branchSoftwareSystemsIntelligence,
+  branchSoftwareBinaryIntelligence,
   branchHardwareSystemsIntelligence,
   branchSoftwareSecurityIntelligence,
   branchNetworkSecurityIntelligence,
@@ -175,6 +177,7 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
 
 const SOFTWARE_CORTEX_BRANCHES = [
   "software_systems_intelligence",
+  "software_binary_intelligence",
   "codex_code_safety",
   "codex_architecture_guard",
   "codex_test_strategy",
@@ -298,6 +301,21 @@ export const BRANCH_GROUPS = Object.freeze({
     description: "Gerarchia software profonda: architettura, contratti, test, release, rollback, audit e consolidamento.",
     branches: SOFTWARE_CORTEX_BRANCHES,
   },
+  software_intelligence_lab: {
+    label: "Software Intelligence Lab",
+    description: "Analisi incorporata di software autorizzato: prove binarie, compatibilita, specifica clean-room, sandbox e regressione.",
+    branches: [
+      "software_binary_intelligence",
+      "software_systems_intelligence",
+      "software_security_intelligence",
+      "research_evidence_intelligence",
+      "quality_verification_intelligence",
+      "codex_code_safety",
+      "codex_test_strategy",
+      "codex_release_gate",
+      "legal_privacy_compliance_guard",
+    ],
+  },
   hardware_cortex: {
     label: "Hardware Cortex",
     description: "Catena device-to-runtime: transport, sensor, pairing, readiness, safety, diagnostics e runtime feedback.",
@@ -343,7 +361,7 @@ export const BRANCH_PACKAGES = Object.freeze({
   gold: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
   network: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
   enterprise: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
-  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
+  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "software_binary_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
   codex_guard: [...HORIZONTAL_WORK_BRANCHES, ...CODEX_GUARD_BRANCHES],
   omni_360: BRANCHES.map((branch) => branch.id),
 });
