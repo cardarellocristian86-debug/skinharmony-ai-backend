@@ -61,6 +61,66 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
 }));
 
+test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {
+  const response = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 30, method: "tools/list" }),
+  });
+  const body = await response.json();
+  const expected = {
+    workspace_list: ["core:read"],
+    workspace_create_folder: ["core:govern"],
+    workspace_read_document: ["core:read"],
+    workspace_write_document: ["core:govern"],
+    task_list: ["core:read"],
+    task_create: ["core:govern"],
+    task_claim: ["core:govern"],
+    task_update: ["core:govern"],
+    agent_heartbeat: ["core:govern"],
+    agent_list: ["core:read"],
+    message_post: ["core:govern"],
+    message_inbox: ["core:read"],
+    message_acknowledge: ["core:govern"],
+  };
+  for (const [name, scopes] of Object.entries(expected)) {
+    const tool = body.result.tools.find((candidate) => candidate.name === name);
+    assert(tool, `missing collaboration tool ${name}`);
+    assert.deepEqual(tool.securitySchemes[0].scopes, scopes);
+  }
+}));
+
+test("allows collaboration reads with core:read but blocks writes without core:govern", async () => {
+  const readOnlyConfig = { ...config, codexScopes: ["core:read"] };
+  const app = createApp(readOnlyConfig, {
+    handlers: {
+      workspace_list: async () => ({ content: [{ type: "text", text: "[]" }] }),
+      workspace_write_document: async () => ({ content: [{ type: "text", text: "unexpected" }] }),
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = { authorization: "Bearer codex-key", "content-type": "application/json" };
+    const read = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "workspace_list", arguments: {} } }),
+    });
+    assert.equal(read.status, 200);
+    const write = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "workspace_write_document", arguments: { path: "x.md", content: "x" } } }),
+    });
+    assert.equal(write.status, 403);
+    assert.match(write.headers.get("www-authenticate"), /scope="core:govern"/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("does not advertise collaboration tools without registered handlers", async () => {
   const app = createApp(config, { handlers: { core_health: async () => ({ content: [{ type: "text", text: "ok" }] }) } });
   const server = app.listen(0);
