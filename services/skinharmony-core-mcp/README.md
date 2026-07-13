@@ -39,12 +39,34 @@ NYRA_OPENAI_RESEARCH_MODEL=gpt-5.6
 NYRA_OPENAI_RESEARCH_TIMEOUT_MS=90000
 NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR=10
 OPENAI_API_KEY=<optional server-side secret>
+NYRA_GOD_MODE_ENABLED=false
+NYRA_GOD_MODE_TENANT_ID=owner-private
+NYRA_GOD_MODE_SUBJECTS=<comma-separated Auth0 subject ids>
+NYRA_GOD_MODE_CLIENT_IDS=<comma-separated dedicated OAuth client ids>
+NYRA_GOD_MODE_CODEX_ENABLED=false
+NYRA_GOD_MODE_EMERGENCY_STOP=false
 ```
 
 `CORE_BASE_URL` is also accepted as a compatibility fallback when
 `UNIVERSAL_CORE_URL` is not set.
 
 Configure the Auth0 application as a public OAuth client for ChatGPT, allow only approved callback URLs, enable authorization code with PKCE, and disable password/implicit grants. Do not commit secrets. Auth0 must issue RS256 access tokens containing `scope` or `permissions`. The MCP merges both claims when Auth0 emits requested OAuth scopes in `scope` and RBAC API permissions in `permissions`; duplicate values are removed before per-tool authorization.
+
+## Nyra God Mode (`owner_root`)
+
+God Mode is a server-side owner profile, not a client-provided flag. It activates
+only when all of these checks pass: the feature is enabled, the emergency stop is
+off, the signed token belongs to `NYRA_GOD_MODE_TENANT_ID`, and the verified
+Auth0 subject/OAuth client (or the separately enabled Codex delegate) is on the
+server allowlist. A matching identity receives `owner:root` plus the configured
+server scopes and sends a verified `owner_context` to Universal Core.
+
+The profile automatically satisfies ordinary owner-confirmation fields for MCP
+work, while Core hard blocks, tenant isolation, secret redaction and audit remain
+enforced. Setting `NYRA_GOD_MODE_EMERGENCY_STOP=true` removes `owner_root` on the
+next request without rotating every credential. God Mode grants every capability
+implemented and advertised by this gateway; it does not fabricate access to an
+external system that has no configured connector or server-side credential.
 
 ## Local verification
 

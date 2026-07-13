@@ -37,6 +37,38 @@ test("accepts a scoped Codex bearer without exposing it", async () => {
   await assert.rejects(auth("Bearer wrong"), /bearer_invalid/);
 });
 
+test("activates owner_root only for the isolated owner tenant and an allowed Codex delegate", async () => {
+  const auth = createAuthenticator({
+    codexKeys: ["secret"],
+    codexScopes: ["core:read"],
+    auth0Issuer: "",
+    defaultTenantId: "owner-private",
+    supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantId: "owner-private",
+    godModeSubjects: [],
+    godModeClientIds: [],
+    godModeCodexEnabled: true,
+  });
+  const identity = await auth("Bearer secret");
+  assert.equal(identity.role, "owner_root");
+  assert.equal(identity.godMode, true);
+  assert.deepEqual(identity.scopes, ["core:read", "core:govern", "workspace:write", "owner:root"]);
+});
+
+test("the emergency stop disables owner_root immediately", async () => {
+  const auth = createAuthenticator({
+    codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "",
+    defaultTenantId: "owner-private", supportedScopes: ["core:read", "core:govern"],
+    godModeEnabled: true, godModeEmergencyStop: true, godModeTenantId: "owner-private",
+    godModeSubjects: [], godModeClientIds: [], godModeCodexEnabled: true,
+  });
+  assert.deepEqual(await auth("Bearer secret"), {
+    kind: "codex", subject: "codex", tenantId: "owner-private", scopes: ["core:read"],
+  });
+});
+
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   const { token, config, cache } = auth0Fixture({ scope: "core:read" });
   assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });

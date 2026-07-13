@@ -24,7 +24,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.6.0-full-intelligence-research-cortex");
+  assert.equal(health.version, "0.7.0-owner-root-god-mode");
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
