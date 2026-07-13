@@ -10,6 +10,8 @@ export type NiraBridgeRequest = {
   request_id?: string;
   text: string;
   tenant_id?: string;
+  domain?: string;
+  domain_pack?: string;
   owner_verified?: boolean;
   access_scope?: "denied" | "limited" | "owner_full";
   mode?: NiraBridgeMode;
@@ -36,6 +38,11 @@ export type NiraBridgeResult = {
   version: "nira_universal_core_bridge_v1";
   mode: NiraBridgeMode;
   god_mode_active: boolean;
+  domain_context: {
+    domain: string;
+    domain_pack: string;
+    runtime_kind: "horizontal_with_domain_pack";
+  };
   prepared_by_nira: {
     intent: string;
     target_system: string;
@@ -229,7 +236,7 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
   const coreInput: UniversalCoreInput = {
     request_id: request.request_id ?? `nira-bridge:${Date.now()}`,
     generated_at: new Date().toISOString(),
-    domain: "assistant",
+    domain: String(request.domain || "generic_multi_tenant_system"),
     context: {
       actor_id: "nira_orchestrator",
       tenant_id: request.tenant_id ?? "owner_private",
@@ -238,6 +245,7 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
       metadata: {
         intent,
         target_system: target,
+        domain_pack: String(request.domain_pack || "generic"),
         nira_role: "prepare_scenarios_only",
         core_role: "judge_rank_gate_audit",
         automation_role: "execute_only_after_core",
@@ -274,6 +282,11 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
     version: "nira_universal_core_bridge_v1",
     mode: godModeActive ? "god_mode_owner_only" : "standard",
     god_mode_active: godModeActive,
+    domain_context: {
+      domain: String(request.domain || "generic_multi_tenant_system"),
+      domain_pack: String(request.domain_pack || "generic"),
+      runtime_kind: "horizontal_with_domain_pack",
+    },
     prepared_by_nira: {
       intent,
       target_system: target,

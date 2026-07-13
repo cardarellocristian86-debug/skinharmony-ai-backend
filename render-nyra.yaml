@@ -9,6 +9,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NYRA_SERVICE_NAME
+        value: nyra-horizontal-runtime
+      - key: NYRA_DOMAIN_PACK_ID
+        value: skinharmony
       - key: NYRA_STORAGE_ROOT
         value: /var/data
       - key: NYRA_FINANCE_SHARED_CAPITAL_EUR

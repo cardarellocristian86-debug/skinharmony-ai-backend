@@ -102,6 +102,89 @@ try {
   const regulatedKey = regulatedGenerated.json.key;
   mark("regulated_codex_key_generate", true, { key_id: regulatedGenerated.json.record.key_id, tenant_id: regulatedGenerated.json.record.tenant_id });
 
+  const horizontalGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_horizontal_acme",
+    brand_scope: "acme",
+    preset: "nyra_core_360_connector",
+    tier: "omni_360",
+    label: "Horizontal Nyra Core test",
+  });
+  assert(horizontalGenerated.status === 201 && horizontalGenerated.json.key, "horizontal key generation failed");
+  const horizontalKey = horizontalGenerated.json.key;
+
+  const invalidPackKey = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant-invalid-pack",
+    brand_scope: "invalid",
+    domain_pack_id: "does_not_exist",
+  });
+  assert(invalidPackKey.status === 400 && invalidPackKey.json.error === "invalid_domain_pack_id", "invalid domain pack assignment was accepted");
+
+  const scopeLimitedGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_horizontal_limited",
+    brand_scope: "limited",
+    key_type: "connector",
+    allowed_scopes: ["read:snapshot"],
+    label: "Domain pack scope negative test",
+  });
+  assert(scopeLimitedGenerated.status === 201 && scopeLimitedGenerated.json.key, "scope-limited key generation failed");
+  const scopeDeniedPack = await api(base, "GET", "/v1/domain-packs/current", undefined, scopeLimitedGenerated.json.key);
+  assert(scopeDeniedPack.status === 403 && scopeDeniedPack.json.error === "scope_denied", "domain pack endpoint did not enforce read:decision");
+
+  const horizontalPack = await api(base, "GET", "/v1/domain-packs/current", undefined, horizontalKey);
+  assert(horizontalPack.status === 200 && horizontalPack.json.domain_pack?.id === "generic", "generic domain pack resolution failed");
+
+  const skinHarmonyPack = await api(base, "GET", "/v1/domain-packs/current", undefined, connectorKey);
+  assert(skinHarmonyPack.status === 200 && skinHarmonyPack.json.domain_pack?.id === "skinharmony", "SkinHarmony compatibility pack resolution failed");
+
+  const horizontalBranches = await api(base, "GET", "/v1/branches", undefined, horizontalKey);
+  assert(horizontalBranches.status === 200, "horizontal branches failed");
+  assert(horizontalBranches.json.tenant_package?.domain_pack?.id === "generic", "horizontal branch package missing generic pack");
+  assert(!horizontalBranches.json.tenant_package?.allowed_branches?.includes("skinharmony_analyzer"), "generic pack leaked SkinHarmony analyzer");
+  assert(!horizontalBranches.json.tenant_package?.allowed_branches?.includes("beauty_vertical_orchestration"), "generic pack leaked beauty vertical");
+
+  const nyraBranchCatalog = await api(base, "GET", "/v1/nira/branches", undefined, horizontalKey);
+  assert(nyraBranchCatalog.status === 200 && nyraBranchCatalog.json.catalog?.governance === "core_opens_nyra_branches", "Nyra branch catalog failed");
+  assert(nyraBranchCatalog.json.catalog.branches.every((item) => item.subbranch_count <= 20), "Nyra subbranch hard limit failed");
+  assert(!nyraBranchCatalog.json.catalog.branches.some((item) => item.id === "skinharmony_domain"), "generic catalog leaked SkinHarmony branch");
+
+  const horizontalInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Valuta privacy e prepara un piano di deploy su Render",
+    nyra_branches: ["execution_planning", "skinharmony_domain", "unknown_branch"],
+  }, horizontalKey);
+  assert(horizontalInterpretation.status === 200, "horizontal Nyra interpretation failed");
+  assert(horizontalInterpretation.json.result?.nyra_neural_network?.opened_by === "universal_core", "Core did not open Nyra branches");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.opened_branches.some((item) => item.id === "execution_planning"), "Core failed to open execution planning");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes("skinharmony_domain"), "Core failed to deny vertical Nyra branch");
+  assert(horizontalInterpretation.json.result.automation_plan?.execution_allowed === false, "Nyra branch router unexpectedly enabled execution");
+
+  const packOverride = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Attempt vertical override",
+    domain_pack: "skinharmony",
+  }, horizontalKey);
+  assert(packOverride.status === 403 && packOverride.json.error === "domain_pack_override_denied", "domain pack override was not denied");
+
+  const emptyNyraRequest = await api(base, "POST", "/v1/nira/core-bridge", { text: "" }, horizontalKey);
+  assert(emptyNyraRequest.status === 400 && emptyNyraRequest.json.error === "nira_text_required", "empty Nyra request was not rejected");
+  const oversizedNyraRequest = await api(base, "POST", "/v1/nira/core-bridge", { text: "x".repeat(20_001) }, horizontalKey);
+  assert(oversizedNyraRequest.status === 413 && oversizedNyraRequest.json.error === "nira_text_too_long", "oversized Nyra request was not rejected");
+  const malformedNyraBranch = await api(base, "POST", "/v1/nira/core-bridge", { text: "test", nyra_branches: ["../vertical"] }, horizontalKey);
+  assert(malformedNyraBranch.status === 400 && malformedNyraBranch.json.error === "invalid_nyra_branch_id", "malformed Nyra branch was not rejected");
+  const excessiveNyraBranches = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "test",
+    nyra_branches: Array.from({ length: 21 }, (_, index) => `branch_${index}`),
+  }, horizontalKey);
+  assert(excessiveNyraBranches.status === 400 && excessiveNyraBranches.json.error === "nyra_branch_request_limit_exceeded", "Nyra branch request limit was not enforced");
+  mark("horizontal_domain_pack_and_nyra_network", true, {
+    generic_pack: horizontalPack.json.domain_pack.id,
+    skinharmony_pack: skinHarmonyPack.json.domain_pack.id,
+    horizontal_branch_count: horizontalBranches.json.tenant_package.allowed_branches.length,
+    nyra_branch_count: nyraBranchCatalog.json.catalog.branches.length,
+    opened: horizontalInterpretation.json.result.nyra_neural_network.opened_branches.map((item) => item.id),
+    denied: horizontalInterpretation.json.result.nyra_neural_network.denied_branches,
+    negative_cases: [invalidPackKey.json.error, packOverride.json.error, emptyNyraRequest.json.error, oversizedNyraRequest.json.error, malformedNyraBranch.json.error, excessiveNyraBranches.json.error],
+    scope_negative_case: scopeDeniedPack.json.error,
+  });
+
   const presets = await api(base, "GET", "/v1/keys/presets", undefined);
   assert(presets.status === 200 && presets.json.presets?.codex_automation?.scopes?.includes("automation:codex"), "key presets list failed");
   assert(presets.json.presets?.codex_automation?.scopes?.includes("gateway:ai"), "codex preset missing AI gateway scope");
@@ -451,7 +534,7 @@ try {
   assert(codexContext.status === 200 && codexContext.json.context?.selected_branches?.includes("executive_gold"), "codex context failed");
   assert(codexContext.json.context?.selected_branches?.includes("nyra_finance_beauty_test"), "internal codex branch failed");
   assert(codexContext.json.context?.selected_branches?.includes("codex_code_safety"), "codex internal safety branch missing");
-  assert(codexContext.json.tenant_policy?.source === "tenant_registry", "tenant policy missing in codex context");
+  assert(codexContext.json.tenant_policy?.source === "domain_pack_registry", "tenant policy missing in codex context");
   assert(codexContext.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex context decision contract missing");
   assert(codexContext.json.guardrail?.openai_call_executed === false, "codex context should not call OpenAI in smoke");
   mark("codex_context_composition", true, {
@@ -782,7 +865,7 @@ try {
   assert(codexGuardGeneric.status === 200 && codexGuardGeneric.json.codex_guard?.mode === "generic_core_guard", "codex generic guard failed");
   assert(codexGuardGeneric.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex generic contract missing");
   assert(codexGuardGeneric.json.codex_guard?.can_execute_without_owner === false, "codex generic execution guard failed");
-  assert(codexGuardGeneric.json.tenant_policy?.source === "tenant_registry", "tenant policy missing in generic guard");
+  assert(codexGuardGeneric.json.tenant_policy?.source === "domain_pack_registry", "tenant policy missing in generic guard");
   mark("codex_guard_generic", true, {
     mode: codexGuardGeneric.json.codex_guard.mode,
     state: codexGuardGeneric.json.decision_contract.state,

@@ -9,6 +9,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: CORE_SERVICE_NAME
+        value: universal-core-service
       - key: CORE_SERVICE_STORAGE_ROOT
         value: /var/data/universal-core-service
       - key: CORE_SERVICE_ADMIN_KEY

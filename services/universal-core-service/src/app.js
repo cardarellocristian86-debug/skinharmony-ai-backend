@@ -24,6 +24,8 @@ import {
 } from "../branches/index.js";
 import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
+import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
+import { nyraBranchCatalog, routeNyraBranches } from "./nyraBranchNetwork.js";
 import {
   AI_GATEWAY_ADAPTERS,
   AI_GATEWAY_MODES,
@@ -48,7 +50,8 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.19-branch-taxonomy-cortex-routefix";
+const SERVICE_VERSION = "0.4.0-horizontal-domain-packs-nyra-network";
+const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
   return new Date().toISOString();
@@ -552,7 +555,11 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
   const metadata = keyRecord?.metadata && typeof keyRecord.metadata === "object" ? keyRecord.metadata : {};
   const resolvedBranches = branchResolution || resolveBranchesForKey(keyRecord);
   const resolvedEntitlement = entitlement || buildEntitlement(keyRecord, resolvedBranches);
-  const resolvedTenantPolicy = tenantPolicy || getTenantPolicy(keyRecord?.tenant_id, metadata.tier || metadata.suite_tier);
+  const resolvedTenantPolicy = tenantPolicy || getTenantPolicy(keyRecord?.tenant_id, metadata.tier || metadata.suite_tier, {
+    brandScope: keyRecord?.brand_scope,
+    metadata,
+  });
+  const domainPack = resolveDomainPackForKey(keyRecord);
   const maturity = branchMaturityReport();
   const registry = branchRegistry();
   const branchProfiles = Object.fromEntries(
@@ -601,15 +608,22 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
       action_mediation_states: ["allow", "rewrite", "confirm", "defer", "sandbox", "block", "rollback_required"],
       rule: "AI e automazioni possono agire solo passando da Core, policy, audit, tenant isolation e conferma quando serve.",
     },
+    domain_pack: publicDomainPack(domainPack),
+    nyra_neural_network: {
+      schema_version: "nyra_neural_branch_network_v1",
+      governance: "core_opens_nyra_branches",
+      catalog_endpoint: "GET /v1/nira/branches",
+      maximum_subbranches_per_branch: 20,
+    },
     limits: resolvedEntitlement.limits,
     recommended_folders: {
-      config: ".skinharmony-core/config",
-      key: ".skinharmony-core/keys",
-      memory: ".skinharmony-core/memory",
+      config: domainPack.id === "skinharmony" ? ".skinharmony-core/config" : ".universal-core/config",
+      key: domainPack.id === "skinharmony" ? ".skinharmony-core/keys" : ".universal-core/keys",
+      memory: domainPack.id === "skinharmony" ? ".skinharmony-core/memory" : ".universal-core/memory",
       reports: "reports/codex-core",
-      policies: ".skinharmony-core/policies",
-      logs: ".skinharmony-core/logs",
-      snapshots: ".skinharmony-core/snapshots",
+      policies: domainPack.id === "skinharmony" ? ".skinharmony-core/policies" : ".universal-core/policies",
+      logs: domainPack.id === "skinharmony" ? ".skinharmony-core/logs" : ".universal-core/logs",
+      snapshots: domainPack.id === "skinharmony" ? ".skinharmony-core/snapshots" : ".universal-core/snapshots",
       ...(typeof metadata.recommended_folders === "object" && metadata.recommended_folders ? metadata.recommended_folders : {}),
     },
     scope: {
@@ -2922,7 +2936,7 @@ export function createUniversalCoreService(options = {}) {
   app.get("/healthz", (req, res) => {
     res.json({
       ok: true,
-      service: "skinharmony-universal-core-service",
+      service: SERVICE_NAME,
       version: SERVICE_VERSION,
       mode: process.env.NODE_ENV || "development",
       render_ready: true,
@@ -3036,7 +3050,10 @@ export function createUniversalCoreService(options = {}) {
       const tenant = tenants.get(setupRecord.tenant_id);
       const branchResolution = resolveBranchesForKey(keyResult.record);
       const entitlement = buildEntitlement(keyResult.record, branchResolution);
-      const tenantPolicy = getTenantPolicy(setupRecord.tenant_id, setupRecord.plan);
+      const tenantPolicy = getTenantPolicy(setupRecord.tenant_id, setupRecord.plan, {
+        brandScope: keyResult.record.brand_scope,
+        metadata: keyResult.record.metadata,
+      });
       const profile = buildBootstrapProfile({
         keyRecord: keyResult.record,
         tenant,
@@ -3081,7 +3098,10 @@ export function createUniversalCoreService(options = {}) {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenant = tenants.get(req.tenantId);
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const profile = buildBootstrapProfile({
       keyRecord: req.coreKey,
       tenant,
@@ -3105,6 +3125,35 @@ export function createUniversalCoreService(options = {}) {
       schema_version: "tenant_registry_v1",
       rule: "Universal Core resta agnostico: settore, dizionario e policy entrano dal tenant registry.",
     });
+  });
+
+  app.get("/v1/domain-packs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    audit.append("core_domain_pack_catalog_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: current.id });
+    res.json({
+      ok: true,
+      schema_version: "core_domain_pack_catalog_v1",
+      current: publicDomainPack(current),
+      packs: listDomainPacks(),
+      rule: "Il runtime e orizzontale; il Core risolve un solo domain pack dal tenant e impedisce override lato client.",
+    });
+  });
+
+  app.get("/v1/domain-packs/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    res.json({ ok: true, tenant_id: req.tenantId, domain_pack: publicDomainPack(current) });
+  });
+
+  app.get("/v1/nira/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    const catalog = nyraBranchCatalog(current.id);
+    audit.append("core_nyra_branch_catalog_read", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      domain_pack_id: current.id,
+      branch_count: catalog.branches.length,
+    });
+    res.json({ ok: true, tenant_id: req.tenantId, catalog });
   });
 
   app.post("/v1/tenants/upsert", requireAdmin, (req, res) => {
@@ -3831,6 +3880,8 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -3843,7 +3894,10 @@ export function createUniversalCoreService(options = {}) {
       userInput: req.body?.user_input || req.body?.input || "",
       locale: req.body?.locale || "it",
     });
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     audit.append("core_codex_context_composed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -3853,6 +3907,7 @@ export function createUniversalCoreService(options = {}) {
     });
     res.json({
       ok: true,
+      domain_pack: publicDomainPack(domainPackAccess.pack),
       context,
       tenant_policy: tenantPolicy,
       decision_contract: normalizeDecisionContract(runUniversalCore({
@@ -3891,6 +3946,8 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.post("/v1/codex/guard", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -3903,7 +3960,10 @@ export function createUniversalCoreService(options = {}) {
       userInput: req.body?.user_input || req.body?.input || "",
       locale: req.body?.locale || "it",
     });
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const evaluatorInput = buildActionEvaluatorInput({
       get: () => "",
       body: {
@@ -3915,7 +3975,7 @@ export function createUniversalCoreService(options = {}) {
         risk_hint: req.body?.risk_hint ?? (context.selected_branches.length ? 35 : 45),
         evidence: [
           { label: context.selected_branches.length ? "Rami Core disponibili per il task" : "Nessun ramo disponibile: guardiano generico Core attivo", value: context.selected_branches.length },
-          { label: tenantPolicy.source === "tenant_registry" ? "Tenant policy specifica caricata" : "Policy tenant generica caricata", value: tenantPolicy.source },
+          { label: tenantPolicy.source === "domain_pack_registry" ? "Domain pack tenant specifico caricato" : "Policy tenant generica caricata", value: tenantPolicy.source },
           ...(Array.isArray(req.body?.evidence) ? req.body.evidence : []),
         ],
       },
@@ -3945,6 +4005,21 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const niraText = String(req.body?.text || req.body?.request || req.body?.task || "").trim();
+    if (!niraText) return publicError(res, 400, "nira_text_required");
+    if (niraText.length > 20_000) return publicError(res, 413, "nira_text_too_long");
+    const requestedNyraBranches = req.body?.nyra_branches;
+    if (requestedNyraBranches !== undefined && !Array.isArray(requestedNyraBranches)) {
+      return publicError(res, 400, "nyra_branches_must_be_array");
+    }
+    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.length > 20) {
+      return publicError(res, 400, "nyra_branch_request_limit_exceeded");
+    }
+    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(String(id || "")))) {
+      return publicError(res, 400, "invalid_nyra_branch_id");
+    }
     const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
     const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
@@ -3956,10 +4031,17 @@ export function createUniversalCoreService(options = {}) {
       userInput: String(req.body?.text || req.body?.request || req.body?.task || ""),
       locale: req.body?.locale || "it",
     });
+    const nyraNetwork = routeNyraBranches({
+      text: niraText,
+      requestedBranches: Array.isArray(requestedNyraBranches) ? requestedNyraBranches : [],
+      domainPackId: domainPackAccess.pack.id,
+    });
     const result = runNiraUniversalCoreBridge({
       request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
-      text: String(req.body?.text || req.body?.request || req.body?.task || ""),
+      text: niraText,
       tenant_id: req.tenantId,
+      domain: domainPackAccess.pack.domain,
+      domain_pack: domainPackAccess.pack.id,
       owner_verified: ownerVerified,
       access_scope: ownerVerified ? "owner_full" : "limited",
       mode: requestedGodMode ? "god_mode_owner_only" : "standard",
@@ -3998,6 +4080,8 @@ export function createUniversalCoreService(options = {}) {
         actual_selected_groups: branchContext.selected_groups,
         actual_denied_groups: branchContext.denied_groups,
       },
+      domain_pack: publicDomainPack(domainPackAccess.pack),
+      nyra_neural_network: nyraNetwork,
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -4009,10 +4093,12 @@ export function createUniversalCoreService(options = {}) {
       execution_allowed: guardedResult.automation_plan.execution_allowed,
       selected_branches: guardedResult.core_branch_diagnostics.actual_selected_branches,
       denied_branches: guardedResult.core_branch_diagnostics.actual_denied_branches,
+      nyra_opened_branches: nyraNetwork.opened_branches.map((item) => item.id),
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
+      domain_pack: publicDomainPack(domainPackAccess.pack),
       result: guardedResult,
       branch_context: {
         selected_branches: branchContext.selected_branches,
@@ -4166,7 +4252,10 @@ export function createUniversalCoreService(options = {}) {
     const policy = req.body?.policy || {};
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const mediation = evaluatePolicyEngine({
       tenantPolicy,
       entitlement,
@@ -4188,7 +4277,10 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/action-mediation/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const result = evaluatePolicyEngine({
       tenantPolicy,
       entitlement,

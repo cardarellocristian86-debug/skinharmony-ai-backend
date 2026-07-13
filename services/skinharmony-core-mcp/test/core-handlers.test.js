@@ -12,12 +12,15 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   });
   const identity = { tenantId: "tenant-a" };
   await handlers.core_health({}, identity);
-  await handlers.nyra_runtime_context({ include_control_snapshot: true }, identity);
-  await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1" }, identity);
+  await handlers.nyra_runtime_context({ include_control_snapshot: true, domain_pack: "generic" }, identity);
+  await handlers.nyra_branch_catalog({}, identity);
+  await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "generic", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
-  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/codex/context", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/codex/context", "/v1/nira/branches", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
-  assert(calls.slice(1).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
+  assert(calls.filter((call) => call.init.body).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
+  assert.equal(JSON.parse(calls[1].init.body).domain_pack, "generic");
+  assert.deepEqual(JSON.parse(calls[3].init.body).nyra_branches, ["context_intelligence"]);
 });
 
 test("rejects a tenant without its own Core key", async () => {

@@ -56,6 +56,7 @@ import { branchInfrastructureRuntimeIntelligence } from "./branch-infrastructure
 import { branchLearningKnowledgeIntelligence } from "./branch-learning-knowledge-intelligence.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
 import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
+import { branchAllowedForDomainPack, resolveDomainPackForKey } from "../src/domainPacks.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -379,6 +380,7 @@ export function normalizeTier(tier) {
 }
 
 export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
+  const domainPack = resolveDomainPackForKey(keyRecord);
   const metadata = keyRecord?.metadata && typeof keyRecord.metadata === "object" ? keyRecord.metadata : {};
   const presetTier =
     keyRecord?.preset === "suite_connector" || keyRecord?.preset === "wordpress_connector"
@@ -398,13 +400,16 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
       ? metadata.active_branches.map(String)
       : fromPackage;
   const expandedAllowed = expandBranchIds(explicitSource);
-  const allowed = [...new Set(expandedAllowed.expanded)].filter((id) => Boolean(getBranch(id)));
+  const allowed = [...new Set(expandedAllowed.expanded)]
+    .filter((id) => Boolean(getBranch(id)))
+    .filter((id) => branchAllowedForDomainPack(domainPack, id));
   const expandedRequested = expandBranchIds(requestedBranches);
   const requested = Array.isArray(requestedBranches) && requestedBranches.length
     ? expandedRequested.expanded.filter((id) => allowed.includes(id))
     : allowed;
 
   return {
+    domain_pack: { id: domainPack.id, version: domainPack.version, domain: domainPack.domain },
     tier,
     allowed_branches: allowed,
     allowed_groups: expandedAllowed.requested_groups,

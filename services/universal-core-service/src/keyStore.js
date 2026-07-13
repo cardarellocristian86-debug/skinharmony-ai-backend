@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { DEFAULT_AUTOMATION_SCOPES, DEFAULT_CONNECTOR_SCOPES, KEY_PRESETS, sanitizeScopes } from "./scope.js";
 import { ensureDir } from "./audit.js";
 import { normalizeAllowedDomains, normalizeSuiteLimits, sanitizeSuiteModules } from "./suitePolicy.js";
+import { getDomainPack } from "./domainPacks.js";
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -48,6 +49,8 @@ export function createKeyStore(storageRoot, audit) {
     const keyId = `key_${crypto.randomUUID()}`;
     const secret = `SHX-${keyType.toUpperCase()}-${crypto.randomBytes(18).toString("base64url")}`;
     const fallbackScopes = preset?.scopes || (keyType === "automation" ? DEFAULT_AUTOMATION_SCOPES : DEFAULT_CONNECTOR_SCOPES);
+    const domainPackId = String(input.domain_pack_id || input.metadata?.domain_pack_id || "").trim();
+    if (domainPackId && !getDomainPack(domainPackId)) throw new Error("invalid_domain_pack_id");
     const record = {
       key_id: keyId,
       key_type: keyType,
@@ -64,6 +67,7 @@ export function createKeyStore(storageRoot, audit) {
       revoked_at: null,
       metadata: {
         ...(typeof input.metadata === "object" && input.metadata ? input.metadata : {}),
+        domain_pack_id: domainPackId || undefined,
         tier: String(input.tier || input.metadata?.tier || preset?.tier || "").trim() || undefined,
         suite_tier: String(input.suite_tier || input.metadata?.suite_tier || input.tier || input.metadata?.tier || preset?.tier || "").trim() || undefined,
         active_branches: Array.isArray(input.active_branches)

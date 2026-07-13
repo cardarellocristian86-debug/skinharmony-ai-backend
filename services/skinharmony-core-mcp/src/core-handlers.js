@@ -36,12 +36,22 @@ export function createCoreHandlers(config, options = {}) {
         task: "ChatGPT requests Nyra runtime context",
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
         locale: "it",
+        ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
         tenant_id: identity.tenantId
       }
     })),
+    nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
     nyra_interpret_request: async (args, identity) => textResult(await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
       method: "POST",
-      body: { text: args.message, request_id: args.session_id, locale: "it", mode: "standard", tenant_id: identity.tenantId }
+      body: {
+        text: args.message,
+        request_id: args.session_id,
+        locale: "it",
+        mode: "standard",
+        ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
+        ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+        tenant_id: identity.tenantId
+      }
     })),
     core_gate_action: async (args, identity) => textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
       method: "POST",
