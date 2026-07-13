@@ -40,7 +40,7 @@ NYRA_OPENAI_RESEARCH_TIMEOUT_MS=90000
 NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR=10
 OPENAI_API_KEY=<optional server-side secret>
 NYRA_GOD_MODE_ENABLED=false
-NYRA_GOD_MODE_TENANT_ID=owner-private
+NYRA_GOD_MODE_TENANT_IDS=owner-private,codexai
 NYRA_GOD_MODE_SUBJECTS=<comma-separated Auth0 subject ids>
 NYRA_GOD_MODE_CLIENT_IDS=<comma-separated dedicated OAuth client ids>
 NYRA_GOD_MODE_CODEX_ENABLED=false
@@ -56,7 +56,7 @@ Configure the Auth0 application as a public OAuth client for ChatGPT, allow only
 
 God Mode is a server-side owner profile, not a client-provided flag. It activates
 only when all of these checks pass: the feature is enabled, the emergency stop is
-off, the signed token belongs to `NYRA_GOD_MODE_TENANT_ID`, and the verified
+off, the signed token belongs to the explicit `NYRA_GOD_MODE_TENANT_IDS` allowlist, and the verified
 Auth0 subject/OAuth client (or the separately enabled Codex delegate) is on the
 server allowlist. A matching identity receives `owner:root` plus the configured
 server scopes and sends a verified `owner_context` to Universal Core.

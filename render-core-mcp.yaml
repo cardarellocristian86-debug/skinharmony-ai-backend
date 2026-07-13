@@ -25,8 +25,8 @@ services:
         value: core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
       - key: NYRA_GOD_MODE_ENABLED
         value: "true"
-      - key: NYRA_GOD_MODE_TENANT_ID
-        value: owner-private
+      - key: NYRA_GOD_MODE_TENANT_IDS
+        value: owner-private,codexai
       - key: NYRA_GOD_MODE_CLIENT_IDS
         value: tpc_nSXQ4C5oyjBo77MhtJnWXE
       - key: NYRA_GOD_MODE_CODEX_ENABLED
