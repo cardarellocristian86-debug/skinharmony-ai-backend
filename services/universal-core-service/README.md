@@ -290,3 +290,11 @@ Provare una decisione:
 ```bash
 npm run core:client -- decision --url http://127.0.0.1:8787 --key "$SH_CORE_KEY" --tenant skinharmony
 ```
+
+## Intelligence consolidation 0.8.1
+
+- Validated tenant memory is normalized before analysis and its provenance is exposed in every probability estimate.
+- Only verified directional memory can move probability; other verified memories can reduce uncertainty without being treated as favorable evidence.
+- Calibration now reports probability buckets, expected calibration error, domain and horizon cohorts.
+- Verified outcomes use atomic per-record tenant storage, preserve legacy reads and reject conflicting reuse of an outcome ID.
+- Live weight mutation remains disabled and every execution still requires the existing Core governance boundary.
