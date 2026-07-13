@@ -59,7 +59,7 @@ export function loadConfig(env = process.env) {
     jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
     codexKeys,
     codexScopes: csv(env.CODEX_BEARER_SCOPES || "core:read,core:govern"),
-    supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate"),
+    supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern"),
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
