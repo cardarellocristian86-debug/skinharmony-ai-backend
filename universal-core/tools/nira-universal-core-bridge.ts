@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../packages/core/src/index.ts";
 import type { UniversalAction, UniversalCoreInput, UniversalSignal } from "../packages/contracts/src/index.ts";
+import { inferNiraIntent, inferNiraTarget, prepareContextualNiraScenarios, selectedScenarioRequiresConfirmation } from "./nira-intent.js";
 
 type NiraBridgeMode = "standard" | "god_mode_owner_only";
 
@@ -25,7 +26,7 @@ export type NiraBridgeRequest = {
   owner_verified?: boolean;
   access_scope?: "denied" | "limited" | "owner_full";
   mode?: NiraBridgeMode;
-  target_system?: "suite" | "smartdesk" | "wordpress" | "universal_core" | "generic";
+  target_system?: "suite" | "smartdesk" | "wordpress" | "analyzer" | "universal_core" | "generic";
   memory_context?: TenantMemoryContext;
 };
 
@@ -94,103 +95,8 @@ function clamp(value: number, min = 0, max = 100): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function inferIntent(text: string): string {
-  const value = text.toLowerCase();
-  if (/(sposta|render|allegger|control plane|dispatch|runbook|automaz)/.test(value)) return "orchestrate_controlled_automation";
-  if (/(test|verifica|controlla|report)/.test(value)) return "verify_and_report";
-  if (/(plugin|wordpress|suite)/.test(value)) return "suite_operational_planning";
-  return "general_operational_planning";
-}
-
-function inferTarget(text: string, explicit?: NiraBridgeRequest["target_system"]): NonNullable<NiraBridgeRequest["target_system"]> {
-  if (explicit) return explicit;
-  const value = text.toLowerCase();
-  if (value.includes("smart desk") || value.includes("smartdesk")) return "smartdesk";
-  if (value.includes("wordpress") || value.includes("wp")) return "wordpress";
-  if (value.includes("suite")) return "suite";
-  if (value.includes("core")) return "universal_core";
-  return "generic";
-}
-
-function scenario(
-  id: string,
-  label: string,
-  actionId: string,
-  actionLabel: string,
-  category: string,
-  values: Partial<Pick<NiraPreparedScenario, "severity" | "confidence" | "expected_value" | "friction" | "reversibility" | "risk" | "execution_scope">> = {},
-): NiraPreparedScenario {
-  return {
-    id,
-    label,
-    action_id: actionId,
-    action_label: actionLabel,
-    category,
-    severity: values.severity ?? 55,
-    confidence: values.confidence ?? 75,
-    expected_value: values.expected_value ?? 70,
-    friction: values.friction ?? 25,
-    reversibility: values.reversibility ?? 80,
-    risk: values.risk ?? 35,
-    execution_scope: values.execution_scope ?? "proposal",
-  };
-}
-
 export function prepareNiraScenarios(request: NiraBridgeRequest): NiraPreparedScenario[] {
-  const text = request.text.toLowerCase();
-  const scenarios: NiraPreparedScenario[] = [
-    scenario("map_context", "Mappa contesto e stato reale", "action:read_current_state", "Leggere stato reale", "context", {
-      severity: 38,
-      confidence: 90,
-      expected_value: 65,
-      friction: 12,
-      risk: 12,
-      execution_scope: "read_only",
-    }),
-    scenario("core_rank_options", "Genera varianti e lascia scegliere al Core", "action:rank_variants_with_core", "Ranking varianti Core", "decision", {
-      severity: 54,
-      confidence: 84,
-      expected_value: 86,
-      friction: 18,
-      risk: 24,
-    }),
-    scenario("controlled_runbook", "Prepara runbook controllato con evidence", "action:prepare_controlled_runbook", "Preparare runbook controllato", "automation", {
-      severity: 66,
-      confidence: 80,
-      expected_value: 88,
-      friction: 22,
-      risk: 42,
-      execution_scope: "confirm_required",
-    }),
-  ];
-
-  if (/(render|control plane|nodi|dispatch|suite)/.test(text)) {
-    scenarios.push(
-      scenario("render_handoff", "Sposta peso su Render e lascia UI leggera", "action:render_control_plane_handoff", "Handoff Render controllato", "architecture", {
-        severity: 70,
-        confidence: 82,
-        expected_value: 92,
-        friction: 28,
-        risk: 48,
-        execution_scope: "confirm_required",
-      }),
-    );
-  }
-
-  if (/(god mode|modalita dio|owner|cristian)/.test(text) || request.mode === "god_mode_owner_only") {
-    scenarios.push(
-      scenario("owner_god_mode_bridge", "Abilita God Mode owner-only come orchestrazione, non bypass", "action:owner_only_god_mode_bridge", "God Mode owner-only", "owner_control", {
-        severity: 62,
-        confidence: request.owner_verified ? 86 : 35,
-        expected_value: 78,
-        friction: 16,
-        risk: request.owner_verified ? 34 : 82,
-        execution_scope: "confirm_required",
-      }),
-    );
-  }
-
-  return scenarios;
+  return prepareContextualNiraScenarios(request) as NiraPreparedScenario[];
 }
 
 function signalFromScenario(item: NiraPreparedScenario): UniversalSignal {
@@ -220,11 +126,12 @@ function primaryAction(output: ReturnType<typeof runUniversalCore>): UniversalAc
 }
 
 export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBridgeResult {
-  const target = inferTarget(request.text, request.target_system);
-  const intent = inferIntent(request.text);
+  const target = inferNiraTarget(request.text, request.target_system);
+  const intent = inferNiraIntent(request.text);
   const requestedGodMode = request.mode === "god_mode_owner_only";
   const godModeActive = Boolean(requestedGodMode && request.owner_verified && request.access_scope === "owner_full");
   const scenarios = prepareNiraScenarios(request);
+  const potentiallySensitive = scenarios.some((item) => item.execution_scope === "confirm_required");
 
   const blockedRules = [];
   if (requestedGodMode && !godModeActive) {
@@ -235,7 +142,7 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
       blocks_execution: true,
     });
   }
-  if (!request.owner_verified) {
+  if (!request.owner_verified && potentiallySensitive) {
     blockedRules.push({
       scope: "sensitive_automation",
       reason_code: "owner_not_verified",
@@ -268,26 +175,26 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
     },
     signals: scenarios.map(signalFromScenario),
     data_quality: {
-      score: godModeActive ? 88 : 68,
-      completeness: 76,
+      score: godModeActive ? 88 : potentiallySensitive ? 72 : 84,
+      completeness: 82,
       freshness: 90,
-      consistency: 82,
-      reliability: request.owner_verified ? 88 : 55,
-      missing_fields: request.owner_verified ? [] : ["owner_verified"],
+      consistency: 86,
+      reliability: request.owner_verified ? 88 : potentiallySensitive ? 65 : 84,
+      missing_fields: potentiallySensitive && !request.owner_verified ? ["owner_verified"] : [],
     },
     constraints: {
       allow_automation: godModeActive,
-      require_confirmation: true,
-      max_control_level: godModeActive ? "confirm" : "suggest",
+      require_confirmation: potentiallySensitive,
+      max_control_level: godModeActive ? "confirm" : potentiallySensitive ? "suggest" : "observe",
       blocked_action_rules: blockedRules,
-      safety_mode: true,
+      safety_mode: potentiallySensitive,
     },
   };
 
   const coreOutput = runUniversalCore(coreInput);
   const action = primaryAction(coreOutput);
   const canExecute = false;
-  const ownerConfirmationRequired = true;
+  const ownerConfirmationRequired = selectedScenarioRequiresConfirmation(scenarios, action?.id);
   const baselineSteps = 9;
   const bridgeSteps = godModeActive ? 5 : 6;
   const stepReductionPct = Math.round(((baselineSteps - bridgeSteps) / baselineSteps) * 100);
@@ -319,9 +226,9 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
     },
     automation_plan: {
       execution_allowed: canExecute,
-      next_step: canExecute
-        ? "Preparare runbook e chiedere conferma owner prima della scrittura reale."
-        : "Restare in proposta/preview finche Core e owner non consentono.",
+      next_step: ownerConfirmationRequired
+        ? "Preparare runbook/evidence e chiedere conferma owner prima della scrittura reale."
+        : "Procedere soltanto in lettura, analisi o proposta nel perimetro tenant.",
       runbook_candidate: action?.id.replace(/^action:/, "") ?? "none",
       audit_required: true,
       owner_confirmation_required: ownerConfirmationRequired,

@@ -8,6 +8,18 @@ function cleanReference(value) {
 export function buildActionAuthorization(decisionContract = {}, body = {}) {
   const ownerConfirmed = body.owner_confirmed === true;
   const exactCommit = /^[a-f0-9]{40}$/i.test(String(body.target_commit || ""));
+  const tenantScopedRead =
+    body.operation_class === "tenant_scoped_read" &&
+    body.external_side_effect !== true &&
+    body.contains_customer_data !== true &&
+    body.cross_tenant !== true &&
+    body.configuration_changes !== true;
+  const sandboxedScopedWork =
+    body.operation_class === "sandboxed_scoped_work" &&
+    body.external_side_effect !== true &&
+    body.contains_customer_data !== true &&
+    body.cross_tenant !== true &&
+    body.configuration_changes !== true;
   const reversibleDeploy =
     body.operation_class === "reversible_owner_confirmed_deploy" &&
     String(body.action_type || "").toLowerCase() === "deploy" &&
@@ -19,20 +31,25 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     body.configuration_changes === false &&
     exactCommit &&
     cleanReference(body.confirmation_reference).length > 0;
-  const confirmationRequired = decisionContract.control_level === "confirm" || reversibleDeploy;
-  const confirmationSatisfied = confirmationRequired && ownerConfirmed;
   const reversibleInternalWrite =
     body.operation_class === "reversible_internal_collaboration_write" &&
     body.external_side_effect === false &&
     body.contains_customer_data === false &&
     body.rollback_ready === true;
+  const confirmationRequired = tenantScopedRead || sandboxedScopedWork
+    ? false
+    : decisionContract.control_level === "confirm" || reversibleDeploy;
+  const confirmationSatisfied = confirmationRequired && ownerConfirmed;
   const hardBlocked = decisionContract.state === "blocked" ||
     decisionContract.recommended_actions?.some?.((action) => action.blocked === true) === true;
-  const authorizedScope = reversibleInternalWrite || reversibleDeploy;
+  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy;
+  const riskAllowed = reversibleDeploy
+    ? ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""))
+    : decisionContract.risk_band === "low";
   const executionAllowed = Boolean(
     authorizedScope &&
     !hardBlocked &&
-    decisionContract.risk_band === "low" &&
+    riskAllowed &&
     (!confirmationRequired || confirmationSatisfied)
   );
 
@@ -49,11 +66,16 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     confirmation_reference: confirmationSatisfied
       ? cleanReference(body.confirmation_reference) || "explicit_owner_confirmation"
       : null,
-    scope: reversibleInternalWrite
-      ? "reversible_internal_collaboration_write"
-      : reversibleDeploy
-        ? "reversible_owner_confirmed_deploy"
-        : "evaluation_only",
+    scope: tenantScopedRead
+      ? "tenant_scoped_read"
+      : sandboxedScopedWork
+        ? "sandboxed_scoped_work"
+        : reversibleInternalWrite
+          ? "reversible_internal_collaboration_write"
+          : reversibleDeploy
+            ? "reversible_owner_confirmed_deploy"
+            : "evaluation_only",
     target_commit: reversibleDeploy ? String(body.target_commit).toLowerCase() : null,
   };
 }
+
