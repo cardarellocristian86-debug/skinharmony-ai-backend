@@ -62,6 +62,7 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   await handlers.calibration_status({ limit: 10 }, identity);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
     "/v1/intelligence/workflow",
+    "/v1/nira/core-bridge",
     "/v1/intelligence/scenarios",
     "/v1/intelligence/hypotheses/rank",
     "/v1/intelligence/events/evaluate",
@@ -72,8 +73,9 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
     "/v1/intelligence/calibration",
   ]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
-  assert(calls.slice(0, 8).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
-  assert(calls.slice(0, 8).every((call) => JSON.parse(call.init.body).memory_context.tenant_id === "tenant-a"));
+  assert(calls.slice(0, 9).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
+  assert(calls.slice(0, 9).every((call) => JSON.parse(call.init.body).memory_context.tenant_id === "tenant-a"));
+  assert.match(JSON.parse(calls[1].init.body).text, /Interpreta e spiega/);
 });
 
 test("write guard fails closed on hard blocks and allows controlled writes", async () => {
