@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
+const { createNyraHorizontalRuntime } = require("./lib/nyra-horizontal-runtime");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -66,7 +67,9 @@ const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
-const NYRA_SERVICE_VERSION = "0.5.0-decision-journey";
+const nyraHorizontalRuntime = createNyraHorizontalRuntime(process.env);
+const NYRA_SERVICE_NAME = nyraHorizontalRuntime.serviceName;
+const NYRA_SERVICE_VERSION = nyraHorizontalRuntime.version;
 const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
 const NYRA_BODY_LIMIT = String(process.env.NYRA_BODY_LIMIT || "1mb");
 const nyraRateBuckets = new Map();
@@ -280,8 +283,10 @@ app.use(express.json({ limit: NYRA_BODY_LIMIT }));
 app.get("/healthz", (_req, res) => {
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
+    runtime_kind: "horizontal_neural_branch_runtime",
+    domain_pack_resolution: nyraHorizontalRuntime.expectedDomainPack ? "core_validated_expected_pack" : "core_resolved_from_tenant",
     auth_required: process.env.NODE_ENV === "production",
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),
@@ -320,7 +325,7 @@ app.use("/api/nyra/analyzer", (req, res, next) => {
   }
   res.status(401).json({
     ok: false,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     error: "analyzer_key_required"
   });
 });
@@ -4424,6 +4429,41 @@ app.get("/api/nyra/control", (_req, res) => {
   });
 });
 
+app.get("/api/nyra/runtime/contract", (_req, res) => {
+  res.json({ ok: true, contract: nyraHorizontalRuntime.contract() });
+});
+
+app.post("/api/nyra/runtime/interpret", async (req, res) => {
+  const prepared = nyraHorizontalRuntime.prepareInterpretation(req.body || {});
+  if (!prepared.ok) {
+    res.status(prepared.status || 400).json({ ok: false, error: prepared.error, execution_allowed: false });
+    return;
+  }
+  const core = await requestNyraCore("/v1/nira/core-bridge", {
+    method: "POST",
+    body: prepared.core_request,
+  });
+  if (!core.ok) {
+    res.status(core.status || 503).json({
+      ok: false,
+      service: NYRA_SERVICE_NAME,
+      error: core.code || "core_branch_router_unavailable",
+      local_interpretation: prepared.local_interpretation,
+      branch_state: "not_opened_core_unavailable",
+      execution_allowed: false,
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    service: NYRA_SERVICE_NAME,
+    runtime: nyraHorizontalRuntime.contract(),
+    local_interpretation: prepared.local_interpretation,
+    core_router: core.data,
+    execution_allowed: false,
+  });
+});
+
 app.get("/api/nyra/runtime/readiness", async (_req, res) => {
   const config = nyraCoreConfig();
   const core = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`);
@@ -4433,8 +4473,9 @@ app.get("/api/nyra/runtime/readiness", async (_req, res) => {
   const ready = Boolean(nyraStorageRoot && authConfigured && core.ok);
   res.status(ready ? 200 : 503).json({
     ok: ready,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
+    runtime: nyraHorizontalRuntime.contract(),
     state: ready ? "ready" : "attention",
     checked_at: new Date().toISOString(),
     auth: {
@@ -4481,7 +4522,7 @@ app.get("/api/nyra/core/status", async (_req, res) => {
   if (!result.ok) {
     return res.status(result.status || 503).json({
       ok: false,
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       core: {
         configured: Boolean(config.baseUrl && config.apiKey && config.tenantId),
         reachable: false,
@@ -4492,7 +4533,7 @@ app.get("/api/nyra/core/status", async (_req, res) => {
   }
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     core: {
       configured: true,
       reachable: true,
@@ -4512,7 +4553,7 @@ app.get("/api/nyra/suite/core/status", async (_req, res) => {
   if (!result.ok) {
     return res.status(result.status || 503).json({
       ok: false,
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       mode: "suite_tenant_scoped_read",
       tenant_id: config.tenantId || null,
       core: {
@@ -4524,7 +4565,7 @@ app.get("/api/nyra/suite/core/status", async (_req, res) => {
   }
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "suite_tenant_scoped_read",
     tenant_id: config.tenantId,
     core: {
@@ -4547,7 +4588,7 @@ app.get("/api/nyra/suite/customer-intelligence/contract", async (_req, res) => {
   if (!result.ok) {
     return res.status(result.status || 503).json({
       ok: false,
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       mode: "suite_tenant_scoped_read",
       tenant_id: config.tenantId || null,
       error: result.code || "suite_customer_intelligence_unavailable",
@@ -4556,7 +4597,7 @@ app.get("/api/nyra/suite/customer-intelligence/contract", async (_req, res) => {
   }
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "suite_tenant_scoped_read",
     tenant_id: config.tenantId,
     source: "universal_core",
@@ -4588,7 +4629,7 @@ app.post("/api/nyra/suite/decision-preview", async (req, res) => {
   const decisionContract = result.data?.decision_contract || result.data?.verdict?.decision_contract || result.data?.output || null;
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "preview_only",
     tenant_id: config.tenantId,
     execution_allowed: false,
@@ -4650,7 +4691,7 @@ app.get("/api/nyra/decision-to-value/report", (_req, res) => {
   const centerId = String(_req.query.center_id || "").trim();
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "read_only_report",
     report: buildNyraDecisionJourneyReport({ context, tenantId, centerId }),
   });
@@ -4663,7 +4704,7 @@ app.get("/api/nyra/decision-to-value/status", (req, res) => {
   const report = buildNyraDecisionJourneyReport({ profileId, tenantId, centerId });
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "read_only_status",
     profile_id: report.profile?.profile_id || (profileId ? journeyProfileId({ profile_id: profileId }) : null),
     status: report.profile || {
@@ -6760,7 +6801,7 @@ function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan
     version: "nyra_render_autopilot_v1",
     generated_at: new Date().toISOString(),
     runtime: {
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       storage_root: nyraStorageRoot || "local",
       paper_only: true,
       no_real_orders: true,
@@ -8351,7 +8392,7 @@ function buildNyraAnalyzerResponse(body = {}) {
 
   return {
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     endpoint: "/api/nyra/analyzer/read-only",
     mode: pack.mode,
     pack_id: pack.pack_id,
@@ -8465,7 +8506,7 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
   const pack = loadNyraAnalyzerLearningPack();
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     endpoint: "/api/nyra/analyzer/read-only",
     pack_id: pack.pack_id,
     version: pack.version,
@@ -8547,7 +8588,7 @@ app.post("/api/nyra/analyzer/read-only", (req, res) => {
     } catch (error) {
       res.status(500).json({
         ok: false,
-        service: "skinharmony-nyra-core",
+        service: NYRA_SERVICE_NAME,
         endpoint: "/api/nyra/analyzer/read-only",
         error: error.message || "Errore Nyra Analyzer.",
         reply: "Nyra Analyzer non ha completato la lettura per un errore runtime."

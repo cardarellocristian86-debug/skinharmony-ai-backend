@@ -12,8 +12,9 @@ const identifier = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$"
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
-  tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness and control context.", object({ include_control_snapshot: { type: "boolean" } }), ["core:read"]),
-  tool("nyra_interpret_request", "Interpret a Nyra request", "Interpret a request without authorizing or executing it.", object({ message: text(), session_id: { type: "string" } }, ["message"]), ["core:read"]),
+  tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness and control context.", object({ include_control_snapshot: { type: "boolean" }, domain_pack: identifier }), ["core:read"]),
+  tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
+  tool("nyra_interpret_request", "Interpret a Nyra request", "Ask Universal Core to open the relevant Nyra branches and interpret a request without executing it.", object({ message: text(), session_id: { type: "string", maxLength: 120 }, domain_pack: identifier, nyra_branches: { type: "array", maxItems: 20, items: identifier } }, ["message"]), ["core:read"]),
   tool("core_gate_action", "Evaluate an action", "Ask Universal Core to evaluate an action; this never executes it.", { type: "object", required: ["action_label", "action_type"], properties: { action_label: text(500), action_type: text(120) }, additionalProperties: true }, ["core:govern"]),
   tool("search", "Search shared work memory", "Search the authenticated tenant's redacted SkinHarmony work memory.", object({ query: text(500) }, ["query"]), ["core:read"]),
   tool("fetch", "Fetch shared work memory document", "Read one search result from the authenticated tenant's redacted work memory.", object({ id: { type: "string", pattern: "^[a-f0-9]{24}$" } }, ["id"]), ["core:read"]),

@@ -78,6 +78,31 @@ const coreServer = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.url === "/v1/nira/core-bridge" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const payload = JSON.parse(body || "{}");
+      assert.equal(req.headers.authorization, "Bearer core-test-key");
+      assert.equal(Array.isArray(payload.nyra_branches), true);
+      assert(payload.nyra_branches.includes("execution_planning"));
+      jsonResponse(res, 200, {
+        ok: true,
+        tenant_id: "tenant-test",
+        domain_pack: { id: "generic", runtime_kind: "horizontal" },
+        result: {
+          nyra_neural_network: {
+            opened_by: "universal_core",
+            opened_branches: payload.nyra_branches.map((id) => ({ id, status: "opened", subbranches: [] })),
+            denied_branches: [],
+            execution_authorized: false,
+          },
+          automation_plan: { execution_allowed: false },
+        },
+      });
+    });
+    return;
+  }
   jsonResponse(res, 404, { ok: false, error: "not_found" });
 });
 
@@ -203,7 +228,9 @@ async function main() {
 
   try {
     const health = await waitForHealth(child);
-    assert.equal(health.json.version, "0.5.0-decision-journey");
+    assert.equal(health.json.version, "0.6.0-horizontal-neural-branches");
+    assert.equal(health.json.service, "nyra-horizontal-runtime");
+    assert.equal(health.json.runtime_kind, "horizontal_neural_branch_runtime");
 
     const unauthenticated = await request("/api/nyra/control");
     assert.equal(unauthenticated.status, 401);
@@ -218,6 +245,22 @@ async function main() {
     assert.equal(readiness.json.core.status, "connected");
     assert.equal(readiness.json.storage.persistent, true);
     assert.equal(readiness.json.journey.event_count, 0);
+    assert.equal(readiness.json.runtime.authority.core_is_final_router, true);
+
+    const runtimeContract = await request("/api/nyra/runtime/contract", { auth: true });
+    assert.equal(runtimeContract.status, 200);
+    assert.equal(runtimeContract.json.contract.neural_network.maximum_subbranches_per_branch, 20);
+    assert.equal(runtimeContract.json.contract.authority.may_open_branches, false);
+
+    const runtimeInterpretation = await request("/api/nyra/runtime/interpret", {
+      method: "POST",
+      auth: true,
+      body: { message: "Valuta privacy e prepara un piano di deploy su Render", session_id: "horizontal-smoke" },
+    });
+    assert.equal(runtimeInterpretation.status, 200);
+    assert.equal(runtimeInterpretation.json.local_interpretation.branch_state, "proposed_waiting_for_core");
+    assert.equal(runtimeInterpretation.json.core_router.result.nyra_neural_network.opened_by, "universal_core");
+    assert.equal(runtimeInterpretation.json.execution_allowed, false);
 
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });
     assert.equal(learningBefore.status, 200);
