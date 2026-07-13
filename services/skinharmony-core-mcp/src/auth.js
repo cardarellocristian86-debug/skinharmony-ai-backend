@@ -15,6 +15,13 @@ function scopes(value) {
   return String(value || "").split(/\s+/).filter(Boolean);
 }
 
+function tokenScopes(payload) {
+  return [...new Set([
+    ...scopes(payload.scope),
+    ...scopes(payload.permissions),
+  ])];
+}
+
 export class JwksCache {
   constructor(fetchImpl = fetch, ttlMs = 300_000) {
     this.fetch = fetchImpl;
@@ -55,7 +62,7 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (payload.nbf && payload.nbf > now + 30) throw new Error("jwt_not_active");
   const tenantId = String(payload[config.tenantClaim] || "").trim();
   if (!tenantId) throw new Error("jwt_tenant_missing");
-  return { kind: "oauth", subject: String(payload.sub || ""), tenantId, scopes: scopes(payload.scope || payload.permissions) };
+  return { kind: "oauth", subject: String(payload.sub || ""), tenantId, scopes: tokenScopes(payload) };
 }
 
 export function createAuthenticator(config, options = {}) {
