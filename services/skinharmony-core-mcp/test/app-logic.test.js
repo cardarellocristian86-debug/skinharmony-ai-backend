@@ -11,6 +11,14 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });
 
+test("does not expose client-selectable product packs on horizontal Core tools", () => {
+  for (const name of ["work_preflight", "nyra_runtime_context", "nyra_interpret_request"]) {
+    const definition = TOOLS.find((tool) => tool.name === name);
+    assert(definition, `missing tool definition ${name}`);
+    assert.equal(definition.inputSchema.properties.domain_pack, undefined);
+  }
+});
+
 test("reports a completed read-only preflight as executable", () => {
   const result = attachWorkPreflight(
     { structuredContent: { documents: [] }, content: [] },
