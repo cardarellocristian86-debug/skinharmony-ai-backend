@@ -41,6 +41,41 @@ test("rejects a tenant without its own Core key", async () => {
   await assert.rejects(handlers.core_health({}, { tenantId: "tenant-b" }), /core_tenant_key_missing/);
 });
 
+test("maps the complete intelligence toolset to tenant-scoped Core routes", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" } }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    contextProvider: async (_input, identity) => ({ tenant_id: identity.tenantId, revision: 1 }),
+  });
+  const identity = { tenantId: "tenant-a" };
+  await handlers.intelligence_workflow({ request: "analyze" }, identity);
+  await handlers.scenario_analysis({ question: "scenarios" }, identity);
+  await handlers.hypothesis_rank({ question: "why", hypotheses: [{ id: "a" }, { id: "b" }] }, identity);
+  await handlers.event_probability({ question: "events", events: [{ id: "e" }] }, identity);
+  await handlers.counterfactual_analysis({ question: "what if", baseline: { id: "b" }, alternatives: [{ id: "a" }] }, identity);
+  await handlers.decision_select({ decision: "choose", options: [{ id: "a" }, { id: "b" }] }, identity);
+  await handlers.outcome_verify({ predicted_probability: 0.8, actual_outcome: true }, identity);
+  await handlers.outcome_record({ outcome_id: "o1", predicted_probability: 0.8, actual_outcome: true }, identity);
+  await handlers.calibration_status({ limit: 10 }, identity);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+    "/v1/intelligence/workflow",
+    "/v1/intelligence/scenarios",
+    "/v1/intelligence/hypotheses/rank",
+    "/v1/intelligence/events/evaluate",
+    "/v1/intelligence/counterfactuals/evaluate",
+    "/v1/intelligence/decisions/select",
+    "/v1/intelligence/outcomes/verify",
+    "/v1/intelligence/outcomes/record",
+    "/v1/intelligence/calibration",
+  ]);
+  assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert(calls.slice(0, 8).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
+  assert(calls.slice(0, 8).every((call) => JSON.parse(call.init.body).memory_context.tenant_id === "tenant-a"));
+});
+
 test("write guard fails closed on hard blocks and allows controlled writes", async () => {
   const calls = [];
   const replies = [

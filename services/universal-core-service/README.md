@@ -37,6 +37,54 @@ Ruoli:
 - `POST /v1/sync/wordpress`
 - `GET /v1/review/pending`
 - `POST /v1/review/action`
+- `POST /v1/intelligence/workflow`
+- `POST /v1/intelligence/scenarios`
+- `POST /v1/intelligence/hypotheses/rank`
+- `POST /v1/intelligence/events/evaluate`
+- `POST /v1/intelligence/counterfactuals/evaluate`
+- `POST /v1/intelligence/decisions/select`
+- `POST /v1/intelligence/outcomes/verify`
+- `POST /v1/intelligence/outcomes/record`
+- `GET /v1/intelligence/calibration`
+
+## Intelligence Contract v1
+
+Il runtime `0.8.0-full-intelligence` completa il flusso Nyra + Core con nove
+funzioni analitiche componibili. Il motore usa log-odds esplicite per combinare
+prior ed evidenze, conserva un intervallo di probabilita legato alla qualita dei
+dati e rende visibili tutti i contributi. Per le decisioni calcola valore atteso,
+utilita, rischio, costo e reversibilita; per gli esiti calcola Brier score, errore
+di calibrazione e sorpresa informativa.
+
+Il workflow completo segue questa sequenza:
+
+`memoria tenant -> ipotesi -> scenari -> eventi -> controfattuali -> decisione -> verifica -> calibrazione`
+
+Proprieta invarianti:
+
+- isolamento tenant e chiave Core dedicata;
+- memoria richiamata prima dell'analisi;
+- probabilita sempre accompagnata da assunzioni e incertezza;
+- esiti persistiti in modo idempotente con evidenza firmata;
+- calibrazione separata per tenant e nessuna auto-modifica opaca dei pesi;
+- `execution_allowed: false`: l'analisi consiglia, la governance autorizza.
+
+Esempio minimo:
+
+```json
+{
+  "request": "Valuta il lancio controllato",
+  "hypotheses": [
+    { "id": "growth", "prior_probability": 0.55, "evidence": [{ "direction": "supports", "strength": 0.8, "reliability": 0.9 }] },
+    { "id": "flat", "prior_probability": 0.45 }
+  ],
+  "options": [
+    { "id": "controlled", "probability": 0.72, "value": 88, "cost": 30, "risk": 24, "reversibility": 90 },
+    { "id": "full", "probability": 0.61, "value": 100, "cost": 48, "risk": 65, "reversibility": 30 }
+  ],
+  "generate_scenarios": true
+}
+```
 
 ## Chiavi
 
