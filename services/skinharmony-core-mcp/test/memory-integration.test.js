@@ -78,8 +78,17 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
   assert.equal(append.status, 200);
   assert.equal(append.body.result.structuredContent.created, true);
 
+  const preflight = await call(2, "work_preflight", {
+    request: "Continue the architecture through the connected GitHub app",
+    project_id: "project-one",
+    session_id: "session-one",
+    available_capabilities: ["github_connected_app"],
+  });
+  assert.equal(preflight.status, 200);
+  assert.equal(preflight.body.result.structuredContent.received_memory.tenant_id, "tenant-integration");
+
   const rawMessage = "Continue the architecture from the other AI without saving this raw sentence";
-  const interpretation = await call(2, "nyra_interpret_request", {
+  const interpretation = await call(3, "nyra_interpret_request", {
     message: rawMessage,
     project_id: "project-one",
     session_id: "session-one",
@@ -91,11 +100,12 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
   assert.equal(received.relevant_memories[0].title, "Architecture decision");
   assert.equal(interpretation.body.result.structuredContent.result.automation_plan.execution_allowed, false);
 
-  const context = await call(3, "memory_context", { project_id: "project-one", session_id: "session-one" });
+  const context = await call(4, "memory_context", { project_id: "project-one", session_id: "session-one" });
   assert.equal(context.status, 200);
   assert(context.body.result.structuredContent.recent_activity.some((item) => item.title === "MCP nyra_interpret_request"));
   const stored = fs.readFileSync(path.join(root, "tenants", "tenant-integration", "memory-fabric", "state.json"), "utf8");
   assert(!stored.includes(rawMessage));
   assert(coreBodies.some((entry) => entry.path === "/v1/action-evaluator"));
+  assert(coreBodies.some((entry) => entry.path === "/v1/work/preflight" && entry.body.memory_context?.tenant_id === "tenant-integration"));
   assert(coreBodies.some((entry) => entry.path === "/v1/nira/core-bridge" && entry.body.memory_context?.tenant_id === "tenant-integration"));
 });

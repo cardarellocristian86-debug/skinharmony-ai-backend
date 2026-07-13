@@ -24,7 +24,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.3.0-tenant-memory-fabric");
+  assert.equal(health.version, "0.4.0-memory-first-preflight");
   assert.equal(health.memory_fabric_configured, false);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
@@ -52,6 +52,10 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(readTools.length > 0);
   assert(writeTools.length > 0);
   assert(writeTools.every((tool) => tool.securitySchemes[0].scopes.includes("core:govern")));
+  const preflight = body.result.tools.find((tool) => tool.name === "work_preflight");
+  assert(preflight);
+  assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
+  assert(body.result.tools.every((tool) => tool._meta["skinharmony/mandatory_first_tool"] === "work_preflight"));
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
   assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
@@ -94,6 +98,71 @@ test("journals successful and failed tool calls without changing client response
     assert.equal(events[0].error, undefined);
     assert.equal(events[1].toolName, "core_gate_action");
     assert.match(events[1].error.message, /expected_failure/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("enforces and exposes automatic preflight before a work tool", async () => {
+  const order = [];
+  const app = createApp(config, {
+    handlers: {
+      search: async () => {
+        order.push("tool");
+        return { structuredContent: { documents: [] }, content: [{ type: "text", text: "[]" }] };
+      },
+    },
+    beforeToolCall: async ({ toolName }) => {
+      order.push("preflight");
+      return {
+        work_preflight: {
+          preflight_id: "preflight-test",
+          state: "routed_waiting_for_core_verdict",
+          tool_routing: { preferred_route: { id: "tenant_shared_workspace" } },
+        },
+      };
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "search", arguments: { query: "current work" } } }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(order, ["preflight", "tool"]);
+    assert.equal(body.result.structuredContent.work_preflight.preflight_id, "preflight-test");
+    assert.equal(body.result._meta["skinharmony/preflight_mandatory"], true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("fails closed before the work tool when mandatory preflight is unavailable", async () => {
+  let toolCalled = false;
+  const app = createApp(config, {
+    handlers: {
+      search: async () => {
+        toolCalled = true;
+        return { content: [{ type: "text", text: "should not run" }] };
+      },
+    },
+    beforeToolCall: async () => { throw new Error("preflight_unavailable"); },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "search", arguments: { query: "work" } } }),
+    });
+    assert.equal(response.status, 500);
+    assert.equal(toolCalled, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

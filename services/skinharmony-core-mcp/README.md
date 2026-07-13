@@ -87,6 +87,33 @@ Restricted records are rejected. `customer_personal` records require a consent
 reference and use the shorter personal retention ceiling. Known credentials,
 tokens and email addresses are redacted before the atomic write.
 
+## Mandatory memory-first work preflight
+
+`work_preflight` is the mandatory entry point before a connected AI starts a
+work request. It recalls the authenticated tenant memory, asks Nyra to interpret
+and propose branches, lets Universal Core open and join the authorized branches,
+assigns roles, emits a dependency-aware task graph and selects the least-privilege
+connected capability. It never authorizes execution.
+
+The MCP initialization instructions and every advertised tool identify
+`work_preflight` as the first tool. For work tools that do not natively call a
+Core routing endpoint, the server runs the preflight automatically before the
+tool handler and returns the preflight with the result. Failure is closed. Core
+health and tenant-memory recall/search are exempt because they are prerequisites
+of the preflight itself. Nyra interpretation, Codex context and the action gate
+embed their own mandatory Core preflight.
+
+Routing is connector-first. For GitHub work, the connected GitHub app is the
+preferred route; GitHub CLI and manual browser authentication are prohibited
+while that connector is available. CLI is only a verified fallback when the
+connector is unavailable and the CLI is already installed and authenticated.
+Merge and deploy require a Core `ALLOW` verdict and explicit owner confirmation.
+
+This enforcement covers AI clients that enter through SkinHarmony Core or this
+MCP. A client that directly invokes an unrelated external connector and bypasses
+SkinHarmony entirely cannot be technically intercepted by this gateway and is
+therefore forbidden by the published protocol.
+
 ## Production boundary
 
 The MCP service calls Universal Core server-to-server with a tenant-scoped key; it never forwards the ChatGPT OAuth token to Core. Explicit memory and collaboration writes affect only the authenticated tenant's internal server-side state and require Core governance. They do not merge, deploy, publish, modify customer systems, or grant cross-tenant access.

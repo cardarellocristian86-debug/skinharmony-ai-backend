@@ -19,6 +19,7 @@ Ruoli:
 - `GET /v1/snapshot`
 - `POST /v1/decision`
 - `POST /v1/action-evaluator`
+- `POST /v1/work/preflight`
 - `POST /v1/codex/context`
 - `POST /v1/codex/guard`
 - `POST /v1/flowcore/decision`
@@ -74,6 +75,25 @@ Forma stabile:
 Regola architetturale:
 
 `OpenAI genera. Universal Core decide. Nyra spiega. I client eseguono solo entro i limiti del Core.`
+
+## Work preflight obbligatorio
+
+Ogni AI collegata tramite Core/MCP deve passare la richiesta a
+`POST /v1/work/preflight` prima del lavoro. Il contratto e memory-first e produce:
+
+- memoria tenant richiamata, checkpoint e handoff rilevanti;
+- ruoli espliciti per owner, Nyra, Core, AI executor, verifica e apprendimento;
+- rami Core e rami/sotto-rami Nyra, massimo 20 sotto-rami per ramo;
+- task graph orizzontale con massimo sei corsie per ondata e join del Core;
+- selezione connector-first dello strumento e fallback condizionati;
+- criteri di verifica, audit, rollback e apprendimento verificato.
+
+Il preflight non autorizza mai l'esecuzione. Le API Nyra, Codex, Action Evaluator
+e AI Gateway includono automaticamente il contratto nelle risposte. Se il
+provider non ha fornito la memoria tenant, lo stato e `memory_recall_required` e
+il lavoro resta bloccato. Per GitHub la rotta preferita e l'app collegata; la CLI
+e vietata quando il connettore e disponibile. Merge e deploy richiedono verdict
+Core `ALLOW` e conferma owner.
 
 Endpoint:
 

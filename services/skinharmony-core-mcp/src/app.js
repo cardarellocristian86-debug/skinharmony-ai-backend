@@ -2,7 +2,36 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.3.0-tenant-memory-fabric";
+const SERVER_VERSION = "0.4.0-memory-first-preflight";
+
+function attachWorkPreflight(result, preflight) {
+  const payload = preflight?.work_preflight || preflight;
+  if (!payload || result?.structuredContent?.work_preflight) return result;
+  const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
+    ? { ...result.structuredContent, work_preflight: payload }
+    : { result: result?.structuredContent, work_preflight: payload };
+  const summary = {
+    mandatory_work_preflight: {
+      preflight_id: payload.preflight_id,
+      state: payload.state,
+      preferred_route: payload.tool_routing?.preferred_route?.id,
+      execution_allowed: false,
+    },
+  };
+  return {
+    ...(result || {}),
+    structuredContent: structured,
+    content: [
+      ...(Array.isArray(result?.content) ? result.content : []),
+      { type: "text", text: JSON.stringify(summary) },
+    ],
+    _meta: {
+      ...(result?._meta || {}),
+      "skinharmony/preflight_id": payload.preflight_id,
+      "skinharmony/preflight_mandatory": true,
+    },
+  };
+}
 
 function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
@@ -17,6 +46,7 @@ export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
+  const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
   const visibleTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
   app.use(express.json({ limit: "1mb" }));
@@ -66,17 +96,21 @@ export function createApp(config, options = {}) {
     }
     const { id = null, method, params = {} } = req.body || {};
     try {
-      if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION } } });
+      if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: "work_preflight is the mandatory first step before connected AI work; Nyra interprets and Universal Core routes before execution." } });
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes } })) } });
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes, "skinharmony/mandatory_first_tool": "work_preflight", "skinharmony/preflight_entrypoint": tool.name === "work_preflight" } })) } });
       if (method === "tools/call") {
         const tool = TOOLS.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
-        const result = await handlers[tool.name](params.arguments || {}, identity);
+        const preflight = typeof beforeToolCall === "function"
+          ? await beforeToolCall({ identity, toolName: tool.name, args: params.arguments || {} })
+          : null;
+        const rawResult = await handlers[tool.name](params.arguments || {}, identity);
+        const result = attachWorkPreflight(rawResult, preflight);
         if (typeof afterToolCall === "function") {
-          try { await afterToolCall({ identity, toolName: tool.name, args: params.arguments || {}, result }); } catch {}
+          try { await afterToolCall({ identity, toolName: tool.name, args: params.arguments || {}, result, preflight }); } catch {}
         }
         return res.json({ jsonrpc: "2.0", id, result });
       }

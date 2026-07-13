@@ -36,6 +36,28 @@ export function createCoreHandlers(config, options = {}) {
 
   return {
     core_health: async (_args, identity) => textResult({ ...(await coreRequest("/healthz", identity.tenantId)), tenant_id: identity.tenantId }),
+    work_preflight: async (args, identity) => {
+      const sharedContext = await memoryContext({
+        query: args.request,
+        project_id: args.project_id,
+        session_id: args.session_id,
+        agent_id: args.agent_id || "connected_ai",
+      }, identity);
+      return textResult(await coreRequest("/v1/work/preflight", identity.tenantId, {
+        method: "POST",
+        body: {
+          request: args.request,
+          target_system: args.target_system || "universal_core",
+          operation_type: args.operation_type || "advisory_work",
+          source_tool: args.tool_name,
+          ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
+          ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+          ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+          ...(sharedContext ? { memory_context: sharedContext } : {}),
+          tenant_id: identity.tenantId,
+        },
+      }));
+    },
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: args.query || "Nyra Core current work decisions and pending handoffs",
@@ -72,15 +94,24 @@ export function createCoreHandlers(config, options = {}) {
         mode: "standard",
         ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
         ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+        ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId
         }
       }));
     },
-    core_gate_action: async (args, identity) => textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
-      method: "POST",
-      body: { ...args, tenant_id: identity.tenantId }
-    }))
+    core_gate_action: async (args, identity) => {
+      const sharedContext = await memoryContext({
+        query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
+        project_id: args.project_id,
+        session_id: args.session_id,
+        agent_id: args.agent_id || "connected_ai",
+      }, identity);
+      return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
+        method: "POST",
+        body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId }
+      }));
+    }
   };
 }
 

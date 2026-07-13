@@ -90,6 +90,13 @@ const coreServer = http.createServer((req, res) => {
         ok: true,
         tenant_id: "tenant-test",
         domain_pack: { id: "generic", runtime_kind: "horizontal" },
+        work_preflight: {
+          schema_version: "skinharmony_work_preflight_v1",
+          preflight_id: "preflight-smoke",
+          mandatory: true,
+          state: "memory_recall_required",
+          governance: { execution_allowed_by_preflight: false },
+        },
         result: {
           nyra_neural_network: {
             opened_by: "universal_core",
@@ -228,7 +235,7 @@ async function main() {
 
   try {
     const health = await waitForHealth(child);
-    assert.equal(health.json.version, "0.7.0-horizontal-work-learning");
+    assert.equal(health.json.version, "0.8.0-memory-first-preflight");
     assert.equal(health.json.service, "nyra-horizontal-runtime");
     assert.equal(health.json.runtime_kind, "horizontal_neural_branch_runtime");
 
@@ -253,6 +260,8 @@ async function main() {
     assert.equal(runtimeContract.json.contract.neural_network.maximum_parallel_branches, 6);
     assert.equal(runtimeContract.json.contract.governed_learning.policy_activation_requires_verify, true);
     assert.equal(runtimeContract.json.contract.authority.may_open_branches, false);
+    assert.equal(runtimeContract.json.contract.authority.may_begin_work_without_preflight, false);
+    assert.equal(runtimeContract.json.contract.mandatory_preflight.connected_tool_first, true);
 
     const runtimeInterpretation = await request("/api/nyra/runtime/interpret", {
       method: "POST",
@@ -262,6 +271,7 @@ async function main() {
     assert.equal(runtimeInterpretation.status, 200);
     assert.equal(runtimeInterpretation.json.local_interpretation.branch_state, "proposed_waiting_for_core");
     assert.equal(runtimeInterpretation.json.core_router.result.nyra_neural_network.opened_by, "universal_core");
+    assert.equal(runtimeInterpretation.json.core_router.work_preflight.mandatory, true);
     assert.equal(runtimeInterpretation.json.execution_allowed, false);
 
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });

@@ -47,7 +47,7 @@ function inferIntent(text) {
 function createNyraHorizontalRuntime(env = process.env) {
   const serviceName = String(env.NYRA_SERVICE_NAME || "nyra-horizontal-runtime").trim();
   const expectedDomainPack = normalizeIdentifier(env.NYRA_DOMAIN_PACK_ID);
-  const version = String(env.NYRA_SERVICE_VERSION || "0.7.0-horizontal-work-learning").trim();
+  const version = String(env.NYRA_SERVICE_VERSION || "0.8.0-memory-first-preflight").trim();
 
   function contract() {
     return {
@@ -74,10 +74,19 @@ function createNyraHorizontalRuntime(env = process.env) {
         free_weight_training: false,
         auto_execution: false,
       },
+      mandatory_preflight: {
+        schema_version: "skinharmony_work_preflight_v1",
+        core_endpoint: "POST /v1/work/preflight",
+        enforced_by_router_endpoint: "POST /v1/nira/core-bridge",
+        sequence: ["recall_tenant_memory", "nyra_interpret_request", "core_open_and_join_branches", "core_verdict", "owner_confirmation_when_required", "execute", "verify", "learn"],
+        connected_tool_first: true,
+        fail_closed_when_unavailable: true,
+      },
       authority: {
         may_propose_branches: true,
         may_open_branches: false,
         may_execute_actions: false,
+        may_begin_work_without_preflight: false,
         core_is_final_router: true,
       },
     };
@@ -107,6 +116,7 @@ function createNyraHorizontalRuntime(env = process.env) {
         nyra_branches: proposedBranches,
         ...(requestedPack || expectedDomainPack ? { domain_pack: requestedPack || expectedDomainPack } : {}),
         mode: "standard",
+        preflight_required: true,
       },
       local_interpretation: {
         intent: inferIntent(text),
@@ -123,6 +133,7 @@ function createNyraHorizontalRuntime(env = process.env) {
           memory_source: "tenant_memory_fabric",
           policy_activation_requires_verify: true,
         },
+        preflight_state: "mandatory_waiting_for_core",
         execution_allowed: false,
       },
     };
