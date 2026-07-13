@@ -3830,7 +3830,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -3944,7 +3944,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
     const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));

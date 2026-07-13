@@ -421,6 +421,27 @@ try {
   assert(authorizedBranches.json.branch_package?.denied_branches?.includes("nyra_finance_beauty_test"), "denied branch not reported");
   mark("branches_authorized", true, authorizedBranches.json.branch_package);
 
+  assert(!generated.json.record.allowed_scopes.includes("automation:codex"), "suite connector unexpectedly has automation scope");
+  const nyraReadonlyContext = await api(base, "POST", "/v1/codex/context", {
+    tenant_id: "tenant_demo_skinharmony",
+    task: "Read Nyra readiness context",
+    user_input: "Read-only readiness check",
+  }, connectorKey);
+  assert(nyraReadonlyContext.status === 200 && nyraReadonlyContext.json.guardrail?.execution_allowed === false, "read-only Nyra context failed");
+
+  const nyraReadonlyInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
+    tenant_id: "tenant_demo_skinharmony",
+    text: "Interpret this request without executing it",
+    mode: "standard",
+  }, connectorKey);
+  assert(nyraReadonlyInterpretation.status === 200, "read-only Nyra interpretation failed");
+  assert(nyraReadonlyInterpretation.json.guardrail?.execution_allowed === false, "read-only Nyra interpretation allowed execution");
+  mark("nyra_readonly_scope_contract", true, {
+    context_status: nyraReadonlyContext.status,
+    interpretation_status: nyraReadonlyInterpretation.status,
+    execution_allowed: nyraReadonlyInterpretation.json.guardrail.execution_allowed,
+  });
+
   const codexContext = await api(base, "POST", "/v1/codex/context", {
     tenant_id: "tenant_demo_skinharmony",
     task: "marketing_recall",
