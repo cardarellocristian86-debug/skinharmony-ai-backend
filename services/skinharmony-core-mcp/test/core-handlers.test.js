@@ -42,14 +42,28 @@ test("rejects a tenant without its own Core key", async () => {
 });
 
 test("write guard fails closed on hard blocks and allows controlled writes", async () => {
+  const calls = [];
   const replies = [
-    { verdict: { decision: "block", action_mediation: { state: "hard_block" } } },
-    { verdict: { decision: "allow_controlled", action_mediation: { state: "allow" } } }
+    { authorization: { allowed: false, state: "confirmation_required", mediation: "confirm", confirmation_required: true, confirmation_satisfied: false } },
+    { authorization: { allowed: true, state: "authorized_after_confirmation", mediation: "confirmed", confirmation_required: true, confirmation_satisfied: true } }
   ];
   const guard = createCoreWriteGuard({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key" }, {
-    fetchImpl: async () => new Response(JSON.stringify(replies.shift()), { status: 200, headers: { "content-type": "application/json" } })
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify(replies.shift()), { status: 200, headers: { "content-type": "application/json" } });
+    }
   });
   const identity = { tenantId: "tenant-a" };
   assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, identity)).allowed, false);
-  assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, identity)).allowed, true);
+  const confirmed = await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, {
+    ...identity,
+    ownerConfirmed: true,
+    confirmationReference: "explicit user confirmation",
+  });
+  assert.equal(confirmed.allowed, true);
+  assert.equal(confirmed.confirmation_satisfied, true);
+  assert.equal(calls[0].owner_confirmed, false);
+  assert.equal(calls[1].owner_confirmed, true);
+  assert.equal(calls[1].confirmation_reference, "explicit user confirmation");
+  assert.equal(calls[1].rollback_ready, true);
 });

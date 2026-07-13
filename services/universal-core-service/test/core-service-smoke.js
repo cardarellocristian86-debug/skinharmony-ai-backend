@@ -695,6 +695,24 @@ try {
   assert(actionEvaluator.json.guardrail?.mandatory_preflight_completed === true, "action evaluator did not mark preflight completion");
   mark("action_evaluator_contract", true, actionEvaluator.json.decision_contract);
 
+  const confirmedInternalWrite = await api(base, "POST", "/v1/action-evaluator", {
+    tenant_id: "tenant_demo_skinharmony",
+    action_type: "workspace.write_document",
+    action_label: "Write confirmed tenant report",
+    operation_class: "reversible_internal_collaboration_write",
+    external_side_effect: false,
+    contains_customer_data: false,
+    rollback_ready: true,
+    owner_confirmed: true,
+    confirmation_reference: "explicit smoke-test owner confirmation",
+  }, codexKey);
+  assert(confirmedInternalWrite.status === 200, "confirmed internal write evaluation failed");
+  assert(confirmedInternalWrite.json.authorization?.allowed === true, "confirmed internal write was not authorized");
+  assert(confirmedInternalWrite.json.authorization?.state === "authorized_after_confirmation", "confirmed internal write state mismatch");
+  assert(confirmedInternalWrite.json.authorization?.confirmation_satisfied === true, "owner confirmation was not satisfied");
+  assert(confirmedInternalWrite.json.guardrail?.owner_confirmation_required === false, "owner confirmation remained pending after satisfaction");
+  mark("action_evaluator_confirmed_internal_write", true, confirmedInternalWrite.json.authorization);
+
   const gatewaySchema = await api(base, "GET", "/v1/ai-gateway/schema", undefined);
   assert(gatewaySchema.status === 200 && gatewaySchema.json.modes?.includes("hard-gating"), "AI gateway schema failed");
   assert(gatewaySchema.json.adapters?.includes("codex"), "AI gateway adapters missing codex");

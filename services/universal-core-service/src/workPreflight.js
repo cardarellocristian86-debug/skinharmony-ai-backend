@@ -2,6 +2,21 @@ import crypto from "node:crypto";
 
 const PREFLIGHT_VERSION = "skinharmony_work_preflight_v1";
 
+const READ_ONLY_OPERATIONS = new Set([
+  "workspace_list",
+  "workspace_read_document",
+  "task_list",
+  "agent_list",
+  "message_inbox",
+  "search",
+  "fetch",
+  "memory_context",
+  "memory_search",
+  "core_health",
+  "nyra_runtime_context",
+  "nyra_branch_catalog",
+]);
+
 const ROLE_CATALOG = Object.freeze([
   {
     id: "request_owner",
@@ -146,7 +161,7 @@ function toolRoute(text, capabilities = [], toolName = "") {
   };
 }
 
-function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired }) {
+function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired, executionAllowedByPreflight }) {
   const memoryReady = Boolean(memoryContext);
   return {
     schema_version: "nyra_core_task_graph_v1",
@@ -184,7 +199,7 @@ function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired 
         branches: ["risk_governance", "parallel_coordination"],
         dependencies: ["interpret_request"],
         parallel_lane: 2,
-        status: "pending_core_verdict",
+        status: executionAllowedByPreflight ? "complete_read_only_route" : "pending_core_verdict",
         acceptance: `Il percorso ${toolRouting.preferred_route.id} e gli eventuali fallback rispettano scope e policy.`,
       },
       {
@@ -192,7 +207,11 @@ function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired 
         role: "connected_ai_worker",
         branch: "execution_planning",
         dependencies: ["research_and_plan", "risk_and_tool_route"],
-        status: ownerConfirmationRequired ? "blocked_by_core_and_owner" : "blocked_by_core_verdict",
+        status: executionAllowedByPreflight
+          ? "ready_read_only"
+          : ownerConfirmationRequired
+            ? "blocked_by_core_and_owner"
+            : "blocked_by_core_verdict",
         acceptance: "Esecuzione limitata al runbook approvato, con audit e rollback proporzionati al rischio.",
       },
       {
@@ -227,6 +246,7 @@ export function buildWorkPreflight({
   branchContext,
   nyraNetwork,
   domainPack,
+  ownerConfirmed = false,
 } = {}) {
   const normalizedRequest = cleanText(requestText, 20_000);
   if (!normalizedRequest) throw new Error("work_preflight_request_required");
@@ -235,6 +255,9 @@ export function buildWorkPreflight({
   const highImpact = /(publish|pubblica|merge|deploy|rilasc|release|send|invia|delete|cancell|payment|pagament|write|scriv|update|modific)/i.test(`${normalizedRequest} ${operationType}`);
   const ownerConfirmationRequired = highImpact || Boolean(routing.release_policy);
   const memoryReady = Boolean(memoryContext);
+  const operationKey = cleanText(toolName || operationType, 100).toLowerCase();
+  const readOnlyOperation = READ_ONLY_OPERATIONS.has(operationKey);
+  const executionAllowedByPreflight = memoryReady && readOnlyOperation;
 
   return {
     schema_version: PREFLIGHT_VERSION,
@@ -242,7 +265,13 @@ export function buildWorkPreflight({
     mandatory: true,
     tenant_id: String(tenantId || ""),
     domain_pack: domainPack,
-    state: memoryReady ? "routed_waiting_for_core_verdict" : "memory_recall_required",
+    state: memoryReady
+      ? executionAllowedByPreflight
+        ? "ready_read_only"
+        : ownerConfirmationRequired && ownerConfirmed
+          ? "routed_owner_confirmed_waiting_for_core_verdict"
+          : "routed_waiting_for_core_verdict"
+      : "memory_recall_required",
     request: {
       summary: cleanText(normalizedRequest, 500),
       target_system: cleanText(targetSystem, 100) || "universal_core",
@@ -279,12 +308,13 @@ export function buildWorkPreflight({
       selected_groups: branchContext?.selected_groups || [],
       final_router: "universal_core",
     },
-    task_graph: buildTaskGraph({ memoryContext, toolRouting: routing, ownerConfirmationRequired }),
+    task_graph: buildTaskGraph({ memoryContext, toolRouting: routing, ownerConfirmationRequired, executionAllowedByPreflight }),
     tool_routing: routing,
     governance: {
-      core_verdict_required_before_execution: true,
-      owner_confirmation_required: ownerConfirmationRequired,
-      execution_allowed_by_preflight: false,
+      core_verdict_required_before_execution: !readOnlyOperation,
+      owner_confirmation_required: ownerConfirmationRequired && !ownerConfirmed,
+      owner_confirmation_satisfied: ownerConfirmationRequired && ownerConfirmed,
+      execution_allowed_by_preflight: executionAllowedByPreflight,
       direct_connector_bypass_forbidden_by_protocol: true,
       cross_tenant_actions_allowed: false,
       audit_required: true,

@@ -77,3 +77,30 @@ test("redacts secrets from the preflight request summary", () => {
   assert(!JSON.stringify(result).includes("super-secret-value"));
   assert(!JSON.stringify(result).includes("hunter2"));
 });
+
+test("marks tenant-scoped reads ready without a redundant confirmation gate", () => {
+  const result = fixture({
+    requestText: "reports/core-nyra/status.md",
+    operationType: "workspace_read_document",
+    toolName: "workspace_read_document",
+  });
+  assert.equal(result.state, "ready_read_only");
+  assert.equal(result.governance.core_verdict_required_before_execution, false);
+  assert.equal(result.governance.owner_confirmation_required, false);
+  assert.equal(result.governance.execution_allowed_by_preflight, true);
+  assert.equal(result.task_graph.nodes.find((node) => node.id === "execute_approved_scope").status, "ready_read_only");
+});
+
+test("tracks explicit owner confirmation while keeping a write Core-gated", () => {
+  const result = fixture({
+    requestText: "Write shared document reports/core-nyra/status.md",
+    operationType: "workspace_write_document",
+    toolName: "workspace_write_document",
+    ownerConfirmed: true,
+  });
+  assert.equal(result.state, "routed_owner_confirmed_waiting_for_core_verdict");
+  assert.equal(result.governance.core_verdict_required_before_execution, true);
+  assert.equal(result.governance.owner_confirmation_required, false);
+  assert.equal(result.governance.owner_confirmation_satisfied, true);
+  assert.equal(result.governance.execution_allowed_by_preflight, false);
+});

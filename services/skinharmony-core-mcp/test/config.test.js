@@ -17,8 +17,8 @@ test("keeps agent collaboration disabled until a persistent root is configured",
   const enabled = loadConfig({ AGENT_WORKSPACE_ROOT: "/var/data/skinharmony-core-mcp" });
   assert.equal(enabled.agentWorkspaceRoot, "/var/data/skinharmony-core-mcp");
   assert.equal(enabled.memoryFabricRoot, "/var/data/skinharmony-core-mcp");
-  assert(enabled.supportedScopes.includes("workspace:write"));
-  assert(enabled.supportedScopes.includes("agent:coordinate"));
+  assert(enabled.supportedScopes.includes("core:read"));
+  assert(enabled.supportedScopes.includes("core:govern"));
 });
 
 test("configures independent memory storage and bounded retention", () => {
