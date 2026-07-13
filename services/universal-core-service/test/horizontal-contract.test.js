@@ -117,6 +117,21 @@ test("generic Core packages exclude vertical branches while SkinHarmony remains 
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(skinHarmony.allowed_branches.includes(branchId));
 });
 
+test("existing keys with explicit branch allowlists inherit the horizontal work cortex", () => {
+  const existingKey = resolveBranchesForKey({
+    tenant_id: "codexai",
+    brand_scope: "skinharmony",
+    preset: "codex_automation",
+    metadata: {
+      tier: "internal",
+      active_branches: ["codex_security_guard", "codex_release_gate"],
+    },
+  });
+  assert(existingKey.allowed_branches.includes("codex_security_guard"));
+  assert(existingKey.allowed_branches.includes("codex_release_gate"));
+  for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(existingKey.allowed_branches.includes(branchId));
+});
+
 test("domain and branch routing remains deterministic under repeated load", () => {
   const start = performance.now();
   for (let index = 0; index < 10_000; index += 1) {
