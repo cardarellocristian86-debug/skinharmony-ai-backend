@@ -46,7 +46,7 @@ test("activates owner_root only for the isolated owner tenant and an allowed Cod
     supportedScopes: ["core:read", "core:govern", "workspace:write"],
     godModeEnabled: true,
     godModeEmergencyStop: false,
-    godModeTenantId: "owner-private",
+    godModeTenantIds: ["owner-private", "codexai"],
     godModeSubjects: [],
     godModeClientIds: [],
     godModeCodexEnabled: true,
@@ -61,7 +61,7 @@ test("the emergency stop disables owner_root immediately", async () => {
   const auth = createAuthenticator({
     codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "",
     defaultTenantId: "owner-private", supportedScopes: ["core:read", "core:govern"],
-    godModeEnabled: true, godModeEmergencyStop: true, godModeTenantId: "owner-private",
+    godModeEnabled: true, godModeEmergencyStop: true, godModeTenantIds: ["owner-private", "codexai"],
     godModeSubjects: [], godModeClientIds: [], godModeCodexEnabled: true,
   });
   assert.deepEqual(await auth("Bearer secret"), {

@@ -53,7 +53,7 @@ export function loadConfig(env = process.env) {
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
   const godModeEnabled = flag(env.NYRA_GOD_MODE_ENABLED, false);
-  const godModeTenantId = String(env.NYRA_GOD_MODE_TENANT_ID || "owner-private").trim();
+  const godModeTenantIds = csv(env.NYRA_GOD_MODE_TENANT_IDS || env.NYRA_GOD_MODE_TENANT_ID || "owner-private");
   const godModeSubjects = csv(env.NYRA_GOD_MODE_SUBJECTS);
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
@@ -82,7 +82,7 @@ export function loadConfig(env = process.env) {
     memoryFabricRoot,
     researchCortexRoot,
     godModeEnabled,
-    godModeTenantId,
+    godModeTenantIds,
     godModeSubjects,
     godModeClientIds,
     godModeCodexEnabled,
