@@ -24,7 +24,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.4.2-core-governed-collaboration");
+  assert.equal(health.version, "0.5.0-full-intelligence");
   assert.equal(health.memory_fabric_configured, false);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
@@ -88,6 +88,22 @@ test("uses Core OAuth scopes for every collaboration capability", async () => se
     assert(tool, `missing collaboration tool ${name}`);
     assert.deepEqual(tool.securitySchemes[0].scopes, scopes);
   }
+}));
+
+test("exposes specialist intelligence tools with read and governed-write scopes", async () => serve(async (base) => {
+  const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "tools/list" }) });
+  const body = await response.json();
+  const reads = ["intelligence_workflow", "scenario_analysis", "hypothesis_rank", "event_probability", "counterfactual_analysis", "decision_select", "outcome_verify", "calibration_status"];
+  for (const name of reads) {
+    const tool = body.result.tools.find((candidate) => candidate.name === name);
+    assert(tool, `missing intelligence tool ${name}`);
+    assert.deepEqual(tool.securitySchemes[0].scopes, ["core:read"]);
+    assert.equal(tool.annotations.readOnlyHint, true);
+  }
+  const record = body.result.tools.find((candidate) => candidate.name === "outcome_record");
+  assert(record);
+  assert.deepEqual(record.securitySchemes[0].scopes, ["core:govern"]);
+  assert.equal(record.annotations.readOnlyHint, false);
 }));
 
 test("allows collaboration reads with core:read but blocks writes without core:govern", async () => {

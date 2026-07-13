@@ -48,10 +48,20 @@ import {
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
+import {
+  analyzeScenarios,
+  evaluateCounterfactuals,
+  evaluateEvents,
+  rankHypotheses,
+  runIntelligenceWorkflow,
+  selectDecision,
+  summarizeCalibration,
+  verifyOutcome,
+} from "./intelligenceEngine.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.7.0-memory-first-preflight";
+const SERVICE_VERSION = "0.8.0-full-intelligence";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -367,6 +377,30 @@ function reviewStore(storageRoot) {
       rows.push(record);
       write(rows);
       return record;
+    },
+  };
+}
+
+function intelligenceOutcomeStore(storageRoot) {
+  const dir = path.join(storageRoot, "intelligence", "outcomes");
+  ensureDir(dir);
+  const fileForTenant = (tenantId) => path.join(dir, `${crypto.createHash("sha256").update(String(tenantId)).digest("hex")}.json`);
+  const read = (tenantId) => readJsonFile(fileForTenant(tenantId), []);
+  const write = (tenantId, rows) => writeJsonFile(fileForTenant(tenantId), rows.slice(-10_000));
+  return {
+    append(tenantId, record) {
+      const rows = read(tenantId);
+      const duplicate = rows.find((item) => item.outcome_id === record.outcome_id);
+      if (duplicate) return { record: duplicate, duplicate: true };
+      rows.push({ ...record, tenant_id: tenantId });
+      write(tenantId, rows);
+      return { record: rows[rows.length - 1], duplicate: false };
+    },
+    recent(tenantId, limit = 100) {
+      return read(tenantId).slice(-Math.max(1, Math.min(1000, Number(limit) || 100)));
+    },
+    calibration(tenantId) {
+      return summarizeCalibration(read(tenantId));
     },
   };
 }
@@ -980,6 +1014,15 @@ function buildConnectorSdkManifest() {
       evidence: "/v1/evidence/recent",
       customer_intelligence_contract: "/v1/customer-intelligence/contract",
       customer_intelligence_readiness: "/v1/customer-intelligence/readiness",
+      intelligence_workflow: "/v1/intelligence/workflow",
+      intelligence_scenarios: "/v1/intelligence/scenarios",
+      intelligence_hypotheses: "/v1/intelligence/hypotheses/rank",
+      intelligence_events: "/v1/intelligence/events/evaluate",
+      intelligence_counterfactuals: "/v1/intelligence/counterfactuals/evaluate",
+      intelligence_decision: "/v1/intelligence/decisions/select",
+      intelligence_outcome_verify: "/v1/intelligence/outcomes/verify",
+      intelligence_outcome_record: "/v1/intelligence/outcomes/record",
+      intelligence_calibration: "/v1/intelligence/calibration",
     },
   };
 }
@@ -3062,6 +3105,7 @@ export function createUniversalCoreService(options = {}) {
   const evidence = evidenceStore(storageRoot);
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
+  const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
   const app = express();
 
   app.disable("x-powered-by");
@@ -3682,6 +3726,110 @@ export function createUniversalCoreService(options = {}) {
       selected_variant: result.selected_variant?.id || null,
     });
     res.json({ ok: true, result });
+  });
+
+  function intelligenceResponse(req, res, analysisType, analyze) {
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
+    const result = analyze(req.body || {});
+    audit.append("core_intelligence_analyzed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      analysis_type: analysisType,
+      schema_version: result.schema_version,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      result,
+      memory_context: memoryContext.value ? {
+        schema_version: memoryContext.value.schema_version,
+        tenant_id: memoryContext.value.tenant_id,
+        revision: memoryContext.value.revision,
+        recalled: true,
+      } : { tenant_id: req.tenantId, recalled: false },
+      execution_allowed: false,
+    });
+  }
+
+  app.post("/v1/intelligence/workflow", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    intelligenceResponse(req, res, "workflow", runIntelligenceWorkflow);
+  });
+
+  app.post("/v1/intelligence/scenarios", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    intelligenceResponse(req, res, "scenarios", analyzeScenarios);
+  });
+
+  app.post("/v1/intelligence/hypotheses/rank", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!Array.isArray(req.body?.hypotheses) || !req.body.hypotheses.length) return publicError(res, 400, "hypotheses_required");
+    intelligenceResponse(req, res, "hypothesis_ranking", rankHypotheses);
+  });
+
+  app.post("/v1/intelligence/events/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!Array.isArray(req.body?.events) || !req.body.events.length) return publicError(res, 400, "events_required");
+    intelligenceResponse(req, res, "event_probability", evaluateEvents);
+  });
+
+  app.post("/v1/intelligence/counterfactuals/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!req.body?.baseline || !Array.isArray(req.body?.alternatives) || !req.body.alternatives.length) {
+      return publicError(res, 400, "baseline_and_alternatives_required");
+    }
+    intelligenceResponse(req, res, "counterfactual_analysis", evaluateCounterfactuals);
+  });
+
+  app.post("/v1/intelligence/decisions/select", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const options = req.body?.options || req.body?.alternatives;
+    if (!Array.isArray(options) || options.length < 2) return publicError(res, 400, "at_least_two_options_required");
+    intelligenceResponse(req, res, "decision_selection", selectDecision);
+  });
+
+  app.post("/v1/intelligence/outcomes/verify", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
+      return publicError(res, 400, "predicted_probability_required");
+    }
+    if (req.body?.actual_outcome === undefined) return publicError(res, 400, "actual_outcome_required");
+    intelligenceResponse(req, res, "outcome_verification", verifyOutcome);
+  });
+
+  app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
+      return publicError(res, 400, "predicted_probability_required");
+    }
+    if (req.body?.actual_outcome === undefined) return publicError(res, 400, "actual_outcome_required");
+    const verified = verifyOutcome(req.body || {});
+    const stored = intelligenceOutcomes.append(req.tenantId, verified);
+    const calibration = intelligenceOutcomes.calibration(req.tenantId);
+    const evidenceRecord = evidence.append(req.tenantId, "intelligence_outcome_recorded", {
+      outcome_id: stored.record.outcome_id,
+      prediction_id: stored.record.prediction_id,
+      brier_score: stored.record.brier_score,
+      duplicate: stored.duplicate,
+    });
+    audit.append("core_intelligence_outcome_recorded", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      outcome_id: stored.record.outcome_id,
+      duplicate: stored.duplicate,
+    });
+    res.status(stored.duplicate ? 200 : 201).json({
+      ok: true,
+      tenant_id: req.tenantId,
+      outcome: stored.record,
+      duplicate: stored.duplicate,
+      calibration,
+      evidence: evidenceRecord,
+      live_weight_mutation_enabled: false,
+    });
+  });
+
+  app.get("/v1/intelligence/calibration", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const calibration = intelligenceOutcomes.calibration(req.tenantId);
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      calibration,
+      recent_outcomes: intelligenceOutcomes.recent(req.tenantId, Number(req.query.limit || 20)),
+    });
   });
 
   app.get("/v1/compliance/claim-shield/status", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {

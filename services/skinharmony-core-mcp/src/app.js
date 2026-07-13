@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.4.2-core-governed-collaboration";
+const SERVER_VERSION = "0.5.0-full-intelligence";
 
 function attachWorkPreflight(result, preflight) {
   const payload = preflight?.work_preflight || preflight;

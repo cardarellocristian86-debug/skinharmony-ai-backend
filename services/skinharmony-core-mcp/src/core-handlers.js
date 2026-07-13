@@ -34,6 +34,19 @@ export function createCoreHandlers(config, options = {}) {
     return contextProvider(input, identity);
   }
 
+  async function intelligenceRequest(path, args, identity, options = {}) {
+    const sharedContext = options.memory === false ? undefined : await memoryContext({
+      query: args.request || args.question || args.decision || args.outcome_id || "Nyra Core intelligence analysis",
+      project_id: args.project_id,
+      session_id: args.session_id,
+      agent_id: args.agent_id || "nyra",
+    }, identity);
+    return textResult(await coreRequest(path, identity.tenantId, {
+      method: "POST",
+      body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId },
+    }));
+  }
+
   return {
     core_health: async (_args, identity) => textResult({ ...(await coreRequest("/healthz", identity.tenantId)), tenant_id: identity.tenantId }),
     work_preflight: async (args, identity) => {
@@ -100,6 +113,15 @@ export function createCoreHandlers(config, options = {}) {
         }
       }));
     },
+    intelligence_workflow: async (args, identity) => intelligenceRequest("/v1/intelligence/workflow", args, identity),
+    scenario_analysis: async (args, identity) => intelligenceRequest("/v1/intelligence/scenarios", args, identity),
+    hypothesis_rank: async (args, identity) => intelligenceRequest("/v1/intelligence/hypotheses/rank", args, identity),
+    event_probability: async (args, identity) => intelligenceRequest("/v1/intelligence/events/evaluate", args, identity),
+    counterfactual_analysis: async (args, identity) => intelligenceRequest("/v1/intelligence/counterfactuals/evaluate", args, identity),
+    decision_select: async (args, identity) => intelligenceRequest("/v1/intelligence/decisions/select", args, identity),
+    outcome_verify: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/verify", args, identity),
+    outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity),
+    calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     core_gate_action: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
