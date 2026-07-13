@@ -141,14 +141,25 @@ try {
   assert(horizontalBranches.json.tenant_package?.domain_pack?.id === "generic", "horizontal branch package missing generic pack");
   assert(!horizontalBranches.json.tenant_package?.allowed_branches?.includes("skinharmony_analyzer"), "generic pack leaked SkinHarmony analyzer");
   assert(!horizontalBranches.json.tenant_package?.allowed_branches?.includes("beauty_vertical_orchestration"), "generic pack leaked beauty vertical");
+  const horizontalWorkBranches = [
+    "work_intake_intelligence",
+    "research_evidence_intelligence",
+    "planning_priority_intelligence",
+    "execution_coordination_intelligence",
+    "quality_verification_intelligence",
+    "adaptive_learning_intelligence",
+  ];
+  assert(horizontalWorkBranches.every((id) => horizontalBranches.json.tenant_package?.allowed_branches?.includes(id)), "generic pack missing horizontal work branches");
 
   const nyraBranchCatalog = await api(base, "GET", "/v1/nira/branches", undefined, horizontalKey);
   assert(nyraBranchCatalog.status === 200 && nyraBranchCatalog.json.catalog?.governance === "core_opens_nyra_branches", "Nyra branch catalog failed");
   assert(nyraBranchCatalog.json.catalog.branches.every((item) => item.subbranch_count <= 20), "Nyra subbranch hard limit failed");
   assert(!nyraBranchCatalog.json.catalog.branches.some((item) => item.id === "skinharmony_domain"), "generic catalog leaked SkinHarmony branch");
+  const nyraWorkBranches = ["work_intake", "research_evidence", "planning_prioritization", "parallel_coordination", "quality_verification", "adaptive_learning"];
+  assert(nyraWorkBranches.every((id) => nyraBranchCatalog.json.catalog.branches.some((item) => item.id === id)), "Nyra catalog missing horizontal work branches");
 
   const horizontalInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
-    text: "Valuta privacy e prepara un piano di deploy su Render",
+    text: "Ricerca fonti, pianifica priorita, coordina il lavoro in parallelo, testa qualita, impara dal feedback e prepara un piano di deploy con privacy su Render",
     nyra_branches: ["execution_planning", "skinharmony_domain", "unknown_branch"],
     memory_context: {
       schema_version: "tenant_memory_context_v1",
@@ -162,6 +173,14 @@ try {
   assert(horizontalInterpretation.status === 200, "horizontal Nyra interpretation failed");
   assert(horizontalInterpretation.json.result?.nyra_neural_network?.opened_by === "universal_core", "Core did not open Nyra branches");
   assert(horizontalInterpretation.json.result.nyra_neural_network.opened_branches.some((item) => item.id === "execution_planning"), "Core failed to open execution planning");
+  assert(nyraWorkBranches.every((id) => horizontalInterpretation.json.result.nyra_neural_network.opened_branches.some((item) => item.id === id)), "Core failed to open the complete Nyra work graph");
+  assert(horizontalWorkBranches.every((id) => horizontalInterpretation.json.result.core_branch_diagnostics.actual_selected_branches.includes(id)), "Core failed to select the horizontal work branches");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.parallel_analysis.waves.length >= 2, "Nyra work graph did not split into parallel waves");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.parallel_analysis.waves.every((wave) => wave.length <= 6), "Nyra parallel branch limit failed");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.parallel_analysis.join_authority === "universal_core", "Core is not the parallel join authority");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.state === "active", "Nyra learning branch did not activate");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.policy_activation_requires_verify === true, "learning verify gate is disabled");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.free_weight_training === false, "free weight training was enabled");
   assert(horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes("skinharmony_domain"), "Core failed to deny vertical Nyra branch");
   assert(horizontalInterpretation.json.result.automation_plan?.execution_allowed === false, "Nyra branch router unexpectedly enabled execution");
   assert(horizontalInterpretation.json.memory_context?.revision === 4, "Nyra did not receive tenant memory");

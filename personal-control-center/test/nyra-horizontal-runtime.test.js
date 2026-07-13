@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { createNyraHorizontalRuntime, proposeBranches } = require("../lib/nyra-horizontal-runtime");
+const { MAX_PARALLEL_BRANCHES, createNyraHorizontalRuntime, proposeBranches } = require("../lib/nyra-horizontal-runtime");
 
 test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   const runtime = createNyraHorizontalRuntime({});
@@ -10,6 +10,11 @@ test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   assert.equal(contract.service, "nyra-horizontal-runtime");
   assert.equal(contract.runtime_kind, "horizontal_neural_branch_runtime");
   assert.equal(contract.neural_network.maximum_subbranches_per_branch, 20);
+  assert.equal(contract.neural_network.maximum_parallel_branches, 6);
+  assert.equal(contract.neural_network.join_authority, "universal_core");
+  assert.equal(contract.governed_learning.memory_source, "tenant_memory_fabric");
+  assert.equal(contract.governed_learning.policy_activation_requires_verify, true);
+  assert.equal(contract.governed_learning.free_weight_training, false);
   assert.equal(contract.authority.may_open_branches, false);
   assert.equal(contract.authority.core_is_final_router, true);
 });
@@ -21,6 +26,22 @@ test("Nyra proposes relevant branches but never opens or executes them locally",
   assert(result.core_request.nyra_branches.includes("risk_governance"));
   assert(result.core_request.nyra_branches.includes("execution_planning"));
   assert.equal(result.local_interpretation.branch_state, "proposed_waiting_for_core");
+  assert(result.local_interpretation.parallel_proposal.waves.every((wave) => wave.length <= MAX_PARALLEL_BRANCHES));
+  assert.equal(result.local_interpretation.execution_allowed, false);
+});
+
+test("Nyra proposes work, parallel verification and learning branches as an agnostic graph", () => {
+  const runtime = createNyraHorizontalRuntime({});
+  const result = runtime.prepareInterpretation({
+    message: "Ricerca fonti, pianifica priorita, coordina in parallelo, testa qualita e impara dal feedback",
+  });
+  for (const id of ["work_intake", "research_evidence", "planning_prioritization", "parallel_coordination", "quality_verification", "adaptive_learning"]) {
+    assert(result.core_request.nyra_branches.includes(id), `missing proposed branch ${id}`);
+  }
+  assert(result.local_interpretation.parallel_proposal.waves.length >= 2);
+  assert(result.local_interpretation.parallel_proposal.waves.every((wave) => wave.length <= 6));
+  assert.equal(result.local_interpretation.governed_learning.state, "proposed_waiting_for_core_verify");
+  assert.equal(result.local_interpretation.governed_learning.policy_activation_requires_verify, true);
   assert.equal(result.local_interpretation.execution_allowed, false);
 });
 
@@ -30,6 +51,5 @@ test("Nyra validates input size and expected domain pack", () => {
   assert.equal(runtime.prepareInterpretation({ message: "x".repeat(20_001) }).error, "message_too_long");
   assert.equal(runtime.prepareInterpretation({ message: "test", domain_pack: "generic" }).error, "domain_pack_override_denied");
   assert.equal(runtime.prepareInterpretation({ message: "test", domain_pack: "skinharmony" }).ok, true);
-  assert.deepEqual(proposeBranches("Spiega la strategia"), ["context_intelligence", "risk_governance", "decision_reasoning", "communication_explanation"]);
+  assert.deepEqual(proposeBranches("Spiega la strategia"), ["context_intelligence", "work_intake", "risk_governance", "decision_reasoning", "communication_explanation"]);
 });
-

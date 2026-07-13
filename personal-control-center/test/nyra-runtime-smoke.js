@@ -228,7 +228,7 @@ async function main() {
 
   try {
     const health = await waitForHealth(child);
-    assert.equal(health.json.version, "0.6.0-horizontal-neural-branches");
+    assert.equal(health.json.version, "0.7.0-horizontal-work-learning");
     assert.equal(health.json.service, "nyra-horizontal-runtime");
     assert.equal(health.json.runtime_kind, "horizontal_neural_branch_runtime");
 
@@ -250,6 +250,8 @@ async function main() {
     const runtimeContract = await request("/api/nyra/runtime/contract", { auth: true });
     assert.equal(runtimeContract.status, 200);
     assert.equal(runtimeContract.json.contract.neural_network.maximum_subbranches_per_branch, 20);
+    assert.equal(runtimeContract.json.contract.neural_network.maximum_parallel_branches, 6);
+    assert.equal(runtimeContract.json.contract.governed_learning.policy_activation_requires_verify, true);
     assert.equal(runtimeContract.json.contract.authority.may_open_branches, false);
 
     const runtimeInterpretation = await request("/api/nyra/runtime/interpret", {
