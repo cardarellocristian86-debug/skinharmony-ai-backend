@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "0.3.0-tenant-memory-fabric";
 
 function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
@@ -17,6 +17,7 @@ export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
+  const afterToolCall = options.afterToolCall;
   const visibleTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
   app.use(express.json({ limit: "1mb" }));
 
@@ -28,7 +29,8 @@ export function createApp(config, options = {}) {
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
-    agent_workspace_configured: Boolean(config.agentWorkspaceRoot)
+    agent_workspace_configured: Boolean(config.agentWorkspaceRoot),
+    memory_fabric_configured: Boolean(config.memoryFabricRoot)
   }));
 
   const protectedResourceMetadata = (_req, res) => res.json({
@@ -73,10 +75,16 @@ export function createApp(config, options = {}) {
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
         const result = await handlers[tool.name](params.arguments || {}, identity);
+        if (typeof afterToolCall === "function") {
+          try { await afterToolCall({ identity, toolName: tool.name, args: params.arguments || {}, result }); } catch {}
+        }
         return res.json({ jsonrpc: "2.0", id, result });
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     } catch (error) {
+      if (typeof afterToolCall === "function" && method === "tools/call") {
+        try { await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error }); } catch {}
+      }
       if (error.message === "insufficient_scope") {
         res.set("WWW-Authenticate", challenge(config, "insufficient_scope", error.missing.join(" ")));
         return res.status(403).json({ jsonrpc: "2.0", id, error: { code: -32003, message: "Insufficient scope" } });

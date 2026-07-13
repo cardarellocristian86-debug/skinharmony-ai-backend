@@ -150,12 +150,30 @@ try {
   const horizontalInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Valuta privacy e prepara un piano di deploy su Render",
     nyra_branches: ["execution_planning", "skinharmony_domain", "unknown_branch"],
+    memory_context: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "tenant_horizontal_acme",
+      revision: 4,
+      relevant_memories: [{ id: "mem-1", kind: "decision", title: "Render", summary: "Keep execution disabled password=never-store" }],
+      pending_handoffs: [{ id: "mem-2", kind: "handoff", title: "Core review", summary: "Review the branch plan", to_agent_id: "core" }],
+      recent_activity: [],
+    },
   }, horizontalKey);
   assert(horizontalInterpretation.status === 200, "horizontal Nyra interpretation failed");
   assert(horizontalInterpretation.json.result?.nyra_neural_network?.opened_by === "universal_core", "Core did not open Nyra branches");
   assert(horizontalInterpretation.json.result.nyra_neural_network.opened_branches.some((item) => item.id === "execution_planning"), "Core failed to open execution planning");
   assert(horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes("skinharmony_domain"), "Core failed to deny vertical Nyra branch");
   assert(horizontalInterpretation.json.result.automation_plan?.execution_allowed === false, "Nyra branch router unexpectedly enabled execution");
+  assert(horizontalInterpretation.json.memory_context?.revision === 4, "Nyra did not receive tenant memory");
+  assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_relevant_count === 1, "Core did not account for relevant tenant memory");
+  assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_handoff_count === 1, "Core did not account for pending AI handoffs");
+  assert(!JSON.stringify(horizontalInterpretation.json).includes("never-store"), "Core response leaked a memory secret");
+
+  const mismatchedMemory = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Attempt cross-tenant memory injection",
+    memory_context: { schema_version: "tenant_memory_context_v1", tenant_id: "tenant-b", revision: 1 },
+  }, horizontalKey);
+  assert(mismatchedMemory.status === 403 && mismatchedMemory.json.error === "memory_context_tenant_mismatch", "cross-tenant memory context was accepted");
 
   const packOverride = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Attempt vertical override",
@@ -181,7 +199,7 @@ try {
     nyra_branch_count: nyraBranchCatalog.json.catalog.branches.length,
     opened: horizontalInterpretation.json.result.nyra_neural_network.opened_branches.map((item) => item.id),
     denied: horizontalInterpretation.json.result.nyra_neural_network.denied_branches,
-    negative_cases: [invalidPackKey.json.error, packOverride.json.error, emptyNyraRequest.json.error, oversizedNyraRequest.json.error, malformedNyraBranch.json.error, excessiveNyraBranches.json.error],
+    negative_cases: [invalidPackKey.json.error, packOverride.json.error, emptyNyraRequest.json.error, oversizedNyraRequest.json.error, malformedNyraBranch.json.error, excessiveNyraBranches.json.error, mismatchedMemory.json.error],
     scope_negative_case: scopeDeniedPack.json.error,
   });
 

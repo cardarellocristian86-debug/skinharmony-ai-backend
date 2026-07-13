@@ -27,6 +27,9 @@ MCP_DEFAULT_TENANT_ID=owner-private
 MCP_TENANT_CLAIM=https://skinharmony.it/tenant_id
 SHARED_WORK_MEMORY_ROOT=/app/shared-work-memory
 AGENT_WORKSPACE_ROOT=/var/data/skinharmony-core-mcp
+MEMORY_FABRIC_ROOT=/var/data/skinharmony-core-mcp
+MEMORY_RETENTION_DAYS=365
+MEMORY_PERSONAL_RETENTION_DAYS=90
 ```
 
 `CORE_BASE_URL` is also accepted as a compatibility fallback when
@@ -66,9 +69,27 @@ Write tools require both their resource scope and `core:govern`. Before changing
 state they call Universal Core's action evaluator. Hard-block verdicts fail
 closed. Documents and tasks use expected versions to prevent lost updates.
 
+## Tenant AI memory fabric
+
+The memory fabric is fail-closed and is advertised only when
+`MEMORY_FABRIC_ROOT` (or the fallback `AGENT_WORKSPACE_ROOT`) is configured.
+Each tenant gets an isolated journal, durable memories, checkpoints and AI
+handoffs under `tenants/<tenant_id>/memory-fabric`.
+
+`memory_context` and `memory_search` require `core:read`. Explicit writes through
+`memory_append`, `memory_checkpoint`, `memory_handoff` and acknowledgement require
+`core:govern` and pass through Universal Core. Nyra context and interpretation
+automatically read this memory. Successful and failed MCP tool calls append only
+redacted operational metadata; raw prompts and raw tool arguments are never
+automatically persisted.
+
+Restricted records are rejected. `customer_personal` records require a consent
+reference and use the shorter personal retention ceiling. Known credentials,
+tokens and email addresses are redacted before the atomic write.
+
 ## Production boundary
 
-The MCP service calls Universal Core server-to-server with `UNIVERSAL_CORE_KEY`; it never forwards the ChatGPT OAuth token to Core. Core and memory tools remain read-only. Optional collaboration writes affect only the authenticated tenant's internal agent workspace; they do not merge, deploy, publish, modify customer records, or grant cross-tenant access.
+The MCP service calls Universal Core server-to-server with a tenant-scoped key; it never forwards the ChatGPT OAuth token to Core. Explicit memory and collaboration writes affect only the authenticated tenant's internal server-side state and require Core governance. They do not merge, deploy, publish, modify customer systems, or grant cross-tenant access.
 
 ## Multi-tenant boundary
 

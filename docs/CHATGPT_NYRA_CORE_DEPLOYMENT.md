@@ -6,7 +6,8 @@
 - The MCP validates Auth0 OAuth tokens and derives the tenant from `https://skinharmony.it/tenant_id`.
 - The MCP selects the tenant-specific Core key from `UNIVERSAL_CORE_KEYS_JSON`.
 - Universal Core remains the decision and governance boundary.
-- Shared work memory is read only from `shared-work-memory/tenants/<tenant>/documents`.
+- Static shared documents remain available under `shared-work-memory/tenants/<tenant>/documents`.
+- The server-side tenant memory fabric stores redacted journal events, explicit memories, checkpoints and AI handoffs on persistent storage.
 
 ## Auth0
 
@@ -21,6 +22,7 @@ Set these in the `skinharmony-core-mcp` service dashboard:
 - `AUTH0_ISSUER`
 - `UNIVERSAL_CORE_KEYS_JSON`
 - optionally `UNIVERSAL_CORE_KEY` for the `owner-private` compatibility path
+- `AGENT_WORKSPACE_ROOT` and `MEMORY_FABRIC_ROOT`, both pointing to the persistent Render disk
 
 Never commit their values.
 
@@ -35,4 +37,4 @@ An unauthenticated MCP request must return `401` and a `WWW-Authenticate` header
 
 ## ChatGPT
 
-Enable Developer mode, create a developer app, and use `https://skinharmony-core-mcp.onrender.com/mcp` as the MCP URL. After Auth0 login, verify the six tools and test `search`, `fetch`, `core_health`, `nyra_runtime_context`, `nyra_interpret_request`, and `core_gate_action`.
+Enable Developer mode, create a developer app, and use `https://skinharmony-core-mcp.onrender.com/mcp` as the MCP URL. After Auth0 login, test health, Nyra interpretation, Core governance, tenant memory context/search, an explicit checkpoint and an AI handoff. Confirm that a second tenant cannot retrieve the first tenant's records.

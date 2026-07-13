@@ -7,6 +7,7 @@ function textResult(payload) {
 
 export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
+  const contextProvider = options.contextProvider;
 
   function coreKey(tenantId) {
     const selected = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
@@ -28,31 +29,54 @@ export function createCoreHandlers(config, options = {}) {
     return payload;
   }
 
+  async function memoryContext(input, identity) {
+    if (typeof contextProvider !== "function") return undefined;
+    return contextProvider(input, identity);
+  }
+
   return {
     core_health: async (_args, identity) => textResult({ ...(await coreRequest("/healthz", identity.tenantId)), tenant_id: identity.tenantId }),
-    nyra_runtime_context: async (args, identity) => textResult(await coreRequest("/v1/codex/context", identity.tenantId, {
-      method: "POST",
-      body: {
+    nyra_runtime_context: async (args, identity) => {
+      const sharedContext = await memoryContext({
+        query: args.query || "Nyra Core current work decisions and pending handoffs",
+        project_id: args.project_id,
+        session_id: args.session_id,
+        agent_id: args.agent_id || "nyra",
+      }, identity);
+      return textResult(await coreRequest("/v1/codex/context", identity.tenantId, {
+        method: "POST",
+        body: {
         task: "ChatGPT requests Nyra runtime context",
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
         locale: "it",
         ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId
-      }
-    })),
+        }
+      }));
+    },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
-    nyra_interpret_request: async (args, identity) => textResult(await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
-      method: "POST",
-      body: {
+    nyra_interpret_request: async (args, identity) => {
+      const sharedContext = await memoryContext({
+        query: args.message,
+        project_id: args.project_id,
+        session_id: args.session_id,
+        agent_id: args.agent_id || "nyra",
+      }, identity);
+      return textResult(await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+        method: "POST",
+        body: {
         text: args.message,
         request_id: args.session_id,
         locale: "it",
         mode: "standard",
         ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
         ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId
-      }
-    })),
+        }
+      }));
+    },
     core_gate_action: async (args, identity) => textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
       method: "POST",
       body: { ...args, tenant_id: identity.tenantId }

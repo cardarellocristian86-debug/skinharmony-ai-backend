@@ -6,6 +6,16 @@ import type { UniversalAction, UniversalCoreInput, UniversalSignal } from "../pa
 
 type NiraBridgeMode = "standard" | "god_mode_owner_only";
 
+type TenantMemoryContext = {
+  schema_version: "tenant_memory_context_v1";
+  tenant_id: string;
+  revision: number;
+  latest_checkpoint?: unknown;
+  relevant_memories?: unknown[];
+  pending_handoffs?: unknown[];
+  recent_activity?: unknown[];
+};
+
 export type NiraBridgeRequest = {
   request_id?: string;
   text: string;
@@ -16,6 +26,7 @@ export type NiraBridgeRequest = {
   access_scope?: "denied" | "limited" | "owner_full";
   mode?: NiraBridgeMode;
   target_system?: "suite" | "smartdesk" | "wordpress" | "universal_core" | "generic";
+  memory_context?: TenantMemoryContext;
 };
 
 export type NiraPreparedScenario = {
@@ -249,6 +260,10 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
         nira_role: "prepare_scenarios_only",
         core_role: "judge_rank_gate_audit",
         automation_role: "execute_only_after_core",
+        memory_schema: request.memory_context?.schema_version || "none",
+        memory_revision: request.memory_context?.revision || 0,
+        memory_relevant_count: request.memory_context?.relevant_memories?.length || 0,
+        memory_handoff_count: request.memory_context?.pending_handoffs?.length || 0,
       },
     },
     signals: scenarios.map(signalFromScenario),
