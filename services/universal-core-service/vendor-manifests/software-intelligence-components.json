@@ -1,0 +1,40 @@
+{
+  "schema_version": "software_intelligence_vendor_manifest_v1",
+  "policy": {
+    "exact_source_version_required": true,
+    "source_hash_required": true,
+    "license_and_notice_required": true,
+    "sbom_required": true,
+    "reproducible_build_test_required": true,
+    "installed_application_copy_is_sufficient": false
+  },
+  "components": [
+    {
+      "id": "skinharmony_binary_evidence_core",
+      "status": "embedded_active",
+      "origin": "SkinHarmony",
+      "runtime": "node",
+      "capabilities": ["elf_header", "pe_header", "macho_header", "sha256", "entropy", "redacted_strings"]
+    },
+    {
+      "id": "ghidra_analysis_components",
+      "status": "vendor_import_required",
+      "upstream": "https://github.com/NationalSecurityAgency/ghidra",
+      "license": "Apache-2.0",
+      "version": null,
+      "source_sha256": null,
+      "notice_verified": false,
+      "sbom_verified": false
+    },
+    {
+      "id": "frida_gum_components",
+      "status": "vendor_import_required",
+      "upstream": "https://github.com/frida/frida",
+      "license": "component_specific_audit_required",
+      "version": null,
+      "source_sha256": null,
+      "notice_verified": false,
+      "sbom_verified": false
+    }
+  ]
+}
