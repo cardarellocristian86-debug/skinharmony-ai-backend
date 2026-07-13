@@ -9,6 +9,8 @@ test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   const contract = runtime.contract();
   assert.equal(contract.service, "nyra-horizontal-runtime");
   assert.equal(contract.runtime_kind, "horizontal_neural_branch_runtime");
+  assert.equal(contract.domain_pack_resolution, "universal_core_key_metadata_only");
+  assert.equal(contract.vertical_pack_selection, "forbidden_in_horizontal_runtime");
   assert.equal(contract.neural_network.maximum_subbranches_per_branch, 20);
   assert.equal(contract.neural_network.maximum_parallel_branches, 6);
   assert.equal(contract.neural_network.join_authority, "universal_core");
@@ -49,11 +51,18 @@ test("Nyra proposes work, parallel verification and learning branches as an agno
   assert.equal(result.local_interpretation.execution_allowed, false);
 });
 
-test("Nyra validates input size and expected domain pack", () => {
+test("Nyra validates input and cannot bind or select a product pack", () => {
   const runtime = createNyraHorizontalRuntime({ NYRA_DOMAIN_PACK_ID: "skinharmony" });
+  assert.equal(runtime.expectedDomainPack, null);
+  assert.equal(runtime.configuredDomainPackIgnored, "skinharmony");
+  assert.equal(runtime.contract().legacy_domain_pack_env_ignored, true);
   assert.equal(runtime.prepareInterpretation({}).error, "message_required");
   assert.equal(runtime.prepareInterpretation({ message: "x".repeat(20_001) }).error, "message_too_long");
-  assert.equal(runtime.prepareInterpretation({ message: "test", domain_pack: "generic" }).error, "domain_pack_override_denied");
-  assert.equal(runtime.prepareInterpretation({ message: "test", domain_pack: "skinharmony" }).ok, true);
+  assert.equal(runtime.prepareInterpretation({ message: "test", domain_pack: "generic" }).error, "domain_pack_selection_forbidden");
+  assert.equal(runtime.prepareInterpretation({ message: "test", domain_pack_id: "analyzer" }).error, "domain_pack_selection_forbidden");
+  const branded = runtime.prepareInterpretation({ message: "Valuta SkinHarmony, beauty, Suite e SmartDesk" });
+  assert.equal(branded.ok, true);
+  assert.equal("domain_pack" in branded.core_request, false);
+  assert.deepEqual(branded.core_request.nyra_branches, ["context_intelligence", "work_intake", "risk_governance", "decision_reasoning"]);
   assert.deepEqual(proposeBranches("Spiega la strategia"), ["context_intelligence", "work_intake", "risk_governance", "decision_reasoning", "communication_explanation"]);
 });
