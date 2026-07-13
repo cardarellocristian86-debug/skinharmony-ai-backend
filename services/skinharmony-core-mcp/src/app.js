@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.4.0-memory-first-preflight";
+const SERVER_VERSION = "0.4.1-auth0-scope-union";
 
 function attachWorkPreflight(result, preflight) {
   const payload = preflight?.work_preflight || preflight;
