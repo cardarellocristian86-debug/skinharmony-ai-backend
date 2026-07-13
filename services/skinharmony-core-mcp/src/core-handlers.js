@@ -32,6 +32,12 @@ export function createCoreHandlers(config, options = {}) {
     return payload;
   }
 
+  function ownerContext(identity) {
+    return identity.godMode === true
+      ? { access_mode: "god_mode", role: "owner_root", delegated_actor: identity.kind, owner_verified: true }
+      : { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+  }
+
   async function memoryContext(input, identity) {
     if (typeof contextProvider !== "function") return undefined;
     return contextProvider(input, identity);
@@ -46,7 +52,7 @@ export function createCoreHandlers(config, options = {}) {
     }, identity);
     const coreAnalysis = await coreRequest(path, identity.tenantId, {
       method: "POST",
-      body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId },
+      body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), owner_context: ownerContext(identity), tenant_id: identity.tenantId },
     });
     if (options.nyraInterpretation !== true) return textResult(coreAnalysis);
 
@@ -105,6 +111,7 @@ export function createCoreHandlers(config, options = {}) {
           ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
           ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
           owner_confirmed: args.owner_confirmed === true || identity.ownerConfirmed === true,
+          owner_context: ownerContext(identity),
           ...(args.confirmation_reference || identity.confirmationReference
             ? { confirmation_reference: args.confirmation_reference || identity.confirmationReference }
             : {}),
@@ -164,6 +171,7 @@ export function createCoreHandlers(config, options = {}) {
         request_id: args.session_id,
         locale: "it",
         mode: "standard",
+        owner_context: ownerContext(identity),
         ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
         ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),

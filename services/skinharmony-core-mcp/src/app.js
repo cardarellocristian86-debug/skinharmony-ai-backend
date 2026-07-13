@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.6.0-full-intelligence-research-cortex";
+const SERVER_VERSION = "0.7.0-owner-root-god-mode";
 const SERVER_INSTRUCTIONS = "Call work_preflight before connected work. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function resolveWorkPreflight(result, payload) {
@@ -85,7 +85,13 @@ export function createApp(config, options = {}) {
     memory_fabric_configured: Boolean(config.memoryFabricRoot),
     research_cortex_configured: Boolean(config.researchCortexRoot),
     openai_research_fallback_enabled: config.openaiResearchEnabled === true,
-    openai_research_fallback_configured: Boolean(config.openaiApiKey)
+    openai_research_fallback_configured: Boolean(config.openaiApiKey),
+    nyra_god_mode: {
+      configured: config.godModeEnabled === true,
+      active: config.godModeEnabled === true && config.godModeEmergencyStop !== true,
+      tenant_isolated: true,
+      emergency_stop: config.godModeEmergencyStop === true
+    }
   }));
 
   const protectedResourceMetadata = (_req, res) => res.json({
@@ -132,7 +138,7 @@ export function createApp(config, options = {}) {
         const args = params.arguments || {};
         const callIdentity = {
           ...identity,
-          ownerConfirmed: args.owner_confirmed === true,
+          ownerConfirmed: identity.godMode === true || args.owner_confirmed === true,
           confirmationReference: String(args.confirmation_reference || "").slice(0, 240),
         };
         const preflight = typeof beforeToolCall === "function"

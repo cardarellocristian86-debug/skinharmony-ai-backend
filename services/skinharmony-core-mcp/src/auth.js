@@ -22,6 +22,21 @@ function tokenScopes(payload) {
   ])];
 }
 
+function applyOwnerRoot(identity, config) {
+  const enabled = config.godModeEnabled === true && config.godModeEmergencyStop !== true;
+  const tenantMatch = identity.tenantId === config.godModeTenantId;
+  const subjectAllowed = identity.kind === "codex"
+    ? config.godModeCodexEnabled === true
+    : config.godModeSubjects.includes(identity.subject) || config.godModeClientIds.includes(identity.clientId);
+  if (!enabled || !tenantMatch || !subjectAllowed) return identity;
+  return {
+    ...identity,
+    role: "owner_root",
+    godMode: true,
+    scopes: [...new Set([...identity.scopes, ...config.supportedScopes, "owner:root"])],
+  };
+}
+
 export class JwksCache {
   constructor(fetchImpl = fetch, ttlMs = 300_000) {
     this.fetch = fetchImpl;
@@ -62,7 +77,13 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (payload.nbf && payload.nbf > now + 30) throw new Error("jwt_not_active");
   const tenantId = String(payload[config.tenantClaim] || "").trim();
   if (!tenantId) throw new Error("jwt_tenant_missing");
-  return { kind: "oauth", subject: String(payload.sub || ""), tenantId, scopes: tokenScopes(payload) };
+  return {
+    kind: "oauth",
+    subject: String(payload.sub || ""),
+    ...(payload.azp || payload.client_id ? { clientId: String(payload.azp || payload.client_id) } : {}),
+    tenantId,
+    scopes: tokenScopes(payload)
+  };
 }
 
 export function createAuthenticator(config, options = {}) {
@@ -72,10 +93,10 @@ export function createAuthenticator(config, options = {}) {
     if (!match) throw new Error("bearer_required");
     const token = match[1].trim();
     if (config.codexKeys.some((key) => safeEqual(key, token))) {
-      return { kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes };
+      return applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config);
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
-    return verifyAuth0Jwt(token, config, cache);
+    return applyOwnerRoot(await verifyAuth0Jwt(token, config, cache), config);
   };
 }
 
