@@ -22,6 +22,12 @@ function jsonObject(value, name) {
   }
 }
 
+function integer(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
 export function loadConfig(env = process.env) {
   const publicUrl = url(env.MCP_PUBLIC_URL || "http://localhost:8790", "MCP_PUBLIC_URL");
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
@@ -39,6 +45,7 @@ export function loadConfig(env = process.env) {
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
+  const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
@@ -59,6 +66,9 @@ export function loadConfig(env = process.env) {
     defaultTenantId,
     tenantClaim,
     sharedMemoryRoot,
-    agentWorkspaceRoot
+    agentWorkspaceRoot,
+    memoryFabricRoot,
+    memoryRetentionDays: integer(env.MEMORY_RETENTION_DAYS, 365, 1, 3_650),
+    personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365)
   };
 }

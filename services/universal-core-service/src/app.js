@@ -50,7 +50,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.4.0-horizontal-domain-packs-nyra-network";
+const SERVICE_VERSION = "0.5.0-tenant-memory-fabric";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -91,6 +91,58 @@ function safeTenantId(req, keyRecord) {
   const tenantFromQuery = req.query?.tenant_id;
   const tenantFromHeader = req.get("x-sh-tenant-id");
   return String(tenantFromBody || tenantFromQuery || tenantFromHeader || keyRecord?.tenant_id || "").trim();
+}
+
+function sanitizeMemoryText(value, max = 2_000) {
+  return String(value || "")
+    .slice(0, max)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "[REDACTED_SECRET]")
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_SECRET]")
+    .replace(/\b(?:password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED_SECRET]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
+}
+
+function normalizeTenantMemoryContext(raw, tenantId) {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "memory_context_invalid" };
+  if (String(raw.tenant_id || "") !== tenantId) return { ok: false, error: "memory_context_tenant_mismatch" };
+  const list = (value, max) => Array.isArray(value) ? value.slice(0, max).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    return {
+      id: sanitizeMemoryText(item.id, 100),
+      kind: sanitizeMemoryText(item.kind, 40),
+      title: sanitizeMemoryText(item.title, 240),
+      summary: sanitizeMemoryText(item.summary, 2_000),
+      decisions: normalizeList(item.decisions, 10).map((entry) => sanitizeMemoryText(entry, 500)),
+      outcomes: normalizeList(item.outcomes, 10).map((entry) => sanitizeMemoryText(entry, 500)),
+      next_steps: normalizeList(item.next_steps, 10).map((entry) => sanitizeMemoryText(entry, 500)),
+      project_id: item.project_id ? sanitizeMemoryText(item.project_id, 64) : null,
+      session_id: item.session_id ? sanitizeMemoryText(item.session_id, 64) : null,
+      to_agent_id: item.to_agent_id ? sanitizeMemoryText(item.to_agent_id, 64) : undefined,
+      status: item.status ? sanitizeMemoryText(item.status, 40) : undefined,
+      created_at: sanitizeMemoryText(item.created_at, 40),
+    };
+  }).filter(Boolean) : [];
+  const latest = list(raw.latest_checkpoint ? [raw.latest_checkpoint] : [], 1)[0] || null;
+  return {
+    ok: true,
+    value: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: tenantId,
+      revision: Number.isInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
+      project_id: raw.project_id ? sanitizeMemoryText(raw.project_id, 64) : null,
+      session_id: raw.session_id ? sanitizeMemoryText(raw.session_id, 64) : null,
+      latest_checkpoint: latest,
+      relevant_memories: list(raw.relevant_memories, 10),
+      pending_handoffs: list(raw.pending_handoffs, 10),
+      recent_activity: list(raw.recent_activity, 20),
+      policy: {
+        tenant_isolated: true,
+        raw_prompts_stored_automatically: false,
+        secrets_storable: false,
+      },
+    },
+  };
 }
 
 function normalizeSignal(input = {}) {
@@ -3882,6 +3934,8 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -3904,11 +3958,13 @@ export function createUniversalCoreService(options = {}) {
       tier: context.tier,
       selected_branches: context.selected_branches,
       denied_branches: context.denied_branches,
+      memory_revision: memoryContext.value?.revision || 0,
     });
     res.json({
       ok: true,
       domain_pack: publicDomainPack(domainPackAccess.pack),
       context,
+      memory_context: memoryContext.value,
       tenant_policy: tenantPolicy,
       decision_contract: normalizeDecisionContract(runUniversalCore({
         request_id: req.body?.request_id || `codex_context_${crypto.randomUUID()}`,
@@ -3929,7 +3985,11 @@ export function createUniversalCoreService(options = {}) {
             category: "codex",
             normalized_score: context.selected_branches.length ? 35 : 45,
             confidence_hint: 80,
-            evidence: [{ label: context.selected_branches.length ? "Rami specializzati disponibili" : "Nessun ramo richiesto/autorizzato: uso guardiano generico", value: true }],
+            evidence: [
+              { label: context.selected_branches.length ? "Rami specializzati disponibili" : "Nessun ramo richiesto/autorizzato: uso guardiano generico", value: true },
+              { label: "Memorie tenant rilevanti", value: memoryContext.value?.relevant_memories.length || 0 },
+              { label: "Handoff AI pendenti", value: memoryContext.value?.pending_handoffs.length || 0 },
+            ],
             tags: ["codex", context.selected_branches.length ? "branch_context" : "generic_guard"],
           }),
         ],
@@ -4007,6 +4067,8 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
     const niraText = String(req.body?.text || req.body?.request || req.body?.task || "").trim();
     if (!niraText) return publicError(res, 400, "nira_text_required");
     if (niraText.length > 20_000) return publicError(res, 413, "nira_text_too_long");
@@ -4046,6 +4108,7 @@ export function createUniversalCoreService(options = {}) {
       access_scope: ownerVerified ? "owner_full" : "limited",
       mode: requestedGodMode ? "god_mode_owner_only" : "standard",
       target_system: req.body?.target_system || "universal_core",
+      memory_context: memoryContext.value || undefined,
       scenario_candidates: Array.isArray(req.body?.scenario_candidates)
         ? req.body.scenario_candidates
         : (Array.isArray(req.body?.scenarios) ? req.body.scenarios : undefined),
@@ -4082,6 +4145,7 @@ export function createUniversalCoreService(options = {}) {
       },
       domain_pack: publicDomainPack(domainPackAccess.pack),
       nyra_neural_network: nyraNetwork,
+      memory_context: memoryContext.value,
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -4094,12 +4158,14 @@ export function createUniversalCoreService(options = {}) {
       selected_branches: guardedResult.core_branch_diagnostics.actual_selected_branches,
       denied_branches: guardedResult.core_branch_diagnostics.actual_denied_branches,
       nyra_opened_branches: nyraNetwork.opened_branches.map((item) => item.id),
+      memory_revision: memoryContext.value?.revision || 0,
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       domain_pack: publicDomainPack(domainPackAccess.pack),
       result: guardedResult,
+      memory_context: memoryContext.value,
       branch_context: {
         selected_branches: branchContext.selected_branches,
         denied_branches: branchContext.denied_branches,

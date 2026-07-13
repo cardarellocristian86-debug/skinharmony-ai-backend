@@ -4,11 +4,16 @@ import { createCoreHandlers, createCoreWriteGuard } from "../src/core-handlers.j
 
 test("maps MCP tools to Universal Core without forwarding the ChatGPT token", async () => {
   const calls = [];
+  const contextCalls = [];
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key" }, {
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ ok: true, path: new URL(url).pathname }), { status: 200, headers: { "content-type": "application/json" } });
-    }
+    },
+    contextProvider: async (input, identity) => {
+      contextCalls.push({ input, identity });
+      return { schema_version: "tenant_memory_context_v1", tenant_id: identity.tenantId, revision: 7, relevant_memories: [] };
+    },
   });
   const identity = { tenantId: "tenant-a" };
   await handlers.core_health({}, identity);
@@ -21,6 +26,11 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert(calls.filter((call) => call.init.body).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert.equal(JSON.parse(calls[1].init.body).domain_pack, "generic");
   assert.deepEqual(JSON.parse(calls[3].init.body).nyra_branches, ["context_intelligence"]);
+  assert.equal(JSON.parse(calls[1].init.body).memory_context.tenant_id, "tenant-a");
+  assert.equal(JSON.parse(calls[3].init.body).memory_context.revision, 7);
+  assert.equal(contextCalls.length, 2);
+  assert.equal(contextCalls[1].input.query, "analizza");
+  assert.equal(contextCalls[1].input.agent_id, "nyra");
 });
 
 test("rejects a tenant without its own Core key", async () => {

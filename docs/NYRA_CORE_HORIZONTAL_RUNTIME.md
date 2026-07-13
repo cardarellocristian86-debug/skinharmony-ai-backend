@@ -35,6 +35,15 @@ Nyra interpreta la richiesta e propone i rami. Universal Core:
 
 Nyra non apre autonomamente i rami e l'endpoint di interpretazione non esegue scritture.
 
+## Continuita tra AI
+
+Quando il Tenant Memory Fabric e configurato, il MCP carica automaticamente
+checkpoint, memorie rilevanti, attivita recente e handoff prima di chiamare gli
+endpoint di contesto/interpretazione. Nyra riceve questa continuita e propone i
+rami; Universal Core convalida nuovamente il tenant, vede revisione e handoff,
+quindi apre soltanto i rami autorizzati. Al termine il MCP registra un evento
+operativo redatto, senza salvare automaticamente il prompt originale.
+
 ## Endpoint
 
 - `GET /v1/domain-packs`
@@ -54,4 +63,3 @@ Gli endpoint Core richiedono `read:decision`; gli endpoint Nyra sotto `/api/` us
 - `NYRA_DOMAIN_PACK_ID`: pack atteso da Nyra. Se assente, il Core lo risolve dal tenant; se presente, il Core deve convalidarlo.
 
 Il nome del servizio Render puo restare quello storico: identifica un'istanza/deployment, non il tipo del motore.
-

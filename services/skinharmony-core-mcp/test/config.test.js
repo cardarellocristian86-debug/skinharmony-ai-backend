@@ -13,10 +13,24 @@ test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => 
 test("keeps agent collaboration disabled until a persistent root is configured", () => {
   const disabled = loadConfig({});
   assert.equal(disabled.agentWorkspaceRoot, "");
+  assert.equal(disabled.memoryFabricRoot, "");
   const enabled = loadConfig({ AGENT_WORKSPACE_ROOT: "/var/data/skinharmony-core-mcp" });
   assert.equal(enabled.agentWorkspaceRoot, "/var/data/skinharmony-core-mcp");
+  assert.equal(enabled.memoryFabricRoot, "/var/data/skinharmony-core-mcp");
   assert(enabled.supportedScopes.includes("workspace:write"));
   assert(enabled.supportedScopes.includes("agent:coordinate"));
+});
+
+test("configures independent memory storage and bounded retention", () => {
+  const config = loadConfig({
+    AGENT_WORKSPACE_ROOT: "/workspace",
+    MEMORY_FABRIC_ROOT: "/memory",
+    MEMORY_RETENTION_DAYS: "99999",
+    MEMORY_PERSONAL_RETENTION_DAYS: "120",
+  });
+  assert.equal(config.memoryFabricRoot, "/memory");
+  assert.equal(config.memoryRetentionDays, 3650);
+  assert.equal(config.personalMemoryRetentionDays, 120);
 });
 
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {

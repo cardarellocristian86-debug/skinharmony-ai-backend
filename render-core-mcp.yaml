@@ -33,3 +33,9 @@ services:
         value: ./shared-work-memory
       - key: AGENT_WORKSPACE_ROOT
         sync: false
+      - key: MEMORY_FABRIC_ROOT
+        sync: false
+      - key: MEMORY_RETENTION_DAYS
+        value: "365"
+      - key: MEMORY_PERSONAL_RETENTION_DAYS
+        value: "90"

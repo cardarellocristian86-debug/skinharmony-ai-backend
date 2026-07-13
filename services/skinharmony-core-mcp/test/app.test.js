@@ -24,7 +24,8 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.2.0");
+  assert.equal(health.version, "0.3.0-tenant-memory-fabric");
+  assert.equal(health.memory_fabric_configured, false);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
@@ -65,6 +66,34 @@ test("does not advertise collaboration tools without registered handlers", async
     const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }) });
     const body = await response.json();
     assert.deepEqual(body.result.tools.map((tool) => tool.name), ["core_health"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("journals successful and failed tool calls without changing client responses", async () => {
+  const events = [];
+  const app = createApp(config, {
+    handlers: {
+      core_health: async () => ({ content: [{ type: "text", text: "ok" }] }),
+      core_gate_action: async () => { throw new Error("expected_failure"); },
+    },
+    afterToolCall: async (event) => events.push(event),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = { authorization: "Bearer codex-key", "content-type": "application/json" };
+    const success = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "core_health", arguments: {} } }) });
+    assert.equal(success.status, 200);
+    const failure = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "core_gate_action", arguments: { action_label: "x", action_type: "y" } } }) });
+    assert.equal(failure.status, 500);
+    assert.equal(events.length, 2);
+    assert.equal(events[0].toolName, "core_health");
+    assert.equal(events[0].error, undefined);
+    assert.equal(events[1].toolName, "core_gate_action");
+    assert.match(events[1].error.message, /expected_failure/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
