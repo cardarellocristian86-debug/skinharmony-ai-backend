@@ -1,0 +1,46 @@
+name: Nyra Core Intelligence
+
+on:
+  pull_request:
+    paths:
+      - "services/skinharmony-core-mcp/**"
+      - "services/universal-core-service/**"
+      - ".github/workflows/nyra-core-intelligence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  universal-core:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/universal-core-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/universal-core-service/package-lock.json
+      - name: Build governed Rust extractor
+        working-directory: .
+        run: bash scripts/build-rust-extractor-render.sh
+      - run: npm ci
+      - run: npm test
+
+  core-mcp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/skinharmony-core-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Universal Core dependencies for integration tests
+        run: npm ci --prefix ../universal-core-service
+      - run: npm install --ignore-scripts
+      - run: npm test

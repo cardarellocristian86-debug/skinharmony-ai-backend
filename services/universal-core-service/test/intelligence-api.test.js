@@ -36,6 +36,12 @@ test("intelligence API is tenant scoped and records idempotent outcomes", async 
   assert.equal(first.status, 201);
   assert.equal(second.status, 200);
   assert.equal(second.json.duplicate, true);
+  const conflict = await request("POST", "/v1/intelligence/outcomes/record", { ...payload, actual_outcome: false }, key);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.json.error, "outcome_id_conflict");
+  const missingId = await request("POST", "/v1/intelligence/outcomes/record", { predicted_probability: 0.8, actual_outcome: true }, key);
+  assert.equal(missingId.status, 400);
+  assert.equal(missingId.json.error, "outcome_id_required");
   const calibration = await request("GET", "/v1/intelligence/calibration", undefined, key);
   assert.equal(calibration.json.calibration.sample_size, 1);
   assert.equal(calibration.json.tenant_id, "tenant-intel");

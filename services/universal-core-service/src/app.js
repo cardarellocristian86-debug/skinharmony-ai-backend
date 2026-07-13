@@ -67,7 +67,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.8.0-full-intelligence";
+const SERVICE_VERSION = "0.8.1-intelligence-consolidation";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -95,7 +95,9 @@ function readJsonFile(file, fallback) {
 
 function writeJsonFile(file, value) {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), "utf8");
+  fs.renameSync(temporary, file);
 }
 
 function normalizeList(value, max = 100) {
@@ -129,7 +131,14 @@ function normalizeTenantMemoryContext(raw, tenantId) {
       id: sanitizeMemoryText(item.id, 100),
       kind: sanitizeMemoryText(item.kind, 40),
       title: sanitizeMemoryText(item.title, 240),
-      summary: sanitizeMemoryText(item.summary, 2_000),
+      summary: sanitizeMemoryText(item.summary ?? item.value, 2_000),
+      direction: ["support", "against"].includes(String(item.direction || "").toLowerCase())
+        ? String(item.direction).toLowerCase()
+        : undefined,
+      strength: Number.isFinite(Number(item.strength)) ? Math.max(0, Math.min(1, Number(item.strength))) : undefined,
+      reliability: Number.isFinite(Number(item.reliability)) ? Math.max(0, Math.min(1, Number(item.reliability))) : undefined,
+      verified: item.verified === true || item.status === "verified",
+      source: item.source ? sanitizeMemoryText(item.source, 240) : undefined,
       decisions: normalizeList(item.decisions, 10).map((entry) => sanitizeMemoryText(entry, 500)),
       outcomes: normalizeList(item.outcomes, 10).map((entry) => sanitizeMemoryText(entry, 500)),
       next_steps: normalizeList(item.next_steps, 10).map((entry) => sanitizeMemoryText(entry, 500)),
@@ -390,17 +399,48 @@ function reviewStore(storageRoot) {
 function intelligenceOutcomeStore(storageRoot) {
   const dir = path.join(storageRoot, "intelligence", "outcomes");
   ensureDir(dir);
-  const fileForTenant = (tenantId) => path.join(dir, `${crypto.createHash("sha256").update(String(tenantId)).digest("hex")}.json`);
-  const read = (tenantId) => readJsonFile(fileForTenant(tenantId), []);
-  const write = (tenantId, rows) => writeJsonFile(fileForTenant(tenantId), rows.slice(-10_000));
+  const tenantHash = (tenantId) => crypto.createHash("sha256").update(String(tenantId)).digest("hex");
+  const legacyFile = (tenantId) => path.join(dir, `${tenantHash(tenantId)}.json`);
+  const tenantDir = (tenantId) => path.join(dir, tenantHash(tenantId));
+  const recordFile = (tenantId, outcomeId) => path.join(
+    tenantDir(tenantId),
+    `${crypto.createHash("sha256").update(String(outcomeId)).digest("hex")}.json`,
+  );
+  const compare = (existing, candidate) => {
+    const fields = ["prediction_id", "predicted_probability", "actual_outcome", "domain", "horizon"];
+    return fields.some((field) => String(existing[field] ?? "") !== String(candidate[field] ?? ""));
+  };
+  const read = (tenantId) => {
+    const legacy = readJsonFile(legacyFile(tenantId), []);
+    const currentDir = tenantDir(tenantId);
+    const current = fs.existsSync(currentDir)
+      ? fs.readdirSync(currentDir).filter((name) => name.endsWith(".json")).map((name) =>
+        readJsonFile(path.join(currentDir, name), null)).filter(Boolean)
+      : [];
+    const byOutcome = new Map();
+    for (const record of [...legacy, ...current]) byOutcome.set(record.outcome_id, record);
+    return [...byOutcome.values()].sort((a, b) => String(a.verified_at).localeCompare(String(b.verified_at))).slice(-10_000);
+  };
   return {
     append(tenantId, record) {
-      const rows = read(tenantId);
-      const duplicate = rows.find((item) => item.outcome_id === record.outcome_id);
-      if (duplicate) return { record: duplicate, duplicate: true };
-      rows.push({ ...record, tenant_id: tenantId });
-      write(tenantId, rows);
-      return { record: rows[rows.length - 1], duplicate: false };
+      const storedRecord = { ...record, tenant_id: tenantId };
+      const legacyDuplicate = readJsonFile(legacyFile(tenantId), []).find((item) => item.outcome_id === record.outcome_id);
+      if (legacyDuplicate) {
+        const conflict = compare(legacyDuplicate, storedRecord);
+        return { record: legacyDuplicate, duplicate: !conflict, conflict };
+      }
+      const file = recordFile(tenantId, record.outcome_id);
+      ensureDir(path.dirname(file));
+      try {
+        fs.writeFileSync(file, JSON.stringify(storedRecord, null, 2), { encoding: "utf8", flag: "wx" });
+        return { record: storedRecord, duplicate: false, conflict: false };
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const existing = readJsonFile(file, null);
+        if (!existing) throw error;
+        const conflict = compare(existing, storedRecord);
+        return { record: existing, duplicate: !conflict, conflict };
+      }
     },
     recent(tenantId, limit = 100) {
       return read(tenantId).slice(-Math.max(1, Math.min(1000, Number(limit) || 100)));
@@ -3744,7 +3784,7 @@ export function createUniversalCoreService(options = {}) {
   function intelligenceResponse(req, res, analysisType, analyze) {
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
-    const result = analyze(req.body || {});
+    const result = analyze({ ...(req.body || {}), memory_context: memoryContext.value });
     audit.append("core_intelligence_analyzed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -3805,12 +3845,26 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    if (!String(req.body?.outcome_id || "").trim()) return publicError(res, 400, "outcome_id_required");
     if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
       return publicError(res, 400, "predicted_probability_required");
     }
     if (req.body?.actual_outcome === undefined) return publicError(res, 400, "actual_outcome_required");
-    const verified = verifyOutcome(req.body || {});
+    if (![true, false, 0, 1, "occurred", "not_occurred"].includes(req.body.actual_outcome)) {
+      return publicError(res, 400, "actual_outcome_invalid");
+    }
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
+    const verified = verifyOutcome({ ...(req.body || {}), memory_context: memoryContext.value });
     const stored = intelligenceOutcomes.append(req.tenantId, verified);
+    if (stored.conflict) {
+      audit.append("core_intelligence_outcome_conflict", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        outcome_id: stored.record.outcome_id,
+      });
+      return publicError(res, 409, "outcome_id_conflict", "The outcome_id already exists with different verified data.");
+    }
     const calibration = intelligenceOutcomes.calibration(req.tenantId);
     const evidenceRecord = evidence.append(req.tenantId, "intelligence_outcome_recorded", {
       outcome_id: stored.record.outcome_id,

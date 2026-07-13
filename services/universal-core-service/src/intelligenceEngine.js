@@ -44,6 +44,42 @@ function qualityScore(payload = {}) {
   return clamp100(completeness * 0.4 + freshness * 0.2 + reliability * 0.4);
 }
 
+function memoryContextProfile(payload = {}) {
+  const context = payload.memory_context;
+  if (!context || typeof context !== "object" || Array.isArray(context)) {
+    return { recalled: false, revision: 0, references: [], verified_count: 0, directional_evidence: [] };
+  }
+  const rows = [
+    ...(context.latest_checkpoint ? [context.latest_checkpoint] : []),
+    ...list(context.relevant_memories, 20),
+    ...list(context.pending_handoffs, 20),
+  ].filter((item) => item && typeof item === "object" && !Array.isArray(item));
+  const references = rows.map((item, index) => ({
+    id: text(item.id, `memory_${index + 1}`),
+    kind: text(item.kind, "context"),
+    title: text(item.title ?? item.summary, "Tenant memory"),
+    status: text(item.status, "available"),
+  }));
+  const verified = rows.filter((item) => item.verified === true || item.status === "verified" ||
+    ["verified_fact", "verified_outcome", "decision", "outcome"].includes(text(item.kind).toLowerCase()));
+  const directionalEvidence = verified.filter((item) => ["support", "against"].includes(text(item.direction).toLowerCase())).map((item) => ({
+    id: text(item.id),
+    label: text(item.title ?? item.summary, "Verified tenant memory"),
+    direction: text(item.direction).toLowerCase(),
+    strength: item.strength ?? 0.5,
+    reliability: item.reliability ?? 0.8,
+    source: `tenant_memory:${text(item.id, "unidentified")}`,
+    provenance: "verified_tenant_memory",
+  }));
+  return {
+    recalled: true,
+    revision: Number.isInteger(context.revision) ? context.revision : 0,
+    references,
+    verified_count: verified.length,
+    directional_evidence: directionalEvidence,
+  };
+}
+
 function normalizedEvidence(rawEvidence = []) {
   return list(rawEvidence, 100).map((item, index) => {
     const direction = ["against", "negative", "oppose"].includes(text(item?.direction).toLowerCase()) ? "against" : "support";
@@ -54,6 +90,7 @@ function normalizedEvidence(rawEvidence = []) {
       strength: clamp(item?.strength ?? item?.weight ?? 0.5),
       reliability: clamp(item?.reliability ?? item?.confidence ?? 0.7),
       source: text(item?.source, "provided_context"),
+      provenance: text(item?.provenance, "request_evidence"),
     };
   });
 }
@@ -61,7 +98,11 @@ function normalizedEvidence(rawEvidence = []) {
 function probabilityEstimate(candidate = {}, payload = {}) {
   const explicitPrior = candidate.prior_probability ?? candidate.base_rate ?? candidate.probability;
   const prior = clamp(explicitPrior ?? payload.default_prior ?? 0.5, 0.01, 0.99);
-  const evidence = normalizedEvidence(candidate.evidence ?? payload.evidence);
+  const memory = memoryContextProfile(payload);
+  const requestEvidence = Array.isArray(candidate.evidence)
+    ? candidate.evidence
+    : Array.isArray(payload.evidence) ? payload.evidence : [];
+  const evidence = normalizedEvidence([...requestEvidence, ...memory.directional_evidence]);
   const posteriorLogOdds = evidence.reduce((current, item) => {
     const sign = item.direction === "against" ? -1 : 1;
     return current + sign * item.strength * item.reliability * 2.2;
@@ -69,7 +110,12 @@ function probabilityEstimate(candidate = {}, payload = {}) {
   const probability = clamp(logistic(posteriorLogOdds), 0.001, 0.999);
   const quality = qualityScore(payload);
   const evidenceMaturity = clamp(evidence.length / 8);
-  const uncertainty = clamp((1 - quality / 100) * 0.34 + (1 - evidenceMaturity) * 0.16, 0.04, 0.42);
+  const memoryMaturity = clamp(memory.verified_count / 8);
+  const uncertainty = clamp(
+    (1 - quality / 100) * 0.34 + (1 - evidenceMaturity) * 0.16 - memoryMaturity * 0.06,
+    0.04,
+    0.42,
+  );
   return {
     prior_probability: round(prior),
     posterior_probability: round(probability),
@@ -78,9 +124,16 @@ function probabilityEstimate(candidate = {}, payload = {}) {
       low: round(clamp(probability - uncertainty), 4),
       high: round(clamp(probability + uncertainty), 4),
     },
-    confidence: round(clamp((quality / 100) * 0.7 + evidenceMaturity * 0.3) * 100, 2),
+    confidence: round(clamp((quality / 100) * 0.65 + evidenceMaturity * 0.25 + memoryMaturity * 0.1) * 100, 2),
     evidence,
-    method: "transparent_log_odds_update_v1",
+    memory_context_usage: {
+      recalled: memory.recalled,
+      revision: memory.revision,
+      verified_items: memory.verified_count,
+      directional_items_used: memory.directional_evidence.length,
+      references: memory.references,
+    },
+    method: "transparent_log_odds_update_v2",
     estimated_from_assumptions: explicitPrior === undefined,
   };
 }
@@ -263,6 +316,9 @@ export function verifyOutcome(payload = {}) {
     analysis_type: "outcome_verification",
     outcome_id: text(payload.outcome_id, `outcome_${crypto.randomUUID()}`),
     prediction_id: text(payload.prediction_id),
+    domain: text(payload.domain, "general"),
+    horizon: text(payload.horizon, "not_specified"),
+    probability_bucket: Math.min(9, Math.floor(predicted * 10)),
     predicted_probability: round(predicted),
     actual_outcome: Boolean(actual),
     brier_score: round(brierScore),
@@ -295,16 +351,62 @@ export function runIntelligenceWorkflow(payload = {}) {
   return output;
 }
 
+function calibrationGroups(records, keyFor) {
+  const groups = new Map();
+  for (const record of records) {
+    const key = String(keyFor(record));
+    const group = groups.get(key) || [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  return [...groups.entries()].map(([key, rows]) => {
+    const meanPrediction = rows.reduce((sum, item) => sum + Number(item.predicted_probability), 0) / rows.length;
+    const observedRate = rows.reduce((sum, item) => sum + (item.actual_outcome ? 1 : 0), 0) / rows.length;
+    const meanBrier = rows.reduce((sum, item) => sum + Number(item.brier_score), 0) / rows.length;
+    return {
+      key,
+      sample_size: rows.length,
+      mean_prediction: round(meanPrediction),
+      observed_rate: round(observedRate),
+      calibration_gap: round(Math.abs(meanPrediction - observedRate)),
+      mean_brier_score: round(meanBrier),
+    };
+  }).sort((a, b) => b.sample_size - a.sample_size || a.key.localeCompare(b.key));
+}
+
 export function summarizeCalibration(records = []) {
-  const valid = list(records, 10_000).filter((item) => Number.isFinite(Number(item.brier_score)));
+  const valid = list(records, 10_000).filter((item) =>
+    Number.isFinite(Number(item.brier_score)) && Number.isFinite(Number(item.predicted_probability)));
   const meanBrier = valid.length ? valid.reduce((sum, item) => sum + Number(item.brier_score), 0) / valid.length : null;
+  const probabilityBuckets = calibrationGroups(valid, (item) => {
+    const bucket = Number.isInteger(item.probability_bucket)
+      ? item.probability_bucket
+      : Math.min(9, Math.floor(clamp(item.predicted_probability) * 10));
+    return `${bucket * 10}-${bucket === 9 ? 100 : bucket * 10 + 10}%`;
+  });
+  const expectedCalibrationError = valid.length
+    ? probabilityBuckets.reduce((sum, bucket) => sum + bucket.calibration_gap * bucket.sample_size, 0) / valid.length
+    : null;
+  const byDomain = calibrationGroups(valid, (item) => text(item.domain, "general"));
+  const byHorizon = calibrationGroups(valid, (item) => text(item.horizon, "not_specified"));
+  const calibrationQuality = valid.length < 20
+    ? "insufficient_data"
+    : meanBrier <= 0.1 && expectedCalibrationError <= 0.08
+      ? "strong"
+      : meanBrier <= 0.25 && expectedCalibrationError <= 0.15 ? "acceptable" : "weak";
   return {
     schema_version: ENGINE_VERSION,
     sample_size: valid.length,
     mean_brier_score: meanBrier === null ? null : round(meanBrier),
-    calibration_quality: meanBrier === null ? "insufficient_data" : meanBrier <= 0.1 ? "strong" : meanBrier <= 0.25 ? "acceptable" : "weak",
+    expected_calibration_error: expectedCalibrationError === null ? null : round(expectedCalibrationError),
+    probability_buckets: probabilityBuckets,
+    by_domain: byDomain,
+    by_horizon: byHorizon,
+    calibration_quality: calibrationQuality,
     live_weight_mutation_enabled: false,
-    recommendation: valid.length < 20 ? "Raccogliere almeno 20 esiti verificati prima di proporre una ricalibrazione." : "Preparare una proposta di calibrazione e sottoporla a Core/owner review.",
+    recommendation: valid.length < 20
+      ? "Raccogliere almeno 20 esiti verificati prima di proporre una ricalibrazione."
+      : "Preparare una proposta di calibrazione per bucket e dominio e sottoporla a Core/owner review.",
   };
 }
 

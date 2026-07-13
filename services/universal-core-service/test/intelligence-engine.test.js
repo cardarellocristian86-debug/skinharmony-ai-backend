@@ -74,7 +74,30 @@ test("outcome verification computes Brier score and calibration summary", () => 
   assert.equal(weak.brier_score, 0.81);
   const summary = summarizeCalibration([strong, weak]);
   assert.equal(summary.sample_size, 2);
+  assert.equal(summary.probability_buckets.length, 1);
+  assert.equal(summary.by_domain[0].key, "general");
+  assert.equal(summary.calibration_quality, "insufficient_data");
   assert.equal(summary.live_weight_mutation_enabled, false);
+});
+
+test("verified tenant memory is used with visible provenance without treating untyped memory as directional proof", () => {
+  const result = rankHypotheses({
+    question: "Use tenant history",
+    hypotheses: [{ id: "a", prior_probability: 0.5 }, { id: "b", prior_probability: 0.4 }],
+    memory_context: {
+      revision: 9,
+      relevant_memories: [
+        { id: "fact-1", kind: "verified_fact", title: "Verified context" },
+        { id: "fact-2", kind: "verified_fact", title: "Directional signal", direction: "support", strength: 0.6, reliability: 0.9 },
+      ],
+    },
+  });
+  const usage = result.ranking[0].memory_context_usage;
+  assert.equal(usage.recalled, true);
+  assert.equal(usage.revision, 9);
+  assert.equal(usage.verified_items, 2);
+  assert.equal(usage.directional_items_used, 1);
+  assert.equal(result.ranking[0].evidence[0].provenance, "verified_tenant_memory");
 });
 
 test("full workflow composes every requested intelligence phase", () => {

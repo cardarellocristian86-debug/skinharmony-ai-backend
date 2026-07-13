@@ -85,10 +85,18 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
     assert.equal(workflow.memory_context.revision, 12);
     assert.equal(workflow.result.decision.selected_option.id, "controlled_launch");
     assert.equal(workflow.result.scenarios.scenarios.length, 3);
+    assert.equal(workflow.result.decision.ranking[0].memory_context_usage.recalled, true);
+    assert.equal(workflow.result.decision.ranking[0].memory_context_usage.verified_items, 1);
+    assert.equal(workflow.intelligence_path.core_analyzed, true);
+    assert.equal(workflow.intelligence_path.nyra_interpreted, true);
+    assert.equal(workflow.intelligence_path.execution_allowed, false);
+    assert.equal(workflow.nyra_interpretation.ok, true);
 
     const recorded = await call("outcome_record", {
       outcome_id: "launch-week-one",
       prediction_id: "controlled-launch-success",
+      domain: "commercial_launch",
+      horizon: "one_week",
       predicted_probability: 0.72,
       actual_outcome: true,
       notes: "Metriche verificate dopo la prima settimana",
@@ -99,6 +107,8 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
     const calibration = await call("calibration_status", { limit: 20 });
     assert.equal(calibration.tenant_id, "tenant-integrated");
     assert.equal(calibration.calibration.sample_size, 1);
+    assert.equal(calibration.calibration.by_domain[0].key, "commercial_launch");
+    assert.equal(calibration.calibration.by_horizon[0].key, "one_week");
   } finally {
     if (mcp) await close(mcp.server);
     await close(core.server);

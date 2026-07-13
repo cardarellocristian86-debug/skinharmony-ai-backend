@@ -41,10 +41,47 @@ export function createCoreHandlers(config, options = {}) {
       session_id: args.session_id,
       agent_id: args.agent_id || "nyra",
     }, identity);
-    return textResult(await coreRequest(path, identity.tenantId, {
+    const coreAnalysis = await coreRequest(path, identity.tenantId, {
       method: "POST",
       body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId },
-    }));
+    });
+    if (options.nyraInterpretation !== true) return textResult(coreAnalysis);
+
+    const interpretationInput = JSON.stringify({
+      request: args.request || args.question || args.decision || "",
+      workflow_id: coreAnalysis.result?.workflow_id,
+      scenarios: coreAnalysis.result?.scenarios?.selected_scenario || null,
+      leading_hypothesis: coreAnalysis.result?.hypotheses?.leading_hypothesis || null,
+      highest_priority_event: coreAnalysis.result?.events?.highest_priority_event || null,
+      preferred_counterfactual: coreAnalysis.result?.counterfactuals?.preferred_counterfactual || null,
+      selected_option: coreAnalysis.result?.decision?.selected_option || null,
+      requires_more_evidence: coreAnalysis.result?.decision?.requires_more_evidence,
+    }).slice(0, 12_000);
+    try {
+      const nyraInterpretation = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+        method: "POST",
+        body: {
+          text: `Interpreta e spiega questo risultato Core senza autorizzare esecuzioni: ${interpretationInput}`,
+          request_id: args.workflow_id || args.session_id,
+          locale: args.locale || "it",
+          mode: "standard",
+          ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
+          ...(sharedContext ? { memory_context: sharedContext } : {}),
+          tenant_id: identity.tenantId,
+        },
+      });
+      return textResult({
+        ...coreAnalysis,
+        nyra_interpretation: nyraInterpretation,
+        intelligence_path: { core_analyzed: true, nyra_interpreted: true, execution_allowed: false },
+      });
+    } catch {
+      return textResult({
+        ...coreAnalysis,
+        nyra_interpretation: { ok: false, error: "nyra_interpretation_unavailable" },
+        intelligence_path: { core_analyzed: true, nyra_interpreted: false, execution_allowed: false },
+      });
+    }
   }
 
   return {
@@ -117,7 +154,7 @@ export function createCoreHandlers(config, options = {}) {
         }
       }));
     },
-    intelligence_workflow: async (args, identity) => intelligenceRequest("/v1/intelligence/workflow", args, identity),
+    intelligence_workflow: async (args, identity) => intelligenceRequest("/v1/intelligence/workflow", args, identity, { nyraInterpretation: true }),
     scenario_analysis: async (args, identity) => intelligenceRequest("/v1/intelligence/scenarios", args, identity),
     hypothesis_rank: async (args, identity) => intelligenceRequest("/v1/intelligence/hypotheses/rank", args, identity),
     event_probability: async (args, identity) => intelligenceRequest("/v1/intelligence/events/evaluate", args, identity),

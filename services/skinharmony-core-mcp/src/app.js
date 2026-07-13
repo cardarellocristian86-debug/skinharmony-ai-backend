@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.5.0-full-intelligence";
+const SERVER_VERSION = "0.5.1-intelligence-consolidation";
 
 function resolveWorkPreflight(result, payload) {
   const gate = result?.structuredContent?.gate;
