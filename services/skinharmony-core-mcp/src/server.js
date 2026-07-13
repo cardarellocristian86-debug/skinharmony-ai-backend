@@ -50,6 +50,8 @@ const app = createApp(config, {
       session_id: args.session_id,
       agent_id: args.agent_id || args.from_agent_id || "connected_ai",
       available_capabilities: ["skinharmony_core_mcp", toolName],
+      owner_confirmed: identity.ownerConfirmed === true,
+      confirmation_reference: identity.confirmationReference,
     }, identity);
     return result.structuredContent;
   },

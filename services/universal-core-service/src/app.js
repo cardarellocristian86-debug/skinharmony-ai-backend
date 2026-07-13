@@ -48,10 +48,11 @@ import {
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
+import { buildActionAuthorization } from "./actionAuthorization.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.7.0-memory-first-preflight";
+const SERVICE_VERSION = "0.7.1-confirmed-action-authorization";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -803,6 +804,7 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
     branchContext: resolvedBranchContext,
     nyraNetwork: resolvedNyraNetwork,
     domainPack: publicDomainPack(domainPack),
+    ownerConfirmed: body.owner_confirmed === true,
   });
 }
 
@@ -3743,6 +3745,7 @@ export function createUniversalCoreService(options = {}) {
       action_type: req.body?.action_type || input.context.metadata.action_type,
       publish_intent: req.body?.publish_intent === true,
     });
+    const authorization = buildActionAuthorization(decisionContract, req.body || {});
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -3752,6 +3755,8 @@ export function createUniversalCoreService(options = {}) {
       control_level: decisionContract.control_level,
       publish_safe: decisionContract.publish_safe,
       preflight_id: workPreflight.preflight_id,
+      authorization_state: authorization.state,
+      confirmation_satisfied: authorization.confirmation_satisfied,
     });
     res.json({
       ok: true,
@@ -3759,11 +3764,12 @@ export function createUniversalCoreService(options = {}) {
       decision_contract: decisionContract,
       output,
       work_preflight: workPreflight,
+      authorization,
       guardrail: {
         destructive_automation: false,
-        execution_allowed: false,
+        execution_allowed: authorization.allowed,
         mandatory_preflight_completed: true,
-        owner_confirmation_required: decisionContract.control_level !== "observe",
+        owner_confirmation_required: authorization.confirmation_required && !authorization.confirmation_satisfied,
         mode: "core_action_gate",
       },
     });
