@@ -24,10 +24,10 @@ function tokenScopes(payload) {
 
 function applyOwnerRoot(identity, config) {
   const enabled = config.godModeEnabled === true && config.godModeEmergencyStop !== true;
-  const tenantMatch = identity.tenantId === config.godModeTenantId;
+  const tenantMatch = (config.godModeTenantIds || [config.godModeTenantId].filter(Boolean)).includes(identity.tenantId);
   const subjectAllowed = identity.kind === "codex"
     ? config.godModeCodexEnabled === true
-    : config.godModeSubjects.includes(identity.subject) || config.godModeClientIds.includes(identity.clientId);
+    : (config.godModeSubjects || []).includes(identity.subject) || (config.godModeClientIds || []).includes(identity.clientId);
   if (!enabled || !tenantMatch || !subjectAllowed) return identity;
   return {
     ...identity,
