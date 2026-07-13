@@ -17,7 +17,7 @@ AUTH0_ISSUER=https://YOUR_TENANT.auth0.com
 AUTH0_AUDIENCE=https://mcp.example.com/mcp
 CODEX_BEARER_KEYS=<comma-separated secrets>
 CODEX_BEARER_SCOPES=core:read,core:govern
-MCP_SUPPORTED_SCOPES=core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
+MCP_SUPPORTED_SCOPES=core:read,core:govern
 UNIVERSAL_CORE_URL=https://your-universal-core.example.com
 UNIVERSAL_CORE_KEY=<server-side scoped Core key>
 UNIVERSAL_CORE_KEYS_JSON={"tenant-a":"server-side-key-a","tenant-b":"server-side-key-b"}
@@ -65,9 +65,11 @@ All collaboration state is stored below
 derived from the verified identity. Agent identifiers are additionally bound to
 the Auth0 subject that registered them, preventing intra-tenant impersonation.
 
-Write tools require both their resource scope and `core:govern`. Before changing
-state they call Universal Core's action evaluator. Hard-block verdicts fail
-closed. Documents and tasks use expected versions to prevent lost updates.
+Collaboration reads require `core:read`; workspace, task and agent writes require
+`core:govern`. This matches the scopes issued by the production OAuth client and
+avoids reauthorization loops for unsupported granular scopes. Before changing
+state, every write calls Universal Core's action evaluator. Tenant isolation,
+audit, expected versions and fail-closed hard-block verdicts remain enforced.
 
 ## Tenant AI memory fabric
 
