@@ -35,7 +35,7 @@ MEMORY_PERSONAL_RETENTION_DAYS=90
 `CORE_BASE_URL` is also accepted as a compatibility fallback when
 `UNIVERSAL_CORE_URL` is not set.
 
-Configure the Auth0 application as a public OAuth client for ChatGPT, allow only approved callback URLs, enable authorization code with PKCE, and disable password/implicit grants. Do not commit secrets. Auth0 must issue RS256 access tokens containing `scope` or `permissions`.
+Configure the Auth0 application as a public OAuth client for ChatGPT, allow only approved callback URLs, enable authorization code with PKCE, and disable password/implicit grants. Do not commit secrets. Auth0 must issue RS256 access tokens containing `scope` or `permissions`. The MCP merges both claims when Auth0 emits requested OAuth scopes in `scope` and RBAC API permissions in `permissions`; duplicate values are removed before per-tool authorization.
 
 ## Local verification
 
