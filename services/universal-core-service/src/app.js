@@ -66,6 +66,10 @@ import {
   MAX_EMBEDDED_ARTIFACT_BYTES,
 } from "./embeddedSoftwareIntelligence.js";
 import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
+import {
+  createUniversalSoftwareJobManager,
+  universalSoftwareComponentManifest,
+} from "./universalSoftwareIntelligence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -1083,6 +1087,9 @@ function buildConnectorSdkManifest() {
       intelligence_calibration: "/v1/intelligence/calibration",
       software_intelligence_components: "/v1/software-intelligence/components",
       software_intelligence_analyze: "/v1/software-intelligence/analyze",
+      software_intelligence_jobs_submit: "/v1/software-intelligence/jobs",
+      software_intelligence_jobs_list: "/v1/software-intelligence/jobs",
+      software_intelligence_job_get: "/v1/software-intelligence/jobs/:jobId",
     },
   };
 }
@@ -3166,6 +3173,7 @@ export function createUniversalCoreService(options = {}) {
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
+  const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
   const app = express();
 
   app.disable("x-powered-by");
@@ -4727,10 +4735,50 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       branch: "software_binary_intelligence",
       maximum_artifact_bytes: MAX_EMBEDDED_ARTIFACT_BYTES,
-      manifest: embeddedComponentManifest(),
+      manifest: universalSoftwareComponentManifest(),
       authorization_required: true,
       execution_supported: false,
     });
+  });
+
+  app.post("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) return publicError(res, 403, "branch_not_allowed");
+    try {
+      const verifiedGovernance = typeof options.softwareAuthorizationVerifier === "function"
+        ? options.softwareAuthorizationVerifier({ tenant_id: req.tenantId, request: req.body, key: req.coreKey })
+        : null;
+      const job = softwareJobs.submit(req.body || {}, {
+        tenant_id: req.tenantId,
+        requested_tenant_id: req.body?.tenant_id,
+        memory_available: options.memoryAvailable !== false,
+        core_available: options.coreAvailable !== false,
+        core_authorized: verifiedGovernance?.authorized === true,
+        target_allowlist: verifiedGovernance?.target_allowlist || [],
+      });
+      audit.append("core_software_job_submitted", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        job_id: job.job_id,
+        mode: job.mode,
+        raw_artifact_persisted: false,
+      });
+      return res.status(202).json({ ok: true, job });
+    } catch (error) {
+      const code = String(error?.message || "software_job_rejected");
+      const status = code === "software_artifact_too_large" ? 413 : 400;
+      return publicError(res, status, code);
+    }
+  });
+
+  app.get("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, tenant_id: req.tenantId, jobs: softwareJobs.list(req.tenantId) });
+  });
+
+  app.get("/v1/software-intelligence/jobs/:jobId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const job = softwareJobs.get(req.params.jobId, req.tenantId);
+    if (!job) return publicError(res, 404, "software_job_not_found");
+    return res.json({ ok: true, job });
   });
 
   app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -4952,4 +5000,3 @@ export function createUniversalCoreService(options = {}) {
 
   return { app, storageRoot };
 }
-

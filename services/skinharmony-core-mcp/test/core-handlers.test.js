@@ -68,6 +68,10 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   await handlers.outcome_verify({ predicted_probability: 0.8, actual_outcome: true }, identity);
   await handlers.outcome_record({ outcome_id: "o1", predicted_probability: 0.8, actual_outcome: true }, identity);
   await handlers.calibration_status({ limit: 10 }, identity);
+  await handlers.software_components({}, identity);
+  await handlers.software_job_submit({ mode: "lightweight_static", authorization: { asserted: true, basis: "owned", purpose: "testing" } }, identity);
+  await handlers.software_job_list({}, identity);
+  await handlers.software_job_get({ job_id: "usij_00000000-0000-4000-8000-000000000000" }, identity);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
     "/v1/intelligence/workflow",
     "/v1/nira/core-bridge",
@@ -79,6 +83,10 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
     "/v1/intelligence/outcomes/verify",
     "/v1/intelligence/outcomes/record",
     "/v1/intelligence/calibration",
+    "/v1/software-intelligence/components",
+    "/v1/software-intelligence/jobs",
+    "/v1/software-intelligence/jobs",
+    "/v1/software-intelligence/jobs/usij_00000000-0000-4000-8000-000000000000",
   ]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert.equal("domain_pack" in JSON.parse(calls[0].init.body), false);
@@ -86,6 +94,7 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   assert(calls.slice(0, 9).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert(calls.slice(0, 9).every((call) => JSON.parse(call.init.body).memory_context.tenant_id === "tenant-a"));
   assert.match(JSON.parse(calls[1].init.body).text, /Interpreta e spiega/);
+  assert.equal(JSON.parse(calls[11].init.body).tenant_id, "tenant-a");
 });
 
 test("write guard fails closed on hard blocks and allows controlled writes", async () => {

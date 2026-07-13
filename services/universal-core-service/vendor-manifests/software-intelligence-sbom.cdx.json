@@ -1,0 +1,45 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:ad61bd73-635c-4a87-b17f-8359d1e3ab12",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-13T00:00:00Z",
+    "component": { "type": "application", "name": "universal-software-intelligence", "version": "1.0.0" }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "universal-binary-evidence-core@1.0.0",
+      "name": "universal-binary-evidence-core",
+      "version": "1.0.0",
+      "scope": "required",
+      "properties": [{ "name": "runtime.status", "value": "embedded_active" }]
+    },
+    {
+      "type": "application",
+      "bom-ref": "ghidra@12.1",
+      "group": "gov.nsa",
+      "name": "Ghidra",
+      "version": "12.1",
+      "scope": "optional",
+      "licenses": [{ "license": { "id": "Apache-2.0" } }],
+      "externalReferences": [{ "type": "distribution", "url": "https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1_build" }],
+      "hashes": [{ "alg": "SHA-256", "content": "aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302" }],
+      "properties": [{ "name": "runtime.status", "value": "optional_unavailable" }]
+    },
+    {
+      "type": "application",
+      "bom-ref": "frida@17.9.11",
+      "name": "Frida",
+      "version": "17.9.11",
+      "scope": "optional",
+      "licenses": [{ "license": { "name": "wxWindows Library Licence 3.1" } }],
+      "externalReferences": [{ "type": "distribution", "url": "https://github.com/frida/frida/releases/tag/17.9.11" }],
+      "properties": [
+        { "name": "runtime.status", "value": "optional_unavailable" },
+        { "name": "activation.blocker", "value": "platform-specific official artifact hash required" }
+      ]
+    }
+  ]
+}

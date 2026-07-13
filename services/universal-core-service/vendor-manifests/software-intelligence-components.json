@@ -1,40 +1,55 @@
 {
-  "schema_version": "software_intelligence_vendor_manifest_v1",
+  "schema_version": "universal_software_supply_chain_v1",
+  "generated_at": "2026-07-13T00:00:00Z",
   "policy": {
-    "exact_source_version_required": true,
-    "source_hash_required": true,
-    "license_and_notice_required": true,
-    "sbom_required": true,
-    "reproducible_build_test_required": true,
-    "installed_application_copy_is_sufficient": false
+    "official_upstream_only": true,
+    "exact_version_required": true,
+    "artifact_sha256_required_before_activation": true,
+    "license_notice_and_redistribution_review_required": true,
+    "local_installation_copy_forbidden": true,
+    "embedded_active_requires_runtime_verification": true
   },
   "components": [
     {
-      "id": "skinharmony_binary_evidence_core",
+      "id": "universal_binary_evidence_core",
       "status": "embedded_active",
-      "origin": "SkinHarmony",
-      "runtime": "node",
+      "version": "1.0.0",
+      "origin": "repository_source",
+      "license": "project_license",
+      "verified": true,
       "capabilities": ["elf_header", "pe_header", "macho_header", "sha256", "entropy", "redacted_strings"]
     },
     {
-      "id": "ghidra_analysis_components",
-      "status": "vendor_import_required",
+      "id": "ghidra_headless",
+      "status": "optional_unavailable",
+      "version": "12.1",
+      "release_tag": "Ghidra_12.1_build",
       "upstream": "https://github.com/NationalSecurityAgency/ghidra",
+      "release_url": "https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1_build",
+      "release_sha256": "aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302",
       "license": "Apache-2.0",
-      "version": null,
-      "source_sha256": null,
-      "notice_verified": false,
-      "sbom_verified": false
+      "notice_path": "NOTICE",
+      "license_verified": true,
+      "notice_verified": true,
+      "redistribution": "allowed_with_license_notice_and_dependency_obligations",
+      "runtime_verified": false,
+      "activation_blocker": "worker_image_and_release_asset_not_installed_or_verified"
     },
     {
-      "id": "frida_gum_components",
-      "status": "vendor_import_required",
+      "id": "frida_local_agent",
+      "status": "optional_unavailable",
+      "version": "17.9.11",
+      "release_tag": "17.9.11",
       "upstream": "https://github.com/frida/frida",
-      "license": "component_specific_audit_required",
-      "version": null,
-      "source_sha256": null,
-      "notice_verified": false,
-      "sbom_verified": false
+      "release_url": "https://github.com/frida/frida/releases/tag/17.9.11",
+      "artifact_sha256": null,
+      "license": "wxWindows-Library-Licence-3.1",
+      "notice_path": "COPYING",
+      "license_verified": true,
+      "notice_verified": true,
+      "redistribution": "allowed_subject_to_wxWindows_3_1_and_selected_binary_component_obligations",
+      "runtime_verified": false,
+      "activation_blocker": "platform_asset_must_be_selected_and_its_official_sha256_recorded"
     }
   ]
 }

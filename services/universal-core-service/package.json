@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node --experimental-strip-types server.js",
     "test": "node --test test/*.test.js && node --experimental-strip-types test/core-service-smoke.js",
-    "core:client": "node tools/core-service-client.js"
+    "core:client": "node tools/core-service-client.js",
+    "test:software-horizontal": "node tools/check-universal-software-horizontal.js",
+    "benchmark:software": "node tools/benchmark-universal-software.js"
   },
   "dependencies": {
     "express": "^5.2.1"
