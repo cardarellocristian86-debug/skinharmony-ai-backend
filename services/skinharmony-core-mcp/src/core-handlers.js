@@ -66,6 +66,10 @@ export function createCoreHandlers(config, options = {}) {
           ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
           ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
           ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+          owner_confirmed: args.owner_confirmed === true || identity.ownerConfirmed === true,
+          ...(args.confirmation_reference || identity.confirmationReference
+            ? { confirmation_reference: args.confirmation_reference || identity.confirmationReference }
+            : {}),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
           tenant_id: identity.tenantId,
         },
@@ -146,13 +150,32 @@ export function createCoreWriteGuard(config, options = {}) {
       target: action.target,
       operation_class: "reversible_internal_collaboration_write",
       external_side_effect: false,
-      contains_customer_data: false
+      contains_customer_data: false,
+      rollback_ready: true,
+      owner_confirmed: identity.ownerConfirmed === true,
+      ...(identity.confirmationReference ? { confirmation_reference: identity.confirmationReference } : {})
     }, identity);
     const payload = result.structuredContent || {};
-    const verdict = payload.verdict || payload;
-    const decision = String(verdict.decision || verdict.decision_state || "unknown");
-    const mediation = String(verdict.action_mediation?.state || verdict.mediation || "unknown");
-    const blocked = decision === "block" || decision === "blocked" || mediation === "hard_block";
-    return { allowed: !blocked, decision, mediation };
+    const authorization = payload.authorization || {};
+    const contract = payload.decision_contract || payload.verdict?.decision_contract || payload.verdict || payload;
+    const output = payload.output || {};
+    const decision = String(authorization.state || contract.state || contract.decision || "unknown");
+    const mediation = String(authorization.mediation || contract.action_mediation?.state || contract.mediation || "unknown");
+    const blocked = decision === "block" || decision === "blocked" || mediation === "hard_block" ||
+      output.recommended_actions?.some?.((item) => item.blocked === true) === true;
+    const confirmationRequired = authorization.confirmation_required === true ||
+      (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
+    const confirmationSatisfied = authorization.confirmation_satisfied === true ||
+      (identity.ownerConfirmed === true && confirmationRequired);
+    const allowed = payload.authorization
+      ? authorization.allowed === true
+      : !blocked && (!confirmationRequired || confirmationSatisfied);
+    return {
+      allowed,
+      decision,
+      mediation,
+      owner_confirmation_required: confirmationRequired,
+      confirmation_satisfied: confirmationSatisfied,
+    };
   };
 }

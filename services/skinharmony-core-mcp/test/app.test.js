@@ -52,6 +52,8 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(readTools.length > 0);
   assert(writeTools.length > 0);
   assert(writeTools.every((tool) => tool.securitySchemes[0].scopes.includes("core:govern")));
+  assert(writeTools.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
+  assert(writeTools.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
   const preflight = body.result.tools.find((tool) => tool.name === "work_preflight");
   assert(preflight);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
@@ -193,8 +195,9 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
       return {
         work_preflight: {
           preflight_id: "preflight-test",
-          state: "routed_waiting_for_core_verdict",
+          state: "ready_read_only",
           tool_routing: { preferred_route: { id: "tenant_shared_workspace" } },
+          governance: { execution_allowed_by_preflight: true },
         },
       };
     },
@@ -212,7 +215,72 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
     assert.equal(response.status, 200);
     assert.deepEqual(order, ["preflight", "tool"]);
     assert.equal(body.result.structuredContent.work_preflight.preflight_id, "preflight-test");
+    assert.equal(body.result.structuredContent.work_preflight.state, "completed_read_only");
+    assert.equal(JSON.parse(body.result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
     assert.equal(body.result._meta["skinharmony/preflight_mandatory"], true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("records explicit owner confirmation and completes a write after the Core gate", async () => {
+  let seenIdentity;
+  const app = createApp(config, {
+    handlers: {
+      workspace_write_document: async (_args, identity) => {
+        seenIdentity = identity;
+        return {
+          structuredContent: {
+            document: { path: "reports/fix.md", version: 1 },
+            gate: {
+              allowed: true,
+              decision: "authorized_after_confirmation",
+              mediation: "confirmed",
+              owner_confirmation_required: true,
+              confirmation_satisfied: true,
+            },
+          },
+          content: [{ type: "text", text: "ok" }],
+        };
+      },
+    },
+    beforeToolCall: async () => ({
+      work_preflight: {
+        preflight_id: "preflight-write",
+        state: "routed_owner_confirmed_waiting_for_core_verdict",
+        tool_routing: { preferred_route: { id: "tenant_shared_workspace" } },
+        governance: { execution_allowed_by_preflight: false, owner_confirmation_required: false, owner_confirmation_satisfied: true },
+      },
+    }),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 22,
+        method: "tools/call",
+        params: {
+          name: "workspace_write_document",
+          arguments: {
+            path: "reports/fix.md",
+            content: "verified",
+            owner_confirmed: true,
+            confirmation_reference: "user confirmed report write",
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(seenIdentity.ownerConfirmed, true);
+    assert.equal(seenIdentity.confirmationReference, "user confirmed report write");
+    assert.equal(body.result.structuredContent.work_preflight.state, "completed_after_core_gate");
+    assert.equal(body.result.structuredContent.work_preflight.governance.execution_authorized_by_core_gate, true);
+    assert.equal(JSON.parse(body.result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

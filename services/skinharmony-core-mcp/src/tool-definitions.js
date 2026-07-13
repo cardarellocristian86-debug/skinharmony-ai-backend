@@ -2,8 +2,23 @@ function annotations(readOnly, idempotent = false) {
   return { readOnlyHint: readOnly, destructiveHint: false, openWorldHint: false, idempotentHint: idempotent };
 }
 
+const ownerConfirmationProperties = {
+  owner_confirmed: {
+    type: "boolean",
+    description: "Set true only after the owner explicitly confirms this exact write action.",
+  },
+  confirmation_reference: {
+    type: "string",
+    maxLength: 240,
+    description: "Short audit reference for the explicit owner confirmation; never include secrets.",
+  },
+};
+
 function tool(name, title, description, inputSchema, scopes, readOnly = true, idempotent = true) {
-  return { name, title, description, inputSchema, scopes, annotations: annotations(readOnly, idempotent) };
+  const schema = !readOnly && inputSchema?.type === "object"
+    ? { ...inputSchema, properties: { ...inputSchema.properties, ...ownerConfirmationProperties } }
+    : inputSchema;
+  return { name, title, description, inputSchema: schema, scopes, annotations: annotations(readOnly, idempotent) };
 }
 
 const object = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });

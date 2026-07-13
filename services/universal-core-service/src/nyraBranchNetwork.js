@@ -68,6 +68,14 @@ const NYRA_BRANCHES = Object.freeze([
     "audience_model", "language_selection", "tone_selection", "fact_hypothesis_split", "evidence_citation",
     "plain_language", "structured_summary", "action_explanation", "uncertainty_disclosure", "localization",
   ], ["*"], { workPhase: "communication", coreBranchBindings: ["execution_coordination_intelligence"] }),
+  branch("software_intelligence", "Software Intelligence", [
+    "software", "codice", "binario", "eseguibile", "debug", "disassembl", "decompil", "ghidra", "frida", "reverse engineering", "interoperabil", "personalizz",
+  ], [
+    "authorization_scope", "artifact_intake", "provenance_hashing", "format_architecture", "static_evidence",
+    "symbol_dependency_mapping", "string_evidence", "control_flow_evidence", "runtime_trace_plan", "behavior_specification",
+    "compatibility_mapping", "clean_room_variant", "patch_candidate", "sandbox_plan", "security_review",
+    "license_review", "regression_matrix", "evidence_confidence", "core_verdict", "learning_handoff",
+  ], ["*"], { workPhase: "research", coreBranchBindings: ["research_evidence_intelligence", "quality_verification_intelligence"] }),
   branch("skinharmony_domain", "SkinHarmony Domain", ["skinharmony", "beauty", "salone", "smartdesk", "protocollo", "cosmet"], [
     "analyzer_interpretation", "beauty_protocol", "cosmetic_claims", "center_operations", "customer_journey",
     "product_inventory", "beauty_value_chain", "brand_network", "site_suite", "smartdesk_bridge",

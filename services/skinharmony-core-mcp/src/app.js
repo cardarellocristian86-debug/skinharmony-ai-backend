@@ -4,9 +4,30 @@ import { TOOLS } from "./tool-definitions.js";
 
 const SERVER_VERSION = "0.5.0-full-intelligence";
 
+function resolveWorkPreflight(result, payload) {
+  const gate = result?.structuredContent?.gate;
+  const authorizedByCoreGate = gate?.allowed === true;
+  const allowedByPreflight = payload?.governance?.execution_allowed_by_preflight === true;
+  if (!authorizedByCoreGate && !allowedByPreflight) return payload;
+  return {
+    ...payload,
+    state: authorizedByCoreGate ? "completed_after_core_gate" : "completed_read_only",
+    governance: {
+      ...(payload?.governance || {}),
+      execution_authorized_by_core_gate: authorizedByCoreGate,
+      owner_confirmation_required: authorizedByCoreGate
+        ? gate?.owner_confirmation_required === true && gate?.confirmation_satisfied !== true
+        : payload?.governance?.owner_confirmation_required === true,
+    },
+  };
+}
+
 function attachWorkPreflight(result, preflight) {
-  const payload = preflight?.work_preflight || preflight;
-  if (!payload || result?.structuredContent?.work_preflight) return result;
+  const originalPayload = preflight?.work_preflight || preflight;
+  if (!originalPayload || result?.structuredContent?.work_preflight) return result;
+  const payload = resolveWorkPreflight(result, originalPayload);
+  const executionAllowed = payload?.governance?.execution_allowed_by_preflight === true ||
+    payload?.governance?.execution_authorized_by_core_gate === true;
   const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
     ? { ...result.structuredContent, work_preflight: payload }
     : { result: result?.structuredContent, work_preflight: payload };
@@ -15,7 +36,7 @@ function attachWorkPreflight(result, preflight) {
       preflight_id: payload.preflight_id,
       state: payload.state,
       preferred_route: payload.tool_routing?.preferred_route?.id,
-      execution_allowed: false,
+      execution_allowed: executionAllowed,
     },
   };
   return {
@@ -104,13 +125,19 @@ export function createApp(config, options = {}) {
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
+        const args = params.arguments || {};
+        const callIdentity = {
+          ...identity,
+          ownerConfirmed: args.owner_confirmed === true,
+          confirmationReference: String(args.confirmation_reference || "").slice(0, 240),
+        };
         const preflight = typeof beforeToolCall === "function"
-          ? await beforeToolCall({ identity, toolName: tool.name, args: params.arguments || {} })
+          ? await beforeToolCall({ identity: callIdentity, toolName: tool.name, args })
           : null;
-        const rawResult = await handlers[tool.name](params.arguments || {}, identity);
+        const rawResult = await handlers[tool.name](args, callIdentity);
         const result = attachWorkPreflight(rawResult, preflight);
         if (typeof afterToolCall === "function") {
-          try { await afterToolCall({ identity, toolName: tool.name, args: params.arguments || {}, result, preflight }); } catch {}
+          try { await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight }); } catch {}
         }
         return res.json({ jsonrpc: "2.0", id, result });
       }
@@ -129,4 +156,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { securitySchemes, TOOLS };
+export { attachWorkPreflight, resolveWorkPreflight, securitySchemes, TOOLS };
