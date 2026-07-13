@@ -10,6 +10,27 @@ function jwt(privateKey, kid, payload) {
   return `${header}.${body}.${signature}`;
 }
 
+function auth0Fixture(overrides = {}) {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "test-key";
+  const config = {
+    auth0Issuer: "https://tenant.auth0.com",
+    auth0Audience: "https://core",
+    jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
+    tenantClaim: "https://skinharmony.it/tenant_id",
+  };
+  const token = jwt(privateKey, jwk.kid, {
+    iss: `${config.auth0Issuer}/`,
+    aud: config.auth0Audience,
+    sub: "chatgpt",
+    exp: Math.floor(Date.now() / 1000) + 60,
+    "https://skinharmony.it/tenant_id": "tenant-a",
+    ...overrides,
+  });
+  return { token, config, cache: { get: async () => jwk } };
+}
+
 test("accepts a scoped Codex bearer without exposing it", async () => {
   const auth = createAuthenticator({ codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "", defaultTenantId: "owner-private" });
   assert.deepEqual(await auth("Bearer secret"), { kind: "codex", subject: "codex", tenantId: "owner-private", scopes: ["core:read"] });
@@ -17,13 +38,27 @@ test("accepts a scoped Codex bearer without exposing it", async () => {
 });
 
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const jwk = publicKey.export({ format: "jwk" });
-  jwk.kid = "test-key";
-  const config = { auth0Issuer: "https://tenant.auth0.com", auth0Audience: "https://core", jwksUri: "https://tenant.auth0.com/.well-known/jwks.json", tenantClaim: "https://skinharmony.it/tenant_id" };
-  const token = jwt(privateKey, jwk.kid, { iss: `${config.auth0Issuer}/`, aud: config.auth0Audience, sub: "chatgpt", exp: Math.floor(Date.now() / 1000) + 60, scope: "core:read", "https://skinharmony.it/tenant_id": "tenant-a" });
-  const cache = { get: async () => jwk };
+  const { token, config, cache } = auth0Fixture({ scope: "core:read" });
   assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });
+});
+
+test("merges Auth0 scope and permissions claims without duplicates", async () => {
+  const { token, config, cache } = auth0Fixture({
+    scope: "openid core:read core:govern",
+    permissions: ["workspace:write", "core:govern"],
+  });
+  const identity = await verifyAuth0Jwt(token, config, cache);
+  assert.deepEqual(identity.scopes, ["openid", "core:read", "core:govern", "workspace:write"]);
+  assert.doesNotThrow(() => requireScopes(identity, ["workspace:write", "core:govern"]));
+});
+
+test("keeps workspace writes closed when neither Auth0 claim grants workspace:write", async () => {
+  const { token, config, cache } = auth0Fixture({
+    scope: "core:read core:govern",
+    permissions: ["core:govern"],
+  });
+  const identity = await verifyAuth0Jwt(token, config, cache);
+  assert.throws(() => requireScopes(identity, ["workspace:write", "core:govern"]), /insufficient_scope/);
 });
 
 test("enforces tool scopes", () => {
