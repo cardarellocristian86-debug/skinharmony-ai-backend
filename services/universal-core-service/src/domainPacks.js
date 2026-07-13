@@ -1,10 +1,11 @@
-const HORIZONTAL_BRANCH_EXCLUSIONS = Object.freeze([
+export const VERTICAL_BRANCH_IDS = Object.freeze([
+  "suite_governance",
+  "smartdesk_operations_guard",
   "beauty_market",
   "cosmetic_chemistry",
   "skinharmony_analyzer",
   "nyra_finance_beauty_test",
   "beauty_value_chain_guard",
-  "smartdesk_operations_guard",
   "beauty_protocol_guard",
   "beauty_vertical_orchestration",
 ]);
@@ -24,38 +25,56 @@ const BASE_PRODUCT_ROLES = Object.freeze({
   advisor_layer: "Spiega e prepara azioni senza essere arbitro finale.",
 });
 
+const BASE_GUARDRAILS = Object.freeze({
+  forbidden_claims: [],
+  protected_terms: [],
+  price_policy_mode: "tenant_defined",
+  data_isolation: "tenant_scope",
+});
+
+function definePack({
+  id,
+  version = "1.0.0",
+  domain,
+  label,
+  runtimeKind = "domain_pack",
+  verticalBranchIds = [],
+  policy,
+}) {
+  const allowedVerticalBranches = Object.freeze([...verticalBranchIds]);
+  return Object.freeze({
+    id,
+    version,
+    domain,
+    label,
+    runtime_kind: runtimeKind,
+    activation_mode: id === "generic" ? "default_horizontal" : "explicit_key_metadata_only",
+    vertical_branch_ids: allowedVerticalBranches,
+    excluded_branch_ids: Object.freeze(
+      VERTICAL_BRANCH_IDS.filter((branchId) => !allowedVerticalBranches.includes(branchId)),
+    ),
+    policy: Object.freeze(policy),
+  });
+}
+
 const DOMAIN_PACKS = Object.freeze({
-  generic: Object.freeze({
+  generic: definePack({
     id: "generic",
-    version: "1.0.0",
     domain: "generic_multi_tenant_system",
     label: "Generic horizontal runtime",
-    runtime_kind: "horizontal",
-    tenant_aliases: [],
-    brand_aliases: [],
-    excluded_branch_ids: HORIZONTAL_BRANCH_EXCLUSIONS,
-    policy: Object.freeze({
+    runtimeKind: "horizontal",
+    policy: {
       vocabulary: BASE_VOCABULARY,
       sensitive_domains: ["identity", "permissions", "billing", "publishing", "data_sync", "tenant_data", "deployment"],
-      guardrails: {
-        forbidden_claims: [],
-        protected_terms: [],
-        price_policy_mode: "tenant_defined",
-        data_isolation: "tenant_scope",
-      },
+      guardrails: BASE_GUARDRAILS,
       product_roles: BASE_PRODUCT_ROLES,
-    }),
+    },
   }),
-  regulated_demo: Object.freeze({
+  regulated_demo: definePack({
     id: "regulated_demo",
-    version: "1.0.0",
     domain: "regulated_content_demo",
     label: "Regulated content reference pack",
-    runtime_kind: "domain_pack",
-    tenant_aliases: ["regulated_demo", "tenant_regulated_demo"],
-    brand_aliases: ["regulated_demo"],
-    excluded_branch_ids: HORIZONTAL_BRANCH_EXCLUSIONS,
-    policy: Object.freeze({
+    policy: {
       vocabulary: {
         ...BASE_VOCABULARY,
         decision_layers: ["decision_engine", "policy_engine", "content_guard"],
@@ -71,39 +90,83 @@ const DOMAIN_PACKS = Object.freeze({
         data_isolation: "tenant_scope",
       },
       product_roles: BASE_PRODUCT_ROLES,
-    }),
+    },
   }),
-  skinharmony: Object.freeze({
-    id: "skinharmony",
-    version: "1.0.0",
-    domain: "beauty_wellness_waas_network",
-    label: "SkinHarmony compatibility pack",
-    runtime_kind: "domain_pack",
-    tenant_aliases: ["skinharmony", "tenant_demo_skinharmony"],
-    brand_aliases: ["skinharmony"],
-    excluded_branch_ids: [],
-    policy: Object.freeze({
+  suite: definePack({
+    id: "suite",
+    domain: "managed_site_suite",
+    label: "Suite product pack",
+    verticalBranchIds: ["suite_governance"],
+    policy: {
       vocabulary: {
-        presentation_nodes: ["Site Suite", "WordPress node", "template", "landing", "pagina offerte"],
-        operational_nodes: ["Smart Desk", "centro", "salone", "nodo operativo"],
-        orchestrators: ["SkinHarmony Suite", "Core Admin", "network dashboard"],
-        decision_layers: ["Universal Core", "Price Guard", "Claim Guard", "Value Chain Guard"],
-        explanation_layers: ["Nyra", "AI Gold", "report advisor"],
+        ...BASE_VOCABULARY,
+        presentation_nodes: ["managed_site", "wordpress_node", "template", "landing_page"],
+        orchestrators: ["suite_control_plane", "core_service"],
       },
-      sensitive_domains: ["claim cosmetici", "listini", "margini", "licenze", "dati cliente", "Smart Desk API", "publish sito"],
+      sensitive_domains: ["publishing", "tenant_content", "deployment", "site_credentials"],
+      guardrails: {
+        ...BASE_GUARDRAILS,
+        data_isolation: "tenant_scope_and_site_scope",
+      },
+      product_roles: {
+        ...BASE_PRODUCT_ROLES,
+        presentation_layer: "La Suite raccoglie contenuti, lead e offerte del sito gestito.",
+      },
+    },
+  }),
+  smartdesk: definePack({
+    id: "smartdesk",
+    domain: "operational_desk",
+    label: "SmartDesk product pack",
+    verticalBranchIds: ["smartdesk_operations_guard"],
+    policy: {
+      vocabulary: {
+        ...BASE_VOCABULARY,
+        operational_nodes: ["smartdesk", "operations_desk", "field_node"],
+        orchestrators: ["smartdesk_control_plane", "core_service"],
+      },
+      sensitive_domains: ["customer_data", "appointments", "billing", "inventory", "operational_api"],
+      guardrails: {
+        ...BASE_GUARDRAILS,
+        data_isolation: "tenant_scope_and_operational_node_scope",
+      },
+      product_roles: {
+        ...BASE_PRODUCT_ROLES,
+        operational_layer: "SmartDesk gestisce i flussi operativi autorizzati del singolo tenant.",
+      },
+    },
+  }),
+  analyzer: definePack({
+    id: "analyzer",
+    domain: "analysis_and_protocol_advisory",
+    label: "Analyzer product pack",
+    verticalBranchIds: [
+      "beauty_market",
+      "cosmetic_chemistry",
+      "skinharmony_analyzer",
+      "nyra_finance_beauty_test",
+      "beauty_value_chain_guard",
+      "beauty_protocol_guard",
+      "beauty_vertical_orchestration",
+    ],
+    policy: {
+      vocabulary: {
+        ...BASE_VOCABULARY,
+        decision_layers: ["analysis_engine", "protocol_guard", "claim_guard", "value_chain_guard"],
+        explanation_layers: ["advisor_layer", "analysis_report"],
+      },
+      sensitive_domains: ["analysis_results", "cosmetic_claims", "protocols", "pricing", "customer_data"],
       guardrails: {
         forbidden_claims: ["cura", "guarisce", "terapia", "medicale", "risultato garantito"],
         protected_terms: ["prezzo consigliato", "range consigliato", "policy interna", "owner approval"],
         price_policy_mode: "advisory_not_resale_price_imposition",
-        data_isolation: "brand_scope_and_tenant_scope",
+        data_isolation: "tenant_scope_and_subject_scope",
       },
       product_roles: {
-        presentation_layer: "Site Suite raccoglie contenuti, lead, offerte e mostra governance.",
-        operational_layer: "Smart Desk gestisce agenda, clienti, cassa, magazzino e operativita centro.",
-        core_layer: "Universal Core decide rischio, readiness, policy, claim/pricing safety e limiti.",
-        advisor_layer: "Nyra spiega priorita, strategia e prossima azione senza sostituire il Core.",
+        ...BASE_PRODUCT_ROLES,
+        advisor_layer: "L'Analyzer interpreta dati e prepara raccomandazioni senza autorizzare azioni.",
       },
-    }),
+    },
   }),
 });
 
@@ -118,7 +181,11 @@ export function validateDomainPack(pack) {
   if (!String(pack.version || "").trim()) errors.push("version_required");
   if (!String(pack.domain || "").trim()) errors.push("domain_required");
   if (!pack.policy || typeof pack.policy !== "object") errors.push("policy_required");
+  if (!Array.isArray(pack.vertical_branch_ids)) errors.push("vertical_branch_ids_required");
   if (!Array.isArray(pack.excluded_branch_ids)) errors.push("excluded_branch_ids_required");
+  if (Array.isArray(pack.vertical_branch_ids) && pack.vertical_branch_ids.some((id) => !VERTICAL_BRANCH_IDS.includes(id))) {
+    errors.push("unknown_vertical_branch_id");
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -133,8 +200,10 @@ export function publicDomainPack(pack) {
     domain: pack.domain,
     label: pack.label,
     runtime_kind: pack.runtime_kind,
+    activation_mode: pack.activation_mode,
     tenant_scoped: true,
-    branch_policy: pack.excluded_branch_ids.length ? "horizontal_exclusions" : "pack_defined",
+    branch_policy: pack.vertical_branch_ids.length ? "explicit_vertical_allowlist" : "horizontal_only",
+    vertical_branch_ids: [...pack.vertical_branch_ids],
   };
 }
 
@@ -142,37 +211,30 @@ export function getDomainPack(id) {
   return DOMAIN_PACKS[normalize(id)] || null;
 }
 
-export function resolveDomainPack({ tenantId = "", brandScope = "", metadata = {} } = {}) {
+export function resolveDomainPack({ metadata = {} } = {}) {
   const explicit = normalize(metadata?.domain_pack_id || metadata?.domain_pack);
-  if (explicit && DOMAIN_PACKS[explicit]) return DOMAIN_PACKS[explicit];
-  const tenant = normalize(tenantId);
-  const brand = normalize(brandScope);
-  return Object.values(DOMAIN_PACKS).find((pack) =>
-    pack.id !== "generic" && (pack.tenant_aliases.includes(tenant) || pack.brand_aliases.includes(brand)),
-  ) || DOMAIN_PACKS.generic;
+  return (explicit && DOMAIN_PACKS[explicit]) || DOMAIN_PACKS.generic;
 }
 
 export function resolveDomainPackForKey(keyRecord = {}) {
-  return resolveDomainPack({
-    tenantId: keyRecord.tenant_id,
-    brandScope: keyRecord.brand_scope,
-    metadata: keyRecord.metadata,
-  });
+  return resolveDomainPack({ metadata: keyRecord.metadata });
 }
 
 export function checkDomainPackRequest(keyRecord, requestedId) {
   const pack = resolveDomainPackForKey(keyRecord);
   const requested = normalize(requestedId);
   return {
-    ok: !requested || requested === pack.id,
+    ok: !requested,
     pack,
     requested_id: requested || null,
-    error: requested && requested !== pack.id ? "domain_pack_override_denied" : null,
+    error: requested ? "domain_pack_override_denied" : null,
   };
 }
 
 export function branchAllowedForDomainPack(pack, branchId) {
-  return !pack.excluded_branch_ids.includes(String(branchId || ""));
+  const resolvedPack = pack || DOMAIN_PACKS.generic;
+  const id = String(branchId || "");
+  return !VERTICAL_BRANCH_IDS.includes(id) || resolvedPack.vertical_branch_ids.includes(id);
 }
 
 for (const pack of Object.values(DOMAIN_PACKS)) {
