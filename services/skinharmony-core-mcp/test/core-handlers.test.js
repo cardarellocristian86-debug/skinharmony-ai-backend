@@ -17,16 +17,18 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   });
   const identity = { tenantId: "tenant-a" };
   await handlers.core_health({}, identity);
-  await handlers.work_preflight({ request: "publish GitHub PR", available_capabilities: ["github_connected_app"] }, identity);
-  await handlers.nyra_runtime_context({ include_control_snapshot: true, domain_pack: "generic" }, identity);
+  await handlers.work_preflight({ request: "publish GitHub PR", domain_pack: "analyzer", available_capabilities: ["github_connected_app"] }, identity);
+  await handlers.nyra_runtime_context({ include_control_snapshot: true, domain_pack: "analyzer" }, identity);
   await handlers.nyra_branch_catalog({}, identity);
-  await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "generic", nyra_branches: ["context_intelligence"] }, identity);
+  await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert(calls.filter((call) => call.init.body).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert.deepEqual(JSON.parse(calls[1].init.body).available_capabilities, ["github_connected_app"]);
-  assert.equal(JSON.parse(calls[2].init.body).domain_pack, "generic");
+  assert.equal("domain_pack" in JSON.parse(calls[1].init.body), false);
+  assert.equal("domain_pack" in JSON.parse(calls[2].init.body), false);
+  assert.equal("domain_pack" in JSON.parse(calls[4].init.body), false);
   assert.deepEqual(JSON.parse(calls[4].init.body).nyra_branches, ["context_intelligence"]);
   assert.equal(JSON.parse(calls[1].init.body).memory_context.tenant_id, "tenant-a");
   assert.equal(JSON.parse(calls[4].init.body).memory_context.revision, 7);
@@ -51,7 +53,7 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
     contextProvider: async (_input, identity) => ({ tenant_id: identity.tenantId, revision: 1 }),
   });
   const identity = { tenantId: "tenant-a" };
-  await handlers.intelligence_workflow({ request: "analyze" }, identity);
+  await handlers.intelligence_workflow({ request: "analyze", domain_pack: "analyzer" }, identity);
   await handlers.scenario_analysis({ question: "scenarios" }, identity);
   await handlers.hypothesis_rank({ question: "why", hypotheses: [{ id: "a" }, { id: "b" }] }, identity);
   await handlers.event_probability({ question: "events", events: [{ id: "e" }] }, identity);
@@ -73,6 +75,8 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
     "/v1/intelligence/calibration",
   ]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert.equal("domain_pack" in JSON.parse(calls[0].init.body), false);
+  assert.equal("domain_pack" in JSON.parse(calls[1].init.body), false);
   assert(calls.slice(0, 9).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert(calls.slice(0, 9).every((call) => JSON.parse(call.init.body).memory_context.tenant_id === "tenant-a"));
   assert.match(JSON.parse(calls[1].init.body).text, /Interpreta e spiega/);

@@ -16,13 +16,16 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   async function coreRequest(path, tenantId, { method = "GET", body } = {}) {
+    const sanitizedBody = body && typeof body === "object" && !Array.isArray(body)
+      ? (({ domain_pack: _domainPack, domain_pack_id: _domainPackId, ...rest }) => rest)(body)
+      : body;
     const headers = { accept: "application/json" };
-    if (body !== undefined) headers["content-type"] = "application/json";
+    if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${coreKey(tenantId)}`;
     const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body: sanitizedBody === undefined ? undefined : JSON.stringify(sanitizedBody)
     });
     const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
     if (!response.ok) throw new Error(`core_request_failed:${response.status}:${payload.error || "unknown"}`);
@@ -65,7 +68,6 @@ export function createCoreHandlers(config, options = {}) {
           request_id: args.workflow_id || args.session_id,
           locale: args.locale || "it",
           mode: "standard",
-          ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
           tenant_id: identity.tenantId,
         },
@@ -100,7 +102,6 @@ export function createCoreHandlers(config, options = {}) {
           target_system: args.target_system || "universal_core",
           operation_type: args.operation_type || "advisory_work",
           source_tool: args.tool_name,
-          ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
           ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
           ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
           owner_confirmed: args.owner_confirmed === true || identity.ownerConfirmed === true,
@@ -125,7 +126,6 @@ export function createCoreHandlers(config, options = {}) {
         task: "ChatGPT requests Nyra runtime context",
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
         locale: "it",
-        ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId
         }
@@ -146,7 +146,6 @@ export function createCoreHandlers(config, options = {}) {
         request_id: args.session_id,
         locale: "it",
         mode: "standard",
-        ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
         ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
         ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),

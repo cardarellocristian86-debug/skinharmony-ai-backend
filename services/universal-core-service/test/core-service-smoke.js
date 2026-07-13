@@ -60,6 +60,7 @@ try {
     brand_scope: "skinharmony",
     key_type: "connector",
     preset: "suite_connector",
+    domain_pack_id: "suite",
     label: "SkinHarmony demo connector",
   });
   assert(generated.status === 201 && generated.json.key, "key generation failed");
@@ -72,6 +73,7 @@ try {
     brand_scope: "skinharmony",
     preset: "codex_automation",
     tier: "internal",
+    domain_pack_id: "analyzer",
     label: "Codex branch package test",
   });
   assert(codexGenerated.status === 201 && codexGenerated.json.key, "codex key generation failed");
@@ -96,6 +98,7 @@ try {
     preset: "codex_automation",
     tier: "internal",
     active_branches: ["codex_code_safety", "codex_architecture_guard", "codex_test_strategy", "codex_release_gate", "codex_security_guard"],
+    domain_pack_id: "regulated_demo",
     label: "Regulated demo Codex/Core gateway test",
   });
   assert(regulatedGenerated.status === 201 && regulatedGenerated.json.key, "regulated codex key generation failed");
@@ -133,8 +136,8 @@ try {
   const horizontalPack = await api(base, "GET", "/v1/domain-packs/current", undefined, horizontalKey);
   assert(horizontalPack.status === 200 && horizontalPack.json.domain_pack?.id === "generic", "generic domain pack resolution failed");
 
-  const skinHarmonyPack = await api(base, "GET", "/v1/domain-packs/current", undefined, connectorKey);
-  assert(skinHarmonyPack.status === 200 && skinHarmonyPack.json.domain_pack?.id === "skinharmony", "SkinHarmony compatibility pack resolution failed");
+  const suitePack = await api(base, "GET", "/v1/domain-packs/current", undefined, connectorKey);
+  assert(suitePack.status === 200 && suitePack.json.domain_pack?.id === "suite", "Suite product pack resolution failed");
 
   const horizontalBranches = await api(base, "GET", "/v1/branches", undefined, horizontalKey);
   assert(horizontalBranches.status === 200, "horizontal branches failed");
@@ -155,6 +158,7 @@ try {
   assert(nyraBranchCatalog.status === 200 && nyraBranchCatalog.json.catalog?.governance === "core_opens_nyra_branches", "Nyra branch catalog failed");
   assert(nyraBranchCatalog.json.catalog.branches.every((item) => item.subbranch_count <= 20), "Nyra subbranch hard limit failed");
   assert(!nyraBranchCatalog.json.catalog.branches.some((item) => item.id === "skinharmony_domain"), "generic catalog leaked SkinHarmony branch");
+  assert(!nyraBranchCatalog.json.catalog.branches.some((item) => ["suite_domain", "smartdesk_domain", "analyzer_domain"].includes(item.id)), "generic catalog leaked a product branch");
   const nyraWorkBranches = ["work_intake", "research_evidence", "planning_prioritization", "parallel_coordination", "quality_verification", "adaptive_learning"];
   assert(nyraWorkBranches.every((id) => nyraBranchCatalog.json.catalog.branches.some((item) => item.id === id)), "Nyra catalog missing horizontal work branches");
 
@@ -198,7 +202,7 @@ try {
 
   const horizontalInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Ricerca fonti, pianifica priorita, coordina il lavoro in parallelo, testa qualita, impara dal feedback e prepara un piano di deploy con privacy su Render",
-    nyra_branches: ["execution_planning", "skinharmony_domain", "unknown_branch"],
+    nyra_branches: ["execution_planning", "suite_domain", "smartdesk_domain", "analyzer_domain", "unknown_branch"],
     memory_context: {
       schema_version: "tenant_memory_context_v1",
       tenant_id: "tenant_horizontal_acme",
@@ -221,7 +225,7 @@ try {
   assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.state === "active", "Nyra learning branch did not activate");
   assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.policy_activation_requires_verify === true, "learning verify gate is disabled");
   assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.free_weight_training === false, "free weight training was enabled");
-  assert(horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes("skinharmony_domain"), "Core failed to deny vertical Nyra branch");
+  assert(["suite_domain", "smartdesk_domain", "analyzer_domain"].every((id) => horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes(id)), "Core failed to deny product-specific Nyra branches");
   assert(horizontalInterpretation.json.result.automation_plan?.execution_allowed === false, "Nyra branch router unexpectedly enabled execution");
   assert(horizontalInterpretation.json.memory_context?.revision === 4, "Nyra did not receive tenant memory");
   assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_relevant_count === 1, "Core did not account for relevant tenant memory");
@@ -236,7 +240,7 @@ try {
 
   const packOverride = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Attempt vertical override",
-    domain_pack: "skinharmony",
+    domain_pack: "analyzer",
   }, horizontalKey);
   assert(packOverride.status === 403 && packOverride.json.error === "domain_pack_override_denied", "domain pack override was not denied");
 
@@ -253,7 +257,7 @@ try {
   assert(excessiveNyraBranches.status === 400 && excessiveNyraBranches.json.error === "nyra_branch_request_limit_exceeded", "Nyra branch request limit was not enforced");
   mark("horizontal_domain_pack_and_nyra_network", true, {
     generic_pack: horizontalPack.json.domain_pack.id,
-    skinharmony_pack: skinHarmonyPack.json.domain_pack.id,
+    suite_pack: suitePack.json.domain_pack.id,
     horizontal_branch_count: horizontalBranches.json.tenant_package.allowed_branches.length,
     nyra_branch_count: nyraBranchCatalog.json.catalog.branches.length,
     opened: horizontalInterpretation.json.result.nyra_neural_network.opened_branches.map((item) => item.id),
@@ -971,7 +975,7 @@ try {
   assert(codexGuardGeneric.status === 200 && codexGuardGeneric.json.codex_guard?.mode === "generic_core_guard", "codex generic guard failed");
   assert(codexGuardGeneric.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex generic contract missing");
   assert(codexGuardGeneric.json.codex_guard?.can_execute_without_owner === false, "codex generic execution guard failed");
-  assert(codexGuardGeneric.json.tenant_policy?.source === "domain_pack_registry", "tenant policy missing in generic guard");
+  assert(codexGuardGeneric.json.tenant_policy?.source === "default_policy", "generic guard did not use the default horizontal policy");
   assert(codexGuardGeneric.json.work_preflight?.mandatory === true, "codex guard bypassed mandatory preflight");
   mark("codex_guard_generic", true, {
     mode: codexGuardGeneric.json.codex_guard.mode,
@@ -1050,7 +1054,7 @@ try {
       sources_provided: false,
       claims: "senza claim terapeutici",
     },
-  }, connectorKey);
+  }, codexKey);
   assert(chemistryBranch.status === 200 && chemistryBranch.json.branch_output?.web_research_required === true, "chemistry branch failed");
   mark("branch_cosmetic_chemistry", true, {
     state: chemistryBranch.json.output.state,
@@ -1072,7 +1076,7 @@ try {
       protocols: [],
       data_quality_score: 88,
     },
-  }, connectorKey);
+  }, codexKey);
   assert(analyzerBranch.status === 200 && analyzerBranch.json.branch_output?.branch === "skinharmony_skin_ensemble_v1", "skinharmony analyzer branch failed");
   assert(analyzerBranch.json.branch_output?.dominant_pattern?.id === "pores_texture_matrix", "skinharmony analyzer dominant pattern failed");
   assert(analyzerBranch.json.branch_output?.secondary_patterns?.some((item) => item.id === "sensitivity_reactivity_matrix"), "skinharmony analyzer secondary pattern failed");

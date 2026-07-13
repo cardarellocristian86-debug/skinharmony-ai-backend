@@ -1,6 +1,19 @@
-# SkinHarmony Universal Core Service
+# Universal Core Service
 
 Servizio centrale Render-ready per esporre Universal Core come decision engine multi-tenant.
+
+## Contratto orizzontale
+
+Universal Core e Nyra sono runtime agnostici: nomi di tenant, brand o prodotto non attivano mai un verticale. Senza metadati espliciti della chiave Core il runtime usa sempre il pack `generic`.
+
+I verticali sono pack prodotto separati e allowlist-based:
+
+- `suite` abilita soltanto i rami Suite;
+- `smartdesk` abilita soltanto i rami SmartDesk;
+- `analyzer` abilita soltanto i rami Analyzer e beauty advisory;
+- `regulated_demo` resta un pack di riferimento senza rami prodotto.
+
+Un pack non può essere scelto nel payload della richiesta: viene risolto esclusivamente da `metadata.domain_pack_id` della chiave Core autenticata. Il vecchio pack ombrello `skinharmony` non esiste.
 
 Ruoli:
 - WordPress/Suite raccolgono dati e renderizzano UI.

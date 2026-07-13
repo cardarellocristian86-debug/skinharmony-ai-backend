@@ -286,7 +286,7 @@ app.get("/healthz", (_req, res) => {
     service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
     runtime_kind: "horizontal_neural_branch_runtime",
-    domain_pack_resolution: nyraHorizontalRuntime.expectedDomainPack ? "core_validated_expected_pack" : "core_resolved_from_tenant",
+    domain_pack_resolution: "universal_core_key_metadata_only",
     auth_required: process.env.NODE_ENV === "production",
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),

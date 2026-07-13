@@ -76,11 +76,18 @@ const NYRA_BRANCHES = Object.freeze([
     "compatibility_mapping", "clean_room_variant", "patch_candidate", "sandbox_plan", "security_review",
     "license_review", "regression_matrix", "evidence_confidence", "core_verdict", "learning_handoff",
   ], ["*"], { workPhase: "research", coreBranchBindings: ["research_evidence_intelligence", "quality_verification_intelligence"] }),
-  branch("skinharmony_domain", "SkinHarmony Domain", ["skinharmony", "beauty", "salone", "smartdesk", "protocollo", "cosmet"], [
-    "analyzer_interpretation", "beauty_protocol", "cosmetic_claims", "center_operations", "customer_journey",
-    "product_inventory", "beauty_value_chain", "brand_network", "site_suite", "smartdesk_bridge",
-    "pricing_guard", "retention_recall",
-  ], ["skinharmony"], { workPhase: "domain", coreBranchBindings: [] }),
+  branch("suite_domain", "Suite Product Pack", ["suite", "sito", "wordpress", "landing", "pubblica"], [
+    "site_governance", "content_publishing", "template_management", "landing_management", "lead_capture",
+    "deployment_readiness", "site_isolation", "rollback_readiness",
+  ], ["suite"], { workPhase: "domain", coreBranchBindings: ["suite_governance"] }),
+  branch("smartdesk_domain", "SmartDesk Product Pack", ["smartdesk", "agenda", "cassa", "magazzino", "operativ"], [
+    "desk_operations", "appointment_workflow", "customer_operations", "billing_operations", "inventory_operations",
+    "operational_api_guard", "node_isolation", "handoff_readiness",
+  ], ["smartdesk"], { workPhase: "domain", coreBranchBindings: ["smartdesk_operations_guard"] }),
+  branch("analyzer_domain", "Analyzer Product Pack", ["analyzer", "analisi", "protocollo", "cosmet", "beauty"], [
+    "analyzer_interpretation", "protocol_advisory", "cosmetic_claims", "evidence_quality", "result_explanation",
+    "value_chain_review", "pricing_guard", "subject_isolation",
+  ], ["analyzer"], { workPhase: "domain", coreBranchBindings: ["skinharmony_analyzer", "beauty_protocol_guard"] }),
 ]);
 
 function normalizeList(value, max = 50) {

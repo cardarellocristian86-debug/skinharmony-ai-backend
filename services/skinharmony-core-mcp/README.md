@@ -1,6 +1,8 @@
-# SkinHarmony Core MCP
+# Universal Core MCP Gateway
 
 Remote MCP endpoint compatible with existing scoped Codex bearer tokens and ChatGPT OAuth 2.1 clients backed by Auth0. Authentication never accepts an owner-confirmation field and never derives tenant access from client input.
+
+The repository path and package name retain the historical SkinHarmony name for deployment compatibility, but the gateway contract is horizontal. MCP tools do not expose a `domain_pack` selector and never forward one supplied out of schema. Suite, SmartDesk and Analyzer packs are resolved only from the authenticated server-side Core key metadata.
 
 ## Authentication
 
