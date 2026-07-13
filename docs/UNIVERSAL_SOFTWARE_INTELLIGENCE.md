@@ -10,10 +10,13 @@
 
 Ghidra and Frida are not copied from local installations and are not included in this repository.
 
+The Ghidra adapter is enabled only when `GHIDRA_SANDBOX_LAUNCHER`, `GHIDRA_SANDBOX_LAUNCHER_SHA256`, and `SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET` are configured. Optional `GHIDRA_VERSION`, `GHIDRA_RELEASE_SHA256`, and `SOFTWARE_INTELLIGENCE_TEMP_ROOT` values further pin the runtime. Partial or invalid configuration fails at startup or probe time.
+
 ## API
 
 - `GET /v1/software-intelligence/components`
 - `POST /v1/software-intelligence/analyze` — synchronous lightweight compatibility route
+- `POST /v1/software-intelligence/authorize` — Core-issued short-lived authorization for deep modes
 - `POST /v1/software-intelligence/jobs` — asynchronous universal route
 - `GET /v1/software-intelligence/jobs`
 - `GET /v1/software-intelligence/jobs/:jobId`
@@ -24,13 +27,13 @@ All evidence uses `universal_software_evidence_v1`. Jobs are visible only to the
 
 Lightweight static analysis requires read-decision scope plus an asserted basis of `owned`, `written_permission`, or `open_source`.
 
-Ghidra and Frida additionally require available tenant memory, available Core governance, an affirmative authorization from the server-side `softwareAuthorizationVerifier`, owner confirmation, an allowed authorization basis, and—when dynamic—a target on the verifier-provided allowlist. A caller-provided boolean is never trusted as the Core verdict. Missing context fails closed.
+Ghidra and Frida additionally require available tenant memory, available Core governance, a short-lived `universal_software_authorization_v1` envelope signed by Universal Core and verified server-side, owner confirmation, an allowed authorization basis, and—when dynamic—a target on the signed allowlist. The signature is tenant-, mode- and time-scoped with a maximum five-minute lifetime. A caller-provided boolean or allowlist is never trusted. Missing context fails closed.
 
 Frida templates are versioned and parameter allowlisted. Arbitrary JavaScript, stealth, evasion, credential extraction, TLS bypass, and protection disabling are not exposed as capabilities.
 
 ## Isolation and limits
 
-The job contract fixes `network_access=denied` and bounds CPU, memory, wall time, artifact size, and output size. A production worker adapter must enforce the same limits at the OS/container boundary; the Core service never runs an artifact itself.
+The job contract fixes `network_access=denied` and bounds CPU, memory, wall time, artifact size, and output size. The Ghidra adapter accepts only an absolute executable launcher whose SHA-256 matches configuration. Its probe must report Ghidra 12.1, the pinned official release hash, denied network access, and OS resource-limit enforcement. Input and output live in a mode-0700 temporary directory removed in `finally`; the Core service never runs the artifact itself.
 
 ## Supply chain
 

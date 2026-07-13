@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   authorizeUniversalSoftwareJob,
+  createSoftwareAuthorizationVerifier,
+  issueSoftwareAuthorizationEnvelope,
   createUniversalSoftwareJobManager,
   FRIDA_TEMPLATE_CATALOG,
   normalizeSoftwareResourceLimits,
@@ -110,4 +112,17 @@ test("redaction removes secrets from lightweight evidence", async () => {
   assert(!serialized.includes("private-value"));
   assert(!serialized.includes("user@example.org"));
   assert(serialized.includes("[REDACTED]"));
+});
+
+test("server-side Core authorization envelope is tenant, mode, signature and time scoped", () => {
+  const secret = "test-only-authorization-secret-32-bytes-minimum";
+  const now = Date.parse("2026-07-13T20:00:00Z");
+  const issued = issueSoftwareAuthorizationEnvelope({ secret, tenantId: "tenant-a", allowedModes: ["ghidra_headless"], now: () => now - 1_000, ttlMilliseconds: 61_000 });
+  const envelope = issued.authorization_envelope;
+  const signature = issued.signature;
+  const verify = createSoftwareAuthorizationVerifier({ secret, now: () => now });
+  assert.equal(verify({ tenant_id: "tenant-a", request: { mode: "ghidra_headless", core_governance: { authorization_envelope: envelope, signature } } }).authorized, true);
+  assert.equal(verify({ tenant_id: "tenant-b", request: { mode: "ghidra_headless", core_governance: { authorization_envelope: envelope, signature } } }).authorized, false);
+  assert.equal(verify({ tenant_id: "tenant-a", request: { mode: "frida_local_agent", core_governance: { authorization_envelope: envelope, signature } } }).authorized, false);
+  assert.equal(verify({ tenant_id: "tenant-a", request: { mode: "ghidra_headless", core_governance: { authorization_envelope: envelope, signature: "0".repeat(64) } } }).authorized, false);
 });

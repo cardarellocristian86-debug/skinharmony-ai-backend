@@ -189,6 +189,7 @@ export function createCoreHandlers(config, options = {}) {
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     software_components: async (_args, identity) => textResult(await coreRequest("/v1/software-intelligence/components", identity.tenantId)),
+    software_authorize: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/authorize", identity.tenantId, { method: "POST", body: { ...args, tenant_id: identity.tenantId } })),
     software_job_submit: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/jobs", identity.tenantId, {
       method: "POST",
       body: { ...args, tenant_id: identity.tenantId },

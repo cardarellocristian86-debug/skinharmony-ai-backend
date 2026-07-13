@@ -7,7 +7,7 @@ The selected architecture is a lightweight embedded analyzer plus optional capab
 ## Runtime state
 
 - Active: `universal_binary_evidence_core`.
-- Optional/unavailable: Ghidra 12.1 headless worker.
+- Optional/unavailable runtime: Ghidra 12.1 headless adapter is implemented, but no Ghidra installation or sandbox launcher is vendored or configured.
 - Optional/unavailable: Frida 17.9.11 Local Agent.
 
 Optional means the policy, template, job, evidence, and adapter contracts exist; activation still requires a separately built no-network worker and platform-specific supply-chain verification.
@@ -26,4 +26,4 @@ Tests cover internally generated ELF/PE/Mach-O fixtures, generic tenant isolatio
 
 Post-rebase benchmark results from a 512-byte internal fixture over 100 iterations: lightweight static mean `0.052 ms/job`; deep mock-adapter orchestration mean `0.007 ms/job`. The deep number measures policy, queue, and evidence wrapping only; it is not a Ghidra performance claim.
 
-Universal Core JavaScript tests pass `44/44`; Core MCP tests pass `45/45`. The legacy aggregate smoke reaches the unrelated translation-extractor status check and fails because its external extractor runtime is unavailable in this worktree. Software, Nyra, tenant, API, and Core regression tests complete before that external-runtime check.
+Universal Core JavaScript tests pass `49/49`; Core MCP tests pass `45/45`. The adapter suite verifies launcher SHA-256, Ghidra version/release pinning, denied network probe, resource-limit declaration, redaction and unconditional temporary-directory cleanup. The legacy aggregate smoke reaches the unrelated translation-extractor status check and fails because its external extractor runtime is unavailable in this worktree. GitHub reports no failing PR checks. Software, Nyra, tenant, API and Core regression tests complete before that external-runtime check.

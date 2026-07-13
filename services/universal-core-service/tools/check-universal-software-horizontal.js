@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targets = [
   "src/universalSoftwareIntelligence.js",
+  "src/ghidraHeadlessAdapter.js",
   "vendor-manifests/software-intelligence-components.json",
   "vendor-manifests/software-intelligence-sbom.cdx.json",
   "test/universal-software-intelligence.test.js",
+  "test/ghidra-headless-adapter.test.js",
 ];
 const forbidden = [/skinharmony/i, /beauty/i, /cosmetic/i, /skin[_-]?harmony[_-]?domain/i, /brand_scope/i];
 const violations = [];

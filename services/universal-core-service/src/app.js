@@ -68,6 +68,7 @@ import {
 import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
 import {
   createUniversalSoftwareJobManager,
+  issueSoftwareAuthorizationEnvelope,
   universalSoftwareComponentManifest,
 } from "./universalSoftwareIntelligence.js";
 
@@ -1086,6 +1087,7 @@ function buildConnectorSdkManifest() {
       intelligence_outcome_record: "/v1/intelligence/outcomes/record",
       intelligence_calibration: "/v1/intelligence/calibration",
       software_intelligence_components: "/v1/software-intelligence/components",
+      software_intelligence_authorize: "/v1/software-intelligence/authorize",
       software_intelligence_analyze: "/v1/software-intelligence/analyze",
       software_intelligence_jobs_submit: "/v1/software-intelligence/jobs",
       software_intelligence_jobs_list: "/v1/software-intelligence/jobs",
@@ -4735,7 +4737,7 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       branch: "software_binary_intelligence",
       maximum_artifact_bytes: MAX_EMBEDDED_ARTIFACT_BYTES,
-      manifest: universalSoftwareComponentManifest(),
+      manifest: universalSoftwareComponentManifest({ configuredWorkers: Object.keys(options.softwareWorkerAdapters || {}) }),
       authorization_required: true,
       execution_supported: false,
     });
@@ -4769,6 +4771,23 @@ export function createUniversalCoreService(options = {}) {
       const status = code === "software_artifact_too_large" ? 413 : 400;
       return publicError(res, status, code);
     }
+  });
+
+  app.post("/v1/software-intelligence/authorize", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    if (!options.softwareAuthorizationSecret) return publicError(res, 503, "software_authorization_issuer_unavailable");
+    if (!req.body?.memory_context || typeof req.body.memory_context !== "object") return publicError(res, 400, "software_memory_required");
+    const memoryContext = normalizeTenantMemoryContext(req.body.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const input = buildActionEvaluatorInput(req, req.coreKey);
+    const output = runUniversalCore(input);
+    const decisionContract = normalizeDecisionContract(output, { action_type: "software_analysis", publish_intent: false });
+    const authorization = buildActionAuthorization(decisionContract, { ...req.body, action_type: "software_analysis", operation_class: "governed_deep_software_analysis" });
+    if (!authorization.allowed) return res.status(403).json({ ok: false, error: authorization.state, authorization, decision_contract: decisionContract });
+    try {
+      const coreGovernance = issueSoftwareAuthorizationEnvelope({ secret: options.softwareAuthorizationSecret, tenantId: req.tenantId, allowedModes: req.body.allowed_modes, targetAllowlist: req.body.target_allowlist || [] });
+      audit.append("core_software_authorization_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, modes: req.body.allowed_modes, target_count: req.body.target_allowlist?.length || 0 });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, authorization, core_governance: coreGovernance });
+    } catch (error) { return publicError(res, 400, error.message || "software_authorization_failed"); }
   });
 
   app.get("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {

@@ -10,6 +10,51 @@ const AUTHORIZATION_BASES = new Set(["owned", "written_permission", "open_source
 const TEMPLATE_ID = /^[a-z][a-z0-9_.-]{2,63}$/;
 const TARGET_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,239}$/;
 
+function safeEqualHex(left, right) {
+  if (!/^[a-f0-9]{64}$/i.test(String(left || "")) || !/^[a-f0-9]{64}$/i.test(String(right || ""))) return false;
+  return crypto.timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
+
+export function createSoftwareAuthorizationVerifier({ secret, now = () => Date.now() } = {}) {
+  const key = String(secret || "");
+  if (key.length < 32) throw new Error("software_authorization_secret_too_short");
+  return ({ tenant_id: tenantId, request = {} }) => {
+    const envelope = request.core_governance?.authorization_envelope;
+    const signature = String(request.core_governance?.signature || "").toLowerCase();
+    if (!envelope || typeof envelope !== "object") return { authorized: false, target_allowlist: [] };
+    const expected = crypto.createHmac("sha256", key).update(JSON.stringify(envelope)).digest("hex");
+    const expiresAt = Date.parse(envelope.expires_at || "");
+    const issuedAt = Date.parse(envelope.issued_at || "");
+    const modeAllowed = Array.isArray(envelope.allowed_modes) && envelope.allowed_modes.includes(request.mode);
+    const valid = safeEqualHex(signature, expected) && envelope.schema_version === "universal_software_authorization_v1" &&
+      envelope.tenant_id === tenantId && envelope.authorized === true && envelope.owner_confirmed === true &&
+      envelope.issued_by === "universal_core" && modeAllowed && Number.isFinite(issuedAt) && Number.isFinite(expiresAt) &&
+      issuedAt <= now() && expiresAt > now() && expiresAt - issuedAt <= 5 * 60_000;
+    return { authorized: valid, target_allowlist: valid && Array.isArray(envelope.target_allowlist) ? envelope.target_allowlist.map(String) : [] };
+  };
+}
+
+export function issueSoftwareAuthorizationEnvelope({ secret, tenantId, allowedModes, targetAllowlist = [], now = () => Date.now(), ttlMilliseconds = 60_000 } = {}) {
+  const key = String(secret || "");
+  if (key.length < 32) throw new Error("software_authorization_secret_too_short");
+  const modes = [...new Set((allowedModes || []).map(String))];
+  if (!modes.length || modes.some((mode) => !DEEP_MODES.has(mode))) throw new Error("software_authorization_modes_invalid");
+  const issued = now();
+  const ttl = Math.max(1_000, Math.min(5 * 60_000, Number(ttlMilliseconds) || 60_000));
+  const envelope = {
+    schema_version: "universal_software_authorization_v1",
+    tenant_id: cleanIdentifier(tenantId, "software_tenant_required"),
+    issued_by: "universal_core",
+    authorized: true,
+    owner_confirmed: true,
+    allowed_modes: modes,
+    target_allowlist: [...new Set(targetAllowlist.map(String))],
+    issued_at: new Date(issued).toISOString(),
+    expires_at: new Date(issued + ttl).toISOString(),
+  };
+  return { authorization_envelope: envelope, signature: crypto.createHmac("sha256", key).update(JSON.stringify(envelope)).digest("hex") };
+}
+
 export const DEFAULT_SOFTWARE_RESOURCE_LIMITS = Object.freeze({
   cpu_seconds: 30,
   memory_megabytes: 512,
@@ -218,7 +263,7 @@ export function createUniversalSoftwareJobManager({ adapters = {}, now = () => D
   return Object.freeze({ submit, get, list, purgeExpired });
 }
 
-export function universalSoftwareComponentManifest() {
+export function universalSoftwareComponentManifest({ configuredWorkers = [] } = {}) {
   const base = embeddedComponentManifest();
   return {
     schema_version: "universal_software_component_manifest_v1",
@@ -232,7 +277,7 @@ export function universalSoftwareComponentManifest() {
       verified: true,
     } : item),
     optional_workers: [
-      { id: "ghidra_headless", status: "optional_unavailable", isolation: "no_network", capabilities: ["elf", "pe", "macho", "sections", "symbols", "imports", "exports", "functions", "references", "call_graph", "selective_decompilation"] },
+      { id: "ghidra_headless", status: configuredWorkers.includes("ghidra_headless") ? "optional_configured_probe_required" : "optional_unavailable", isolation: "no_network", capabilities: ["elf", "pe", "macho", "sections", "symbols", "imports", "exports", "functions", "references", "call_graph", "selective_decompilation"] },
       { id: "frida_local_agent", status: "optional_unavailable", isolation: "local_agent_no_network", templates: FRIDA_TEMPLATE_CATALOG.map((item) => ({ id: item.id, version: item.version, capability: item.capability })) },
     ],
   };
