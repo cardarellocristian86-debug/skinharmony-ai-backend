@@ -59,6 +59,7 @@ import {
   verifyOutcome,
 } from "./intelligenceEngine.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
+import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
   embeddedComponentManifest,
@@ -68,7 +69,7 @@ import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.9.0-full-intelligence-research-cortex";
+const SERVICE_VERSION = "0.9.1-research-risk-and-interpretation";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -230,12 +231,19 @@ function buildActionEvaluatorInput(req, keyRecord) {
   const body = req.body || {};
   const actionType = String(body.action_type || body.action?.type || body.domain || "workflow_decision");
   const actionLabel = String(body.action_label || body.action?.label || body.task || actionType);
-  const riskHint = Number(body.risk_hint ?? body.action?.risk_hint ?? 45);
-  const confidenceHint = Number(body.confidence_hint ?? body.action?.confidence_hint ?? 75);
+  const riskClassification = classifyActionRisk(body);
+  const riskHint = Number(body.risk_hint ?? body.action?.risk_hint ?? riskClassification.risk_score);
+  const confidenceHint = Number(body.confidence_hint ?? body.action?.confidence_hint ?? 85);
   const publishIntent = body.publish_intent === true || actionType === "publish";
-  const sensitive =
-    publishIntent ||
-    ["publish", "approve", "change_state", "pricing", "claim_validation", "workflow_decision", "sync", "send", "delete", "write", "deploy", "update", "codex_automation"].includes(actionType);
+  const blockedActionRules = [
+    ...(Array.isArray(body.constraints?.blocked_action_rules) ? body.constraints.blocked_action_rules : []),
+    ...riskClassification.reason_codes.map((reasonCode) => ({
+      action_id: `action:${actionType}`,
+      reason_code: reasonCode,
+      severity: riskClassification.risk_score,
+      blocks_execution: riskClassification.hard_block,
+    })),
+  ];
 
   return {
     request_id: body.request_id || `action_${crypto.randomUUID()}`,
@@ -248,6 +256,8 @@ function buildActionEvaluatorInput(req, keyRecord) {
       locale: body.locale || "it",
       metadata: {
         action_type: actionType,
+        action_classification: riskClassification.classification,
+        operation_class: riskClassification.operation_class,
         publish_intent: publishIntent ? "true" : "false",
         source: "action_evaluator",
         ...(typeof body.metadata === "object" && body.metadata ? body.metadata : {}),
@@ -256,35 +266,30 @@ function buildActionEvaluatorInput(req, keyRecord) {
     signals: [
       normalizeSignal({
         id: `action:${actionType}`,
-        category: "action",
+        category: riskClassification.classification,
         label: actionLabel,
-        normalized_score: sensitive ? Math.max(45, riskHint) : riskHint,
-        severity_hint: sensitive ? Math.max(45, riskHint) : riskHint,
+        normalized_score: riskClassification.risk_score,
+        severity_hint: riskClassification.risk_score,
         confidence_hint: confidenceHint,
-        risk_hint: riskHint,
-        evidence: Array.isArray(body.evidence) ? body.evidence : [{ label: "Azione richiesta dal client", value: actionType }],
-        tags: ["action_gate", actionType],
+        evidence: Array.isArray(body.evidence) ? body.evidence : [
+          { label: "Azione richiesta dal client", value: actionType },
+          { label: "Classificazione deterministica", value: riskClassification.classification },
+        ],
+        tags: ["action_gate", actionType, riskClassification.classification],
       }),
     ],
     data_quality: {
-      score: Number(body.data_quality?.score ?? body.data_quality_score ?? 70),
+      score: Number(body.data_quality?.score ?? body.data_quality_score ?? 80),
       missing_fields: Array.isArray(body.data_quality?.missing_fields) ? body.data_quality.missing_fields : [],
     },
     constraints: safeConstraints({
       ...(typeof body.constraints === "object" && body.constraints ? body.constraints : {}),
-      require_confirmation: true,
-      max_control_level: "confirm",
-      blocked_action_rules: [
-        ...(Array.isArray(body.constraints?.blocked_action_rules) ? body.constraints.blocked_action_rules : []),
-        ...(publishIntent
-          ? [{
-              action_id: `action:${actionType}`,
-              reason_code: "publish_requires_owner_review",
-              severity: 80,
-              blocks_execution: false,
-            }]
-          : []),
-      ],
+      require_confirmation: riskClassification.confirmation_required,
+      max_control_level: riskClassification.control_level,
+      risk_floor: riskClassification.risk_band,
+      passive_only: ["tenant_scoped_read", "sandboxed_scoped_work"].includes(riskClassification.operation_class),
+      blocked_action_rules: blockedActionRules,
+      safety_mode: riskClassification.control_level !== "observe",
     }, keyRecord, body.owner_confirmed === true),
   };
 }
@@ -295,11 +300,12 @@ function safeConstraints(raw = {}, keyRecord, ownerConfirmed) {
       ownerConfirmed &&
       hasScope(keyRecord, SCOPES.AUTOMATION_CODEX)
   );
+  const passiveOnly = raw.passive_only === true && raw.allow_automation !== true;
 
   return {
     allow_automation: automationAllowed,
     require_confirmation: raw.require_confirmation !== false,
-    max_control_level: automationAllowed ? raw.max_control_level || "confirm" : "confirm",
+    max_control_level: automationAllowed ? raw.max_control_level || "confirm" : passiveOnly ? "observe" : "confirm",
     min_control_level: raw.min_control_level,
     state_floor: raw.state_floor,
     risk_floor: raw.risk_floor,
@@ -4024,13 +4030,17 @@ export function createUniversalCoreService(options = {}) {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
     });
+    const riskClassification = classifyActionRisk(req.body || {});
     const input = buildActionEvaluatorInput(req, req.coreKey);
     const output = runUniversalCore(input);
-    const decisionContract = normalizeDecisionContract(output, {
+    const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
       action_type: req.body?.action_type || input.context.metadata.action_type,
       publish_intent: req.body?.publish_intent === true,
+    }), riskClassification);
+    const authorization = buildActionAuthorization(decisionContract, {
+      ...(req.body || {}),
+      operation_class: req.body?.operation_class || riskClassification.operation_class,
     });
-    const authorization = buildActionAuthorization(decisionContract, req.body || {});
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -4041,6 +4051,9 @@ export function createUniversalCoreService(options = {}) {
       publish_safe: decisionContract.publish_safe,
       preflight_id: workPreflight.preflight_id,
       authorization_state: authorization.state,
+      action_classification: riskClassification.classification,
+      action_risk_band: riskClassification.risk_band,
+      action_reason_codes: riskClassification.reason_codes,
       confirmation_satisfied: authorization.confirmation_satisfied,
     });
     res.json({
@@ -4050,6 +4063,7 @@ export function createUniversalCoreService(options = {}) {
       output,
       work_preflight: workPreflight,
       authorization,
+      risk_classification: riskClassification,
       guardrail: {
         destructive_automation: false,
         execution_allowed: authorization.allowed,
@@ -4594,7 +4608,9 @@ export function createUniversalCoreService(options = {}) {
       automation_plan: {
         ...result.automation_plan,
         execution_allowed: false,
-        next_step: "Preparare runbook/evidence e chiedere conferma owner prima di ogni scrittura reale.",
+        next_step: result.automation_plan.owner_confirmation_required
+          ? "Preparare runbook/evidence e chiedere conferma owner prima di ogni scrittura reale."
+          : "Procedere soltanto in lettura, analisi o proposta nel perimetro tenant.",
       },
       core_branch_diagnostics: {
         ...(result.core_branch_diagnostics || {}),
@@ -4640,7 +4656,7 @@ export function createUniversalCoreService(options = {}) {
       guardrail: {
         execution_allowed: false,
         mandatory_preflight_completed: true,
-        owner_confirmation_required: true,
+        owner_confirmation_required: guardedResult.automation_plan.owner_confirmation_required,
         audit_required: true,
         mode: "nira_prepare_core_select_no_auto_execute",
       },
@@ -4936,3 +4952,4 @@ export function createUniversalCoreService(options = {}) {
 
   return { app, storageRoot };
 }
+

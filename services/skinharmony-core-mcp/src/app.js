@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.7.0-owner-root-god-mode";
+const SERVER_VERSION = "0.7.1-owner-root-risk-and-interpretation";
 const SERVER_INSTRUCTIONS = "Call work_preflight before connected work. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function resolveWorkPreflight(result, payload) {
