@@ -11,8 +11,31 @@ const repoRoot = path.resolve(__dirname, "../..");
 const nyraPort = 33000 + Math.floor(Math.random() * 1000);
 const corePort = nyraPort + 1;
 const smartDeskPort = nyraPort + 2;
+const researchMcpPort = nyraPort + 3;
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-nyra-runtime-")).replace(/\\/g, "/");
 const auth = `Basic ${Buffer.from("test-user:test-password").toString("base64")}`;
+const foreignJourneyPath = path.join(storageRoot, "universal-core/runtime/nyra/nyra_decision_to_value_journey.json");
+fs.mkdirSync(path.dirname(foreignJourneyPath), { recursive: true });
+fs.writeFileSync(foreignJourneyPath, JSON.stringify({
+  version: 1,
+  events: [{
+    event_id: "foreign-event",
+    tenant_id: "tenant-foreign",
+    center_id: "center_admin",
+    profile_id: "p_00000000000000000000000000000000",
+    stage: "analyzer",
+    source: "foreign-source",
+    value: {},
+  }],
+  profiles: {
+    foreign: {
+      tenant_id: "tenant-foreign",
+      center_id: "center_admin",
+      profile_id: "p_00000000000000000000000000000000",
+      stages: {},
+    },
+  },
+}), "utf8");
 
 function jsonResponse(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json" });
@@ -78,6 +101,38 @@ const coreServer = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.url === "/v1/nira/core-bridge" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const payload = JSON.parse(body || "{}");
+      assert.equal(req.headers.authorization, "Bearer core-test-key");
+      assert.equal(Array.isArray(payload.nyra_branches), true);
+      assert(payload.nyra_branches.includes("execution_planning"));
+      jsonResponse(res, 200, {
+        ok: true,
+        tenant_id: "tenant-test",
+        domain_pack: { id: "generic", runtime_kind: "horizontal" },
+        work_preflight: {
+          schema_version: "skinharmony_work_preflight_v1",
+          preflight_id: "preflight-smoke",
+          mandatory: true,
+          state: "memory_recall_required",
+          governance: { execution_allowed_by_preflight: false },
+        },
+        result: {
+          nyra_neural_network: {
+            opened_by: "universal_core",
+            opened_branches: payload.nyra_branches.map((id) => ({ id, status: "opened", subbranches: [] })),
+            denied_branches: [],
+            execution_authorized: false,
+          },
+          automation_plan: { execution_allowed: false },
+        },
+      });
+    });
+    return;
+  }
   jsonResponse(res, 404, { ok: false, error: "not_found" });
 });
 
@@ -107,6 +162,21 @@ const smartDeskServer = http.createServer((req, res) => {
         value: { currency: "EUR", amount: 120, cost: 35 },
         metadata: { payment_id: "payment-smoke", appointment_id: "appointment-smoke" },
       }],
+    });
+    return;
+  }
+  jsonResponse(res, 404, { ok: false, error: "not_found" });
+});
+
+const researchMcpServer = http.createServer((req, res) => {
+  if (req.url === "/healthz") {
+    jsonResponse(res, 200, {
+      ok: true,
+      service: "skinharmony-core-mcp",
+      version: "0.6.0-full-intelligence-research-cortex",
+      research_cortex_configured: true,
+      openai_research_fallback_enabled: false,
+      openai_research_fallback_configured: true,
     });
     return;
   }
@@ -169,6 +239,7 @@ function waitForHealth(child) {
 async function main() {
   await new Promise((resolve) => coreServer.listen(corePort, "127.0.0.1", resolve));
   await new Promise((resolve) => smartDeskServer.listen(smartDeskPort, "127.0.0.1", resolve));
+  await new Promise((resolve) => researchMcpServer.listen(researchMcpPort, "127.0.0.1", resolve));
   const child = spawn(process.execPath, ["personal-control-center/server.js"], {
     cwd: repoRoot,
     env: {
@@ -185,6 +256,7 @@ async function main() {
       NYRA_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_CORE_KEY: "core-test-key",
       NYRA_CORE_TENANT_ID: "tenant-test",
+      NYRA_RESEARCH_MCP_URL: `http://127.0.0.1:${researchMcpPort}`,
       NYRA_SUITE_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_SUITE_CORE_KEY: "suite-core-key",
       NYRA_SUITE_CORE_TENANT_ID: "tenant-suite",
@@ -203,7 +275,9 @@ async function main() {
 
   try {
     const health = await waitForHealth(child);
-    assert.equal(health.json.version, "0.5.0-decision-journey");
+    assert.equal(health.json.version, "0.9.0-research-cortex");
+    assert.equal(health.json.service, "nyra-horizontal-runtime");
+    assert.equal(health.json.runtime_kind, "horizontal_neural_branch_runtime");
 
     const unauthenticated = await request("/api/nyra/control");
     assert.equal(unauthenticated.status, 401);
@@ -218,6 +292,34 @@ async function main() {
     assert.equal(readiness.json.core.status, "connected");
     assert.equal(readiness.json.storage.persistent, true);
     assert.equal(readiness.json.journey.event_count, 0);
+    assert.equal(readiness.json.journey.profile_count, 0);
+    assert.equal(readiness.json.journey.tenant_id, "tenant-test");
+    assert.equal(readiness.json.research.status, "connected");
+    assert.equal(readiness.json.research.primary_provider, "host_chatgpt_or_codex_web");
+    assert.equal(readiness.json.research.openai_fallback_enabled, false);
+    assert.equal(readiness.json.research.openai_fallback_configured, true);
+    assert.equal(readiness.json.runtime.authority.core_is_final_router, true);
+
+    const runtimeContract = await request("/api/nyra/runtime/contract", { auth: true });
+    assert.equal(runtimeContract.status, 200);
+    assert.equal(runtimeContract.json.contract.neural_network.maximum_subbranches_per_branch, 20);
+    assert.equal(runtimeContract.json.contract.neural_network.maximum_parallel_branches, 6);
+    assert.equal(runtimeContract.json.contract.governed_learning.policy_activation_requires_verify, true);
+    assert.equal(runtimeContract.json.contract.realtime_research.mcp_entrypoint, "nyra_research_plan");
+    assert.equal(runtimeContract.json.contract.authority.may_open_branches, false);
+    assert.equal(runtimeContract.json.contract.authority.may_begin_work_without_preflight, false);
+    assert.equal(runtimeContract.json.contract.mandatory_preflight.connected_tool_first, true);
+
+    const runtimeInterpretation = await request("/api/nyra/runtime/interpret", {
+      method: "POST",
+      auth: true,
+      body: { message: "Valuta privacy e prepara un piano di deploy su Render", session_id: "horizontal-smoke" },
+    });
+    assert.equal(runtimeInterpretation.status, 200);
+    assert.equal(runtimeInterpretation.json.local_interpretation.branch_state, "proposed_waiting_for_core");
+    assert.equal(runtimeInterpretation.json.core_router.result.nyra_neural_network.opened_by, "universal_core");
+    assert.equal(runtimeInterpretation.json.core_router.work_preflight.mandatory, true);
+    assert.equal(runtimeInterpretation.json.execution_allowed, false);
 
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });
     assert.equal(learningBefore.status, 200);
@@ -400,6 +502,7 @@ async function main() {
     }
     await new Promise((resolve) => coreServer.close(resolve));
     await new Promise((resolve) => smartDeskServer.close(resolve));
+    await new Promise((resolve) => researchMcpServer.close(resolve));
     if (stdout.trim()) process.stdout.write(stdout);
     if (stderr.trim()) process.stderr.write(stderr);
   }
@@ -408,5 +511,6 @@ async function main() {
 main().catch((error) => {
   console.error(error.stack || error.message);
   coreServer.close();
+  researchMcpServer.close();
   process.exit(1);
 });
