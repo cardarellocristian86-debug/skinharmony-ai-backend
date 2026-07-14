@@ -268,7 +268,7 @@ try {
   assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.free_weight_training === false, "free weight training was enabled");
   assert(["suite_domain", "smartdesk_domain", "analyzer_domain"].every((id) => horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes(id)), "Core failed to deny product-specific Nyra branches");
   assert(horizontalInterpretation.json.result.automation_plan?.execution_allowed === false, "Nyra branch router unexpectedly enabled execution");
-  assert(horizontalInterpretation.json.result.deep_nyra_runtime?.mode === "shadow", "deep Nyra runtime did not start in shadow mode");
+  assert(horizontalInterpretation.json.result.deep_nyra_runtime?.mode === "active", "deep Nyra runtime did not start in active bounded mode");
   assert(horizontalInterpretation.json.result.deep_nyra_runtime?.core_final_authority === true, "deep Nyra runtime bypassed Core authority");
   assert(horizontalInterpretation.json.result.deep_nyra_runtime?.memory?.backend === "tenant_memory_fabric_postgresql", "deep Nyra runtime did not use the cloud memory adapter");
   assert(horizontalInterpretation.json.result.deep_nyra_runtime?.execution_allowed === false, "deep Nyra runtime unexpectedly enabled execution");
