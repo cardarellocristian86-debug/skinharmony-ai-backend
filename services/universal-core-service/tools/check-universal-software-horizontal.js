@@ -6,17 +6,22 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targets = [
   "src/universalSoftwareIntelligence.js",
   "src/ghidraHeadlessAdapter.js",
+  "src/fridaLocalAdapter.js",
   "vendor-manifests/software-intelligence-components.json",
   "vendor-manifests/software-intelligence-sbom.cdx.json",
   "test/universal-software-intelligence.test.js",
   "test/ghidra-headless-adapter.test.js",
   "test/ghidra-container-launcher.test.js",
+  "test/frida-local-adapter.test.js",
   "workers/ghidra/Containerfile",
   "workers/ghidra/run-analysis.sh",
   "workers/ghidra/UniversalEvidenceExporter.java",
   "workers/ghidra/ghidra-container-launcher.mjs",
   "workers/ghidra/build-image.sh",
   "workers/ghidra/README.md",
+  "workers/local-agent/frida-local-agent.py",
+  "workers/local-agent/ghidra-local-launcher.mjs",
+  "workers/local-agent/README.md",
 ];
 const forbidden = [/skinharmony/i, /beauty/i, /cosmetic/i, /skin[_-]?harmony[_-]?domain/i, /brand_scope/i];
 const violations = [];

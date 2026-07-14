@@ -194,6 +194,46 @@ function normalizeEvidence(job, result) {
   };
 }
 
+function normalizedSymbol(value) {
+  return String(value || "").replace(/^_+/, "").trim().toLowerCase();
+}
+
+export function correlateUniversalSoftwareEvidence(staticEvidence, dynamicEvidence) {
+  if (staticEvidence?.schema_version !== UNIVERSAL_SOFTWARE_EVIDENCE_SCHEMA || dynamicEvidence?.schema_version !== UNIVERSAL_SOFTWARE_EVIDENCE_SCHEMA) throw new Error("software_evidence_schema_invalid");
+  const functions = Array.isArray(staticEvidence.functions) ? staticEvidence.functions : [];
+  const runtimeCalls = new Map();
+  for (const event of Array.isArray(dynamicEvidence.events) ? dynamicEvidence.events : []) {
+    if (event?.kind !== "call_enter") continue;
+    const key = normalizedSymbol(event.symbol);
+    if (key) runtimeCalls.set(key, (runtimeCalls.get(key) || 0) + 1);
+  }
+  const matches = functions.map((item) => {
+    const normalized = normalizedSymbol(item.name);
+    return {
+      function: item.name,
+      entry: item.entry,
+      signature: item.signature || null,
+      static_callers: item.callers || [],
+      static_callees: item.callees || [],
+      runtime_observed: runtimeCalls.has(normalized),
+      runtime_call_count: runtimeCalls.get(normalized) || 0,
+      confidence: runtimeCalls.has(normalized) ? "confirmed_runtime" : "static_only",
+    };
+  });
+  const unmatchedRuntimeSymbols = [...runtimeCalls.keys()].filter((symbol) => !functions.some((item) => normalizedSymbol(item.name) === symbol));
+  return {
+    schema_version: "universal_software_correlation_v1",
+    evidence_schema: UNIVERSAL_SOFTWARE_EVIDENCE_SCHEMA,
+    matched_functions: matches,
+    observed_function_count: matches.filter((item) => item.runtime_observed).length,
+    unmatched_runtime_symbols: unmatchedRuntimeSymbols,
+    static_call_graph: Array.isArray(staticEvidence.call_graph) ? staticEvidence.call_graph : [],
+    reconstructed_code: Array.isArray(staticEvidence.decompilation) ? staticEvidence.decompilation : [],
+    interpretation_boundary: "Nyra and Codex may explain evidence and confidence but must not represent static inference as runtime fact.",
+    raw_content_persisted: false,
+  };
+}
+
 export function createUniversalSoftwareJobManager({ adapters = {}, now = () => Date.now(), retentionMilliseconds = 15 * 60_000 } = {}) {
   const jobs = new Map();
 
@@ -260,7 +300,16 @@ export function createUniversalSoftwareJobManager({ adapters = {}, now = () => D
     for (const [id, job] of jobs) if (Date.parse(job.expires_at) <= timestamp) jobs.delete(id);
   }
 
-  return Object.freeze({ submit, get, list, purgeExpired });
+  function correlate(jobIds, tenantId) {
+    const selected = (jobIds || []).map((id) => jobs.get(String(id || "")));
+    if (selected.length !== 2 || selected.some((job) => !job || job.tenant_id !== tenantId || job.state !== "completed")) throw new Error("software_correlation_jobs_unavailable");
+    const staticJob = selected.find((job) => job.mode === "ghidra_headless");
+    const dynamicJob = selected.find((job) => job.mode === "frida_local_agent");
+    if (!staticJob || !dynamicJob) throw new Error("software_correlation_modes_required");
+    return { ...correlateUniversalSoftwareEvidence(staticJob.evidence, dynamicJob.evidence), tenant_id: tenantId, source_job_ids: selected.map((job) => job.job_id) };
+  }
+
+  return Object.freeze({ submit, get, list, correlate, purgeExpired });
 }
 
 export function universalSoftwareComponentManifest({ configuredWorkers = [] } = {}) {
@@ -278,7 +327,7 @@ export function universalSoftwareComponentManifest({ configuredWorkers = [] } = 
     } : item),
     optional_workers: [
       { id: "ghidra_headless", status: configuredWorkers.includes("ghidra_headless") ? "optional_configured_probe_required" : "optional_unavailable", isolation: "no_network", capabilities: ["elf", "pe", "macho", "sections", "symbols", "imports", "exports", "functions", "references", "call_graph", "selective_decompilation"] },
-      { id: "frida_local_agent", status: "optional_unavailable", isolation: "local_agent_no_network", templates: FRIDA_TEMPLATE_CATALOG.map((item) => ({ id: item.id, version: item.version, capability: item.capability })) },
+      { id: "frida_local_agent", status: configuredWorkers.includes("frida_local_agent") ? "optional_configured_probe_required" : "optional_unavailable", isolation: "local_agent_no_network", templates: FRIDA_TEMPLATE_CATALOG.map((item) => ({ id: item.id, version: item.version, capability: item.capability })) },
     ],
   };
 }

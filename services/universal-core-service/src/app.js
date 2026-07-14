@@ -4800,6 +4800,14 @@ export function createUniversalCoreService(options = {}) {
     return res.json({ ok: true, job });
   });
 
+  app.post("/v1/software-intelligence/correlate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const correlation = softwareJobs.correlate(req.body?.job_ids, req.tenantId);
+      audit.append("core_software_evidence_correlated", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, source_job_ids: correlation.source_job_ids, raw_content_persisted: false });
+      return res.json({ ok: true, correlation });
+    } catch (error) { return publicError(res, 400, error.message || "software_correlation_failed"); }
+  });
+
   app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) {

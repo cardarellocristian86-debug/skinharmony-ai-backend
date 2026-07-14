@@ -6,10 +6,21 @@ import {
   issueSoftwareAuthorizationEnvelope,
   createUniversalSoftwareJobManager,
   FRIDA_TEMPLATE_CATALOG,
+  correlateUniversalSoftwareEvidence,
   normalizeSoftwareResourceLimits,
   UNIVERSAL_SOFTWARE_EVIDENCE_SCHEMA,
   universalSoftwareComponentManifest,
 } from "../src/universalSoftwareIntelligence.js";
+
+test("correlates static reconstruction with runtime-confirmed calls for assistant interpretation", () => {
+  const staticEvidence = { schema_version: "universal_software_evidence_v1", functions: [{ name: "_work", entry: "1000", signature: "int work(int)", callers: ["entry"], callees: [] }], call_graph: [{ caller: "entry", callee: "_work" }], decompilation: [{ function: "_work", code: "return value + 1;" }] };
+  const dynamicEvidence = { schema_version: "universal_software_evidence_v1", events: [{ kind: "call_enter", symbol: "work" }, { kind: "call_leave", symbol: "work" }] };
+  const result = correlateUniversalSoftwareEvidence(staticEvidence, dynamicEvidence);
+  assert.equal(result.observed_function_count, 1);
+  assert.equal(result.matched_functions[0].confidence, "confirmed_runtime");
+  assert.equal(result.reconstructed_code[0].function, "_work");
+  assert.equal(result.raw_content_persisted, false);
+});
 
 const owned = Object.freeze({ asserted: true, basis: "owned", purpose: "testing", owner_confirmed: true });
 

@@ -30,19 +30,22 @@
         { "name": "runtime.status", "value": "optional_unavailable" },
         { "name": "worker.build_definition", "value": "workers/ghidra/Containerfile" },
         { "name": "runtime.verified", "value": "false" }
+        ,{ "name": "local.runtime.version", "value": "12.1.2" }
+        ,{ "name": "local.runtime.live_analysis_verified", "value": "true" }
       ]
     },
     {
       "type": "application",
-      "bom-ref": "frida@17.9.11",
+      "bom-ref": "frida@17.15.3",
       "name": "Frida",
-      "version": "17.9.11",
+      "version": "17.15.3",
       "scope": "optional",
       "licenses": [{ "license": { "name": "wxWindows Library Licence 3.1" } }],
-      "externalReferences": [{ "type": "distribution", "url": "https://github.com/frida/frida/releases/tag/17.9.11" }],
+      "externalReferences": [{ "type": "distribution", "url": "https://github.com/frida/frida/releases/tag/17.15.3" }],
       "properties": [
-        { "name": "runtime.status", "value": "optional_unavailable" },
-        { "name": "activation.blocker", "value": "platform-specific official artifact hash required" }
+        { "name": "runtime.status", "value": "optional_local_verified" },
+        { "name": "local.binding.sha256", "value": "7118d7d8eaa8aa56519f5c3fdf41b0caf810315728bb03610bce302732caea95" },
+        { "name": "activation.blocker", "value": "explicit agent hash Core authorization and target allowlist required" }
       ]
     }
   ]

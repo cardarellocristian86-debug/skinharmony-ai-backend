@@ -33,24 +33,34 @@
       "notice_verified": true,
       "redistribution": "allowed_with_license_notice_and_dependency_obligations",
       "runtime_verified": false,
+      "local_runtime": {
+        "version": "12.1.2",
+        "distribution": "homebrew_official_formula",
+        "source_sha256": "c30fe709ec5d5e68bf799a6c1f4dfc6853dacb189d10203eb882ecbb408db216",
+        "live_probe_verified": true,
+        "live_static_analysis_verified": true,
+        "activation": "explicit_local_configuration_required"
+      },
       "worker_build_definition": "workers/ghidra/Containerfile",
       "activation_blocker": "digest_pinned_base_images_build_registry_digest_and_runtime_probe_not_verified"
     },
     {
       "id": "frida_local_agent",
       "status": "optional_unavailable",
-      "version": "17.9.11",
-      "release_tag": "17.9.11",
+      "version": "17.15.3",
+      "release_tag": "17.15.3",
       "upstream": "https://github.com/frida/frida",
-      "release_url": "https://github.com/frida/frida/releases/tag/17.9.11",
+      "release_url": "https://github.com/frida/frida/releases/tag/17.15.3",
       "artifact_sha256": null,
+      "local_binding_sha256": "7118d7d8eaa8aa56519f5c3fdf41b0caf810315728bb03610bce302732caea95",
       "license": "wxWindows-Library-Licence-3.1",
       "notice_path": "COPYING",
       "license_verified": true,
       "notice_verified": true,
       "redistribution": "allowed_subject_to_wxWindows_3_1_and_selected_binary_component_obligations",
-      "runtime_verified": false,
-      "activation_blocker": "platform_asset_must_be_selected_and_its_official_sha256_recorded"
+      "runtime_verified": true,
+      "runtime_scope": "verified_local_arm64_python_binding_only",
+      "activation_blocker": "explicit_agent_path_hash_core_authorization_and_target_allowlist_required"
     }
   ]
 }

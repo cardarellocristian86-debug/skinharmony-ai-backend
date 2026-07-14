@@ -52,12 +52,15 @@ export function createGhidraHeadlessAdapter({
   expectedReleaseSha256 = EXPECTED_GHIDRA_RELEASE_SHA256,
   tempRoot = os.tmpdir(),
   run = execFileAsync,
+  launcherEnv = {},
 } = {}) {
   const launcher = requireAbsoluteFile(launcherPath);
   const launcherHash = String(launcherSha256 || "").toLowerCase();
   const releaseHash = String(expectedReleaseSha256 || "").toLowerCase();
   if (!SHA256.test(launcherHash)) throw new Error("ghidra_sandbox_launcher_sha256_required");
   if (!SHA256.test(releaseHash)) throw new Error("ghidra_release_sha256_required");
+  const allowedLauncherEnv = Object.fromEntries(["GHIDRA_ANALYZE_HEADLESS", "GHIDRA_JAVA_HOME", "GHIDRA_LOCAL_VERSION", "GHIDRA_LOCAL_RELEASE_SHA256"].filter((key) => launcherEnv[key]).map((key) => [key, String(launcherEnv[key])]));
+  const runtimeEnv = { PATH: process.env.PATH || "", JAVA_HOME: process.env.JAVA_HOME || "", LANG: "C.UTF-8", ...allowedLauncherEnv };
 
   let verifiedProbe = null;
   async function verifyLauncher(limits) {
@@ -70,7 +73,7 @@ export function createGhidraHeadlessAdapter({
       timeout: Math.min(10_000, limits.wall_time_seconds * 1000),
       maxBuffer: Math.min(limits.output_bytes, 256 * 1024),
       windowsHide: true,
-      env: { PATH: process.env.PATH || "", JAVA_HOME: process.env.JAVA_HOME || "", LANG: "C.UTF-8" },
+      env: runtimeEnv,
     });
     const probe = parseJson(probeRun.stdout, "ghidra_sandbox_probe_invalid");
     if (probe.worker !== "ghidra_headless" || probe.version !== expectedVersion) throw new Error("ghidra_worker_version_mismatch");
@@ -104,7 +107,7 @@ export function createGhidraHeadlessAdapter({
         timeout: limits.wall_time_seconds * 1000,
         maxBuffer: Math.min(limits.output_bytes, 1024 * 1024),
         windowsHide: true,
-        env: { PATH: process.env.PATH || "", JAVA_HOME: process.env.JAVA_HOME || "", LANG: "C.UTF-8" },
+        env: runtimeEnv,
       });
       const outputStat = await fs.stat(outputPath).catch(() => null);
       if (!outputStat?.isFile()) throw new Error("ghidra_evidence_missing");

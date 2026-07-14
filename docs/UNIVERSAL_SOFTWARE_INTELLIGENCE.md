@@ -12,6 +12,8 @@ Ghidra and Frida are not copied from local installations and their binaries are 
 
 The Ghidra adapter is enabled only when `GHIDRA_SANDBOX_LAUNCHER`, `GHIDRA_SANDBOX_LAUNCHER_SHA256`, and `SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET` are configured. Optional `GHIDRA_VERSION`, `GHIDRA_RELEASE_SHA256`, and `SOFTWARE_INTELLIGENCE_TEMP_ROOT` values further pin the runtime. Partial or invalid configuration fails at startup or probe time.
 
+The Frida adapter is enabled only when `FRIDA_LOCAL_AGENT`, `FRIDA_LOCAL_AGENT_SHA256`, and the same Core authorization secret are configured. `FRIDA_VERSION` pins the runtime. Host Python resolution must be explicitly scoped to the verified Frida environment. Local setup is documented in `workers/local-agent/README.md`.
+
 ## API
 
 - `GET /v1/software-intelligence/components`
@@ -20,6 +22,7 @@ The Ghidra adapter is enabled only when `GHIDRA_SANDBOX_LAUNCHER`, `GHIDRA_SANDB
 - `POST /v1/software-intelligence/jobs` — asynchronous universal route
 - `GET /v1/software-intelligence/jobs`
 - `GET /v1/software-intelligence/jobs/:jobId`
+- `POST /v1/software-intelligence/correlate` — correlate one completed Ghidra job and one completed Frida job belonging to the same tenant
 
 All evidence uses `universal_software_evidence_v1`. Jobs are visible only to their authenticated tenant. Raw artifact bytes are held only by the request/job closure until completion and never included in the public job record or audit event.
 
@@ -30,6 +33,8 @@ Lightweight static analysis requires read-decision scope plus an asserted basis 
 Ghidra and Frida additionally require available tenant memory, available Core governance, a short-lived `universal_software_authorization_v1` envelope signed by Universal Core and verified server-side, owner confirmation, an allowed authorization basis, and—when dynamic—a target on the signed allowlist. The signature is tenant-, mode- and time-scoped with a maximum five-minute lifetime. A caller-provided boolean or allowlist is never trusted. Missing context fails closed.
 
 Frida templates are versioned and parameter allowlisted. Arbitrary JavaScript, stealth, evasion, credential extraction, TLS bypass, and protection disabling are not exposed as capabilities.
+
+Correlation normalizes platform symbol prefixes and distinguishes static reconstruction from runtime confirmation. Nyra and Codex may explain signatures, pseudocode, callers, callees and observed counts, but the evidence contract prevents presenting an unobserved static inference as a runtime fact.
 
 ## Isolation and limits
 
@@ -46,6 +51,7 @@ Run:
 ```sh
 npm run test:software-horizontal
 npm run test:ghidra-worker
+npm run test:local-software-agent
 npm run benchmark:software
 ```
 

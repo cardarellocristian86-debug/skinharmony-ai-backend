@@ -196,6 +196,7 @@ export function createCoreHandlers(config, options = {}) {
     })),
     software_job_list: async (_args, identity) => textResult(await coreRequest("/v1/software-intelligence/jobs", identity.tenantId)),
     software_job_get: async (args, identity) => textResult(await coreRequest(`/v1/software-intelligence/jobs/${encodeURIComponent(args.job_id)}`, identity.tenantId)),
+    software_correlate: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/correlate", identity.tenantId, { method: "POST", body: { job_ids: args.job_ids, tenant_id: identity.tenantId } })),
     core_gate_action: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),

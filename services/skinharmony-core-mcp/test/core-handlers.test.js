@@ -73,6 +73,7 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   await handlers.software_job_submit({ mode: "lightweight_static", authorization: { asserted: true, basis: "owned", purpose: "testing" } }, identity);
   await handlers.software_job_list({}, identity);
   await handlers.software_job_get({ job_id: "usij_00000000-0000-4000-8000-000000000000" }, identity);
+  await handlers.software_correlate({ job_ids: ["usij_00000000-0000-4000-8000-000000000000", "usij_00000000-0000-4000-8000-000000000001"] }, identity);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
     "/v1/intelligence/workflow",
     "/v1/nira/core-bridge",
@@ -89,6 +90,7 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
     "/v1/software-intelligence/jobs",
     "/v1/software-intelligence/jobs",
     "/v1/software-intelligence/jobs/usij_00000000-0000-4000-8000-000000000000",
+    "/v1/software-intelligence/correlate",
   ]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert.equal("domain_pack" in JSON.parse(calls[0].init.body), false);
