@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createAgentPresence } from "./agent-presence.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
 const PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
-const CLIENT_TYPES = new Set(["chatgpt", "codex", "api_agent", "other"]);
 const AGENT_ACTIVE_WINDOW_MS = 5 * 60 * 1_000;
 
 function fail(code) {
@@ -51,22 +51,6 @@ function logicalPath(value, { folder = false } = {}) {
 
 function actor(identity) {
   return String(identity.subject || identity.kind || "unknown").slice(0, 200);
-}
-
-function normalizeClientType(value) {
-  const clientType = String(value || "").trim().toLowerCase();
-  if (!CLIENT_TYPES.has(clientType)) fail("client_type_invalid");
-  return clientType;
-}
-
-function sessionFingerprint(value) {
-  const sessionId = requiredText(value, "session_id", 240);
-  return crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 24);
-}
-
-function buildAgentSignature(identity, agentId, clientType, fingerprint) {
-  const material = [identity.tenantId, actor(identity), agentId, clientType, fingerprint].join("\u0000");
-  return `ags_${crypto.createHash("sha256").update(material).digest("hex").slice(0, 32)}`;
 }
 
 function publicAgent(agent) {
@@ -158,9 +142,10 @@ async function updateState(root, tenantId, mutate) {
 }
 
 function audit(state, identity, type, target, gate, result = {}) {
-  const agentId = result.agent?.id || result.task?.claimed_by || result.message?.from_agent_id || result.acknowledged_by || null;
-  const agentSignature = result.agent?.signature || result.task?.claimed_by_signature || result.message?.from_agent_signature || result.acknowledged_by_signature || null;
-  const clientType = result.agent?.client_type || result.message?.from_client_type || null;
+  const boundPresence = identity.agentPresence || {};
+  const agentId = result.agent?.id || result.task?.claimed_by || result.message?.from_agent_id || result.acknowledged_by || boundPresence.agent_id || null;
+  const agentSignature = result.agent?.signature || result.task?.claimed_by_signature || result.message?.from_agent_signature || result.acknowledged_by_signature || boundPresence.signature || null;
+  const clientType = result.agent?.client_type || result.message?.from_client_type || boundPresence.client_type || null;
   state.audit.push({
     id: crypto.randomUUID(),
     at: new Date().toISOString(),
@@ -369,10 +354,11 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     agent_heartbeat: async ({ agent_id, client_type, session_id, display_name = "", capabilities = [] }, identity) => {
-      const agentId = safeId(agent_id, "agent");
-      const clientType = normalizeClientType(client_type);
-      const fingerprint = sessionFingerprint(session_id);
-      const signature = buildAgentSignature(identity, agentId, clientType, fingerprint);
+      const presence = createAgentPresence(config, identity, { agent_id, client_type, session_id });
+      const agentId = presence.agent_id;
+      const clientType = presence.client_type;
+      const fingerprint = presence.session_fingerprint;
+      const signature = presence.signature;
       const displayName = optionalText(display_name, "display_name", 120) || agentId;
       const safeCapabilities = Array.isArray(capabilities) ? [...new Set(capabilities.map((value) => safeId(value, "capability")))].slice(0, 20) : fail("capabilities_invalid");
       return governed(identity, { action_type: "agent.heartbeat", action_label: `Register agent ${agentId}`, target: agentId }, async (state) => {
@@ -381,7 +367,9 @@ export function createCollaborationHandlers(config, options = {}) {
         if (!record) {
           record = {
             id: agentId,
+            opaque_agent_id: presence.opaque_agent_id,
             signature,
+            signature_version: presence.signature_version,
             client_type: clientType,
             session_fingerprint: fingerprint,
             display_name: displayName,
@@ -394,7 +382,9 @@ export function createCollaborationHandlers(config, options = {}) {
         } else {
           if (record.actor_subject !== actor(identity)) fail("agent_identity_conflict");
           if (record.session_fingerprint && record.signature !== signature) fail("agent_instance_conflict");
+          record.opaque_agent_id = presence.opaque_agent_id;
           record.signature = signature;
+          record.signature_version = presence.signature_version;
           record.client_type = clientType;
           record.session_fingerprint = fingerprint;
           record.display_name = displayName;
