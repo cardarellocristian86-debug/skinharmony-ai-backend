@@ -17,6 +17,10 @@ services:
         sync: false
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
+      - key: NYRA_DEEP_RUNTIME_ENABLED
+        value: "true"
+      - key: NYRA_DEEP_RUNTIME_MODE
+        value: active
     disk:
       name: universal-core-service-data
       mountPath: /var/data

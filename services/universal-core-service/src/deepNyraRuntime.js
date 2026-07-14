@@ -14,7 +14,7 @@ function clamp(value, min = 0, max = 1) {
 
 function runtimeMode(env = process.env) {
   if (String(env.NYRA_DEEP_RUNTIME_ENABLED || "true").toLowerCase() === "false") return "disabled";
-  const requested = String(env.NYRA_DEEP_RUNTIME_MODE || "shadow").trim().toLowerCase();
+  const requested = String(env.NYRA_DEEP_RUNTIME_MODE || "active").trim().toLowerCase();
   return VALID_MODES.has(requested) ? requested : "shadow";
 }
 

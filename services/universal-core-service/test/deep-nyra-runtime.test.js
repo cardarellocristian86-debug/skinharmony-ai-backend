@@ -18,7 +18,7 @@ const network = {
   parallel_analysis: { waves: [["context_intelligence", "risk_governance"], ["execution_planning"]] },
 };
 
-test("defaults to shadow mode and preserves Core authority", () => {
+test("defaults to active bounded mode after live shadow validation and preserves Core authority", () => {
   const result = buildDeepNyraRuntime({
     text: "Analizza le alternative e prepara il piano migliore",
     ownerVerified: true,
@@ -28,10 +28,10 @@ test("defaults to shadow mode and preserves Core authority", () => {
     memoryContext: { revision: 7, relevant_memories: [{ secret: "must-not-leak" }], pending_handoffs: [{}] },
     env: {},
   });
-  assert.equal(result.mode, "shadow");
+  assert.equal(result.mode, "active");
   assert.equal(result.execution_allowed, false);
   assert.equal(result.core_final_authority, true);
-  assert.equal(result.dialogue.preferred_reply, undefined);
+  assert.equal(Boolean(result.dialogue.preferred_reply), result.dialogue.validator.accepted);
   assert.equal(result.memory.revision, 7);
   assert.equal(result.memory.relevant_count, 1);
   assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
