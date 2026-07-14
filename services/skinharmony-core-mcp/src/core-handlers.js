@@ -23,6 +23,18 @@ function ownerBindingStatus(config, identity) {
   };
 }
 
+function applyVerifiedOwnerConfirmation(payload, identity) {
+  if (identity.godMode !== true) return payload;
+  return {
+    ...payload,
+    governance: {
+      ...(payload?.governance || {}),
+      owner_confirmation_satisfied: true,
+      owner_identity_verified: true,
+    },
+  };
+}
+
 export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
@@ -123,7 +135,7 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
-      return textResult(await coreRequest("/v1/work/preflight", identity.tenantId, {
+      const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
         method: "POST",
         body: {
           request: args.request,
@@ -140,7 +152,8 @@ export function createCoreHandlers(config, options = {}) {
           ...(sharedContext ? { memory_context: sharedContext } : {}),
           tenant_id: identity.tenantId,
         },
-      }));
+      });
+      return textResult(applyVerifiedOwnerConfirmation(payload, identity));
     },
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({

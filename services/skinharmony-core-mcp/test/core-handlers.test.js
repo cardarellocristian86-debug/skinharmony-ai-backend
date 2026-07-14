@@ -94,6 +94,44 @@ test("reports owner binding checks without exposing OAuth identifiers", async ()
   assert.equal(JSON.stringify(result).includes(clientId), false);
 });
 
+test("marks preflight owner confirmation satisfied only for a verified owner identity", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        governance: {
+          owner_confirmation_required: false,
+          owner_confirmation_satisfied: false,
+          execution_allowed_by_preflight: true,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const ownerResult = await handlers.work_preflight({ request: "read status" }, {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    godMode: true,
+    ownerConfirmed: true,
+  });
+  assert.equal(ownerResult.structuredContent.governance.owner_confirmation_satisfied, true);
+  assert.equal(ownerResult.structuredContent.governance.owner_identity_verified, true);
+  assert.equal(ownerResult.structuredContent.governance.execution_allowed_by_preflight, true);
+  assert.equal(calls[0].owner_confirmed, true);
+
+  const standardResult = await handlers.work_preflight({ request: "read status" }, {
+    kind: "oauth",
+    tenantId: "tenant-a",
+  });
+  assert.equal(standardResult.structuredContent.governance.owner_confirmation_satisfied, false);
+  assert.equal(standardResult.structuredContent.governance.owner_identity_verified, undefined);
+  assert.equal(calls[1].owner_confirmed, false);
+});
+
 test("maps the complete intelligence toolset to tenant-scoped Core routes", async () => {
   const calls = [];
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" } }, {
