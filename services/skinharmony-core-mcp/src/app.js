@@ -220,6 +220,13 @@ export function createApp(config, options = {}) {
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     } catch (error) {
+      if (["agent_presence_session_required", "agent_presence_conflict"].includes(error.code)) {
+        return res.status(error.code === "agent_presence_conflict" ? 409 : 400).json({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32602, message: error.code },
+        });
+      }
       if (typeof afterToolCall === "function" && method === "tools/call") {
         await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error });
       }
