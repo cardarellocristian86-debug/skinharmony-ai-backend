@@ -14,9 +14,34 @@ const ownerConfirmationProperties = {
   },
 };
 
+const agentPresenceProperties = {
+  agent_id: {
+    type: "string",
+    pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$",
+    description: "Logical id unique to this concurrent ChatGPT, Codex or API-agent session.",
+  },
+  client_type: {
+    type: "string",
+    enum: ["chatgpt", "codex", "api_agent", "other"],
+  },
+  session_id: {
+    type: "string",
+    pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$",
+    description: "Opaque random id unique to the current conversation or agent run; reuse it for every tool call in that run.",
+  },
+};
+
 function tool(name, title, description, inputSchema, scopes, readOnly = true, idempotent = true, options = {}) {
-  const schema = !readOnly && inputSchema?.type === "object"
-    ? { ...inputSchema, properties: { ...inputSchema.properties, ...ownerConfirmationProperties } }
+  const schema = inputSchema?.type === "object"
+    ? {
+        ...inputSchema,
+        properties: {
+          ...inputSchema.properties,
+          ...agentPresenceProperties,
+          ...(!readOnly ? ownerConfirmationProperties : {}),
+        },
+        required: [...new Set([...(inputSchema.required || []), "agent_id", "client_type", "session_id"])],
+      }
     : inputSchema;
   return {
     name,
