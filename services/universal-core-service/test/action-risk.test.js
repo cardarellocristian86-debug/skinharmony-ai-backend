@@ -31,6 +31,31 @@ test("hard-blocks secrets, cross-tenant access and unverified learning", () => {
   }
 });
 
+test("does not classify ordinary collaboration writes as unverified learning", () => {
+  const result = classifyActionRisk({
+    action_type: "task.create",
+    operation_class: "reversible_internal_collaboration_write",
+    external_side_effect: false,
+    contains_customer_data: false,
+    rollback_ready: true,
+    verified_outcome: false,
+  });
+  assert.equal(result.classification, "reversible_internal_write");
+  assert.equal(result.hard_block, false);
+  assert.equal(result.risk_band, "low");
+});
+
+test("still blocks an outcome write explicitly marked unverified", () => {
+  const result = classifyActionRisk({
+    action_type: "outcome_record",
+    operation_class: "outcome_record",
+    verified_outcome: false,
+  });
+  assert.equal(result.classification, "unverified_learning");
+  assert.equal(result.hard_block, true);
+  assert(result.reason_codes.includes("unverified_learning_denied"));
+});
+
 test("hard-blocks destructive changes without rollback", () => {
   const result = classifyActionRisk({ action_type: "delete_tenant_data", destructive: true, rollback_ready: false });
   assert.equal(result.classification, "destructive_without_rollback");
