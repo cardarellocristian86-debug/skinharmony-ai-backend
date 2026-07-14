@@ -103,6 +103,15 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
     fetchImpl: async (_url, init) => {
       calls.push(JSON.parse(init.body));
       return new Response(JSON.stringify({
+        ok: true,
+        work_preflight: {
+          preflight_id: "preflight-real-shape",
+          governance: {
+            owner_confirmation_required: false,
+            owner_confirmation_satisfied: false,
+            execution_allowed_by_preflight: false,
+          },
+        },
         governance: {
           owner_confirmation_required: false,
           owner_confirmation_satisfied: false,
@@ -121,6 +130,9 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
   assert.equal(ownerResult.structuredContent.governance.owner_confirmation_satisfied, true);
   assert.equal(ownerResult.structuredContent.governance.owner_identity_verified, true);
   assert.equal(ownerResult.structuredContent.governance.execution_allowed_by_preflight, true);
+  assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, true);
+  assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_identity_verified, true);
+  assert.equal(ownerResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
   assert.equal(calls[0].owner_confirmed, true);
 
   const standardResult = await handlers.work_preflight({ request: "read status" }, {
@@ -129,6 +141,9 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
   });
   assert.equal(standardResult.structuredContent.governance.owner_confirmation_satisfied, false);
   assert.equal(standardResult.structuredContent.governance.owner_identity_verified, undefined);
+  assert.equal(standardResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, false);
+  assert.equal(standardResult.structuredContent.work_preflight.governance.owner_identity_verified, undefined);
+  assert.equal(standardResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
   assert.equal(calls[1].owner_confirmed, false);
 });
 
