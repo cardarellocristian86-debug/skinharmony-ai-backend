@@ -8,6 +8,7 @@ import { runUniversalCore } from "../../../universal-core/packages/core/src/inde
 import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branches/flowcore/src/index.ts";
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
+import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
@@ -75,7 +76,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.9.1-research-risk-and-interpretation";
+const SERVICE_VERSION = "0.10.0-deep-nyra-cloud-runtime";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -4643,6 +4644,14 @@ export function createUniversalCoreService(options = {}) {
         branch_profiles: branchContext.branch_profiles,
       },
     });
+    const deepNyraRuntime = buildDeepNyraRuntime({
+      text: niraText,
+      ownerVerified,
+      godModeActive: result.god_mode_active,
+      selectedByCore: result.selected_by_core,
+      nyraNetwork,
+      memoryContext: memoryContext.value,
+    });
     const guardedResult = {
       ...result,
       selected_by_core: {
@@ -4668,6 +4677,7 @@ export function createUniversalCoreService(options = {}) {
       nyra_neural_network: nyraNetwork,
       memory_context: memoryContext.value,
       work_preflight: workPreflight,
+      deep_nyra_runtime: deepNyraRuntime,
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -4682,6 +4692,8 @@ export function createUniversalCoreService(options = {}) {
       nyra_opened_branches: nyraNetwork.opened_branches.map((item) => item.id),
       memory_revision: memoryContext.value?.revision || 0,
       preflight_id: workPreflight.preflight_id,
+      deep_runtime_mode: deepNyraRuntime.mode,
+      deep_runtime_hard_block: deepNyraRuntime.owner_protection?.hard_block === true,
     });
     res.json({
       ok: true,
