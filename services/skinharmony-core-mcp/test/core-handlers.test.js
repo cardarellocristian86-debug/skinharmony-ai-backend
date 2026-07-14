@@ -17,7 +17,7 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   });
   const identity = { tenantId: "tenant-a" };
   await handlers.core_health({}, identity);
-  await handlers.work_preflight({ request: "publish GitHub PR", domain_pack: "analyzer", available_capabilities: ["github_connected_app"] }, identity);
+  await handlers.work_preflight({ request: "publish GitHub PR", agent_id: "codex-test", client_type: "codex", session_id: "session-core-one", domain_pack: "analyzer", available_capabilities: ["github_connected_app"] }, identity);
   await handlers.nyra_runtime_context({ include_control_snapshot: true, domain_pack: "analyzer" }, identity);
   await handlers.nyra_branch_catalog({}, identity);
   await handlers.research_plan({ question: "ricerca fonti", allowed_domains: ["example.org"], domain_pack: "analyzer" }, identity);
@@ -121,7 +121,7 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
     },
   });
 
-  const ownerResult = await handlers.work_preflight({ request: "read status" }, {
+  const ownerResult = await handlers.work_preflight({ request: "read status", agent_id: "chatgpt-test", client_type: "chatgpt", session_id: "session-owner-status" }, {
     kind: "oauth",
     tenantId: "tenant-a",
     godMode: true,
@@ -135,7 +135,7 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
   assert.equal(ownerResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
   assert.equal(calls[0].owner_confirmed, true);
 
-  const standardResult = await handlers.work_preflight({ request: "read status" }, {
+  const standardResult = await handlers.work_preflight({ request: "read status", agent_id: "chatgpt-test", client_type: "chatgpt", session_id: "session-owner-status" }, {
     kind: "oauth",
     tenantId: "tenant-a",
   });
@@ -213,7 +213,7 @@ test("adds automatic shared-memory bootstrap to a generic first work_preflight c
       }),
     },
   });
-  const result = await handlers.work_preflight({ request: "Dimmi lo stato corrente" }, { tenantId: "codexai" });
+  const result = await handlers.work_preflight({ request: "Dimmi lo stato corrente", agent_id: "codex-bootstrap", client_type: "codex", session_id: "session-bootstrap" }, { tenantId: "codexai" });
   assert.equal(result.structuredContent.shared_memory_bootstrap.loaded, true);
   assert.equal(result.structuredContent.shared_memory_bootstrap.tenant_id, "codexai");
   assert.equal(result.structuredContent.work_preflight.shared_memory_bootstrap.loaded, true);
