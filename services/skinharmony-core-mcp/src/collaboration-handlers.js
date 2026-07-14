@@ -409,7 +409,7 @@ export function createCollaborationHandlers(config, options = {}) {
       return governed(identity, { action_type: "message.post", action_label: `Post agent message from ${fromAgentId} to ${toAgentId}`, target: toAgentId }, async (state) => {
         const sender = requireOwnedAgent(state, fromAgentId, identity);
         const recipient = toAgentId === "all" ? null : state.agents.find((agent) => agent.id === toAgentId);
-        if (toAgentId !== "all" && !recipient) fail("message_recipient_not_found");
+        if (toAgentId !== "all" && !recipient) fail("recipient_not_registered");
         if (recipient && (!recipient.session_fingerprint || String(recipient.signature || "").startsWith("ags_legacy_"))) fail("message_recipient_reregistration_required");
         const existing = key && state.messages.find((message) => message.idempotency_key === key && message.from_agent_id === fromAgentId);
         if (existing) return { message: existing, created: false, idempotent_replay: true };

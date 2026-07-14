@@ -122,7 +122,7 @@ test("messages fail explicitly until the recipient registers a signed presence",
   await register(handlers, "sender", identity, { session_id: "sender-session" });
   await assert.rejects(
     handlers.message_post({ from_agent_id: "sender", to_agent_id: "missing-recipient", body: "hello" }, identity),
-    /message_recipient_not_found/
+    /recipient_not_registered/
   );
   await register(handlers, "missing-recipient", identity, { client_type: "api_agent", session_id: "recipient-session" });
   const delivered = payload(await handlers.message_post({ from_agent_id: "sender", to_agent_id: "missing-recipient", body: "hello" }, identity));
