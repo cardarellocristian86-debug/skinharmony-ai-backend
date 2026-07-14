@@ -188,7 +188,7 @@ export function createApp(config, options = {}) {
           throw presenceError;
         }
         const previousPresence = sessionPresences.get(presenceKey);
-        const sessionId = normalizeTransportSession(rawArgs.session_id) || previousPresence?.session_id || presenceKey;
+        const sessionId = previousPresence?.session_id || transportSessionId || normalizeTransportSession(rawArgs.session_id) || presenceKey;
         const requestedAgentId = rawArgs.agent_id || rawArgs.from_agent_id || previousPresence?.agent_id ||
           `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${presenceKey}`).digest("hex").slice(0, 20)}`;
         const presenceInput = {
