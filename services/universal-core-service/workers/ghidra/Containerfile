@@ -1,4 +1,5 @@
 ARG BUILDER_IMAGE
+ARG RUNTIME_IMAGE
 FROM ${BUILDER_IMAGE} AS fetch
 ARG GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1_build/ghidra_12.1_PUBLIC_20260513.zip
 ARG GHIDRA_SHA256=aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302
@@ -12,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rmdir /opt/ghidra/ghidra_* \
     && rm /tmp/ghidra.zip
 
-ARG RUNTIME_IMAGE
 FROM ${RUNTIME_IMAGE}
 ARG GHIDRA_SHA256=aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302
 LABEL org.opencontainers.image.title="Universal Software Intelligence Ghidra Worker" \

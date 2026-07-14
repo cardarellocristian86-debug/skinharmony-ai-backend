@@ -30,7 +30,7 @@ export function buildContainerArguments(args, cwd, options = {}) {
   if (value(args, "--network") !== "none") throw new Error("ghidra_worker_network_denied");
   const cpu = bounded(value(args, "--cpu-seconds"), 1, 120); const memory = bounded(value(args, "--memory-megabytes"), 64, 2048);
   const wall = bounded(value(args, "--wall-time-seconds"), 1, 300); const outputBytes = bounded(value(args, "--output-bytes"), 1024, 8388608);
-  return ["run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "256", "--memory", `${memory}m`, "--cpus", "1.0", "--ulimit", `cpu=${cpu}:${cpu}`, "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m", "--mount", `type=bind,src=${cwd},dst=/work,rw`, image, "--input", `/work/${path.basename(input)}`, "--output", `/work/${path.basename(output)}`, "--wall-time-seconds", String(wall), "--output-bytes", String(outputBytes)];
+  return ["run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "256", "--memory", `${memory}m`, "--cpus", "1.0", "--ulimit", `cpu=${cpu}:${cpu}`, "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m", "--mount", `type=bind,src=${cwd},dst=/work`, image, "--input", `/work/${path.basename(input)}`, "--output", `/work/${path.basename(output)}`, "--wall-time-seconds", String(wall), "--output-bytes", String(outputBytes)];
 }
 
 export async function main(argv = process.argv.slice(2)) {

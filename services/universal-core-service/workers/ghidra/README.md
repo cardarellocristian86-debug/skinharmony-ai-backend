@@ -10,9 +10,11 @@ Build requires a running Docker or Podman daemon:
 
 ```sh
 export BUILDER_IMAGE='eclipse-temurin:21-jdk@sha256:<verified-digest>'
-export RUNTIME_IMAGE='eclipse-temurin:21-jre@sha256:<verified-digest>'
+export RUNTIME_IMAGE='eclipse-temurin:21-jdk@sha256:<verified-digest>'
 export GHIDRA_WORKER_IMAGE='usi-ghidra:12.1-20260513'
 ./build-image.sh
 ```
 
 After building, push to an approved registry if required and configure the runtime by immutable image digest, never by `latest`.
+
+Ghidra headless requires a full supported JDK at runtime; a JRE-only base is intentionally rejected by the live validation path.

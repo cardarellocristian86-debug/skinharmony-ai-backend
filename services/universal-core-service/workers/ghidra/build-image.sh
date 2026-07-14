@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 : "${BUILDER_IMAGE:?Set a digest-pinned JDK 21 builder image}"
-: "${RUNTIME_IMAGE:?Set a digest-pinned JRE 21 runtime image}"
+: "${RUNTIME_IMAGE:?Set a digest-pinned JDK 21 runtime image}"
 : "${GHIDRA_WORKER_IMAGE:?Set the output image name without latest tag}"
 case "$BUILDER_IMAGE" in *@sha256:*) ;; *) echo "builder_image_digest_required" >&2; exit 64 ;; esac
 case "$RUNTIME_IMAGE" in *@sha256:*) ;; *) echo "runtime_image_digest_required" >&2; exit 64 ;; esac
