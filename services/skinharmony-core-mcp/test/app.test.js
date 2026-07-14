@@ -10,6 +10,7 @@ const config = {
   jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
   codexKeys: ["codex-key"],
   codexScopes: ["core:read", "core:govern"],
+  defaultTenantId: "owner-private",
   supportedScopes: ["core:read", "core:govern"]
 };
 
