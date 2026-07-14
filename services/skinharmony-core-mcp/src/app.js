@@ -2,7 +2,7 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.8.1-shared-memory-bootstrap";
+const SERVER_VERSION = "0.8.2-enforced-agent-memory";
 const SERVER_INSTRUCTIONS = "Always call work_preflight first. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function resolveWorkPreflight(result, payload) {
