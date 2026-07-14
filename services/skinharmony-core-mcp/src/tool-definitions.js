@@ -244,6 +244,14 @@ export const TOOLS = [
   tool("memory_handoff_acknowledge", "Acknowledge tenant AI handoff", "Acknowledge a handoff addressed to this AI inside the authenticated tenant.", object({ handoff_id: { type: "string", pattern: "^mem_[a-f0-9-]{36}$" }, agent_id: identifier }, ["handoff_id", "agent_id"]), ["core:govern"], false, true),
   tool("search", "Search tenant knowledge", "Use this when ChatGPT, Codex, company knowledge or deep research needs validated tenant documents and research evidence.", object({ query: text(500) }, ["query"]), ["core:read"], true, true, { outputSchema: searchOutputSchema }),
   tool("fetch", "Fetch tenant knowledge document", "Use this after search to read one tenant-scoped document or validated research source with a canonical citation URL.", object({ id: { type: "string", pattern: "^[a-f0-9]{24}$" } }, ["id"]), ["core:read"], true, true, { outputSchema: fetchOutputSchema }),
+  tool("memory_cloud_status", "Check persistent cloud memory", "Read the authenticated tenant's persistent memory backend, document count and last update.", object(), ["core:read"]),
+  tool("memory_document_upsert", "Synchronize a redacted work document", "Create or update one tenant-scoped work document in persistent cloud memory. The server redacts secrets again and verifies the optional SHA-256 checksum.", object({
+    source_path: { type: "string", minLength: 1, maxLength: 500, pattern: "^(?!.*\\.\\.)[^\\u0000]+$" },
+    title: { type: "string", minLength: 1, maxLength: 240 },
+    text: { type: "string", minLength: 1, maxLength: 900000 },
+    content_sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    metadata: { type: "object", additionalProperties: { type: ["string", "number", "boolean", "null"] } },
+  }, ["source_path", "title", "text"]), ["core:govern"], false, true),
 
   tool("workspace_list", "List shared workspace", "List folders and document metadata inside the authenticated tenant workspace.", object({ prefix: { type: "string", maxLength: 240 } }), ["core:read"]),
   tool("workspace_create_folder", "Create shared folder", "Create a tenant-scoped logical folder after Core governance.", object({ path: text(240) }, ["path"]), ["core:govern"], false, true),

@@ -81,6 +81,12 @@ export function createApp(config, options = {}) {
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
+    cloud_memory: {
+      configured: Boolean(config.databaseUrl),
+      backend: config.databaseUrl ? "postgres" : "filesystem",
+      persistent: Boolean(config.databaseUrl),
+      tenant_isolated: true,
+    },
     agent_workspace_configured: Boolean(config.agentWorkspaceRoot),
     memory_fabric_configured: Boolean(config.memoryFabricRoot),
     research_cortex_configured: Boolean(config.researchCortexRoot),

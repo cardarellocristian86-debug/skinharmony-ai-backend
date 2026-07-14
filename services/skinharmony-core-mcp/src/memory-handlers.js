@@ -21,6 +21,7 @@ function content(payload) {
 
 export function createMemoryHandlers(config, options = {}) {
   const research = options.researchCortex;
+  const cloud = options.cloudMemoryStore;
   return {
     search: async ({ query }, identity) => {
       const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean).slice(0, 12);
@@ -33,11 +34,12 @@ export function createMemoryHandlers(config, options = {}) {
         title: record.title,
         url: ""
       }));
+      const cloudResults = cloud ? await cloud.search(identity.tenantId, query, 20) : [];
       const researchResults = research?.searchDocuments
         ? research.searchDocuments(query, identity, 20)
         : [];
       const seen = new Set();
-      const results = [...researchResults, ...memoryResults].filter((result) => {
+      const results = [...cloudResults, ...researchResults, ...memoryResults].filter((result) => {
         if (seen.has(result.id)) return false;
         seen.add(result.id);
         return true;
@@ -46,12 +48,20 @@ export function createMemoryHandlers(config, options = {}) {
     },
     fetch: async ({ id }, identity) => {
       if (!/^[a-f0-9]{24}$/.test(String(id || ""))) throw new Error("memory_id_invalid");
+      const cloudRecord = cloud ? await cloud.fetch(identity.tenantId, id) : null;
+      if (cloudRecord) return content({ id: cloudRecord.id, title: cloudRecord.title, text: cloudRecord.content.slice(0, 100_000), url: "", metadata: { source_path: cloudRecord.source_path, tenant_id: identity.tenantId, redacted: "true", content_sha256: cloudRecord.content_sha256, storage: "postgres" } });
       const record = records(config, identity.tenantId).find((item) => item.id === id);
       if (record) return content({ id: record.id, title: record.title, text: record.text.slice(0, 100_000), url: "", metadata: { source_path: record.source_path, tenant_id: identity.tenantId, redacted: "true" } });
       const researchDocument = research?.fetchDocument ? research.fetchDocument(id, identity) : null;
       if (!researchDocument) throw new Error("memory_document_not_found");
       return content(researchDocument);
-    }
+    },
+    ...(cloud ? {
+      memory_document_upsert: async (args, identity) => content(await cloud.upsert(identity.tenantId, args)),
+    } : {}),
+    memory_cloud_status: async (_args, identity) => content(cloud
+      ? await cloud.status(identity.tenantId)
+      : { backend: "filesystem", persistent: false, document_count: records(config, identity.tenantId).length }),
   };
 }
 

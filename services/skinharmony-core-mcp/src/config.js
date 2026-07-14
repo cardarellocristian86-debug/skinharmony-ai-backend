@@ -49,6 +49,7 @@ export function loadConfig(env = process.env) {
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
+  const databaseUrl = String(env.DATABASE_URL || "").trim();
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
@@ -78,6 +79,10 @@ export function loadConfig(env = process.env) {
     defaultTenantId,
     tenantClaim,
     sharedMemoryRoot,
+    databaseUrl,
+    databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
+    databasePoolMax: integer(env.DATABASE_POOL_MAX, 5, 1, 20),
+    cloudMemoryMaxDocumentBytes: integer(env.CLOUD_MEMORY_MAX_DOCUMENT_BYTES, 250_000, 1_000, 900_000),
     agentWorkspaceRoot,
     memoryFabricRoot,
     researchCortexRoot,

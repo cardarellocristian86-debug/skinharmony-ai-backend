@@ -4,9 +4,11 @@ import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
+import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 
 const config = loadConfig();
+const cloudMemoryStore = createCloudMemoryStore(config);
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
 const collaborationHandlers = config.agentWorkspaceRoot
@@ -45,7 +47,7 @@ function summarizeToolRequest(toolName, args = {}) {
 const app = createApp(config, {
   handlers: {
     ...coreHandlers,
-    ...createMemoryHandlers(config, { researchCortex }),
+    ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
     ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
     ...collaborationHandlers,
