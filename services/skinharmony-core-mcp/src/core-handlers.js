@@ -1,4 +1,5 @@
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
+import { createAgentPresence } from "./agent-presence.js";
 
 function textResult(payload) {
   return {
@@ -142,6 +143,7 @@ export function createCoreHandlers(config, options = {}) {
       mcp_identity: ownerBindingStatus(config, identity),
     }),
     work_preflight: async (args, identity) => {
+      const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);
       const bootstrap = sharedMemoryBootstrap
         ? await sharedMemoryBootstrap.load(identity)
         : { loaded: false, tenant_id: identity.tenantId, missing_files: [], reason: "shared_memory_bootstrap_unavailable" };
@@ -166,10 +168,11 @@ export function createCoreHandlers(config, options = {}) {
             ? { confirmation_reference: args.confirmation_reference || identity.confirmationReference }
             : {}),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
+          agent_presence: agentPresence,
           tenant_id: identity.tenantId,
         },
       });
-      return textResult(attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap));
+      return textResult({ ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence });
     },
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({
