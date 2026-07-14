@@ -85,3 +85,33 @@ test("keeps incomplete, configuration-changing and cross-tenant deploys closed",
     assert.equal(buildActionAuthorization(contract(), unsafe).allowed, false);
   }
 });
+
+const deepSoftware = {
+  action_type: "software_analysis",
+  operation_class: "governed_deep_software_analysis",
+  external_side_effect: false,
+  contains_customer_data: false,
+  cross_tenant: false,
+  sandbox_ready: true,
+  audit_ready: true,
+  authorization_basis: "owned",
+  allowed_modes: ["ghidra_headless"],
+};
+
+test("authorizes only owner-confirmed low-risk deep software analysis", () => {
+  assert.equal(buildActionAuthorization(contract({ control_level: "suggest" }), deepSoftware).allowed, false);
+  const allowed = buildActionAuthorization(contract({ control_level: "suggest" }), { ...deepSoftware, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "governed_deep_software_analysis");
+  assert.equal(allowed.confirmation_satisfied, true);
+});
+
+test("deep software analysis fails closed without sandbox, audit, basis or dynamic allowlist", () => {
+  for (const unsafe of [
+    { ...deepSoftware, owner_confirmed: true, sandbox_ready: false },
+    { ...deepSoftware, owner_confirmed: true, audit_ready: false },
+    { ...deepSoftware, owner_confirmed: true, authorization_basis: "unknown" },
+    { ...deepSoftware, owner_confirmed: true, allowed_modes: ["frida_local_agent"], target_allowlist: [] },
+    { ...deepSoftware, owner_confirmed: true, cross_tenant: true },
+  ]) assert.equal(buildActionAuthorization(contract({ control_level: "suggest" }), unsafe).allowed, false);
+});

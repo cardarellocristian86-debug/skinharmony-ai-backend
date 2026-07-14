@@ -66,6 +66,11 @@ import {
   MAX_EMBEDDED_ARTIFACT_BYTES,
 } from "./embeddedSoftwareIntelligence.js";
 import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
+import {
+  createUniversalSoftwareJobManager,
+  issueSoftwareAuthorizationEnvelope,
+  universalSoftwareComponentManifest,
+} from "./universalSoftwareIntelligence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -1082,7 +1087,11 @@ function buildConnectorSdkManifest() {
       intelligence_outcome_record: "/v1/intelligence/outcomes/record",
       intelligence_calibration: "/v1/intelligence/calibration",
       software_intelligence_components: "/v1/software-intelligence/components",
+      software_intelligence_authorize: "/v1/software-intelligence/authorize",
       software_intelligence_analyze: "/v1/software-intelligence/analyze",
+      software_intelligence_jobs_submit: "/v1/software-intelligence/jobs",
+      software_intelligence_jobs_list: "/v1/software-intelligence/jobs",
+      software_intelligence_job_get: "/v1/software-intelligence/jobs/:jobId",
     },
   };
 }
@@ -3166,6 +3175,7 @@ export function createUniversalCoreService(options = {}) {
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
+  const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
   const app = express();
 
   app.disable("x-powered-by");
@@ -4727,10 +4737,75 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       branch: "software_binary_intelligence",
       maximum_artifact_bytes: MAX_EMBEDDED_ARTIFACT_BYTES,
-      manifest: embeddedComponentManifest(),
+      manifest: universalSoftwareComponentManifest({ configuredWorkers: Object.keys(options.softwareWorkerAdapters || {}) }),
       authorization_required: true,
       execution_supported: false,
     });
+  });
+
+  app.post("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) return publicError(res, 403, "branch_not_allowed");
+    try {
+      const verifiedGovernance = typeof options.softwareAuthorizationVerifier === "function"
+        ? options.softwareAuthorizationVerifier({ tenant_id: req.tenantId, request: req.body, key: req.coreKey })
+        : null;
+      const job = softwareJobs.submit(req.body || {}, {
+        tenant_id: req.tenantId,
+        requested_tenant_id: req.body?.tenant_id,
+        memory_available: options.memoryAvailable !== false,
+        core_available: options.coreAvailable !== false,
+        core_authorized: verifiedGovernance?.authorized === true,
+        target_allowlist: verifiedGovernance?.target_allowlist || [],
+      });
+      audit.append("core_software_job_submitted", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        job_id: job.job_id,
+        mode: job.mode,
+        raw_artifact_persisted: false,
+      });
+      return res.status(202).json({ ok: true, job });
+    } catch (error) {
+      const code = String(error?.message || "software_job_rejected");
+      const status = code === "software_artifact_too_large" ? 413 : 400;
+      return publicError(res, status, code);
+    }
+  });
+
+  app.post("/v1/software-intelligence/authorize", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    if (!options.softwareAuthorizationSecret) return publicError(res, 503, "software_authorization_issuer_unavailable");
+    if (!req.body?.memory_context || typeof req.body.memory_context !== "object") return publicError(res, 400, "software_memory_required");
+    const memoryContext = normalizeTenantMemoryContext(req.body.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const input = buildActionEvaluatorInput(req, req.coreKey);
+    const output = runUniversalCore(input);
+    const decisionContract = normalizeDecisionContract(output, { action_type: "software_analysis", publish_intent: false });
+    const authorization = buildActionAuthorization(decisionContract, { ...req.body, action_type: "software_analysis", operation_class: "governed_deep_software_analysis" });
+    if (!authorization.allowed) return res.status(403).json({ ok: false, error: authorization.state, authorization, decision_contract: decisionContract });
+    try {
+      const coreGovernance = issueSoftwareAuthorizationEnvelope({ secret: options.softwareAuthorizationSecret, tenantId: req.tenantId, allowedModes: req.body.allowed_modes, targetAllowlist: req.body.target_allowlist || [] });
+      audit.append("core_software_authorization_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, modes: req.body.allowed_modes, target_count: req.body.target_allowlist?.length || 0 });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, authorization, core_governance: coreGovernance });
+    } catch (error) { return publicError(res, 400, error.message || "software_authorization_failed"); }
+  });
+
+  app.get("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, tenant_id: req.tenantId, jobs: softwareJobs.list(req.tenantId) });
+  });
+
+  app.get("/v1/software-intelligence/jobs/:jobId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const job = softwareJobs.get(req.params.jobId, req.tenantId);
+    if (!job) return publicError(res, 404, "software_job_not_found");
+    return res.json({ ok: true, job });
+  });
+
+  app.post("/v1/software-intelligence/correlate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const correlation = softwareJobs.correlate(req.body?.job_ids, req.tenantId);
+      audit.append("core_software_evidence_correlated", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, source_job_ids: correlation.source_job_ids, raw_content_persisted: false });
+      return res.json({ ok: true, correlation });
+    } catch (error) { return publicError(res, 400, error.message || "software_correlation_failed"); }
   });
 
   app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -4952,4 +5027,3 @@ export function createUniversalCoreService(options = {}) {
 
   return { app, storageRoot };
 }
-

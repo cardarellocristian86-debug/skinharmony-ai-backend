@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-export const EMBEDDED_SOFTWARE_INTELLIGENCE_VERSION = "embedded_software_intelligence_v1";
+export const EMBEDDED_SOFTWARE_INTELLIGENCE_VERSION = "universal_software_evidence_v1";
 // Base64 adds roughly 33%; 6 MiB stays below the service's default 10 MiB JSON limit.
 export const MAX_EMBEDDED_ARTIFACT_BYTES = 6 * 1024 * 1024;
 
@@ -255,7 +255,7 @@ export function embeddedComponentManifest() {
     desktop_application_required: false,
     components: [
       {
-        id: "skinharmony_binary_evidence_core",
+        id: "universal_binary_evidence_core",
         status: "embedded_active",
         implementation: "native_node",
         capabilities: ["elf_header", "pe_header", "macho_header", "sha256", "entropy", "redacted_strings"],

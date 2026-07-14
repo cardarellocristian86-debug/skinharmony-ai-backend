@@ -36,13 +36,22 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     body.external_side_effect === false &&
     body.contains_customer_data === false &&
     body.rollback_ready === true;
+  const allowedSoftwareModes = Array.isArray(body.allowed_modes) && body.allowed_modes.length > 0 &&
+    body.allowed_modes.every((mode) => ["ghidra_headless", "frida_local_agent"].includes(mode));
+  const deepSoftwareAnalysis =
+    body.operation_class === "governed_deep_software_analysis" &&
+    String(body.action_type || "").toLowerCase() === "software_analysis" &&
+    body.external_side_effect === false && body.contains_customer_data === false && body.cross_tenant === false &&
+    body.sandbox_ready === true && body.audit_ready === true && ownerConfirmed && allowedSoftwareModes &&
+    ["owned", "written_permission", "open_source"].includes(String(body.authorization_basis || "").toLowerCase()) &&
+    (!body.allowed_modes.includes("frida_local_agent") || (Array.isArray(body.target_allowlist) && body.target_allowlist.length > 0));
   const confirmationRequired = tenantScopedRead || sandboxedScopedWork
     ? false
-    : decisionContract.control_level === "confirm" || reversibleDeploy;
+    : decisionContract.control_level === "confirm" || reversibleDeploy || deepSoftwareAnalysis;
   const confirmationSatisfied = confirmationRequired && ownerConfirmed;
   const hardBlocked = decisionContract.state === "blocked" ||
     decisionContract.recommended_actions?.some?.((action) => action.blocked === true) === true;
-  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy;
+  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || deepSoftwareAnalysis;
   const riskAllowed = reversibleDeploy
     ? ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""))
     : decisionContract.risk_band === "low";
@@ -74,8 +83,9 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
           ? "reversible_internal_collaboration_write"
           : reversibleDeploy
             ? "reversible_owner_confirmed_deploy"
-            : "evaluation_only",
+            : deepSoftwareAnalysis
+              ? "governed_deep_software_analysis"
+              : "evaluation_only",
     target_commit: reversibleDeploy ? String(body.target_commit).toLowerCase() : null,
   };
 }
-

@@ -236,6 +236,33 @@ export const TOOLS = [
     allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
     search_context_size: { type: "string", enum: ["low", "medium", "high"] },
   }, ["query"]), ["core:govern"], false, false, { openWorld: true }),
+  tool("software_components", "Read software intelligence components", "Read the universal lightweight analyzer, optional worker state, evidence schema, versioned dynamic templates and supply-chain boundaries.", object(), ["core:read"]),
+  tool("software_authorize", "Authorize deep software analysis", "Ask Universal Core to issue a short-lived tenant- and mode-scoped authorization envelope after owner confirmation, memory recall, sandbox readiness and artifact authority checks.", object({
+    owner_confirmed: { const: true }, external_side_effect: { const: false }, contains_customer_data: { const: false }, cross_tenant: { const: false }, sandbox_ready: { const: true }, audit_ready: { const: true },
+    authorization_basis: { type: "string", enum: ["owned", "written_permission", "open_source"] },
+    allowed_modes: { type: "array", minItems: 1, maxItems: 2, items: { type: "string", enum: ["ghidra_headless", "frida_local_agent"] } },
+    target_allowlist: { type: "array", maxItems: 100, items: { type: "string", maxLength: 240 } },
+    memory_context: { type: "object", additionalProperties: true }
+  }, ["owner_confirmed", "external_side_effect", "contains_customer_data", "cross_tenant", "sandbox_ready", "audit_ready", "authorization_basis", "allowed_modes", "memory_context"]), ["core:govern"], false, true),
+  tool("software_job_submit", "Submit a governed software intelligence job", "Submit one tenant-scoped software analysis job. Deep Ghidra or Frida modes remain fail-closed without Core authorization, owner confirmation and target allowlisting; arbitrary Frida source is not accepted.", { type: "object", required: ["mode", "authorization"], properties: {
+    mode: { type: "string", enum: ["lightweight_static", "ghidra_headless", "frida_local_agent"] },
+    artifact: { type: "object", properties: { name: { type: "string", maxLength: 240 }, content_base64: { type: "string", maxLength: 8388608 } }, additionalProperties: false },
+    authorization: { type: "object", required: ["asserted", "basis", "purpose"], properties: { asserted: { const: true }, basis: { type: "string", enum: ["owned", "written_permission", "open_source"] }, purpose: { type: "string", enum: ["compatibility", "customization", "debugging", "interoperability", "maintenance", "security_review", "testing"] }, owner_confirmed: { type: "boolean" }, artifact_owner: identifier }, additionalProperties: false },
+    target: { type: "string", maxLength: 240 }, template_id: identifier,
+    template_parameters: { type: "object", additionalProperties: { anyOf: [{ type: "string", maxLength: 240 }, { type: "integer" }, { type: "boolean" }] } },
+    limits: { type: "object", properties: { cpu_seconds: { type: "integer", minimum: 1, maximum: 120 }, memory_megabytes: { type: "integer", minimum: 64, maximum: 2048 }, wall_time_seconds: { type: "integer", minimum: 1, maximum: 300 }, artifact_bytes: { type: "integer", minimum: 1, maximum: 6291456 }, output_bytes: { type: "integer", minimum: 1024, maximum: 8388608 } }, additionalProperties: false },
+    core_governance: { type: "object", properties: {
+      authorization_envelope: { type: "object", required: ["schema_version", "tenant_id", "issued_by", "authorized", "owner_confirmed", "allowed_modes", "issued_at", "expires_at"], properties: {
+        schema_version: { const: "universal_software_authorization_v1" }, tenant_id: identifier, issued_by: { const: "universal_core" }, authorized: { const: true }, owner_confirmed: { const: true },
+        allowed_modes: { type: "array", minItems: 1, maxItems: 3, items: { type: "string", enum: ["ghidra_headless", "frida_local_agent"] } },
+        target_allowlist: { type: "array", maxItems: 100, items: { type: "string", maxLength: 240 } }, issued_at: { type: "string", format: "date-time" }, expires_at: { type: "string", format: "date-time" }
+      }, additionalProperties: false },
+      signature: { type: "string", pattern: "^[a-fA-F0-9]{64}$" }
+    }, required: ["authorization_envelope", "signature"], additionalProperties: false }
+  }, additionalProperties: false }, ["core:govern"], false, true),
+  tool("software_job_list", "List software intelligence jobs", "List only the authenticated tenant's redacted software-analysis job records.", object(), ["core:read"]),
+  tool("software_job_get", "Read a software intelligence job", "Read one redacted software-analysis job belonging to the authenticated tenant.", object({ job_id: { type: "string", pattern: "^usij_[a-f0-9-]{36}$" } }, ["job_id"]), ["core:read"]),
+  tool("software_correlate", "Correlate static and runtime evidence", "Correlate one completed Ghidra job with one completed Frida job for the authenticated tenant, marking reconstructed functions as static-only or runtime-confirmed for Nyra and Codex interpretation.", object({ job_ids: { type: "array", minItems: 2, maxItems: 2, items: { type: "string", pattern: "^usij_[a-f0-9-]{36}$" } } }, ["job_ids"]), ["core:read"]),
   tool("memory_context", "Read tenant AI context", "Read the authenticated tenant's current checkpoint, relevant memories, pending handoffs and recent redacted activity.", object({ ...memoryScopeProperties, activity_limit: { type: "integer", minimum: 1, maximum: 50 } }), ["core:read"]),
   tool("memory_search", "Search tenant AI memory", "Search durable, redacted memory belonging only to the authenticated tenant.", object(memoryScopeProperties), ["core:read"]),
   tool("memory_append", "Append tenant AI memory", "Store an explicit durable memory after Core governance, consent checks and secret redaction.", object({ kind: memoryKind, ...memoryProperties }, ["title", "summary"]), ["core:govern"], false, true),

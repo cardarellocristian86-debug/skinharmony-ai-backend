@@ -223,6 +223,15 @@ export function createCoreHandlers(config, options = {}) {
     outcome_verify: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/verify", args, identity),
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
+    software_components: async (_args, identity) => textResult(await coreRequest("/v1/software-intelligence/components", identity.tenantId)),
+    software_authorize: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/authorize", identity.tenantId, { method: "POST", body: { ...args, tenant_id: identity.tenantId } })),
+    software_job_submit: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/jobs", identity.tenantId, {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    software_job_list: async (_args, identity) => textResult(await coreRequest("/v1/software-intelligence/jobs", identity.tenantId)),
+    software_job_get: async (args, identity) => textResult(await coreRequest(`/v1/software-intelligence/jobs/${encodeURIComponent(args.job_id)}`, identity.tenantId)),
+    software_correlate: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/correlate", identity.tenantId, { method: "POST", body: { job_ids: args.job_ids, tenant_id: identity.tenantId } })),
     core_gate_action: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
