@@ -5,6 +5,36 @@ function textResult(payload) {
   };
 }
 
+function ownerBindingStatus(config, identity) {
+  const tenantIds = config.godModeTenantIds || [config.godModeTenantId].filter(Boolean);
+  return {
+    kind: identity.kind || "unknown",
+    role: identity.role || "standard",
+    god_mode: identity.godMode === true,
+    owner_confirmation_satisfied: identity.godMode === true,
+    binding_checks: {
+      enabled: config.godModeEnabled === true,
+      emergency_stop: config.godModeEmergencyStop === true,
+      tenant_allowed: tenantIds.includes(identity.tenantId),
+      subject_allowed: (config.godModeSubjects || []).includes(identity.subject),
+      client_allowed: (config.godModeClientIds || []).includes(identity.clientId),
+      codex_delegate_allowed: identity.kind === "codex" && config.godModeCodexEnabled === true,
+    },
+  };
+}
+
+function applyVerifiedOwnerConfirmation(payload, identity) {
+  if (identity.godMode !== true) return payload;
+  return {
+    ...payload,
+    governance: {
+      ...(payload?.governance || {}),
+      owner_confirmation_satisfied: true,
+      owner_identity_verified: true,
+    },
+  };
+}
+
 export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
@@ -93,7 +123,11 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   return {
-    core_health: async (_args, identity) => textResult({ ...(await coreRequest("/healthz", identity.tenantId)), tenant_id: identity.tenantId }),
+    core_health: async (_args, identity) => textResult({
+      ...(await coreRequest("/healthz", identity.tenantId)),
+      tenant_id: identity.tenantId,
+      mcp_identity: ownerBindingStatus(config, identity),
+    }),
     work_preflight: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: args.request,
@@ -101,7 +135,7 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
-      return textResult(await coreRequest("/v1/work/preflight", identity.tenantId, {
+      const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
         method: "POST",
         body: {
           request: args.request,
@@ -118,7 +152,8 @@ export function createCoreHandlers(config, options = {}) {
           ...(sharedContext ? { memory_context: sharedContext } : {}),
           tenant_id: identity.tenantId,
         },
-      }));
+      });
+      return textResult(applyVerifiedOwnerConfirmation(payload, identity));
     },
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({

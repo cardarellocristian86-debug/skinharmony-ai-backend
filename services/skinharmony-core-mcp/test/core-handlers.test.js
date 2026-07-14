@@ -49,6 +49,89 @@ test("rejects a tenant without its own Core key", async () => {
   await assert.rejects(handlers.core_health({}, { tenantId: "tenant-b" }), /core_tenant_key_missing/);
 });
 
+test("reports owner binding checks without exposing OAuth identifiers", async () => {
+  const subject = "oauth-subject-private";
+  const clientId = "oauth-client-private";
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["tenant-a"],
+    godModeSubjects: [subject],
+    godModeClientIds: [],
+    godModeCodexEnabled: true,
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  const result = await handlers.core_health({}, {
+    kind: "oauth",
+    subject,
+    clientId,
+    tenantId: "tenant-a",
+    role: "owner_root",
+    godMode: true,
+  });
+
+  assert.deepEqual(result.structuredContent.mcp_identity, {
+    kind: "oauth",
+    role: "owner_root",
+    god_mode: true,
+    owner_confirmation_satisfied: true,
+    binding_checks: {
+      enabled: true,
+      emergency_stop: false,
+      tenant_allowed: true,
+      subject_allowed: true,
+      client_allowed: false,
+      codex_delegate_allowed: false,
+    },
+  });
+  assert.equal(JSON.stringify(result).includes(subject), false);
+  assert.equal(JSON.stringify(result).includes(clientId), false);
+});
+
+test("marks preflight owner confirmation satisfied only for a verified owner identity", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        governance: {
+          owner_confirmation_required: false,
+          owner_confirmation_satisfied: false,
+          execution_allowed_by_preflight: true,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const ownerResult = await handlers.work_preflight({ request: "read status" }, {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    godMode: true,
+    ownerConfirmed: true,
+  });
+  assert.equal(ownerResult.structuredContent.governance.owner_confirmation_satisfied, true);
+  assert.equal(ownerResult.structuredContent.governance.owner_identity_verified, true);
+  assert.equal(ownerResult.structuredContent.governance.execution_allowed_by_preflight, true);
+  assert.equal(calls[0].owner_confirmed, true);
+
+  const standardResult = await handlers.work_preflight({ request: "read status" }, {
+    kind: "oauth",
+    tenantId: "tenant-a",
+  });
+  assert.equal(standardResult.structuredContent.governance.owner_confirmation_satisfied, false);
+  assert.equal(standardResult.structuredContent.governance.owner_identity_verified, undefined);
+  assert.equal(calls[1].owner_confirmed, false);
+});
+
 test("maps the complete intelligence toolset to tenant-scoped Core routes", async () => {
   const calls = [];
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" } }, {
