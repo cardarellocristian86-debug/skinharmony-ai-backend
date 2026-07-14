@@ -166,7 +166,7 @@ const fetchOutputSchema = object({
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
-  tool("work_preflight", "Route work through Nyra and Core", "Mandatory first step before any connected AI begins work. Recalls tenant memory, assigns roles, opens Nyra/Core branches, builds the task graph, selects connected tools and returns non-executing governance gates.", object({
+  tool("work_preflight", "Bootstrap shared memory and route work", "Always use this as the first step in every new ChatGPT or Codex session. It automatically loads the authenticated tenant's canonical STATE, TASKS, LOCKS, ARTIFACTS and HANDOFF documents by source path, then recalls relevant memory, assigns roles, opens Nyra/Core branches, builds the task graph, selects connected tools and returns fail-closed governance gates. Never ask the user for a separate shared-memory loading prompt.", object({
     request: text(),
     target_system: { type: "string", maxLength: 100 },
     operation_type: { type: "string", maxLength: 100 },

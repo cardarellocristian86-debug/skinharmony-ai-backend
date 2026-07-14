@@ -2,8 +2,8 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
-const SERVER_VERSION = "0.7.5-cloud-search-terms";
-const SERVER_INSTRUCTIONS = "Call work_preflight before connected work. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
+const SERVER_VERSION = "0.8.1-shared-memory-bootstrap";
+const SERVER_INSTRUCTIONS = "Always call work_preflight first. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every other tool also runs the mandatory preflight middleware. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function resolveWorkPreflight(result, payload) {
   const gate = result?.structuredContent?.gate;
@@ -38,6 +38,7 @@ function attachWorkPreflight(result, preflight) {
       state: payload.state,
       preferred_route: payload.tool_routing?.preferred_route?.id,
       execution_allowed: executionAllowed,
+      shared_memory_bootstrap_loaded: payload.shared_memory_bootstrap?.loaded === true,
     },
   };
   return {
