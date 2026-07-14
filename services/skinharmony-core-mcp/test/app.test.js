@@ -181,6 +181,47 @@ test("does not advertise collaboration tools without registered handlers", async
   }
 });
 
+test("binds concurrent MCP chats to distinct stable signatures", async () => {
+  const app = createApp(config, {
+    handlers: { core_health: async () => ({ structuredContent: { ok: true }, content: [] }) },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const call = async (session, agentId = "") => {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": session },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: session,
+          method: "tools/call",
+          params: { name: "core_health", arguments: agentId ? { agent_id: agentId, client_type: "codex" } : {} },
+        }),
+      });
+      return { response, body: await response.json() };
+    };
+
+    const first = await call("mcp-concurrent-one");
+    const replay = await call("mcp-concurrent-one");
+    const second = await call("mcp-concurrent-two");
+    assert.equal(first.response.status, 200);
+    assert.equal(replay.response.status, 200);
+    assert.equal(second.response.status, 200);
+    assert.equal(first.body.result.structuredContent.agent_presence.signature, replay.body.result.structuredContent.agent_presence.signature);
+    assert.notEqual(first.body.result.structuredContent.agent_presence.signature, second.body.result.structuredContent.agent_presence.signature);
+
+    const named = await call("mcp-named-session", "codex-alpha");
+    assert.equal(named.response.status, 200);
+    const conflict = await call("mcp-named-session", "codex-beta");
+    assert.equal(conflict.response.status, 409);
+    assert.equal(conflict.body.error.message, "agent_presence_conflict");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("journals successful and failed tool calls without changing client responses", async () => {
   const events = [];
   const app = createApp(config, {
