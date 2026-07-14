@@ -60,6 +60,7 @@ try {
     brand_scope: "skinharmony",
     key_type: "connector",
     preset: "suite_connector",
+    domain_pack_id: "suite",
     label: "SkinHarmony demo connector",
   });
   assert(generated.status === 201 && generated.json.key, "key generation failed");
@@ -72,6 +73,7 @@ try {
     brand_scope: "skinharmony",
     preset: "codex_automation",
     tier: "internal",
+    domain_pack_id: "analyzer",
     label: "Codex branch package test",
   });
   assert(codexGenerated.status === 201 && codexGenerated.json.key, "codex key generation failed");
@@ -96,11 +98,214 @@ try {
     preset: "codex_automation",
     tier: "internal",
     active_branches: ["codex_code_safety", "codex_architecture_guard", "codex_test_strategy", "codex_release_gate", "codex_security_guard"],
+    domain_pack_id: "regulated_demo",
     label: "Regulated demo Codex/Core gateway test",
   });
   assert(regulatedGenerated.status === 201 && regulatedGenerated.json.key, "regulated codex key generation failed");
   const regulatedKey = regulatedGenerated.json.key;
   mark("regulated_codex_key_generate", true, { key_id: regulatedGenerated.json.record.key_id, tenant_id: regulatedGenerated.json.record.tenant_id });
+
+  const horizontalGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_horizontal_acme",
+    brand_scope: "acme",
+    preset: "nyra_core_360_connector",
+    tier: "omni_360",
+    label: "Horizontal Nyra Core test",
+  });
+  assert(horizontalGenerated.status === 201 && horizontalGenerated.json.key, "horizontal key generation failed");
+  const horizontalKey = horizontalGenerated.json.key;
+
+  const invalidPackKey = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant-invalid-pack",
+    brand_scope: "invalid",
+    domain_pack_id: "does_not_exist",
+  });
+  assert(invalidPackKey.status === 400 && invalidPackKey.json.error === "invalid_domain_pack_id", "invalid domain pack assignment was accepted");
+
+  const scopeLimitedGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_horizontal_limited",
+    brand_scope: "limited",
+    key_type: "connector",
+    allowed_scopes: ["read:snapshot"],
+    label: "Domain pack scope negative test",
+  });
+  assert(scopeLimitedGenerated.status === 201 && scopeLimitedGenerated.json.key, "scope-limited key generation failed");
+  const scopeDeniedPack = await api(base, "GET", "/v1/domain-packs/current", undefined, scopeLimitedGenerated.json.key);
+  assert(scopeDeniedPack.status === 403 && scopeDeniedPack.json.error === "scope_denied", "domain pack endpoint did not enforce read:decision");
+
+  const horizontalPack = await api(base, "GET", "/v1/domain-packs/current", undefined, horizontalKey);
+  assert(horizontalPack.status === 200 && horizontalPack.json.domain_pack?.id === "generic", "generic domain pack resolution failed");
+
+  const suitePack = await api(base, "GET", "/v1/domain-packs/current", undefined, connectorKey);
+  assert(suitePack.status === 200 && suitePack.json.domain_pack?.id === "suite", "Suite product pack resolution failed");
+
+  const horizontalBranches = await api(base, "GET", "/v1/branches", undefined, horizontalKey);
+  assert(horizontalBranches.status === 200, "horizontal branches failed");
+  assert(horizontalBranches.json.tenant_package?.domain_pack?.id === "generic", "horizontal branch package missing generic pack");
+  assert(!horizontalBranches.json.tenant_package?.allowed_branches?.includes("skinharmony_analyzer"), "generic pack leaked SkinHarmony analyzer");
+  assert(!horizontalBranches.json.tenant_package?.allowed_branches?.includes("beauty_vertical_orchestration"), "generic pack leaked beauty vertical");
+  const horizontalWorkBranches = [
+    "work_intake_intelligence",
+    "research_evidence_intelligence",
+    "planning_priority_intelligence",
+    "execution_coordination_intelligence",
+    "quality_verification_intelligence",
+    "adaptive_learning_intelligence",
+  ];
+  assert(horizontalWorkBranches.every((id) => horizontalBranches.json.tenant_package?.allowed_branches?.includes(id)), "generic pack missing horizontal work branches");
+
+  const nyraBranchCatalog = await api(base, "GET", "/v1/nira/branches", undefined, horizontalKey);
+  assert(nyraBranchCatalog.status === 200 && nyraBranchCatalog.json.catalog?.governance === "core_opens_nyra_branches", "Nyra branch catalog failed");
+  assert(nyraBranchCatalog.json.catalog.branches.every((item) => item.subbranch_count <= 20), "Nyra subbranch hard limit failed");
+  assert(!nyraBranchCatalog.json.catalog.branches.some((item) => item.id === "skinharmony_domain"), "generic catalog leaked SkinHarmony branch");
+  assert(!nyraBranchCatalog.json.catalog.branches.some((item) => ["suite_domain", "smartdesk_domain", "analyzer_domain"].includes(item.id)), "generic catalog leaked a product branch");
+  const nyraWorkBranches = ["work_intake", "research_evidence", "planning_prioritization", "parallel_coordination", "quality_verification", "adaptive_learning"];
+  assert(nyraWorkBranches.every((id) => nyraBranchCatalog.json.catalog.branches.some((item) => item.id === id)), "Nyra catalog missing horizontal work branches");
+
+  const workPreflight = await api(base, "POST", "/v1/work/preflight", {
+    request: "Usa GitHub per pubblicare le modifiche in una PR e prepara il deploy",
+    target_system: "github",
+    operation_type: "repository_release",
+    available_capabilities: ["github_connected_app"],
+    memory_context: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "tenant_horizontal_acme",
+      revision: 5,
+      latest_checkpoint: { id: "mem-checkpoint", kind: "decision", title: "GitHub route", summary: "Prefer connected GitHub app" },
+      relevant_memories: [],
+      pending_handoffs: [],
+      recent_activity: [],
+    },
+  }, horizontalKey);
+  assert(workPreflight.status === 200 && workPreflight.json.work_preflight?.mandatory === true, "mandatory work preflight failed");
+  assert(workPreflight.json.work_preflight.memory_first.status === "recalled", "work preflight did not recall tenant memory");
+  assert(workPreflight.json.work_preflight.memory_first.revision === 5, "work preflight memory revision mismatch");
+  assert(workPreflight.json.work_preflight.roles.some((role) => role.id === "nyra_request_interpreter"), "Nyra role missing from preflight");
+  assert(workPreflight.json.work_preflight.roles.some((role) => role.id === "core_route_authority"), "Core role missing from preflight");
+  assert(workPreflight.json.work_preflight.task_graph.nodes.some((node) => node.id === "learn_from_verified_outcome"), "learning task missing from preflight");
+  assert(workPreflight.json.work_preflight.nyra_route.opened_branches.every((branch) => branch.subbranches.length <= 20), "preflight exceeded Nyra subbranch limit");
+  assert(workPreflight.json.work_preflight.nyra_route.parallel_analysis.waves.every((wave) => wave.length <= 6), "preflight exceeded Nyra parallel limit");
+  assert(horizontalWorkBranches.every((id) => workPreflight.json.work_preflight.core_route.selected_branches.includes(id)), "preflight did not select complete horizontal Core cortex");
+  assert(workPreflight.json.work_preflight.tool_routing.preferred_route.id === "github_connected_app", "preflight did not prefer connected GitHub app");
+  assert(workPreflight.json.work_preflight.tool_routing.prohibited_when_preferred_available.includes("github_cli"), "preflight did not block GitHub CLI");
+  assert(workPreflight.json.work_preflight.tool_routing.release_policy.merge_requires_core_verdict === "ALLOW", "merge does not require Core ALLOW");
+  assert(workPreflight.json.work_preflight.tool_routing.release_policy.merge_requires_owner_confirmation === true, "merge does not require owner confirmation");
+  assert(workPreflight.json.work_preflight.governance.execution_allowed_by_preflight === false, "preflight unexpectedly authorized execution");
+
+  const researchPlan = await api(base, "POST", "/v1/research/plan", {
+    question: "Quali prove autorevoli supportano questa decisione?",
+    allowed_domains: ["example.org", "example.edu"],
+  }, horizontalKey);
+  assert(researchPlan.status === 200 && researchPlan.json.tenant_id === "tenant_horizontal_acme", "research plan tenant scope failed");
+  assert(researchPlan.json.research_plan?.provider_order?.[0] === "connected_ai_web", "research plan did not prefer connected AI web");
+  assert(researchPlan.json.nyra_neural_network?.opened_branches?.some((branch) => branch.id === "research_evidence"), "research plan did not route Nyra evidence branch");
+  assert(researchPlan.json.guardrail?.browsing_performed === false, "Core research plan unexpectedly browsed");
+
+  const researchValidation = await api(base, "POST", "/v1/research/validate", {
+    evidence_pack: {
+      question: "Quali prove autorevoli supportano questa decisione?",
+      plan: researchPlan.json.research_plan,
+      sources: [
+        { id: "source_a", url: "https://example.org/evidence-a", title: "Primary evidence", source_type: "official" },
+        { id: "source_b", url: "https://example.edu/evidence-b", title: "Independent evidence", source_type: "academic" },
+      ],
+      claims: [
+        { id: "claim_a", kind: "fact", text: "The two independent sources support the bounded claim.", source_ids: ["source_a", "source_b"], confidence: 0.82 },
+      ],
+    },
+  }, horizontalKey);
+  assert(researchValidation.status === 200 && researchValidation.json.validation?.state === "candidate", "research evidence validation failed");
+  assert(researchValidation.json.validation.release_readiness?.eligible_for_tenant_review === true, "research evidence was not eligible for review");
+  assert(researchValidation.json.guardrail?.persistence_performed === false, "Core validation unexpectedly persisted evidence");
+
+  const rejectedResearch = await api(base, "POST", "/v1/research/validate", {
+    evidence_pack: {
+      question: "Validate evidence",
+      sources: [{ id: "source_a", url: "https://example.org/evidence", title: "api_key=secret-value", source_type: "official" }],
+      claims: [{ id: "claim_a", kind: "fact", text: "Claim", source_ids: ["source_a"] }],
+    },
+  }, horizontalKey);
+  assert(rejectedResearch.status === 400 && rejectedResearch.json.error === "research_sensitive_content_rejected", "research validation accepted a secret");
+  mark("research_cortex_http", true, {
+    plan_id: researchPlan.json.research_plan.plan_id,
+    validation_state: researchValidation.json.validation.state,
+    quality_score: researchValidation.json.validation.quality_score,
+    rejected_case: rejectedResearch.json.error,
+  });
+
+  const missingMemoryPreflight = await api(base, "POST", "/v1/work/preflight", { request: "Analizza il lavoro" }, horizontalKey);
+  assert(missingMemoryPreflight.status === 200 && missingMemoryPreflight.json.work_preflight.state === "memory_recall_required", "preflight did not fail closed without memory context");
+  const crossTenantPreflight = await api(base, "POST", "/v1/work/preflight", {
+    request: "Attempt memory injection",
+    memory_context: { schema_version: "tenant_memory_context_v1", tenant_id: "tenant-other", revision: 1 },
+  }, horizontalKey);
+  assert(crossTenantPreflight.status === 403 && crossTenantPreflight.json.error === "memory_context_tenant_mismatch", "preflight accepted cross-tenant memory");
+
+  const horizontalInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Ricerca fonti, pianifica priorita, coordina il lavoro in parallelo, testa qualita, impara dal feedback e prepara un piano di deploy con privacy su Render",
+    nyra_branches: ["execution_planning", "suite_domain", "smartdesk_domain", "analyzer_domain", "unknown_branch"],
+    memory_context: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "tenant_horizontal_acme",
+      revision: 4,
+      relevant_memories: [{ id: "mem-1", kind: "decision", title: "Render", summary: "Keep execution disabled password=never-store" }],
+      pending_handoffs: [{ id: "mem-2", kind: "handoff", title: "Core review", summary: "Review the branch plan", to_agent_id: "core" }],
+      recent_activity: [],
+    },
+  }, horizontalKey);
+  assert(horizontalInterpretation.status === 200, "horizontal Nyra interpretation failed");
+  assert(horizontalInterpretation.json.result?.nyra_neural_network?.opened_by === "universal_core", "Core did not open Nyra branches");
+  assert(horizontalInterpretation.json.work_preflight?.mandatory === true, "Nyra bridge bypassed mandatory preflight");
+  assert(horizontalInterpretation.json.guardrail?.mandatory_preflight_completed === true, "Nyra bridge did not mark preflight completion");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.opened_branches.some((item) => item.id === "execution_planning"), "Core failed to open execution planning");
+  assert(nyraWorkBranches.every((id) => horizontalInterpretation.json.result.nyra_neural_network.opened_branches.some((item) => item.id === id)), "Core failed to open the complete Nyra work graph");
+  assert(horizontalWorkBranches.every((id) => horizontalInterpretation.json.result.core_branch_diagnostics.actual_selected_branches.includes(id)), "Core failed to select the horizontal work branches");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.parallel_analysis.waves.length >= 2, "Nyra work graph did not split into parallel waves");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.parallel_analysis.waves.every((wave) => wave.length <= 6), "Nyra parallel branch limit failed");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.parallel_analysis.join_authority === "universal_core", "Core is not the parallel join authority");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.state === "active", "Nyra learning branch did not activate");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.policy_activation_requires_verify === true, "learning verify gate is disabled");
+  assert(horizontalInterpretation.json.result.nyra_neural_network.governed_learning.free_weight_training === false, "free weight training was enabled");
+  assert(["suite_domain", "smartdesk_domain", "analyzer_domain"].every((id) => horizontalInterpretation.json.result.nyra_neural_network.denied_branches.includes(id)), "Core failed to deny product-specific Nyra branches");
+  assert(horizontalInterpretation.json.result.automation_plan?.execution_allowed === false, "Nyra branch router unexpectedly enabled execution");
+  assert(horizontalInterpretation.json.memory_context?.revision === 4, "Nyra did not receive tenant memory");
+  assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_relevant_count === 1, "Core did not account for relevant tenant memory");
+  assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_handoff_count === 1, "Core did not account for pending AI handoffs");
+  assert(!JSON.stringify(horizontalInterpretation.json).includes("never-store"), "Core response leaked a memory secret");
+
+  const mismatchedMemory = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Attempt cross-tenant memory injection",
+    memory_context: { schema_version: "tenant_memory_context_v1", tenant_id: "tenant-b", revision: 1 },
+  }, horizontalKey);
+  assert(mismatchedMemory.status === 403 && mismatchedMemory.json.error === "memory_context_tenant_mismatch", "cross-tenant memory context was accepted");
+
+  const packOverride = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Attempt vertical override",
+    domain_pack: "analyzer",
+  }, horizontalKey);
+  assert(packOverride.status === 403 && packOverride.json.error === "domain_pack_override_denied", "domain pack override was not denied");
+
+  const emptyNyraRequest = await api(base, "POST", "/v1/nira/core-bridge", { text: "" }, horizontalKey);
+  assert(emptyNyraRequest.status === 400 && emptyNyraRequest.json.error === "nira_text_required", "empty Nyra request was not rejected");
+  const oversizedNyraRequest = await api(base, "POST", "/v1/nira/core-bridge", { text: "x".repeat(20_001) }, horizontalKey);
+  assert(oversizedNyraRequest.status === 413 && oversizedNyraRequest.json.error === "nira_text_too_long", "oversized Nyra request was not rejected");
+  const malformedNyraBranch = await api(base, "POST", "/v1/nira/core-bridge", { text: "test", nyra_branches: ["../vertical"] }, horizontalKey);
+  assert(malformedNyraBranch.status === 400 && malformedNyraBranch.json.error === "invalid_nyra_branch_id", "malformed Nyra branch was not rejected");
+  const excessiveNyraBranches = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "test",
+    nyra_branches: Array.from({ length: 21 }, (_, index) => `branch_${index}`),
+  }, horizontalKey);
+  assert(excessiveNyraBranches.status === 400 && excessiveNyraBranches.json.error === "nyra_branch_request_limit_exceeded", "Nyra branch request limit was not enforced");
+  mark("horizontal_domain_pack_and_nyra_network", true, {
+    generic_pack: horizontalPack.json.domain_pack.id,
+    suite_pack: suitePack.json.domain_pack.id,
+    horizontal_branch_count: horizontalBranches.json.tenant_package.allowed_branches.length,
+    nyra_branch_count: nyraBranchCatalog.json.catalog.branches.length,
+    opened: horizontalInterpretation.json.result.nyra_neural_network.opened_branches.map((item) => item.id),
+    denied: horizontalInterpretation.json.result.nyra_neural_network.denied_branches,
+    negative_cases: [invalidPackKey.json.error, packOverride.json.error, emptyNyraRequest.json.error, oversizedNyraRequest.json.error, malformedNyraBranch.json.error, excessiveNyraBranches.json.error, mismatchedMemory.json.error],
+    scope_negative_case: scopeDeniedPack.json.error,
+  });
 
   const presets = await api(base, "GET", "/v1/keys/presets", undefined);
   assert(presets.status === 200 && presets.json.presets?.codex_automation?.scopes?.includes("automation:codex"), "key presets list failed");
@@ -124,6 +329,8 @@ try {
   const sdkManifest = await api(base, "GET", "/v1/connectors/sdk/manifest?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
   assert(sdkManifest.status === 200 && sdkManifest.json.sdk?.manifest_version === "core_connector_sdk_v1", "connector sdk manifest failed");
   assert(sdkManifest.json.sdk?.transports?.includes("mcp_ready_schema"), "connector sdk mcp-ready transport missing");
+  assert(sdkManifest.json.sdk?.core_routes?.work_preflight === "/v1/work/preflight", "connector sdk missing mandatory work preflight route");
+  assert(sdkManifest.json.sdk?.required_client_behaviour?.includes("call_work_preflight_before_any_ai_work"), "connector sdk does not require preflight");
   assert(sdkManifest.json.sdk?.core_routes?.translator_extractor_catalog === "/v1/translator/extractor/catalog", "connector sdk missing translator extractor route");
   mark("connector_sdk_manifest", true, {
     adapters: sdkManifest.json.sdk.adapters,
@@ -421,6 +628,27 @@ try {
   assert(authorizedBranches.json.branch_package?.denied_branches?.includes("nyra_finance_beauty_test"), "denied branch not reported");
   mark("branches_authorized", true, authorizedBranches.json.branch_package);
 
+  assert(!generated.json.record.allowed_scopes.includes("automation:codex"), "suite connector unexpectedly has automation scope");
+  const nyraReadonlyContext = await api(base, "POST", "/v1/codex/context", {
+    tenant_id: "tenant_demo_skinharmony",
+    task: "Read Nyra readiness context",
+    user_input: "Read-only readiness check",
+  }, connectorKey);
+  assert(nyraReadonlyContext.status === 200 && nyraReadonlyContext.json.guardrail?.execution_allowed === false, "read-only Nyra context failed");
+
+  const nyraReadonlyInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
+    tenant_id: "tenant_demo_skinharmony",
+    text: "Interpret this request without executing it",
+    mode: "standard",
+  }, connectorKey);
+  assert(nyraReadonlyInterpretation.status === 200, "read-only Nyra interpretation failed");
+  assert(nyraReadonlyInterpretation.json.guardrail?.execution_allowed === false, "read-only Nyra interpretation allowed execution");
+  mark("nyra_readonly_scope_contract", true, {
+    context_status: nyraReadonlyContext.status,
+    interpretation_status: nyraReadonlyInterpretation.status,
+    execution_allowed: nyraReadonlyInterpretation.json.guardrail.execution_allowed,
+  });
+
   const codexContext = await api(base, "POST", "/v1/codex/context", {
     tenant_id: "tenant_demo_skinharmony",
     task: "marketing_recall",
@@ -430,8 +658,10 @@ try {
   assert(codexContext.status === 200 && codexContext.json.context?.selected_branches?.includes("executive_gold"), "codex context failed");
   assert(codexContext.json.context?.selected_branches?.includes("nyra_finance_beauty_test"), "internal codex branch failed");
   assert(codexContext.json.context?.selected_branches?.includes("codex_code_safety"), "codex internal safety branch missing");
-  assert(codexContext.json.tenant_policy?.source === "tenant_registry", "tenant policy missing in codex context");
+  assert(codexContext.json.tenant_policy?.source === "domain_pack_registry", "tenant policy missing in codex context");
   assert(codexContext.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex context decision contract missing");
+  assert(codexContext.json.work_preflight?.mandatory === true, "codex context bypassed mandatory preflight");
+  assert(codexContext.json.guardrail?.mandatory_preflight_completed === true, "codex context did not complete preflight");
   assert(codexContext.json.guardrail?.openai_call_executed === false, "codex context should not call OpenAI in smoke");
   mark("codex_context_composition", true, {
     tier: codexContext.json.context.tier,
@@ -504,7 +734,29 @@ try {
   }, codexKey);
   assert(actionEvaluator.status === 200 && actionEvaluator.json.decision_contract?.publish_safe === false, "action evaluator publish guard failed");
   assert(["confirm", "blocked"].includes(actionEvaluator.json.decision_contract?.control_level), "action evaluator control level failed");
+  assert(actionEvaluator.json.work_preflight?.mandatory === true, "action evaluator bypassed mandatory preflight");
+  assert(actionEvaluator.json.work_preflight?.governance?.core_verdict_required_before_execution === true, "action evaluator preflight missing Core gate");
+  assert(actionEvaluator.json.work_preflight?.governance?.owner_confirmation_required === true, "action evaluator preflight missing owner gate");
+  assert(actionEvaluator.json.guardrail?.mandatory_preflight_completed === true, "action evaluator did not mark preflight completion");
   mark("action_evaluator_contract", true, actionEvaluator.json.decision_contract);
+
+  const confirmedInternalWrite = await api(base, "POST", "/v1/action-evaluator", {
+    tenant_id: "tenant_demo_skinharmony",
+    action_type: "workspace.write_document",
+    action_label: "Write confirmed tenant report",
+    operation_class: "reversible_internal_collaboration_write",
+    external_side_effect: false,
+    contains_customer_data: false,
+    rollback_ready: true,
+    owner_confirmed: true,
+    confirmation_reference: "explicit smoke-test owner confirmation",
+  }, codexKey);
+  assert(confirmedInternalWrite.status === 200, "confirmed internal write evaluation failed");
+  assert(confirmedInternalWrite.json.authorization?.allowed === true, "confirmed internal write was not authorized");
+  assert(confirmedInternalWrite.json.authorization?.state === "authorized_after_confirmation", "confirmed internal write state mismatch");
+  assert(confirmedInternalWrite.json.authorization?.confirmation_satisfied === true, "owner confirmation was not satisfied");
+  assert(confirmedInternalWrite.json.guardrail?.owner_confirmation_required === false, "owner confirmation remained pending after satisfaction");
+  mark("action_evaluator_confirmed_internal_write", true, confirmedInternalWrite.json.authorization);
 
   const gatewaySchema = await api(base, "GET", "/v1/ai-gateway/schema", undefined);
   assert(gatewaySchema.status === 200 && gatewaySchema.json.modes?.includes("hard-gating"), "AI gateway schema failed");
@@ -541,6 +793,9 @@ try {
   assert(["confirm", "sandbox", "rollback_required", "block"].includes(aiGatewayCodex.json.verdict?.action_mediation?.state), "AI gateway codex mediation missing");
   assert(aiGatewayCodex.json.verdict?.explainability?.summary, "AI gateway codex explainability missing");
   assert(aiGatewayCodex.json.benchmark?.delta?.execution_hardened === true, "AI gateway benchmark failed");
+  assert(aiGatewayCodex.json.work_preflight?.mandatory === true, "AI gateway bypassed mandatory preflight");
+  assert(aiGatewayCodex.json.gateway?.mandatory_preflight_completed === true, "AI gateway did not mark preflight completion");
+  assert(aiGatewayCodex.json.work_preflight?.tool_routing?.preferred_route?.id === "connected_runtime_workspace", "AI gateway preflight did not route deploy work");
   mark("ai_gateway_codex_hard_gate", true, {
     decision: aiGatewayCodex.json.verdict.decision,
     mediation: aiGatewayCodex.json.verdict.action_mediation,
@@ -761,7 +1016,8 @@ try {
   assert(codexGuardGeneric.status === 200 && codexGuardGeneric.json.codex_guard?.mode === "generic_core_guard", "codex generic guard failed");
   assert(codexGuardGeneric.json.decision_contract?.contract_version === "core_decision_contract_v1", "codex generic contract missing");
   assert(codexGuardGeneric.json.codex_guard?.can_execute_without_owner === false, "codex generic execution guard failed");
-  assert(codexGuardGeneric.json.tenant_policy?.source === "tenant_registry", "tenant policy missing in generic guard");
+  assert(codexGuardGeneric.json.tenant_policy?.source === "default_policy", "generic guard did not use the default horizontal policy");
+  assert(codexGuardGeneric.json.work_preflight?.mandatory === true, "codex guard bypassed mandatory preflight");
   mark("codex_guard_generic", true, {
     mode: codexGuardGeneric.json.codex_guard.mode,
     state: codexGuardGeneric.json.decision_contract.state,
@@ -777,6 +1033,7 @@ try {
   assert(codexGuardBranches.status === 200 && codexGuardBranches.json.codex_guard?.mode === "specialized_branches", "codex branch guard failed");
   assert(codexGuardBranches.json.codex_guard?.selected_branches?.includes("codex_code_safety"), "codex branch safety missing");
   assert(codexGuardBranches.json.codex_guard?.selected_branches?.includes("codex_release_gate"), "codex branch release missing");
+  assert(codexGuardBranches.json.work_preflight?.core_route?.selected_branches?.includes("adaptive_learning_intelligence"), "codex guard preflight missing learning branch");
   mark("codex_guard_branches", true, {
     mode: codexGuardBranches.json.codex_guard.mode,
     selected_branches: codexGuardBranches.json.codex_guard.selected_branches,
@@ -838,7 +1095,7 @@ try {
       sources_provided: false,
       claims: "senza claim terapeutici",
     },
-  }, connectorKey);
+  }, codexKey);
   assert(chemistryBranch.status === 200 && chemistryBranch.json.branch_output?.web_research_required === true, "chemistry branch failed");
   mark("branch_cosmetic_chemistry", true, {
     state: chemistryBranch.json.output.state,
@@ -860,7 +1117,7 @@ try {
       protocols: [],
       data_quality_score: 88,
     },
-  }, connectorKey);
+  }, codexKey);
   assert(analyzerBranch.status === 200 && analyzerBranch.json.branch_output?.branch === "skinharmony_skin_ensemble_v1", "skinharmony analyzer branch failed");
   assert(analyzerBranch.json.branch_output?.dominant_pattern?.id === "pores_texture_matrix", "skinharmony analyzer dominant pattern failed");
   assert(analyzerBranch.json.branch_output?.secondary_patterns?.some((item) => item.id === "sensitivity_reactivity_matrix"), "skinharmony analyzer secondary pattern failed");

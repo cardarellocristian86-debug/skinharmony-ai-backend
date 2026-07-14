@@ -643,7 +643,10 @@ export function buildAiGatewayCoreInput({ payload = {}, tenantId = "", keyRecord
   const context = typeof payload.context === "object" && payload.context ? payload.context : {};
   const runtime = contextualRuntime(payload);
   const roleScope = contextualRoleScope(payload);
-  const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier);
+  const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier, {
+    brandScope: keyRecord?.brand_scope,
+    metadata: keyRecord?.metadata,
+  });
   const outputRisk = riskFromText(payload.llm_output || payload.output || "");
   const policyWarnings = [
     ...policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || ""),
@@ -836,7 +839,10 @@ export function buildAiGatewayVerdict({
   const adapter = normalizeAdapter(adapterOverride || payload.adapter || payload.client);
   const mode = normalizeMode(payload.mode || payload.gateway_mode);
   const action = requestedAction(payload);
-  const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier);
+  const tenantPolicy = getTenantPolicy(tenantId, payload.plan || keyRecord?.metadata?.tier, {
+    brandScope: keyRecord?.brand_scope,
+    metadata: keyRecord?.metadata,
+  });
   const policyWarnings = [
     ...policyWarningsFromText(tenantPolicy, payload.llm_output || payload.output || ""),
     ...policyWarningsFromStructuredClaims(payload),

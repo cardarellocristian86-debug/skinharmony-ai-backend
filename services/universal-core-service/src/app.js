@@ -24,6 +24,9 @@ import {
 } from "../branches/index.js";
 import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
+import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
+import { nyraBranchCatalog, routeNyraBranches } from "./nyraBranchNetwork.js";
+import { multiAgentRegistry, planMultiAgentRun } from "./multiAgentArchitecture.js";
 import {
   AI_GATEWAY_ADAPTERS,
   AI_GATEWAY_MODES,
@@ -45,10 +48,35 @@ import {
   SOFTWARE_LANGUAGE_GATE_VERSION,
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
+import { buildWorkPreflight } from "./workPreflight.js";
+import {
+  analyzeScenarios,
+  evaluateCounterfactuals,
+  evaluateEvents,
+  rankHypotheses,
+  runIntelligenceWorkflow,
+  selectDecision,
+  summarizeCalibration,
+  verifyOutcome,
+} from "./intelligenceEngine.js";
+import { buildActionAuthorization } from "./actionAuthorization.js";
+import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
+import {
+  analyzeEmbeddedSoftwareArtifact,
+  embeddedComponentManifest,
+  MAX_EMBEDDED_ARTIFACT_BYTES,
+} from "./embeddedSoftwareIntelligence.js";
+import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
+import {
+  createUniversalSoftwareJobManager,
+  issueSoftwareAuthorizationEnvelope,
+  universalSoftwareComponentManifest,
+} from "./universalSoftwareIntelligence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.3.19-branch-taxonomy-cortex-routefix";
+const SERVICE_VERSION = "0.9.1-research-risk-and-interpretation";
+const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
   return new Date().toISOString();
@@ -75,7 +103,9 @@ function readJsonFile(file, fallback) {
 
 function writeJsonFile(file, value) {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), "utf8");
+  fs.renameSync(temporary, file);
 }
 
 function normalizeList(value, max = 100) {
@@ -88,6 +118,65 @@ function safeTenantId(req, keyRecord) {
   const tenantFromQuery = req.query?.tenant_id;
   const tenantFromHeader = req.get("x-sh-tenant-id");
   return String(tenantFromBody || tenantFromQuery || tenantFromHeader || keyRecord?.tenant_id || "").trim();
+}
+
+function sanitizeMemoryText(value, max = 2_000) {
+  return String(value || "")
+    .slice(0, max)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "[REDACTED_SECRET]")
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_SECRET]")
+    .replace(/\b(?:password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED_SECRET]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
+}
+
+function normalizeTenantMemoryContext(raw, tenantId) {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "memory_context_invalid" };
+  if (String(raw.tenant_id || "") !== tenantId) return { ok: false, error: "memory_context_tenant_mismatch" };
+  const list = (value, max) => Array.isArray(value) ? value.slice(0, max).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    return {
+      id: sanitizeMemoryText(item.id, 100),
+      kind: sanitizeMemoryText(item.kind, 40),
+      title: sanitizeMemoryText(item.title, 240),
+      summary: sanitizeMemoryText(item.summary ?? item.value, 2_000),
+      direction: ["support", "against"].includes(String(item.direction || "").toLowerCase())
+        ? String(item.direction).toLowerCase()
+        : undefined,
+      strength: Number.isFinite(Number(item.strength)) ? Math.max(0, Math.min(1, Number(item.strength))) : undefined,
+      reliability: Number.isFinite(Number(item.reliability)) ? Math.max(0, Math.min(1, Number(item.reliability))) : undefined,
+      verified: item.verified === true || item.status === "verified",
+      source: item.source ? sanitizeMemoryText(item.source, 240) : undefined,
+      decisions: normalizeList(item.decisions, 10).map((entry) => sanitizeMemoryText(entry, 500)),
+      outcomes: normalizeList(item.outcomes, 10).map((entry) => sanitizeMemoryText(entry, 500)),
+      next_steps: normalizeList(item.next_steps, 10).map((entry) => sanitizeMemoryText(entry, 500)),
+      project_id: item.project_id ? sanitizeMemoryText(item.project_id, 64) : null,
+      session_id: item.session_id ? sanitizeMemoryText(item.session_id, 64) : null,
+      to_agent_id: item.to_agent_id ? sanitizeMemoryText(item.to_agent_id, 64) : undefined,
+      status: item.status ? sanitizeMemoryText(item.status, 40) : undefined,
+      created_at: sanitizeMemoryText(item.created_at, 40),
+    };
+  }).filter(Boolean) : [];
+  const latest = list(raw.latest_checkpoint ? [raw.latest_checkpoint] : [], 1)[0] || null;
+  return {
+    ok: true,
+    value: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: tenantId,
+      revision: Number.isInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
+      project_id: raw.project_id ? sanitizeMemoryText(raw.project_id, 64) : null,
+      session_id: raw.session_id ? sanitizeMemoryText(raw.session_id, 64) : null,
+      latest_checkpoint: latest,
+      relevant_memories: list(raw.relevant_memories, 10),
+      pending_handoffs: list(raw.pending_handoffs, 10),
+      recent_activity: list(raw.recent_activity, 20),
+      policy: {
+        tenant_isolated: true,
+        raw_prompts_stored_automatically: false,
+        secrets_storable: false,
+      },
+    },
+  };
 }
 
 function normalizeSignal(input = {}) {
@@ -148,12 +237,19 @@ function buildActionEvaluatorInput(req, keyRecord) {
   const body = req.body || {};
   const actionType = String(body.action_type || body.action?.type || body.domain || "workflow_decision");
   const actionLabel = String(body.action_label || body.action?.label || body.task || actionType);
-  const riskHint = Number(body.risk_hint ?? body.action?.risk_hint ?? 45);
-  const confidenceHint = Number(body.confidence_hint ?? body.action?.confidence_hint ?? 75);
+  const riskClassification = classifyActionRisk(body);
+  const riskHint = Number(body.risk_hint ?? body.action?.risk_hint ?? riskClassification.risk_score);
+  const confidenceHint = Number(body.confidence_hint ?? body.action?.confidence_hint ?? 85);
   const publishIntent = body.publish_intent === true || actionType === "publish";
-  const sensitive =
-    publishIntent ||
-    ["publish", "approve", "change_state", "pricing", "claim_validation", "workflow_decision", "sync", "send", "delete", "write", "deploy", "update", "codex_automation"].includes(actionType);
+  const blockedActionRules = [
+    ...(Array.isArray(body.constraints?.blocked_action_rules) ? body.constraints.blocked_action_rules : []),
+    ...riskClassification.reason_codes.map((reasonCode) => ({
+      action_id: `action:${actionType}`,
+      reason_code: reasonCode,
+      severity: riskClassification.risk_score,
+      blocks_execution: riskClassification.hard_block,
+    })),
+  ];
 
   return {
     request_id: body.request_id || `action_${crypto.randomUUID()}`,
@@ -166,6 +262,8 @@ function buildActionEvaluatorInput(req, keyRecord) {
       locale: body.locale || "it",
       metadata: {
         action_type: actionType,
+        action_classification: riskClassification.classification,
+        operation_class: riskClassification.operation_class,
         publish_intent: publishIntent ? "true" : "false",
         source: "action_evaluator",
         ...(typeof body.metadata === "object" && body.metadata ? body.metadata : {}),
@@ -174,35 +272,30 @@ function buildActionEvaluatorInput(req, keyRecord) {
     signals: [
       normalizeSignal({
         id: `action:${actionType}`,
-        category: "action",
+        category: riskClassification.classification,
         label: actionLabel,
-        normalized_score: sensitive ? Math.max(45, riskHint) : riskHint,
-        severity_hint: sensitive ? Math.max(45, riskHint) : riskHint,
+        normalized_score: riskClassification.risk_score,
+        severity_hint: riskClassification.risk_score,
         confidence_hint: confidenceHint,
-        risk_hint: riskHint,
-        evidence: Array.isArray(body.evidence) ? body.evidence : [{ label: "Azione richiesta dal client", value: actionType }],
-        tags: ["action_gate", actionType],
+        evidence: Array.isArray(body.evidence) ? body.evidence : [
+          { label: "Azione richiesta dal client", value: actionType },
+          { label: "Classificazione deterministica", value: riskClassification.classification },
+        ],
+        tags: ["action_gate", actionType, riskClassification.classification],
       }),
     ],
     data_quality: {
-      score: Number(body.data_quality?.score ?? body.data_quality_score ?? 70),
+      score: Number(body.data_quality?.score ?? body.data_quality_score ?? 80),
       missing_fields: Array.isArray(body.data_quality?.missing_fields) ? body.data_quality.missing_fields : [],
     },
     constraints: safeConstraints({
       ...(typeof body.constraints === "object" && body.constraints ? body.constraints : {}),
-      require_confirmation: true,
-      max_control_level: "confirm",
-      blocked_action_rules: [
-        ...(Array.isArray(body.constraints?.blocked_action_rules) ? body.constraints.blocked_action_rules : []),
-        ...(publishIntent
-          ? [{
-              action_id: `action:${actionType}`,
-              reason_code: "publish_requires_owner_review",
-              severity: 80,
-              blocks_execution: false,
-            }]
-          : []),
-      ],
+      require_confirmation: riskClassification.confirmation_required,
+      max_control_level: riskClassification.control_level,
+      risk_floor: riskClassification.risk_band,
+      passive_only: ["tenant_scoped_read", "sandboxed_scoped_work"].includes(riskClassification.operation_class),
+      blocked_action_rules: blockedActionRules,
+      safety_mode: riskClassification.control_level !== "observe",
     }, keyRecord, body.owner_confirmed === true),
   };
 }
@@ -213,11 +306,12 @@ function safeConstraints(raw = {}, keyRecord, ownerConfirmed) {
       ownerConfirmed &&
       hasScope(keyRecord, SCOPES.AUTOMATION_CODEX)
   );
+  const passiveOnly = raw.passive_only === true && raw.allow_automation !== true;
 
   return {
     allow_automation: automationAllowed,
     require_confirmation: raw.require_confirmation !== false,
-    max_control_level: automationAllowed ? raw.max_control_level || "confirm" : "confirm",
+    max_control_level: automationAllowed ? raw.max_control_level || "confirm" : passiveOnly ? "observe" : "confirm",
     min_control_level: raw.min_control_level,
     state_floor: raw.state_floor,
     risk_floor: raw.risk_floor,
@@ -311,6 +405,61 @@ function reviewStore(storageRoot) {
       rows.push(record);
       write(rows);
       return record;
+    },
+  };
+}
+
+function intelligenceOutcomeStore(storageRoot) {
+  const dir = path.join(storageRoot, "intelligence", "outcomes");
+  ensureDir(dir);
+  const tenantHash = (tenantId) => crypto.createHash("sha256").update(String(tenantId)).digest("hex");
+  const legacyFile = (tenantId) => path.join(dir, `${tenantHash(tenantId)}.json`);
+  const tenantDir = (tenantId) => path.join(dir, tenantHash(tenantId));
+  const recordFile = (tenantId, outcomeId) => path.join(
+    tenantDir(tenantId),
+    `${crypto.createHash("sha256").update(String(outcomeId)).digest("hex")}.json`,
+  );
+  const compare = (existing, candidate) => {
+    const fields = ["prediction_id", "predicted_probability", "actual_outcome", "domain", "horizon"];
+    return fields.some((field) => String(existing[field] ?? "") !== String(candidate[field] ?? ""));
+  };
+  const read = (tenantId) => {
+    const legacy = readJsonFile(legacyFile(tenantId), []);
+    const currentDir = tenantDir(tenantId);
+    const current = fs.existsSync(currentDir)
+      ? fs.readdirSync(currentDir).filter((name) => name.endsWith(".json")).map((name) =>
+        readJsonFile(path.join(currentDir, name), null)).filter(Boolean)
+      : [];
+    const byOutcome = new Map();
+    for (const record of [...legacy, ...current]) byOutcome.set(record.outcome_id, record);
+    return [...byOutcome.values()].sort((a, b) => String(a.verified_at).localeCompare(String(b.verified_at))).slice(-10_000);
+  };
+  return {
+    append(tenantId, record) {
+      const storedRecord = { ...record, tenant_id: tenantId };
+      const legacyDuplicate = readJsonFile(legacyFile(tenantId), []).find((item) => item.outcome_id === record.outcome_id);
+      if (legacyDuplicate) {
+        const conflict = compare(legacyDuplicate, storedRecord);
+        return { record: legacyDuplicate, duplicate: !conflict, conflict };
+      }
+      const file = recordFile(tenantId, record.outcome_id);
+      ensureDir(path.dirname(file));
+      try {
+        fs.writeFileSync(file, JSON.stringify(storedRecord, null, 2), { encoding: "utf8", flag: "wx" });
+        return { record: storedRecord, duplicate: false, conflict: false };
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const existing = readJsonFile(file, null);
+        if (!existing) throw error;
+        const conflict = compare(existing, storedRecord);
+        return { record: existing, duplicate: !conflict, conflict };
+      }
+    },
+    recent(tenantId, limit = 100) {
+      return read(tenantId).slice(-Math.max(1, Math.min(1000, Number(limit) || 100)));
+    },
+    calibration(tenantId) {
+      return summarizeCalibration(read(tenantId));
     },
   };
 }
@@ -552,7 +701,11 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
   const metadata = keyRecord?.metadata && typeof keyRecord.metadata === "object" ? keyRecord.metadata : {};
   const resolvedBranches = branchResolution || resolveBranchesForKey(keyRecord);
   const resolvedEntitlement = entitlement || buildEntitlement(keyRecord, resolvedBranches);
-  const resolvedTenantPolicy = tenantPolicy || getTenantPolicy(keyRecord?.tenant_id, metadata.tier || metadata.suite_tier);
+  const resolvedTenantPolicy = tenantPolicy || getTenantPolicy(keyRecord?.tenant_id, metadata.tier || metadata.suite_tier, {
+    brandScope: keyRecord?.brand_scope,
+    metadata,
+  });
+  const domainPack = resolveDomainPackForKey(keyRecord);
   const maturity = branchMaturityReport();
   const registry = branchRegistry();
   const branchProfiles = Object.fromEntries(
@@ -601,15 +754,25 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
       action_mediation_states: ["allow", "rewrite", "confirm", "defer", "sandbox", "block", "rollback_required"],
       rule: "AI e automazioni possono agire solo passando da Core, policy, audit, tenant isolation e conferma quando serve.",
     },
+    domain_pack: publicDomainPack(domainPack),
+    nyra_neural_network: {
+      schema_version: "nyra_neural_branch_network_v1",
+      governance: "core_opens_nyra_branches",
+      catalog_endpoint: "GET /v1/nira/branches",
+      maximum_subbranches_per_branch: 20,
+      maximum_parallel_branches: 6,
+      parallel_mode: "bounded_parallel_advisory",
+      learning_mode: "tenant_scoped_verify_before_consolidate",
+    },
     limits: resolvedEntitlement.limits,
     recommended_folders: {
-      config: ".skinharmony-core/config",
-      key: ".skinharmony-core/keys",
-      memory: ".skinharmony-core/memory",
+      config: domainPack.id === "skinharmony" ? ".skinharmony-core/config" : ".universal-core/config",
+      key: domainPack.id === "skinharmony" ? ".skinharmony-core/keys" : ".universal-core/keys",
+      memory: domainPack.id === "skinharmony" ? ".skinharmony-core/memory" : ".universal-core/memory",
       reports: "reports/codex-core",
-      policies: ".skinharmony-core/policies",
-      logs: ".skinharmony-core/logs",
-      snapshots: ".skinharmony-core/snapshots",
+      policies: domainPack.id === "skinharmony" ? ".skinharmony-core/policies" : ".universal-core/policies",
+      logs: domainPack.id === "skinharmony" ? ".skinharmony-core/logs" : ".universal-core/logs",
+      snapshots: domainPack.id === "skinharmony" ? ".skinharmony-core/snapshots" : ".universal-core/snapshots",
       ...(typeof metadata.recommended_folders === "object" && metadata.recommended_folders ? metadata.recommended_folders : {}),
     },
     scope: {
@@ -637,7 +800,27 @@ function inferNiraBranchRequest(body = {}) {
 
   const target = String(body.target_system || "").toLowerCase();
   const text = String(body.text || body.request || body.task || "").toLowerCase();
-  const requested = ["automation_control"];
+  const requested = ["automation_control", "work_intake_intelligence"];
+
+  if (/(software|codice|binari|eseguibil|debug|disassembl|decompil|ghidra|frida|reverse engineering|interoperabil|personalizz)/.test(`${target} ${text}`)) {
+    requested.push("software_intelligence_lab");
+  }
+
+  if (/(ricerca|fonti|evidenz|documentazione|paper|benchmark|source|dati verificati)/.test(text)) {
+    requested.push("research_evidence_intelligence");
+  }
+  if (/(pianifica|piano|priorit|roadmap|sequenza|milestone|dipenden|stima)/.test(text)) {
+    requested.push("planning_priority_intelligence");
+  }
+  if (/(parallelo|coordina|delega|agenti|handoff|concorren|sincron|collabora|esegui|implementa)/.test(text)) {
+    requested.push("execution_coordination_intelligence");
+  }
+  if (/(test|qualita|verifica|collaudo|accettazione|regression|evidence|qa)/.test(text)) {
+    requested.push("quality_verification_intelligence");
+  }
+  if (/(apprendi|impara|migliora|retrospettiva|outcome|feedback|lezione|pattern|memoria)/.test(text)) {
+    requested.push("adaptive_learning_intelligence");
+  }
 
   if (target === "suite" || target === "wordpress" || /(suite|wordpress|wp|plugin|waas|sito|template)/.test(text)) {
     requested.push("platform_engineering", "site_factory");
@@ -654,11 +837,77 @@ function inferNiraBranchRequest(body = {}) {
   if (/(privacy|gdpr|audit|tenant|cross tenant|chiav|api key)/.test(text)) {
     requested.push("security_defense");
   }
+  if (/(delega|agente|workload|identita|identity|oauth|token|scope|audience|revoca|impersona)/.test(`${target} ${text}`)) {
+    requested.push("identity_delegation");
+  }
+  if (/(provenienza|provenance|verdict|decisione|conferma|approvazione|audit|rollback|tracciabil)/.test(text)) {
+    requested.push("decision_provenance");
+  }
   if (/(render|deploy|release|runtime|server|nodi|node|update|rollback)/.test(text)) {
     requested.push("runtime_deployment_scaling_guard", "observability_roi_guard");
   }
 
   return [...new Set(requested)];
+}
+
+const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
+  "context_intelligence",
+  "work_intake",
+  "research_evidence",
+  "decision_reasoning",
+  "planning_prioritization",
+  "risk_governance",
+  "execution_planning",
+  "parallel_coordination",
+  "quality_verification",
+  "learning_memory",
+  "adaptive_learning",
+]);
+
+function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, branchContext = null, nyraNetwork = null } = {}) {
+  const body = req.body || {};
+  const requestText = String(
+    body.request || body.message || body.text || body.task || body.user_request || body.user_input || body.input || body.action_label ||
+    body.requested_action?.label || body.requested_action?.type ||
+    `Core controlled ${body.action_type || body.operation_type || "work"}`,
+  ).trim();
+  const requestedCoreBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(body)])];
+  const mandatoryBranchContext = composeBranchContext({
+    keyRecord: req.coreKey,
+    requestedBranches: requestedCoreBranches,
+    task: String(body.task || body.action_label || requestText),
+    userInput: requestText,
+    locale: body.locale || "it",
+  });
+  const resolvedBranchContext = branchContext ? {
+    ...mandatoryBranchContext,
+    selected_branches: [...new Set([...(mandatoryBranchContext.selected_branches || []), ...(branchContext.selected_branches || [])])],
+    denied_branches: [...new Set([...(mandatoryBranchContext.denied_branches || []), ...(branchContext.denied_branches || [])])]
+      .filter((id) => !(mandatoryBranchContext.selected_branches || []).includes(id) && !(branchContext.selected_branches || []).includes(id)),
+    selected_groups: [...new Set([...(mandatoryBranchContext.selected_groups || []), ...(branchContext.selected_groups || [])])],
+  } : mandatoryBranchContext;
+  const requestedNyraBranches = [
+    ...MANDATORY_NYRA_WORK_BRANCHES,
+    ...normalizeList(body.nyra_branches, 20),
+  ];
+  const resolvedNyraNetwork = nyraNetwork || routeNyraBranches({
+    text: requestText,
+    requestedBranches: requestedNyraBranches,
+    domainPackId: domainPack.id,
+  });
+  return buildWorkPreflight({
+    tenantId: req.tenantId,
+    requestText,
+    targetSystem: body.target_system || "universal_core",
+    operationType: body.operation_type || body.action_type || body.requested_action?.type || "advisory_work",
+    toolName: body.source_tool || body.tool_name || "",
+    availableCapabilities: body.available_capabilities || body.available_tools || body.connected_capabilities || [],
+    memoryContext,
+    branchContext: resolvedBranchContext,
+    nyraNetwork: resolvedNyraNetwork,
+    domainPack: publicDomainPack(domainPack),
+    ownerConfirmed: body.owner_confirmed === true,
+  });
 }
 
 function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy = {}, context = {} }) {
@@ -815,12 +1064,15 @@ function buildConnectorSdkManifest() {
     },
     adapters: ["wordpress", "site_suite", "smart_desk", "crm", "ecommerce", "files", "external_api"],
     required_client_behaviour: [
+      "call_work_preflight_before_any_ai_work",
+      "recall_tenant_memory_before_planning",
       "send_tenant_id_on_every_request",
       "never_execute_when_executionAllowed_false",
       "ask_owner_when_requiresOwnerConfirmation_true",
       "store_evidence_id_for_sensitive_actions",
     ],
     core_routes: {
+      work_preflight: "/v1/work/preflight",
       gate: "/v1/ai-gateway/evaluate",
       software_language_gate: "/v1/software-language-gate/evaluate",
       control_plane: "/v1/control-plane/overview",
@@ -832,6 +1084,21 @@ function buildConnectorSdkManifest() {
       evidence: "/v1/evidence/recent",
       customer_intelligence_contract: "/v1/customer-intelligence/contract",
       customer_intelligence_readiness: "/v1/customer-intelligence/readiness",
+      intelligence_workflow: "/v1/intelligence/workflow",
+      intelligence_scenarios: "/v1/intelligence/scenarios",
+      intelligence_hypotheses: "/v1/intelligence/hypotheses/rank",
+      intelligence_events: "/v1/intelligence/events/evaluate",
+      intelligence_counterfactuals: "/v1/intelligence/counterfactuals/evaluate",
+      intelligence_decision: "/v1/intelligence/decisions/select",
+      intelligence_outcome_verify: "/v1/intelligence/outcomes/verify",
+      intelligence_outcome_record: "/v1/intelligence/outcomes/record",
+      intelligence_calibration: "/v1/intelligence/calibration",
+      software_intelligence_components: "/v1/software-intelligence/components",
+      software_intelligence_authorize: "/v1/software-intelligence/authorize",
+      software_intelligence_analyze: "/v1/software-intelligence/analyze",
+      software_intelligence_jobs_submit: "/v1/software-intelligence/jobs",
+      software_intelligence_jobs_list: "/v1/software-intelligence/jobs",
+      software_intelligence_job_get: "/v1/software-intelligence/jobs/:jobId",
     },
   };
 }
@@ -2914,6 +3181,8 @@ export function createUniversalCoreService(options = {}) {
   const evidence = evidenceStore(storageRoot);
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
+  const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
+  const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
   const app = express();
 
   app.disable("x-powered-by");
@@ -2922,7 +3191,7 @@ export function createUniversalCoreService(options = {}) {
   app.get("/healthz", (req, res) => {
     res.json({
       ok: true,
-      service: "skinharmony-universal-core-service",
+      service: SERVICE_NAME,
       version: SERVICE_VERSION,
       mode: process.env.NODE_ENV || "development",
       render_ready: true,
@@ -3036,7 +3305,10 @@ export function createUniversalCoreService(options = {}) {
       const tenant = tenants.get(setupRecord.tenant_id);
       const branchResolution = resolveBranchesForKey(keyResult.record);
       const entitlement = buildEntitlement(keyResult.record, branchResolution);
-      const tenantPolicy = getTenantPolicy(setupRecord.tenant_id, setupRecord.plan);
+      const tenantPolicy = getTenantPolicy(setupRecord.tenant_id, setupRecord.plan, {
+        brandScope: keyResult.record.brand_scope,
+        metadata: keyResult.record.metadata,
+      });
       const profile = buildBootstrapProfile({
         keyRecord: keyResult.record,
         tenant,
@@ -3081,7 +3353,10 @@ export function createUniversalCoreService(options = {}) {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenant = tenants.get(req.tenantId);
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const profile = buildBootstrapProfile({
       keyRecord: req.coreKey,
       tenant,
@@ -3104,6 +3379,146 @@ export function createUniversalCoreService(options = {}) {
       tenants: visible,
       schema_version: "tenant_registry_v1",
       rule: "Universal Core resta agnostico: settore, dizionario e policy entrano dal tenant registry.",
+    });
+  });
+
+  app.get("/v1/domain-packs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    audit.append("core_domain_pack_catalog_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: current.id });
+    res.json({
+      ok: true,
+      schema_version: "core_domain_pack_catalog_v1",
+      current: publicDomainPack(current),
+      packs: listDomainPacks(),
+      rule: "Il runtime e orizzontale; il Core risolve un solo domain pack dal tenant e impedisce override lato client.",
+    });
+  });
+
+  app.get("/v1/domain-packs/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    res.json({ ok: true, tenant_id: req.tenantId, domain_pack: publicDomainPack(current) });
+  });
+
+  app.get("/v1/nira/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    const catalog = nyraBranchCatalog(current.id);
+    audit.append("core_nyra_branch_catalog_read", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      domain_pack_id: current.id,
+      branch_count: catalog.branches.length,
+    });
+    res.json({ ok: true, tenant_id: req.tenantId, catalog });
+  });
+
+  app.post("/v1/research/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    try {
+      const plan = buildResearchPlan(req.body || {});
+      const nyraNetwork = routeNyraBranches({
+        text: plan.question,
+        requestedBranches: plan.nyra_branches,
+        domainPackId: domainPackAccess.pack.id,
+      });
+      audit.append("core_research_plan_created", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        plan_id: plan.plan_id,
+        risk: plan.classification.risk,
+        temporal: plan.classification.temporal,
+        allowed_domain_count: plan.source_policy.allowed_domains.length,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        domain_pack: publicDomainPack(domainPackAccess.pack),
+        research_plan: plan,
+        nyra_neural_network: nyraNetwork,
+        guardrail: {
+          execution_allowed: false,
+          browsing_performed: false,
+          tenant_scoped_ingest_required: true,
+          automatic_knowledge_promotion: false,
+        },
+      });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_plan_invalid");
+    }
+  });
+
+  app.post("/v1/research/validate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    try {
+      const evidencePack = req.body?.evidence_pack && typeof req.body.evidence_pack === "object"
+        ? req.body.evidence_pack
+        : req.body || {};
+      const validation = validateResearchEvidence(evidencePack);
+      audit.append("core_research_evidence_validated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        validation_id: validation.validation_id,
+        state: validation.state,
+        quality_score: validation.quality_score,
+        source_count: validation.source_count,
+        claim_count: validation.claim_assessments.length,
+        prompt_injection_count: validation.threat_assessment.prompt_injection_count,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        domain_pack: publicDomainPack(domainPackAccess.pack),
+        validation,
+        guardrail: {
+          execution_allowed: false,
+          persistence_performed: false,
+          automatic_validation_allowed: false,
+          global_promotion_allowed: false,
+        },
+      });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_evidence_invalid");
+    }
+  });
+
+  app.post("/v1/work/preflight", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const requestText = String(req.body?.request || req.body?.message || req.body?.text || req.body?.task || req.body?.action_label || "").trim();
+    if (!requestText) return publicError(res, 400, "work_preflight_request_required");
+    if (requestText.length > 20_000) return publicError(res, 413, "work_preflight_request_too_long");
+    if (req.body?.nyra_branches !== undefined && !Array.isArray(req.body.nyra_branches)) {
+      return publicError(res, 400, "nyra_branches_must_be_array");
+    }
+    if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > 20) {
+      return publicError(res, 400, "nyra_branch_request_limit_exceeded");
+    }
+    const preflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+    });
+    audit.append("core_work_preflight_completed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      preflight_id: preflight.preflight_id,
+      state: preflight.state,
+      memory_revision: preflight.memory_first.revision,
+      selected_branches: preflight.core_route.selected_branches,
+      preferred_route: preflight.tool_routing.preferred_route.id,
+      owner_confirmation_required: preflight.governance.owner_confirmation_required,
+    });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      work_preflight: preflight,
+      guardrail: {
+        mandatory_before_work: true,
+        execution_allowed: false,
+        fail_closed_when_unavailable: true,
+      },
     });
   });
 
@@ -3461,6 +3876,124 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result });
   });
 
+  function intelligenceResponse(req, res, analysisType, analyze) {
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
+    const result = analyze({ ...(req.body || {}), memory_context: memoryContext.value });
+    audit.append("core_intelligence_analyzed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      analysis_type: analysisType,
+      schema_version: result.schema_version,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      result,
+      memory_context: memoryContext.value ? {
+        schema_version: memoryContext.value.schema_version,
+        tenant_id: memoryContext.value.tenant_id,
+        revision: memoryContext.value.revision,
+        recalled: true,
+      } : { tenant_id: req.tenantId, recalled: false },
+      execution_allowed: false,
+    });
+  }
+
+  app.post("/v1/intelligence/workflow", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    intelligenceResponse(req, res, "workflow", runIntelligenceWorkflow);
+  });
+
+  app.post("/v1/intelligence/scenarios", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    intelligenceResponse(req, res, "scenarios", analyzeScenarios);
+  });
+
+  app.post("/v1/intelligence/hypotheses/rank", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!Array.isArray(req.body?.hypotheses) || !req.body.hypotheses.length) return publicError(res, 400, "hypotheses_required");
+    intelligenceResponse(req, res, "hypothesis_ranking", rankHypotheses);
+  });
+
+  app.post("/v1/intelligence/events/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!Array.isArray(req.body?.events) || !req.body.events.length) return publicError(res, 400, "events_required");
+    intelligenceResponse(req, res, "event_probability", evaluateEvents);
+  });
+
+  app.post("/v1/intelligence/counterfactuals/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!req.body?.baseline || !Array.isArray(req.body?.alternatives) || !req.body.alternatives.length) {
+      return publicError(res, 400, "baseline_and_alternatives_required");
+    }
+    intelligenceResponse(req, res, "counterfactual_analysis", evaluateCounterfactuals);
+  });
+
+  app.post("/v1/intelligence/decisions/select", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const options = req.body?.options || req.body?.alternatives;
+    if (!Array.isArray(options) || options.length < 2) return publicError(res, 400, "at_least_two_options_required");
+    intelligenceResponse(req, res, "decision_selection", selectDecision);
+  });
+
+  app.post("/v1/intelligence/outcomes/verify", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
+      return publicError(res, 400, "predicted_probability_required");
+    }
+    if (req.body?.actual_outcome === undefined) return publicError(res, 400, "actual_outcome_required");
+    intelligenceResponse(req, res, "outcome_verification", verifyOutcome);
+  });
+
+  app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    if (!String(req.body?.outcome_id || "").trim()) return publicError(res, 400, "outcome_id_required");
+    if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
+      return publicError(res, 400, "predicted_probability_required");
+    }
+    if (req.body?.actual_outcome === undefined) return publicError(res, 400, "actual_outcome_required");
+    if (![true, false, 0, 1, "occurred", "not_occurred"].includes(req.body.actual_outcome)) {
+      return publicError(res, 400, "actual_outcome_invalid");
+    }
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
+    const verified = verifyOutcome({ ...(req.body || {}), memory_context: memoryContext.value });
+    const stored = intelligenceOutcomes.append(req.tenantId, verified);
+    if (stored.conflict) {
+      audit.append("core_intelligence_outcome_conflict", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        outcome_id: stored.record.outcome_id,
+      });
+      return publicError(res, 409, "outcome_id_conflict", "The outcome_id already exists with different verified data.");
+    }
+    const calibration = intelligenceOutcomes.calibration(req.tenantId);
+    const evidenceRecord = evidence.append(req.tenantId, "intelligence_outcome_recorded", {
+      outcome_id: stored.record.outcome_id,
+      prediction_id: stored.record.prediction_id,
+      brier_score: stored.record.brier_score,
+      duplicate: stored.duplicate,
+    });
+    audit.append("core_intelligence_outcome_recorded", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      outcome_id: stored.record.outcome_id,
+      duplicate: stored.duplicate,
+    });
+    res.status(stored.duplicate ? 200 : 201).json({
+      ok: true,
+      tenant_id: req.tenantId,
+      outcome: stored.record,
+      duplicate: stored.duplicate,
+      calibration,
+      evidence: evidenceRecord,
+      live_weight_mutation_enabled: false,
+    });
+  });
+
+  app.get("/v1/intelligence/calibration", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const calibration = intelligenceOutcomes.calibration(req.tenantId);
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      calibration,
+      recent_outcomes: intelligenceOutcomes.recent(req.tenantId, Number(req.query.limit || 20)),
+    });
+  });
+
   app.get("/v1/compliance/claim-shield/status", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
     res.json({
       ok: true,
@@ -3506,11 +4039,24 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+    });
+    const riskClassification = classifyActionRisk(req.body || {});
     const input = buildActionEvaluatorInput(req, req.coreKey);
     const output = runUniversalCore(input);
-    const decisionContract = normalizeDecisionContract(output, {
+    const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
       action_type: req.body?.action_type || input.context.metadata.action_type,
       publish_intent: req.body?.publish_intent === true,
+    }), riskClassification);
+    const authorization = buildActionAuthorization(decisionContract, {
+      ...(req.body || {}),
+      operation_class: req.body?.operation_class || riskClassification.operation_class,
     });
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
@@ -3520,16 +4066,26 @@ export function createUniversalCoreService(options = {}) {
       state: decisionContract.state,
       control_level: decisionContract.control_level,
       publish_safe: decisionContract.publish_safe,
+      preflight_id: workPreflight.preflight_id,
+      authorization_state: authorization.state,
+      action_classification: riskClassification.classification,
+      action_risk_band: riskClassification.risk_band,
+      action_reason_codes: riskClassification.reason_codes,
+      confirmation_satisfied: authorization.confirmation_satisfied,
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       decision_contract: decisionContract,
       output,
+      work_preflight: workPreflight,
+      authorization,
+      risk_classification: riskClassification,
       guardrail: {
         destructive_automation: false,
-        execution_allowed: false,
-        owner_confirmation_required: decisionContract.control_level !== "observe",
+        execution_allowed: authorization.allowed,
+        mandatory_preflight_completed: true,
+        owner_confirmation_required: authorization.confirmation_required && !authorization.confirmation_satisfied,
         mode: "core_action_gate",
       },
     });
@@ -3672,6 +4228,15 @@ export function createUniversalCoreService(options = {}) {
       return publicError(res, 400, "ai_gateway_payload_invalid", validation.errors.join(", "));
     }
 
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+    });
+
     const input = buildAiGatewayCoreInput({
       payload: req.body || {},
       tenantId: req.tenantId,
@@ -3699,6 +4264,7 @@ export function createUniversalCoreService(options = {}) {
       execution_allowed: verdict.executionAllowed,
       owner_confirmation_required: verdict.requiresOwnerConfirmation,
       next_step: verdict.action_mediation?.next_step,
+      preflight_id: workPreflight.preflight_id,
     });
     return res.json({
       ok: true,
@@ -3708,8 +4274,10 @@ export function createUniversalCoreService(options = {}) {
         adapters_separated: true,
         no_duplicated_logic: true,
         openai_call_executed: false,
+        mandatory_preflight_completed: true,
         audit_event: "core_ai_gateway_evaluated",
       },
+      work_preflight: workPreflight,
       verdict,
       benchmark,
     });
@@ -3830,7 +4398,38 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+  app.get("/v1/agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const pack = resolveDomainPackForKey(req.coreKey);
+    audit.append("multi_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: pack.id });
+    res.json({ ok: true, ...multiAgentRegistry({ domainPackId: pack.id }) });
+  });
+
+  app.post("/v1/agents/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const plan = planMultiAgentRun({
+      domainPackId: domainPackAccess.pack.id,
+      tenantId: req.tenantId,
+      input: req.body || {},
+      requestedAgents: req.body?.requested_agents,
+    });
+    audit.append("multi_agent_plan_created", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      domain_pack_id: domainPackAccess.pack.id,
+      selected_agents: plan.selection.map((item) => item.id),
+      model_calls_budget: plan.credit_control.model_calls_budget,
+    });
+    res.json({ ok: true, ...plan });
+  });
+
+  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -3843,17 +4442,30 @@ export function createUniversalCoreService(options = {}) {
       userInput: req.body?.user_input || req.body?.input || "",
       locale: req.body?.locale || "it",
     });
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+      branchContext: context,
+    });
     audit.append("core_codex_context_composed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
       tier: context.tier,
       selected_branches: context.selected_branches,
       denied_branches: context.denied_branches,
+      memory_revision: memoryContext.value?.revision || 0,
+      preflight_id: workPreflight.preflight_id,
     });
     res.json({
       ok: true,
+      domain_pack: publicDomainPack(domainPackAccess.pack),
       context,
+      memory_context: memoryContext.value,
+      work_preflight: workPreflight,
       tenant_policy: tenantPolicy,
       decision_contract: normalizeDecisionContract(runUniversalCore({
         request_id: req.body?.request_id || `codex_context_${crypto.randomUUID()}`,
@@ -3874,7 +4486,11 @@ export function createUniversalCoreService(options = {}) {
             category: "codex",
             normalized_score: context.selected_branches.length ? 35 : 45,
             confidence_hint: 80,
-            evidence: [{ label: context.selected_branches.length ? "Rami specializzati disponibili" : "Nessun ramo richiesto/autorizzato: uso guardiano generico", value: true }],
+            evidence: [
+              { label: context.selected_branches.length ? "Rami specializzati disponibili" : "Nessun ramo richiesto/autorizzato: uso guardiano generico", value: true },
+              { label: "Memorie tenant rilevanti", value: memoryContext.value?.relevant_memories.length || 0 },
+              { label: "Handoff AI pendenti", value: memoryContext.value?.pending_handoffs.length || 0 },
+            ],
             tags: ["codex", context.selected_branches.length ? "branch_context" : "generic_guard"],
           }),
         ],
@@ -3885,12 +4501,17 @@ export function createUniversalCoreService(options = {}) {
         destructive_automation: false,
         execution_allowed: false,
         openai_call_executed: false,
+        mandatory_preflight_completed: true,
         mode: "context_composition_only",
       },
     });
   });
 
   app.post("/v1/codex/guard", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
     const requestedBranches = Array.isArray(req.body?.branches)
       ? req.body.branches
       : Array.isArray(req.body?.requested_branches)
@@ -3903,7 +4524,10 @@ export function createUniversalCoreService(options = {}) {
       userInput: req.body?.user_input || req.body?.input || "",
       locale: req.body?.locale || "it",
     });
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const evaluatorInput = buildActionEvaluatorInput({
       get: () => "",
       body: {
@@ -3915,7 +4539,7 @@ export function createUniversalCoreService(options = {}) {
         risk_hint: req.body?.risk_hint ?? (context.selected_branches.length ? 35 : 45),
         evidence: [
           { label: context.selected_branches.length ? "Rami Core disponibili per il task" : "Nessun ramo disponibile: guardiano generico Core attivo", value: context.selected_branches.length },
-          { label: tenantPolicy.source === "tenant_registry" ? "Tenant policy specifica caricata" : "Policy tenant generica caricata", value: tenantPolicy.source },
+          { label: tenantPolicy.source === "domain_pack_registry" ? "Domain pack tenant specifico caricato" : "Policy tenant generica caricata", value: tenantPolicy.source },
           ...(Array.isArray(req.body?.evidence) ? req.body.evidence : []),
         ],
       },
@@ -3931,6 +4555,11 @@ export function createUniversalCoreService(options = {}) {
       actionType: req.body?.action_type || "codex_automation",
     });
     response.tenant_policy = tenantPolicy;
+    response.work_preflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+      branchContext: context,
+    });
     audit.append("core_codex_guard_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -3940,15 +4569,33 @@ export function createUniversalCoreService(options = {}) {
       control_level: response.decision_contract.control_level,
       selected_branches: response.codex_guard.selected_branches,
       denied_branches: response.codex_guard.denied_branches,
+      preflight_id: response.work_preflight.preflight_id,
     });
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const niraText = String(req.body?.text || req.body?.request || req.body?.task || "").trim();
+    if (!niraText) return publicError(res, 400, "nira_text_required");
+    if (niraText.length > 20_000) return publicError(res, 413, "nira_text_too_long");
+    const requestedNyraBranches = req.body?.nyra_branches;
+    if (requestedNyraBranches !== undefined && !Array.isArray(requestedNyraBranches)) {
+      return publicError(res, 400, "nyra_branches_must_be_array");
+    }
+    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.length > 20) {
+      return publicError(res, 400, "nyra_branch_request_limit_exceeded");
+    }
+    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(String(id || "")))) {
+      return publicError(res, 400, "invalid_nyra_branch_id");
+    }
     const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
     const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
-    const requestedBranches = inferNiraBranchRequest(req.body || {});
+    const requestedBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(req.body || {})])];
     const branchContext = composeBranchContext({
       keyRecord: req.coreKey,
       requestedBranches,
@@ -3956,14 +4603,31 @@ export function createUniversalCoreService(options = {}) {
       userInput: String(req.body?.text || req.body?.request || req.body?.task || ""),
       locale: req.body?.locale || "it",
     });
+    const nyraNetwork = routeNyraBranches({
+      text: niraText,
+      requestedBranches: [
+        ...MANDATORY_NYRA_WORK_BRANCHES,
+        ...(Array.isArray(requestedNyraBranches) ? requestedNyraBranches : []),
+      ],
+      domainPackId: domainPackAccess.pack.id,
+    });
+    const workPreflight = composeMandatoryWorkPreflight(req, {
+      domainPack: domainPackAccess.pack,
+      memoryContext: memoryContext.value,
+      branchContext,
+      nyraNetwork,
+    });
     const result = runNiraUniversalCoreBridge({
       request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
-      text: String(req.body?.text || req.body?.request || req.body?.task || ""),
+      text: niraText,
       tenant_id: req.tenantId,
+      domain: domainPackAccess.pack.domain,
+      domain_pack: domainPackAccess.pack.id,
       owner_verified: ownerVerified,
       access_scope: ownerVerified ? "owner_full" : "limited",
       mode: requestedGodMode ? "god_mode_owner_only" : "standard",
       target_system: req.body?.target_system || "universal_core",
+      memory_context: memoryContext.value || undefined,
       scenario_candidates: Array.isArray(req.body?.scenario_candidates)
         ? req.body.scenario_candidates
         : (Array.isArray(req.body?.scenarios) ? req.body.scenarios : undefined),
@@ -3988,7 +4652,9 @@ export function createUniversalCoreService(options = {}) {
       automation_plan: {
         ...result.automation_plan,
         execution_allowed: false,
-        next_step: "Preparare runbook/evidence e chiedere conferma owner prima di ogni scrittura reale.",
+        next_step: result.automation_plan.owner_confirmation_required
+          ? "Preparare runbook/evidence e chiedere conferma owner prima di ogni scrittura reale."
+          : "Procedere soltanto in lettura, analisi o proposta nel perimetro tenant.",
       },
       core_branch_diagnostics: {
         ...(result.core_branch_diagnostics || {}),
@@ -3998,6 +4664,10 @@ export function createUniversalCoreService(options = {}) {
         actual_selected_groups: branchContext.selected_groups,
         actual_denied_groups: branchContext.denied_groups,
       },
+      domain_pack: publicDomainPack(domainPackAccess.pack),
+      nyra_neural_network: nyraNetwork,
+      memory_context: memoryContext.value,
+      work_preflight: workPreflight,
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -4009,11 +4679,17 @@ export function createUniversalCoreService(options = {}) {
       execution_allowed: guardedResult.automation_plan.execution_allowed,
       selected_branches: guardedResult.core_branch_diagnostics.actual_selected_branches,
       denied_branches: guardedResult.core_branch_diagnostics.actual_denied_branches,
+      nyra_opened_branches: nyraNetwork.opened_branches.map((item) => item.id),
+      memory_revision: memoryContext.value?.revision || 0,
+      preflight_id: workPreflight.preflight_id,
     });
     res.json({
       ok: true,
       tenant_id: req.tenantId,
+      domain_pack: publicDomainPack(domainPackAccess.pack),
       result: guardedResult,
+      memory_context: memoryContext.value,
+      work_preflight: workPreflight,
       branch_context: {
         selected_branches: branchContext.selected_branches,
         denied_branches: branchContext.denied_branches,
@@ -4023,7 +4699,8 @@ export function createUniversalCoreService(options = {}) {
       },
       guardrail: {
         execution_allowed: false,
-        owner_confirmation_required: true,
+        mandatory_preflight_completed: true,
+        owner_confirmation_required: guardedResult.automation_plan.owner_confirmation_required,
         audit_required: true,
         mode: "nira_prepare_core_select_no_auto_execute",
       },
@@ -4077,6 +4754,148 @@ export function createUniversalCoreService(options = {}) {
         languagetool_enabled: process.env.LANGUAGETOOL_DISABLED === "1" || process.env.NODE_ENV === "test" ? false : true,
       },
     });
+  });
+
+  app.get("/v1/software-intelligence/components", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) {
+      audit.append("core_branch_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+      });
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      branch: "software_binary_intelligence",
+      maximum_artifact_bytes: MAX_EMBEDDED_ARTIFACT_BYTES,
+      manifest: universalSoftwareComponentManifest({ configuredWorkers: Object.keys(options.softwareWorkerAdapters || {}) }),
+      authorization_required: true,
+      execution_supported: false,
+    });
+  });
+
+  app.post("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) return publicError(res, 403, "branch_not_allowed");
+    try {
+      const verifiedGovernance = typeof options.softwareAuthorizationVerifier === "function"
+        ? options.softwareAuthorizationVerifier({ tenant_id: req.tenantId, request: req.body, key: req.coreKey })
+        : null;
+      const job = softwareJobs.submit(req.body || {}, {
+        tenant_id: req.tenantId,
+        requested_tenant_id: req.body?.tenant_id,
+        memory_available: options.memoryAvailable !== false,
+        core_available: options.coreAvailable !== false,
+        core_authorized: verifiedGovernance?.authorized === true,
+        target_allowlist: verifiedGovernance?.target_allowlist || [],
+      });
+      audit.append("core_software_job_submitted", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        job_id: job.job_id,
+        mode: job.mode,
+        raw_artifact_persisted: false,
+      });
+      return res.status(202).json({ ok: true, job });
+    } catch (error) {
+      const code = String(error?.message || "software_job_rejected");
+      const status = code === "software_artifact_too_large" ? 413 : 400;
+      return publicError(res, status, code);
+    }
+  });
+
+  app.post("/v1/software-intelligence/authorize", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    if (!options.softwareAuthorizationSecret) return publicError(res, 503, "software_authorization_issuer_unavailable");
+    if (!req.body?.memory_context || typeof req.body.memory_context !== "object") return publicError(res, 400, "software_memory_required");
+    const memoryContext = normalizeTenantMemoryContext(req.body.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const input = buildActionEvaluatorInput(req, req.coreKey);
+    const output = runUniversalCore(input);
+    const decisionContract = normalizeDecisionContract(output, { action_type: "software_analysis", publish_intent: false });
+    const authorization = buildActionAuthorization(decisionContract, { ...req.body, action_type: "software_analysis", operation_class: "governed_deep_software_analysis" });
+    if (!authorization.allowed) return res.status(403).json({ ok: false, error: authorization.state, authorization, decision_contract: decisionContract });
+    try {
+      const coreGovernance = issueSoftwareAuthorizationEnvelope({ secret: options.softwareAuthorizationSecret, tenantId: req.tenantId, allowedModes: req.body.allowed_modes, targetAllowlist: req.body.target_allowlist || [] });
+      audit.append("core_software_authorization_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, modes: req.body.allowed_modes, target_count: req.body.target_allowlist?.length || 0 });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, authorization, core_governance: coreGovernance });
+    } catch (error) { return publicError(res, 400, error.message || "software_authorization_failed"); }
+  });
+
+  app.get("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, tenant_id: req.tenantId, jobs: softwareJobs.list(req.tenantId) });
+  });
+
+  app.get("/v1/software-intelligence/jobs/:jobId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const job = softwareJobs.get(req.params.jobId, req.tenantId);
+    if (!job) return publicError(res, 404, "software_job_not_found");
+    return res.json({ ok: true, job });
+  });
+
+  app.post("/v1/software-intelligence/correlate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const correlation = softwareJobs.correlate(req.body?.job_ids, req.tenantId);
+      audit.append("core_software_evidence_correlated", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, source_job_ids: correlation.source_job_ids, raw_content_persisted: false });
+      return res.json({ ok: true, correlation });
+    } catch (error) { return publicError(res, 400, error.message || "software_correlation_failed"); }
+  });
+
+  app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
+    if (!resolution.selected_branches.includes("software_binary_intelligence")) {
+      audit.append("core_branch_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+      });
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
+
+    try {
+      const analysis = analyzeEmbeddedSoftwareArtifact({
+        artifact: req.body?.artifact,
+        authorization: req.body?.authorization,
+        options: req.body?.options,
+      });
+      audit.append("core_software_artifact_analyzed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+        analysis_id: analysis.analysis_id,
+        artifact_sha256: analysis.artifact.sha256,
+        artifact_bytes: analysis.artifact.byte_length,
+        artifact_format: analysis.executable.format,
+        artifact_architecture: analysis.executable.architecture,
+        authorization_basis: analysis.authorization.basis,
+        purpose: analysis.authorization.purpose,
+        raw_content_persisted: false,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        branch: "software_binary_intelligence",
+        analysis,
+        guardrail: {
+          execution_allowed: false,
+          static_observation_only: true,
+          raw_content_persisted: false,
+          patch_requires_separate_core_verdict: true,
+          mode: "embedded_authorized_static_analysis",
+        },
+      });
+    } catch (error) {
+      const code = String(error?.message || "software_analysis_failed");
+      const status = code === "software_artifact_too_large" ? 413 : 400;
+      audit.append("core_software_artifact_analysis_rejected", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch: "software_binary_intelligence",
+        reason: code,
+      });
+      return publicError(res, status, code);
+    }
   });
 
   app.post("/v1/branches/:branch/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -4166,7 +4985,10 @@ export function createUniversalCoreService(options = {}) {
     const policy = req.body?.policy || {};
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const mediation = evaluatePolicyEngine({
       tenantPolicy,
       entitlement,
@@ -4188,7 +5010,10 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/action-mediation/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
-    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier);
+    const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
+      brandScope: req.coreKey?.brand_scope,
+      metadata: req.coreKey?.metadata,
+    });
     const result = evaluatePolicyEngine({
       tenantPolicy,
       entitlement,

@@ -49,13 +49,23 @@ import { branchSmartDeskOperationsGuard } from "./branch-smartdesk-operations-gu
 import { branchBeautyProtocolGuard } from "./branch-beauty-protocol-guard.js";
 import { branchChangeImpactOrchestration } from "./branch-change-impact-orchestration.js";
 import { branchSoftwareSystemsIntelligence } from "./branch-software-systems-intelligence.js";
+import { branchSoftwareBinaryIntelligence } from "./branch-software-binary-intelligence.js";
 import { branchHardwareSystemsIntelligence } from "./branch-hardware-systems-intelligence.js";
 import { branchSoftwareSecurityIntelligence } from "./branch-software-security-intelligence.js";
 import { branchNetworkSecurityIntelligence } from "./branch-network-security-intelligence.js";
 import { branchInfrastructureRuntimeIntelligence } from "./branch-infrastructure-runtime-intelligence.js";
 import { branchLearningKnowledgeIntelligence } from "./branch-learning-knowledge-intelligence.js";
+import { branchWorkIntakeIntelligence } from "./branch-work-intake-intelligence.js";
+import { branchResearchEvidenceIntelligence } from "./branch-research-evidence-intelligence.js";
+import { branchPlanningPriorityIntelligence } from "./branch-planning-priority-intelligence.js";
+import { branchExecutionCoordinationIntelligence } from "./branch-execution-coordination-intelligence.js";
+import { branchQualityVerificationIntelligence } from "./branch-quality-verification-intelligence.js";
+import { branchAdaptiveLearningIntelligence } from "./branch-adaptive-learning-intelligence.js";
+import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identity-delegation-guard.js";
+import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
 import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
+import { branchAllowedForDomainPack, resolveDomainPackForKey } from "../src/domainPacks.js";
 
 const BRANCHES = [
   branchDeskBase,
@@ -108,11 +118,20 @@ const BRANCHES = [
   branchSmartDeskOperationsGuard,
   branchBeautyProtocolGuard,
   branchSoftwareSystemsIntelligence,
+  branchSoftwareBinaryIntelligence,
   branchHardwareSystemsIntelligence,
   branchSoftwareSecurityIntelligence,
   branchNetworkSecurityIntelligence,
   branchInfrastructureRuntimeIntelligence,
   branchLearningKnowledgeIntelligence,
+  branchWorkIntakeIntelligence,
+  branchResearchEvidenceIntelligence,
+  branchPlanningPriorityIntelligence,
+  branchExecutionCoordinationIntelligence,
+  branchQualityVerificationIntelligence,
+  branchAdaptiveLearningIntelligence,
+  branchWorkloadIdentityDelegationGuard,
+  branchDecisionProvenanceIntelligence,
   branchBeautyVerticalOrchestration,
   branchChangeImpactOrchestration,
 ];
@@ -134,6 +153,7 @@ const CODEX_GUARD_BRANCHES = [
   "observability_roi_guard",
   "legal_privacy_compliance_guard",
   "agent_orchestration_guard",
+  "workload_identity_delegation_guard",
   "runtime_deployment_scaling_guard",
   "change_impact_orchestration",
 ];
@@ -162,6 +182,7 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
 
 const SOFTWARE_CORTEX_BRANCHES = [
   "software_systems_intelligence",
+  "software_binary_intelligence",
   "codex_code_safety",
   "codex_architecture_guard",
   "codex_test_strategy",
@@ -188,11 +209,26 @@ const SECURITY_CORTEX_BRANCHES = [
   "runtime_deployment_scaling_guard",
 ];
 
+export const HORIZONTAL_WORK_BRANCHES = Object.freeze([
+  "work_intake_intelligence",
+  "research_evidence_intelligence",
+  "planning_priority_intelligence",
+  "execution_coordination_intelligence",
+  "quality_verification_intelligence",
+  "adaptive_learning_intelligence",
+  "decision_provenance_intelligence",
+]);
+
 const LEARNING_CORTEX_BRANCHES = [
+  "adaptive_learning_intelligence",
+  "research_evidence_intelligence",
+  "quality_verification_intelligence",
   "learning_knowledge_intelligence",
   "observability_roi_guard",
   "change_impact_orchestration",
   "agent_orchestration_guard",
+  "workload_identity_delegation_guard",
+  "decision_provenance_intelligence",
   "runtime_deployment_scaling_guard",
 ];
 
@@ -211,6 +247,21 @@ const BEAUTY_CORTEX_BRANCHES = [
 ];
 
 export const BRANCH_GROUPS = Object.freeze({
+  work_cortex: {
+    label: "Horizontal Work Cortex",
+    description: "Intake, ricerca, piano, coordinamento parallelo, verifica e apprendimento governato per qualsiasi dominio.",
+    branches: HORIZONTAL_WORK_BRANCHES,
+  },
+  identity_delegation: {
+    label: "Identity & Delegation",
+    description: "Identita verificabile di agenti/workload, deleghe limitate, audience binding, revoca e trust-domain isolation.",
+    branches: ["workload_identity_delegation_guard", "agent_orchestration_guard", "consent_ledger_guard", "legal_privacy_compliance_guard"],
+  },
+  decision_provenance: {
+    label: "Decision Provenance",
+    description: "Catena richiesta-policy-evidenza-verdict-conferma-reversal per decisioni governate e riesaminabili.",
+    branches: ["decision_provenance_intelligence", "research_evidence_intelligence", "quality_verification_intelligence", "change_impact_orchestration", "consent_ledger_guard"],
+  },
   customer_intelligence: {
     label: "Customer Intelligence",
     description: "Profilo cliente/account, consensi, eventi, Customer 360, journey, lifecycle e next best action controllata.",
@@ -268,6 +319,21 @@ export const BRANCH_GROUPS = Object.freeze({
     description: "Gerarchia software profonda: architettura, contratti, test, release, rollback, audit e consolidamento.",
     branches: SOFTWARE_CORTEX_BRANCHES,
   },
+  software_intelligence_lab: {
+    label: "Software Intelligence Lab",
+    description: "Analisi incorporata di software autorizzato: prove binarie, compatibilita, specifica clean-room, sandbox e regressione.",
+    branches: [
+      "software_binary_intelligence",
+      "software_systems_intelligence",
+      "software_security_intelligence",
+      "research_evidence_intelligence",
+      "quality_verification_intelligence",
+      "codex_code_safety",
+      "codex_test_strategy",
+      "codex_release_gate",
+      "legal_privacy_compliance_guard",
+    ],
+  },
   hardware_cortex: {
     label: "Hardware Cortex",
     description: "Catena device-to-runtime: transport, sensor, pairing, readiness, safety, diagnostics e runtime feedback.",
@@ -291,12 +357,12 @@ export const BRANCH_GROUPS = Object.freeze({
   security_defense: {
     label: "Security / Defensive Intelligence",
     description: "Tenant isolation, segreti, audit, policy, hardening e difesa da automazioni rischiose.",
-    branches: ["codex_security_guard", "codex_code_safety", "codex_release_gate", "codex_architecture_guard", "legal_privacy_compliance_guard", "agent_orchestration_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "observability_roi_guard"],
+    branches: ["codex_security_guard", "codex_code_safety", "codex_release_gate", "codex_architecture_guard", "legal_privacy_compliance_guard", "agent_orchestration_guard", "workload_identity_delegation_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "observability_roi_guard"],
   },
   automation_control: {
     label: "Automation Control",
     description: "Codex, agenti, runbook, audit, action mediation, deploy e ROI delle automazioni.",
-    branches: ["agent_orchestration_guard", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
+    branches: ["agent_orchestration_guard", "workload_identity_delegation_guard", "decision_provenance_intelligence", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
   },
   nyra_interpretation: {
     label: "Nyra Interpretation Layer",
@@ -306,15 +372,15 @@ export const BRANCH_GROUPS = Object.freeze({
 });
 
 export const BRANCH_PACKAGES = Object.freeze({
-  starter: ["front_desk_base"],
-  base: ["front_desk_base"],
-  pro: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
-  silver: ["front_desk_base", "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
-  gold: ["front_desk_base", "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
-  network: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
-  enterprise: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
-  internal: ["front_desk_base", "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
-  codex_guard: CODEX_GUARD_BRANCHES,
+  starter: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES],
+  base: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES],
+  pro: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
+  silver: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
+  gold: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
+  network: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
+  enterprise: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
+  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "software_binary_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
+  codex_guard: [...HORIZONTAL_WORK_BRANCHES, ...CODEX_GUARD_BRANCHES],
   omni_360: BRANCHES.map((branch) => branch.id),
 });
 
@@ -379,6 +445,7 @@ export function normalizeTier(tier) {
 }
 
 export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
+  const domainPack = resolveDomainPackForKey(keyRecord);
   const metadata = keyRecord?.metadata && typeof keyRecord.metadata === "object" ? keyRecord.metadata : {};
   const presetTier =
     keyRecord?.preset === "suite_connector" || keyRecord?.preset === "wordpress_connector"
@@ -393,18 +460,21 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
   const tier = normalizeTier(metadata.tier || keyRecord?.tier || presetTier);
   const fromPackage = BRANCH_PACKAGES[tier] || BRANCH_PACKAGES.base;
   const explicitSource = Array.isArray(metadata.active_branch_groups) && metadata.active_branch_groups.length
-    ? [...metadata.active_branch_groups, ...(Array.isArray(metadata.active_branches) ? metadata.active_branches : [])]
+    ? [...HORIZONTAL_WORK_BRANCHES, ...metadata.active_branch_groups, ...(Array.isArray(metadata.active_branches) ? metadata.active_branches : [])]
     : Array.isArray(metadata.active_branches)
-      ? metadata.active_branches.map(String)
+      ? [...HORIZONTAL_WORK_BRANCHES, ...metadata.active_branches.map(String)]
       : fromPackage;
   const expandedAllowed = expandBranchIds(explicitSource);
-  const allowed = [...new Set(expandedAllowed.expanded)].filter((id) => Boolean(getBranch(id)));
+  const allowed = [...new Set(expandedAllowed.expanded)]
+    .filter((id) => Boolean(getBranch(id)))
+    .filter((id) => branchAllowedForDomainPack(domainPack, id));
   const expandedRequested = expandBranchIds(requestedBranches);
   const requested = Array.isArray(requestedBranches) && requestedBranches.length
     ? expandedRequested.expanded.filter((id) => allowed.includes(id))
     : allowed;
 
   return {
+    domain_pack: { id: domainPack.id, version: domainPack.version, domain: domainPack.domain },
     tier,
     allowed_branches: allowed,
     allowed_groups: expandedAllowed.requested_groups,

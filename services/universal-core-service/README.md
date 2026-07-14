@@ -1,6 +1,19 @@
-# SkinHarmony Universal Core Service
+# Universal Core Service
 
 Servizio centrale Render-ready per esporre Universal Core come decision engine multi-tenant.
+
+## Contratto orizzontale
+
+Universal Core e Nyra sono runtime agnostici: nomi di tenant, brand o prodotto non attivano mai un verticale. Senza metadati espliciti della chiave Core il runtime usa sempre il pack `generic`.
+
+I verticali sono pack prodotto separati e allowlist-based:
+
+- `suite` abilita soltanto i rami Suite;
+- `smartdesk` abilita soltanto i rami SmartDesk;
+- `analyzer` abilita soltanto i rami Analyzer e beauty advisory;
+- `regulated_demo` resta un pack di riferimento senza rami prodotto.
+
+Un pack non può essere scelto nel payload della richiesta: viene risolto esclusivamente da `metadata.domain_pack_id` della chiave Core autenticata. Il vecchio pack ombrello `skinharmony` non esiste.
 
 Ruoli:
 - WordPress/Suite raccolgono dati e renderizzano UI.
@@ -19,6 +32,7 @@ Ruoli:
 - `GET /v1/snapshot`
 - `POST /v1/decision`
 - `POST /v1/action-evaluator`
+- `POST /v1/work/preflight`
 - `POST /v1/codex/context`
 - `POST /v1/codex/guard`
 - `POST /v1/flowcore/decision`
@@ -36,6 +50,54 @@ Ruoli:
 - `POST /v1/sync/wordpress`
 - `GET /v1/review/pending`
 - `POST /v1/review/action`
+- `POST /v1/intelligence/workflow`
+- `POST /v1/intelligence/scenarios`
+- `POST /v1/intelligence/hypotheses/rank`
+- `POST /v1/intelligence/events/evaluate`
+- `POST /v1/intelligence/counterfactuals/evaluate`
+- `POST /v1/intelligence/decisions/select`
+- `POST /v1/intelligence/outcomes/verify`
+- `POST /v1/intelligence/outcomes/record`
+- `GET /v1/intelligence/calibration`
+
+## Intelligence Contract v1
+
+Il runtime `0.8.0-full-intelligence` completa il flusso Nyra + Core con nove
+funzioni analitiche componibili. Il motore usa log-odds esplicite per combinare
+prior ed evidenze, conserva un intervallo di probabilita legato alla qualita dei
+dati e rende visibili tutti i contributi. Per le decisioni calcola valore atteso,
+utilita, rischio, costo e reversibilita; per gli esiti calcola Brier score, errore
+di calibrazione e sorpresa informativa.
+
+Il workflow completo segue questa sequenza:
+
+`memoria tenant -> ipotesi -> scenari -> eventi -> controfattuali -> decisione -> verifica -> calibrazione`
+
+Proprieta invarianti:
+
+- isolamento tenant e chiave Core dedicata;
+- memoria richiamata prima dell'analisi;
+- probabilita sempre accompagnata da assunzioni e incertezza;
+- esiti persistiti in modo idempotente con evidenza firmata;
+- calibrazione separata per tenant e nessuna auto-modifica opaca dei pesi;
+- `execution_allowed: false`: l'analisi consiglia, la governance autorizza.
+
+Esempio minimo:
+
+```json
+{
+  "request": "Valuta il lancio controllato",
+  "hypotheses": [
+    { "id": "growth", "prior_probability": 0.55, "evidence": [{ "direction": "supports", "strength": 0.8, "reliability": 0.9 }] },
+    { "id": "flat", "prior_probability": 0.45 }
+  ],
+  "options": [
+    { "id": "controlled", "probability": 0.72, "value": 88, "cost": 30, "risk": 24, "reversibility": 90 },
+    { "id": "full", "probability": 0.61, "value": 100, "cost": 48, "risk": 65, "reversibility": 30 }
+  ],
+  "generate_scenarios": true
+}
+```
 
 ## Chiavi
 
@@ -74,6 +136,25 @@ Forma stabile:
 Regola architetturale:
 
 `OpenAI genera. Universal Core decide. Nyra spiega. I client eseguono solo entro i limiti del Core.`
+
+## Work preflight obbligatorio
+
+Ogni AI collegata tramite Core/MCP deve passare la richiesta a
+`POST /v1/work/preflight` prima del lavoro. Il contratto e memory-first e produce:
+
+- memoria tenant richiamata, checkpoint e handoff rilevanti;
+- ruoli espliciti per owner, Nyra, Core, AI executor, verifica e apprendimento;
+- rami Core e rami/sotto-rami Nyra, massimo 20 sotto-rami per ramo;
+- task graph orizzontale con massimo sei corsie per ondata e join del Core;
+- selezione connector-first dello strumento e fallback condizionati;
+- criteri di verifica, audit, rollback e apprendimento verificato.
+
+Il preflight non autorizza mai l'esecuzione. Le API Nyra, Codex, Action Evaluator
+e AI Gateway includono automaticamente il contratto nelle risposte. Se il
+provider non ha fornito la memoria tenant, lo stato e `memory_recall_required` e
+il lavoro resta bloccato. Per GitHub la rotta preferita e l'app collegata; la CLI
+e vietata quando il connettore e disponibile. Merge e deploy richiedono verdict
+Core `ALLOW` e conferma owner.
 
 Endpoint:
 
@@ -222,3 +303,11 @@ Provare una decisione:
 ```bash
 npm run core:client -- decision --url http://127.0.0.1:8787 --key "$SH_CORE_KEY" --tenant skinharmony
 ```
+
+## Intelligence consolidation 0.8.1
+
+- Validated tenant memory is normalized before analysis and its provenance is exposed in every probability estimate.
+- Only verified directional memory can move probability; other verified memories can reduce uncertainty without being treated as favorable evidence.
+- Calibration now reports probability buckets, expected calibration error, domain and horizon cohorts.
+- Verified outcomes use atomic per-record tenant storage, preserve legacy reads and reject conflicting reuse of an outcome ID.
+- Live weight mutation remains disabled and every execution still requires the existing Core governance boundary.
