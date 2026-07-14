@@ -25,7 +25,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.8.3-agent-presence");
+  assert.equal(health.version, "0.8.4-stable-chat-presence");
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
@@ -223,6 +223,53 @@ test("binds five concurrent MCP chats to distinct stable signatures", async () =
     const conflict = await call("mcp-named-session", "codex-beta");
     assert.equal(conflict.response.status, 409);
     assert.equal(conflict.body.error.message, "agent_presence_conflict");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("keeps one logical chat signature stable across rotated MCP transports", async () => {
+  const app = createApp(config, {
+    handlers: { core_health: async () => ({ structuredContent: { ok: true }, content: [] }) },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const call = async (transport, sessionId, agentId = "chatgpt-chat-one") => {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": transport },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: transport,
+          method: "tools/call",
+          params: {
+            name: "core_health",
+            arguments: { agent_id: agentId, client_type: "chatgpt", session_id: sessionId },
+          },
+        }),
+      });
+      return { response, body: await response.json() };
+    };
+
+    const first = await call("rotated-transport-one", "logical-chat-one");
+    const replay = await call("rotated-transport-two", "logical-chat-one");
+    const otherChat = await call("rotated-transport-three", "logical-chat-two");
+    assert.equal(first.response.status, 200);
+    assert.equal(replay.response.status, 200);
+    assert.equal(otherChat.response.status, 200);
+    const firstPresence = first.body.result.structuredContent.agent_presence;
+    const replayPresence = replay.body.result.structuredContent.agent_presence;
+    const otherPresence = otherChat.body.result.structuredContent.agent_presence;
+    assert.equal(firstPresence.signature, replayPresence.signature);
+    assert.equal(firstPresence.opaque_agent_id, replayPresence.opaque_agent_id);
+    assert.equal(firstPresence.session_fingerprint, replayPresence.session_fingerprint);
+    assert.notEqual(firstPresence.signature, otherPresence.signature);
+
+    const identityConflict = await call("rotated-transport-four", "logical-chat-one", "chatgpt-chat-two");
+    assert.equal(identityConflict.response.status, 409);
+    assert.equal(identityConflict.body.error.message, "agent_presence_conflict");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

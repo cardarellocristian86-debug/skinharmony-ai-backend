@@ -4,7 +4,7 @@ import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 
-const SERVER_VERSION = "0.8.3-agent-presence";
+const SERVER_VERSION = "0.8.4-stable-chat-presence";
 const SERVER_INSTRUCTIONS = "Always call work_preflight first. The MCP transport session is automatically bound to one server-signed agent presence and that signature is returned on every tool call. For collaboration, register each ChatGPT, Codex, API-agent or other session with agent_heartbeat using a unique agent_id, client_type and session_id. Never reuse one agent_id across concurrent sessions or change identity inside one transport session; preserve the server-issued agent signature in task, message and audit evidence. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function inferClientType(identity) {
@@ -19,6 +19,12 @@ function normalizeTransportSession(value) {
   if (!raw) return "";
   if (/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(raw)) return raw;
   return `mcp_${crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32)}`;
+}
+
+function setBounded(map, key, value, maximum = 5_000) {
+  if (map.has(key)) map.delete(key);
+  while (map.size >= maximum) map.delete(map.keys().next().value);
+  map.set(key, value);
 }
 
 function attachAgentPresence(result, presence) {
@@ -104,7 +110,12 @@ export function createApp(config, options = {}) {
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
   const visibleTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
-  const sessionPresences = new Map();
+  // A host can rotate the MCP transport between tool calls from one logical chat.
+  // Keep the transport binding for anti-switch protection, while correlating the
+  // server-signed presence through the explicitly declared logical session id.
+  // Client-provided ids are correlation data only and never grant authorization.
+  const logicalSessionPresences = new Map();
+  const transportPresenceBindings = new Map();
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/healthz", (_req, res) => res.json({
@@ -181,30 +192,49 @@ export function createApp(config, options = {}) {
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
         const rawArgs = params.arguments || {};
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
-        const presenceKey = transportSessionId || normalizeTransportSession(rawArgs.session_id);
-        if (!presenceKey) {
+        const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
+        const transportPresence = transportSessionId
+          ? transportPresenceBindings.get(transportSessionId)
+          : null;
+        if (!transportSessionId && !declaredSessionId) {
           const presenceError = new Error("agent_presence_session_required");
           presenceError.code = "agent_presence_session_required";
           throw presenceError;
         }
-        const previousPresence = sessionPresences.get(presenceKey);
-        const sessionId = previousPresence?.session_id || transportSessionId || normalizeTransportSession(rawArgs.session_id) || presenceKey;
-        const requestedAgentId = rawArgs.agent_id || rawArgs.from_agent_id || previousPresence?.agent_id ||
-          `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${presenceKey}`).digest("hex").slice(0, 20)}`;
-        const presenceInput = {
-          agent_id: requestedAgentId,
-          client_type: rawArgs.client_type || previousPresence?.client_type || inferClientType(identity),
-          session_id: sessionId,
-        };
-        const agentPresence = createAgentPresence(config, identity, presenceInput);
-        if (previousPresence && previousPresence.signature !== agentPresence.signature) {
+        if (
+          transportPresence?.binding_source === "declared" &&
+          declaredSessionId &&
+          transportPresence.session_id !== declaredSessionId
+        ) {
           const presenceError = new Error("agent_presence_conflict");
           presenceError.code = "agent_presence_conflict";
           throw presenceError;
         }
-        if (sessionPresences.has(presenceKey)) sessionPresences.delete(presenceKey);
-        while (sessionPresences.size >= 5_000) sessionPresences.delete(sessionPresences.keys().next().value);
-        sessionPresences.set(presenceKey, { ...agentPresence, session_id: sessionId });
+        const sessionId = transportPresence?.session_id || declaredSessionId || transportSessionId;
+        const requestedAgentId = rawArgs.agent_id || rawArgs.from_agent_id || transportPresence?.agent_id ||
+          `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
+        const presenceInput = {
+          agent_id: requestedAgentId,
+          client_type: rawArgs.client_type || transportPresence?.client_type || inferClientType(identity),
+          session_id: sessionId,
+        };
+        const agentPresence = createAgentPresence(config, identity, presenceInput);
+        const logicalPresence = logicalSessionPresences.get(agentPresence.session_fingerprint);
+        if (
+          (transportPresence && transportPresence.signature !== agentPresence.signature) ||
+          (logicalPresence && logicalPresence.signature !== agentPresence.signature)
+        ) {
+          const presenceError = new Error("agent_presence_conflict");
+          presenceError.code = "agent_presence_conflict";
+          throw presenceError;
+        }
+        const presenceBinding = {
+          ...agentPresence,
+          session_id: sessionId,
+          binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : "transport"),
+        };
+        setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
+        if (transportSessionId) setBounded(transportPresenceBindings, transportSessionId, presenceBinding);
         const args = { ...rawArgs, ...presenceInput };
         const callIdentity = {
           ...identity,
