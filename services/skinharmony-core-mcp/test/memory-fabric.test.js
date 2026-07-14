@@ -143,6 +143,10 @@ test("automatic journal stores safe metadata but never raw arguments", async (t)
   const recent = fabric.context({ project_id: "project-x" }, tenantA).recent_activity;
   assert.equal(recent[0].source, "mcp_auto_journal");
   assert.equal(recent[0].summary, "Tool nyra_interpret_request completed.");
+  const lifecycle = fabric.context({ project_id: "project-x" }, tenantA).latest_checkpoint;
+  assert.equal(lifecycle.title, "Connected AI progress checkpoint");
+  assert.match(lifecycle.agent_id, /^ai_[a-f0-9]{24}$/);
+  assert.equal(lifecycle.source, "mcp_work_lifecycle");
 });
 
 test("fails closed when Core governance denies a memory write", async (t) => {

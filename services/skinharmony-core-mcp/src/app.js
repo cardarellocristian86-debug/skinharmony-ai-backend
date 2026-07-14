@@ -3,7 +3,7 @@ import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 
 const SERVER_VERSION = "0.8.1-shared-memory-bootstrap";
-const SERVER_INSTRUCTIONS = "Always call work_preflight first. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every other tool also runs the mandatory preflight middleware. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
+const SERVER_INSTRUCTIONS = "Always call work_preflight first. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function resolveWorkPreflight(result, payload) {
   const gate = result?.structuredContent?.gate;
@@ -136,7 +136,7 @@ export function createApp(config, options = {}) {
     try {
       if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes, "skinharmony/mandatory_first_tool": "work_preflight", "skinharmony/preflight_entrypoint": tool.name === "work_preflight", "skinharmony/research_entrypoint": tool.name === "nyra_research_plan", "skinharmony/research_sequence": "plan -> host web -> ingest -> query -> feedback" } })) } });
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes, "skinharmony/mandatory_first_tool": "work_preflight", "skinharmony/preflight_entrypoint": tool.name === "work_preflight", "skinharmony/shared_memory_lifecycle": "automatic_task_contract_and_checkpoint", "skinharmony/research_entrypoint": tool.name === "nyra_research_plan", "skinharmony/research_sequence": "plan -> host web -> ingest -> query -> feedback" } })) } });
       if (method === "tools/call") {
         const tool = TOOLS.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
@@ -153,15 +153,13 @@ export function createApp(config, options = {}) {
           : null;
         const rawResult = await handlers[tool.name](args, callIdentity);
         const result = attachWorkPreflight(rawResult, preflight);
-        if (typeof afterToolCall === "function") {
-          try { await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight }); } catch {}
-        }
+        if (typeof afterToolCall === "function") await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight });
         return res.json({ jsonrpc: "2.0", id, result });
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     } catch (error) {
       if (typeof afterToolCall === "function" && method === "tools/call") {
-        try { await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error }); } catch {}
+        await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error });
       }
       if (error.message === "insufficient_scope") {
         res.set("WWW-Authenticate", challenge(config, "insufficient_scope", error.missing.join(" ")));

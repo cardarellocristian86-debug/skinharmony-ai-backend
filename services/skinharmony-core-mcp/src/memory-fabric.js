@@ -83,6 +83,14 @@ function actor(identity) {
   return String(identity?.subject || identity?.kind || "system").slice(0, 200);
 }
 
+// Never trust a client-provided agent id for the durable collaboration trail.
+// A stable, opaque id lets any Core/Nyra-connected client resume its own work
+// without disclosing its OAuth subject to another tenant participant.
+function connectedAgentId(identity) {
+  const subject = actor(identity);
+  return `ai_${crypto.createHash("sha256").update(subject).digest("hex").slice(0, 24)}`;
+}
+
 function tenantRoot(root, tenantId) {
   const tenant = safeId(tenantId, "tenant");
   const base = path.resolve(root, "tenants");
@@ -267,6 +275,9 @@ function searchState(state, input = {}) {
   const limit = boundedNumber(input.limit, 10, 1, 50);
   const records = [...state.memories, ...state.checkpoints];
   return records
+    // Lifecycle checkpoints are surfaced deterministically as latest_checkpoint
+    // and recent_activity; keep free-text recall focused on user/agent knowledge.
+    .filter((record) => record.source !== "mcp_work_lifecycle")
     .filter((record) => !projectId || !record.project_id || record.project_id === projectId)
     .filter((record) => !sessionId || !record.session_id || record.session_id === sessionId)
     .map((record) => {
@@ -413,11 +424,44 @@ export function createMemoryFabric(config, options = {}) {
     };
   }
 
-  async function recordToolActivity({ identity, toolName, args = {}, result = null, error = null }) {
+  async function recordToolActivity({ identity, toolName, args = {}, result = null, error = null, preflight = null }) {
     if (!identity?.tenantId || String(toolName || "").startsWith("memory_")) return;
     const details = safeAutomaticDetails(toolName, args, result);
+    const agentId = connectedAgentId(identity);
+    const preflightId = String(preflight?.work_preflight?.preflight_id || preflight?.preflight_id || "").trim();
     await updateState(root, identity.tenantId, async (state) => {
       const timestamp = new Date().toISOString();
+      const lifecycleKey = `agent_lifecycle:${preflightId || `${agentId}:${toolName}:${timestamp}`}`;
+      // A preflight is the durable task contract. Every subsequent Core/Nyra
+      // operation is a checkpoint, so a different connected AI can continue
+      // even if the original ChatGPT/Codex session disappears.
+      const lifecycleRecord = normalizeMemoryInput({
+        kind: "checkpoint",
+        title: toolName === "work_preflight" ? "Connected AI task contract" : "Connected AI progress checkpoint",
+        summary: error
+          ? `Connected AI ${agentId} failed while running ${toolName}; the next agent must inspect this checkpoint before retrying.`
+          : toolName === "work_preflight"
+            ? `Connected AI ${agentId} opened governed work through Core/Nyra.`
+            : `Connected AI ${agentId} completed ${toolName} through Core/Nyra.`,
+        facts: preflightId ? [`Preflight: ${preflightId}`] : [],
+        decisions: details.decision_state ? [`Core state: ${details.decision_state}`] : [],
+        actions: [`Tool call: ${toolName}`],
+        outcomes: [error ? "failed" : "completed"],
+        next_steps: error ? ["Inspect the failed checkpoint and continue with a governed retry or handoff."] : ["Read tenant memory context before the next action."],
+        tags: ["connected_ai", "core_nyra", toolName === "work_preflight" ? "task_contract" : "checkpoint", error ? "failed" : "completed"],
+        importance: error ? 75 : toolName === "work_preflight" ? 70 : 45,
+        data_classification: "internal",
+        project_id: details.project_id,
+        session_id: details.session_id,
+        agent_id: agentId,
+        source: "mcp_work_lifecycle",
+        idempotency_key: lifecycleKey,
+      }, identity, config, "checkpoint");
+      const existing = state.checkpoints.find((item) => item.idempotency_key === lifecycleRecord.idempotency_key && item.actor_subject === lifecycleRecord.actor_subject);
+      if (!existing) {
+        state.checkpoints.push(lifecycleRecord);
+        state.events.push({ ...lifecycleRecord, id: `evt_${crypto.randomUUID()}`, checkpoint_id: lifecycleRecord.id });
+      }
       state.events.push({
         id: `evt_${crypto.randomUUID()}`,
         kind: error ? "outcome" : "action",
@@ -434,7 +478,7 @@ export function createMemoryFabric(config, options = {}) {
         consent_reference: null,
         project_id: details.project_id,
         session_id: details.session_id,
-        agent_id: null,
+        agent_id: agentId,
         source: "mcp_auto_journal",
         actor_subject: actor(identity),
         created_at: timestamp,
@@ -444,7 +488,7 @@ export function createMemoryFabric(config, options = {}) {
         tool_activity: details,
       });
       audit(state, identity, error ? "tool.failed" : "tool.completed", toolName);
-      return { recorded: true };
+      return { recorded: true, agent_id: agentId, task_contract_id: preflightId || null, checkpoint_created: !existing };
     });
   }
 
