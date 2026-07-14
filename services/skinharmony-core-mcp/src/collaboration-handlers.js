@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createAgentPresence } from "./agent-presence.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
 const PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
+const AGENT_ACTIVE_WINDOW_MS = 5 * 60 * 1_000;
 
 function fail(code) {
   const error = new Error(code);
@@ -51,6 +53,13 @@ function actor(identity) {
   return String(identity.subject || identity.kind || "unknown").slice(0, 200);
 }
 
+function publicAgent(agent) {
+  const { actor_subject: _subject, ...record } = agent;
+  const lastSeen = Date.parse(record.last_seen_at || "");
+  const active = Number.isFinite(lastSeen) && Date.now() - lastSeen <= AGENT_ACTIVE_WINDOW_MS;
+  return { ...record, active, status: active ? "active" : "stale" };
+}
+
 function tenantRoot(root, tenantId) {
   const tenant = safeId(tenantId, "tenant");
   const base = path.resolve(root, "tenants");
@@ -60,7 +69,7 @@ function tenantRoot(root, tenantId) {
 }
 
 function emptyState() {
-  return { schema_version: 1, revision: 0, folders: [], documents: [], tasks: [], messages: [], agents: [], audit: [] };
+  return { schema_version: 2, revision: 0, folders: [], documents: [], tasks: [], messages: [], agents: [], audit: [] };
 }
 
 function normalizeState(value) {
@@ -68,7 +77,12 @@ function normalizeState(value) {
   for (const key of ["folders", "documents", "tasks", "messages", "agents", "audit"]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
-  state.schema_version = 1;
+  state.schema_version = 2;
+  for (const agent of state.agents) {
+    agent.client_type ||= "legacy";
+    agent.session_fingerprint ||= null;
+    agent.signature ||= `ags_legacy_${crypto.createHash("sha256").update(`${agent.actor_subject || "unknown"}\u0000${agent.id || "unknown"}`).digest("hex").slice(0, 24)}`;
+  }
   state.revision = Number.isInteger(state.revision) && state.revision >= 0 ? state.revision : 0;
   return state;
 }
@@ -127,14 +141,21 @@ async function updateState(root, tenantId, mutate) {
   }
 }
 
-function audit(state, identity, type, target, gate) {
+function audit(state, identity, type, target, gate, result = {}) {
+  const boundPresence = identity.agentPresence || {};
+  const agentId = result.agent?.id || result.task?.claimed_by || result.message?.from_agent_id || result.acknowledged_by || boundPresence.agent_id || null;
+  const agentSignature = result.agent?.signature || result.task?.claimed_by_signature || result.message?.from_agent_signature || result.acknowledged_by_signature || boundPresence.signature || null;
+  const clientType = result.agent?.client_type || result.message?.from_client_type || boundPresence.client_type || null;
   state.audit.push({
     id: crypto.randomUUID(),
     at: new Date().toISOString(),
     actor_subject: actor(identity),
+    agent_id: agentId,
+    agent_signature: agentSignature,
+    client_type: clientType,
     type,
     target,
-    gate: gate ? { decision: gate.decision || "unknown", mediation: gate.mediation || "unknown" } : null
+    gate: gate ? { allowed: gate.allowed === true, decision: gate.decision || "unknown", mediation: gate.mediation || "unknown" } : null
   });
   if (state.audit.length > 2_000) state.audit.splice(0, state.audit.length - 2_000);
 }
@@ -161,6 +182,7 @@ function publicTask(task) {
 function requireOwnedAgent(state, agentId, identity) {
   const registered = state.agents.find((agent) => agent.id === agentId && agent.actor_subject === actor(identity));
   if (!registered) fail("agent_not_registered");
+  if (!registered.session_fingerprint || String(registered.signature || "").startsWith("ags_legacy_")) fail("agent_reregistration_required");
   return registered;
 }
 
@@ -175,10 +197,20 @@ export function createCollaborationHandlers(config, options = {}) {
     if (!gate?.allowed) fail("core_gate_denied");
     const transaction = await updateState(root, identity.tenantId, async (state) => {
       const result = await mutate(state, gate);
-      audit(state, identity, action.action_type, action.target, gate);
+      audit(state, identity, action.action_type, action.target, gate, result);
       return result;
     });
-    return textResult({ ...transaction.result, workspace_revision: transaction.revision, gate: { decision: gate.decision, mediation: gate.mediation } });
+    return textResult({
+      ...transaction.result,
+      workspace_revision: transaction.revision,
+      gate: {
+        allowed: gate.allowed === true,
+        decision: gate.decision,
+        mediation: gate.mediation,
+        owner_confirmation_required: gate.owner_confirmation_required === true,
+        confirmation_satisfied: gate.confirmation_satisfied === true
+      }
+    });
   }
 
   return {
@@ -279,7 +311,7 @@ export function createCollaborationHandlers(config, options = {}) {
       const agentId = safeId(agent_id, "agent");
       if (!Number.isInteger(Number(expected_version)) || Number(expected_version) < 1) fail("task_expected_version_required");
       return governed(identity, { action_type: "task.claim", action_label: `Claim shared task ${taskId}`, target: taskId }, async (state) => {
-        requireOwnedAgent(state, agentId, identity);
+        const registeredAgent = requireOwnedAgent(state, agentId, identity);
         const task = state.tasks.find((candidate) => candidate.id === taskId);
         if (!task) fail("task_not_found");
         if (task.version !== Number(expected_version)) fail("task_version_conflict");
@@ -287,10 +319,12 @@ export function createCollaborationHandlers(config, options = {}) {
         if (["completed", "cancelled"].includes(task.status)) fail("task_closed");
         const timestamp = new Date().toISOString();
         task.claimed_by = agentId;
+        task.claimed_by_signature = registeredAgent.signature;
+        task.claimed_by_client_type = registeredAgent.client_type;
         task.status = task.status === "open" ? "claimed" : task.status;
         task.version += 1;
         task.updated_at = timestamp;
-        task.history.push({ at: timestamp, actor_subject: actor(identity), agent_id: agentId, action: "claimed" });
+        task.history.push({ at: timestamp, actor_subject: actor(identity), agent_id: agentId, agent_signature: registeredAgent.signature, client_type: registeredAgent.client_type, action: "claimed" });
         return { task: publicTask(task) };
       });
     },
@@ -302,44 +336,68 @@ export function createCollaborationHandlers(config, options = {}) {
       if (!Number.isInteger(Number(expected_version)) || Number(expected_version) < 1) fail("task_expected_version_required");
       const taskNote = optionalText(note, "task_note", 10_000);
       return governed(identity, { action_type: "task.update", action_label: `Update shared task ${taskId} to ${status}`, target: taskId }, async (state) => {
-        requireOwnedAgent(state, agentId, identity);
+        const registeredAgent = requireOwnedAgent(state, agentId, identity);
         const task = state.tasks.find((candidate) => candidate.id === taskId);
         if (!task) fail("task_not_found");
         if (task.version !== Number(expected_version)) fail("task_version_conflict");
         if (task.claimed_by && task.claimed_by !== agentId) fail("task_claim_mismatch");
         const timestamp = new Date().toISOString();
         task.claimed_by ||= agentId;
+        task.claimed_by_signature ||= registeredAgent.signature;
+        task.claimed_by_client_type ||= registeredAgent.client_type;
         task.status = status;
         task.version += 1;
         task.updated_at = timestamp;
-        task.history.push({ at: timestamp, actor_subject: actor(identity), agent_id: agentId, action: "status_updated", status, note: taskNote });
+        task.history.push({ at: timestamp, actor_subject: actor(identity), agent_id: agentId, agent_signature: registeredAgent.signature, client_type: registeredAgent.client_type, action: "status_updated", status, note: taskNote });
         return { task: publicTask(task) };
       });
     },
 
-    agent_heartbeat: async ({ agent_id, display_name = "", capabilities = [] }, identity) => {
-      const agentId = safeId(agent_id, "agent");
+    agent_heartbeat: async ({ agent_id, client_type, session_id, display_name = "", capabilities = [] }, identity) => {
+      const presence = createAgentPresence(config, identity, { agent_id, client_type, session_id });
+      const agentId = presence.agent_id;
+      const clientType = presence.client_type;
+      const fingerprint = presence.session_fingerprint;
+      const signature = presence.signature;
       const displayName = optionalText(display_name, "display_name", 120) || agentId;
       const safeCapabilities = Array.isArray(capabilities) ? [...new Set(capabilities.map((value) => safeId(value, "capability")))].slice(0, 20) : fail("capabilities_invalid");
       return governed(identity, { action_type: "agent.heartbeat", action_label: `Register agent ${agentId}`, target: agentId }, async (state) => {
         const timestamp = new Date().toISOString();
         let record = state.agents.find((candidate) => candidate.id === agentId);
         if (!record) {
-          record = { id: agentId, display_name: displayName, capabilities: safeCapabilities, actor_subject: actor(identity), first_seen_at: timestamp, last_seen_at: timestamp };
+          record = {
+            id: agentId,
+            opaque_agent_id: presence.opaque_agent_id,
+            signature,
+            signature_version: presence.signature_version,
+            client_type: clientType,
+            session_fingerprint: fingerprint,
+            display_name: displayName,
+            capabilities: safeCapabilities,
+            actor_subject: actor(identity),
+            first_seen_at: timestamp,
+            last_seen_at: timestamp
+          };
           state.agents.push(record);
         } else {
           if (record.actor_subject !== actor(identity)) fail("agent_identity_conflict");
+          if (record.session_fingerprint && record.signature !== signature) fail("agent_instance_conflict");
+          record.opaque_agent_id = presence.opaque_agent_id;
+          record.signature = signature;
+          record.signature_version = presence.signature_version;
+          record.client_type = clientType;
+          record.session_fingerprint = fingerprint;
           record.display_name = displayName;
           record.capabilities = safeCapabilities;
           record.last_seen_at = timestamp;
         }
-        return { agent: record };
+        return { agent: publicAgent(record) };
       });
     },
 
     agent_list: async (_args, identity) => {
       const state = readState(root, identity.tenantId);
-      return textResult({ agents: state.agents.map(({ actor_subject: _subject, ...agent }) => agent), revision: state.revision });
+      return textResult({ agents: state.agents.map(publicAgent), revision: state.revision });
     },
 
     message_post: async ({ from_agent_id, to_agent_id = "all", body, thread_id = "", idempotency_key = "" }, identity) => {
@@ -349,13 +407,25 @@ export function createCollaborationHandlers(config, options = {}) {
       const threadId = optionalText(thread_id, "thread_id", 80);
       const key = optionalText(idempotency_key, "idempotency_key", 120);
       return governed(identity, { action_type: "message.post", action_label: `Post agent message from ${fromAgentId} to ${toAgentId}`, target: toAgentId }, async (state) => {
-        requireOwnedAgent(state, fromAgentId, identity);
-        if (toAgentId !== "all" && !state.agents.some((agent) => agent.id === toAgentId)) fail("message_recipient_not_found");
+        const sender = requireOwnedAgent(state, fromAgentId, identity);
+        const recipient = toAgentId === "all" ? null : state.agents.find((agent) => agent.id === toAgentId);
+        if (toAgentId !== "all" && !recipient) fail("message_recipient_not_found");
+        if (recipient && (!recipient.session_fingerprint || String(recipient.signature || "").startsWith("ags_legacy_"))) fail("message_recipient_reregistration_required");
         const existing = key && state.messages.find((message) => message.idempotency_key === key && message.from_agent_id === fromAgentId);
         if (existing) return { message: existing, created: false, idempotent_replay: true };
         const message = {
-          id: crypto.randomUUID(), thread_id: threadId || crypto.randomUUID(), from_agent_id: fromAgentId, to_agent_id: toAgentId,
-          body: messageBody, created_at: new Date().toISOString(), read_by: [], idempotency_key: key
+          id: crypto.randomUUID(),
+          thread_id: threadId || crypto.randomUUID(),
+          from_agent_id: fromAgentId,
+          from_agent_signature: sender.signature,
+          from_client_type: sender.client_type,
+          to_agent_id: toAgentId,
+          to_agent_signature: recipient?.signature || null,
+          body: messageBody,
+          created_at: new Date().toISOString(),
+          read_by: [],
+          read_by_signatures: [],
+          idempotency_key: key
         };
         state.messages.push(message);
         return { message, created: true, idempotent_replay: false };
@@ -377,11 +447,13 @@ export function createCollaborationHandlers(config, options = {}) {
       const messageId = requiredText(message_id, "message_id", 80);
       const agentId = safeId(agent_id, "agent");
       return governed(identity, { action_type: "message.acknowledge", action_label: `Acknowledge agent message ${messageId}`, target: messageId }, async (state) => {
-        requireOwnedAgent(state, agentId, identity);
+        const registeredAgent = requireOwnedAgent(state, agentId, identity);
         const message = state.messages.find((candidate) => candidate.id === messageId);
         if (!message || (message.to_agent_id !== "all" && message.to_agent_id !== agentId)) fail("message_not_found");
         if (!message.read_by.includes(agentId)) message.read_by.push(agentId);
-        return { message_id: message.id, acknowledged_by: agentId };
+        message.read_by_signatures ||= [];
+        if (!message.read_by_signatures.includes(registeredAgent.signature)) message.read_by_signatures.push(registeredAgent.signature);
+        return { message_id: message.id, acknowledged_by: agentId, acknowledged_by_signature: registeredAgent.signature };
       });
     }
   };

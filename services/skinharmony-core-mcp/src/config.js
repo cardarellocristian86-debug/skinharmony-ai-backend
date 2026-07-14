@@ -41,6 +41,7 @@ export function loadConfig(env = process.env) {
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
+  const agentSignatureSecret = String(env.AGENT_SIGNATURE_SECRET || "").trim();
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
   if (chatgptTenantId && chatgptCoreKey && !universalCoreKeys[chatgptTenantId]) {
@@ -76,6 +77,7 @@ export function loadConfig(env = process.env) {
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
+    agentSignatureSecret,
     defaultTenantId,
     tenantClaim,
     sharedMemoryRoot,

@@ -14,9 +14,34 @@ const ownerConfirmationProperties = {
   },
 };
 
+const agentPresenceProperties = {
+  agent_id: {
+    type: "string",
+    pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$",
+    description: "Logical id unique to this concurrent ChatGPT, Codex or API-agent session.",
+  },
+  client_type: {
+    type: "string",
+    enum: ["chatgpt", "codex", "api_agent", "other"],
+  },
+  session_id: {
+    type: "string",
+    pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$",
+    description: "Opaque random id unique to the current conversation or agent run; reuse it for every tool call in that run.",
+  },
+};
+
 function tool(name, title, description, inputSchema, scopes, readOnly = true, idempotent = true, options = {}) {
-  const schema = !readOnly && inputSchema?.type === "object"
-    ? { ...inputSchema, properties: { ...inputSchema.properties, ...ownerConfirmationProperties } }
+  const schema = inputSchema?.type === "object"
+    ? {
+        ...inputSchema,
+        properties: {
+          ...inputSchema.properties,
+          ...agentPresenceProperties,
+          ...(!readOnly ? ownerConfirmationProperties : {}),
+        },
+        required: inputSchema.required || [],
+      }
     : inputSchema;
   return {
     name,
@@ -263,7 +288,7 @@ export const TOOLS = [
   tool("task_claim", "Claim shared task", "Atomically claim an open tenant-scoped task for one registered agent.", object({ task_id: text(80), agent_id: identifier, expected_version: { type: "integer", minimum: 1 } }, ["task_id", "agent_id", "expected_version"]), ["core:govern"], false, true),
   tool("task_update", "Update shared task", "Update the status of a claimed tenant-scoped task using optimistic concurrency.", object({ task_id: text(80), agent_id: identifier, status: { type: "string", enum: ["claimed", "in_progress", "blocked", "completed", "cancelled"] }, note: { type: "string", maxLength: 10_000 }, expected_version: { type: "integer", minimum: 1 } }, ["task_id", "agent_id", "status", "expected_version"]), ["core:govern"], false, true),
 
-  tool("agent_heartbeat", "Register agent heartbeat", "Register or refresh an agent identity inside the authenticated tenant.", object({ agent_id: identifier, display_name: { type: "string", maxLength: 120 }, capabilities: { type: "array", maxItems: 20, items: identifier } }, ["agent_id"]), ["core:govern"], false, true),
+  tool("agent_heartbeat", "Register unique agent presence", "Register or refresh one uniquely signed ChatGPT, Codex, API-agent or other session. A different session cannot silently reuse the same agent_id.", object({ agent_id: identifier, client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] }, session_id: { type: "string", minLength: 1, maxLength: 240 }, display_name: { type: "string", maxLength: 120 }, capabilities: { type: "array", maxItems: 20, items: identifier } }, ["agent_id", "client_type", "session_id"]), ["core:govern"], false, true),
   tool("agent_list", "List tenant agents", "List registered agents and their last heartbeat in the authenticated tenant.", object(), ["core:read"]),
   tool("message_post", "Post agent message", "Post a tenant-scoped message from a registered agent to another agent or all agents.", object({ from_agent_id: identifier, to_agent_id: { anyOf: [identifier, { const: "all" }] }, body: text(20_000), thread_id: { type: "string", maxLength: 80 }, idempotency_key: { type: "string", maxLength: 120 } }, ["from_agent_id", "body"]), ["core:govern"], false, true),
   tool("message_inbox", "Read agent inbox", "Read tenant-scoped messages addressed to one agent or all agents.", object({ agent_id: identifier, unread_only: { type: "boolean" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, ["agent_id"]), ["core:read"]),

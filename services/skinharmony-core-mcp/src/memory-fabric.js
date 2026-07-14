@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createAgentPresence } from "./agent-presence.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const CLASSIFICATIONS = new Set(["internal", "customer_aggregate", "customer_personal", "restricted"]);
@@ -81,14 +82,6 @@ function tagList(value) {
 
 function actor(identity) {
   return String(identity?.subject || identity?.kind || "system").slice(0, 200);
-}
-
-// Never trust a client-provided agent id for the durable collaboration trail.
-// A stable, opaque id lets any Core/Nyra-connected client resume its own work
-// without disclosing its OAuth subject to another tenant participant.
-function connectedAgentId(identity) {
-  const subject = actor(identity);
-  return `ai_${crypto.createHash("sha256").update(subject).digest("hex").slice(0, 24)}`;
 }
 
 function tenantRoot(root, tenantId) {
@@ -233,6 +226,11 @@ function normalizeMemoryInput(input, identity, config, kindOverride = "") {
     project_id: safeId(input.project_id, "project", { optional: true }) || null,
     session_id: safeId(input.session_id, "session", { optional: true }) || null,
     agent_id: safeId(input.agent_id, "agent", { optional: true }) || null,
+    logical_agent_id: safeId(input.logical_agent_id, "logical_agent", { optional: true }) || null,
+    agent_signature: safeId(input.agent_signature, "agent_signature", { optional: true }) || null,
+    agent_signature_version: safeId(input.agent_signature_version, "agent_signature_version", { optional: true }) || null,
+    client_type: safeId(input.client_type, "client_type", { optional: true }) || null,
+    session_fingerprint: safeId(input.session_fingerprint, "session_fingerprint", { optional: true }) || null,
     source: safeId(input.source || "mcp_explicit", "source"),
     actor_subject: actor(identity),
     created_at: new Date().toISOString(),
@@ -248,11 +246,16 @@ function publicRecord(record) {
   return safe;
 }
 
-function audit(state, identity, type, target, gate = null) {
+function audit(state, identity, type, target, gate = null, explicitPresence = null) {
+  const presence = explicitPresence || identity.agentPresence || {};
   state.audit.push({
     id: `ma_${crypto.randomUUID()}`,
     created_at: new Date().toISOString(),
     actor_subject: actor(identity),
+    agent_id: presence.opaque_agent_id || null,
+    logical_agent_id: presence.agent_id || null,
+    agent_signature: presence.signature || null,
+    client_type: presence.client_type || null,
     type,
     target,
     gate: gate ? { decision: gate.decision || "unknown", mediation: gate.mediation || "unknown" } : null,
@@ -305,11 +308,23 @@ function safeAutomaticDetails(toolName, args = {}, result = null) {
   const payload = resultPayload(result);
   const target = redactText(args.path || args.task_id || args.action_type || "", 240);
   const safeResultId = (value) => ID_PATTERN.test(String(value || "")) ? String(value) : null;
+  const candidatePresence = payload.agent_presence || payload.work_preflight?.agent_presence || null;
+  const safePresence = candidatePresence && /^ags_[a-f0-9]{32}$/.test(String(candidatePresence.signature || ""))
+    ? {
+        agent_id: safeResultId(candidatePresence.agent_id),
+        opaque_agent_id: safeResultId(candidatePresence.opaque_agent_id),
+        client_type: safeResultId(candidatePresence.client_type),
+        session_fingerprint: safeResultId(candidatePresence.session_fingerprint),
+        signature: String(candidatePresence.signature),
+        signature_version: safeResultId(candidatePresence.signature_version),
+      }
+    : null;
   const details = {
     tool_name: toolName,
     target: target.text || null,
     project_id: ID_PATTERN.test(String(args.project_id || "")) ? String(args.project_id) : null,
     session_id: ID_PATTERN.test(String(args.session_id || "")) ? String(args.session_id) : null,
+    agent_presence: safePresence,
     domain_pack_id: safeResultId(payload.domain_pack?.id || payload.result?.domain_pack?.id),
     decision_state: safeResultId(payload.decision_contract?.state || payload.result?.selected_by_core?.state),
     execution_allowed: payload.guardrail?.execution_allowed === true || payload.result?.automation_plan?.execution_allowed === true,
@@ -427,11 +442,17 @@ export function createMemoryFabric(config, options = {}) {
   async function recordToolActivity({ identity, toolName, args = {}, result = null, error = null, preflight = null }) {
     if (!identity?.tenantId || String(toolName || "").startsWith("memory_")) return;
     const details = safeAutomaticDetails(toolName, args, result);
-    const agentId = connectedAgentId(identity);
+    const preflightPresence = preflight?.agent_presence || preflight?.work_preflight?.agent_presence || null;
+    const presence = identity.agentPresence || details.agent_presence || preflightPresence || createAgentPresence(config, identity, {
+      agent_id: args.agent_id || args.from_agent_id || "connected_ai",
+      client_type: args.client_type || (String(identity.kind || "").toLowerCase().includes("codex") ? "codex" : "api_agent"),
+      session_id: args.session_id || `legacy_${crypto.createHash("sha256").update(actor(identity)).digest("hex").slice(0, 24)}`,
+    });
+    const agentId = presence.opaque_agent_id;
     const preflightId = String(preflight?.work_preflight?.preflight_id || preflight?.preflight_id || "").trim();
     await updateState(root, identity.tenantId, async (state) => {
       const timestamp = new Date().toISOString();
-      const lifecycleKey = `agent_lifecycle:${preflightId || `${agentId}:${toolName}:${timestamp}`}`;
+      const lifecycleKey = `agent_lifecycle:${preflightId || `${presence.signature}:${toolName}:${timestamp}`}`;
       // A preflight is the durable task contract. Every subsequent Core/Nyra
       // operation is a checkpoint, so a different connected AI can continue
       // even if the original ChatGPT/Codex session disappears.
@@ -443,7 +464,7 @@ export function createMemoryFabric(config, options = {}) {
           : toolName === "work_preflight"
             ? `Connected AI ${agentId} opened governed work through Core/Nyra.`
             : `Connected AI ${agentId} completed ${toolName} through Core/Nyra.`,
-        facts: preflightId ? [`Preflight: ${preflightId}`] : [],
+        facts: [...(preflightId ? [`Preflight: ${preflightId}`] : []), `Agent signature: ${presence.signature}`, `Client type: ${presence.client_type}`, `Session fingerprint: ${presence.session_fingerprint}`],
         decisions: details.decision_state ? [`Core state: ${details.decision_state}`] : [],
         actions: [`Tool call: ${toolName}`],
         outcomes: [error ? "failed" : "completed"],
@@ -454,6 +475,11 @@ export function createMemoryFabric(config, options = {}) {
         project_id: details.project_id,
         session_id: details.session_id,
         agent_id: agentId,
+        logical_agent_id: presence.agent_id,
+        agent_signature: presence.signature,
+        agent_signature_version: presence.signature_version,
+        client_type: presence.client_type,
+        session_fingerprint: presence.session_fingerprint,
         source: "mcp_work_lifecycle",
         idempotency_key: lifecycleKey,
       }, identity, config, "checkpoint");
@@ -479,6 +505,11 @@ export function createMemoryFabric(config, options = {}) {
         project_id: details.project_id,
         session_id: details.session_id,
         agent_id: agentId,
+        logical_agent_id: presence.agent_id,
+        agent_signature: presence.signature,
+        agent_signature_version: presence.signature_version,
+        client_type: presence.client_type,
+        session_fingerprint: presence.session_fingerprint,
         source: "mcp_auto_journal",
         actor_subject: actor(identity),
         created_at: timestamp,
@@ -487,8 +518,8 @@ export function createMemoryFabric(config, options = {}) {
         redaction_count: 0,
         tool_activity: details,
       });
-      audit(state, identity, error ? "tool.failed" : "tool.completed", toolName);
-      return { recorded: true, agent_id: agentId, task_contract_id: preflightId || null, checkpoint_created: !existing };
+      audit(state, identity, error ? "tool.failed" : "tool.completed", toolName, null, presence);
+      return { recorded: true, agent_id: agentId, agent_signature: presence.signature, task_contract_id: preflightId || null, checkpoint_created: !existing };
     });
   }
 

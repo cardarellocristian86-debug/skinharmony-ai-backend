@@ -63,7 +63,7 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
   async function call(id, name, args) {
     const response = await fetch(`${base}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer integration-key", "content-type": "application/json" },
+      headers: { authorization: "Bearer integration-key", "content-type": "application/json", "mcp-session-id": "mcp-integration-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
     });
     return { status: response.status, body: await response.json() };
@@ -86,6 +86,7 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
   });
   assert.equal(preflight.status, 200);
   assert.equal(preflight.body.result.structuredContent.received_memory.tenant_id, "tenant-integration");
+  assert.match(preflight.body.result.structuredContent.agent_presence.signature, /^ags_[a-f0-9]{32}$/);
 
   const rawMessage = "Continue the architecture from the other AI without saving this raw sentence";
   const interpretation = await call(3, "nyra_interpret_request", {
