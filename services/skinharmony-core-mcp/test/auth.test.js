@@ -69,6 +69,44 @@ test("the emergency stop disables owner_root immediately", async () => {
   });
 });
 
+test("activates owner_root only for an allowlisted OAuth subject in an owner tenant", async () => {
+  const ownerSubject = "google-oauth2|owner";
+  const ownerFixture = auth0Fixture({
+    sub: ownerSubject,
+    scope: "core:read",
+    azp: "dynamic-chatgpt-client",
+    "https://skinharmony.it/tenant_id": "codexai",
+  });
+  const ownerConfig = {
+    ...ownerFixture.config,
+    codexKeys: [],
+    supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["owner-private", "codexai"],
+    godModeSubjects: [ownerSubject],
+    godModeClientIds: [],
+    godModeCodexEnabled: true,
+  };
+  const ownerIdentity = await createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache })(`Bearer ${ownerFixture.token}`);
+  assert.equal(ownerIdentity.role, "owner_root");
+  assert.equal(ownerIdentity.godMode, true);
+  assert.equal(ownerIdentity.clientId, "dynamic-chatgpt-client");
+
+  const otherFixture = auth0Fixture({
+    sub: "google-oauth2|another-user",
+    scope: "core:read",
+    azp: "dynamic-chatgpt-client",
+    "https://skinharmony.it/tenant_id": "codexai",
+  });
+  const otherIdentity = await createAuthenticator({
+    ...ownerConfig,
+    ...otherFixture.config,
+  }, { jwksCache: otherFixture.cache })(`Bearer ${otherFixture.token}`);
+  assert.equal(otherIdentity.role, undefined);
+  assert.equal(otherIdentity.godMode, undefined);
+});
+
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   const { token, config, cache } = auth0Fixture({ scope: "core:read" });
   assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });

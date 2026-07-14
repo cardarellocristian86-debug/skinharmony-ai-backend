@@ -49,6 +49,51 @@ test("rejects a tenant without its own Core key", async () => {
   await assert.rejects(handlers.core_health({}, { tenantId: "tenant-b" }), /core_tenant_key_missing/);
 });
 
+test("reports owner binding checks without exposing OAuth identifiers", async () => {
+  const subject = "oauth-subject-private";
+  const clientId = "oauth-client-private";
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["tenant-a"],
+    godModeSubjects: [subject],
+    godModeClientIds: [],
+    godModeCodexEnabled: true,
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  const result = await handlers.core_health({}, {
+    kind: "oauth",
+    subject,
+    clientId,
+    tenantId: "tenant-a",
+    role: "owner_root",
+    godMode: true,
+  });
+
+  assert.deepEqual(result.structuredContent.mcp_identity, {
+    kind: "oauth",
+    role: "owner_root",
+    god_mode: true,
+    owner_confirmation_satisfied: true,
+    binding_checks: {
+      enabled: true,
+      emergency_stop: false,
+      tenant_allowed: true,
+      subject_allowed: true,
+      client_allowed: false,
+      codex_delegate_allowed: false,
+    },
+  });
+  assert.equal(JSON.stringify(result).includes(subject), false);
+  assert.equal(JSON.stringify(result).includes(clientId), false);
+});
+
 test("maps the complete intelligence toolset to tenant-scoped Core routes", async () => {
   const calls = [];
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" } }, {

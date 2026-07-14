@@ -5,6 +5,24 @@ function textResult(payload) {
   };
 }
 
+function ownerBindingStatus(config, identity) {
+  const tenantIds = config.godModeTenantIds || [config.godModeTenantId].filter(Boolean);
+  return {
+    kind: identity.kind || "unknown",
+    role: identity.role || "standard",
+    god_mode: identity.godMode === true,
+    owner_confirmation_satisfied: identity.godMode === true,
+    binding_checks: {
+      enabled: config.godModeEnabled === true,
+      emergency_stop: config.godModeEmergencyStop === true,
+      tenant_allowed: tenantIds.includes(identity.tenantId),
+      subject_allowed: (config.godModeSubjects || []).includes(identity.subject),
+      client_allowed: (config.godModeClientIds || []).includes(identity.clientId),
+      codex_delegate_allowed: identity.kind === "codex" && config.godModeCodexEnabled === true,
+    },
+  };
+}
+
 export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
@@ -93,7 +111,11 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   return {
-    core_health: async (_args, identity) => textResult({ ...(await coreRequest("/healthz", identity.tenantId)), tenant_id: identity.tenantId }),
+    core_health: async (_args, identity) => textResult({
+      ...(await coreRequest("/healthz", identity.tenantId)),
+      tenant_id: identity.tenantId,
+      mcp_identity: ownerBindingStatus(config, identity),
+    }),
     work_preflight: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: args.request,
