@@ -58,6 +58,12 @@ async function call(name, args) {
 
 const previous = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, "utf8")) : { documents: {} };
 const pending = fs.existsSync(queuePath) ? JSON.parse(fs.readFileSync(queuePath, "utf8")) : [];
+const cloudStatusResult = await call("memory_cloud_status", {});
+const cloudStatus = cloudStatusResult.structuredContent || JSON.parse(cloudStatusResult.content?.[0]?.text || "{}");
+if (cloudStatus.backend !== "postgres") {
+  console.error("[cloud-memory] PostgreSQL backend is not configured; sync postponed without creating a queue");
+  process.exitCode = 75;
+} else {
 const candidates = [];
 for (const file of walk(root)) {
   const stat = fs.statSync(file.absolute);
@@ -97,3 +103,4 @@ previous.pending = failed.length;
 fs.writeFileSync(manifestPath, `${JSON.stringify(previous, null, 2)}\n`, { mode: 0o600 });
 fs.writeFileSync(queuePath, `${JSON.stringify(failed, null, 2)}\n`, { mode: 0o600 });
 console.log(JSON.stringify({ ok: failed.length === 0, scanned: walk(root).length, attempted: work.length, pending: failed.length, manifest: manifestPath }));
+}
