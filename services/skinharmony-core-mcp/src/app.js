@@ -202,6 +202,8 @@ export function createApp(config, options = {}) {
           presenceError.code = "agent_presence_conflict";
           throw presenceError;
         }
+        if (sessionPresences.has(presenceKey)) sessionPresences.delete(presenceKey);
+        while (sessionPresences.size >= 5_000) sessionPresences.delete(sessionPresences.keys().next().value);
         sessionPresences.set(presenceKey, { ...agentPresence, session_id: sessionId });
         const args = { ...rawArgs, ...presenceInput };
         const callIdentity = {
