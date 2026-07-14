@@ -134,7 +134,7 @@ test("automatic journal stores safe metadata but never raw arguments", async (t)
   await fabric.recordToolActivity({
     identity: tenantA,
     toolName: "nyra_interpret_request",
-    args: { message: `${rawPrompt} ${rawSecret}`, project_id: "project-x" },
+    args: { message: `${rawPrompt} ${rawSecret}`, project_id: "project-x", agent_id: "codex-journal", client_type: "codex", session_id: "session-journal-a" },
     result: { structuredContent: { result: { selected_by_core: { state: "controlled" } } } },
   });
   const stored = fs.readFileSync(path.join(root, "tenants", "tenant-a", "memory-fabric", "state.json"), "utf8");
@@ -146,7 +146,30 @@ test("automatic journal stores safe metadata but never raw arguments", async (t)
   const lifecycle = fabric.context({ project_id: "project-x" }, tenantA).latest_checkpoint;
   assert.equal(lifecycle.title, "Connected AI progress checkpoint");
   assert.match(lifecycle.agent_id, /^ai_[a-f0-9]{24}$/);
+  assert.match(lifecycle.agent_signature, /^ags_[a-f0-9]{32}$/);
+  assert.equal(lifecycle.logical_agent_id, "codex-journal");
+  assert.equal(lifecycle.client_type, "codex");
   assert.equal(lifecycle.source, "mcp_work_lifecycle");
+});
+
+test("automatic lifecycle separates concurrent chats owned by the same OAuth subject", async (t) => {
+  const { root, fabric } = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const sessionId of ["session-chat-one", "session-chat-two"]) {
+    await fabric.recordToolActivity({
+      identity: tenantA,
+      toolName: "work_preflight",
+      args: { request: "parallel work", project_id: "project-parallel", agent_id: "chatgpt-worker", client_type: "chatgpt", session_id: sessionId },
+      result: { structuredContent: { decision_contract: { state: "controlled" } } },
+    });
+  }
+  const state = JSON.parse(fs.readFileSync(path.join(root, "tenants", "tenant-a", "memory-fabric", "state.json"), "utf8"));
+  const checkpoints = state.checkpoints.filter((item) => item.project_id === "project-parallel");
+  assert.equal(checkpoints.length, 2);
+  assert.equal(new Set(checkpoints.map((item) => item.agent_signature)).size, 2);
+  assert.equal(new Set(checkpoints.map((item) => item.agent_id)).size, 2);
+  assert.equal(new Set(checkpoints.map((item) => item.session_fingerprint)).size, 2);
+  assert(checkpoints.every((item) => item.logical_agent_id === "chatgpt-worker"));
 });
 
 test("fails closed when Core governance denies a memory write", async (t) => {
