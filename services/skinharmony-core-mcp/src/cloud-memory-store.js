@@ -62,12 +62,13 @@ export function createCloudMemoryStore(config, options = {}) {
       await initialize();
       const terms = String(query || "").trim().split(/\s+/).filter(Boolean).slice(0, 12);
       if (!terms.length) return [];
-      const pattern = `%${terms.join("%")}%`;
+      const patterns = terms.map((term) => `%${term}%`);
       const result = await pool.query(
         `SELECT id, title FROM mcp_memory_documents
-         WHERE tenant_id = $1 AND concat_ws(' ', title, source_path, content) ILIKE $2
+         WHERE tenant_id = $1
+           AND concat_ws(' ', title, source_path, content) ILIKE ALL ($2::text[])
          ORDER BY updated_at DESC LIMIT $3`,
-        [tenant(tenantId), pattern, Math.min(Number(limit) || 20, 50)],
+        [tenant(tenantId), patterns, Math.min(Number(limit) || 20, 50)],
       );
       return result.rows.map((row) => ({ id: row.id, title: row.title, url: "" }));
     },
