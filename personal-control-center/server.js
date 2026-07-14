@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
+const { createNyraHorizontalRuntime } = require("./lib/nyra-horizontal-runtime");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -65,7 +67,9 @@ const NYRA_WORLD_PAPER_TRAINING_SLIPPAGE_RATE = 0;
 const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
-const NYRA_SERVICE_VERSION = "0.5.0-decision-journey";
+const nyraHorizontalRuntime = createNyraHorizontalRuntime(process.env);
+const NYRA_SERVICE_NAME = nyraHorizontalRuntime.serviceName;
+const NYRA_SERVICE_VERSION = nyraHorizontalRuntime.version;
 const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
 const NYRA_BODY_LIMIT = String(process.env.NYRA_BODY_LIMIT || "1mb");
 const nyraRateBuckets = new Map();
@@ -279,8 +283,10 @@ app.use(express.json({ limit: NYRA_BODY_LIMIT }));
 app.get("/healthz", (_req, res) => {
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
+    runtime_kind: "horizontal_neural_branch_runtime",
+    domain_pack_resolution: "universal_core_key_metadata_only",
     auth_required: process.env.NODE_ENV === "production",
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),
@@ -319,7 +325,7 @@ app.use("/api/nyra/analyzer", (req, res, next) => {
   }
   res.status(401).json({
     ok: false,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     error: "analyzer_key_required"
   });
 });
@@ -1727,6 +1733,41 @@ function nyraSuiteCoreConfig() {
   };
 }
 
+function nyraResearchMcpConfig() {
+  return {
+    baseUrl: String(process.env.NYRA_RESEARCH_MCP_URL || "").trim().replace(/\/+$/, ""),
+  };
+}
+
+async function requestNyraResearchHealth(options = {}) {
+  const config = nyraResearchMcpConfig();
+  if (!config.baseUrl) return { ok: false, status: 503, code: "research_mcp_not_configured" };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(options.timeoutMs || 5000));
+  try {
+    const response = await fetch(`${config.baseUrl}/healthz`, {
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
+    }
+    return { ok: response.ok && data.ok === true, status: response.status, data };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      code: error?.name === "AbortError" ? "research_mcp_timeout" : "research_mcp_unreachable",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function requestNyraCore(pathname, options = {}) {
   const config = options.coreConfig || nyraCoreConfig();
   if (!config.baseUrl || !config.apiKey || !config.tenantId) {
@@ -1858,6 +1899,13 @@ function journeyProfileId(payload = {}) {
   return `p_${journeyFingerprint(`skinharmony:codexai:${identity}`)}`;
 }
 
+function journeyTenantScope(payload = {}) {
+  return resolveTenantScope(payload, {
+    tenantId: process.env.NYRA_CORE_TENANT_ID || "codexai",
+    centerId: "center_admin"
+  });
+}
+
 function emptyJourneyStages() {
   return Object.fromEntries(NYRA_JOURNEY_STAGES.map((stage) => [stage.id, {
     status: "missing",
@@ -1928,6 +1976,7 @@ function normalizeJourneyEvent(payload = {}, idempotencyKey = "") {
 
   const profileId = journeyProfileId(payload);
   if (!profileId) return { error: "journey_identity_required", required: ["profile_id", "customer_id", "lead_id", "external_id", "email", "phone"] };
+  const tenantScope = journeyTenantScope(payload);
 
   const source = String(payload.source || payload.source_system || "").trim().toLowerCase().replace(/[^a-z0-9_:-]/g, "_").slice(0, 80);
   if (!source) return { error: "journey_source_required" };
@@ -1953,14 +2002,17 @@ function normalizeJourneyEvent(payload = {}, idempotencyKey = "") {
   const evidence = normalizeJourneyEvidence(payload.evidence);
   const externalEventId = String(payload.external_event_id || payload.externalEventId || "").trim();
   const fallbackIdempotency = externalEventId
-    ? [source, externalEventId].join("|")
-    : [profileId, stage, source, eventType, parsedOccurredAt.toISOString()].join("|");
+    ? [tenantScope.namespace, source, externalEventId].join("|")
+    : [tenantScope.namespace, profileId, stage, source, eventType, parsedOccurredAt.toISOString()].join("|");
   const normalizedIdempotency = String(idempotencyKey || payload.idempotency_key || fallbackIdempotency).trim().slice(0, 180);
 
   return {
     event_id: `journey_evt_${crypto.randomUUID()}`,
     idempotency_key: journeyFingerprint(normalizedIdempotency),
     profile_id: profileId,
+    profile_store_key: profileStoreKey(profileId, tenantScope),
+    tenant_id: tenantScope.tenantId,
+    center_id: tenantScope.centerId,
     stage,
     stage_label: NYRA_JOURNEY_STAGES.find((item) => item.id === stage)?.label || stage,
     event_type: eventType,
@@ -1990,6 +2042,8 @@ function journeyProfileSummary(profile) {
   const readyCount = stages.filter((stage) => stage.status === "ready").length;
   return {
     profile_id: profile.profile_id,
+    tenant_id: profile.tenant_id || null,
+    center_id: profile.center_id || null,
     event_count: Number(profile.event_count || 0),
     first_seen_at: profile.first_seen_at || null,
     last_event_at: profile.last_event_at || null,
@@ -2005,10 +2059,34 @@ function journeyProfileSummary(profile) {
 }
 
 function recordNyraDecisionJourneyEvent(store, event) {
-  const duplicate = store.events.find((item) => item.idempotency_key === event.idempotency_key);
+  let duplicate = store.events.find((item) => item.idempotency_key === event.idempotency_key);
+  let scopeAdopted = false;
+  if (!duplicate && event.source_record_fingerprint) {
+    duplicate = store.events.find((item) => !item.tenant_id
+      && item.profile_id === event.profile_id
+      && item.stage === event.stage
+      && item.source === event.source
+      && item.source_record_fingerprint === event.source_record_fingerprint);
+    if (duplicate) {
+      duplicate.tenant_id = event.tenant_id;
+      duplicate.center_id = event.center_id;
+      duplicate.profile_store_key = event.profile_store_key;
+      duplicate.idempotency_key = event.idempotency_key;
+      scopeAdopted = true;
+    }
+  }
   if (duplicate) {
-    const profile = store.profiles[duplicate.profile_id];
-    let updated = false;
+    const duplicateProfileKey = duplicate.profile_store_key || profileStoreKey(duplicate.profile_id, duplicate);
+    let profile = store.profiles[duplicateProfileKey];
+    if (!profile && store.profiles[duplicate.profile_id] && !store.profiles[duplicate.profile_id].tenant_id) {
+      profile = store.profiles[duplicate.profile_id];
+      delete store.profiles[duplicate.profile_id];
+      profile.tenant_id = duplicate.tenant_id;
+      profile.center_id = duplicate.center_id;
+      profile.profile_store_key = duplicateProfileKey;
+      store.profiles[duplicateProfileKey] = profile;
+    }
+    let updated = scopeAdopted;
     if (profile && duplicate.stage === "commerce") {
       const oldAmount = Number(duplicate.value?.amount || 0);
       const oldCost = duplicate.value?.cost === null || duplicate.value?.cost === undefined ? 0 : Number(duplicate.value.cost || 0);
@@ -2040,12 +2118,16 @@ function recordNyraDecisionJourneyEvent(store, event) {
     if (event.metadata && Object.keys(event.metadata).length) {
       duplicate.metadata = { ...(duplicate.metadata || {}), ...event.metadata };
     }
-    return { event: duplicate, duplicate: true, updated, profile: journeyProfileSummary(profile || store.profiles[duplicate.profile_id]) };
+    return { event: duplicate, duplicate: true, updated, profile: journeyProfileSummary(profile) };
   }
 
   const now = event.received_at;
-  const profile = store.profiles[event.profile_id] || {
+  const eventProfileKey = event.profile_store_key || profileStoreKey(event.profile_id, event);
+  const profile = store.profiles[eventProfileKey] || {
     profile_id: event.profile_id,
+    profile_store_key: eventProfileKey,
+    tenant_id: event.tenant_id,
+    center_id: event.center_id,
     first_seen_at: now,
     last_event_at: null,
     event_count: 0,
@@ -2078,7 +2160,7 @@ function recordNyraDecisionJourneyEvent(store, event) {
     profile.value.margin += margin;
     profile.value.currency = event.value.currency;
   }
-  store.profiles[event.profile_id] = profile;
+  store.profiles[eventProfileKey] = profile;
   store.events.push(event);
   return { event, duplicate: false, profile: journeyProfileSummary(profile) };
 }
@@ -2103,9 +2185,22 @@ function buildJourneySourceReadiness(context = {}, store = loadNyraDecisionJourn
   ].map((source) => ({ ...source, state: source.connected ? "ready" : "missing" }));
 }
 
-function buildNyraDecisionJourneyReport({ profileId = "", context = null } = {}) {
+function buildNyraDecisionJourneyReport({ profileId = "", context = null, tenantId = "", centerId = "" } = {}) {
   const store = loadNyraDecisionJourney();
-  const profiles = Object.values(store.profiles || {});
+  const scope = journeyTenantScope({ tenant_id: tenantId, center_id: centerId });
+  const profiles = Object.values(store.profiles || {}).filter((profile) => (
+    String(profile.tenant_id || "") === scope.tenantId
+    && String(profile.center_id || "") === scope.centerId
+  ));
+  const events = store.events.filter((event) => (
+    String(event.tenant_id || "") === scope.tenantId
+    && String(event.center_id || "") === scope.centerId
+  ));
+  const scopedStore = {
+    ...store,
+    events,
+    profiles: Object.fromEntries(profiles.map((profile) => [profile.profile_store_key || profileStoreKey(profile.profile_id, scope), profile]))
+  };
   const stageCoverage = NYRA_JOURNEY_STAGES.map((stage) => {
     const ready = profiles.filter((profile) => profile.stages?.[stage.id]?.status === "ready").length;
     return {
@@ -2116,14 +2211,14 @@ function buildNyraDecisionJourneyReport({ profileId = "", context = null } = {})
     };
   });
   const resolvedProfileId = profileId ? journeyProfileId({ profile_id: profileId }) : "";
-  const profile = resolvedProfileId ? store.profiles[resolvedProfileId] : null;
+  const profile = resolvedProfileId ? store.profiles[profileStoreKey(resolvedProfileId, scope)] : null;
   return {
     version: "decision_to_value_journey_v1",
     generated_at: new Date().toISOString(),
     persisted: Boolean(nyraStorageRoot),
     profile_count: profiles.length,
-    event_count: store.events.length,
-    source_readiness: buildJourneySourceReadiness(context || {}, store),
+    event_count: events.length,
+    source_readiness: buildJourneySourceReadiness(context || {}, scopedStore),
     stage_coverage: stageCoverage,
     missing_stage_priority: stageCoverage
       .slice()
@@ -3059,6 +3154,19 @@ async function syncSmartDeskSource() {
   const data = loadControlData();
   const journeyIngest = { received: 0, recorded: 0, updated: 0, duplicates: 0, rejected: 0 };
   if (bridgeSnapshot?.ok) {
+    const tenantScope = resolveTenantScope(bridgeSnapshot, {
+      tenantId: process.env.NYRA_CORE_TENANT_ID || "codexai",
+      centerId: "center_admin"
+    });
+    data.smartDeskSnapshots = data.smartDeskSnapshots.map((snapshot) => (
+      snapshot?.source === "smartdesk_live_bridge" && (!snapshot.tenant_id || !snapshot.center_id)
+        ? {
+          ...snapshot,
+          tenant_id: tenantScope.tenantId,
+          center_id: tenantScope.centerId,
+        }
+        : snapshot
+    ));
     const salesById = new Map(data.sales.map((sale) => [String(sale.id || ""), sale]));
     const directSales = Array.isArray(bridgeSnapshot.sales) ? bridgeSnapshot.sales : [];
     const paymentSales = directSales.length
@@ -3077,8 +3185,14 @@ async function syncSmartDeskSource() {
     [...directSales, ...paymentSales].forEach((sale) => {
       if (!sale.sale_id) return;
       const profileId = sale.client_id ? journeyProfileId({ external_id: sale.client_id }) : "";
-      salesById.set(String(sale.sale_id), {
-        id: String(sale.sale_id),
+      const scopedSaleId = scopedEntityId("sale", sale.sale_id, tenantScope);
+      const legacySaleId = String(sale.sale_id);
+      if (salesById.has(legacySaleId) && !salesById.get(legacySaleId)?.tenant_id) salesById.delete(legacySaleId);
+      salesById.set(scopedSaleId, {
+        id: scopedSaleId,
+        sourceId: String(sale.sale_id),
+        tenant_id: tenantScope.tenantId,
+        center_id: tenantScope.centerId,
         profileId,
         price: Number(sale.amount || 0),
         estimatedCost: sale.cost === null || sale.cost === undefined ? 0 : Number(sale.cost),
@@ -3094,8 +3208,14 @@ async function syncSmartDeskSource() {
     const inventoryById = new Map(data.inventoryItems.map((item) => [String(item.id || ""), item]));
     (Array.isArray(bridgeSnapshot.inventory) ? bridgeSnapshot.inventory : []).forEach((item) => {
       if (!item.product_id) return;
-      inventoryById.set(String(item.product_id), {
-        id: String(item.product_id),
+      const scopedProductId = scopedEntityId("inventory", item.product_id, tenantScope);
+      const legacyProductId = String(item.product_id);
+      if (inventoryById.has(legacyProductId) && !inventoryById.get(legacyProductId)?.tenant_id) inventoryById.delete(legacyProductId);
+      inventoryById.set(scopedProductId, {
+        id: scopedProductId,
+        sourceId: String(item.product_id),
+        tenant_id: tenantScope.tenantId,
+        center_id: tenantScope.centerId,
         sku: String(item.sku || ""),
         initialQuantity: Number(item.quantity || 0),
         minQuantity: Number(item.min_quantity || 0),
@@ -3112,6 +3232,8 @@ async function syncSmartDeskSource() {
       journeyIngest.received += 1;
       const normalized = normalizeJourneyEvent({
         ...event,
+        tenant_id: tenantScope.tenantId,
+        center_id: tenantScope.centerId,
         external_id: event.profile_external_id,
         source: event.source || "smartdesk"
       });
@@ -3132,6 +3254,8 @@ async function syncSmartDeskSource() {
     id: `smartdesk_api_${Date.now()}`,
     source: bridgeSnapshot?.ok ? "smartdesk_live_bridge" : "smartdesk_local_live",
     date: new Date().toISOString(),
+    tenant_id: bridgeSnapshot?.tenant_id || null,
+    center_id: bridgeSnapshot?.center_id || null,
     ...(bridgeSnapshot?.counts || localCounts),
     liveHealth,
     bridge: {
@@ -4340,17 +4464,61 @@ app.get("/api/nyra/control", (_req, res) => {
   });
 });
 
+app.get("/api/nyra/runtime/contract", (_req, res) => {
+  res.json({ ok: true, contract: nyraHorizontalRuntime.contract() });
+});
+
+app.post("/api/nyra/runtime/interpret", async (req, res) => {
+  const prepared = nyraHorizontalRuntime.prepareInterpretation(req.body || {});
+  if (!prepared.ok) {
+    res.status(prepared.status || 400).json({ ok: false, error: prepared.error, execution_allowed: false });
+    return;
+  }
+  const core = await requestNyraCore("/v1/nira/core-bridge", {
+    method: "POST",
+    body: prepared.core_request,
+  });
+  if (!core.ok) {
+    res.status(core.status || 503).json({
+      ok: false,
+      service: NYRA_SERVICE_NAME,
+      error: core.code || "core_branch_router_unavailable",
+      local_interpretation: prepared.local_interpretation,
+      branch_state: "not_opened_core_unavailable",
+      execution_allowed: false,
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    service: NYRA_SERVICE_NAME,
+    runtime: nyraHorizontalRuntime.contract(),
+    local_interpretation: prepared.local_interpretation,
+    core_router: core.data,
+    execution_allowed: false,
+  });
+});
+
 app.get("/api/nyra/runtime/readiness", async (_req, res) => {
   const config = nyraCoreConfig();
-  const core = await requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`);
+  const researchConfig = nyraResearchMcpConfig();
+  const [core, researchHealth] = await Promise.all([
+    requestNyraCore(`/v1/tenant/status?tenant_id=${encodeURIComponent(config.tenantId)}`),
+    requestNyraResearchHealth(),
+  ]);
   const learning = buildNyraTextLearningStatus();
-  const journeyStore = loadNyraDecisionJourney();
+  const journeyScope = journeyTenantScope({ tenant_id: config.tenantId });
+  const journeyReport = buildNyraDecisionJourneyReport({
+    tenantId: journeyScope.tenantId,
+    centerId: journeyScope.centerId,
+  });
   const authConfigured = basicCredentialsConfigured() || nyraBearerKeys().length > 0;
   const ready = Boolean(nyraStorageRoot && authConfigured && core.ok);
   res.status(ready ? 200 : 503).json({
     ok: ready,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
+    runtime: nyraHorizontalRuntime.contract(),
     state: ready ? "ready" : "attention",
     checked_at: new Date().toISOString(),
     auth: {
@@ -4369,11 +4537,25 @@ app.get("/api/nyra/runtime/readiness", async (_req, res) => {
       status: core.ok ? "connected" : core.code || "unavailable",
       tenant_id: config.tenantId || null,
     },
+    research: {
+      configured: Boolean(researchConfig.baseUrl),
+      reachable: researchHealth.ok,
+      status: researchHealth.ok ? "connected" : researchHealth.code || `http_${researchHealth.status || 503}`,
+      service: researchHealth.ok ? researchHealth.data?.service || null : null,
+      version: researchHealth.ok ? researchHealth.data?.version || null : null,
+      primary_mode: "connected_ai_mcp_bridge",
+      primary_provider: "host_chatgpt_or_codex_web",
+      openai_fallback_enabled: researchHealth.ok && researchHealth.data?.openai_research_fallback_enabled === true,
+      openai_fallback_configured: researchHealth.ok && researchHealth.data?.openai_research_fallback_configured === true,
+      automatic_unreviewed_learning: false,
+    },
     learning,
     journey: {
       persisted: Boolean(nyraStorageRoot),
-      profile_count: Object.keys(journeyStore.profiles || {}).length,
-      event_count: journeyStore.events.length,
+      tenant_id: journeyScope.tenantId,
+      center_id: journeyScope.centerId,
+      profile_count: journeyReport.profile_count,
+      event_count: journeyReport.event_count,
       contract: "decision_to_value_journey_v1",
     },
     paper: {
@@ -4397,7 +4579,7 @@ app.get("/api/nyra/core/status", async (_req, res) => {
   if (!result.ok) {
     return res.status(result.status || 503).json({
       ok: false,
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       core: {
         configured: Boolean(config.baseUrl && config.apiKey && config.tenantId),
         reachable: false,
@@ -4408,7 +4590,7 @@ app.get("/api/nyra/core/status", async (_req, res) => {
   }
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     core: {
       configured: true,
       reachable: true,
@@ -4428,7 +4610,7 @@ app.get("/api/nyra/suite/core/status", async (_req, res) => {
   if (!result.ok) {
     return res.status(result.status || 503).json({
       ok: false,
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       mode: "suite_tenant_scoped_read",
       tenant_id: config.tenantId || null,
       core: {
@@ -4440,7 +4622,7 @@ app.get("/api/nyra/suite/core/status", async (_req, res) => {
   }
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "suite_tenant_scoped_read",
     tenant_id: config.tenantId,
     core: {
@@ -4463,7 +4645,7 @@ app.get("/api/nyra/suite/customer-intelligence/contract", async (_req, res) => {
   if (!result.ok) {
     return res.status(result.status || 503).json({
       ok: false,
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       mode: "suite_tenant_scoped_read",
       tenant_id: config.tenantId || null,
       error: result.code || "suite_customer_intelligence_unavailable",
@@ -4472,7 +4654,7 @@ app.get("/api/nyra/suite/customer-intelligence/contract", async (_req, res) => {
   }
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "suite_tenant_scoped_read",
     tenant_id: config.tenantId,
     source: "universal_core",
@@ -4504,7 +4686,7 @@ app.post("/api/nyra/suite/decision-preview", async (req, res) => {
   const decisionContract = result.data?.decision_contract || result.data?.verdict?.decision_contract || result.data?.output || null;
   return res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "preview_only",
     tenant_id: config.tenantId,
     execution_allowed: false,
@@ -4562,20 +4744,24 @@ app.post("/api/nyra/decision-to-value/preview", async (req, res) => {
 
 app.get("/api/nyra/decision-to-value/report", (_req, res) => {
   const context = buildControlContext();
+  const tenantId = String(_req.query.tenant_id || "").trim();
+  const centerId = String(_req.query.center_id || "").trim();
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "read_only_report",
-    report: buildNyraDecisionJourneyReport({ context }),
+    report: buildNyraDecisionJourneyReport({ context, tenantId, centerId }),
   });
 });
 
 app.get("/api/nyra/decision-to-value/status", (req, res) => {
   const profileId = String(req.query.profile_id || "").trim();
-  const report = buildNyraDecisionJourneyReport({ profileId });
+  const tenantId = String(req.query.tenant_id || "").trim();
+  const centerId = String(req.query.center_id || "").trim();
+  const report = buildNyraDecisionJourneyReport({ profileId, tenantId, centerId });
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     mode: "read_only_status",
     profile_id: report.profile?.profile_id || (profileId ? journeyProfileId({ profile_id: profileId }) : null),
     status: report.profile || {
@@ -4639,7 +4825,11 @@ app.post("/api/nyra/decision-to-value/events", (req, res) => {
     duplicate: result.duplicate,
     event_id: result.event.event_id,
     profile: result.profile,
-    journey: buildNyraDecisionJourneyReport({ profileId: result.event.profile_id }),
+    journey: buildNyraDecisionJourneyReport({
+      profileId: result.event.profile_id,
+      tenantId: result.event.tenant_id,
+      centerId: result.event.center_id
+    }),
   });
 });
 
@@ -6668,7 +6858,7 @@ function buildNyraRenderAutopilotReport({ result = null, rebalanced = null, scan
     version: "nyra_render_autopilot_v1",
     generated_at: new Date().toISOString(),
     runtime: {
-      service: "skinharmony-nyra-core",
+      service: NYRA_SERVICE_NAME,
       storage_root: nyraStorageRoot || "local",
       paper_only: true,
       no_real_orders: true,
@@ -8259,7 +8449,7 @@ function buildNyraAnalyzerResponse(body = {}) {
 
   return {
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     endpoint: "/api/nyra/analyzer/read-only",
     mode: pack.mode,
     pack_id: pack.pack_id,
@@ -8373,7 +8563,7 @@ app.get("/api/nyra/analyzer/learning-pack", (_req, res) => {
   const pack = loadNyraAnalyzerLearningPack();
   res.json({
     ok: true,
-    service: "skinharmony-nyra-core",
+    service: NYRA_SERVICE_NAME,
     endpoint: "/api/nyra/analyzer/read-only",
     pack_id: pack.pack_id,
     version: pack.version,
@@ -8455,7 +8645,7 @@ app.post("/api/nyra/analyzer/read-only", (req, res) => {
     } catch (error) {
       res.status(500).json({
         ok: false,
-        service: "skinharmony-nyra-core",
+        service: NYRA_SERVICE_NAME,
         endpoint: "/api/nyra/analyzer/read-only",
         error: error.message || "Errore Nyra Analyzer.",
         reply: "Nyra Analyzer non ha completato la lettura per un errore runtime."
