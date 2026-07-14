@@ -59,7 +59,7 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
     const call = async (name, args) => {
       const response = await fetch(`${mcp.url}/mcp`, {
         method: "POST",
-        headers: { authorization: "Bearer chatgpt-test-token", "content-type": "application/json" },
+        headers: { authorization: "Bearer chatgpt-test-token", "content-type": "application/json", "mcp-session-id": "mcp-intelligence-integration" },
         body: JSON.stringify({ jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: args } }),
       });
       assert.equal(response.status, 200);
