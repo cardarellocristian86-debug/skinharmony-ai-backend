@@ -25,13 +25,23 @@ function ownerBindingStatus(config, identity) {
 
 function applyVerifiedOwnerConfirmation(payload, identity) {
   if (identity.godMode !== true) return payload;
+  const verifiedGovernance = (governance) => ({
+    ...(governance || {}),
+    owner_confirmation_satisfied: true,
+    owner_identity_verified: true,
+  });
+  const nestedPreflight = payload?.work_preflight;
   return {
     ...payload,
-    governance: {
-      ...(payload?.governance || {}),
-      owner_confirmation_satisfied: true,
-      owner_identity_verified: true,
-    },
+    governance: verifiedGovernance(payload?.governance),
+    ...(nestedPreflight && typeof nestedPreflight === "object" && !Array.isArray(nestedPreflight)
+      ? {
+        work_preflight: {
+          ...nestedPreflight,
+          governance: verifiedGovernance(nestedPreflight.governance),
+        },
+      }
+      : {}),
   };
 }
 
