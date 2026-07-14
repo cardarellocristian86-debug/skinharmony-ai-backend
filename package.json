@@ -29,12 +29,14 @@
     "core:mcp:test": "node --test services/skinharmony-core-mcp/test/*.test.js",
     "memory:import": "node scripts/import-shared-work-memory.mjs",
     "memory:view:owner": "node scripts/build-tenant-memory-view.mjs shared-work-memory/archive/connector-memory shared-work-memory owner-private"
+    ,"memory:cloud:sync": "node scripts/sync-cloud-memory.mjs"
   },
   "dependencies": {
     "axios": "^1.18.1",
     "express": "^5.2.1",
     "imapflow": "^1.4.7",
     "mailparser": "^3.9.14",
-    "nodemailer": "^9.0.3"
+    "nodemailer": "^9.0.3",
+    "pg": "^8.22.0"
   }
 }

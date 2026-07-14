@@ -41,6 +41,12 @@ services:
         sync: false
       - key: SHARED_WORK_MEMORY_ROOT
         value: ./shared-work-memory
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: CLOUD_MEMORY_MAX_DOCUMENT_BYTES
+        value: "250000"
       - key: AGENT_WORKSPACE_ROOT
         sync: false
       - key: MEMORY_FABRIC_ROOT
