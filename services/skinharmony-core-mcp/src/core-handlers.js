@@ -1,3 +1,5 @@
+import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
+
 function textResult(payload) {
   return {
     structuredContent: payload,
@@ -48,6 +50,7 @@ function applyVerifiedOwnerConfirmation(payload, identity) {
 export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
+  const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
 
   function coreKey(tenantId) {
     const selected = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
@@ -139,6 +142,9 @@ export function createCoreHandlers(config, options = {}) {
       mcp_identity: ownerBindingStatus(config, identity),
     }),
     work_preflight: async (args, identity) => {
+      const bootstrap = sharedMemoryBootstrap
+        ? await sharedMemoryBootstrap.load(identity)
+        : { loaded: false, tenant_id: identity.tenantId, missing_files: [], reason: "shared_memory_bootstrap_unavailable" };
       const sharedContext = await memoryContext({
         query: args.request,
         project_id: args.project_id,
@@ -163,7 +169,7 @@ export function createCoreHandlers(config, options = {}) {
           tenant_id: identity.tenantId,
         },
       });
-      return textResult(applyVerifiedOwnerConfirmation(payload, identity));
+      return textResult(attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap));
     },
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({

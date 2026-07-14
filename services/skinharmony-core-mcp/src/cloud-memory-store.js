@@ -81,6 +81,36 @@ export function createCloudMemoryStore(config, options = {}) {
       );
       return result.rows[0] || null;
     },
+    async inspectBySourcePaths(tenantId, sourcePaths) {
+      await initialize();
+      const paths = [...new Set((sourcePaths || []).map((value) => String(value || "").replace(/^\/+/, "")))]
+        .filter((value) => value && !value.includes(".."))
+        .slice(0, 50);
+      if (!paths.length) return [];
+      const result = await pool.query(
+        `SELECT id, source_path, content_sha256, updated_at
+         FROM mcp_memory_documents
+         WHERE tenant_id = $1 AND source_path = ANY($2::text[])
+         ORDER BY source_path ASC`,
+        [tenant(tenantId), paths],
+      );
+      return result.rows;
+    },
+    async fetchBySourcePaths(tenantId, sourcePaths) {
+      await initialize();
+      const paths = [...new Set((sourcePaths || []).map((value) => String(value || "").replace(/^\/+/, "")))]
+        .filter((value) => value && !value.includes(".."))
+        .slice(0, 50);
+      if (!paths.length) return [];
+      const result = await pool.query(
+        `SELECT id, title, source_path, content, content_sha256, redaction_count, metadata, updated_at
+         FROM mcp_memory_documents
+         WHERE tenant_id = $1 AND source_path = ANY($2::text[])
+         ORDER BY source_path ASC`,
+        [tenant(tenantId), paths],
+      );
+      return result.rows;
+    },
     async upsert(tenantId, input) {
       await initialize();
       const sourcePath = String(input.source_path || "").replace(/^\/+/, "").slice(0, 500);

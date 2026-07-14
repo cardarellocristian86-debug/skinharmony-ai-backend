@@ -5,10 +5,12 @@ import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
+import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
+const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
 const collaborationHandlers = config.agentWorkspaceRoot
@@ -16,6 +18,7 @@ const collaborationHandlers = config.agentWorkspaceRoot
   : {};
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
+  sharedMemoryBootstrap,
 });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
@@ -27,14 +30,7 @@ const researchCortex = config.researchCortexRoot
   : null;
 
 const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
-  "core_health",
   "work_preflight",
-  "nyra_runtime_context",
-  "nyra_branch_catalog",
-  "nyra_interpret_request",
-  "core_gate_action",
-  "memory_context",
-  "memory_search",
 ]);
 
 function summarizeToolRequest(toolName, args = {}) {

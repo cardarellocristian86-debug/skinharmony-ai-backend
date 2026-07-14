@@ -186,6 +186,39 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   assert.match(JSON.parse(calls[1].init.body).text, /Interpreta e spiega/);
 });
 
+test("adds automatic shared-memory bootstrap to a generic first work_preflight call", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "codexai": "tenant-core-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: true,
+      work_preflight: {
+        preflight_id: "preflight-bootstrap",
+        state: "completed_read_only",
+        governance: { execution_allowed_by_preflight: true },
+      },
+    }), { status: 200 }),
+    sharedMemoryBootstrap: {
+      load: async (identity) => ({
+        loaded: true,
+        tenant_id: identity.tenantId,
+        generated_at: "2026-07-14T18:45:29.447Z",
+        active_task_count: 107,
+        active_lock_count: 24,
+        artifact_count: 890,
+        latest_handoff: null,
+        recent_tasks: [],
+        recent_artifacts: [],
+      }),
+    },
+  });
+  const result = await handlers.work_preflight({ request: "Dimmi lo stato corrente" }, { tenantId: "codexai" });
+  assert.equal(result.structuredContent.shared_memory_bootstrap.loaded, true);
+  assert.equal(result.structuredContent.shared_memory_bootstrap.tenant_id, "codexai");
+  assert.equal(result.structuredContent.work_preflight.shared_memory_bootstrap.loaded, true);
+});
+
 test("write guard fails closed on hard blocks and allows controlled writes", async () => {
   const calls = [];
   const replies = [

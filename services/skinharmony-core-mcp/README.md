@@ -152,10 +152,24 @@ connected capability. It never authorizes execution.
 The MCP initialization instructions and every advertised tool identify
 `work_preflight` as the first tool. For work tools that do not natively call a
 Core routing endpoint, the server runs the preflight automatically before the
-tool handler and returns the preflight with the result. Failure is closed. Core
-health and tenant-memory recall/search are exempt because they are prerequisites
-of the preflight itself. Nyra interpretation, Codex context and the action gate
-embed their own mandatory Core preflight.
+tool handler and returns the preflight with the result. Failure is closed.
+`work_preflight` itself is the only middleware exemption because it is the
+entrypoint; health, memory, Nyra, Codex and action tools all receive the same
+automatic preflight before their handler runs.
+
+### Automatic shared-memory bootstrap
+
+Every authenticated `work_preflight` loads these canonical tenant documents by
+exact `source_path`: `SHARED_MEMORY/STATE.json`, `TASKS.json`, `LOCKS.json`,
+`ARTIFACTS.json` and `HANDOFF.md`. The compact result is returned as
+`work_preflight.shared_memory_bootstrap` with counts plus at most five recent
+tasks and five recent artifacts. Full artifact details remain available through
+tenant knowledge tools.
+
+Parsed content is cached per tenant for at most 300 seconds and invalidated when
+a canonical checksum or update timestamp changes. Missing or invalid documents
+return `loaded=false`, list `missing_files` and force preflight governance
+closed. Tenant identity always comes from the authenticated MCP identity.
 
 Routing is connector-first. For GitHub work, the connected GitHub app is the
 preferred route; GitHub CLI and manual browser authentication are prohibited
