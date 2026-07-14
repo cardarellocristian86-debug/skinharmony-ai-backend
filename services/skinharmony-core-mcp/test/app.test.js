@@ -182,7 +182,7 @@ test("does not advertise collaboration tools without registered handlers", async
   }
 });
 
-test("binds concurrent MCP chats to distinct stable signatures", async () => {
+test("binds five concurrent MCP chats to distinct stable signatures", async () => {
   const app = createApp(config, {
     handlers: { core_health: async () => ({ structuredContent: { ok: true }, content: [] }) },
   });
@@ -204,14 +204,19 @@ test("binds concurrent MCP chats to distinct stable signatures", async () => {
       return { response, body: await response.json() };
     };
 
-    const first = await call("mcp-concurrent-one");
+    const five = await Promise.all([
+      "mcp-concurrent-one",
+      "mcp-concurrent-two",
+      "mcp-concurrent-three",
+      "mcp-concurrent-four",
+      "mcp-concurrent-five",
+    ].map((session) => call(session)));
+    assert(five.every(({ response }) => response.status === 200));
+    const signatures = five.map(({ body }) => body.result.structuredContent.agent_presence.signature);
+    assert.equal(new Set(signatures).size, 5);
     const replay = await call("mcp-concurrent-one");
-    const second = await call("mcp-concurrent-two");
-    assert.equal(first.response.status, 200);
     assert.equal(replay.response.status, 200);
-    assert.equal(second.response.status, 200);
-    assert.equal(first.body.result.structuredContent.agent_presence.signature, replay.body.result.structuredContent.agent_presence.signature);
-    assert.notEqual(first.body.result.structuredContent.agent_presence.signature, second.body.result.structuredContent.agent_presence.signature);
+    assert.equal(signatures[0], replay.body.result.structuredContent.agent_presence.signature);
 
     const named = await call("mcp-named-session", "codex-alpha");
     assert.equal(named.response.status, 200);
