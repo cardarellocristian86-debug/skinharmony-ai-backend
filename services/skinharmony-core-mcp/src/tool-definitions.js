@@ -40,7 +40,7 @@ function tool(name, title, description, inputSchema, scopes, readOnly = true, id
           ...agentPresenceProperties,
           ...(!readOnly ? ownerConfirmationProperties : {}),
         },
-        required: [...new Set([...(inputSchema.required || []), "agent_id", "client_type", "session_id"])],
+        required: inputSchema.required || [],
       }
     : inputSchema;
   return {
