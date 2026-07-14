@@ -93,7 +93,11 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
-  const unverifiedLearning = body.verified_outcome === false || /\b(unverified learning|apprend(?:imento|ere).{0,24}non verific|without verified outcome)\b/i.test(text);
+  const learningOperation = /\b(learn(?:ing)?|outcome|calibrat|apprend|esito)\w*\b/i.test(text) ||
+    ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record"].includes(String(body.operation_class || "").toLowerCase());
+  const explicitlyUnverified = body.verified_outcome === false;
+  const unverifiedLearning = (learningOperation && explicitlyUnverified) ||
+    /\b(unverified learning|apprend(?:imento|ere).{0,24}non verific|without verified outcome)\b/i.test(text);
   if (unverifiedLearning) {
     return profile({
       classification: "unverified_learning",
