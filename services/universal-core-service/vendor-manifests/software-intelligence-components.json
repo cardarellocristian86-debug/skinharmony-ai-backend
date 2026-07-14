@@ -33,7 +33,8 @@
       "notice_verified": true,
       "redistribution": "allowed_with_license_notice_and_dependency_obligations",
       "runtime_verified": false,
-      "activation_blocker": "worker_image_and_release_asset_not_installed_or_verified"
+      "worker_build_definition": "workers/ghidra/Containerfile",
+      "activation_blocker": "digest_pinned_base_images_build_registry_digest_and_runtime_probe_not_verified"
     },
     {
       "id": "frida_local_agent",

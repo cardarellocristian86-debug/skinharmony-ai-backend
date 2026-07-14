@@ -26,7 +26,11 @@
       "licenses": [{ "license": { "id": "Apache-2.0" } }],
       "externalReferences": [{ "type": "distribution", "url": "https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1_build" }],
       "hashes": [{ "alg": "SHA-256", "content": "aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302" }],
-      "properties": [{ "name": "runtime.status", "value": "optional_unavailable" }]
+      "properties": [
+        { "name": "runtime.status", "value": "optional_unavailable" },
+        { "name": "worker.build_definition", "value": "workers/ghidra/Containerfile" },
+        { "name": "runtime.verified", "value": "false" }
+      ]
     },
     {
       "type": "application",

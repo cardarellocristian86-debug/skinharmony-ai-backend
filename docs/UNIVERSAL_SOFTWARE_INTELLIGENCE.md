@@ -8,7 +8,7 @@
 - `ghidra_headless` is an optional adapter capability for sections, symbols, imports, exports, functions, references, call graphs, and selective decompilation. It remains unavailable until an isolated worker image is configured and its official release artifact is verified.
 - `frida_local_agent` is an optional local-only dynamic adapter. It accepts only the versioned templates returned by the component API. It never accepts JavaScript or source text from a caller.
 
-Ghidra and Frida are not copied from local installations and are not included in this repository.
+Ghidra and Frida are not copied from local installations and their binaries are not included in this repository. The repository does include a Linux container build definition, a fixed Ghidra post-script, and a host launcher under `services/universal-core-service/workers/ghidra/`.
 
 The Ghidra adapter is enabled only when `GHIDRA_SANDBOX_LAUNCHER`, `GHIDRA_SANDBOX_LAUNCHER_SHA256`, and `SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET` are configured. Optional `GHIDRA_VERSION`, `GHIDRA_RELEASE_SHA256`, and `SOFTWARE_INTELLIGENCE_TEMP_ROOT` values further pin the runtime. Partial or invalid configuration fails at startup or probe time.
 
@@ -35,6 +35,8 @@ Frida templates are versioned and parameter allowlisted. Arbitrary JavaScript, s
 
 The job contract fixes `network_access=denied` and bounds CPU, memory, wall time, artifact size, and output size. The Ghidra adapter accepts only an absolute executable launcher whose SHA-256 matches configuration. Its probe must report Ghidra 12.1, the pinned official release hash, denied network access, and OS resource-limit enforcement. Input and output live in a mode-0700 temporary directory removed in `finally`; the Core service never runs the artifact itself.
 
+The Linux launcher additionally requires the worker image by registry digest. It starts a non-root container with a read-only root filesystem, no network, all capabilities dropped, `no-new-privileges`, PID/memory/CPU/wall/output bounds, a `noexec` temporary filesystem, and only the current transient job directory mounted. The image build fetches the official archive and verifies SHA-256 during the build; the archive is not stored in source control. See `workers/ghidra/README.md` for the build contract.
+
 ## Supply chain
 
 The manifest and CycloneDX SBOM live in `services/universal-core-service/vendor-manifests/`. Only the embedded native analyzer is active. Optional upstream components stay unavailable until their exact platform artifact, SHA-256, license, NOTICE/COPYING, redistribution obligations, and runtime are verified.
@@ -43,6 +45,7 @@ Run:
 
 ```sh
 npm run test:software-horizontal
+npm run test:ghidra-worker
 npm run benchmark:software
 ```
 

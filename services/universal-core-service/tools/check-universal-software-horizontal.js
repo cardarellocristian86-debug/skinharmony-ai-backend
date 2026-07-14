@@ -10,6 +10,13 @@ const targets = [
   "vendor-manifests/software-intelligence-sbom.cdx.json",
   "test/universal-software-intelligence.test.js",
   "test/ghidra-headless-adapter.test.js",
+  "test/ghidra-container-launcher.test.js",
+  "workers/ghidra/Containerfile",
+  "workers/ghidra/run-analysis.sh",
+  "workers/ghidra/UniversalEvidenceExporter.java",
+  "workers/ghidra/ghidra-container-launcher.mjs",
+  "workers/ghidra/build-image.sh",
+  "workers/ghidra/README.md",
 ];
 const forbidden = [/skinharmony/i, /beauty/i, /cosmetic/i, /skin[_-]?harmony[_-]?domain/i, /brand_scope/i];
 const violations = [];
