@@ -22,6 +22,33 @@ import {
   deterministicBranchRegistry,
   resolveBranchesForKey,
 } from "../branches/index.js";
+import { multiAgentRegistry, planMultiAgentRun } from "../src/multiAgentArchitecture.js";
+
+test("multi-agent planner uses deterministic routing first and bounds specialist credit use", () => {
+  const plan = planMultiAgentRun({
+    tenantId: "tenant-a",
+    domainPackId: "generic",
+    input: { text: "Crea una variante Core con test e verifica isolamento tenant", create_variant: true, require_evaluation: true },
+  });
+  assert.equal(plan.execution_authorized, false);
+  assert.equal(plan.selection[0].id, "core_intake_router");
+  assert(plan.selection.some((item) => item.id === "core_variant_designer"));
+  assert(plan.selection.some((item) => item.id === "quality_evaluator"));
+  assert(plan.selection.length <= 3);
+  assert(plan.credit_control.model_calls_budget <= 2);
+  assert.equal(plan.tenant_isolation.client_selected_tenant_allowed, false);
+});
+
+test("multi-agent planner exposes vertical agents only through authorized domain packs", () => {
+  const generic = multiAgentRegistry({ domainPackId: "generic" }).agents.map((agent) => agent.id);
+  const analyzer = multiAgentRegistry({ domainPackId: "analyzer" }).agents.map((agent) => agent.id);
+  assert.equal(generic.includes("beauty_protocol_advisor"), false);
+  assert(analyzer.includes("beauty_protocol_advisor"));
+  const plan = planMultiAgentRun({ domainPackId: "analyzer", tenantId: "tenant-b", input: { text: "Interpreta questa analisi", has_image: true } });
+  assert(plan.selection.some((item) => item.id === "beauty_protocol_advisor"));
+  assert(plan.selection.some((item) => item.id === "vision_analyst"));
+  assert.equal(plan.credit_control.model_calls_budget, 2);
+});
 
 test("Core defaults to horizontal and product packs require explicit key metadata", () => {
   const packs = listDomainPacks();
@@ -129,11 +156,21 @@ test("every horizontal Nyra Core binding resolves to an agnostic registered work
   for (const item of catalog.branches) {
     for (const binding of item.core_branch_bindings) {
       assert(registry[binding], `missing Core binding ${binding}`);
-      assert.equal(registry[binding].domain, "horizontal_work");
+      assert(["horizontal_work", "identity_delegation"].includes(registry[binding].domain));
       assert(registry[binding].subbranches.length <= 20);
     }
   }
   assert.deepEqual(deterministicBranchGroups().work_cortex.branches, HORIZONTAL_WORK_BRANCHES);
+});
+
+test("Nyra opens identity delegation and decision provenance only for relevant governed requests", () => {
+  const route = routeNyraBranches({
+    text: "Verifica la delega OAuth dell'agente, audience del token, audit del verdict e rollback.",
+    domainPackId: "generic",
+  });
+  const bindings = Object.fromEntries(route.opened_branches.map((item) => [item.id, item.core_branch_bindings]));
+  assert.deepEqual(bindings.delegated_authority, ["workload_identity_delegation_guard"]);
+  assert.deepEqual(bindings.decision_provenance, ["decision_provenance_intelligence"]);
 });
 
 test("Core branch packages isolate Suite, SmartDesk and Analyzer verticals", () => {

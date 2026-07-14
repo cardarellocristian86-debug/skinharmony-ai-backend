@@ -139,4 +139,3 @@ export function selectedScenarioRequiresConfirmation(scenarios, actionId) {
   const selected = scenarios.find((item) => item.id === normalizedId || item.action_id === actionId);
   return selected?.execution_scope === "confirm_required";
 }
-

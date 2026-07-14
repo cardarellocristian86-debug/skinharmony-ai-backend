@@ -41,6 +41,16 @@ const NYRA_BRANCHES = Object.freeze([
     "security_review", "compliance_review", "claim_review", "pricing_review", "audit_evidence",
     "confirmation_gate", "rollback_readiness",
   ], ["*"], { workPhase: "governance", coreBranchBindings: ["quality_verification_intelligence"] }),
+  branch("delegated_authority", "Delegated Authority", ["delega", "agente", "workload", "identita", "identity", "oauth", "token", "scope", "audience", "revoca", "impersona"], [
+    "principal_identity", "workload_attestation", "trust_domain_boundary", "delegation_chain", "act_as_scope",
+    "resource_audience_binding", "credential_lifetime", "credential_rotation", "token_separation", "revocation_check",
+    "redirect_uri_validation", "delegation_expiry", "incident_containment", "authority_summary",
+  ], ["*"], { workPhase: "governance", coreBranchBindings: ["workload_identity_delegation_guard"] }),
+  branch("decision_provenance", "Decision Provenance", ["provenienza", "provenance", "verdict", "decisione", "conferma", "approvazione", "audit", "rollback", "evidenza", "tracciabil"], [
+    "request_fingerprint", "actor_authority", "policy_snapshot", "evidence_lineage", "risk_rationale",
+    "decision_contract", "confirmation_scope", "decision_expiry", "revalidation_trigger", "reversal_path",
+    "audit_safe_summary", "cross_tenant_replay_check", "accountability_handoff", "provenance_summary",
+  ], ["*"], { workPhase: "governance", coreBranchBindings: ["decision_provenance_intelligence"] }),
   branch("execution_planning", "Execution Planning", ["piano", "esegui", "runbook", "deploy", "render", "automat", "implementa"], [
     "goal_decomposition", "dependency_mapping", "runbook_design", "resource_estimation", "failure_mode_analysis",
     "test_strategy", "release_strategy", "rollback_plan", "human_confirmation", "evidence_plan",

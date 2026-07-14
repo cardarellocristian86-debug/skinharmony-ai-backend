@@ -32,4 +32,3 @@ test("read-only scenarios do not require confirmation", () => {
   const scenarios = prepareContextualNiraScenarios({ text: "Leggi audit e stato del tenant" });
   assert(scenarios.every((item) => item.execution_scope !== "confirm_required"));
 });
-

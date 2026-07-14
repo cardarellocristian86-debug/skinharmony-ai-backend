@@ -79,6 +79,35 @@ test("software intelligence API enforces entitlement and authorization without p
     assert.equal(analyzed.json.analysis.artifact.raw_content_persisted, false);
     assert.equal(analyzed.json.guardrail.execution_allowed, false);
     assert(!JSON.stringify(analyzed.json).includes(Buffer.from("sample artifact").toString("base64")));
+
+    const queued = await api(service.base, "POST", "/v1/software-intelligence/jobs", {
+      mode: "lightweight_static",
+      artifact: { name: "sample.bin", content_base64: Buffer.from("sample artifact").toString("base64") },
+      authorization: { asserted: true, basis: "owned", purpose: "testing" },
+    }, internal.json.key);
+    assert.equal(queued.status, 202);
+    assert.equal(queued.json.job.tenant_id, "tenant-software-lab");
+    assert.equal(queued.json.job.raw_artifact_persisted, false);
+
+    const crossTenant = await api(service.base, "POST", "/v1/software-intelligence/jobs", {
+      tenant_id: "tenant-other",
+      mode: "lightweight_static",
+      artifact: { name: "sample.bin", content_base64: Buffer.from("sample artifact").toString("base64") },
+      authorization: { asserted: true, basis: "owned", purpose: "testing" },
+    }, internal.json.key);
+    assert.equal(crossTenant.status, 403);
+    assert.equal(crossTenant.json.error, "tenant_scope_denied");
+
+    const arbitraryFrida = await api(service.base, "POST", "/v1/software-intelligence/jobs", {
+      mode: "frida_local_agent",
+      target: "process:demo",
+      template_id: "observe_module_loads_v1",
+      javascript: "send('arbitrary')",
+      authorization: { asserted: true, basis: "owned", purpose: "testing", owner_confirmed: true },
+      core_governance: { authorized: true, target_allowlist: ["process:demo"] },
+    }, internal.json.key);
+    assert.equal(arbitraryFrida.status, 400);
+    assert.equal(arbitraryFrida.json.error, "software_core_authorization_required");
   } finally {
     await service.close();
   }

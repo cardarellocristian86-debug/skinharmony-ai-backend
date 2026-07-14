@@ -1,0 +1,33 @@
+ARG BUILDER_IMAGE
+ARG RUNTIME_IMAGE
+FROM ${BUILDER_IMAGE} AS fetch
+ARG GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1_build/ghidra_12.1_PUBLIC_20260513.zip
+ARG GHIDRA_SHA256=aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --proto '=https' --tlsv1.2 --output /tmp/ghidra.zip "${GHIDRA_URL}" \
+    && echo "${GHIDRA_SHA256}  /tmp/ghidra.zip" | sha256sum --check --strict \
+    && mkdir -p /opt/ghidra \
+    && unzip -q /tmp/ghidra.zip -d /opt/ghidra \
+    && mv /opt/ghidra/ghidra_*/* /opt/ghidra/ \
+    && rmdir /opt/ghidra/ghidra_* \
+    && rm /tmp/ghidra.zip
+
+FROM ${RUNTIME_IMAGE}
+ARG GHIDRA_SHA256=aa5cbcbbf48f41ca185fce900e19592f1ade4cd5994eb6e0ede468dac8a6f302
+LABEL org.opencontainers.image.title="Universal Software Intelligence Ghidra Worker" \
+      org.opencontainers.image.version="12.1" \
+      org.opencontainers.image.source="https://github.com/NationalSecurityAgency/ghidra" \
+      usi.worker="ghidra_headless" \
+      usi.ghidra.release_sha256="${GHIDRA_SHA256}" \
+      usi.network_access="denied" \
+      usi.resource_limits_enforced="true"
+COPY --from=fetch /opt/ghidra /opt/ghidra
+COPY UniversalEvidenceExporter.java /opt/usi/scripts/UniversalEvidenceExporter.java
+COPY run-analysis.sh /opt/usi/bin/run-analysis
+RUN chmod 0555 /opt/usi/bin/run-analysis \
+    && chmod 0444 /opt/usi/scripts/UniversalEvidenceExporter.java \
+    && useradd --create-home --uid 65532 --shell /usr/sbin/nologin usi-worker
+USER 65532:65532
+WORKDIR /work
+ENTRYPOINT ["/opt/usi/bin/run-analysis"]

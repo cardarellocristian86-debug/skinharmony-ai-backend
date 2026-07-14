@@ -9,10 +9,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NYRA_SERVICE_NAME
-        value: nyra-horizontal-runtime
-      - key: NYRA_DOMAIN_PACK_ID
-        value: skinharmony
       - key: NYRA_STORAGE_ROOT
         value: /var/data
       - key: NYRA_FINANCE_SHARED_CAPITAL_EUR
@@ -49,8 +45,6 @@ services:
         sync: false
       - key: NYRA_CORE_TENANT_ID
         value: "codexai"
-      - key: NYRA_RESEARCH_MCP_URL
-        value: "https://skinharmony-core-mcp.onrender.com"
       - key: NYRA_SUITE_CORE_URL
         value: "https://skinharmony-universal-core.onrender.com"
       - key: NYRA_SUITE_CORE_KEY

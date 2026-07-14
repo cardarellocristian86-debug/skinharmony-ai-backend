@@ -61,6 +61,8 @@ import { branchPlanningPriorityIntelligence } from "./branch-planning-priority-i
 import { branchExecutionCoordinationIntelligence } from "./branch-execution-coordination-intelligence.js";
 import { branchQualityVerificationIntelligence } from "./branch-quality-verification-intelligence.js";
 import { branchAdaptiveLearningIntelligence } from "./branch-adaptive-learning-intelligence.js";
+import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identity-delegation-guard.js";
+import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
 import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
 import { branchAllowedForDomainPack, resolveDomainPackForKey } from "../src/domainPacks.js";
@@ -128,6 +130,8 @@ const BRANCHES = [
   branchExecutionCoordinationIntelligence,
   branchQualityVerificationIntelligence,
   branchAdaptiveLearningIntelligence,
+  branchWorkloadIdentityDelegationGuard,
+  branchDecisionProvenanceIntelligence,
   branchBeautyVerticalOrchestration,
   branchChangeImpactOrchestration,
 ];
@@ -149,6 +153,7 @@ const CODEX_GUARD_BRANCHES = [
   "observability_roi_guard",
   "legal_privacy_compliance_guard",
   "agent_orchestration_guard",
+  "workload_identity_delegation_guard",
   "runtime_deployment_scaling_guard",
   "change_impact_orchestration",
 ];
@@ -211,6 +216,7 @@ export const HORIZONTAL_WORK_BRANCHES = Object.freeze([
   "execution_coordination_intelligence",
   "quality_verification_intelligence",
   "adaptive_learning_intelligence",
+  "decision_provenance_intelligence",
 ]);
 
 const LEARNING_CORTEX_BRANCHES = [
@@ -221,6 +227,8 @@ const LEARNING_CORTEX_BRANCHES = [
   "observability_roi_guard",
   "change_impact_orchestration",
   "agent_orchestration_guard",
+  "workload_identity_delegation_guard",
+  "decision_provenance_intelligence",
   "runtime_deployment_scaling_guard",
 ];
 
@@ -243,6 +251,16 @@ export const BRANCH_GROUPS = Object.freeze({
     label: "Horizontal Work Cortex",
     description: "Intake, ricerca, piano, coordinamento parallelo, verifica e apprendimento governato per qualsiasi dominio.",
     branches: HORIZONTAL_WORK_BRANCHES,
+  },
+  identity_delegation: {
+    label: "Identity & Delegation",
+    description: "Identita verificabile di agenti/workload, deleghe limitate, audience binding, revoca e trust-domain isolation.",
+    branches: ["workload_identity_delegation_guard", "agent_orchestration_guard", "consent_ledger_guard", "legal_privacy_compliance_guard"],
+  },
+  decision_provenance: {
+    label: "Decision Provenance",
+    description: "Catena richiesta-policy-evidenza-verdict-conferma-reversal per decisioni governate e riesaminabili.",
+    branches: ["decision_provenance_intelligence", "research_evidence_intelligence", "quality_verification_intelligence", "change_impact_orchestration", "consent_ledger_guard"],
   },
   customer_intelligence: {
     label: "Customer Intelligence",
@@ -339,12 +357,12 @@ export const BRANCH_GROUPS = Object.freeze({
   security_defense: {
     label: "Security / Defensive Intelligence",
     description: "Tenant isolation, segreti, audit, policy, hardening e difesa da automazioni rischiose.",
-    branches: ["codex_security_guard", "codex_code_safety", "codex_release_gate", "codex_architecture_guard", "legal_privacy_compliance_guard", "agent_orchestration_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "observability_roi_guard"],
+    branches: ["codex_security_guard", "codex_code_safety", "codex_release_gate", "codex_architecture_guard", "legal_privacy_compliance_guard", "agent_orchestration_guard", "workload_identity_delegation_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "observability_roi_guard"],
   },
   automation_control: {
     label: "Automation Control",
     description: "Codex, agenti, runbook, audit, action mediation, deploy e ROI delle automazioni.",
-    branches: ["agent_orchestration_guard", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
+    branches: ["agent_orchestration_guard", "workload_identity_delegation_guard", "decision_provenance_intelligence", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
   },
   nyra_interpretation: {
     label: "Nyra Interpretation Layer",

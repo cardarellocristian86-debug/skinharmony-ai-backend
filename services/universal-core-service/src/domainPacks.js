@@ -241,4 +241,3 @@ for (const pack of Object.values(DOMAIN_PACKS)) {
   const validation = validateDomainPack(pack);
   if (!validation.ok) throw new Error(`invalid_domain_pack:${pack.id}:${validation.errors.join(",")}`);
 }
-

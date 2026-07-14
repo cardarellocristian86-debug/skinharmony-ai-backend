@@ -65,7 +65,7 @@ function machoArm64Fixture() {
 test("embedded component manifest distinguishes active code from vendor imports", () => {
   const manifest = embeddedComponentManifest();
   assert.equal(manifest.desktop_application_required, false);
-  assert.equal(manifest.components.find((item) => item.id === "skinharmony_binary_evidence_core").status, "embedded_active");
+  assert.equal(manifest.components.find((item) => item.id === "universal_binary_evidence_core").status, "embedded_active");
   assert.equal(manifest.components.find((item) => item.id === "ghidra_analysis_components").status, "vendor_import_required");
   assert.equal(manifest.components.find((item) => item.id === "frida_gum_components").status, "vendor_import_required");
 });

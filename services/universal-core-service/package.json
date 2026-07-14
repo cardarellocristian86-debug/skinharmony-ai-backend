@@ -6,7 +6,11 @@
   "scripts": {
     "start": "node --experimental-strip-types server.js",
     "test": "node --test test/*.test.js && node --experimental-strip-types test/core-service-smoke.js",
-    "core:client": "node tools/core-service-client.js"
+    "core:client": "node tools/core-service-client.js",
+    "test:software-horizontal": "node tools/check-universal-software-horizontal.js",
+    "test:ghidra-worker": "node --test test/ghidra-container-launcher.test.js test/ghidra-headless-adapter.test.js",
+    "test:local-software-agent": "node --test test/ghidra-headless-adapter.test.js test/frida-local-adapter.test.js",
+    "benchmark:software": "node tools/benchmark-universal-software.js"
   },
   "dependencies": {
     "express": "^5.2.1"
