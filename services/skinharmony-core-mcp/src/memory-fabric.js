@@ -246,11 +246,16 @@ function publicRecord(record) {
   return safe;
 }
 
-function audit(state, identity, type, target, gate = null) {
+function audit(state, identity, type, target, gate = null, explicitPresence = null) {
+  const presence = explicitPresence || identity.agentPresence || {};
   state.audit.push({
     id: `ma_${crypto.randomUUID()}`,
     created_at: new Date().toISOString(),
     actor_subject: actor(identity),
+    agent_id: presence.opaque_agent_id || null,
+    logical_agent_id: presence.agent_id || null,
+    agent_signature: presence.signature || null,
+    client_type: presence.client_type || null,
     type,
     target,
     gate: gate ? { decision: gate.decision || "unknown", mediation: gate.mediation || "unknown" } : null,
@@ -513,7 +518,7 @@ export function createMemoryFabric(config, options = {}) {
         redaction_count: 0,
         tool_activity: details,
       });
-      audit(state, identity, error ? "tool.failed" : "tool.completed", toolName);
+      audit(state, identity, error ? "tool.failed" : "tool.completed", toolName, null, presence);
       return { recorded: true, agent_id: agentId, agent_signature: presence.signature, task_contract_id: preflightId || null, checkpoint_created: !existing };
     });
   }
