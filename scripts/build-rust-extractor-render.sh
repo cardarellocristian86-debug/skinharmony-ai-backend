@@ -7,6 +7,7 @@ BIN="$ROOT_DIR/skinharmony-rust-extractor-governor/target/release/skinharmony-ex
 
 export CARGO_HOME="${CARGO_HOME:-$ROOT_DIR/.render-rust/cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$ROOT_DIR/.render-rust/rustup}"
+export PATH="$CARGO_HOME/bin:$PATH"
 mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
 
 if ! command -v rustup >/dev/null 2>&1; then
@@ -18,11 +19,16 @@ if [ -f "$CARGO_HOME/env" ]; then
   source "$CARGO_HOME/env"
 fi
 
-if ! rustup default >/dev/null 2>&1; then
+if ! rustup run stable rustc -vV >/dev/null 2>&1; then
   rustup toolchain install stable --profile minimal
-  rustup default stable
 fi
 
-rustup run stable cargo build --release --manifest-path "$MANIFEST"
+rustup default stable
+
+# Invoke the toolchain binary directly. In constrained runtimes the rustup Cargo
+# proxy can resolve rustc back to itself even when the stable toolchain is valid.
+TOOLCHAIN_CARGO="$(rustup which --toolchain stable cargo)"
+TOOLCHAIN_BIN="$(dirname "$TOOLCHAIN_CARGO")"
+PATH="$TOOLCHAIN_BIN:$PATH" "$TOOLCHAIN_CARGO" build --release --manifest-path "$MANIFEST"
 test -x "$BIN"
 echo "SkinHarmony Rust extractor ready: $BIN"

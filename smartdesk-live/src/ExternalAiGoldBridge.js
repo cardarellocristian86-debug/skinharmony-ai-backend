@@ -110,6 +110,18 @@ function smartDeskAnswerUsable(content = "") {
   return requiredDomain && !contaminated;
 }
 
+function nyraBridgeContent(response = {}) {
+  const result = response.result || response;
+  return cleanText(
+    result?.deep_nyra_runtime?.dialogue?.preferred_reply ||
+    result?.deep_nyra_runtime?.dialogue?.reply ||
+    result?.prepared_by_nira?.summary ||
+    "",
+    "",
+    4000,
+  );
+}
+
 function branchNextActions(branchAnalyses = []) {
   return branchAnalyses
     .flatMap((item) => Array.isArray(item.branch_output?.next_actions) ? item.branch_output.next_actions : [])
@@ -299,17 +311,24 @@ class ExternalAiGoldBridge {
       }))
       : [];
     const nyraPrompt = this.buildNyraPrompt({ mode, question, context, core: normalizedCore.output, branchAnalyses });
-    const nyra = await this.callNyraTextChat({
-      text: nyraPrompt,
-      sessionId: `smartdesk-${mode}-${centerId}`
-    });
+    const usesCoreNyraBridge = typeof this.universalCoreBridge?.nyraInterpret === "function" && this.universalCoreBridge?.isConfigured?.();
+    const nyra = usesCoreNyraBridge
+      ? await this.universalCoreBridge.nyraInterpret({
+        message: question || "Prepara una lettura operativa Smart Desk in sola proposta.",
+        mode,
+        centerScope: centerId,
+      })
+      : await this.callNyraTextChat({ text: nyraPrompt, sessionId: `smartdesk-${mode}-${centerId}` });
     const nyraResult = nyra.result || {};
-    const content = cleanText(nyraResult.content || nyraResult.reply || "", "", 4000);
+    const content = usesCoreNyraBridge
+      ? nyraBridgeContent(nyra)
+      : cleanText(nyraResult.content || nyraResult.reply || "", "", 4000);
     const governedFallback = this.fallbackAnswer({ mode, context, core: normalizedCore, nyra, branchAnalyses });
     return {
       success: Boolean(normalizedCore.ok || nyra.success),
       provider: "universal_core_server_nyra_server",
       sourceLayer: "external_core_nyra_render",
+      nyraPath: usesCoreNyraBridge ? "smartdesk_to_core_to_nyra" : "legacy_direct_nyra_fallback",
       mode,
       answer: smartDeskAnswerUsable(content) ? content : governedFallback,
       nyraAnswerAccepted: smartDeskAnswerUsable(content),

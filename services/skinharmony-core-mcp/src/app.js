@@ -51,6 +51,13 @@ function resolveWorkPreflight(result, payload) {
   return {
     ...payload,
     state: authorizedByCoreGate ? "completed_after_core_gate" : "completed_read_only",
+    gate: gate ? {
+      allowed: gate.allowed === true,
+      decision: gate.decision || "unknown",
+      mediation: gate.mediation || "unknown",
+      owner_confirmation_required: gate.owner_confirmation_required === true,
+      confirmation_satisfied: gate.confirmation_satisfied === true,
+    } : payload?.gate,
     governance: {
       ...(payload?.governance || {}),
       execution_authorized_by_core_gate: authorizedByCoreGate,

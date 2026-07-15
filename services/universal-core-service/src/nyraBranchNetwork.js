@@ -90,15 +90,15 @@ const NYRA_BRANCHES = Object.freeze([
   branch("suite_domain", "Suite Product Pack", ["suite", "sito", "wordpress", "landing", "pubblica"], [
     "site_governance", "content_publishing", "template_management", "landing_management", "lead_capture",
     "deployment_readiness", "site_isolation", "rollback_readiness",
-  ], ["suite"], { workPhase: "domain", coreBranchBindings: ["suite_governance"] }),
+  ], ["suite", "skinharmony"], { workPhase: "domain", coreBranchBindings: ["suite_governance"] }),
   branch("smartdesk_domain", "SmartDesk Product Pack", ["smartdesk", "agenda", "cassa", "magazzino", "operativ"], [
     "desk_operations", "appointment_workflow", "customer_operations", "billing_operations", "inventory_operations",
     "operational_api_guard", "node_isolation", "handoff_readiness",
-  ], ["smartdesk"], { workPhase: "domain", coreBranchBindings: ["smartdesk_operations_guard"] }),
+  ], ["smartdesk", "skinharmony"], { workPhase: "domain", coreBranchBindings: ["smartdesk_operations_guard"] }),
   branch("analyzer_domain", "Analyzer Product Pack", ["analyzer", "analisi", "protocollo", "cosmet", "beauty"], [
     "analyzer_interpretation", "protocol_advisory", "cosmetic_claims", "evidence_quality", "result_explanation",
     "value_chain_review", "pricing_guard", "subject_isolation",
-  ], ["analyzer"], { workPhase: "domain", coreBranchBindings: ["skinharmony_analyzer", "beauty_protocol_guard"] }),
+  ], ["analyzer", "skinharmony"], { workPhase: "domain", coreBranchBindings: ["skinharmony_analyzer", "beauty_protocol_guard"] }),
 ]);
 
 function normalizeList(value, max = 50) {

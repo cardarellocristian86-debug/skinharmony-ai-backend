@@ -45,6 +45,18 @@ test("does not classify ordinary collaboration writes as unverified learning", (
   assert.equal(result.risk_band, "low");
 });
 
+test("does not apply verified_outcome to non-learning actions", () => {
+  const result = classifyActionRisk({
+    action_type: "deploy",
+    operation_class: "reversible_owner_confirmed_deploy",
+    verified_outcome: false,
+    external_side_effect: true,
+  });
+  assert.equal(result.classification, "high_impact_change");
+  assert.equal(result.hard_block, false);
+  assert.equal(result.governance_verdict, "CONFIRM");
+});
+
 test("still blocks an outcome write explicitly marked unverified", () => {
   const result = classifyActionRisk({
     action_type: "outcome_record",
@@ -98,4 +110,12 @@ test("deterministic profile overrides generic Core safety fallback", () => {
   assert.equal(result.state, "ready");
   assert.equal(result.control_level, "observe");
   assert.deepEqual(result.blocked_reasons, ["tenant_scoped_read"]);
+  assert.equal(result.governance_verdict, "ALLOW");
+});
+
+test("emits a stable governance verdict for each Core outcome", () => {
+  assert.equal(classifyActionRisk({ action_type: "read_status", read_only: true }).governance_verdict, "ALLOW");
+  assert.equal(classifyActionRisk({ action_type: "deploy", external_side_effect: true }).governance_verdict, "CONFIRM");
+  assert.equal(classifyActionRisk({ action_type: "unknown_mutation" }).governance_verdict, "DEFER");
+  assert.equal(classifyActionRisk({ action_type: "expose_secret" }).governance_verdict, "BLOCK");
 });
