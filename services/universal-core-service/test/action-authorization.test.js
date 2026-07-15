@@ -115,3 +115,31 @@ test("deep software analysis fails closed without sandbox, audit, basis or dynam
     { ...deepSoftware, owner_confirmed: true, cross_tenant: true },
   ]) assert.equal(buildActionAuthorization(contract({ control_level: "suggest" }), unsafe).allowed, false);
 });
+
+const reversibleBranchChange = {
+  action_type: "repository_file_update",
+  operation_class: "reversible_owner_confirmed_branch_change",
+  external_side_effect: true,
+  contains_customer_data: false,
+  cross_tenant: false,
+  configuration_changes: false,
+  rollback_ready: true,
+  audit_ready: true,
+  target_commit: "4cb397cdec02c8a0f45582f990e4171ec992c44e",
+  target_branch: "agent/cockpit-360-e2e",
+  confirmation_reference: "owner-confirmed-branch-change",
+};
+
+test("authorizes only a confirmed reversible code-only agent branch update", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high" }), reversibleBranchChange);
+  assert.equal(pending.allowed, false);
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...reversibleBranchChange, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_branch_change");
+  for (const unsafe of [
+    { ...reversibleBranchChange, owner_confirmed: true, target_branch: "main" },
+    { ...reversibleBranchChange, owner_confirmed: true, rollback_ready: false },
+    { ...reversibleBranchChange, owner_confirmed: true, audit_ready: false },
+    { ...reversibleBranchChange, owner_confirmed: true, configuration_changes: true },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), unsafe).allowed, false);
+});
