@@ -11,6 +11,7 @@ const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter
 const { WhatsappService } = require("./src/WhatsappService");
 const { SuiteAppKeyBridge } = require("./src/SuiteAppKeyBridge");
 const { UniversalCoreBridge } = require("./src/UniversalCoreBridge");
+const { cockpit360Contract } = require("./src/Cockpit360Contract");
 const { computeAppointmentProfitability } = require("./src/core/profitability/ProfitabilityCore");
 
 const app = express();
@@ -1823,6 +1824,37 @@ app.get("/api/ai-gold/cockpit", requirePlan("gold"), async (req, res) => {
       },
       sections: [],
       message: error instanceof Error ? error.message : "Cockpit Gold non disponibile"
+    });
+  }
+});
+
+app.get("/api/ai-gold/cockpit-360", requirePlan("gold"), async (req, res) => {
+  try {
+    const cockpit = service.getAiGoldCockpit({
+      startDate: req.query.startDate || "",
+      endDate: req.query.endDate || ""
+    }, req.session);
+    const enhanced = await assistantService.enhanceGoldPayloadWithExternalReadout(cockpit, req.session, "gold");
+    return res.json(cockpit360Contract({
+      cockpit,
+      enhanced,
+      tenantId: req.session?.tenantId || process.env.UNIVERSAL_CORE_TENANT_ID || "",
+      centerId: req.session?.centerId || ""
+    }));
+  } catch (error) {
+    return res.status(502).json({
+      ok: false,
+      schema_version: "cockpit_360_v1",
+      mode: "read_only_advisory",
+      code: "cockpit_360_e2e_unavailable",
+      message: error instanceof Error ? error.message : "Cockpit 360 non disponibile.",
+      guardrails: {
+        read_only: true,
+        automatic_execution_allowed: false,
+        operator_confirmation_required: true,
+        tenant_scoped: true,
+        source_data_mutated: false
+      }
     });
   }
 });
