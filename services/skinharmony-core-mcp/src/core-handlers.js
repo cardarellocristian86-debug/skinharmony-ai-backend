@@ -24,6 +24,135 @@ function textResult(payload) {
   };
 }
 
+function compactTextResult(payload, narration = {}) {
+  return {
+    structuredContent: payload,
+    content: [{ type: "text", text: JSON.stringify(narration) }],
+  };
+}
+
+function compactMemoryContext(memory) {
+  if (!memory || typeof memory !== "object") return null;
+  return {
+    schema_version: memory.schema_version,
+    tenant_id: memory.tenant_id,
+    revision: Number(memory.revision || 0),
+    relevant_count: Array.isArray(memory.relevant_memories) ? memory.relevant_memories.length : 0,
+    handoff_count: Array.isArray(memory.pending_handoffs) ? memory.pending_handoffs.length : 0,
+    recent_activity_count: Array.isArray(memory.recent_activity) ? memory.recent_activity.length : 0,
+  };
+}
+
+function compactBootstrap(bootstrap) {
+  if (!bootstrap || typeof bootstrap !== "object") return undefined;
+  return {
+    loaded: bootstrap.loaded === true,
+    tenant_id: bootstrap.tenant_id,
+    generated_at: bootstrap.generated_at,
+    active_task_count: Number(bootstrap.active_task_count || 0),
+    active_lock_count: Number(bootstrap.active_lock_count || 0),
+    artifact_count: Number(bootstrap.artifact_count || 0),
+    latest_handoff: bootstrap.latest_handoff,
+    recent_tasks: Array.isArray(bootstrap.recent_tasks) ? bootstrap.recent_tasks.slice(0, 5) : [],
+    recent_artifacts: Array.isArray(bootstrap.recent_artifacts) ? bootstrap.recent_artifacts.slice(0, 5) : [],
+    ...(bootstrap.loaded === false ? { missing_files: bootstrap.missing_files || [] } : {}),
+  };
+}
+
+function compactWorkPreflight(preflight) {
+  if (!preflight || typeof preflight !== "object") return null;
+  return {
+    schema_version: preflight.schema_version,
+    preflight_id: preflight.preflight_id,
+    tenant_id: preflight.tenant_id,
+    state: preflight.state,
+    mandatory: preflight.mandatory === true,
+    governance: preflight.governance,
+    gate: preflight.gate,
+    tool_routing: preflight.tool_routing?.preferred_route
+      ? { preferred_route: preflight.tool_routing.preferred_route }
+      : preflight.tool_routing,
+    shared_memory_bootstrap: compactBootstrap(preflight.shared_memory_bootstrap),
+  };
+}
+
+function compactNyraNetwork(network) {
+  if (!network || typeof network !== "object") return null;
+  return {
+    schema_version: network.schema_version,
+    domain_pack_id: network.domain_pack_id,
+    opened_by: network.opened_by,
+    opened_branches: Array.isArray(network.opened_branches)
+      ? network.opened_branches.map((branch) => ({ id: branch.id, work_phase: branch.work_phase }))
+      : [],
+    denied_branches: network.denied_branches || [],
+    parallel_analysis: {
+      enabled: network.parallel_analysis?.enabled === true,
+      wave_count: Array.isArray(network.parallel_analysis?.waves) ? network.parallel_analysis.waves.length : 0,
+      join_authority: network.parallel_analysis?.join_authority,
+    },
+    governed_learning: network.governed_learning,
+    execution_authorized: false,
+  };
+}
+
+function compactDeepRuntime(runtime, detail = "fast") {
+  if (!runtime || typeof runtime !== "object") return null;
+  if (detail === "deep") return runtime;
+  return {
+    schema_version: runtime.schema_version,
+    mode: runtime.mode,
+    enabled: runtime.enabled,
+    owner_protection: runtime.owner_protection,
+    dialogue: runtime.dialogue,
+    cognition: {
+      opened_branch_count: runtime.cognition?.opened_branch_count,
+      parallel_waves: runtime.cognition?.parallel_waves,
+      hypothesis_count: Array.isArray(runtime.cognition?.hypothesis_ranking)
+        ? runtime.cognition.hypothesis_ranking.length
+        : 0,
+      counterfactual_screening: runtime.cognition?.counterfactual_screening === true,
+      verification_gate: runtime.cognition?.verification_gate === true,
+    },
+    memory: runtime.memory,
+    execution_allowed: false,
+    core_final_authority: runtime.core_final_authority === true,
+  };
+}
+
+function compactNyraPayload(payload, { analysisId, detail = "fast" } = {}) {
+  const result = payload?.result || {};
+  const selected = result.selected_by_core || {};
+  const compactResult = {
+    version: result.version,
+    mode: result.mode,
+    god_mode_active: result.god_mode_active === true,
+    selected_by_core: selected,
+    automation_plan: result.automation_plan,
+    deep_nyra_runtime: compactDeepRuntime(result.deep_nyra_runtime, detail),
+    nyra_neural_network: compactNyraNetwork(result.nyra_neural_network),
+    memory_context: compactMemoryContext(result.memory_context || payload?.memory_context),
+    work_preflight: compactWorkPreflight(result.work_preflight || payload?.work_preflight),
+    ...(detail === "deep" ? {
+      prepared_by_nira: result.prepared_by_nira,
+      efficiency: result.efficiency,
+      core_branch_diagnostics: result.core_branch_diagnostics,
+    } : {}),
+  };
+  return {
+    ok: payload?.ok === true,
+    tenant_id: payload?.tenant_id,
+    received_memory: compactMemoryContext(payload?.received_memory || result.memory_context || payload?.memory_context),
+    analysis_id: analysisId,
+    response_mode: detail,
+    result: compactResult,
+    branch_context: payload?.branch_context,
+    guardrail: payload?.guardrail,
+    details_available: true,
+    details_tool: "nyra_fetch_analysis",
+  };
+}
+
 function ownerBindingStatus(config, identity) {
   const tenantIds = config.godModeTenantIds || [config.godModeTenantId].filter(Boolean);
   return {
@@ -68,6 +197,27 @@ export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
+  const analysisCache = new Map();
+  const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
+
+  function cacheAnalysis(tenantId, payload) {
+    const now = Date.now();
+    for (const [key, value] of analysisCache) if (value.expires_at <= now) analysisCache.delete(key);
+    while (analysisCache.size >= 500) analysisCache.delete(analysisCache.keys().next().value);
+    const analysisId = `nyra_${crypto.randomBytes(12).toString("hex")}`;
+    analysisCache.set(`${tenantId}:${analysisId}`, { payload, expires_at: now + analysisCacheTtlMs });
+    return analysisId;
+  }
+
+  function fetchAnalysis(tenantId, analysisId) {
+    const key = `${tenantId}:${analysisId}`;
+    const entry = analysisCache.get(key);
+    if (!entry || entry.expires_at <= Date.now()) {
+      analysisCache.delete(key);
+      throw new Error("nyra_analysis_not_found_or_expired");
+    }
+    return entry.payload;
+  }
 
   function coreKey(tenantId) {
     const selected = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
@@ -203,7 +353,25 @@ export function createCoreHandlers(config, options = {}) {
           tenant_id: identity.tenantId,
         },
       });
-      return textResult({ ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence });
+      const complete = { ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence };
+      if (args.response_mode === "full") return textResult(complete);
+      const compact = {
+        ok: complete.ok !== false,
+        tenant_id: identity.tenantId,
+        received_memory: compactMemoryContext(complete.received_memory),
+        work_preflight: compactWorkPreflight(complete.work_preflight || complete),
+        governance: complete.governance,
+        shared_memory_bootstrap: compactBootstrap(complete.shared_memory_bootstrap || complete.work_preflight?.shared_memory_bootstrap),
+        agent_presence: agentPresence,
+        details_available: true,
+        full_mode: "work_preflight.response_mode=full",
+      };
+      return compactTextResult(compact, {
+        preflight_id: compact.work_preflight?.preflight_id,
+        state: compact.work_preflight?.state,
+        tenant_id: compact.tenant_id,
+        shared_memory_bootstrap_loaded: compact.shared_memory_bootstrap?.loaded === true,
+      });
     },
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({
@@ -249,7 +417,7 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "nyra",
       }, identity);
-      return textResult(await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+      const payload = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
         method: "POST",
         body: {
         text: args.message,
@@ -262,7 +430,44 @@ export function createCoreHandlers(config, options = {}) {
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId
         }
-      }));
+      });
+      const analysisId = cacheAnalysis(identity.tenantId, payload);
+      if (args.response_mode === "full") {
+        return compactTextResult({ ...payload, analysis_id: analysisId, response_mode: "full" }, {
+          ok: payload.ok === true,
+          analysis_id: analysisId,
+          response_mode: "full",
+        });
+      }
+      const detail = args.response_mode === "deep" ? "deep" : "fast";
+      const compact = compactNyraPayload(payload, { analysisId, detail });
+      return compactTextResult(compact, {
+        ok: compact.ok,
+        analysis_id: analysisId,
+        response_mode: detail,
+        selected_action: compact.result?.selected_by_core?.primary_action_label,
+        risk_band: compact.result?.selected_by_core?.risk_band,
+        preferred_reply: compact.result?.deep_nyra_runtime?.dialogue?.preferred_reply,
+        execution_allowed: false,
+      });
+    },
+    nyra_fetch_analysis: async (args, identity) => {
+      const payload = fetchAnalysis(identity.tenantId, args.analysis_id);
+      if (args.response_mode === "full") {
+        return compactTextResult({ ...payload, analysis_id: args.analysis_id, response_mode: "full" }, {
+          ok: payload.ok === true,
+          analysis_id: args.analysis_id,
+          response_mode: "full",
+          execution_allowed: false,
+        });
+      }
+      const compact = compactNyraPayload(payload, { analysisId: args.analysis_id, detail: "deep" });
+      return compactTextResult(compact, {
+        ok: compact.ok,
+        analysis_id: args.analysis_id,
+        response_mode: "deep",
+        execution_allowed: false,
+      });
     },
     intelligence_workflow: async (args, identity) => intelligenceRequest("/v1/intelligence/workflow", args, identity, { nyraInterpretation: true }),
     scenario_analysis: async (args, identity) => intelligenceRequest("/v1/intelligence/scenarios", args, identity),
