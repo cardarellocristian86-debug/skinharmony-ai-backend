@@ -50,3 +50,13 @@ test("rischio alto porta al giudice V0", async () => {
   assert.ok(result.results.V0);
   assert.equal(result.execution_allowed, false);
 });
+
+test("normalizza il payload parziale del middleware MCP", async () => {
+  const result = await evaluateCoreRuntimeHierarchy({
+    request: "MCP preflight",
+    context: { tenant_id: "codexai" },
+    signals: [{ id: "mcp_runtime_request", label: "work_preflight", severity: 20, risk_hint: 20, reversibility_hint: 80 }],
+  }, { mode: "shadow" });
+  assert.equal(result.hierarchy_version, "core_runtime_hierarchy_v1");
+  assert.equal(result.execution_allowed, false);
+});
