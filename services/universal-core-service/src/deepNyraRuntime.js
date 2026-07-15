@@ -84,7 +84,7 @@ export function buildDeepNyraRuntime({
   const actionLabel = String(selectedByCore.primary_action_label || "Analizzare e verificare prima di agire");
   const dialogue = runNyraCoreRuntime({
     user_text: String(text || ""),
-    owner_recognition_score: ownerVerified ? 1 : 0,
+    owner_recognition_score: ownerVerified ? 100 : 0,
     god_mode_requested: Boolean(godModeActive && ownerVerified),
     intro: ownerVerified ? "Cristian, ho verificato il perimetro owner." : "Mantengo il perimetro protetto.",
     state: String(selectedByCore.state || "uncertain"),
@@ -120,6 +120,7 @@ export function buildDeepNyraRuntime({
     dialogue: {
       intent: dialogue.analysis.intent,
       tone: dialogue.analysis.tone,
+      authority_scope: dialogue.analysis.authority_scope,
       confidence: dialogue.analysis.confidence,
       response_mode: dialogue.humanized.response_mode,
       validator: dialogue.validator,

@@ -49,6 +49,46 @@ function matches(input: string, terms: string[]): number {
   return terms.reduce((score, term) => score + (input.includes(term) ? 1 : 0), 0);
 }
 
+function hasComparisonRequest(input: string): boolean {
+  const directMarkers = [
+    " confronta ",
+    " confrontare ",
+    " confronto tra ",
+    " compara ",
+    " comparare ",
+    " paragona ",
+    " differenza tra ",
+    " pro e contro ",
+    " vantaggi e svantaggi ",
+    " versus ",
+    " vs ",
+    " compare ",
+    " comparison between ",
+    " difference between ",
+    " pros and cons ",
+  ];
+  const choiceMarkers = [
+    " scegliere tra ", " scelta tra ", " migliore tra ", " quale conviene ", " quale preferire ",
+    " choose between ", " which is better ", " which should i choose ",
+  ];
+  const alternativeMarkers = [
+    " alternative ", " alternatives ", " opzioni ", " options ", " scenari ", " scenarios ",
+    " strategie ", " strategies ", " approcci ", " approaches ",
+  ];
+  const evaluationMarkers = [
+    " valuta ", " valutare ", " analizza ", " ordinare ", " classifica ", " priorita ",
+    " evaluate ", " analyze ", " rank ", " prioritize ",
+  ];
+
+  return directMarkers.some((marker) => input.includes(marker))
+    || choiceMarkers.some((marker) => input.includes(marker))
+    || (
+      alternativeMarkers.some((marker) => input.includes(marker))
+      && evaluationMarkers.some((marker) => input.includes(marker))
+    )
+    || (input.includes(" oppure ") && /\b(quale|meglio|conviene|scegli|preferisci)\b/u.test(input));
+}
+
 export function analyzeNyraDialogueInput(
   userText: string,
   options: {
@@ -75,6 +115,7 @@ export function analyzeNyraDialogueInput(
     text.includes(" quindi ") ||
     text.includes(" perche ") ||
     text.includes(" perché ");
+  const isComparisonRequest = hasComparisonRequest(text);
 
   const autonomyCues = substrateCuesForDomain(substrate, "autonomy_progression");
   const mathCues = substrateCuesForDomain(substrate, "applied_math");
@@ -167,6 +208,9 @@ export function analyzeNyraDialogueInput(
     intentScores.supportive_analysis += 12;
     intentScores.ask_missing_data += 6;
   }
+  if (isComparisonRequest) {
+    intentScores.ask_technical_comparison += 54;
+  }
 
   if (godMode) {
     intentScores.ask_owner_truth += 8;
@@ -218,6 +262,7 @@ export function analyzeNyraDialogueInput(
     `tone=${tone}`,
     `semantic_autonomy_hits=${autonomySemanticHits}`,
     `semantic_technical_hits=${technicalSemanticHits}`,
+    `comparison_request=${isComparisonRequest}`,
   ];
 
   return {

@@ -76,7 +76,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.0-deep-nyra-cloud-runtime";
+const SERVICE_VERSION = "0.10.1-nyra-generalization";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 
 function nowIso() {
@@ -4593,8 +4593,18 @@ export function createUniversalCoreService(options = {}) {
     if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(String(id || "")))) {
       return publicError(res, 400, "invalid_nyra_branch_id");
     }
-    const ownerConfirmed = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
-    const requestedGodMode = req.body?.mode === "god_mode_owner_only" || req.body?.god_mode === true;
+    const ownerContext = req.body?.owner_context && typeof req.body.owner_context === "object"
+      ? req.body.owner_context
+      : {};
+    const trustedOwnerContext = ownerContext.owner_verified === true
+      && ownerContext.role === "owner_root"
+      && ownerContext.access_mode === "god_mode";
+    const ownerConfirmed = req.body?.owner_confirmed === true
+      || req.body?.owner_confirmation === true
+      || trustedOwnerContext;
+    const requestedGodMode = req.body?.mode === "god_mode_owner_only"
+      || req.body?.god_mode === true
+      || trustedOwnerContext;
     const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
     const requestedBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(req.body || {})])];
     const branchContext = composeBranchContext({

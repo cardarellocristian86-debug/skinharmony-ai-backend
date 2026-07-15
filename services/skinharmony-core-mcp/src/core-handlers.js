@@ -118,6 +118,7 @@ export function createCoreHandlers(config, options = {}) {
           request_id: args.workflow_id || args.session_id,
           locale: args.locale || "it",
           mode: "standard",
+          owner_context: ownerContext(identity),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
           tenant_id: identity.tenantId,
         },
