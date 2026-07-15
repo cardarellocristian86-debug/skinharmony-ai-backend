@@ -164,7 +164,7 @@ try {
   assert(horizontalPack.status === 200 && horizontalPack.json.domain_pack?.id === "generic", "generic domain pack resolution failed");
 
   const suitePack = await api(base, "GET", "/v1/domain-packs/current", undefined, connectorKey);
-  assert(suitePack.status === 200 && suitePack.json.domain_pack?.id === "suite", "Suite product pack resolution failed");
+  assert(suitePack.status === 200 && suitePack.json.domain_pack?.id === "skinharmony", "SkinHarmony tenant product pack resolution failed");
 
   const horizontalBranches = await api(base, "GET", "/v1/branches", undefined, horizontalKey);
   assert(horizontalBranches.status === 200, "horizontal branches failed");

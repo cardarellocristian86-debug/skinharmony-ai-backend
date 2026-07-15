@@ -403,6 +403,7 @@ test("records explicit owner confirmation and completes a write after the Core g
     assert.equal(seenIdentity.ownerConfirmed, true);
     assert.equal(seenIdentity.confirmationReference, "user confirmed report write");
     assert.equal(body.result.structuredContent.work_preflight.state, "completed_after_core_gate");
+    assert.equal(body.result.structuredContent.work_preflight.gate.allowed, true);
     assert.equal(body.result.structuredContent.work_preflight.governance.execution_authorized_by_core_gate, true);
     assert.equal(JSON.parse(body.result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
   } finally {

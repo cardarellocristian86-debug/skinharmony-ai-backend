@@ -16,6 +16,14 @@ function normalizeBaseUrl(value) {
   return cleanText(value, "", 300).replace(/\/+$/, "");
 }
 
+function safeNyraText(value, max = 500) {
+  return cleanText(value, "", max)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, "[REDACTED_SECRET]")
+    .replace(/\b(?:password|secret|token|api[_ -]?key)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED_SECRET]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
+    .replace(/\+?\d[\d .()-]{7,}\d/g, "[REDACTED_PHONE]");
+}
+
 class UniversalCoreBridge {
   constructor(options = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl || process.env.UNIVERSAL_CORE_URL);
@@ -108,6 +116,27 @@ class UniversalCoreBridge {
         source: "smartdesk_live",
         ...(payload.metadata || {})
       }
+    });
+  }
+
+  async nyraInterpret(payload = {}) {
+    const text = safeNyraText(payload.message || payload.question || payload.text, 500);
+    if (!text) {
+      return { success: false, code: "nyra_bridge_message_required", message: "Serve una richiesta Smart Desk sintetica." };
+    }
+    return this.request("POST", "/v1/nira/core-bridge", {
+      text,
+      request: text,
+      target_system: "smartdesk",
+      available_capabilities: ["smartdesk_ui"],
+      // The Core derives the tenant and domain pack from the authenticated key.
+      // No customer record, raw prompt, domain-pack override, or execution flag crosses the bridge.
+      metadata: {
+        source: "smartdesk_ui_bridge",
+        contract: "smartdesk_nyra_core_bridge_v1",
+        mode: cleanText(payload.mode, "gold", 16),
+        center_scope: cleanText(payload.centerScope, "", 120),
+      },
     });
   }
 

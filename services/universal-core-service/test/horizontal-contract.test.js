@@ -50,17 +50,17 @@ test("multi-agent planner exposes vertical agents only through authorized domain
   assert.equal(plan.credit_control.model_calls_budget, 2);
 });
 
-test("Core defaults to horizontal and product packs require explicit key metadata", () => {
+test("Core keeps generic tenants horizontal and resolves SkinHarmony as one tenant-scoped pack", () => {
   const packs = listDomainPacks();
-  assert.deepEqual(packs.map((pack) => pack.id), ["generic", "regulated_demo", "suite", "smartdesk", "analyzer"]);
+  assert.deepEqual(packs.map((pack) => pack.id), ["generic", "regulated_demo", "suite", "smartdesk", "analyzer", "skinharmony"]);
   assert.equal(resolveDomainPack({ tenantId: "tenant-acme" }).id, "generic");
   assert.equal(resolveDomainPack({ tenantId: "tenant_demo_skinharmony" }).id, "generic");
   assert.equal(resolveDomainPack({ brandScope: "skinharmony" }).id, "generic");
   assert.equal(resolveDomainPack({ metadata: { domain_pack_id: "suite" } }).id, "suite");
   assert.equal(resolveDomainPack({ metadata: { domain_pack_id: "smartdesk" } }).id, "smartdesk");
   assert.equal(resolveDomainPack({ metadata: { domain_pack_id: "analyzer" } }).id, "analyzer");
-  assert.equal(resolveDomainPack({ metadata: { domain_pack_id: "skinharmony" } }).id, "generic");
-  assert.equal(getDomainPack("skinharmony"), null);
+  assert.equal(resolveDomainPack({ metadata: { domain_pack_id: "skinharmony" } }).id, "skinharmony");
+  assert.equal(getDomainPack("skinharmony").id, "skinharmony");
   assert.equal(packs[0].activation_mode, "default_horizontal");
   assert(packs.slice(1).every((pack) => pack.activation_mode === "explicit_key_metadata_only"));
   assert.equal(validateDomainPack({}).ok, false);
@@ -68,7 +68,7 @@ test("Core defaults to horizontal and product packs require explicit key metadat
 
 test("client payloads cannot select a domain pack", () => {
   const key = { tenant_id: "tenant-acme", brand_scope: "skinharmony", metadata: { domain_pack_id: "analyzer" } };
-  assert.equal(resolveDomainPackForKey(key).id, "analyzer");
+  assert.equal(resolveDomainPackForKey(key).id, "skinharmony");
   assert.equal(checkDomainPackRequest(key).ok, true);
   assert.deepEqual(checkDomainPackRequest(key, "analyzer"), {
     ok: false,
@@ -79,11 +79,19 @@ test("client payloads cannot select a domain pack", () => {
   assert.equal(checkDomainPackRequest(key, "generic").ok, false);
 });
 
+test("SkinHarmony brand keys resolve the combined pack while generic tenants remain generic", () => {
+  const skinharmonyKey = { tenant_id: "tenant_demo_skinharmony", brand_scope: "skinharmony", metadata: { domain_pack_id: "suite" } };
+  const genericKey = { tenant_id: "tenant-acme", brand_scope: "acme", metadata: {} };
+  assert.equal(resolveDomainPackForKey(skinharmonyKey).id, "skinharmony");
+  assert.equal(resolveDomainPackForKey(genericKey).id, "generic");
+  assert.equal(checkDomainPackRequest(skinharmonyKey).pack.id, "skinharmony");
+});
+
 test("Nyra network respects limits and exposes only explicit product branches", () => {
   const validation = validateNyraBranchNetwork();
   assert.equal(validation.ok, true);
   assert.equal(validation.max_subbranches_per_branch, 20);
-  for (const packId of ["generic", "suite", "smartdesk", "analyzer"]) {
+  for (const packId of ["generic", "suite", "smartdesk", "analyzer", "skinharmony"]) {
     for (const item of nyraBranchCatalog(packId).branches) {
       assert(item.subbranch_count > 0);
       assert(item.subbranch_count <= MAX_SUBBRANCHES_PER_BRANCH);
@@ -98,6 +106,8 @@ test("Nyra network respects limits and exposes only explicit product branches", 
   assert(nyraBranchCatalog("suite").branches.some((item) => item.id === "suite_domain"));
   assert(nyraBranchCatalog("smartdesk").branches.some((item) => item.id === "smartdesk_domain"));
   assert(nyraBranchCatalog("analyzer").branches.some((item) => item.id === "analyzer_domain"));
+  const skinharmonyIds = nyraBranchCatalog("skinharmony").branches.map((item) => item.id);
+  for (const id of ["suite_domain", "smartdesk_domain", "analyzer_domain"]) assert(skinharmonyIds.includes(id));
   const research = nyraBranchCatalog("generic").branches.find((item) => item.id === "research_evidence");
   assert.equal(research.subbranch_count, 20);
   assert(research.subbranches.includes("claim_evidence_graph"));
@@ -128,6 +138,10 @@ test("Core opens horizontal Nyra branches and isolates product-specific branches
 
   const analyzer = routeNyraBranches({ text: "Valuta analisi e protocollo", requestedBranches: ["analyzer_domain"], domainPackId: "analyzer" });
   assert(analyzer.opened_branches.some((item) => item.id === "analyzer_domain"));
+
+  const skinharmony = routeNyraBranches({ text: "Verifica Smart Desk, WordPress e protocollo beauty", requestedBranches: ["suite_domain", "smartdesk_domain", "analyzer_domain"], domainPackId: "skinharmony" });
+  for (const id of ["suite_domain", "smartdesk_domain", "analyzer_domain"]) assert(skinharmony.opened_branches.some((item) => item.id === id));
+  assert.deepEqual(skinharmony.denied_branches, []);
 });
 
 test("Nyra proposes a complete horizontal work graph and Core opens it in bounded waves", () => {
@@ -180,8 +194,8 @@ test("Core branch packages isolate Suite, SmartDesk and Analyzer verticals", () 
     preset: "nyra_core_360_connector",
     metadata: {},
   });
-  assert.equal(generic.domain_pack.id, "generic");
-  assert(VERTICAL_BRANCH_IDS.every((id) => !generic.allowed_branches.includes(id)));
+  assert.equal(generic.domain_pack.id, "skinharmony");
+  assert(VERTICAL_BRANCH_IDS.every((id) => generic.allowed_branches.includes(id)));
   assert.equal(generic.allowed_branches.includes("codex_security_guard"), true);
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(generic.allowed_branches.includes(branchId));
 
@@ -191,10 +205,10 @@ test("Core branch packages isolate Suite, SmartDesk and Analyzer verticals", () 
     preset: "nyra_core_360_connector",
     metadata: { domain_pack_id: "suite" },
   });
-  assert.equal(suite.domain_pack.id, "suite");
+  assert.equal(suite.domain_pack.id, "skinharmony");
   assert.equal(suite.allowed_branches.includes("suite_governance"), true);
-  assert.equal(suite.allowed_branches.includes("smartdesk_operations_guard"), false);
-  assert.equal(suite.allowed_branches.includes("skinharmony_analyzer"), false);
+  assert.equal(suite.allowed_branches.includes("smartdesk_operations_guard"), true);
+  assert.equal(suite.allowed_branches.includes("skinharmony_analyzer"), true);
 
   const smartdesk = resolveBranchesForKey({
     tenant_id: "tenant-any",
@@ -216,7 +230,7 @@ test("Core branch packages isolate Suite, SmartDesk and Analyzer verticals", () 
   assert.equal(analyzer.allowed_branches.includes("smartdesk_operations_guard"), false);
 });
 
-test("existing keys with explicit branch allowlists inherit only the horizontal work cortex by default", () => {
+test("existing SkinHarmony keys retain their explicit horizontal guards and gain authorized vertical branches", () => {
   const existingKey = resolveBranchesForKey({
     tenant_id: "codexai",
     brand_scope: "skinharmony",
@@ -226,10 +240,10 @@ test("existing keys with explicit branch allowlists inherit only the horizontal 
       active_branches: ["codex_security_guard", "codex_release_gate", "suite_governance"],
     },
   });
-  assert.equal(existingKey.domain_pack.id, "generic");
+  assert.equal(existingKey.domain_pack.id, "skinharmony");
   assert(existingKey.allowed_branches.includes("codex_security_guard"));
   assert(existingKey.allowed_branches.includes("codex_release_gate"));
-  assert.equal(existingKey.allowed_branches.includes("suite_governance"), false);
+  assert.equal(existingKey.allowed_branches.includes("suite_governance"), true);
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(existingKey.allowed_branches.includes(branchId));
 });
 

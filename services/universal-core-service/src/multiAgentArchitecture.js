@@ -92,7 +92,7 @@ const AGENT_REGISTRY = Object.freeze([
     lane: "standard_reasoning",
     owner: "domain_adapter",
     purpose: "Interpreta analisi e protocolli nel pack autorizzato; guida l'operatore senza claim medici o azioni cliente automatiche.",
-    domain_packs: ["analyzer"],
+    domain_packs: ["analyzer", "skinharmony"],
     model_required: true,
     side_effects: false,
   },
@@ -102,7 +102,7 @@ const AGENT_REGISTRY = Object.freeze([
     lane: "standard_reasoning",
     owner: "domain_adapter",
     purpose: "Suggerisce priorità operative sul singolo tenant; scritture e contatti restano mediati dal Core.",
-    domain_packs: ["smartdesk"],
+    domain_packs: ["smartdesk", "skinharmony"],
     model_required: true,
     side_effects: false,
   },
@@ -167,6 +167,10 @@ export function planMultiAgentRun({ domainPackId = "generic", tenantId = "", inp
   else if (research) add("evidence_researcher", "request needs traceable external or internal evidence");
   else if (domainPackId === "analyzer") add("beauty_protocol_advisor", "authorized Analyzer pack needs operator-guided advice");
   else if (domainPackId === "smartdesk") add("smartdesk_operator_advisor", "authorized SmartDesk pack needs tenant-scoped operational advice");
+  else if (domainPackId === "skinharmony") {
+    if (matches(text, /\b(beauty|cosmet|protocollo|pelle|skin)\b/)) add("beauty_protocol_advisor", "SkinHarmony beauty request needs operator-guided advice");
+    else if (matches(text, /\b(smart\s*desk|agenda|cassa|magazzino|operativ)\b/)) add("smartdesk_operator_advisor", "SkinHarmony Smart Desk request needs tenant-scoped operational advice");
+  }
 
   if (hasImage && selections.length < MAX_SPECIALISTS) add("vision_analyst", "vision is invoked only because an image input is present");
   if (needsQuality && selections.length < MAX_SPECIALISTS) add("quality_evaluator", "explicit evaluation, regression or tenant-isolation verification requested");

@@ -168,6 +168,34 @@ const DOMAIN_PACKS = Object.freeze({
       },
     },
   }),
+  skinharmony: definePack({
+    id: "skinharmony",
+    domain: "skinharmony_tenant_platform",
+    label: "SkinHarmony tenant product pack",
+    verticalBranchIds: VERTICAL_BRANCH_IDS,
+    policy: {
+      vocabulary: {
+        ...BASE_VOCABULARY,
+        presentation_nodes: ["managed_site", "wordpress_node", "template", "landing_page"],
+        operational_nodes: ["smartdesk", "operations_desk", "field_node"],
+        orchestrators: ["suite_control_plane", "smartdesk_control_plane", "core_service"],
+        decision_layers: ["analysis_engine", "protocol_guard", "claim_guard", "value_chain_guard"],
+      },
+      sensitive_domains: ["publishing", "tenant_content", "customer_data", "appointments", "billing", "inventory", "cosmetic_claims", "pricing", "deployment"],
+      guardrails: {
+        forbidden_claims: ["cura", "guarisce", "terapia", "medicale", "risultato garantito"],
+        protected_terms: ["prezzo consigliato", "range consigliato", "policy interna", "owner approval"],
+        price_policy_mode: "advisory_not_resale_price_imposition",
+        data_isolation: "tenant_scope_and_product_node_scope",
+      },
+      product_roles: {
+        ...BASE_PRODUCT_ROLES,
+        presentation_layer: "Suite e WordPress raccolgono input e mostrano output nel tenant autorizzato.",
+        operational_layer: "Smart Desk prepara flussi operativi; Core mantiene conferma, audit e limiti.",
+        advisor_layer: "Nyra prepara raccomandazioni beauty e operative senza pubblicare, contattare clienti o modificare dati.",
+      },
+    },
+  }),
 });
 
 function normalize(value) {
@@ -217,6 +245,11 @@ export function resolveDomainPack({ metadata = {} } = {}) {
 }
 
 export function resolveDomainPackForKey(keyRecord = {}) {
+  const explicit = normalize(keyRecord?.metadata?.domain_pack_id || keyRecord?.metadata?.domain_pack);
+  const brandScope = normalize(keyRecord?.brand_scope);
+  // SkinHarmony is a single tenant-scoped product domain. Legacy sub-pack metadata
+  // must not split Suite, Smart Desk and beauty requests back into generic routing.
+  if (explicit === "skinharmony" || brandScope === "skinharmony") return DOMAIN_PACKS.skinharmony;
   return resolveDomainPack({ metadata: keyRecord.metadata });
 }
 

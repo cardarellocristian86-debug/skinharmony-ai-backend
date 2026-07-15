@@ -28,8 +28,16 @@ function profile({
   controlLevel,
   confirmationRequired,
   hardBlock = false,
+  governanceVerdict,
   reasonCodes = [],
 }) {
+  const verdict = governanceVerdict || (hardBlock
+    ? "BLOCK"
+    : controlLevel === "confirm"
+      ? "CONFIRM"
+      : state === "ready" || controlLevel === "observe"
+        ? "ALLOW"
+        : "DEFER");
   return Object.freeze({
     schema_version: "core_action_risk_v1",
     classification,
@@ -40,6 +48,7 @@ function profile({
     control_level: controlLevel,
     confirmation_required: confirmationRequired,
     hard_block: hardBlock,
+    governance_verdict: verdict,
     reason_codes: Object.freeze([...new Set(reasonCodes)]),
   });
 }
@@ -93,8 +102,10 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
-  const learningOperation = /\b(learn(?:ing)?|outcome|calibrat|apprend|esito)\w*\b/i.test(text) ||
-    ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record"].includes(String(body.operation_class || "").toLowerCase());
+  const operationClass = String(body.operation_class || "").toLowerCase();
+  const actionType = String(body.action_type || body.action?.type || "").toLowerCase();
+  const learningOperation = ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record"].includes(operationClass) ||
+    ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record", "activate_unverified_learning"].includes(actionType);
   const explicitlyUnverified = body.verified_outcome === false;
   const unverifiedLearning = (learningOperation && explicitlyUnverified) ||
     /\b(unverified learning|apprend(?:imento|ere).{0,24}non verific|without verified outcome)\b/i.test(text);
@@ -198,6 +209,7 @@ export function classifyActionRisk(body = {}) {
     riskScore: 50,
     controlLevel: "confirm",
     confirmationRequired: true,
+    governanceVerdict: "DEFER",
     reasonCodes: ["insufficient_action_context"],
   });
 }
@@ -225,5 +237,6 @@ export function applyActionRiskProfile(decisionContract = {}, riskProfile = {}) 
       : [],
     blocked_reasons: reasons,
     risk_classification: riskProfile,
+    governance_verdict: riskProfile.governance_verdict || "DEFER",
   };
 }
