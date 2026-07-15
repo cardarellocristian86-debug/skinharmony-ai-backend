@@ -4,7 +4,7 @@ import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 
-const SERVER_VERSION = "0.10.0-fast-deep-fetch";
+const SERVER_VERSION = "0.10.1-memory-redaction-fix";
 const SERVER_INSTRUCTIONS = "Always call work_preflight first. The MCP transport session is automatically bound to one server-signed agent presence and that signature is returned on every tool call. For collaboration, register each ChatGPT, Codex, API-agent or other session with agent_heartbeat using a unique agent_id, client_type and session_id. Never reuse one agent_id across concurrent sessions or change identity inside one transport session; preserve the server-issued agent signature in task, message and audit evidence. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware but returns only a compact preflight reference. Use nyra_interpret_request in fast mode by default, deep mode for scenarios and hypotheses, and nyra_fetch_analysis only when the compact result says details are relevant. Full mode is diagnostic only. Universal Core remains the final authority and execution is always disabled. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function inferClientType(identity) {
@@ -294,6 +294,13 @@ export function createApp(config, options = {}) {
       if (error.message === "insufficient_scope") {
         res.set("WWW-Authenticate", challenge(config, "insufficient_scope", error.missing.join(" ")));
         return res.status(403).json({ jsonrpc: "2.0", id, error: { code: -32003, message: "Insufficient scope" } });
+      }
+      if (error.message === "memory_checksum_mismatch") {
+        return res.status(400).json({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32602, message: "memory_checksum_mismatch" },
+        });
       }
       return res.status(500).json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error" } });
     }

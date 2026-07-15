@@ -14,6 +14,27 @@ test("cloud memory redacts common credentials before persistence", () => {
   assert(!result.text.includes("abc123456"));
 });
 
+test("cloud memory does not redact ordinary SkinHarmony repository names", () => {
+  const url = "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend/pull/44";
+  const result = redactMemoryText(url);
+  assert.equal(result.redactions, 0);
+  assert.equal(result.text, url);
+});
+
+test("cloud memory still redacts structured provider credentials", () => {
+  const input = [
+    `sk-${"a".repeat(20)}`,
+    `sk-proj-${"b".repeat(20)}`,
+    `ghp_${"c".repeat(20)}`,
+    `xoxb-${"d".repeat(20)}`,
+    `AKIA${"E".repeat(16)}`,
+  ].join(" ");
+  const result = redactMemoryText(input);
+  assert.equal(result.redactions, 5);
+  assert.equal(result.text.includes("aaaa"), false);
+  assert.equal(result.text.includes("cccc"), false);
+});
+
 test("cloud memory search matches every term without requiring phrase order", async () => {
   const calls = [];
   const pool = {

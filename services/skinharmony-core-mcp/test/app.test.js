@@ -25,7 +25,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.10.0-fast-deep-fetch");
+  assert.equal(health.version, "0.10.1-memory-redaction-fix");
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
@@ -432,6 +432,31 @@ test("fails closed before the work tool when mandatory preflight is unavailable"
     });
     assert.equal(response.status, 500);
     assert.equal(toolCalled, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("returns an explicit client error for a cloud-memory checksum mismatch", async () => {
+  const app = createApp(config, {
+    handlers: {
+      memory_document_upsert: async () => { throw new Error("memory_checksum_mismatch"); },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "checksum-test-session" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 22, method: "tools/call", params: {
+        name: "memory_document_upsert",
+        arguments: { source_path: "SHARED_MEMORY/report.md", title: "Report", text: "content" },
+      } }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 400);
+    assert.equal(body.error?.message, "memory_checksum_mismatch");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
