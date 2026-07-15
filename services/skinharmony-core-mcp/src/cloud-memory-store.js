@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { Pool } from "pg";
 
 const SECRET_PATTERNS = [
-  /\b(?:sk|gh[opusu]|xox[baprs]|AKIA)[-_A-Za-z0-9]{12,}\b/g,
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g,
+  /\bgh[opusr]_[A-Za-z0-9]{12,}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{12,}\b/g,
+  /\bAKIA[A-Z0-9]{12,}\b/g,
   /\b(?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+/gi,
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
 ];

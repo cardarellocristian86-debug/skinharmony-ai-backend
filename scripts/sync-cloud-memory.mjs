@@ -10,11 +10,14 @@ const root = path.resolve(process.argv[2] || path.join(os.homedir(), "skinharmon
 const stateRoot = path.join(os.homedir(), ".skinharmony", "cloud-memory-sync");
 const manifestPath = path.join(stateRoot, "manifest.json");
 const queuePath = path.join(stateRoot, "queue.json");
-const allowedTop = new Set(["checklists", "decisions", "events", "external-drive", "handoffs", "policies", "programs", "prompts", "snapshots"]);
+const allowedTop = new Set(["checklists", "decisions", "events", "external-drive", "handoffs", "policies", "programs", "prompts", "reports", "snapshots"]);
 const allowedExtensions = new Set([".md", ".json", ".jsonl", ".txt", ".yaml", ".yml"]);
 const deniedNames = /(?:^|[._-])(env|secret|token|credential|password|private[-_]?key)(?:$|[._-])/i;
 const secretPatterns = [
-  /\b(?:sk|gh[opusu]|xox[baprs]|AKIA)[-_A-Za-z0-9]{12,}\b/g,
+  /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g,
+  /\bgh[opusr]_[A-Za-z0-9]{12,}\b/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{12,}\b/g,
+  /\bAKIA[A-Z0-9]{12,}\b/g,
   /\b(?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+/gi,
   /-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g,
 ];
