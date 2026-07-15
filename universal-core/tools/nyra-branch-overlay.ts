@@ -483,6 +483,6 @@ export function buildNyraBranchOverlay(userText: string): NyraBranchOverlay {
     risk_flags: riskFlags,
     active_group_ids: activeGroupIds,
     available_branch_count: BRANCHES.length,
-    taxonomy_schema_version: "branch_taxonomy_v2",
+    taxonomy_schema_version: "branch_taxonomy_v3",
   };
 }

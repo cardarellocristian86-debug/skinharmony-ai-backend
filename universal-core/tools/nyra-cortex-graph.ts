@@ -445,8 +445,8 @@ export function buildNyraCortexGraph(input: {
 
   return {
     mode: "cortex_graph",
-    schema_version: taxonomy.schema_version || "branch_taxonomy_v2",
-    max_depth: Number(taxonomy.max_depth) || 20,
+    schema_version: taxonomy.schema_version || "branch_taxonomy_v3",
+    max_depth: Number(taxonomy.max_depth) || 30,
     node_count: Number(taxonomy.node_count) || nodes.length,
     synapse_count: Number(taxonomy.synapse_count) || synapses.length,
     registry_branch_count: Number(taxonomy.branch_count) || 0,

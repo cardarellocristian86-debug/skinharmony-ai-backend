@@ -13,6 +13,16 @@ const STAGE_SEQUENCE = [
   ["policy_reweighting", "Policy Reweighting", "stage_18", ["policy", "reweighting", "governance"]],
   ["synaptic_consolidation", "Synaptic Consolidation", "stage_19", ["synapse", "consolidation", "network"]],
   ["terminal_action_model", "Terminal Action Model", "stage_20", ["terminal", "action", "model"]],
+  ["outcome_observation", "Outcome Observation", "stage_21", ["outcome", "observation", "evidence"]],
+  ["expected_actual_comparison", "Expected Actual Comparison", "stage_22", ["expected", "actual", "comparison"]],
+  ["drift_detection", "Drift Detection", "stage_23", ["drift", "detection", "baseline"]],
+  ["failure_attribution", "Failure Attribution", "stage_24", ["failure", "attribution", "cause"]],
+  ["cross_branch_reconciliation", "Cross Branch Reconciliation", "stage_25", ["cross_branch", "reconciliation", "conflict"]],
+  ["knowledge_gap_update", "Knowledge Gap Update", "stage_26", ["knowledge", "gap", "update"]],
+  ["policy_candidate_review", "Policy Candidate Review", "stage_27", ["policy", "candidate", "review"]],
+  ["human_review_checkpoint", "Human Review Checkpoint", "stage_28", ["human", "review", "checkpoint"]],
+  ["verified_learning_commit", "Verified Learning Commit", "stage_29", ["verified", "learning", "commit"]],
+  ["continuity_handoff", "Continuity Handoff", "stage_30", ["continuity", "handoff", "next_session"]],
 ];
 
 function slugify(value) {
@@ -278,9 +288,9 @@ export function buildBranchTaxonomyFromRegistry({ branches = [], groups = {} } =
   const synapses = buildCrossBranchSynapses(normalizedBranches, membershipByBranch);
 
   return {
-    schema_version: "branch_taxonomy_v2",
+    schema_version: "branch_taxonomy_v3",
     generated_from: "complete_branch_registry",
-    max_depth: 20,
+    max_depth: 6 + STAGE_SEQUENCE.length,
     node_count: nodes.length,
     synapse_count: synapses.length,
     branch_count: normalizedBranches.length,
@@ -304,6 +314,16 @@ export function buildBranchTaxonomyFromRegistry({ branches = [], groups = {} } =
         "policy_reweighting",
         "synaptic_consolidation",
         "terminal_action_model",
+        "outcome_observation",
+        "expected_actual_comparison",
+        "drift_detection",
+        "failure_attribution",
+        "cross_branch_reconciliation",
+        "knowledge_gap_update",
+        "policy_candidate_review",
+        "human_review_checkpoint",
+        "verified_learning_commit",
+        "continuity_handoff",
       ],
       auto_learning_scope: "distilled_memory_and_policy_reweighting_only",
       hard_limits: [
