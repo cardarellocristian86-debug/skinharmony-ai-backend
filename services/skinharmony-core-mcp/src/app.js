@@ -4,8 +4,8 @@ import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 
-const SERVER_VERSION = "0.9.0-deep-nyra-cloud-runtime";
-const SERVER_INSTRUCTIONS = "Always call work_preflight first. The MCP transport session is automatically bound to one server-signed agent presence and that signature is returned on every tool call. For collaboration, register each ChatGPT, Codex, API-agent or other session with agent_heartbeat using a unique agent_id, client_type and session_id. Never reuse one agent_id across concurrent sessions or change identity inside one transport session; preserve the server-issued agent signature in task, message and audit evidence. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware. nyra_interpret_request runs the cloud-compatible deep Nyra runtime for dialogue validation, bounded cognition and owner protection; Universal Core remains the final authority and execution is always disabled. Nyra and Universal Core can analyze scenarios, hypotheses, events, counterfactuals, decisions and verified outcomes without executing them. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
+const SERVER_VERSION = "0.10.0-fast-deep-fetch";
+const SERVER_INSTRUCTIONS = "Always call work_preflight first. The MCP transport session is automatically bound to one server-signed agent presence and that signature is returned on every tool call. For collaboration, register each ChatGPT, Codex, API-agent or other session with agent_heartbeat using a unique agent_id, client_type and session_id. Never reuse one agent_id across concurrent sessions or change identity inside one transport session; preserve the server-issued agent signature in task, message and audit evidence. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware but returns only a compact preflight reference. Use nyra_interpret_request in fast mode by default, deep mode for scenarios and hypotheses, and nyra_fetch_analysis only when the compact result says details are relevant. Full mode is diagnostic only. Universal Core remains the final authority and execution is always disabled. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function inferClientType(identity) {
   const kind = String(identity?.kind || "").toLowerCase();
@@ -71,7 +71,29 @@ function resolveWorkPreflight(result, payload) {
 function attachWorkPreflight(result, preflight) {
   const originalPayload = preflight?.work_preflight || preflight;
   if (!originalPayload || result?.structuredContent?.work_preflight) return result;
-  const payload = resolveWorkPreflight(result, originalPayload);
+  const resolvedPayload = resolveWorkPreflight(result, originalPayload);
+  const payload = {
+    schema_version: resolvedPayload.schema_version,
+    preflight_id: resolvedPayload.preflight_id,
+    tenant_id: resolvedPayload.tenant_id,
+    state: resolvedPayload.state,
+    mandatory: resolvedPayload.mandatory === true,
+    governance: resolvedPayload.governance,
+    gate: resolvedPayload.gate || result?.structuredContent?.gate,
+    tool_routing: resolvedPayload.tool_routing?.preferred_route
+      ? { preferred_route: resolvedPayload.tool_routing.preferred_route }
+      : resolvedPayload.tool_routing,
+    shared_memory_bootstrap: resolvedPayload.shared_memory_bootstrap
+      ? {
+        loaded: resolvedPayload.shared_memory_bootstrap.loaded === true,
+        tenant_id: resolvedPayload.shared_memory_bootstrap.tenant_id,
+        generated_at: resolvedPayload.shared_memory_bootstrap.generated_at,
+        active_task_count: resolvedPayload.shared_memory_bootstrap.active_task_count,
+        active_lock_count: resolvedPayload.shared_memory_bootstrap.active_lock_count,
+        artifact_count: resolvedPayload.shared_memory_bootstrap.artifact_count,
+      }
+      : undefined,
+  };
   const executionAllowed = payload?.governance?.execution_allowed_by_preflight === true ||
     payload?.governance?.execution_authorized_by_core_gate === true;
   const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)

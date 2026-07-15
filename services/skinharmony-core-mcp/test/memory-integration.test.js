@@ -97,8 +97,8 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
   assert.equal(interpretation.status, 200);
   const received = interpretation.body.result.structuredContent.received_memory;
   assert.equal(received.tenant_id, "tenant-integration");
-  assert.equal(received.relevant_memories.length, 1);
-  assert.equal(received.relevant_memories[0].title, "Architecture decision");
+  assert.equal(received.relevant_count, 1);
+  assert.equal(received.relevant_memories, undefined);
   assert.equal(interpretation.body.result.structuredContent.result.automation_plan.execution_allowed, false);
 
   const context = await call(4, "memory_context", { project_id: "project-one", session_id: "session-one" });
