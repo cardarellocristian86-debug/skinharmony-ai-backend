@@ -1,0 +1,148 @@
+openapi: 3.1.0
+info:
+  title: Universal Core V2 and Nyra MCP Gateway
+  version: 0.8.0
+  description: >-
+    Local, private HTTP boundary for the Streamable HTTP MCP server. MCP tool
+    contracts are discovered dynamically with tools/list and are defined in
+    src/tool-definitions.js; this document describes the transport and OAuth
+    discovery surface only.
+servers:
+  - url: http://localhost:8790
+    description: Local development
+paths:
+  /healthz:
+    get:
+      operationId: gatewayHealth
+      summary: Read gateway readiness without credentials
+      responses:
+        "200":
+          description: Gateway health and configured capability flags
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, service, version]
+                properties:
+                  ok: { type: boolean }
+                  service: { const: skinharmony-core-mcp }
+                  version: { type: string }
+                additionalProperties: true
+  /.well-known/oauth-protected-resource:
+    get:
+      operationId: oauthProtectedResourceMetadata
+      summary: Discover RFC 9728 protected-resource metadata
+      responses:
+        "200":
+          description: OAuth protected-resource metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProtectedResourceMetadata"
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      operationId: oauthProtectedResourceMetadataForMcp
+      summary: Discover path-specific RFC 9728 metadata
+      responses:
+        "200":
+          description: OAuth protected-resource metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProtectedResourceMetadata"
+  /mcp:
+    post:
+      operationId: mcpJsonRpc
+      summary: Send an authenticated MCP JSON-RPC request
+      description: >-
+        Supports initialize, notifications/initialized, tools/list and
+        tools/call. Tenant identity is derived only from the bearer credential;
+        tool arguments do not accept tenant_id.
+      security:
+        - oauth2: [core:read]
+        - localBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JsonRpcRequest"
+            examples:
+              initialize:
+                value: { jsonrpc: "2.0", id: 1, method: initialize, params: {} }
+              listTools:
+                value: { jsonrpc: "2.0", id: 2, method: tools/list, params: {} }
+      responses:
+        "200":
+          description: MCP JSON-RPC result or protocol error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JsonRpcResponse"
+        "401":
+          description: Missing or invalid bearer credential
+          headers:
+            WWW-Authenticate:
+              schema: { type: string }
+        "403":
+          description: The authenticated identity lacks a required Core scope
+          headers:
+            WWW-Authenticate:
+              schema: { type: string }
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://replace-with-local-auth.example/authorize
+          tokenUrl: https://replace-with-local-auth.example/oauth/token
+          scopes:
+            core:read: Read tenant-scoped Core, Nyra, memory and evidence
+            core:govern: Request governed tenant-scoped writes or authorization
+    localBearer:
+      type: http
+      scheme: bearer
+      description: Local compatibility bearer configured only in the server environment.
+  schemas:
+    ProtectedResourceMetadata:
+      type: object
+      required: [resource, authorization_servers, scopes_supported, bearer_methods_supported]
+      properties:
+        resource: { type: string, format: uri }
+        authorization_servers:
+          type: array
+          items: { type: string, format: uri }
+        scopes_supported:
+          type: array
+          items: { type: string }
+        bearer_methods_supported:
+          type: array
+          items: { type: string }
+        resource_documentation: { type: string, format: uri }
+      additionalProperties: false
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc: { const: "2.0" }
+        id: { type: [string, integer, "null"] }
+        method: { type: string }
+        params: { type: object, additionalProperties: true }
+      additionalProperties: false
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc: { const: "2.0" }
+        id: { type: [string, integer, "null"] }
+        result: {}
+        error:
+          type: object
+          properties:
+            code: { type: integer }
+            message: { type: string }
+            data: {}
+          required: [code, message]
+          additionalProperties: false
+      additionalProperties: false
