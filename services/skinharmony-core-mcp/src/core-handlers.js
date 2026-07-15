@@ -76,6 +76,25 @@ function compactWorkPreflight(preflight) {
   };
 }
 
+function compactCoreRuntime(payload) {
+  const result = payload?.result || payload || {};
+  const router = result.router || {};
+  return {
+    hierarchy_version: result.hierarchy_version || "core_runtime_hierarchy_v1",
+    mode: result.mode || "shadow",
+    route: router.route || null,
+    selected_authority: result.selected_authority || "V1",
+    parity: {
+      attempted: result.parity?.attempted === true,
+      matched: result.parity?.matched ?? null,
+      fallback: result.parity?.fallback || null,
+      ...(result.parity?.error ? { error: "v2_unavailable_or_mismatch" } : {}),
+    },
+    execution_allowed: false,
+    latency_ms: Number.isFinite(Number(payload?.latency_ms)) ? Number(payload.latency_ms) : null,
+  };
+}
+
 function compactNyraNetwork(network) {
   if (!network || typeof network !== "object") return null;
   return {
@@ -267,6 +286,24 @@ export function createCoreHandlers(config, options = {}) {
     return contextProvider(input, identity);
   }
 
+  function hierarchyInput(args = {}, identity, operation = "advisory_work") {
+    const supplied = args.core_input && typeof args.core_input === "object" && !Array.isArray(args.core_input) ? args.core_input : {};
+    const request = String(args.request || args.message || args.question || args.decision || operation).slice(0, 12_000);
+    const signals = Array.isArray(supplied.signals) && supplied.signals.length
+      ? supplied.signals
+      : [{ id: "mcp_runtime_request", label: operation, severity: 20, reversibility_hint: 80, risk_hint: 20 }];
+    return { ...supplied, request, signals, context: { ...(supplied.context || {}), tenant_id: identity.tenantId } };
+  }
+
+  async function runtimeHierarchyEvaluate(args, identity, operation) {
+    const started = Date.now();
+    const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
+      method: "POST",
+      body: { core_input: hierarchyInput(args, identity, operation) },
+    });
+    return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
+  }
+
   async function intelligenceRequest(path, args, identity, options = {}) {
     const sharedContext = options.memory === false ? undefined : await memoryContext({
       query: args.request || args.question || args.decision || args.outcome_id || "Nyra Core intelligence analysis",
@@ -324,6 +361,7 @@ export function createCoreHandlers(config, options = {}) {
       mcp_identity: ownerBindingStatus(config, identity),
     }),
     work_preflight: async (args, identity) => {
+      const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
       const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);
       const bootstrap = sharedMemoryBootstrap
         ? await sharedMemoryBootstrap.load(identity)
@@ -353,7 +391,7 @@ export function createCoreHandlers(config, options = {}) {
           tenant_id: identity.tenantId,
         },
       });
-      const complete = { ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence };
+      const complete = { ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence, core_runtime: coreRuntime };
       if (args.response_mode === "full") return textResult(complete);
       const compact = {
         ok: complete.ok !== false,
@@ -361,6 +399,7 @@ export function createCoreHandlers(config, options = {}) {
         received_memory: compactMemoryContext(complete.received_memory),
         work_preflight: compactWorkPreflight(complete.work_preflight || complete),
         governance: complete.governance,
+        core_runtime: coreRuntime,
         shared_memory_bootstrap: compactBootstrap(complete.shared_memory_bootstrap || complete.work_preflight?.shared_memory_bootstrap),
         agent_presence: agentPresence,
         details_available: true,
@@ -373,6 +412,15 @@ export function createCoreHandlers(config, options = {}) {
         shared_memory_bootstrap_loaded: compact.shared_memory_bootstrap?.loaded === true,
       });
     },
+    core_runtime_hierarchy_status: async (_args, identity) => textResult({
+      ...(await coreRequest("/v1/runtime/hierarchy/status", identity.tenantId)),
+      tenant_id: identity.tenantId,
+    }),
+    core_runtime_hierarchy_evaluate: async (args, identity) => textResult({
+      ok: true,
+      tenant_id: identity.tenantId,
+      core_runtime: await runtimeHierarchyEvaluate(args, identity, args.operation_type || "runtime_hierarchy_evaluate"),
+    }),
     nyra_runtime_context: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: args.query || "Nyra Core current work decisions and pending handoffs",

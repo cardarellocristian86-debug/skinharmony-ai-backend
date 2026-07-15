@@ -188,9 +188,38 @@ const fetchOutputSchema = object({
   url: { type: "string" },
   metadata: { type: "object", additionalProperties: { type: "string" } },
 }, ["id", "title", "text", "url"]);
+const coreRuntimeOutputSchema = object({
+  hierarchy_version: { type: "string" },
+  mode: { type: "string", enum: ["shadow", "active", "disabled"] },
+  route: { anyOf: [{ type: "string", enum: ["V0", "V1", "V2"] }, { type: "null" }] },
+  selected_authority: { type: "string", enum: ["V0", "V1", "V2"] },
+  parity: object({
+    attempted: { type: "boolean" },
+    matched: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+    fallback: { anyOf: [{ type: "string" }, { type: "null" }] },
+    error: { type: "string" },
+  }, ["attempted", "matched", "fallback"]),
+  execution_allowed: { const: false },
+  latency_ms: { anyOf: [{ type: "number", minimum: 0 }, { type: "null" }] },
+}, ["hierarchy_version", "mode", "route", "selected_authority", "parity", "execution_allowed", "latency_ms"]);
+const workPreflightOutputSchema = {
+  type: "object",
+  properties: { core_runtime: coreRuntimeOutputSchema },
+  additionalProperties: true,
+};
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
+  tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
+  tool("core_runtime_hierarchy_evaluate", "Evaluate through Universal Core runtime hierarchy", "Use this when a read-only decision needs the V7 router, V0 final judge, V1 canonical digest and V2 shadow parity result. Tenant identity is authenticated server-side; this tool never authorizes execution.", object({
+    request: text(12_000),
+    operation_type: { type: "string", maxLength: 120 },
+    core_input: { type: "object", properties: {
+      signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } },
+      data_quality: { type: "object", additionalProperties: true },
+      context: { type: "object", additionalProperties: true },
+    }, additionalProperties: false },
+  }, ["request"]), ["core:read"], true, true, { outputSchema: object({ ok: { type: "boolean" }, tenant_id: { type: "string" }, core_runtime: coreRuntimeOutputSchema }, ["ok", "tenant_id", "core_runtime"]) }),
   tool("work_preflight", "Bootstrap shared memory and route work", "Always use this as the first step in every new ChatGPT or Codex session. It automatically loads the authenticated tenant's canonical STATE, TASKS, LOCKS, ARTIFACTS and HANDOFF documents by source path, then recalls relevant memory, assigns roles, opens Nyra/Core branches, builds the task graph, selects connected tools and returns fail-closed governance gates. Never ask the user for a separate shared-memory loading prompt.", object({
     request: text(),
     target_system: { type: "string", maxLength: 100 },
@@ -202,7 +231,8 @@ export const TOOLS = [
     response_mode: { type: "string", enum: ["compact", "full"] },
     nyra_branches: { type: "array", maxItems: 20, items: identifier },
     available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } },
-  }, ["request"]), ["core:read"]),
+    core_input: { type: "object", properties: { signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } }, data_quality: { type: "object", additionalProperties: true }, context: { type: "object", additionalProperties: true } }, additionalProperties: false },
+  }, ["request"]), ["core:read"], true, true, { outputSchema: workPreflightOutputSchema }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
   tool("nyra_interpret_request", "Interpret a Nyra request", "Use this when a request needs Nyra routing, bounded cognition, dialogue validation or owner protection. It returns a compact fast result by default; choose deep for scenarios and hypotheses, or full only for diagnostics. Universal Core remains final authority and execution stays disabled.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, response_mode: { type: "string", enum: ["fast", "deep", "full"] }, nyra_branches: { type: "array", maxItems: 20, items: identifier }, available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } } }, ["message"]), ["core:read"]),

@@ -25,7 +25,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.10.1-memory-redaction-fix");
+  assert.equal(health.version, "0.10.3-runtime-hierarchy");
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
@@ -60,11 +60,15 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(writeTools.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
   const preflight = body.result.tools.find((tool) => tool.name === "work_preflight");
   assert(preflight);
+  assert(preflight.outputSchema?.properties?.core_runtime);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert(body.result.tools.every((tool) => tool._meta["skinharmony/mandatory_first_tool"] === "work_preflight"));
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
   assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
+  for (const name of ["core_runtime_hierarchy_status", "core_runtime_hierarchy_evaluate"]) {
+    assert(body.result.tools.find((tool) => tool.name === name)?.outputSchema, `missing ${name} output schema`);
+  }
   const plan = body.result.tools.find((tool) => tool.name === "nyra_research_plan");
   const ingest = body.result.tools.find((tool) => tool.name === "nyra_research_ingest");
   const execute = body.result.tools.find((tool) => tool.name === "nyra_research_execute");
