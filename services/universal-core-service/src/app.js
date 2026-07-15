@@ -76,11 +76,40 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.1-nyra-generalization";
+const SERVICE_VERSION = "0.10.2-nyra-live-validation";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
+const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function ownerContextCanonical(context) {
+  return JSON.stringify({
+    version: context.assertion_version,
+    audience: context.audience,
+    tenant_id: context.tenant_id,
+    access_mode: context.access_mode,
+    role: context.role,
+    delegated_actor: context.delegated_actor,
+    owner_verified: context.owner_verified,
+    issued_at: context.issued_at,
+  });
+}
+
+function verifyOwnerContextAssertion(context, secret, tenantId, now = Date.now()) {
+  if (!context || typeof context !== "object" || !secret) return false;
+  if (context.assertion_version !== OWNER_CONTEXT_ASSERTION_VERSION) return false;
+  if (context.audience !== "nira_core_bridge" || context.tenant_id !== tenantId) return false;
+  if (context.owner_verified !== true || context.role !== "owner_root" || context.access_mode !== "god_mode") return false;
+  const issuedAt = Date.parse(String(context.issued_at || ""));
+  if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
+  const supplied = String(context.assertion || "");
+  if (!/^ocs_[a-f0-9]{64}$/i.test(supplied)) return false;
+  const expected = `ocs_${crypto.createHmac("sha256", secret)
+    .update(`owner-context\u0000${ownerContextCanonical(context)}`)
+    .digest("hex")}`;
+  return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
 }
 
 function readSecret(req) {
@@ -4596,16 +4625,13 @@ export function createUniversalCoreService(options = {}) {
     const ownerContext = req.body?.owner_context && typeof req.body.owner_context === "object"
       ? req.body.owner_context
       : {};
-    const trustedOwnerContext = ownerContext.owner_verified === true
-      && ownerContext.role === "owner_root"
-      && ownerContext.access_mode === "god_mode";
-    const ownerConfirmed = req.body?.owner_confirmed === true
-      || req.body?.owner_confirmation === true
-      || trustedOwnerContext;
+    const trustedOwnerContext = verifyOwnerContextAssertion(ownerContext, readSecret(req), req.tenantId);
+    const explicitOwnerConfirmation = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
+    const ownerConfirmed = explicitOwnerConfirmation || trustedOwnerContext;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only"
       || req.body?.god_mode === true
       || trustedOwnerContext;
-    const ownerVerified = Boolean(ownerConfirmed && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
+    const ownerVerified = Boolean(trustedOwnerContext || (explicitOwnerConfirmation && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX)));
     const requestedBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(req.body || {})])];
     const branchContext = composeBranchContext({
       keyRecord: req.coreKey,

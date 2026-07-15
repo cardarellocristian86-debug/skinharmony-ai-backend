@@ -134,6 +134,10 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
   assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_identity_verified, true);
   assert.equal(ownerResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
   assert.equal(calls[0].owner_confirmed, true);
+  assert.equal(calls[0].owner_context.assertion_version, "owner_context_assertion_v1");
+  assert.equal(calls[0].owner_context.tenant_id, "tenant-a");
+  assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(calls[0].owner_context).includes("tenant-a-key"), false);
 
   const standardResult = await handlers.work_preflight({ request: "read status", agent_id: "chatgpt-test", client_type: "chatgpt", session_id: "session-owner-status" }, {
     kind: "oauth",

@@ -1,5 +1,21 @@
+import crypto from "node:crypto";
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
+
+const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+
+function ownerContextCanonical(context) {
+  return JSON.stringify({
+    version: context.assertion_version,
+    audience: context.audience,
+    tenant_id: context.tenant_id,
+    access_mode: context.access_mode,
+    role: context.role,
+    delegated_actor: context.delegated_actor,
+    owner_verified: context.owner_verified,
+    issued_at: context.issued_at,
+  });
+}
 
 function textResult(payload) {
   return {
@@ -77,9 +93,23 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   function ownerContext(identity) {
-    return identity.godMode === true
-      ? { access_mode: "god_mode", role: "owner_root", delegated_actor: identity.kind, owner_verified: true }
-      : { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+    if (identity.godMode !== true) {
+      return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+    }
+    const context = {
+      assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
+      audience: "nira_core_bridge",
+      tenant_id: identity.tenantId,
+      access_mode: "god_mode",
+      role: "owner_root",
+      delegated_actor: identity.kind || "unknown",
+      owner_verified: true,
+      issued_at: new Date().toISOString(),
+    };
+    const digest = crypto.createHmac("sha256", coreKey(identity.tenantId))
+      .update(`owner-context\u0000${ownerContextCanonical(context)}`)
+      .digest("hex");
+    return { ...context, assertion: `ocs_${digest}` };
   }
 
   async function memoryContext(input, identity) {

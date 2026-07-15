@@ -32,6 +32,7 @@ test("defaults to active bounded mode after live shadow validation and preserves
   assert.equal(result.mode, "active");
   assert.equal(result.execution_allowed, false);
   assert.equal(result.core_final_authority, true);
+  assert.equal(result.owner_protection.hard_block, false);
   assert.equal(Boolean(result.dialogue.preferred_reply), result.dialogue.validator.accepted);
   assert.equal(result.memory.revision, 7);
   assert.equal(result.memory.relevant_count, 1);
@@ -136,6 +137,7 @@ test("different comparison formulations share a general comparison intent", () =
     "Valuta le alternative e ordinale per rischio e reversibilita",
     "Meglio mantenere il sistema attuale oppure migrare per fasi?",
     "Paragona due architetture usando prove, impatto e costo",
+    "Metti a confronto due piani usando costo, impatto e reversibilita",
   ];
 
   for (const text of comparisonCases) {
@@ -144,6 +146,27 @@ test("different comparison formulations share a general comparison intent", () =
     assert.match(result.dialogue.preferred_reply || "", /alternative|confront/i, text);
     assert.deepEqual(result.owner_protection.signals, { financial: 0, emotional: 0, vital: 0 }, text);
   }
+});
+
+test("a blocked Core action does not fabricate an owner threat", () => {
+  const result = buildDeepNyraRuntime({
+    text: "Confronta due piani senza eseguire modifiche",
+    ownerVerified: false,
+    selectedByCore: {
+      state: "blocked",
+      risk_band: "blocked",
+      primary_action_label: "Preparare un confronto read-only",
+    },
+    nyraNetwork: network,
+    env: {},
+  });
+
+  assert.equal(result.owner_protection.core_action_risk.band, "blocked");
+  assert.equal(result.owner_protection.hard_block, false);
+  assert.deepEqual(result.owner_protection.signals, { financial: 0, emotional: 0, vital: 0 });
+  assert.equal(result.dialogue.intent, "ask_technical_comparison");
+  assert.equal(Boolean(result.dialogue.preferred_reply), result.dialogue.validator.accepted);
+  assert.equal(result.execution_allowed, false);
 });
 
 test("verified owner uses the full recognition scale without granting execution", () => {

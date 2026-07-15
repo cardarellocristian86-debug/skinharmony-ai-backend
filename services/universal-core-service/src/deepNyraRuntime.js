@@ -63,11 +63,12 @@ export function buildDeepNyraRuntime({
 } = {}) {
   const mode = runtimeMode(env);
   const riskBand = String(selectedByCore.risk_band || "medium").toLowerCase();
-  const baseRisk = {
+  const coreActionRisk = {
     score: RISK_BY_BAND[riskBand] ?? RISK_BY_BAND.medium,
     band: Object.hasOwn(RISK_BY_BAND, riskBand) ? riskBand : "medium",
     escalate: riskBand === "high" || riskBand === "blocked",
   };
+  const baseRisk = { score: RISK_BY_BAND.low, band: "low", escalate: false };
   const protectionSignals = deriveOwnerProtectionSignals(String(text || ""));
   const amplifiedRisk = amplifyOwnerRisk(baseRisk, protectionSignals);
 
@@ -112,6 +113,7 @@ export function buildDeepNyraRuntime({
     },
     owner_protection: {
       signals: protectionSignals,
+      core_action_risk: coreActionRisk,
       base_risk: baseRisk,
       amplified_risk: amplifiedRisk,
       owner_verified: Boolean(ownerVerified),
