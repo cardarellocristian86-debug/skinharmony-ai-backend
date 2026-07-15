@@ -15,12 +15,36 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function scoreFromKeywords(text: string, groups: Array<{ keywords: string[]; score: number }>): number {
-  const normalized = String(text || "").toLowerCase();
+function normalizeForMatching(text: string): string {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasPhrase(text: string, phrase: string): boolean {
+  const normalizedPhrase = normalizeForMatching(phrase);
+  if (!normalizedPhrase) return false;
+  const pattern = normalizedPhrase.split(" ").map(escapeRegex).join("\\s+");
+  return new RegExp(`(?:^|\\s)${pattern}(?=$|\\s)`, "u").test(text);
+}
+
+function hasAnyPhrase(text: string, phrases: string[]): boolean {
+  return phrases.some((phrase) => hasPhrase(text, phrase));
+}
+
+function scoreFromPhrases(normalized: string, groups: Array<{ phrases: string[]; score: number }>): number {
   let best = 0;
 
   for (const group of groups) {
-    if (group.keywords.some((keyword) => normalized.includes(keyword))) {
+    if (hasAnyPhrase(normalized, group.phrases)) {
       best = Math.max(best, group.score);
     }
   }
@@ -29,31 +53,47 @@ function scoreFromKeywords(text: string, groups: Array<{ keywords: string[]; sco
 }
 
 export function deriveOwnerProtectionSignals(text: string): RiskSignals {
-  const normalized = String(text || "").toLowerCase();
-  const mentionsFinancial = /\b(finanziario|finanziari|liquidita|capitale|pagamento|soldi|frode|cash)\b/.test(normalized);
-  const mentionsEmotional = /\b(emotivo|emotiva|emotivi|burnout|manipolare|lucidita|stress|pressione|stabilita emotiva)\b/.test(normalized);
-  const mentionsVital = /\b(vitale|vita|fisico|fisica|pericolo fisico|danno fisico|salute|irreversibile|proteggere lui)\b/.test(normalized);
-  const mentionsCompoundThreat =
-    normalized.includes("insieme finanziario, emotivo e fisico")
-    || normalized.includes("finanziario, emotivo e fisico")
-    || normalized.includes("owner-first")
-    || normalized.includes("senza sacrificare lui")
-    || normalized.includes("tratta cristian come il re");
+  const normalized = normalizeForMatching(text);
+  const mentionsFinancial = hasAnyPhrase(normalized, [
+    "finanziario", "finanziari", "finanziaria", "liquidita", "capitale", "pagamento", "soldi", "frode", "cash", "financial",
+  ]);
+  const mentionsEmotional = hasAnyPhrase(normalized, [
+    "emotivo", "emotiva", "emotivi", "burnout", "manipolare", "lucidita", "stress", "pressione", "stabilita emotiva", "emotional",
+  ]);
+  const mentionsVital = hasAnyPhrase(normalized, [
+    "vitale", "vita", "fisico", "fisica", "pericolo fisico", "danno fisico", "salute", "physical", "health",
+  ]);
+  const mentionsThreat = hasAnyPhrase(normalized, [
+    "minaccia", "pericolo", "danno", "proteggi", "proteggere", "sacrificare", "a rischio", "harm", "threat", "danger",
+  ]);
+  const mentionsCompoundThreat = mentionsThreat && mentionsFinancial && mentionsEmotional && mentionsVital;
 
-  const financial = scoreFromKeywords(text, [
-    { keywords: ["liquidita", "capitale", "pagamento", "frode", "finanziario", "finanziari", "soldi", "trappola"], score: 0.92 },
-    { keywords: ["perdere", "danno finanziario", "fraud", "cash"], score: 0.72 },
+  const financial = scoreFromPhrases(normalized, [
+    { phrases: [
+      "frode", "truffa", "pagamento non autorizzato", "danno finanziario", "perdita finanziaria",
+      "liquidita a rischio", "capitale a rischio", "perdere soldi", "perdere il capitale", "rubare soldi",
+      "financial fraud", "financial harm", "money at risk",
+    ], score: 0.92 },
+    { phrases: ["insolvenza", "debito ingestibile", "trappola finanziaria", "cash shortfall"], score: 0.72 },
   ]);
-  const emotional = scoreFromKeywords(text, [
-    { keywords: ["burnout", "manipolare", "emotivamente", "emotivo", "emotiva", "lucidita", "energia", "stabilita emotiva"], score: 0.9 },
-    { keywords: ["pressione", "stress", "crollo", "centro decisionale"], score: 0.7 },
+  const emotional = scoreFromPhrases(normalized, [
+    { phrases: [
+      "burnout", "manipolazione emotiva", "manipolare emotivamente", "crollo emotivo", "pressione psicologica",
+      "minaccia emotiva", "perdere lucidita", "stress estremo", "emotional harm", "emotional manipulation",
+    ], score: 0.9 },
+    { phrases: ["forte pressione emotiva", "stress acuto", "stabilita emotiva a rischio"], score: 0.7 },
   ]);
-  const vital = scoreFromKeywords(text, [
-    { keywords: ["vita", "morte", "irreversibile", "pericolo fisico", "danno fisico", "fisico", "fisica", "vitale", "salute"], score: 0.96 },
-    { keywords: ["guidare di notte", "immediato", "proteggere lui"], score: 0.78 },
+  const vital = scoreFromPhrases(normalized, [
+    { phrases: [
+      "pericolo di morte", "rischio di morte", "vita a rischio", "pericolo fisico", "danno fisico",
+      "minaccia fisica", "salute in pericolo", "emergenza medica", "suicidio", "suicidarsi",
+      "farsi del male", "fare del male a se", "volersi fare del male", "ferirsi", "uccidere", "ammazzare",
+      "physical harm", "life at risk", "suicide", "self harm",
+    ], score: 0.96 },
+    { phrases: ["guidare di notte stanco", "guidare con sonno", "rischio vitale", "rischio fisico immediato"], score: 0.78 },
   ]);
 
-  if (mentionsCompoundThreat && mentionsFinancial && mentionsEmotional && mentionsVital) {
+  if (mentionsCompoundThreat) {
     return {
       financial: Math.max(financial, 0.88),
       emotional: Math.max(emotional, 0.88),

@@ -320,6 +320,23 @@ function buildCandidates(input: ComposeInput, rules: StudyRules): Candidate[] {
     });
   }
 
+  if (input.intent === "ask_technical_comparison") {
+    candidates.push({
+      id: "comparison_criteria_first",
+      text: joinSentences([
+        input.intro,
+        "Metto le alternative sullo stesso piano prima di scegliere.",
+        "Le confronto su impatto, rischio, costo, reversibilita e prove disponibili.",
+        `La linea utile adesso e ${doNow}.`,
+        `Il nodo da risolvere e ${input.main_problem}.`,
+        `Non scelgo per familiarita o per slogan: lascio fuori ${avoidNow}.`,
+        `Conta perche ${input.why_this_matters}.`,
+      ]),
+      score: 0,
+      reasons: [],
+    });
+  }
+
   if (isCommunicationPrompt) {
     candidates.push({
       id: "communication_concrete_first",
@@ -439,6 +456,10 @@ function scoreCandidate(candidate: Candidate, input: ComposeInput, rules: StudyR
   if (input.response_mode === "explain" && /ti spiego il punto|nodo da capire|qui non serve/.test(compact)) {
     score += 20;
     reasons.push("explain_mode_fit");
+  }
+  if (input.intent === "ask_technical_comparison" && /alternative sullo stesso piano|impatto, rischio, costo, reversibilita/.test(compact)) {
+    score += 28;
+    reasons.push("comparison_criteria_fit");
   }
   if (input.response_mode === "protect" && /proteggere il perimetro|rischio sotto/.test(compact)) {
     score += 18;
