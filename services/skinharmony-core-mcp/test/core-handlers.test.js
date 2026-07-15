@@ -8,6 +8,9 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key" }, {
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
+      if (new URL(url).pathname === "/v1/runtime/hierarchy/evaluate") {
+        return new Response(JSON.stringify({ ok: true, result: { hierarchy_version: "core_runtime_hierarchy_v1", mode: "shadow", router: { route: "V2" }, selected_authority: "V1", parity: { attempted: true, matched: false, fallback: "V1" }, execution_allowed: true } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({ ok: true, path: new URL(url).pathname }), { status: 200, headers: { "content-type": "application/json" } });
     },
     contextProvider: async (input, identity) => {
@@ -24,21 +27,22 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.research_validate({ evidence_pack: { question: "ricerca", sources: [], claims: [] }, domain_pack: "analyzer" }, identity);
   await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
-  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
-  assert(calls.filter((call) => call.init.body).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
-  assert.deepEqual(JSON.parse(calls[1].init.body).available_capabilities, ["github_connected_app"]);
-  assert.equal("domain_pack" in JSON.parse(calls[1].init.body), false);
+  assert(calls.filter((call) => call.init.body && new URL(call.url).pathname !== "/v1/runtime/hierarchy/evaluate").every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
+  assert.equal(JSON.parse(calls[1].init.body).core_input.context.tenant_id, "tenant-a");
+  assert.deepEqual(JSON.parse(calls[2].init.body).available_capabilities, ["github_connected_app"]);
   assert.equal("domain_pack" in JSON.parse(calls[2].init.body), false);
-  assert.equal("domain_pack" in JSON.parse(calls[4].init.body), false);
+  assert.equal("domain_pack" in JSON.parse(calls[3].init.body), false);
   assert.equal("domain_pack" in JSON.parse(calls[5].init.body), false);
   assert.equal("domain_pack" in JSON.parse(calls[6].init.body), false);
-  assert.deepEqual(JSON.parse(calls[4].init.body).allowed_domains, ["example.org"]);
-  assert.equal(JSON.parse(calls[5].init.body).evidence_pack.question, "ricerca");
-  assert.deepEqual(JSON.parse(calls[6].init.body).nyra_branches, ["context_intelligence"]);
-  assert.equal(JSON.parse(calls[1].init.body).memory_context.tenant_id, "tenant-a");
-  assert.equal(JSON.parse(calls[6].init.body).memory_context.revision, 7);
+  assert.equal("domain_pack" in JSON.parse(calls[7].init.body), false);
+  assert.deepEqual(JSON.parse(calls[5].init.body).allowed_domains, ["example.org"]);
+  assert.equal(JSON.parse(calls[6].init.body).evidence_pack.question, "ricerca");
+  assert.deepEqual(JSON.parse(calls[7].init.body).nyra_branches, ["context_intelligence"]);
+  assert.equal(JSON.parse(calls[2].init.body).memory_context.tenant_id, "tenant-a");
   assert.equal(JSON.parse(calls[7].init.body).memory_context.revision, 7);
+  assert.equal(JSON.parse(calls[8].init.body).memory_context.revision, 7);
   assert.equal(contextCalls.length, 4);
   assert.equal(contextCalls[2].input.query, "analizza");
   assert.equal(contextCalls[2].input.agent_id, "nyra");
@@ -47,6 +51,43 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
 test("rejects a tenant without its own Core key", async () => {
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: {}, defaultTenantId: "owner-private", universalCoreKey: "owner-key" });
   await assert.rejects(handlers.core_health({}, { tenantId: "tenant-b" }), /core_tenant_key_missing/);
+});
+
+test("runtime hierarchy is tenant-scoped, redacts V2 fallback details, and never authorizes execution", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ path: new URL(url).pathname, body: init.body ? JSON.parse(init.body) : null, authorization: init.headers.authorization });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          hierarchy_version: "core_runtime_hierarchy_v1",
+          mode: "shadow",
+          router: { route: "V0" },
+          selected_authority: "V0",
+          parity: { attempted: true, matched: false, fallback: "V1", error: "worker timeout: internal details" },
+          execution_allowed: true,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const result = await handlers.core_runtime_hierarchy_evaluate({
+    request: "high-risk decision",
+    core_input: { context: { tenant_id: "forged-tenant" }, signals: [{ id: "risk", severity: 100 }] },
+  }, { tenantId: "tenant-a" });
+  const runtime = result.structuredContent.core_runtime;
+  assert.equal(calls[0].body.core_input.context.tenant_id, "tenant-a");
+  assert.equal(calls[0].authorization, "Bearer tenant-a-key");
+  assert.equal(runtime.selected_authority, "V0");
+  assert.equal(runtime.parity.fallback, "V1");
+  assert.equal(runtime.parity.error, "v2_unavailable_or_mismatch");
+  assert.equal(runtime.execution_allowed, false);
+  assert.equal(JSON.stringify(result).includes("tenant-a-key"), false);
+  assert.equal(JSON.stringify(result).includes("worker timeout"), false);
 });
 
 test("reports owner binding checks without exposing OAuth identifiers", async () => {
@@ -100,8 +141,9 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-a-key" },
   }, {
-    fetchImpl: async (_url, init) => {
+    fetchImpl: async (url, init) => {
       calls.push(JSON.parse(init.body));
+      if (new URL(url).pathname === "/v1/runtime/hierarchy/evaluate") return new Response(JSON.stringify({ ok: true, result: { mode: "shadow", router: { route: "V1" }, selected_authority: "V1", parity: { attempted: false, matched: null }, execution_allowed: false } }), { status: 200, headers: { "content-type": "application/json" } });
       return new Response(JSON.stringify({
         ok: true,
         work_preflight: {
@@ -133,11 +175,11 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
   assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, true);
   assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_identity_verified, true);
   assert.equal(ownerResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
-  assert.equal(calls[0].owner_confirmed, true);
-  assert.equal(calls[0].owner_context.assertion_version, "owner_context_assertion_v1");
-  assert.equal(calls[0].owner_context.tenant_id, "tenant-a");
-  assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
-  assert.equal(JSON.stringify(calls[0].owner_context).includes("tenant-a-key"), false);
+  assert.equal(calls[1].owner_confirmed, true);
+  assert.equal(calls[1].owner_context.assertion_version, "owner_context_assertion_v1");
+  assert.equal(calls[1].owner_context.tenant_id, "tenant-a");
+  assert.match(calls[1].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(calls[1].owner_context).includes("tenant-a-key"), false);
 
   const standardResult = await handlers.work_preflight({ request: "read status", agent_id: "chatgpt-test", client_type: "chatgpt", session_id: "session-owner-status" }, {
     kind: "oauth",
@@ -148,7 +190,7 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
   assert.equal(standardResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, false);
   assert.equal(standardResult.structuredContent.work_preflight.governance.owner_identity_verified, undefined);
   assert.equal(standardResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
-  assert.equal(calls[1].owner_confirmed, false);
+  assert.equal(calls[3].owner_confirmed, false);
 });
 
 test("maps the complete intelligence toolset to tenant-scoped Core routes", async () => {
