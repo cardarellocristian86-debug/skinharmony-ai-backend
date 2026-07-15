@@ -162,6 +162,13 @@ export function createApp(config, options = {}) {
       persistent: Boolean(config.databaseUrl),
       tenant_isolated: true,
     },
+    decision_ledger: {
+      configured: Boolean(config.databaseUrl),
+      required: config.decisionLedgerRequired === true,
+      backend: config.databaseUrl ? "postgres_append_only" : "disabled",
+      tenant_isolated: true,
+      raw_prompts_stored: false,
+    },
     agent_workspace_configured: Boolean(config.agentWorkspaceRoot),
     memory_fabric_configured: Boolean(config.memoryFabricRoot),
     research_cortex_configured: Boolean(config.researchCortexRoot),
@@ -272,12 +279,19 @@ export function createApp(config, options = {}) {
           ownerConfirmed: identity.godMode === true || args.owner_confirmed === true,
           confirmationReference: String(args.confirmation_reference || "").slice(0, 240),
         };
-        const preflight = typeof beforeToolCall === "function"
+        const hookContext = typeof beforeToolCall === "function"
           ? await beforeToolCall({ identity: callIdentity, toolName: tool.name, args })
           : null;
+        const preflight = hookContext?.preflight ?? hookContext;
         const rawResult = await handlers[tool.name](args, callIdentity);
         const result = attachAgentPresence(attachWorkPreflight(rawResult, preflight), agentPresence);
-        if (typeof afterToolCall === "function") await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight });
+        if (typeof afterToolCall === "function") {
+          try {
+            await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight, hookContext });
+          } catch (hookError) {
+            if (tool.annotations?.readOnlyHint !== true) throw hookError;
+          }
+        }
         return res.json({ jsonrpc: "2.0", id, result });
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });

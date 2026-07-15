@@ -7,9 +7,12 @@ import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
+import { createDecisionLedger } from "./decision-ledger.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
+const decisionLedger = createDecisionLedger(config);
+if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
@@ -47,9 +50,14 @@ const app = createApp(config, {
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
     ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
     ...collaborationHandlers,
+    ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
+      const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    } } : {}),
   },
   beforeToolCall: async ({ identity, toolName, args }) => {
-    if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return null;
+    const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
+    if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext };
     const result = await coreHandlers.work_preflight({
       request: summarizeToolRequest(toolName, args),
       operation_type: toolName,
@@ -62,8 +70,17 @@ const app = createApp(config, {
       owner_confirmed: identity.ownerConfirmed === true,
       confirmation_reference: identity.confirmationReference,
     }, identity);
-    return result.structuredContent;
+    const preflight = result.structuredContent;
+    if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
+      preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,
+      reason_summary: preflight?.work_preflight?.state || preflight?.state || "preflight_completed",
+      metadata: { execution_allowed: preflight?.work_preflight?.governance?.execution_allowed_by_preflight === true },
+    });
+    return { preflight, ledgerContext };
   },
-  afterToolCall: memoryFabric ? (event) => memoryFabric.recordToolActivity(event) : null,
+  afterToolCall: async (event) => {
+    if (decisionLedger && event.hookContext?.ledgerContext) await decisionLedger.finishWork(event.hookContext.ledgerContext, event);
+    if (memoryFabric) await memoryFabric.recordToolActivity(event);
+  },
 });
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));

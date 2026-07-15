@@ -53,6 +53,13 @@ test("keeps the OpenAI research fallback opt-in and bounded", () => {
   assert.equal(config.researchRetentionDays, 3650);
 });
 
+test("requires the decision ledger by default only in production", () => {
+  const production = { NODE_ENV: "production", CODEX_BEARER_KEYS: "test-key" };
+  assert.equal(loadConfig({}).decisionLedgerRequired, false);
+  assert.equal(loadConfig(production).decisionLedgerRequired, true);
+  assert.equal(loadConfig({ ...production, CORE_DECISION_LEDGER_REQUIRED: "false" }).decisionLedgerRequired, false);
+});
+
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {
   const config = loadConfig({
     NODE_ENV: "production",
