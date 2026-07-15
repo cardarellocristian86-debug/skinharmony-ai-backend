@@ -9,6 +9,8 @@
     "core:client": "node tools/core-service-client.js",
     "test:software-horizontal": "node tools/check-universal-software-horizontal.js",
     "test:ghidra-worker": "node --test test/ghidra-container-launcher.test.js test/ghidra-headless-adapter.test.js",
+    "test:core-runtime": "node --experimental-strip-types --test test/core-runtime-hierarchy.test.js",
+    "test:core-runtime:parity": "node --experimental-strip-types tools/check-core-runtime-parity.js",
     "test:local-software-agent": "node --test test/ghidra-headless-adapter.test.js test/frida-local-adapter.test.js",
     "benchmark:software": "node tools/benchmark-universal-software.js"
   },

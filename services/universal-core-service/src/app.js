@@ -61,6 +61,8 @@ import {
 } from "./intelligenceEngine.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
+import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
+import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
   embeddedComponentManifest,
@@ -3183,6 +3185,9 @@ export function createUniversalCoreService(options = {}) {
   const entityGraph = entityGraphStore(storageRoot);
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
   const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
+  const coreRuntime = options.coreRuntime || createCoreRuntimeWorker(options.coreRuntimeOptions);
+  const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
+  const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
   const app = express();
 
   app.disable("x-powered-by");
@@ -3202,6 +3207,40 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
+  });
+
+  app.get("/v1/runtime/hierarchy/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, tenant_id: req.tenantId, runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode) });
+  });
+
+  app.post("/v1/runtime/hierarchy/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    try {
+      const rawInput = req.body?.core_input || req.body?.input;
+      if (!rawInput || typeof rawInput !== "object") return publicError(res, 400, "core_runtime_input_required");
+      const requestedTenant = String(rawInput.context?.tenant_id || "").trim();
+      if (requestedTenant && requestedTenant !== req.tenantId) return publicError(res, 403, "tenant_scope_denied");
+      const input = {
+        ...rawInput,
+        context: { ...(rawInput.context || {}), tenant_id: req.tenantId },
+      };
+      const result = await evaluateCoreRuntimeHierarchy(input, {
+        worker: coreRuntime,
+        mode: coreRuntimeMode,
+        routing: req.body?.routing,
+        ownerMode: options.coreRuntimeOwnerMode || "normal",
+      });
+      audit.append("core_runtime_hierarchy_evaluated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        hierarchy_version: result.hierarchy_version,
+        selected_authority: result.selected_authority,
+        route: result.router.route,
+        parity_matched: result.parity.matched,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, result });
+    } catch {
+      return publicError(res, 400, "core_runtime_evaluation_failed");
+    }
   });
 
   app.get("/v1/keys/presets", (req, res) => {
@@ -5059,5 +5098,5 @@ export function createUniversalCoreService(options = {}) {
 
   app.use((req, res) => publicError(res, 404, "route_not_found"));
 
-  return { app, storageRoot };
+  return { app, storageRoot, coreRuntime };
 }
