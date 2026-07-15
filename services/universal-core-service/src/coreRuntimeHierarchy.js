@@ -54,6 +54,39 @@ function compactDigest(value) {
   };
 }
 
+function normalizeHierarchyInput(input = {}) {
+  const now = new Date().toISOString();
+  const signals = (Array.isArray(input.signals) ? input.signals : []).map((signal, index) => {
+    const severity = Number(signal.normalized_score ?? signal.severity_hint ?? signal.severity ?? signal.value ?? 20);
+    return {
+      ...signal,
+      id: String(signal.id || `runtime:signal:${index + 1}`),
+      source: String(signal.source || "runtime_hierarchy"),
+      category: String(signal.category || "runtime"),
+      label: String(signal.label || signal.id || `Runtime signal ${index + 1}`),
+      value: Number(signal.value ?? severity),
+      normalized_score: severity,
+      severity_hint: Number(signal.severity_hint ?? severity),
+      confidence_hint: Number(signal.confidence_hint ?? 80),
+      reliability_hint: Number(signal.reliability_hint ?? 80),
+      friction_hint: Number(signal.friction_hint ?? 20),
+      risk_hint: Number(signal.risk_hint ?? 20),
+      reversibility_hint: Number(signal.reversibility_hint ?? 80),
+      tags: Array.isArray(signal.tags) ? signal.tags : [],
+    };
+  });
+  return {
+    ...input,
+    request_id: String(input.request_id || `runtime:${Date.now()}`),
+    generated_at: input.generated_at || now,
+    domain: String(input.domain || "runtime"),
+    context: { ...(input.context || {}), metadata: input.context?.metadata || {} },
+    signals,
+    data_quality: { score: 80, completeness: 80, freshness: 80, consistency: 80, reliability: 80, ...(input.data_quality || {}) },
+    constraints: { allow_automation: false, require_confirmation: false, blocked_actions: [], blocked_action_rules: [], ...(input.constraints || {}) },
+  };
+}
+
 export function compareDigestParity(reference, candidate, tolerance = 1e-8) {
   const numeric = ["severity", "confidence", "risk_score", "priority_score"];
   const deltas = Object.fromEntries(numeric.map((key) => [key, Math.abs(Number(reference[key]) - Number(candidate[key]))]));
@@ -63,6 +96,7 @@ export function compareDigestParity(reference, candidate, tolerance = 1e-8) {
 
 export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
   if (!input || !Array.isArray(input.signals) || !input.signals.length) throw new Error("core_runtime_input_required");
+  input = normalizeHierarchyInput(input);
   const mode = ["shadow", "active", "disabled"].includes(options.mode) ? options.mode : "shadow";
   const v1 = runDigestV1Canonical(input);
   const v7 = routeCoreV7(routingSignals(input, v1, options.routing), options.ownerMode);
