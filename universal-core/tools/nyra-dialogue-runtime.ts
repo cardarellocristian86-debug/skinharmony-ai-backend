@@ -54,6 +54,7 @@ function hasComparisonRequest(input: string): boolean {
     " confronta ",
     " confrontare ",
     " confronto tra ",
+    " a confronto ",
     " compara ",
     " comparare ",
     " paragona ",
