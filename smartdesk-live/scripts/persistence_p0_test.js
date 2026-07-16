@@ -5,6 +5,7 @@ const path = require("path");
 const { JsonFileRepository } = require("../src/JsonFileRepository");
 const { PostgresPersistenceAdapter } = require("../src/PostgresPersistenceAdapter");
 const { DesktopMirrorService } = require("../src/DesktopMirrorService");
+const { GoldOnboardingEngine } = require("../src/GoldOnboardingEngine");
 
 async function withTempRepository(adapter, run) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "smartdesk-persistence-test-"));
@@ -163,12 +164,106 @@ async function testPaymentWithRepeatedInventoryLineUsesOneAtomicSnapshotSet() {
   assert.strictEqual(inventory.list()[0].stockQuantity, 5);
 }
 
+function makeGoldRepository(items, collectionName) {
+  return {
+    collectionName,
+    revision: 1,
+    items,
+    list() { return this.items; },
+    findById(id) { return this.items.find((item) => String(item.id) === String(id)) || null; },
+    write(next) { this.items = next; }
+  };
+}
+
+function makeGoldImportRecord() {
+  return {
+    id: "gold-import-1",
+    centerId: "center-a",
+    status: "analyzed",
+    importHash: "fixture-hash",
+    snapshots: {
+      import_customers_snapshot: { validRows: [{ id: "customer-1", normalized: { name: "Alice Rossi", email: "alice@example.test", phone: "+393331234567", privacyConsent: true, sensitiveDataConsent: true, marketingConsent: true } }], reviewRows: [], invalidRows: [], duplicates: [] },
+      import_appointments_snapshot: { validRows: [
+        { id: "appointment-1", normalized: { clientName: "Alice Rossi", serviceName: "Trattamento", staffName: "Operatrice", startAt: "2026-07-16T09:00:00.000Z", endAt: "2026-07-16T10:00:00.000Z", durationMin: 60, status: "completed" } },
+        { id: "appointment-duplicate", normalized: { clientName: "Alice Rossi", serviceName: "Trattamento", staffName: "Operatrice", startAt: "2026-07-16T09:00:00.000Z", durationMin: 60, status: "completed" } }
+      ], reviewRows: [], invalidRows: [], duplicates: [] },
+      import_payments_snapshot: { validRows: [
+        { id: "payment-1", normalized: { walkInName: "Alice Rossi", amountCents: 5000, method: "card", createdAt: "2026-07-16T10:00:00.000Z" } },
+        { id: "payment-duplicate", normalized: { walkInName: "Alice Rossi", amountCents: 5000, method: "card", createdAt: "2026-07-16T11:00:00.000Z" } }
+      ], reviewRows: [], invalidRows: [], duplicates: [] }
+    }
+  };
+}
+
+async function testGoldConfirmPlansAndCommitsOneAtomicBatch() {
+  const clients = makeGoldRepository([], "clients");
+  const appointments = makeGoldRepository([], "appointments");
+  const payments = makeGoldRepository([], "payments");
+  const imports = makeGoldRepository([makeGoldImportRecord()], "gold_imports");
+  let commits = 0;
+  const service = {
+    clientsRepository: clients,
+    appointmentsRepository: appointments,
+    paymentsRepository: payments,
+    getCenterId: () => "center-a",
+    getCenterName: () => "Center A",
+    filterByCenter: (items) => items.filter((item) => item.centerId === "center-a"),
+    commitRepositorySnapshots: async (changes) => {
+      commits += 1;
+      changes.forEach(({ repository, payload }) => repository.write(payload));
+    },
+    invalidateAppointmentsDayCache: () => undefined,
+    invalidateBusinessSnapshot: () => undefined,
+    dirtyBlocksForRepository: () => []
+  };
+  const engine = new GoldOnboardingEngine({ service, importRepository: imports });
+  const result = await engine.confirm({ importId: "gold-import-1" }, { centerId: "center-a", centerName: "Center A" });
+  assert.strictEqual(commits, 1);
+  assert.deepStrictEqual(result.createdCounts, { customers: 1, appointments: 1, payments: 1 });
+  assert.strictEqual(appointments.list().length, 1, "same-import duplicate appointment must be skipped");
+  assert.strictEqual(payments.list().length, 1, "same-import duplicate payment must be skipped");
+  assert.strictEqual(clients.list()[0].privacyConsent, true);
+  assert.strictEqual(clients.list()[0].sensitiveDataConsent, true);
+  assert.strictEqual(appointments.list()[0].endAt, "2026-07-16T10:00:00.000Z");
+  assert.strictEqual(imports.list()[0].status, "imported");
+  const replay = await engine.confirm({ importId: "gold-import-1" }, { centerId: "center-a", centerName: "Center A" });
+  assert.strictEqual(replay.duplicateConfirm, true);
+  assert.strictEqual(commits, 1, "idempotent replay must not write");
+}
+
+async function testGoldConfirmDoesNotMutateWhenAtomicCommitFails() {
+  const clients = makeGoldRepository([], "clients");
+  const appointments = makeGoldRepository([], "appointments");
+  const payments = makeGoldRepository([], "payments");
+  const imports = makeGoldRepository([makeGoldImportRecord()], "gold_imports");
+  const service = {
+    clientsRepository: clients,
+    appointmentsRepository: appointments,
+    paymentsRepository: payments,
+    getCenterId: () => "center-a",
+    getCenterName: () => "Center A",
+    filterByCenter: (items) => items.filter((item) => item.centerId === "center-a"),
+    commitRepositorySnapshots: async () => { throw new Error("simulated transaction rollback"); },
+    invalidateAppointmentsDayCache: () => undefined,
+    invalidateBusinessSnapshot: () => undefined,
+    dirtyBlocksForRepository: () => []
+  };
+  const engine = new GoldOnboardingEngine({ service, importRepository: imports });
+  await assert.rejects(engine.confirm({ importId: "gold-import-1" }, { centerId: "center-a" }), /rollback/);
+  assert.strictEqual(clients.list().length, 0);
+  assert.strictEqual(appointments.list().length, 0);
+  assert.strictEqual(payments.list().length, 0);
+  assert.strictEqual(imports.list()[0].status, "analyzed");
+}
+
 async function main() {
   await testRepositoryDoesNotWriteLocallyWhenDatabaseFails();
   await testRepositoryCommitsAfterDatabaseConfirmation();
   await testAdapterDistinguishesConflictAndOutage();
   await testAtomicSnapshotsCommitOrRollbackTogether();
   await testPaymentWithRepeatedInventoryLineUsesOneAtomicSnapshotSet();
+  await testGoldConfirmPlansAndCommitsOneAtomicBatch();
+  await testGoldConfirmDoesNotMutateWhenAtomicCommitFails();
   console.log("persistence P0 tests passed");
 }
 
