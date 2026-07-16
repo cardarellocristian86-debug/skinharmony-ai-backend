@@ -7826,7 +7826,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.inventoryMovementsRepository.list(), session).filter((item) => !itemId || item.itemId === itemId);
   }
 
-  createInventoryMovement(payload = {}, session = null) {
+  async createInventoryMovement(payload = {}, session = null) {
     const centerId = this.getCenterId(session);
     assertValid(Boolean(payload.itemId), "Articolo magazzino obbligatorio");
     assertValid(Boolean(this.findByIdInCenter(this.inventoryRepository, payload.itemId, session)), "Articolo magazzino non trovato");
@@ -7845,19 +7845,29 @@ class DesktopMirrorService {
       note: cleanText(payload.note || "", "", 500),
       createdAt: nowIso()
     };
-    this.inventoryMovementsRepository.create(movement);
-    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
+    const nextMovements = [movement, ...this.inventoryMovementsRepository.list()];
+    const nextInventory = [...this.inventoryRepository.list()];
     if (movement.itemId) {
       const signedQuantity = ["unload", "internal_use", "sale"].includes(movement.type)
         ? -movement.quantity
         : movement.quantity;
-      this.updateInCenter(this.inventoryRepository, movement.itemId, (current) => ({
+      const itemIndex = nextInventory.findIndex((item) => String(item.id || "") === movement.itemId && this.belongsToCenter(item, centerId));
+      assertValid(itemIndex >= 0, "Articolo magazzino non trovato");
+      const current = nextInventory[itemIndex];
+      const nextQuantity = Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity);
+      nextInventory[itemIndex] = {
         ...current,
-        quantity: Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity),
-        stockQuantity: Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity),
+        quantity: nextQuantity,
+        stockQuantity: nextQuantity,
         updatedAt: nowIso()
-      }), session);
+      };
     }
+    await this.commitRepositorySnapshots([
+      { repository: this.inventoryMovementsRepository, payload: nextMovements },
+      { repository: this.inventoryRepository, payload: nextInventory }
+    ]);
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryRepository));
     return movement;
   }
 

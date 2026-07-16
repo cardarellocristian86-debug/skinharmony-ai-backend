@@ -164,6 +164,46 @@ async function testPaymentWithRepeatedInventoryLineUsesOneAtomicSnapshotSet() {
   assert.strictEqual(inventory.list()[0].stockQuantity, 5);
 }
 
+function makeInventoryMovementService({ commitRepositorySnapshots } = {}) {
+  const inventory = makeGoldRepository([{ id: "item-1", centerId: "center-a", quantity: 10, stockQuantity: 10 }], "inventory");
+  const movements = makeGoldRepository([], "inventory_movements");
+  const service = Object.create(DesktopMirrorService.prototype);
+  service.inventoryRepository = inventory;
+  service.inventoryMovementsRepository = movements;
+  service.getCenterId = () => "center-a";
+  service.getCenterName = () => "Center A";
+  service.belongsToCenter = (item, centerId) => item.centerId === centerId;
+  service.findByIdInCenter = (repository, id) => repository.list().find((item) => item.id === id && item.centerId === "center-a") || null;
+  service.invalidateBusinessSnapshot = () => undefined;
+  service.dirtyBlocksForRepository = () => [];
+  service.commitRepositorySnapshots = commitRepositorySnapshots || (async (changes) => {
+    changes.forEach(({ repository, payload }) => repository.write(payload));
+  });
+  return { service, inventory, movements };
+}
+
+async function testManualInventoryMovementCommitsAtomically() {
+  const { service, inventory, movements } = makeInventoryMovementService();
+  const movement = await service.createInventoryMovement({ itemId: "item-1", type: "unload", quantity: 3 }, { centerId: "center-a" });
+  assert.strictEqual(movement.type, "unload");
+  assert.strictEqual(movements.list().length, 1);
+  assert.strictEqual(inventory.list()[0].quantity, 7);
+  assert.strictEqual(inventory.list()[0].stockQuantity, 7);
+}
+
+async function testManualInventoryMovementDoesNotMutateWhenCommitFails() {
+  const { service, inventory, movements } = makeInventoryMovementService({
+    commitRepositorySnapshots: async () => { throw new Error("simulated inventory transaction rollback"); }
+  });
+  await assert.rejects(
+    service.createInventoryMovement({ itemId: "item-1", type: "unload", quantity: 3 }, { centerId: "center-a" }),
+    /rollback/
+  );
+  assert.strictEqual(movements.list().length, 0);
+  assert.strictEqual(inventory.list()[0].quantity, 10);
+  assert.strictEqual(inventory.list()[0].stockQuantity, 10);
+}
+
 function makeGoldRepository(items, collectionName) {
   return {
     collectionName,
@@ -262,6 +302,8 @@ async function main() {
   await testAdapterDistinguishesConflictAndOutage();
   await testAtomicSnapshotsCommitOrRollbackTogether();
   await testPaymentWithRepeatedInventoryLineUsesOneAtomicSnapshotSet();
+  await testManualInventoryMovementCommitsAtomically();
+  await testManualInventoryMovementDoesNotMutateWhenCommitFails();
   await testGoldConfirmPlansAndCommitsOneAtomicBatch();
   await testGoldConfirmDoesNotMutateWhenAtomicCommitFails();
   console.log("persistence P0 tests passed");

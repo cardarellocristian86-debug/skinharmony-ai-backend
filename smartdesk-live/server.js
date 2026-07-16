@@ -1707,11 +1707,11 @@ app.get("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   res.json(service.listInventoryMovements(String(req.query.itemId || ""), req.session));
 });
 
-app.post("/api/inventory/movements", requirePlan("silver"), (req, res) => {
+app.post("/api/inventory/movements", requirePlan("silver"), async (req, res) => {
   try {
-    res.status(201).json(service.createInventoryMovement(req.body || {}, req.session));
+    res.status(201).json(await service.createInventoryMovement(req.body || {}, req.session));
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile registrare il movimento");
+    sendBadRequest(res, error, "Impossibile registrare il movimento");
   }
 });
 
