@@ -2612,6 +2612,13 @@ function buildBranchPayload(branch, payload = {}) {
     })).filter((item) => item.key) : [];
     if (!scores.length) missing.push("scores");
     const byKey = Object.fromEntries(scores.map((item) => [item.key, item]));
+    const expectedKeys = ["skin_tone_brightness", "water_oil_balance", "texture_fine_lines", "redness_sensitivity_signals", "spots_pigmentation_signals", "pores_texture"];
+    const missingScores = expectedKeys.filter((key) => !byKey[key]);
+    const acquisition = data.acquisition && typeof data.acquisition === "object" ? data.acquisition : {};
+    const explicitQuality = Number.isFinite(Number(data.data_quality_score));
+    const dataQualityScore = clampScore(explicitQuality ? data.data_quality_score : 70);
+    const qualityReasons = [...(dataQualityScore < 65 ? ["aggregate_quality_low"] : []), ...(Number(acquisition.focus_score) < 65 ? ["focus_low"] : []), ...(Number(acquisition.illumination_score) < 65 ? ["illumination_low"] : []), ...(!acquisition.capture_protocol_id ? ["capture_protocol_missing"] : []), ...(!acquisition.device_model ? ["device_provenance_missing"] : [])];
+    const abstain = explicitQuality && dataQualityScore < 65;
     const getScore = (key) => Number.isFinite(Number(byKey[key]?.score)) ? Number(byKey[key].score) : null;
     const attention = (key, fallback = 52) => {
       const score = getScore(key);
@@ -2675,10 +2682,16 @@ function buildBranchPayload(branch, payload = {}) {
     domains.forEach((domain) => addSignal(domain.id, `Skin analyzer ${domain.label}`, domain.score, "skin_analysis", ["ensemble", domain.id]));
     addSignal("claim_risk", "Rischio claim testo analyzer", claimResult.risk_score, "claim", ["claim_guard"]);
     addSignal("catalog_readiness", "Catalogo prodotti/protocolli disponibile", products.length || protocols.length ? 20 : 65, "catalog", ["products", "protocols"]);
+    addSignal("acquisition_quality", "Qualita e provenienza acquisizione", 100 - dataQualityScore, "skin_analysis", ["quality", "provenance"]);
+    const previousScores = Array.isArray(data.previous_scores) ? Object.fromEntries(data.previous_scores.map((item) => [textValue(item?.key), Number(item?.score)])) : {};
+    const comparable = Boolean(data.previous_scores?.length && acquisition.capture_protocol_id && acquisition.device_model && acquisition.capture_protocol_id === data.previous_acquisition?.capture_protocol_id && acquisition.device_model === data.previous_acquisition?.device_model);
+    const longitudinalDeltas = comparable ? Object.fromEntries(scores.filter((item) => Number.isFinite(previousScores[item.key])).map((item) => [item.key, Math.round((item.score - previousScores[item.key]) * 10) / 10])) : {};
+    const learningContext = data.learning_context && typeof data.learning_context === "object" ? data.learning_context : {};
+    const learningEligible = comparable && learningContext.outcome_verified === true && learningContext.human_reviewed === true && Number(learningContext.comparable_capture_count) >= 2;
     branchOutput = {
-      branch: "skinharmony_skin_ensemble_v1",
-      dominant_pattern: dominant,
-      secondary_patterns: secondary,
+      branch: "skinharmony_skin_ensemble_v2",
+      dominant_pattern: abstain ? null : dominant,
+      secondary_patterns: abstain ? [] : secondary,
       all_patterns: domains,
       score_relationships: relationshipRules,
       protective_signals: [
@@ -2688,7 +2701,11 @@ function buildBranchPayload(branch, payload = {}) {
       ],
       products_loaded: products.length,
       protocols_loaded: protocols.length,
-      suggested_direction: dominant?.id === "pores_texture_matrix"
+      data_quality: { score: dataQualityScore, abstained: abstain, repeat_acquisition_recommended: abstain, reasons: qualityReasons, missing_scores: missingScores },
+      longitudinal: { available: Boolean(data.previous_scores?.length), comparable, deltas: longitudinalDeltas, interpretation_allowed: comparable && !abstain },
+      fairness: { audit_required: true, individual_group_adjustment_allowed: false, minimum_rule: "report quality and abstention rates by represented skin-tone groups" },
+      learning: { eligible_candidate: learningEligible, activation_allowed: false, requires: ["verified_outcome", "human_review", "comparable_capture_series", "core_regression_gate"] },
+      suggested_direction: abstain ? "Ripetere l'acquisizione con qualita e protocollo controllati prima di interpretare." : dominant?.id === "pores_texture_matrix"
         ? "Percorso riequilibrante su grana, pori e texture, con progressione rispettosa della reattivita."
         : dominant?.id === "sensitivity_reactivity_matrix"
           ? "Percorso comfort e tolleranza prima di stimoli estetici piu intensivi."

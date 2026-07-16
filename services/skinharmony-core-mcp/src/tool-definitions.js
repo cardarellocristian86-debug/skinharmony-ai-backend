@@ -221,6 +221,10 @@ const scalpMetrics = object({
   ostia_count: { type: "integer", minimum: 0 },
   confidence: probability,
 });
+const scalpAcquisition = object({
+  device_model: { type: "string", maxLength: 120 }, magnification: { type: "string", maxLength: 40 }, capture_protocol_id: identifier,
+  polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] }, focus_score: score, illumination_score: score, zone_coverage_score: score,
+});
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
@@ -301,11 +305,20 @@ export const TOOLS = [
     protocols: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
     report_text: { type: "string", maxLength: 10_000 },
     data_quality_score: score,
+    acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier, focus_score: score, illumination_score: score, color_calibrated: { type: "boolean" }, polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] } }),
+    previous_scores: { type: "array", maxItems: 12, items: skinScore },
+    previous_acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier }),
+    learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }),
     session_id: identifier,
   }, ["scores"]), ["core:read"], true, true, { examples: [{ scores: [{ key: "pores_texture", label: "Pori e grana", score: 42 }], data_quality_score: 86 }] }),
   tool("scalp_analyzer", "Interpret Scalp Analyzer metrics", "Use this when an authenticated tenant needs a read-only, non-diagnostic interpretation of structured scalp metrics produced by the local analyzer. It returns quality flags and cosmetic observation priorities, never medical findings, prescriptions, raw images, or cross-tenant data.", object({
     overall: scalpMetrics,
     zones: { type: "array", maxItems: 12, items: object({ zone: identifier, metrics: scalpMetrics }, ["zone", "metrics"]) },
+    acquisition: scalpAcquisition,
+    previous: object({ overall: scalpMetrics, acquisition: scalpAcquisition }),
+    reported_warning_signals: { type: "array", maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["sudden_change", "pain", "bleeding", "open_lesion", "infection_suspected"] } },
+    professional_profile: { type: "string", enum: ["medical_study", "salon_trichology", "pharmacy_dermocosmetic"] },
+    learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }),
     locale: { type: "string", enum: ["it", "en"] },
     session_id: identifier,
   }, ["overall"]), ["core:read"], true, true, { examples: [{ overall: { density_index: 62, miniaturization_index: 28, redness_percent: 14, confidence: 0.88 }, locale: "it" }] }),
