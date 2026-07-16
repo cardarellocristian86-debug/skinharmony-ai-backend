@@ -7796,7 +7796,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.inventoryRepository.list(), session);
   }
 
-  saveInventoryItem(payload = {}, session = null) {
+  async saveInventoryItem(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.inventoryRepository, payload, session) : null;
     if (existing) return existing;
     const itemName = cleanText(payload.name || "", "", 160);
@@ -7829,20 +7829,20 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      this.inventoryRepository.create(entity);
+      await this.inventoryRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
       this.applyGoldStateEvent("inventory_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
-    const updated = this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const updated = await this.updateInCenterDurable(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
     this.applyGoldStateEvent("inventory_updated", { before, after: updated }, session);
     return updated;
   }
 
-  deleteInventoryItem(id, session = null) {
+  async deleteInventoryItem(id, session = null) {
     const before = this.findByIdInCenter(this.inventoryRepository, id, session);
-    const result = this.deleteInCenter(this.inventoryRepository, id, session);
+    const result = await this.deleteInCenterDurable(this.inventoryRepository, id, session);
     if (result?.success) this.applyGoldStateEvent("inventory_deleted", { before }, session);
     return result;
   }
@@ -7912,7 +7912,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.treatmentsRepository.list(), session).filter((item) => !clientId || item.clientId === clientId);
   }
 
-  createTreatment(payload = {}, session = null) {
+  async createTreatment(payload = {}, session = null) {
     const treatment = {
       id: makeId("treat"),
       centerId: this.getCenterId(session),
@@ -7922,7 +7922,7 @@ class DesktopMirrorService {
       note: String(payload.note || ""),
       createdAt: nowIso()
     };
-    this.treatmentsRepository.create(treatment);
+    await this.treatmentsRepository.createDurable(treatment);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return treatment;
   }
@@ -7935,7 +7935,7 @@ class DesktopMirrorService {
       .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime());
   }
 
-  saveProtocol(payload = {}, session = null) {
+  async saveProtocol(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.protocolsRepository, payload, session) : null;
     if (existing) return existing;
     const now = nowIso();
@@ -7973,7 +7973,7 @@ class DesktopMirrorService {
       updatedAt: now
     };
     if (payload.id) {
-      return this.updateInCenter(this.protocolsRepository, payload.id, (current) => ({
+      return this.updateInCenterDurable(this.protocolsRepository, payload.id, (current) => ({
         ...current,
         ...entity,
         id: current.id,
@@ -7985,13 +7985,13 @@ class DesktopMirrorService {
       ...entity,
       createdAt: now
     };
-    this.protocolsRepository.create(protocol);
+    await this.protocolsRepository.createDurable(protocol);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return protocol;
   }
 
-  deleteProtocol(id, session = null) {
-    return this.deleteInCenter(this.protocolsRepository, id, session);
+  async deleteProtocol(id, session = null) {
+    return this.deleteInCenterDurable(this.protocolsRepository, id, session);
   }
 
   async generateAiGoldProtocolDraft(payload = {}, session = null) {
@@ -10773,7 +10773,7 @@ class DesktopMirrorService {
     };
   }
 
-  generateAiMarketingAutopilotActions(session = null) {
+  async generateAiMarketingAutopilotActions(session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       return {
@@ -10798,7 +10798,7 @@ class DesktopMirrorService {
       ))
       .slice(0, 12);
 
-    candidates.forEach((suggestion) => {
+    for (const suggestion of candidates) {
       const alreadyOpen = existing.some((item) => (
         String(item.clientId || "") === String(suggestion.clientId || "")
         && String(item.type || "") === "recall"
@@ -10808,7 +10808,7 @@ class DesktopMirrorService {
         String(item.clientId || "") === String(suggestion.clientId || "")
         && toDateOnly(item.generatedAt || item.createdAt) === today
       ));
-      if (alreadyOpen || generatedToday) return;
+      if (alreadyOpen || generatedToday) continue;
       const action = {
         id: makeId("aimkt"),
         centerId,
@@ -10844,9 +10844,9 @@ class DesktopMirrorService {
         approvedAt: "",
         copiedAt: ""
       };
-      this.aiMarketingActionsRepository.create(action);
+      await this.aiMarketingActionsRepository.createDurable(action);
       created.push(action);
-    });
+    }
     if (created.length) {
       this.invalidateBusinessSnapshot(centerId, [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
     }
@@ -10859,7 +10859,7 @@ class DesktopMirrorService {
     };
   }
 
-  updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
+  async updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Marketing Autopilot disponibile solo con piano Gold");
@@ -10875,7 +10875,7 @@ class DesktopMirrorService {
       const action = (state.marketingActions?.actions || []).find((item) => String(item.clientId || "") === clientId);
       if (!action) throw new Error("Azione Gold non trovata");
       const now = nowIso();
-      const created = this.aiMarketingActionsRepository.create({
+      const created = await this.aiMarketingActionsRepository.createDurable({
         id: makeId("aimkt"),
         centerId: this.getCenterId(session),
         centerName: this.getCenterName(session),
@@ -10913,7 +10913,7 @@ class DesktopMirrorService {
       this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
       return created;
     }
-    const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
+    const updated = await this.updateInCenterDurable(this.aiMarketingActionsRepository, actionId, (current) => ({
       ...current,
       status: status === "discarded" ? "archived" : status,
       updatedAt: nowIso(),
@@ -10925,17 +10925,17 @@ class DesktopMirrorService {
     return updated;
   }
 
-  updateAiMarketingActionDrafts(enhancements = [], session = null) {
+  async updateAiMarketingActionDrafts(enhancements = [], session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       return [];
     }
     const byId = new Map(enhancements.map((item) => [String(item.id || ""), item]));
     const updated = [];
-    this.filterByCenter(this.aiMarketingActionsRepository.list(), session).forEach((action) => {
+    for (const action of this.filterByCenter(this.aiMarketingActionsRepository.list(), session)) {
       const enhancement = byId.get(String(action.id || ""));
-      if (!enhancement) return;
-      const next = this.updateInCenter(this.aiMarketingActionsRepository, action.id, (current) => ({
+      if (!enhancement) continue;
+      const next = await this.updateInCenterDurable(this.aiMarketingActionsRepository, action.id, (current) => ({
         ...current,
         reason: String(enhancement.reason || current.reason || ""),
         suggestedMessage: String(enhancement.suggestedMessage || current.suggestedMessage || ""),
@@ -10943,7 +10943,7 @@ class DesktopMirrorService {
         updatedAt: nowIso()
       }), session);
       updated.push(next);
-    });
+    }
     return updated;
   }
 
@@ -11382,7 +11382,7 @@ class DesktopMirrorService {
     };
   }
 
-  handleWhatsappWebhook(payload = {}, whatsappService = null) {
+  async handleWhatsappWebhook(payload = {}, whatsappService = null) {
     const messageId = String(payload.MessageSid || payload.SmsSid || payload.SmsMessageSid || "");
     const status = whatsappService?.mapStatus?.(payload.MessageStatus || payload.SmsStatus || (payload.Body ? "received" : "")) || "";
     const from = cleanPhone(String(payload.From || "").replace(/^whatsapp:/, ""));
@@ -11397,7 +11397,7 @@ class DesktopMirrorService {
     if (!target) {
       return { success: true, matched: false, status };
     }
-    const updated = this.whatsappMessagesRepository.update(target.id, (current) => ({
+    const updated = await this.whatsappMessagesRepository.updateDurable(target.id, (current) => ({
       ...current,
       status: status || current.status || "sent",
       response: payload.Body ? String(payload.Body || "").slice(0, 1000) : current.response || "",
@@ -11410,7 +11410,7 @@ class DesktopMirrorService {
       webhookRaw: payload
     }));
     if (updated && status === "replied") {
-      this.goldActionOutcomesRepository.create({
+      await this.goldActionOutcomesRepository.createDurable({
         id: crypto.randomUUID(),
         centerId: updated.centerId,
         createdAt: now,
@@ -11502,7 +11502,7 @@ class DesktopMirrorService {
     return learningMap.get(`${domain}:${action}`) || { attempts: 0, successes: 0, failures: 0 };
   }
 
-  recordGoldActionOutcome(payload = {}, session = null) {
+  async recordGoldActionOutcome(payload = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Outcome Gold disponibile solo con piano Gold");
@@ -11519,7 +11519,7 @@ class DesktopMirrorService {
       valueCents: Number(payload.valueCents || 0),
       note: String(payload.note || "").slice(0, 500)
     };
-    this.goldActionOutcomesRepository.create(row);
+    await this.goldActionOutcomesRepository.createDurable(row);
     return row;
   }
 

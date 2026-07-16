@@ -1080,14 +1080,14 @@ app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
   }
 });
 
-app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
+app.post("/api/integrations/twilio/whatsapp-webhook", async (req, res) => {
   const expectedToken = String(process.env.TWILIO_WEBHOOK_TOKEN || "").trim();
   const providedToken = String(req.query.token || req.headers["x-smartdesk-webhook-token"] || "").trim();
   if (expectedToken && providedToken !== expectedToken) {
     return res.status(401).json({ success: false, message: "Webhook non autorizzato" });
   }
   try {
-    res.json(service.handleWhatsappWebhook(req.body || {}, whatsappService));
+    res.json(await service.handleWhatsappWebhook(req.body || {}, whatsappService));
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -1687,24 +1687,24 @@ app.get("/api/inventory/items", (req, res) => {
   res.json(service.listInventoryItems(req.session));
 });
 
-app.post("/api/inventory/items", (req, res) => {
+app.post("/api/inventory/items", async (req, res) => {
   try {
-    res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
+    res.status(201).json(await service.saveInventoryItem(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'articolo");
   }
 });
 
-app.put("/api/inventory/items/:id", (req, res) => {
+app.put("/api/inventory/items/:id", async (req, res) => {
   try {
-    res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'articolo");
   }
 });
 
-app.delete("/api/inventory/items/:id", (req, res) => {
-  res.json(service.deleteInventoryItem(req.params.id, req.session));
+app.delete("/api/inventory/items/:id", async (req, res) => {
+  try { res.json(await service.deleteInventoryItem(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare l'articolo"); }
 });
 
 app.get("/api/inventory/movements", requirePlan("silver"), (req, res) => {
@@ -2192,10 +2192,10 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione marketing temporaneamente limitata"));
   }
   try {
-    const generated = service.generateAiMarketingAutopilotActions(req.session);
+    const generated = await service.generateAiMarketingAutopilotActions(req.session);
     const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
     if (enhanced.actions?.length) {
-      service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
+      await service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
     }
     res.json({
       ...service.getAiMarketingAutopilot(req.session),
@@ -2207,9 +2207,9 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
   }
 });
 
-app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), async (req, res) => {
   try {
-    res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
+    res.json(await service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare l'azione marketing");
   }
@@ -2295,9 +2295,9 @@ app.get("/api/treatments", requirePlan("silver"), (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
-app.post("/api/treatments", requirePlan("silver"), (req, res) => {
+app.post("/api/treatments", requirePlan("silver"), async (req, res) => {
   try {
-    res.status(201).json(service.createTreatment(req.body || {}, req.session));
+    res.status(201).json(await service.createTreatment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il trattamento");
   }
@@ -2307,24 +2307,24 @@ app.get("/api/protocols", (req, res) => {
   res.json(service.listProtocols(req.query.clientId, req.session));
 });
 
-app.post("/api/protocols", (req, res) => {
+app.post("/api/protocols", async (req, res) => {
   try {
-    res.status(201).json(service.saveProtocol(req.body || {}, req.session));
+    res.status(201).json(await service.saveProtocol(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile salvare il protocollo");
   }
 });
 
-app.put("/api/protocols/:id", (req, res) => {
+app.put("/api/protocols/:id", async (req, res) => {
   try {
-    res.json(service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare il protocollo");
   }
 });
 
-app.delete("/api/protocols/:id", (req, res) => {
-  res.json(service.deleteProtocol(req.params.id, req.session));
+app.delete("/api/protocols/:id", async (req, res) => {
+  try { res.json(await service.deleteProtocol(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare il protocollo"); }
 });
 
 app.get("/api/payments", (req, res) => {
