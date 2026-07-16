@@ -13,7 +13,7 @@
 ## Non ancora completo
 
 - Le mutazioni non convertite usano ancora il percorso legacy asincrono e possono dare falso successo in caso di errore DB.
-- Gold onboarding salva record uno alla volta: un fallimento intermedio richiede recupero idempotente; non è un batch atomico.
+- Gold onboarding ora valida clienti, appuntamenti e pagamenti prima di iniziare a scrivere, ma salva ancora record uno alla volta: un errore runtime intermedio richiede recupero idempotente; non è ancora un batch atomico.
 - Il tenant è separato per configurazione del servizio; i centri restano isolamento logico dentro uno snapshot comune. L'isolamento fisico per centro richiede normalizzazione per entità.
 - Il flag fail-closed è soltanto codice finché non viene configurato nel servizio Render tramite un'azione autorizzata.
 

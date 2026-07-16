@@ -629,6 +629,47 @@ class GoldOnboardingEngine {
     const skippedDuplicates = { customers: 0, appointments: 0, payments: 0 };
     const skippedReview = [];
     const hardValidationErrors = [];
+    const customerRows = [
+      ...(snapshots.import_customers_snapshot?.validRows || []),
+      ...(snapshots.import_customers_snapshot?.reviewRows || []).filter(shouldImportReview)
+    ];
+    const appointmentRows = [
+      ...(snapshots.import_appointments_snapshot?.validRows || []),
+      ...(snapshots.import_appointments_snapshot?.reviewRows || []).filter(shouldImportReview)
+    ];
+    const paymentRows = [
+      ...(snapshots.import_payments_snapshot?.validRows || []),
+      ...(snapshots.import_payments_snapshot?.reviewRows || []).filter(shouldImportReview)
+    ];
+    (snapshots.import_customers_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    (snapshots.import_appointments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    (snapshots.import_payments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    appointmentRows.forEach((item) => {
+      const appointment = item.normalized || {};
+      if (!appointment.serviceName || !appointment.staffName) {
+        hardValidationErrors.push({
+          type: "appointment",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: "Appuntamento senza servizio o operatore"
+        });
+      }
+    });
+    paymentRows.forEach((item) => {
+      const payment = item.normalized || {};
+      if (!payment.walkInName || Number(payment.amountCents || 0) <= 0) {
+        hardValidationErrors.push({
+          type: "payment",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: !payment.walkInName ? "Pagamento senza cliente" : "Pagamento con importo non valido"
+        });
+      }
+    });
+    if (hardValidationErrors.length) {
+      const first = hardValidationErrors[0];
+      throw new Error(`Import bloccato: ${first.reason} (record ${first.id}${first.sourceRow ? `, riga ${first.sourceRow}` : ""}).`);
+    }
     const clientByName = new Map();
     const existingClients = this.service.filterByCenter(this.service.clientsRepository.list(), session);
     const clientIndex = indexExistingClients(existingClients);
@@ -637,11 +678,6 @@ class GoldOnboardingEngine {
       clientByName.set(normalizeText(client.name || `${client.firstName || ""} ${client.lastName || ""}`), client);
     });
 
-    const customerRows = [
-      ...(snapshots.import_customers_snapshot?.validRows || []),
-      ...(snapshots.import_customers_snapshot?.reviewRows || []).filter(shouldImportReview)
-    ];
-    (snapshots.import_customers_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
     for (const item of customerRows) {
       const customer = item.normalized || {};
       const existing = evaluateCustomerMatch(customer, clientIndex).duplicateOf || clientByName.get(normalizeText(customer.name));
@@ -662,22 +698,6 @@ class GoldOnboardingEngine {
       clientIndex.byName.set(customerComparableName(saved), saved);
     }
 
-    const appointmentRows = [
-      ...(snapshots.import_appointments_snapshot?.validRows || []),
-      ...(snapshots.import_appointments_snapshot?.reviewRows || []).filter(shouldImportReview)
-    ];
-    (snapshots.import_appointments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    appointmentRows.forEach((item) => {
-      const appointment = item.normalized || {};
-      if (!appointment.serviceName || !appointment.staffName) {
-        hardValidationErrors.push({
-          type: "appointment",
-          id: item.id,
-          sourceRow: item.sourceRow || null,
-          reason: "Appuntamento senza servizio o operatore"
-        });
-      }
-    });
     appointmentRows.forEach((item) => {
       const appointment = item.normalized || {};
       const client = clientByName.get(normalizeText(appointment.clientName || ""));
@@ -723,26 +743,6 @@ class GoldOnboardingEngine {
       const key = `${normalizeText(appointment.clientName || appointment.walkInName || "")}:${String(appointment.startAt || "").slice(0, 10)}`;
       if (key !== ":") appointmentByClientAndDay.set(key, appointment);
     });
-    const paymentRows = [
-      ...(snapshots.import_payments_snapshot?.validRows || []),
-      ...(snapshots.import_payments_snapshot?.reviewRows || []).filter(shouldImportReview)
-    ];
-    (snapshots.import_payments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    for (const item of paymentRows) {
-      const payment = item.normalized || {};
-      if (!payment.walkInName || Number(payment.amountCents || 0) <= 0) {
-        hardValidationErrors.push({
-          type: "payment",
-          id: item.id,
-          sourceRow: item.sourceRow || null,
-          reason: !payment.walkInName ? "Pagamento senza cliente" : "Pagamento con importo non valido"
-        });
-      }
-    }
-    if (hardValidationErrors.length) {
-      const first = hardValidationErrors[0];
-      throw new Error(`Import bloccato: ${first.reason} (record ${first.id}${first.sourceRow ? `, riga ${first.sourceRow}` : ""}).`);
-    }
     for (const item of paymentRows) {
       const payment = item.normalized || {};
       const client = clientByName.get(normalizeText(payment.walkInName || ""));
