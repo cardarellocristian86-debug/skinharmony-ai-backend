@@ -86,6 +86,41 @@ test("keeps incomplete, configuration-changing and cross-tenant deploys closed",
   }
 });
 
+const stagingPostgres = {
+  action_type: "environment_configuration", operation_class: "reversible_owner_confirmed_deploy",
+  external_side_effect: true, contains_customer_data: false, contains_secret: false, cross_tenant: false,
+  destructive: false, bypass_orchestrator: false, rollback_ready: true, audit_ready: true, configuration_changes: true,
+  environment: "staging", target: "skinharmony-mcp-staging-db", target_branch: "agent/multiagent-postgres-cloud",
+  resource_type: "postgresql", create_new: true, reuse_existing_database: false, auth0_changes: false,
+  merge: false, production_deploy: false, delete: false,
+  target_commit: "6bd1aecda5defeb1c50e1e753d814b1e05c9b559", confirmation_reference: "owner confirmed staging postgres",
+};
+test("authorizes only the exact owner-confirmed staging PostgreSQL configuration", () => {
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...stagingPostgres, owner_confirmed: true });
+  assert.equal(allowed.allowed, true); assert.equal(allowed.state, "authorized_after_confirmation");
+  assert.equal(allowed.confirmation_satisfied, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_deploy");
+  const missingConfirmation = buildActionAuthorization(contract({ risk_band: "high" }), stagingPostgres);
+  assert.equal(missingConfirmation.allowed, false);
+  assert.equal(missingConfirmation.state, "confirmation_required");
+  for (const unsafe of [
+    { target: "skinharmony-db" }, { environment: "production" },
+    { rollback_ready: false }, { audit_ready: false }, { cross_tenant: true }, { destructive: true },
+    { bypass_orchestrator: true }, { target_branch: "main" }, { target: "another-staging-db" },
+    { reuse_existing_database: true }, { create_new: false }, { auth0_changes: true }, { merge: true },
+    { production_deploy: true }, { delete: true },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...stagingPostgres, owner_confirmed: true, ...unsafe }).allowed, false);
+  for (const hardBlock of [{ cross_tenant: true }, { destructive: true }, { bypass_orchestrator: true }]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), { ...stagingPostgres, owner_confirmed: true, ...hardBlock });
+    assert.equal(result.state, "blocked");
+    assert.equal(result.mediation, "hard_block");
+  }
+  for (const changedConfirmationBinding of [{ target_branch: "main" }, { target: "another-staging-db" }]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), { ...stagingPostgres, owner_confirmed: true, ...changedConfirmationBinding });
+    assert.equal(result.confirmation_satisfied, false);
+  }
+});
+
 const deepSoftware = {
   action_type: "software_analysis",
   operation_class: "governed_deep_software_analysis",
