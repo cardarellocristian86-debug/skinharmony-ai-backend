@@ -471,8 +471,8 @@ async function runInternalRenderJob() {
     whatsappGoldMode: "manual"
   }, demoSession);
 
-  const staff = buildStaff().map((item) => service.saveStaff(item, demoSession));
-  const services = buildServices().map((item) => service.saveService({ ...item, idempotencyKey: `hybrid24m:service:${item.key}` }, demoSession));
+  const staff = await Promise.all(buildStaff().map((item) => service.saveStaff(item, demoSession)));
+  const services = await Promise.all(buildServices().map((item) => service.saveService({ ...item, idempotencyKey: `hybrid24m:service:${item.key}` }, demoSession)));
   const inventory = buildInventory().map((item) => service.saveInventoryItem(item, demoSession));
   const clients = buildClients().map((item, index) => normalizeClientPayload(item, index));
   bulkAppend(service.clientsRepository, clients);

@@ -6038,6 +6038,27 @@ class DesktopMirrorService {
     return { success };
   }
 
+  async updateInCenterDurable(repository, id, updater, session = null) {
+    const centerId = this.getCenterId(session);
+    const current = repository.findById(id);
+    if (!current || !this.belongsToCenter(current, centerId)) {
+      throw new Error("Elemento non trovato");
+    }
+    const updated = await repository.updateDurable(id, updater);
+    if (!updated) throw new Error("Elemento non trovato");
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(repository));
+    return updated;
+  }
+
+  async deleteInCenterDurable(repository, id, session = null) {
+    const centerId = this.getCenterId(session);
+    const current = repository.findById(id);
+    if (!current || !this.belongsToCenter(current, centerId)) return { success: false };
+    const success = await repository.deleteDurable(id);
+    if (success) this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(repository));
+    return { success };
+  }
+
   findExistingByIdempotency(repository, payload = {}, session = null) {
     const key = idempotencyKey(payload);
     if (!key) return null;
@@ -7482,7 +7503,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.servicesRepository.list(), session);
   }
 
-  saveService(payload = {}, session = null) {
+  async saveService(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.servicesRepository, payload, session) : null;
     if (existing) return existing;
     const serviceName = cleanText(payload.name || "", "", 160);
@@ -7525,20 +7546,20 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      this.servicesRepository.create(entity);
+      await this.servicesRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.servicesRepository));
       this.applyGoldStateEvent("service_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.servicesRepository, payload.id, session);
-    const updated = this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const updated = await this.updateInCenterDurable(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
     this.applyGoldStateEvent("service_updated", { before, after: updated }, session);
     return updated;
   }
 
-  deleteService(id, session = null) {
+  async deleteService(id, session = null) {
     const before = this.findByIdInCenter(this.servicesRepository, id, session);
-    const result = this.deleteInCenter(this.servicesRepository, id, session);
+    const result = await this.deleteInCenterDurable(this.servicesRepository, id, session);
     if (result?.success) this.applyGoldStateEvent("service_deleted", { before }, session);
     return result;
   }
@@ -7547,7 +7568,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.staffRepository.list(), session);
   }
 
-  saveStaff(payload = {}, session = null) {
+  async saveStaff(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.staffRepository, payload, session) : null;
     if (existing) return existing;
     const staffName = cleanText(payload.name || "", "", 120);
@@ -7571,23 +7592,21 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      this.staffRepository.create(entity);
+      await this.staffRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
       this.applyGoldStateEvent("staff_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.staffRepository, payload.id, session);
-    const updated = this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
-    this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
+    const updated = await this.updateInCenterDurable(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
     this.applyGoldStateEvent("staff_updated", { before, after: updated }, session);
     return updated;
   }
 
-  deleteStaff(id, session = null) {
+  async deleteStaff(id, session = null) {
     const before = this.findByIdInCenter(this.staffRepository, id, session);
-    const result = this.deleteInCenter(this.staffRepository, id, session);
+    const result = await this.deleteInCenterDurable(this.staffRepository, id, session);
     if (result?.success) {
-      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
       this.applyGoldStateEvent("staff_deleted", { before }, session);
     }
     return result;
@@ -7607,7 +7626,7 @@ class DesktopMirrorService {
     return shifts;
   }
 
-  saveShift(payload = {}, session = null) {
+  async saveShift(payload = {}, session = null) {
     const settings = this.getSettings(session);
     if (settings.shiftsBaseEnabled === false) {
       throw new Error("Modulo turni non attivo");
@@ -7655,15 +7674,15 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      this.shiftsRepository.create(entity);
+      await this.shiftsRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.shiftsRepository));
       return entity;
     }
-    return this.updateInCenter(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    return this.updateInCenterDurable(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
   }
 
-  deleteShift(id, session = null) {
-    return this.deleteInCenter(this.shiftsRepository, id, session);
+  async deleteShift(id, session = null) {
+    return this.deleteInCenterDurable(this.shiftsRepository, id, session);
   }
 
   exportShiftReport(_options = {}, _session = null) {
@@ -7678,7 +7697,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.shiftTemplatesRepository.list(), session);
   }
 
-  saveShiftTemplate(payload = {}, session = null) {
+  async saveShiftTemplate(payload = {}, session = null) {
     const templateName = cleanText(payload.name || "", "", 120);
     assertValid(templateName.length >= 2, "Nome schema turni obbligatorio");
     const entity = {
@@ -7691,14 +7710,14 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      this.shiftTemplatesRepository.create(entity);
+      await this.shiftTemplatesRepository.createDurable(entity);
       return entity;
     }
-    return this.updateInCenter(this.shiftTemplatesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    return this.updateInCenterDurable(this.shiftTemplatesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
   }
 
-  deleteShiftTemplate(id, session = null) {
-    return this.deleteInCenter(this.shiftTemplatesRepository, id, session);
+  async deleteShiftTemplate(id, session = null) {
+    return this.deleteInCenterDurable(this.shiftTemplatesRepository, id, session);
   }
 
   generateShiftTemplate(payload = {}) {
@@ -7713,7 +7732,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.resourcesRepository.list(), session);
   }
 
-  saveResource(payload = {}, session = null) {
+  async saveResource(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.resourcesRepository, payload, session) : null;
     if (existing) return existing;
     const resourceName = cleanText(payload.name || "", "", 120);
@@ -7762,15 +7781,15 @@ class DesktopMirrorService {
       createdAt
     };
     if (!payload.id) {
-      this.resourcesRepository.create(entity);
+      await this.resourcesRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.resourcesRepository));
       return entity;
     }
-    return this.updateInCenter(this.resourcesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    return this.updateInCenterDurable(this.resourcesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
   }
 
-  deleteResource(id, session = null) {
-    return this.deleteInCenter(this.resourcesRepository, id, session);
+  async deleteResource(id, session = null) {
+    return this.deleteInCenterDurable(this.resourcesRepository, id, session);
   }
 
   listInventoryItems(session = null) {

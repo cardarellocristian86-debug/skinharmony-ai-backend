@@ -73,15 +73,15 @@ function buildPlanDemoConfig() {
   ];
 }
 
-function seedOperationalData(service, session, marker) {
-  const staff = [
+async function seedOperationalData(service, session, marker) {
+  const staff = await Promise.all([
     service.saveStaff({ name: "Anna Demo", role: "Operatrice", hourlyCostCents: cents(18), active: true }, session),
     service.saveStaff({ name: "Luca Demo", role: "Reception", hourlyCostCents: cents(15), active: true }, session)
-  ];
-  const services = [
+  ]);
+  const services = await Promise.all([
     service.saveService({ name: "Check pelle demo", category: "consulenza", durationMin: 35, priceCents: cents(45), estimatedProductCostCents: cents(3), active: true }, session),
     service.saveService({ name: "Trattamento viso demo", category: "viso", durationMin: 60, priceCents: cents(85), estimatedProductCostCents: cents(12), technologyCostCents: cents(6), active: true }, session)
-  ];
+  ]);
   const clients = [
     service.saveClient({
       firstName: "Giulia",
@@ -215,7 +215,7 @@ async function runInternalRenderJob() {
       accessState: "active"
     };
     service.saveSettings(config.settings, session);
-    const created = seedOperationalData(service, session, config.marker);
+    const created = await seedOperationalData(service, session, config.marker);
     const capabilities = service.getGoldCapabilities(session);
     const decisionContext = service.getGoldDecisionContext({}, session);
     results.push({
