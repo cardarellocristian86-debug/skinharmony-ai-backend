@@ -8,6 +8,7 @@ import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
+import { createSuiteHandlers } from "./suite-handlers.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
@@ -31,6 +32,7 @@ const researchCortex = config.researchCortexRoot
       memoryFabric,
     })
   : null;
+const suiteHandlers = createSuiteHandlers(config);
 
 const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
   "work_preflight",
@@ -49,6 +51,7 @@ const app = createApp(config, {
     ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
     ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
+    ...suiteHandlers,
     ...collaborationHandlers,
     ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
       const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };

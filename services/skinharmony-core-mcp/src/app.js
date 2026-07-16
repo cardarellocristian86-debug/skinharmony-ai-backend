@@ -3,9 +3,10 @@ import express from "express";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
+import { validateToolArguments } from "./schema-validation.js";
 
-const SERVER_VERSION = "0.10.3-runtime-hierarchy";
-const SERVER_INSTRUCTIONS = "Always call work_preflight first. It automatically evaluates the authenticated tenant through Universal Core's V7 router, V0 final judge, V1 canonical digest and V2 Rust shadow accelerator; the returned core_runtime is analytical only and never grants execution. The MCP transport session is automatically bound to one server-signed agent presence and that signature is returned on every tool call. For collaboration, register each ChatGPT, Codex, API-agent or other session with agent_heartbeat using a unique agent_id, client_type and session_id. Never reuse one agent_id across concurrent sessions or change identity inside one transport session; preserve the server-issued agent signature in task, message and audit evidence. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware but returns only a compact preflight reference. Use nyra_interpret_request in fast mode by default, deep mode for scenarios and hypotheses, and nyra_fetch_analysis only when the compact result says details are relevant. Full mode is diagnostic only. Universal Core remains the final authority and execution is always disabled. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
+const SERVER_VERSION = "0.11.0-suite-cockpit";
+const SERVER_INSTRUCTIONS = "Always call work_preflight first. It automatically evaluates the authenticated tenant through Universal Core's V7 router, V0 final judge, V1 canonical digest and V2 Rust shadow accelerator; the returned core_runtime is analytical only and never grants execution. The MCP transport session is automatically bound to one server-signed agent presence and that signature is returned on every tool call. For collaboration, register each ChatGPT, Codex, API-agent or other session with agent_heartbeat using a unique agent_id, client_type and session_id. Never reuse one agent_id across concurrent sessions or change identity inside one transport session; preserve the server-issued agent signature in task, message and audit evidence. It automatically loads the authenticated tenant's canonical shared-memory state, tasks, locks, artifacts and handoff; never ask the user to provide a separate 'Carica SHARED_MEMORY' prompt. Every Core/Nyra-connected AI run is automatically persisted as a tenant-isolated task contract at preflight and durable progress checkpoints after each tool call; use memory_checkpoint or memory_handoff to add a human-quality final summary. Every other tool also runs the mandatory preflight middleware but returns only a compact preflight reference. Use nyra_interpret_request in fast mode by default, deep mode for scenarios and hypotheses, and nyra_fetch_analysis only when the compact result says details are relevant. Full mode is diagnostic only. Use suite_status, suite_cockpit_360 and suite_branch_read for tenant-scoped WordPress Suite facts; suite_decision_preview and suite_runbook_preview are previews only and this MCP exposes no Suite dispatch or execution tool. Universal Core remains the final authority and execution is always disabled. For live research call nyra_research_plan, browse with the host ChatGPT or Codex web tool, submit short sourced evidence with nyra_research_ingest, then query or review it. Never include secrets, raw customer data or full pages. Tenant identity always comes from OAuth; only reviewed evidence enters Nyra memory.";
 
 function inferClientType(identity) {
   const kind = String(identity?.kind || "").toLowerCase();
@@ -128,9 +129,32 @@ function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
 }
 
-function challenge(config, error = "invalid_token", scope = "") {
+function challenge(config, error = "invalid_token", scope = "", description = "Authentication is required to use this MCP resource") {
   const metadata = `${config.publicUrl}/.well-known/oauth-protected-resource`;
-  return `Bearer resource_metadata="${metadata}", error="${error}"${scope ? `, scope="${scope}"` : ""}`;
+  const safeDescription = String(description).replace(/["\\\r\n]/g, " ").slice(0, 160);
+  return `Bearer resource_metadata="${metadata}", error="${error}", error_description="${safeDescription}"${scope ? `, scope="${scope}"` : ""}`;
+}
+
+function toolFailure(error) {
+  const raw = String(error?.code || error?.message || "tool_execution_failed");
+  const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
+  const status = Number(error?.status || (core ? core[1] : 500));
+  const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
+  const retryable = error?.retryable === true || status === 429 || status >= 500;
+  const payload = {
+    ok: false,
+    error: {
+      code,
+      message: retryable ? "The governed backend is temporarily unavailable." : "The governed request was rejected.",
+      retryable,
+      ...(Number.isFinite(status) ? { status } : {}),
+    },
+  };
+  return {
+    structuredContent: payload,
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    isError: true,
+  };
 }
 
 export function createApp(config, options = {}) {
@@ -174,6 +198,11 @@ export function createApp(config, options = {}) {
     research_cortex_configured: Boolean(config.researchCortexRoot),
     openai_research_fallback_enabled: config.openaiResearchEnabled === true,
     openai_research_fallback_configured: Boolean(config.openaiApiKey),
+    suite_control_plane: {
+      configured: Boolean(config.suiteControlPlaneUrl && Object.keys(config.suiteControlPlaneKeys || {}).length),
+      tenant_bindings: Object.keys(config.suiteControlPlaneKeys || {}).length,
+      execution_allowed: false,
+    },
     nyra_god_mode: {
       configured: config.godModeEnabled === true,
       active: config.godModeEnabled === true && config.godModeEmergencyStop !== true,
@@ -221,13 +250,41 @@ export function createApp(config, options = {}) {
         return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => ({ ...tool, securitySchemes: securitySchemes(scopes), _meta: { securitySchemes: securitySchemes(scopes), "skinharmony/scopes": scopes, "skinharmony/mandatory_first_tool": "work_preflight", "skinharmony/preflight_entrypoint": tool.name === "work_preflight", "skinharmony/shared_memory_lifecycle": "automatic_task_contract_and_checkpoint", "skinharmony/research_entrypoint": tool.name === "nyra_research_plan", "skinharmony/research_sequence": "plan -> host web -> ingest -> query -> feedback" } })) } });
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
+        const schemes = securitySchemes(scopes);
+        return {
+          ...tool,
+          securitySchemes: schemes,
+          _meta: {
+            ...(tool._meta || {}),
+            securitySchemes: schemes,
+            "skinharmony/scopes": scopes,
+            "skinharmony/mandatory_first_tool": "work_preflight",
+            "skinharmony/preflight_entrypoint": tool.name === "work_preflight",
+            "skinharmony/shared_memory_lifecycle": "automatic_task_contract_and_checkpoint",
+            "skinharmony/research_entrypoint": tool.name === "nyra_research_plan",
+            "skinharmony/research_sequence": "plan -> host web -> ingest -> query -> feedback",
+          },
+        };
+      }) } });
       if (method === "tools/call") {
         const tool = TOOLS.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
         const rawArgs = params.arguments || {};
+        const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);
+        if (validationErrors.length) {
+          return res.json({
+            jsonrpc: "2.0",
+            id,
+            error: {
+              code: -32602,
+              message: "Invalid tool arguments",
+              data: { tool: tool.name, violations: validationErrors.slice(0, 20) },
+            },
+          });
+        }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
         const transportPresence = transportSessionId
@@ -304,7 +361,7 @@ export function createApp(config, options = {}) {
         });
       }
       if (typeof afterToolCall === "function" && method === "tools/call") {
-        await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error });
+        try { await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error }); } catch {}
       }
       if (error.message === "insufficient_scope") {
         res.set("WWW-Authenticate", challenge(config, "insufficient_scope", error.missing.join(" ")));
@@ -317,10 +374,11 @@ export function createApp(config, options = {}) {
           error: { code: -32602, message: "memory_checksum_mismatch" },
         });
       }
+      if (method === "tools/call") return res.json({ jsonrpc: "2.0", id, result: toolFailure(error) });
       return res.status(500).json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error" } });
     }
   });
   return app;
 }
 
-export { attachWorkPreflight, resolveWorkPreflight, securitySchemes, TOOLS };
+export { attachWorkPreflight, resolveWorkPreflight, securitySchemes, toolFailure, TOOLS };

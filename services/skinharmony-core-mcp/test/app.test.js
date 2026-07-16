@@ -25,7 +25,7 @@ async function serve(run) {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.10.3-runtime-hierarchy");
+  assert.equal(health.version, "0.11.0-suite-cockpit");
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
@@ -80,6 +80,34 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.deepEqual(execute.securitySchemes[0].scopes, ["core:govern"]);
   for (const name of ["search", "fetch"]) {
     assert(body.result.tools.find((tool) => tool.name === name).outputSchema);
+  }
+  const search = body.result.tools.find((tool) => tool.name === "search");
+  const fetchTool = body.result.tools.find((tool) => tool.name === "fetch");
+  assert.deepEqual(Object.keys(search.inputSchema.properties), ["query"]);
+  assert.deepEqual(Object.keys(fetchTool.inputSchema.properties), ["id"]);
+  assert.deepEqual(search.inputSchema.required, ["query"]);
+  assert.deepEqual(fetchTool.inputSchema.required, ["id"]);
+
+  const suiteReadTools = ["suite_status", "suite_cockpit_360", "suite_branch_catalog", "suite_branch_read", "suite_runbook_catalog"];
+  const suitePreviewTools = ["suite_decision_preview", "suite_runbook_preview"];
+  for (const name of suiteReadTools) {
+    const tool = body.result.tools.find((candidate) => candidate.name === name);
+    assert(tool, `missing Suite tool ${name}`);
+    assert.deepEqual(tool.securitySchemes[0].scopes, ["core:read"]);
+    assert.equal(tool.annotations.readOnlyHint, true);
+    assert.equal(tool.annotations.destructiveHint, false);
+    assert.equal(tool.annotations.openWorldHint, false);
+    assert(tool.outputSchema, `missing output schema for ${name}`);
+    assert.match(tool._meta["openai/toolInvocation/invoking"], /Suite|runbook/i);
+  }
+  for (const name of suitePreviewTools) {
+    const tool = body.result.tools.find((candidate) => candidate.name === name);
+    assert(tool, `missing Suite preview tool ${name}`);
+    assert.deepEqual(tool.securitySchemes[0].scopes, ["core:govern"]);
+    assert.equal(tool.annotations.readOnlyHint, true);
+    assert.equal(tool.annotations.destructiveHint, false);
+    assert.equal(tool.annotations.openWorldHint, false);
+    assert(tool.outputSchema, `missing output schema for ${name}`);
   }
 }));
 
@@ -181,6 +209,61 @@ test("does not advertise collaboration tools without registered handlers", async
     const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }) });
     const body = await response.json();
     assert.deepEqual(body.result.tools.map((tool) => tool.name), ["core_health"]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("rejects tenant, URL and key injection on every Suite tool before handler execution", async () => {
+  const called = [];
+  const valid = {
+    suite_status: {},
+    suite_cockpit_360: {},
+    suite_branch_catalog: {},
+    suite_branch_read: { branch_key: "pricing_margin" },
+    suite_decision_preview: { question: "What should we do?" },
+    suite_runbook_catalog: {},
+    suite_runbook_preview: { runbook_id: "customer_report", node_id: "node-a" },
+  };
+  const handlers = Object.fromEntries(Object.keys(valid).map((name) => [name, async () => {
+    called.push(name);
+    return { structuredContent: { ok: true }, content: [] };
+  }]));
+  const app = createApp(config, { handlers });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    for (const [name, argumentsValue] of Object.entries(valid)) {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": `suite-injection-${name}` },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: name,
+          method: "tools/call",
+          params: {
+            name,
+            arguments: {
+              ...argumentsValue,
+              tenant_id: "tenant-b",
+              url: "https://attacker.invalid",
+              api_key: "attacker-key",
+            },
+          },
+        }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(body.error?.code, -32602, name);
+      const paths = body.error?.data?.violations?.map((item) => item.path) || [];
+      assert(paths.includes("$.tenant_id"), `${name} accepted tenant_id`);
+      assert(paths.includes("$.url"), `${name} accepted url`);
+      assert(paths.includes("$.api_key"), `${name} accepted api_key`);
+    }
+    assert.deepEqual(called, []);
+    const runbook = TOOLS.find((tool) => tool.name === "suite_runbook_preview");
+    assert(runbook.inputSchema.required.includes("node_id"));
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -298,7 +381,10 @@ test("journals successful and failed tool calls without changing client response
     const successBody = await success.json();
     assert.match(successBody.result.structuredContent.agent_presence.signature, /^ags_[a-f0-9]{32}$/);
     const failure = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "core_gate_action", arguments: { action_label: "x", action_type: "y" } } }) });
-    assert.equal(failure.status, 500);
+    assert.equal(failure.status, 200);
+    const failureBody = await failure.json();
+    assert.equal(failureBody.result.isError, true);
+    assert.equal(failureBody.result.structuredContent.error.code, "expected_failure");
     assert.equal(events.length, 2);
     assert.equal(events[0].toolName, "core_health");
     assert.equal(events[0].error, undefined);
@@ -434,7 +520,10 @@ test("fails closed before the work tool when mandatory preflight is unavailable"
       headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "search", arguments: { query: "work" } } }),
     });
-    assert.equal(response.status, 500);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.result.isError, true);
+    assert.equal(body.result.structuredContent.error.code, "preflight_unavailable");
     assert.equal(toolCalled, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));

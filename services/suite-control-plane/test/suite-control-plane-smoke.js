@@ -3,6 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createSuiteControlPlane } from "../src/app.js";
+import { loadSuiteBranchArchitecture } from "../src/branchArchitecture.js";
+import { sanitizeCockpit360Summary, sanitizeSuiteNodeSnapshot } from "../src/cockpit360.js";
+
+let lastNyraDecisionPayload = null;
 
 const mockCoreClient = {
   status: (tenantId = "tenant_demo") => ({
@@ -78,6 +82,7 @@ const mockNyraClient = {
     };
   },
   async decisionPreview(payload) {
+    lastNyraDecisionPayload = payload;
     return {
       success: true,
       http_status: 200,
@@ -89,6 +94,20 @@ const mockNyraClient = {
     };
   },
 };
+
+const branchArchitecture = loadSuiteBranchArchitecture();
+const allEvidenceSourceIds = [...new Set(branchArchitecture.branches.flatMap((branch) => branch.evidence_sources.map((source) => source.id)))];
+const completeSourcePresence = Object.fromEntries(allEvidenceSourceIds.map((id) => [id, true]));
+const fiftyModuleStatuses = Array.from({ length: 50 }, (_, index) => ({
+  id: `suite_module_${index + 1}`,
+  label: `Suite module ${index + 1}`,
+  state: index === 0 ? "attention" : "ready",
+  enabled: true,
+  entitled: true,
+  readiness_score: index === 0 ? 75 : 100,
+  attention_codes: index === 0 ? ["verify_module_contract"] : [],
+  source: "wordpress_site_suite",
+}));
 
 const { app, storage } = createSuiteControlPlane({ coreClient: mockCoreClient, nyraClient: mockNyraClient });
 const server = app.listen(0);
@@ -153,9 +172,36 @@ try {
   assert.equal(health.body.ok, true);
   assert.equal(health.body.service, "skinharmony-suite-control-plane");
   assert.equal(health.body.nyra_suite.scope_status, "scoped");
+  assert.equal(health.body.version, "0.6.0-suite-cockpit-360");
+
+  const livez = await request("/livez");
+  assert.equal(livez.response.status, 200);
+  assert.equal(livez.body.live, true);
+
+  const readyz = await request("/readyz");
+  assert.equal(readyz.response.status, 200);
+  assert.equal(readyz.body.ready, true);
+  assert.equal(readyz.body.branch_architecture.ok, true);
+  assert.equal(readyz.body.auth.tenant_bound, true);
+
+  const absentCount = sanitizeCockpit360Summary({});
+  const realZeroCount = sanitizeCockpit360Summary({ customer: { profiles_visible: 0 } });
+  assert.equal(Object.hasOwn(absentCount.customer, "profiles_visible"), false);
+  assert.equal(Object.hasOwn(realZeroCount.customer, "profiles_visible"), true);
+  assert.equal(realZeroCount.customer.profiles_visible, 0);
+  const minimalNodeSnapshot = sanitizeSuiteNodeSnapshot({ node_id: "minimal", tenant_id: "tenant_demo" });
+  assert.equal(minimalNodeSnapshot.source_presence.journey_summary, false);
+  assert.equal(minimalNodeSnapshot.source_presence.crm_freshness, false);
+  assert.equal(minimalNodeSnapshot.source_presence.tenant_policy, false);
+  assert.equal(minimalNodeSnapshot.source_presence.validation, false);
+  assert.equal(minimalNodeSnapshot.cockpit_360_summary.source_presence.journey_summary, false);
 
   const unauthorized = await request("/api/suite/overview");
   assert.equal(unauthorized.response.status, 401);
+
+  const tenantMismatch = await request("/api/suite/tenants/tenant_other/dashboard", { headers });
+  assert.equal(tenantMismatch.response.status, 403);
+  assert.equal(tenantMismatch.body.error, "suite_control_plane_tenant_scope_mismatch");
 
   const heartbeat = await request("/api/suite/nodes/heartbeat", {
     method: "POST",
@@ -178,15 +224,131 @@ try {
     body: JSON.stringify({
       node_id: "wp_test_node",
       tenant_id: "tenant_demo",
-      summary: { plugin_version: "5.1.12", runtime_mode: "shared_render" },
-      validation: { manifest_integrity_ready: true },
+      summary: {
+        plugin_version: "5.1.12",
+        runtime_mode: "shared_render",
+        recent_evidence_events: 1,
+        active_licenses: 0,
+        password: "SNAPSHOT_SECRET_MUST_NOT_LEAK",
+      },
+      control_plane: {
+        state: "control_plane_ready",
+        core_bridge_ready: true,
+        runbook_receiver_ready: true,
+        evidence_receiver_ready: true,
+        automatic_remote_execution_enabled: true,
+      },
+      validation: {
+        core_configured: true,
+        core_control_plane_bridge_ready: true,
+        nira_core_bridge_endpoint_declared: true,
+        license_registry_ready: true,
+        manifest_integrity_ready: true,
+        critical_issues: [],
+      },
+      core_control_plane_bridge: {
+        state: "suite_ui_core_render_bridge_ready",
+        tenant: { tenant_id: "tenant_demo", brand_scope: "skinharmony", scope_status: "scoped" },
+        core_runtime: { configured: true, remote_configured: true, scope_match: true, scope_status: "scoped" },
+        guardrails: { read_only: true, no_auto_execute: true, owner_confirmation_required: true, tenant_scoped: true },
+        bearer_token: "CORE_SECRET_MUST_NOT_LEAK",
+      },
+      tenant_policy_surface: {
+        schema_version: "suite_tenant_policy_surface_v1",
+        mode: "read_only_policy_surface",
+        tenant: { tenant_id: "tenant_demo", brand_scope: "skinharmony", environment: "test", scope_status: "scoped" },
+        entitlement: {
+          plan: "enterprise",
+          modules: fiftyModuleStatuses.map((module) => module.id),
+          locked_modules: [],
+          limits: { wordpress_nodes: 2, monthly_core_calls: 1000 },
+        },
+        branch_groups: ["platform_governance", "customer_intelligence"],
+        key_policy: { scoped: true, tenant_bound: true, api_key: "TENANT_KEY_MUST_NOT_LEAK" },
+      },
+      enterprise_mcp_gateway_map: {
+        schema_version: "suite_enterprise_mcp_gateway_map_v1",
+        connectors: [{ id: "codex", status: "active", configured: true, scopes: ["suite:read"], token: "MCP_SECRET_MUST_NOT_LEAK" }],
+        agent_roles: [{ id: "operator" }],
+        default_policy: { read_only: true, tenant_scoped: true },
+      },
+      ai_control_tower_score: {
+        score: 88,
+        level: "operational",
+        automation_posture: "manual_confirm_only",
+        dimensions: [{ key: "runtime", status: "ready", score: 90 }],
+        attention: ["verify_module_contract"],
+      },
+      agent_action_observability: {
+        summary: { events_total: 4, connectors_declared: 3, blocked_total: 0, rollback_declared_total: 0 },
+        timeline: [{ id: "event_1", action_type: "read", state: "allow", customer_email: "RAW_CUSTOMER_MUST_NOT_LEAK" }],
+        policy: { read_only: true, append_only: true, tenant_scoped: true },
+      },
+      context_freshness_monitor: {
+        score: 100,
+        level: "fresh",
+        decision_mode: "use_verified_context",
+        sources: [{ key: "crm", status: "fresh", updated_at: new Date().toISOString(), age_seconds: 0, max_age_seconds: 1800 }],
+        attention: [],
+      },
       change_impact_orchestration: {
         schema_version: "skinharmony_change_impact_contract_v1",
         enabled: true,
         core_branch: "change_impact_orchestration",
-        automation_level: "assisted_owner_confirm",
-        required_actions_count: 9,
-        tests_required_count: 6,
+        surfaces: ["suite_control_plane"],
+        required_actions: ["verify_contract"],
+        tests_required: ["suite_smoke"],
+        blocked_until: [],
+      },
+      marketing_journey_builder: {
+        schema_version: "suite_marketing_journey_builder_v1",
+        mode: "draft_approve_only",
+        signals: [{ id: "recall_due" }],
+        journeys: [{ id: "journey_1", customer_name: "RAW_CUSTOMER_MUST_NOT_LEAK" }],
+        approval_queue: [{ id: "approval_1", message: "RAW_MESSAGE_MUST_NOT_LEAK" }],
+      },
+      commerce_snapshot: {
+        schema_version: "suite_commerce_snapshot_v1",
+        summary: {
+          crm_contacts: 0,
+          product_items: 8,
+          technology_items: 3,
+          orders_count: 0,
+          crm_erp_lite_orders: 0,
+          crm_erp_lite_revenue_net: 0,
+          crm_erp_lite_margin_net: 0,
+          crm_erp_lite_owner_required: 0,
+        },
+        raw_profiles: [{ email: "RAW_CUSTOMER_MUST_NOT_LEAK" }],
+      },
+      cockpit_360_summary: {
+        schema_version: "cockpit_360_summary_v1",
+        generated_at: new Date().toISOString(),
+        source_presence: completeSourcePresence,
+        posture: { readiness_score: 92, risk_score: 18, data_quality_score: 96, automation_mode: "manual_confirm_only" },
+        customer: {
+          profiles_visible: 0,
+          crm_contacts: 0,
+          high_priority_profiles: 0,
+          manual_review_profiles: 0,
+          consent_missing_count: 0,
+        },
+        commerce: { orders_count: 0, order_value: 0, margin_net: 0, manual_settlement_rows: 0, owner_confirmation_required: 0 },
+        registry: { product_items: 8, technology_items: 3, low_stock_items: 0, missing_price_count: 0, missing_sku_count: 0 },
+        license: { active_licenses: 0, expiring_licenses: 0, grace_period_count: 0, locked_modules: 0, domain_mismatch_count: 0 },
+        operations: { events_total: 4, connectors_declared: 3, blocked_actions: 0, rollback_required: 0 },
+        content: { desktop_review_missing: 0, mobile_review_missing: 0, cta_visibility_attention: 0, layout_attention: 0 },
+        governance: {
+          claims: { issues_total: 1, blocker_count: 1, medical_claim_count: 1, review_required_count: 1 },
+          pricing: { missing_official_price_count: 0, below_cost_count: 0, negative_margin_count: 0 },
+        },
+        module_coverage: { expected_total: 50, statuses: fiftyModuleStatuses },
+        branches: [
+          { key: "claim_content", state: "blocked", evidence_ratio: 1, blocking_count: 1, primary_reason: "medical_claim_detected", top_action: "review_claim_sources" },
+          { key: "visual_content", state: "ready", evidence_ratio: 1, blocking_count: 0, primary_reason: "visual_evidence_ready", top_action: "review_priority_surface" },
+        ],
+        raw_customer_records: [{ email: "RAW_CUSTOMER_MUST_NOT_LEAK" }],
+        api_key: "COCKPIT_SECRET_MUST_NOT_LEAK",
       },
     }),
   });
@@ -393,6 +555,13 @@ try {
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "customer_360_profile_review"));
   assert.ok(runbooks.body.runbooks.some((runbook) => runbook.id === "journey_builder_guarded_draft"));
 
+  const runbookCatalogSpec = await request("/api/suite/runbooks/catalog-spec", { headers });
+  assert.equal(runbookCatalogSpec.response.status, 200);
+  assert.equal(runbookCatalogSpec.body.schema_version, "suite_runbook_catalog_spec_v1");
+  assert.equal(runbookCatalogSpec.body.execution_allowed, false);
+  assert.equal(runbookCatalogSpec.body.summary.runbooks_available, runbooks.body.runbooks.length);
+  assert.ok(runbookCatalogSpec.body.runbooks.every((runbook) => runbook.dispatch_role === "proposal_queue_only"));
+
   const tracks = await request("/api/suite/ecosystem/tracks", { headers });
   assert.equal(tracks.response.status, 200);
   assert.equal(tracks.body.tracks.schema_version, "suite_ecosystem_tracks_v1");
@@ -407,6 +576,11 @@ try {
   assert.equal(branchMap.body.execution_allowed, false);
   assert.equal(branchMap.body.owner_confirmation_required, true);
   assert.equal(branchMap.body.branch_count, 14);
+  assert.equal(branchMap.body.architecture_schema, "nyra_suite_branch_architecture_v2");
+  assert.equal(branchMap.body.architecture_validation.ok, true);
+  assert.equal(branchMap.body.branch_map.pipeline.stages.length, 12);
+  assert.ok(branchMap.body.branch_map.branches.every((branch) => branch.purpose && branch.evidence_sources.length >= 2));
+  assert.ok(branchMap.body.branch_map.branches.every((branch) => branch.decision_rules.thresholds.stale_after_seconds >= 60));
   assert.ok(branchMap.body.branch_keys.includes("analytics_insight"));
   assert.ok(branchMap.body.branch_keys.includes("crm_sales"));
   assert.ok(branchMap.body.branch_keys.includes("render_operations"));
@@ -421,6 +595,29 @@ try {
   assert.equal(nyraContract.response.status, 200);
   assert.equal(nyraContract.body.contract.schema_version, "customer_intelligence_contract_v1");
 
+  const cockpitFirst = await request("/api/suite/tenants/tenant_demo/cockpit-360", { headers });
+  assert.equal(cockpitFirst.response.status, 200);
+  assert.equal(cockpitFirst.body.schema_version, "cockpit_360_summary_v1");
+  assert.match(cockpitFirst.body.revision_hash, /^[a-f0-9]{64}$/);
+  assert.equal(cockpitFirst.body.module_coverage.expected_total, 50);
+  assert.equal(cockpitFirst.body.module_coverage.total, 50);
+  assert.equal(cockpitFirst.body.module_coverage.known, 50);
+  assert.equal(cockpitFirst.body.module_coverage.ready, 49);
+  assert.equal(cockpitFirst.body.module_coverage.attention, 1);
+  assert.equal(cockpitFirst.body.branches.length, 14);
+  assert.equal(cockpitFirst.body.branches.find((branch) => branch.key === "claim_content").state, "blocked");
+  assert.equal(cockpitFirst.body.branches.find((branch) => branch.key === "visual_content").state, "blocked");
+  assert.ok(cockpitFirst.body.conflicts.some((conflict) => conflict.id === "claim_precedence"));
+  assert.doesNotMatch(JSON.stringify(cockpitFirst.body), /MUST_NOT_LEAK|RAW_CUSTOMER|RAW_MESSAGE/);
+
+  const cockpitSecond = await request("/api/suite/tenants/tenant_demo/cockpit-360", { headers });
+  assert.equal(cockpitSecond.body.revision_hash, cockpitFirst.body.revision_hash);
+
+  const sanitizedNodeDashboard = await request("/api/suite/nodes/wp_test_node/dashboard", { headers });
+  assert.equal(sanitizedNodeDashboard.body.dashboard.node.latest_snapshot.schema_version, "suite_node_snapshot_v2");
+  assert.equal(sanitizedNodeDashboard.body.dashboard.node.latest_snapshot.cockpit_360_summary.module_coverage.total, 50);
+  assert.doesNotMatch(JSON.stringify(sanitizedNodeDashboard.body), /MUST_NOT_LEAK|RAW_CUSTOMER|RAW_MESSAGE/);
+
   const nyraPreview = await request("/api/suite/nyra/decision-preview", {
     method: "POST",
     headers,
@@ -429,6 +626,30 @@ try {
   assert.equal(nyraPreview.response.status, 200);
   assert.equal(nyraPreview.body.mode, "preview_only");
   assert.equal(nyraPreview.body.execution_allowed, false);
+  assert.equal(nyraPreview.body.hydration.server_side, true);
+  assert.equal(nyraPreview.body.hydration.cockpit_schema, "cockpit_360_summary_v1");
+  assert.equal(lastNyraDecisionPayload.context.hydrated_server_side, true);
+  assert.equal(lastNyraDecisionPayload.context.cockpit_360.schema_version, "cockpit_360_summary_v1");
+  assert.equal(lastNyraDecisionPayload.context.cockpit_360.revision_hash, cockpitFirst.body.revision_hash);
+  assert.doesNotMatch(JSON.stringify(lastNyraDecisionPayload), /MUST_NOT_LEAK|RAW_CUSTOMER|RAW_MESSAGE/);
+
+  const compatibilityPreview = await request("/api/suite/core/nira-bridge", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ tenant_id: "tenant_demo", branches: ["claim_content", "visual_content"], text: "Spiega il conflitto." }),
+  });
+  assert.equal(compatibilityPreview.response.status, 200);
+  assert.equal(compatibilityPreview.body.compatibility_route, "/api/suite/core/nira-bridge");
+  assert.equal(compatibilityPreview.body.canonical_route, "/api/suite/nyra/decision-preview");
+  assert.deepEqual(compatibilityPreview.body.hydration.selected_branches, ["claim_content", "visual_content"]);
+
+  const unknownBranchPreview = await request("/api/suite/nyra/decision-preview", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ tenant_id: "tenant_demo", branches: ["not_a_suite_branch"] }),
+  });
+  assert.equal(unknownBranchPreview.response.status, 400);
+  assert.deepEqual(unknownBranchPreview.body.unknown_branches, ["not_a_suite_branch"]);
 
   const googleStatus = await request("/api/suite/integrations/google/status?tenant_id=tenant_demo", { headers });
   assert.equal(googleStatus.response.status, 200);
@@ -670,6 +891,53 @@ try {
   assert.equal(dispatch.response.status, 202);
   assert.equal(dispatch.body.accepted, true);
   assert.equal(dispatch.body.dispatch.state, "queued_for_node_pull");
+  assert.equal(dispatch.body.dispatch.execution_allowed, false);
+  assert.equal(dispatch.body.dispatch.dispatch_role, "proposal_queue_only");
+  assert.equal(dispatch.body.dispatch.approval.mode, "legacy_owner_flag_proposal_only");
+
+  const wrongActionEnvelope = await request("/api/suite/runbooks/dispatch", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "plugin_update_preflight",
+      node_id: "wp_test_node",
+      approval_envelope: {
+        tenant_id: "tenant_demo",
+        node_id: "wp_test_node",
+        runbook_id: "plugin_update_preflight",
+        action_id: "wrong:action:binding",
+        core_decision_id: "core_decision_wrong_action",
+        owner_confirmed: true,
+        expires_at: new Date(Date.now() + 60000).toISOString(),
+      },
+    }),
+  });
+  assert.equal(wrongActionEnvelope.response.status, 409);
+  assert.equal(wrongActionEnvelope.body.accepted, false);
+  assert.ok(wrongActionEnvelope.body.dispatch.approval.errors.includes("action_id_mismatch"));
+
+  const actionBoundDispatch = await request("/api/suite/runbooks/dispatch", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      runbook_id: "plugin_update_preflight",
+      node_id: "wp_test_node",
+      approval_envelope: {
+        tenant_id: "tenant_demo",
+        node_id: "wp_test_node",
+        runbook_id: "plugin_update_preflight",
+        action_id: "plugin_update_preflight:tenant_demo:wp_test_node",
+        core_decision_id: "core_decision_action_bound",
+        owner_confirmed: true,
+        expires_at: new Date(Date.now() + 60000).toISOString(),
+      },
+    }),
+  });
+  assert.equal(actionBoundDispatch.response.status, 202);
+  assert.equal(actionBoundDispatch.body.accepted, true);
+  assert.equal(actionBoundDispatch.body.dispatch.execution_allowed, false);
+  assert.equal(actionBoundDispatch.body.dispatch.approval.valid, true);
+  assert.equal(actionBoundDispatch.body.dispatch.approval.expected_action_id, "plugin_update_preflight:tenant_demo:wp_test_node");
 
   const customerReportDispatch = await request("/api/suite/runbooks/dispatch", {
     method: "POST",
@@ -709,7 +977,7 @@ try {
   assert.equal(dashboard.response.status, 200);
   assert.equal(dashboard.body.dashboard.node.node_id, "wp_test_node");
   assert.equal(dashboard.body.dashboard.node.evidence_count, 1);
-  assert.equal(dashboard.body.dashboard.dispatches.length, 4);
+  assert.equal(dashboard.body.dashboard.dispatches.length, 6);
   assert.ok(dashboard.body.dashboard.dispatches.some((item) => item.dispatch_type === "marketing_journey_queue"));
   assert.equal(dashboard.body.dashboard.runbook_artifacts.length, 1);
 
@@ -717,7 +985,7 @@ try {
   assert.equal(overview.response.status, 200);
   assert.equal(overview.body.overview.nodes_total, 1);
   assert.equal(overview.body.overview.runbooks_total, runbooks.body.runbooks.length);
-  assert.equal(overview.body.overview.dispatches_total, 4);
+  assert.equal(overview.body.overview.dispatches_total, 6);
   assert.equal(overview.body.overview.runbook_artifacts_total, 1);
 
   const staleNode = storage.dashboard("wp_test_node").node;
@@ -732,6 +1000,14 @@ try {
   assert.equal(staleDashboard.body.dashboard.tenants[0].nodes[0].status, "stale");
   assert.equal(staleDashboard.body.dashboard.tenants[0].nodes[0].readiness.status, "warning");
   assert.ok(staleDashboard.body.dashboard.tenants[0].nodes[0].readiness.missing.includes("heartbeat_fresh"));
+
+  const staleCockpit = await request("/api/suite/tenants/tenant_demo/cockpit-360", { headers });
+  const staleRenderBranch = staleCockpit.body.branches.find((branch) => branch.key === "render_operations");
+  const staleAnalyticsBranch = staleCockpit.body.branches.find((branch) => branch.key === "analytics_insight");
+  assert.equal(staleRenderBranch.state, "blocked");
+  assert.equal(staleRenderBranch.evidence.find((item) => item.id === "node_readiness").available, true);
+  assert.equal(staleAnalyticsBranch.evidence.find((item) => item.id === "node_freshness").stale, true);
+  assert.equal(staleAnalyticsBranch.state, "blocked");
 
   const stalePreview = await request("/api/suite/runbooks/preview", {
     method: "POST",
@@ -761,6 +1037,7 @@ try {
   persistedOne.storage.runbookDispatch({
     runbook_id: "smartdesk_bridge_check",
     node_id: "wp_persisted_node",
+    tenant_id: "tenant_demo",
   });
   persistedOne.storage.runbookArtifact({
     node_id: "wp_persisted_node",
@@ -778,6 +1055,121 @@ try {
   assert.equal(persistedOverview.dispatches_total, 1);
   assert.equal(persistedOverview.runbook_artifacts_total, 1);
   delete process.env.SUITE_CONTROL_STORAGE_ROOT;
+
+  const isolatedPlane = createSuiteControlPlane({
+    coreClient: mockCoreClient,
+    nyraClient: mockNyraClient,
+    auth: {
+      bindings: [
+        { key_id: "alpha", secret: "alpha-key", tenant_id: "tenant_alpha", scopes: ["suite:read", "suite:ingest"] },
+        { key_id: "beta", secret: "beta-key", tenant_id: "tenant_beta", scopes: ["suite:read", "suite:ingest"] },
+      ],
+    },
+  });
+  isolatedPlane.storage.heartbeat({ node_id: "shared_node", tenant_id: "tenant_alpha", plugin_version: "alpha" });
+  isolatedPlane.storage.snapshot({ node_id: "shared_node", tenant_id: "tenant_alpha", summary: { plugin_version: "alpha" } });
+  isolatedPlane.storage.runbookArtifact({
+    node_id: "shared_node",
+    tenant_id: "tenant_alpha",
+    runbook_id: "customer_report",
+    artifact_type: "tenant_alpha_report",
+  });
+  isolatedPlane.storage.heartbeat({ node_id: "shared_node", tenant_id: "tenant_beta", plugin_version: "beta" });
+  isolatedPlane.storage.snapshot({ node_id: "shared_node", tenant_id: "tenant_beta", summary: { plugin_version: "beta" } });
+  isolatedPlane.storage.runbookArtifact({
+    node_id: "shared_node",
+    tenant_id: "tenant_beta",
+    runbook_id: "customer_report",
+    artifact_type: "tenant_beta_report",
+  });
+  assert.notEqual(isolatedPlane.storage.nodeForTenant("tenant_alpha", "shared_node"), isolatedPlane.storage.nodeForTenant("tenant_beta", "shared_node"));
+  assert.equal(isolatedPlane.storage.dashboard("shared_node", "tenant_alpha").node.latest_snapshot.summary.plugin_version, "alpha");
+  assert.equal(isolatedPlane.storage.dashboard("shared_node", "tenant_beta").node.latest_snapshot.summary.plugin_version, "beta");
+  assert.equal(isolatedPlane.storage.runbookArtifacts("shared_node", 50, "tenant_alpha")[0].artifact_type, "tenant_alpha_report");
+  assert.equal(isolatedPlane.storage.runbookArtifacts("shared_node", 50, "tenant_beta")[0].artifact_type, "tenant_beta_report");
+  assert.equal(isolatedPlane.storage.overview("tenant_alpha").nodes_total, 1);
+  assert.equal(isolatedPlane.storage.overview("tenant_beta").nodes_total, 1);
+
+  const isolatedServer = isolatedPlane.app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => isolatedServer.once("listening", resolve));
+  try {
+    const isolatedBase = `http://127.0.0.1:${isolatedServer.address().port}`;
+    const alphaDashboardResponse = await fetch(`${isolatedBase}/api/suite/nodes/shared_node/dashboard`, { headers: { "x-sh-suite-key": "alpha-key" } });
+    const alphaDashboard = await alphaDashboardResponse.json();
+    const betaDashboardResponse = await fetch(`${isolatedBase}/api/suite/nodes/shared_node/dashboard`, { headers: { "x-sh-suite-key": "beta-key" } });
+    const betaDashboard = await betaDashboardResponse.json();
+    assert.equal(alphaDashboardResponse.status, 200);
+    assert.equal(betaDashboardResponse.status, 200);
+    assert.equal(alphaDashboard.dashboard.node.tenant_id, "tenant_alpha");
+    assert.equal(betaDashboard.dashboard.node.tenant_id, "tenant_beta");
+    assert.equal(alphaDashboard.dashboard.node.latest_snapshot.summary.plugin_version, "alpha");
+    assert.equal(betaDashboard.dashboard.node.latest_snapshot.summary.plugin_version, "beta");
+
+    const alphaCockpitResponse = await fetch(`${isolatedBase}/api/suite/tenants/tenant_alpha/cockpit-360`, { headers: { "x-sh-suite-key": "alpha-key" } });
+    const alphaCockpit = await alphaCockpitResponse.json();
+    const betaCockpitResponse = await fetch(`${isolatedBase}/api/suite/tenants/tenant_beta/cockpit-360`, { headers: { "x-sh-suite-key": "beta-key" } });
+    const betaCockpit = await betaCockpitResponse.json();
+    assert.equal(alphaCockpit.scope.tenant_id, "tenant_alpha");
+    assert.equal(betaCockpit.scope.tenant_id, "tenant_beta");
+    assert.equal(alphaCockpit.scope.node_id, "shared_node");
+    assert.equal(betaCockpit.scope.node_id, "shared_node");
+
+    const alphaArtifacts = await fetch(`${isolatedBase}/api/suite/nodes/shared_node/runbook-artifacts`, { headers: { "x-sh-suite-key": "alpha-key" } });
+    const betaArtifacts = await fetch(`${isolatedBase}/api/suite/nodes/shared_node/runbook-artifacts`, { headers: { "x-sh-suite-key": "beta-key" } });
+    assert.equal((await alphaArtifacts.json()).artifacts[0].artifact_type, "tenant_alpha_report");
+    assert.equal((await betaArtifacts.json()).artifacts[0].artifact_type, "tenant_beta_report");
+
+    const crossTenantDashboard = await fetch(`${isolatedBase}/api/suite/tenants/tenant_beta/dashboard`, { headers: { "x-sh-suite-key": "alpha-key" } });
+    assert.equal(crossTenantDashboard.status, 403);
+  } finally {
+    isolatedServer.close();
+  }
+
+  const readOnlyPlane = createSuiteControlPlane({
+    coreClient: mockCoreClient,
+    nyraClient: mockNyraClient,
+    auth: {
+      bindings: [{ key_id: "reader", secret: "reader-key", tenant_id: "tenant_demo", scopes: ["suite:read"] }],
+    },
+  });
+  const readOnlyServer = readOnlyPlane.app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => readOnlyServer.once("listening", resolve));
+  try {
+    const readOnlyBase = `http://127.0.0.1:${readOnlyServer.address().port}`;
+    const readResponse = await fetch(`${readOnlyBase}/api/suite/nyra/branch-map`, { headers: { "x-sh-suite-key": "reader-key" } });
+    assert.equal(readResponse.status, 200);
+    const deniedIngest = await fetch(`${readOnlyBase}/api/suite/nodes/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-sh-suite-key": "reader-key" },
+      body: JSON.stringify({ tenant_id: "tenant_demo", node_id: "denied_node" }),
+    });
+    assert.equal(deniedIngest.status, 403);
+    assert.equal((await deniedIngest.json()).error, "suite_control_plane_scope_denied");
+  } finally {
+    readOnlyServer.close();
+  }
+
+  const nonPersistentProductionPlane = createSuiteControlPlane({
+    coreClient: mockCoreClient,
+    nyraClient: mockNyraClient,
+    production: true,
+    probeRemote: false,
+    auth: {
+      bindings: [{ key_id: "production", secret: "production-key", tenant_id: "tenant_demo", scopes: ["suite:read"] }],
+    },
+  });
+  const nonPersistentServer = nonPersistentProductionPlane.app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => nonPersistentServer.once("listening", resolve));
+  try {
+    const nonPersistentBase = `http://127.0.0.1:${nonPersistentServer.address().port}`;
+    const nonPersistentReady = await fetch(`${nonPersistentBase}/readyz`);
+    assert.equal(nonPersistentReady.status, 503);
+    const readinessBody = await nonPersistentReady.json();
+    assert.equal(readinessBody.ready, false);
+    assert.ok(readinessBody.missing.includes("storage_persistent"));
+  } finally {
+    nonPersistentServer.close();
+  }
 
   console.log("Suite Control Plane smoke OK");
 } finally {
