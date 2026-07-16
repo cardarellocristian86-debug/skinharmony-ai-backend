@@ -1080,14 +1080,14 @@ app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
   }
 });
 
-app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
+app.post("/api/integrations/twilio/whatsapp-webhook", async (req, res) => {
   const expectedToken = String(process.env.TWILIO_WEBHOOK_TOKEN || "").trim();
   const providedToken = String(req.query.token || req.headers["x-smartdesk-webhook-token"] || "").trim();
   if (expectedToken && providedToken !== expectedToken) {
     return res.status(401).json({ success: false, message: "Webhook non autorizzato" });
   }
   try {
-    res.json(service.handleWhatsappWebhook(req.body || {}, whatsappService));
+    res.json(await service.handleWhatsappWebhook(req.body || {}, whatsappService));
   } catch (error) {
     res.status(400).json({
       success: false,

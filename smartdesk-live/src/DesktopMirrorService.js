@@ -11382,7 +11382,7 @@ class DesktopMirrorService {
     };
   }
 
-  handleWhatsappWebhook(payload = {}, whatsappService = null) {
+  async handleWhatsappWebhook(payload = {}, whatsappService = null) {
     const messageId = String(payload.MessageSid || payload.SmsSid || payload.SmsMessageSid || "");
     const status = whatsappService?.mapStatus?.(payload.MessageStatus || payload.SmsStatus || (payload.Body ? "received" : "")) || "";
     const from = cleanPhone(String(payload.From || "").replace(/^whatsapp:/, ""));
@@ -11397,7 +11397,7 @@ class DesktopMirrorService {
     if (!target) {
       return { success: true, matched: false, status };
     }
-    const updated = this.whatsappMessagesRepository.update(target.id, (current) => ({
+    const updated = await this.whatsappMessagesRepository.updateDurable(target.id, (current) => ({
       ...current,
       status: status || current.status || "sent",
       response: payload.Body ? String(payload.Body || "").slice(0, 1000) : current.response || "",
@@ -11410,7 +11410,7 @@ class DesktopMirrorService {
       webhookRaw: payload
     }));
     if (updated && status === "replied") {
-      this.goldActionOutcomesRepository.create({
+      await this.goldActionOutcomesRepository.createDurable({
         id: crypto.randomUUID(),
         centerId: updated.centerId,
         createdAt: now,
@@ -11502,7 +11502,7 @@ class DesktopMirrorService {
     return learningMap.get(`${domain}:${action}`) || { attempts: 0, successes: 0, failures: 0 };
   }
 
-  recordGoldActionOutcome(payload = {}, session = null) {
+  async recordGoldActionOutcome(payload = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Outcome Gold disponibile solo con piano Gold");
@@ -11519,7 +11519,7 @@ class DesktopMirrorService {
       valueCents: Number(payload.valueCents || 0),
       note: String(payload.note || "").slice(0, 500)
     };
-    this.goldActionOutcomesRepository.create(row);
+    await this.goldActionOutcomesRepository.createDurable(row);
     return row;
   }
 
