@@ -442,6 +442,67 @@ async function testGoldConfirmDoesNotMutateWhenAtomicCommitFails() {
   assert.strictEqual(imports.list()[0].status, "analyzed");
 }
 
+function makeAccountRepository(items, collectionName) {
+  return {
+    collectionName,
+    revision: 1,
+    items,
+    list() { return this.items; },
+    write(next) { this.items = next; }
+  };
+}
+
+function makeAccountProvisioningService(commitRepositorySnapshots) {
+  const service = Object.create(DesktopMirrorService.prototype);
+  service.usersRepository = makeAccountRepository([], "users");
+  service.staffRepository = makeAccountRepository([], "staff");
+  service.settingsRepository = makeAccountRepository({}, "settings");
+  service.assertEnterpriseCenterProvisioningAllowed = () => undefined;
+  service.isSuperAdminSession = (session) => String(session?.role || "") === "superadmin";
+  service.getCenterId = (session) => session?.centerId || "center-a";
+  service.getCenterName = (session) => session?.centerName || "Center A";
+  service.belongsToCenter = (item, centerId) => String(item.centerId) === String(centerId);
+  service.readSettingsStore = () => service.settingsRepository.list();
+  service.listAccessUsers = () => service.usersRepository.list();
+  service.serializeUserSummary = (user) => user;
+  service.commitRepositorySnapshots = commitRepositorySnapshots || (async (changes) => {
+    changes.forEach(({ repository, payload }) => repository.write(payload));
+  });
+  return service;
+}
+
+async function testAccountProvisioningCommitsUserStaffAndSettingsAtomically() {
+  const commits = [];
+  const service = makeAccountProvisioningService(async (changes) => {
+    commits.push(changes.map(({ repository }) => repository.collectionName).sort());
+    changes.forEach(({ repository, payload }) => repository.write(payload));
+  });
+  const user = await service.createAccessUser({
+    username: "owner-a",
+    password: "safe-password-1",
+    centerId: "center-a",
+    centerName: "Center A",
+    role: "owner"
+  }, { role: "superadmin", centerId: "admin" });
+  assert.strictEqual(commits.length, 1);
+  assert.deepStrictEqual(commits[0], ["settings", "staff", "users"]);
+  assert.strictEqual(service.usersRepository.list().length, 1);
+  assert.ok(service.staffRepository.list().length > 0);
+  assert.strictEqual(service.settingsRepository.list()["center-a"].centerName, "Center A");
+  assert.strictEqual(user.username, "owner-a");
+}
+
+async function testAccountProvisioningDoesNotMutateWhenAtomicCommitFails() {
+  const service = makeAccountProvisioningService(async () => { throw new Error("simulated account transaction rollback"); });
+  await assert.rejects(
+    service.createAccessUser({ username: "owner-a", password: "safe-password-1", centerId: "center-a" }, { role: "superadmin" }),
+    /rollback/
+  );
+  assert.strictEqual(service.usersRepository.list().length, 0);
+  assert.strictEqual(service.staffRepository.list().length, 0);
+  assert.deepStrictEqual(service.settingsRepository.list(), {});
+}
+
 async function main() {
   await testRepositoryDoesNotWriteLocallyWhenDatabaseFails();
   await testRepositoryCommitsAfterDatabaseConfirmation();
@@ -456,6 +517,8 @@ async function main() {
   await testCatalogFailureDoesNotMutateRepository();
   await testGoldConfirmPlansAndCommitsOneAtomicBatch();
   await testGoldConfirmDoesNotMutateWhenAtomicCommitFails();
+  await testAccountProvisioningCommitsUserStaffAndSettingsAtomically();
+  await testAccountProvisioningDoesNotMutateWhenAtomicCommitFails();
   console.log("persistence P0 tests passed");
 }
 

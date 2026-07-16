@@ -440,7 +440,7 @@ async function runInternalRenderJob() {
     centerId: DEMO_CENTER_ID,
     confirm: `RESET-${DEMO_CENTER_ID}`
   }, adminSession);
-  const demoUser = service.createAccessUser({
+  const demoUser = await service.createAccessUser({
     username: DEMO_USERNAME,
     password: DEMO_PASSWORD,
     role: "owner",

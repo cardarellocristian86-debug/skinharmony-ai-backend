@@ -369,7 +369,7 @@ async function runInternalRenderJob(data) {
   }, adminSession);
 
   const demoPassword = DEMO_PASSWORD || `DemoGold-${Date.now()}`;
-  const demoUser = service.createAccessUser({
+  const demoUser = await service.createAccessUser({
     username: DEMO_USERNAME,
     password: demoPassword,
     role: "owner",
