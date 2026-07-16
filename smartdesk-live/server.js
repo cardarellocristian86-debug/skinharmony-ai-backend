@@ -2192,10 +2192,10 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione marketing temporaneamente limitata"));
   }
   try {
-    const generated = service.generateAiMarketingAutopilotActions(req.session);
+    const generated = await service.generateAiMarketingAutopilotActions(req.session);
     const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
     if (enhanced.actions?.length) {
-      service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
+      await service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
     }
     res.json({
       ...service.getAiMarketingAutopilot(req.session),
@@ -2207,9 +2207,9 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
   }
 });
 
-app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), async (req, res) => {
   try {
-    res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
+    res.json(await service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare l'azione marketing");
   }

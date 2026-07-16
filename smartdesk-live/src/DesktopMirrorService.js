@@ -10773,7 +10773,7 @@ class DesktopMirrorService {
     };
   }
 
-  generateAiMarketingAutopilotActions(session = null) {
+  async generateAiMarketingAutopilotActions(session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       return {
@@ -10798,7 +10798,7 @@ class DesktopMirrorService {
       ))
       .slice(0, 12);
 
-    candidates.forEach((suggestion) => {
+    for (const suggestion of candidates) {
       const alreadyOpen = existing.some((item) => (
         String(item.clientId || "") === String(suggestion.clientId || "")
         && String(item.type || "") === "recall"
@@ -10808,7 +10808,7 @@ class DesktopMirrorService {
         String(item.clientId || "") === String(suggestion.clientId || "")
         && toDateOnly(item.generatedAt || item.createdAt) === today
       ));
-      if (alreadyOpen || generatedToday) return;
+      if (alreadyOpen || generatedToday) continue;
       const action = {
         id: makeId("aimkt"),
         centerId,
@@ -10844,9 +10844,9 @@ class DesktopMirrorService {
         approvedAt: "",
         copiedAt: ""
       };
-      this.aiMarketingActionsRepository.create(action);
+      await this.aiMarketingActionsRepository.createDurable(action);
       created.push(action);
-    });
+    }
     if (created.length) {
       this.invalidateBusinessSnapshot(centerId, [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
     }
@@ -10859,7 +10859,7 @@ class DesktopMirrorService {
     };
   }
 
-  updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
+  async updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Marketing Autopilot disponibile solo con piano Gold");
@@ -10875,7 +10875,7 @@ class DesktopMirrorService {
       const action = (state.marketingActions?.actions || []).find((item) => String(item.clientId || "") === clientId);
       if (!action) throw new Error("Azione Gold non trovata");
       const now = nowIso();
-      const created = this.aiMarketingActionsRepository.create({
+      const created = await this.aiMarketingActionsRepository.createDurable({
         id: makeId("aimkt"),
         centerId: this.getCenterId(session),
         centerName: this.getCenterName(session),
@@ -10913,7 +10913,7 @@ class DesktopMirrorService {
       this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
       return created;
     }
-    const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
+    const updated = await this.updateInCenterDurable(this.aiMarketingActionsRepository, actionId, (current) => ({
       ...current,
       status: status === "discarded" ? "archived" : status,
       updatedAt: nowIso(),
@@ -10925,17 +10925,17 @@ class DesktopMirrorService {
     return updated;
   }
 
-  updateAiMarketingActionDrafts(enhancements = [], session = null) {
+  async updateAiMarketingActionDrafts(enhancements = [], session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       return [];
     }
     const byId = new Map(enhancements.map((item) => [String(item.id || ""), item]));
     const updated = [];
-    this.filterByCenter(this.aiMarketingActionsRepository.list(), session).forEach((action) => {
+    for (const action of this.filterByCenter(this.aiMarketingActionsRepository.list(), session)) {
       const enhancement = byId.get(String(action.id || ""));
-      if (!enhancement) return;
-      const next = this.updateInCenter(this.aiMarketingActionsRepository, action.id, (current) => ({
+      if (!enhancement) continue;
+      const next = await this.updateInCenterDurable(this.aiMarketingActionsRepository, action.id, (current) => ({
         ...current,
         reason: String(enhancement.reason || current.reason || ""),
         suggestedMessage: String(enhancement.suggestedMessage || current.suggestedMessage || ""),
@@ -10943,7 +10943,7 @@ class DesktopMirrorService {
         updatedAt: nowIso()
       }), session);
       updated.push(next);
-    });
+    }
     return updated;
   }
 
