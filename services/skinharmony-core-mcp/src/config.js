@@ -109,6 +109,9 @@ export function loadConfig(env = process.env) {
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const databaseUrl = String(env.DATABASE_URL || "").trim();
+  // Collaboration state must never silently share the service's existing
+  // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
+  const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
   const decisionLedgerRequired = flag(env.CORE_DECISION_LEDGER_REQUIRED, env.NODE_ENV === "production");
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
@@ -146,8 +149,10 @@ export function loadConfig(env = process.env) {
     tenantClaim,
     sharedMemoryRoot,
     databaseUrl,
+    collaborationDatabaseUrl,
     decisionLedgerRequired,
     databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
+    collaborationDatabaseSsl: flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production"),
     databasePoolMax: integer(env.DATABASE_POOL_MAX, 5, 1, 20),
     cloudMemoryMaxDocumentBytes: integer(env.CLOUD_MEMORY_MAX_DOCUMENT_BYTES, 250_000, 1_000, 900_000),
     agentWorkspaceRoot,

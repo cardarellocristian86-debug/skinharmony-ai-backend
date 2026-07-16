@@ -20,6 +20,18 @@ test("keeps agent collaboration disabled until a persistent root is configured",
   assert(enabled.supportedScopes.includes("core:read"));
   assert(enabled.supportedScopes.includes("core:govern"));
   assert.equal(enabled.researchCortexRoot, "/var/data/skinharmony-core-mcp");
+  const postgresOnly = loadConfig({
+    DATABASE_URL: "postgres://existing-service-db",
+    MCP_COLLABORATION_DATABASE_URL: "postgres://staging-collaboration-db",
+  });
+  assert.equal(postgresOnly.databaseUrl, "postgres://existing-service-db");
+  assert.equal(postgresOnly.collaborationDatabaseUrl, "postgres://staging-collaboration-db");
+});
+
+test("does not enable PostgreSQL collaboration from the generic database URL", () => {
+  const config = loadConfig({ DATABASE_URL: "postgres://existing-service-db" });
+  assert.equal(config.collaborationDatabaseUrl, "");
+  assert.equal(config.collaborationDatabaseSsl, false);
 });
 
 test("configures independent memory storage and bounded retention", () => {
