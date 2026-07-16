@@ -18,6 +18,8 @@ export const branchSkinHarmonyAnalyzer = {
     "anamnesis_sales_guard",
     "technology_claim_guard",
     "post_treatment_timing_guard",
+    "acquisition_quality_gate", "capture_modality_provenance", "longitudinal_comparability", "uncertainty_abstention",
+    "skin_tone_fairness_audit", "confounder_artifact_guard", "verified_outcome_learning", "human_review_release",
   ],
   rules: [
     "Leggere i punteggi come insieme: dominante, secondari, segnali protettivi e relazioni.",
@@ -32,6 +34,10 @@ export const branchSkinHarmonyAnalyzer = {
     "Se prima dello scatto e presente tecnologia, servizio o nuova routine, leggere rossore, idratazione, sebo e luminosita come possibili effetti temporanei e non come variazione stabile.",
     "Usare 2/3 settimane come follow-up operativo standard per confronto cliente, salvo reazione importante o protocollo professionale specifico.",
     "Usare linguaggio estetico professionale, non diagnosi o promesse cliniche.",
+    "Interpretare solo acquisizioni con qualita, luce, fuoco, modalita e provenienza dichiarate; altrimenti astenersi e ripetere lo scatto.",
+    "Confrontare nel tempo solo immagini ottenute con protocollo comparabile; non chiamare miglioramento una differenza di luce, distanza o dispositivo.",
+    "Monitorare prestazioni e astensioni per gruppi di tonalita rappresentati senza inferire etnia o usare il gruppo per modificare il risultato individuale.",
+    "L'apprendimento produce solo candidati tenant-scoped da outcome verificati e review umana; non cambia pesi, soglie o policy live.",
   ],
   guardrails: {
     destructive_automation: false,

@@ -1173,14 +1173,26 @@ try {
       data_quality_score: 88,
     },
   }, codexKey);
-  assert(analyzerBranch.status === 200 && analyzerBranch.json.branch_output?.branch === "skinharmony_skin_ensemble_v1", "skinharmony analyzer branch failed");
+  assert(analyzerBranch.status === 200 && analyzerBranch.json.branch_output?.branch === "skinharmony_skin_ensemble_v2", "skinharmony analyzer branch failed");
   assert(analyzerBranch.json.branch_output?.dominant_pattern?.id === "pores_texture_matrix", "skinharmony analyzer dominant pattern failed");
   assert(analyzerBranch.json.branch_output?.secondary_patterns?.some((item) => item.id === "sensitivity_reactivity_matrix"), "skinharmony analyzer secondary pattern failed");
+  assert(analyzerBranch.json.branch_output?.data_quality?.abstained === false, "skinharmony analyzer quality gate failed");
+  assert(analyzerBranch.json.branch_output?.learning?.activation_allowed === false, "skinharmony analyzer learning guard failed");
   mark("branch_skinharmony_analyzer", true, {
     state: analyzerBranch.json.output.state,
     dominant: analyzerBranch.json.branch_output.dominant_pattern,
     secondary: analyzerBranch.json.branch_output.secondary_patterns,
   });
+
+  const analyzerAbstention = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", { data: { scores: [{ key: "pores_texture", score: 25 }], data_quality_score: 40, acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard", focus_score: 35, illumination_score: 45 } } }, codexKey);
+  assert(analyzerAbstention.status === 200, "skinharmony analyzer abstention request failed");
+  assert(analyzerAbstention.json.branch_output?.data_quality?.abstained === true, "skinharmony analyzer did not abstain on low quality");
+  assert(analyzerAbstention.json.branch_output?.dominant_pattern === null, "skinharmony analyzer exposed a dominant pattern after abstention");
+  const analyzerLearning = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", { data: { scores: [{ key: "pores_texture", score: 50 }, { key: "water_oil_balance", score: 75 }], previous_scores: [{ key: "pores_texture", score: 45 }, { key: "water_oil_balance", score: 70 }], acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard", focus_score: 90, illumination_score: 90 }, previous_acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard" }, learning_context: { outcome_verified: true, human_reviewed: true, comparable_capture_count: 3 }, data_quality_score: 90 } }, codexKey);
+  assert(analyzerLearning.json.branch_output?.longitudinal?.comparable === true, "skinharmony analyzer comparable series failed");
+  assert(analyzerLearning.json.branch_output?.longitudinal?.deltas?.pores_texture === 5, "skinharmony analyzer delta failed");
+  assert(analyzerLearning.json.branch_output?.learning?.eligible_candidate === true, "skinharmony analyzer verified candidate failed");
+  assert(analyzerLearning.json.branch_output?.learning?.activation_allowed === false, "skinharmony analyzer activated learning without Core review");
 
   const textGuard = await api(base, "POST", "/v1/content-guard/check", {
     tenant_id: "tenant_demo_skinharmony",
