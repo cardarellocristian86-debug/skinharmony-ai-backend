@@ -61,6 +61,11 @@ class JsonFileRepository {
     this.write(items, { skipLegacySync: true });
   }
 
+  acceptDurableCommit(items, revision) {
+    this.setRevision(revision);
+    this.write(items, { skipLegacySync: true });
+  }
+
   async createDurable(item) {
     const items = this.list();
     await this.writeDurable([item, ...items]);

@@ -6237,6 +6237,35 @@ class DesktopMirrorService {
     );
   }
 
+  async commitRepositorySnapshots(changes = []) {
+    if (!this.persistenceAdapter) {
+      changes.forEach(({ repository, payload }) => repository.write(payload));
+      return;
+    }
+    let revisions;
+    try {
+      revisions = await this.persistenceAdapter.writeCollectionsAtomically(
+        changes.map(({ repository, payload }) => ({
+          name: repository.collectionName,
+          payload,
+          expectedRevision: repository.revision
+        }))
+      );
+    } catch (error) {
+      if (error?.code === "persistence_conflict") {
+        const refreshed = await Promise.all(changes.map(async ({ repository }) => ({
+          repository,
+          remote: await this.persistenceAdapter.readCollection(repository.collectionName)
+        })));
+        refreshed.forEach(({ repository, remote }) => repository.acceptDurableCommit(remote.payload, remote.revision));
+      }
+      throw error;
+    }
+    changes.forEach(({ repository, payload }) => {
+      repository.acceptDurableCommit(payload, revisions.get(repository.collectionName));
+    });
+  }
+
   async init() {
     if (this.persistenceAdapter) {
       await this.persistenceAdapter.init([
@@ -9201,19 +9230,45 @@ class DesktopMirrorService {
       productSales,
       createdAt
     };
-    await this.paymentsRepository.createDurable(payment);
-    productSales.forEach((line) => {
-      this.createInventoryMovement({
-        itemId: line.itemId,
-        type: "sale",
-        quantity: line.quantity,
-        paymentId: payment.id,
-        appointmentId: payment.appointmentId,
-        salePriceCents: line.salePriceCents,
-        lineTotalCents: line.salePriceCents * line.quantity,
-        note: `Vendita checkout: ${line.name || line.itemId}`
-      }, session);
-    });
+    if (!productSales.length) {
+      await this.paymentsRepository.createDurable(payment);
+    } else {
+      const nextInventory = [...this.inventoryRepository.list()];
+      const movements = [];
+      productSales.forEach((line) => {
+        const itemIndex = nextInventory.findIndex((item) => String(item.id || "") === line.itemId && this.belongsToCenter(item, this.getCenterId(session)));
+        assertValid(itemIndex >= 0, "Prodotto carrello non trovato in magazzino");
+        const current = nextInventory[itemIndex];
+        const nextQuantity = Math.max(0, Number(current.quantity || current.stockQuantity || 0) - line.quantity);
+        nextInventory[itemIndex] = {
+          ...current,
+          quantity: nextQuantity,
+          stockQuantity: nextQuantity,
+          updatedAt: nowIso()
+        };
+        movements.unshift({
+          id: makeId("move"),
+          centerId: this.getCenterId(session),
+          centerName: this.getCenterName(session),
+          itemId: line.itemId,
+          type: "sale",
+          quantity: line.quantity,
+          paymentId: payment.id,
+          appointmentId: payment.appointmentId,
+          salePriceCents: line.salePriceCents,
+          lineTotalCents: line.salePriceCents * line.quantity,
+          note: `Vendita checkout: ${line.name || line.itemId}`,
+          createdAt: nowIso()
+        });
+      });
+      await this.commitRepositorySnapshots([
+        { repository: this.paymentsRepository, payload: [payment, ...this.paymentsRepository.list()] },
+        { repository: this.inventoryMovementsRepository, payload: [...movements, ...this.inventoryMovementsRepository.list()] },
+        { repository: this.inventoryRepository, payload: nextInventory }
+      ]);
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
+    }
     this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.paymentsRepository));
     this.applyGoldStateEvent("payment_created", { after: payment }, session);
     return payment;

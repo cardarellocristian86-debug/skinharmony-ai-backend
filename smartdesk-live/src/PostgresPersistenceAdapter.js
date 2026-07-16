@@ -127,6 +127,35 @@ class PostgresPersistenceAdapter {
     return this.revisions.get(name) || null;
   }
 
+  async readCollection(name) {
+    try {
+      const result = await this.createPool().query(
+        `SELECT payload, revision
+         FROM smartdesk_collection_snapshots
+         WHERE tenant_id = $1 AND collection_name = $2
+         LIMIT 1`,
+        [this.tenantId, name]
+      );
+      if (!result.rows[0]) {
+        const error = new Error(`Collezione PostgreSQL non trovata: ${name}`);
+        error.code = "persistence_unavailable";
+        throw error;
+      }
+      const value = {
+        payload: result.rows[0].payload,
+        revision: Number(result.rows[0].revision)
+      };
+      this.revisions.set(name, value.revision);
+      return value;
+    } catch (cause) {
+      if (cause?.code === "persistence_unavailable") throw cause;
+      const error = new Error(`Persistenza PostgreSQL non disponibile per ${name}`);
+      error.code = "persistence_unavailable";
+      error.cause = cause;
+      throw error;
+    }
+  }
+
   async writeCollection(name, payload, expectedRevision) {
     if (!this.databaseUrl) return null;
     const revision = Number(expectedRevision || this.getRevision(name));
@@ -158,6 +187,59 @@ class PostgresPersistenceAdapter {
     const nextRevision = Number(result.rows[0].revision);
     this.revisions.set(name, nextRevision);
     return nextRevision;
+  }
+
+  async writeCollectionsAtomically(changes = []) {
+    const ordered = [...changes].sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    if (!ordered.length) return new Map();
+    let client;
+    let began = false;
+    try {
+      client = await this.createPool().connect();
+      await client.query("BEGIN");
+      began = true;
+      const committed = new Map();
+      for (const change of ordered) {
+        const expectedRevision = Number(change.expectedRevision || this.getRevision(change.name));
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+          const error = new Error(`Revisione mancante per la collezione ${change.name}`);
+          error.code = "persistence_revision_missing";
+          throw error;
+        }
+        const result = await client.query(
+          `UPDATE smartdesk_collection_snapshots
+           SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW()
+           WHERE tenant_id = $2 AND collection_name = $3 AND revision = $4
+           RETURNING revision`,
+          [JSON.stringify(change.payload), this.tenantId, change.name, expectedRevision]
+        );
+        if (!result.rows[0]) {
+          const error = new Error(`Conflitto di scrittura per la collezione ${change.name}; ricarica e riprova.`);
+          error.code = "persistence_conflict";
+          throw error;
+        }
+        committed.set(change.name, Number(result.rows[0].revision));
+      }
+      await client.query("COMMIT");
+      began = false;
+      committed.forEach((revision, name) => this.revisions.set(name, revision));
+      return committed;
+    } catch (cause) {
+      if (began) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // Preserve the original persistence error.
+        }
+      }
+      if (cause?.code === "persistence_conflict" || cause?.code === "persistence_revision_missing") throw cause;
+      const error = new Error("Persistenza PostgreSQL non disponibile per la transazione Smart Desk");
+      error.code = "persistence_unavailable";
+      error.cause = cause;
+      throw error;
+    } finally {
+      client?.release?.();
+    }
   }
 
   // Transitional compatibility only. Critical endpoints must call writeCollection
