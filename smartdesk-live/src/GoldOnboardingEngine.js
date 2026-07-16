@@ -608,7 +608,7 @@ class GoldOnboardingEngine {
     };
   }
 
-  confirm(payload = {}, session = null) {
+  async confirm(payload = {}, session = null) {
     const importId = String(payload.importId || "");
     const record = this.importRepository.findById(importId);
     if (!record || String(record.centerId || "") !== this.service.getCenterId(session)) {
@@ -642,15 +642,15 @@ class GoldOnboardingEngine {
       ...(snapshots.import_customers_snapshot?.reviewRows || []).filter(shouldImportReview)
     ];
     (snapshots.import_customers_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    customerRows.forEach((item) => {
+    for (const item of customerRows) {
       const customer = item.normalized || {};
       const existing = evaluateCustomerMatch(customer, clientIndex).duplicateOf || clientByName.get(normalizeText(customer.name));
       if (existing) {
         skippedDuplicates.customers += 1;
         clientByName.set(normalizeText(customer.name), existing);
-        return;
+        continue;
       }
-      const saved = this.service.saveClient({
+      const saved = await this.service.saveClient({
         ...customer,
         idempotencyKey: `gold-onboarding:${importId}:customer:${item.id}`,
         consentSource: "import_gold_onboarding"
@@ -660,7 +660,7 @@ class GoldOnboardingEngine {
       if (saved.email) clientIndex.byEmail.set(cleanEmail(saved.email), saved);
       if (saved.phone) clientIndex.byPhone.set(cleanPhone(saved.phone), saved);
       clientIndex.byName.set(customerComparableName(saved), saved);
-    });
+    }
 
     const appointmentRows = [
       ...(snapshots.import_appointments_snapshot?.validRows || []),
@@ -728,7 +728,7 @@ class GoldOnboardingEngine {
       ...(snapshots.import_payments_snapshot?.reviewRows || []).filter(shouldImportReview)
     ];
     (snapshots.import_payments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    paymentRows.forEach((item) => {
+    for (const item of paymentRows) {
       const payment = item.normalized || {};
       if (!payment.walkInName || Number(payment.amountCents || 0) <= 0) {
         hardValidationErrors.push({
@@ -738,12 +738,12 @@ class GoldOnboardingEngine {
           reason: !payment.walkInName ? "Pagamento senza cliente" : "Pagamento con importo non valido"
         });
       }
-    });
+    }
     if (hardValidationErrors.length) {
       const first = hardValidationErrors[0];
       throw new Error(`Import bloccato: ${first.reason} (record ${first.id}${first.sourceRow ? `, riga ${first.sourceRow}` : ""}).`);
     }
-    paymentRows.forEach((item) => {
+    for (const item of paymentRows) {
       const payment = item.normalized || {};
       const client = clientByName.get(normalizeText(payment.walkInName || ""));
       const dateKey = `${normalizeText(payment.walkInName || "")}:${String(payment.createdAt || "").slice(0, 10)}`;
@@ -755,16 +755,16 @@ class GoldOnboardingEngine {
       ));
       if (duplicatePayment) {
         skippedDuplicates.payments += 1;
-        return;
+        continue;
       }
-      const saved = this.service.createPayment({
+      const saved = await this.service.createPayment({
         ...payment,
         clientId: client?.id || "",
         appointmentId: appointment?.id || "",
         idempotencyKey: `gold-onboarding:${importId}:payment:${item.id}`
       }, session);
       created.payments.push(saved);
-    });
+    }
 
     const rebuild = this.service.rebuildGoldStateForCurrentGoldTenant(session, {
       reason: "gold_onboarding_import",

@@ -10,14 +10,21 @@ function formatBytes(bytes) {
 }
 
 class PostgresPersistenceAdapter {
-  constructor(databaseUrl) {
+  constructor(databaseUrl, options = {}) {
     this.databaseUrl = databaseUrl;
-    this.writeChains = new Map();
+    this.tenantId = String(options.tenantId || process.env.SMARTDESK_TENANT_ID || "smartdesk").trim() || "smartdesk";
+    this.poolFactory = options.poolFactory || null;
+    this.revisions = new Map();
+    this.legacyWriteChains = new Map();
     this.pool = null;
   }
 
   createPool() {
     if (this.pool) return this.pool;
+    if (this.poolFactory) {
+      this.pool = this.poolFactory();
+      return this.pool;
+    }
     let Pool;
     try {
       ({ Pool } = require("pg"));
@@ -41,10 +48,28 @@ class PostgresPersistenceAdapter {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS smartdesk_collection_snapshots (
+        tenant_id TEXT NOT NULL,
+        collection_name TEXT NOT NULL,
+        revision BIGINT NOT NULL DEFAULT 1,
+        payload JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (tenant_id, collection_name)
+      )
+    `);
+    await pool.query(
+      `INSERT INTO smartdesk_collection_snapshots (tenant_id, collection_name, revision, payload, updated_at)
+       SELECT $1, name, 1, payload, updated_at
+       FROM smartdesk_collections
+       ON CONFLICT (tenant_id, collection_name) DO NOTHING`,
+      [this.tenantId]
+    );
 
     for (const collection of collections) {
       await this.bootstrapCollection(collection);
     }
+    return this.revisions;
   }
 
   ensureLocalFile(filePath, defaultValue) {
@@ -66,44 +91,87 @@ class PostgresPersistenceAdapter {
     const pool = this.createPool();
     const localPayload = this.readLocalPayload(filePath, defaultValue);
     const result = await pool.query(
-      "SELECT payload FROM smartdesk_collections WHERE name = $1 LIMIT 1",
-      [name]
+      `SELECT payload, revision
+       FROM smartdesk_collection_snapshots
+       WHERE tenant_id = $1 AND collection_name = $2
+       LIMIT 1`,
+      [this.tenantId, name]
     );
 
     if (result.rows[0]) {
       this.writeLocalPayload(filePath, result.rows[0].payload);
+      this.revisions.set(name, Number(result.rows[0].revision || 1));
       return;
     }
 
-    await pool.query(
-      `INSERT INTO smartdesk_collections (name, payload, updated_at)
-       VALUES ($1, $2::jsonb, NOW())
-       ON CONFLICT (name) DO NOTHING`,
-      [name, JSON.stringify(localPayload)]
+    const inserted = await pool.query(
+      `INSERT INTO smartdesk_collection_snapshots (tenant_id, collection_name, revision, payload, updated_at)
+       VALUES ($1, $2, 1, $3::jsonb, NOW())
+       ON CONFLICT (tenant_id, collection_name) DO NOTHING
+       RETURNING revision`,
+      [this.tenantId, name, JSON.stringify(localPayload)]
     );
+    if (inserted.rows[0]) {
+      this.revisions.set(name, Number(inserted.rows[0].revision || 1));
+      return;
+    }
+    const existing = await pool.query(
+      `SELECT revision FROM smartdesk_collection_snapshots
+       WHERE tenant_id = $1 AND collection_name = $2`,
+      [this.tenantId, name]
+    );
+    this.revisions.set(name, Number(existing.rows[0]?.revision || 1));
   }
 
-  enqueueWrite(name, payload) {
-    if (!this.databaseUrl) return Promise.resolve();
-    const currentChain = this.writeChains.get(name) || Promise.resolve();
-    const nextChain = currentChain
-      .catch(() => undefined)
-      .then(async () => {
-        const pool = this.createPool();
-        await pool.query(
-          `INSERT INTO smartdesk_collections (name, payload, updated_at)
-           VALUES ($1, $2::jsonb, NOW())
-           ON CONFLICT (name)
-           DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
-          [name, JSON.stringify(payload)]
-        );
-      })
-      .catch((error) => {
-        console.error(`[SmartDesk][DB] Sync fallita per ${name}:`, error.message);
-      });
+  getRevision(name) {
+    return this.revisions.get(name) || null;
+  }
 
-    this.writeChains.set(name, nextChain);
-    return nextChain;
+  async writeCollection(name, payload, expectedRevision) {
+    if (!this.databaseUrl) return null;
+    const revision = Number(expectedRevision || this.getRevision(name));
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      const error = new Error(`Revisione mancante per la collezione ${name}`);
+      error.code = "persistence_revision_missing";
+      throw error;
+    }
+    let result;
+    try {
+      result = await this.createPool().query(
+        `UPDATE smartdesk_collection_snapshots
+         SET payload = $1::jsonb, revision = revision + 1, updated_at = NOW()
+         WHERE tenant_id = $2 AND collection_name = $3 AND revision = $4
+         RETURNING revision`,
+        [JSON.stringify(payload), this.tenantId, name, revision]
+      );
+    } catch (cause) {
+      const error = new Error(`Persistenza PostgreSQL non disponibile per ${name}`);
+      error.code = "persistence_unavailable";
+      error.cause = cause;
+      throw error;
+    }
+    if (!result.rows[0]) {
+      const error = new Error(`Conflitto di scrittura per la collezione ${name}; ricarica e riprova.`);
+      error.code = "persistence_conflict";
+      throw error;
+    }
+    const nextRevision = Number(result.rows[0].revision);
+    this.revisions.set(name, nextRevision);
+    return nextRevision;
+  }
+
+  // Transitional compatibility only. Critical endpoints must call writeCollection
+  // through JsonFileRepository.writeDurable and await the result.
+  enqueueLegacyWrite(name, payload) {
+    const current = this.legacyWriteChains.get(name) || Promise.resolve();
+    const next = current
+      .catch(() => undefined)
+      .then(() => this.writeCollection(name, payload, this.getRevision(name)))
+      .catch((error) => {
+        console.error(`[SmartDesk][DB][legacy] Sync fallita per ${name}:`, error.message);
+      });
+    this.legacyWriteChains.set(name, next);
+    return next;
   }
 
   async getDatabaseUsage(options = {}) {
