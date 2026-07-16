@@ -7,6 +7,7 @@ import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
+import { createAnalyzerHandlers } from "./analyzer-handlers.js";
 import { createDecisionLedger } from "./decision-ledger.js";
 
 const config = loadConfig();
@@ -49,6 +50,7 @@ const app = createApp(config, {
     ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
     ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
+    ...createAnalyzerHandlers(),
     ...collaborationHandlers,
     ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
       const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };

@@ -526,6 +526,7 @@ export function createCoreHandlers(config, options = {}) {
     outcome_verify: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/verify", args, identity),
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
+    skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     core_gate_action: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
