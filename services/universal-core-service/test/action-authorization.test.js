@@ -281,3 +281,18 @@ test("authorizes only a verified owner-confirmed protected-branch pull request m
     assert.equal(result.confirmation_satisfied, false);
   }
 });
+
+test("allows a bound owner-confirmed draft-to-review transition and nothing else", () => {
+  const transition = {
+    ...pullRequestMerge,
+    action_type: "github_pull_request_ready_for_review",
+    operation_class: "reversible_owner_confirmed_pull_request_review_transition",
+    draft: true, ready_for_review: true, merge: false,
+  };
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...transition, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_pull_request_review_transition");
+  for (const unsafe of [{ ready_for_review: false }, { merge: true }, { deploy: true }, { delete: true }, { force: true }, { pull_request: 60 }]) {
+    assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...transition, owner_confirmed: true, ...unsafe }).allowed, false);
+  }
+});

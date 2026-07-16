@@ -130,6 +130,28 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
   const pullRequestMergeAttempt =
     body.operation_class === "reversible_owner_confirmed_pull_request_merge" &&
     String(body.action_type || "").toLowerCase() === "github_pull_request_merge";
+  const reversiblePullRequestReady =
+    body.operation_class === "reversible_owner_confirmed_pull_request_review_transition" &&
+    String(body.action_type || "").toLowerCase() === "github_pull_request_ready_for_review" &&
+    body.external_side_effect === true &&
+    body.contains_customer_data === false && body.contains_secret === false && body.cross_tenant === false &&
+    body.destructive === false && body.bypass_orchestrator === false && body.configuration_changes === false &&
+    body.rollback_ready === true && body.audit_ready === true && exactCommit &&
+    Number.isInteger(body.pull_request) && body.pull_request > 0 &&
+    /^agent\/[a-z0-9._/-]+$/i.test(String(body.target_branch || "")) &&
+    String(body.base_branch || "") === "main" &&
+    /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(String(body.repository || "")) &&
+    body.draft === true && body.ready_for_review === true && body.merge === false && body.deploy === false &&
+    body.delete === false && body.force === false && body.admin_bypass === false &&
+    Number.isInteger(body.confirmation_pull_request) && body.confirmation_pull_request === body.pull_request &&
+    String(body.confirmation_target_commit || "").toLowerCase() === String(body.target_commit || "").toLowerCase() &&
+    String(body.confirmation_target_branch || "") === String(body.target_branch || "") &&
+    String(body.confirmation_base_branch || "") === String(body.base_branch || "") &&
+    String(body.confirmation_repository || "") === String(body.repository || "") &&
+    cleanReference(body.confirmation_reference).length > 0;
+  const pullRequestReadyAttempt =
+    body.operation_class === "reversible_owner_confirmed_pull_request_review_transition" &&
+    String(body.action_type || "").toLowerCase() === "github_pull_request_ready_for_review";
   const allowedSoftwareModes = Array.isArray(body.allowed_modes) && body.allowed_modes.length > 0 &&
     body.allowed_modes.every((mode) => ["ghidra_headless", "frida_local_agent"].includes(mode));
   const deepSoftwareAnalysis =
@@ -141,18 +163,19 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     (!body.allowed_modes.includes("frida_local_agent") || (Array.isArray(body.target_allowlist) && body.target_allowlist.length > 0));
   const confirmationRequired = tenantScopedRead || sandboxedScopedWork
     ? false
-    : decisionContract.control_level === "confirm" || reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || deepSoftwareAnalysis;
+    : decisionContract.control_level === "confirm" || reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
   // The owner confirmation is bound to the exact staging target and branch. A
   // changed target or branch must never inherit a confirmation issued for it.
   const confirmationSatisfied = confirmationRequired && ownerConfirmed &&
     (!stagingPostgresAttempt || stagingPostgresConfiguration) &&
     (!draftPullRequestAttempt || reversibleDraftPullRequest) &&
-    (!pullRequestMergeAttempt || reversiblePullRequestMerge);
+    (!pullRequestMergeAttempt || reversiblePullRequestMerge) &&
+    (!pullRequestReadyAttempt || reversiblePullRequestReady);
   const hardBlocked = decisionContract.state === "blocked" ||
     decisionContract.recommended_actions?.some?.((action) => action.blocked === true) === true ||
     (stagingPostgresAttempt && (body.cross_tenant === true || body.destructive === true || body.bypass_orchestrator === true));
-  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || deepSoftwareAnalysis;
-  const riskAllowed = reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge
+  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+  const riskAllowed = reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
     ? ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""))
     : decisionContract.risk_band === "low";
   const executionAllowed = Boolean(
@@ -189,9 +212,11 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
                 ? "reversible_owner_confirmed_draft_pull_request"
                 : reversiblePullRequestMerge
                   ? "reversible_owner_confirmed_pull_request_merge"
-                : deepSoftwareAnalysis
+                  : reversiblePullRequestReady
+                    ? "reversible_owner_confirmed_pull_request_review_transition"
+                  : deepSoftwareAnalysis
               ? "governed_deep_software_analysis"
               : "evaluation_only",
-    target_commit: reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge ? String(body.target_commit).toLowerCase() : null,
+    target_commit: reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady ? String(body.target_commit).toLowerCase() : null,
   };
 }
