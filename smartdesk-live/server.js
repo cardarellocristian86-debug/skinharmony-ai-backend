@@ -747,7 +747,13 @@ function sendCoreliaSafe(res, fallbackFactory, compute) {
 }
 
 function sendBadRequest(res, error, fallback) {
-  res.status(400).send(error instanceof Error ? error.message : fallback);
+  const code = String(error?.code || "");
+  const status = code === "persistence_conflict"
+    ? 409
+    : code === "persistence_unavailable" || code === "persistence_revision_missing"
+      ? 503
+      : 400;
+  res.status(status).send(error instanceof Error ? error.message : fallback);
 }
 
 function verifyWooCommerceWebhook(req) {
@@ -1467,17 +1473,17 @@ app.post("/api/clients/merge", (req, res) => {
   }
 });
 
-app.post("/api/clients", (req, res) => {
+app.post("/api/clients", async (req, res) => {
   try {
-    res.status(201).json(service.saveClient(req.body || {}, req.session));
+    res.status(201).json(await service.saveClient(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il cliente");
   }
 });
 
-app.put("/api/clients/:id", (req, res) => {
+app.put("/api/clients/:id", async (req, res) => {
   try {
-    res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il cliente");
   }
@@ -2060,7 +2066,7 @@ app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
   }
 });
 
-app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: import Gold temporaneamente limitato"));
   }
@@ -2079,10 +2085,15 @@ app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
         limit: GOLD_ONBOARDING_SYNC_RECORD_LIMIT
       });
     }
-    res.json(service.confirmGoldOnboardingImport(req.body || {}, req.session));
+    res.json(await service.confirmGoldOnboardingImport(req.body || {}, req.session));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Impossibile completare import Gold";
-    res.status(400).json({
+    const status = error?.code === "persistence_conflict"
+      ? 409
+      : error?.code === "persistence_unavailable" || error?.code === "persistence_revision_missing"
+        ? 503
+        : 400;
+    res.status(status).json({
       success: false,
       code: "gold_onboarding_confirm_failed",
       message
@@ -2344,25 +2355,25 @@ app.get("/api/payments/unlinked", (req, res) => {
   }));
 });
 
-app.post("/api/payments/cash-close", (req, res) => {
+app.post("/api/payments/cash-close", async (req, res) => {
   try {
-    res.json(service.closeCashdesk(req.body || {}, req.session));
+    res.json(await service.closeCashdesk(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile chiudere la cassa");
   }
 });
 
-app.post("/api/payments", (req, res) => {
+app.post("/api/payments", async (req, res) => {
   try {
-    res.status(201).json(service.createPayment(req.body || {}, req.session));
+    res.status(201).json(await service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare il pagamento");
   }
 });
 
-app.post("/api/sales", (req, res) => {
+app.post("/api/sales", async (req, res) => {
   try {
-    res.status(201).json(service.createPayment(req.body || {}, req.session));
+    res.status(201).json(await service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare la vendita");
   }
@@ -2491,6 +2502,10 @@ app.use((_req, res) => {
 const port = Number(process.env.PORT || 10000);
 
 async function bootstrap() {
+  const requireDurablePersistence = ["1", "true", "yes"].includes(String(process.env.SMARTDESK_REQUIRE_DURABLE_PERSISTENCE || "").trim().toLowerCase());
+  if (requireDurablePersistence && !process.env.DATABASE_URL) {
+    throw new Error("SMARTDESK_REQUIRE_DURABLE_PERSISTENCE richiede DATABASE_URL: avvio bloccato per evitare persistenza locale non durevole.");
+  }
   const persistenceAdapter = process.env.DATABASE_URL
     ? new PostgresPersistenceAdapter(process.env.DATABASE_URL)
     : null;

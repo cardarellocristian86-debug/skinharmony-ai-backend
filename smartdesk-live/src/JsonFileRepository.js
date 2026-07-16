@@ -7,6 +7,7 @@ class JsonFileRepository {
     this.adapter = options.adapter || null;
     this.collectionName = options.collectionName || null;
     this.cache = null;
+    this.revision = options.revision || null;
   }
 
   ensureFile() {
@@ -35,7 +36,7 @@ class JsonFileRepository {
     return items;
   }
 
-  write(items) {
+  write(items, options = {}) {
     fs.writeFileSync(this.filePath, JSON.stringify(items, null, 2));
     const stat = fs.statSync(this.filePath);
     this.cache = {
@@ -43,9 +44,51 @@ class JsonFileRepository {
       mtimeMs: stat.mtimeMs,
       size: stat.size
     };
-    if (this.adapter && this.collectionName) {
-      void this.adapter.enqueueWrite(this.collectionName, items);
+    if (!options.skipLegacySync && this.adapter && this.collectionName) {
+      void this.adapter.enqueueLegacyWrite(this.collectionName, items);
     }
+  }
+
+  setRevision(revision) {
+    const value = Number(revision);
+    this.revision = Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+
+  async writeDurable(items) {
+    if (this.adapter && this.collectionName) {
+      this.revision = await this.adapter.writeCollection(this.collectionName, items, this.revision);
+    }
+    this.write(items, { skipLegacySync: true });
+  }
+
+  acceptDurableCommit(items, revision) {
+    this.setRevision(revision);
+    this.write(items, { skipLegacySync: true });
+  }
+
+  async createDurable(item) {
+    const items = this.list();
+    await this.writeDurable([item, ...items]);
+    return item;
+  }
+
+  async updateDurable(id, updater) {
+    const items = this.list();
+    const index = items.findIndex((item) => item.id === id);
+    if (index === -1) return null;
+    const next = updater(items[index]);
+    const replacement = [...items];
+    replacement[index] = next;
+    await this.writeDurable(replacement);
+    return next;
+  }
+
+  async deleteDurable(id) {
+    const items = this.list();
+    const next = items.filter((item) => item.id !== id);
+    if (next.length === items.length) return false;
+    await this.writeDurable(next);
+    return true;
   }
 
   findById(id) {

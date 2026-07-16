@@ -608,7 +608,11 @@ class GoldOnboardingEngine {
     };
   }
 
-  confirm(payload = {}, session = null) {
+  async confirm(payload = {}, session = null) {
+    return this.confirmAtomically(payload, session);
+  }
+
+  async confirmAtomically(payload = {}, session = null) {
     const importId = String(payload.importId || "");
     const record = this.importRepository.findById(importId);
     if (!record || String(record.centerId || "") !== this.service.getCenterId(session)) {
@@ -629,59 +633,115 @@ class GoldOnboardingEngine {
     const skippedDuplicates = { customers: 0, appointments: 0, payments: 0 };
     const skippedReview = [];
     const hardValidationErrors = [];
+    const customerRows = [
+      ...(snapshots.import_customers_snapshot?.validRows || []),
+      ...(snapshots.import_customers_snapshot?.reviewRows || []).filter(shouldImportReview)
+    ];
+    const appointmentRows = [
+      ...(snapshots.import_appointments_snapshot?.validRows || []),
+      ...(snapshots.import_appointments_snapshot?.reviewRows || []).filter(shouldImportReview)
+    ];
+    const paymentRows = [
+      ...(snapshots.import_payments_snapshot?.validRows || []),
+      ...(snapshots.import_payments_snapshot?.reviewRows || []).filter(shouldImportReview)
+    ];
+    (snapshots.import_customers_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    (snapshots.import_appointments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    (snapshots.import_payments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
+    customerRows.forEach((item) => {
+      const customer = item.normalized || {};
+      const name = cleanText(customer.name || `${customer.firstName || ""} ${customer.lastName || ""}`, 180);
+      const email = cleanEmail(customer.email || "");
+      const phone = cleanPhone(customer.phone || "");
+      if (name.length < 2 || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) || (phone && phone.replace(/\D/g, "").length < 5)) {
+        hardValidationErrors.push({
+          type: "customer",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: name.length < 2 ? "Cliente senza nome valido" : (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? "Cliente con email non valida" : "Cliente con telefono non valido")
+        });
+      }
+    });
+    appointmentRows.forEach((item) => {
+      const appointment = item.normalized || {};
+      const durationMin = Number(appointment.durationMin || 45);
+      const startAt = String(appointment.startAt || "");
+      if (!appointment.serviceName || !appointment.staffName || !startAt || Number.isNaN(new Date(startAt).getTime()) || !Number.isFinite(durationMin) || durationMin < 5 || durationMin > 720) {
+        hardValidationErrors.push({
+          type: "appointment",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: !appointment.serviceName || !appointment.staffName
+            ? "Appuntamento senza servizio o operatore"
+            : (!startAt || Number.isNaN(new Date(startAt).getTime()) ? "Appuntamento con data non valida" : "Appuntamento con durata non valida")
+        });
+      }
+    });
+    paymentRows.forEach((item) => {
+      const payment = item.normalized || {};
+      if (!payment.walkInName || Number(payment.amountCents || 0) <= 0 || (Array.isArray(payment.productSales) && payment.productSales.length)) {
+        hardValidationErrors.push({
+          type: "payment",
+          id: item.id,
+          sourceRow: item.sourceRow || null,
+          reason: !payment.walkInName
+            ? "Pagamento senza cliente"
+            : (Array.isArray(payment.productSales) && payment.productSales.length ? "Pagamento con vendita prodotti non supportata nel batch Gold" : "Pagamento con importo non valido")
+        });
+      }
+    });
+    if (hardValidationErrors.length) {
+      const first = hardValidationErrors[0];
+      throw new Error(`Import bloccato: ${first.reason} (record ${first.id}${first.sourceRow ? `, riga ${first.sourceRow}` : ""}).`);
+    }
     const clientByName = new Map();
-    const existingClients = this.service.filterByCenter(this.service.clientsRepository.list(), session);
+    const now = nowIso();
+    const clientsSnapshot = [...this.service.clientsRepository.list()];
+    const appointmentsSnapshot = [...this.service.appointmentsRepository.list()];
+    const paymentsSnapshot = [...this.service.paymentsRepository.list()];
+    const importsSnapshot = [...this.importRepository.list()];
+    const existingClients = this.service.filterByCenter(clientsSnapshot, session);
     const clientIndex = indexExistingClients(existingClients);
 
     existingClients.forEach((client) => {
       clientByName.set(normalizeText(client.name || `${client.firstName || ""} ${client.lastName || ""}`), client);
     });
 
-    const customerRows = [
-      ...(snapshots.import_customers_snapshot?.validRows || []),
-      ...(snapshots.import_customers_snapshot?.reviewRows || []).filter(shouldImportReview)
-    ];
-    (snapshots.import_customers_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    customerRows.forEach((item) => {
+    for (const item of customerRows) {
       const customer = item.normalized || {};
       const existing = evaluateCustomerMatch(customer, clientIndex).duplicateOf || clientByName.get(normalizeText(customer.name));
       if (existing) {
         skippedDuplicates.customers += 1;
         clientByName.set(normalizeText(customer.name), existing);
-        return;
+        continue;
       }
-      const saved = this.service.saveClient({
-        ...customer,
+      const parts = String(customer.name || "").trim().split(/\s+/);
+      const saved = {
+        id: `client_${sha256(`${importId}:customer:${item.id}`).slice(0, 16)}`,
         idempotencyKey: `gold-onboarding:${importId}:customer:${item.id}`,
-        consentSource: "import_gold_onboarding"
-      }, session);
+        centerId: this.service.getCenterId(session), centerName: this.service.getCenterName(session),
+        name: customer.name, firstName: customer.firstName || parts[0] || "", lastName: customer.lastName || parts.slice(1).join(" "),
+        phone: customer.phone || "", email: customer.email || "", birthDate: customer.birthDate || "", notes: customer.notes || "",
+        marketingConsent: Boolean(customer.marketingConsent),
+        privacyConsent: Boolean(customer.privacyConsent),
+        sensitiveDataConsent: Boolean(customer.sensitiveDataConsent),
+        privacyConsentAt: String(customer.privacyConsentAt || (customer.privacyConsent ? now : "")),
+        marketingConsentAt: String(customer.marketingConsentAt || (customer.marketingConsent ? now : "")),
+        sensitiveDataConsentAt: String(customer.sensitiveDataConsentAt || (customer.sensitiveDataConsent ? now : "")),
+        consentSource: String(customer.consentSource || "import_gold_onboarding"), createdAt: now, updatedAt: now
+      };
+      clientsSnapshot.unshift(saved);
       created.customers.push(saved);
       clientByName.set(normalizeText(saved.name), saved);
       if (saved.email) clientIndex.byEmail.set(cleanEmail(saved.email), saved);
       if (saved.phone) clientIndex.byPhone.set(cleanPhone(saved.phone), saved);
       clientIndex.byName.set(customerComparableName(saved), saved);
-    });
+    }
 
-    const appointmentRows = [
-      ...(snapshots.import_appointments_snapshot?.validRows || []),
-      ...(snapshots.import_appointments_snapshot?.reviewRows || []).filter(shouldImportReview)
-    ];
-    (snapshots.import_appointments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    appointmentRows.forEach((item) => {
-      const appointment = item.normalized || {};
-      if (!appointment.serviceName || !appointment.staffName) {
-        hardValidationErrors.push({
-          type: "appointment",
-          id: item.id,
-          sourceRow: item.sourceRow || null,
-          reason: "Appuntamento senza servizio o operatore"
-        });
-      }
-    });
     appointmentRows.forEach((item) => {
       const appointment = item.normalized || {};
       const client = clientByName.get(normalizeText(appointment.clientName || ""));
-      const duplicateAppointment = this.service.filterByCenter(this.service.appointmentsRepository.list(), session).find((existing) => (
+      const duplicateAppointment = this.service.filterByCenter(appointmentsSnapshot, session).find((existing) => (
         normalizeText(existing.clientName || existing.walkInName || "") === normalizeText(appointment.clientName || "") &&
         String(existing.startAt || "").slice(0, 16) === String(appointment.startAt || "").slice(0, 16) &&
         normalizeText(existing.serviceName || "") === normalizeText(appointment.serviceName || "")
@@ -690,15 +750,27 @@ class GoldOnboardingEngine {
         skippedDuplicates.appointments += 1;
         return;
       }
-      const saved = this.service.saveAppointment({
-        ...appointment,
-        clientId: client?.id || "",
-        idempotencyKey: `gold-onboarding:${importId}:appointment:${item.id}`
-      }, session);
+      const startAt = String(appointment.startAt || "");
+      if (!startAt || Number.isNaN(new Date(startAt).getTime())) throw new Error(`Import bloccato: data appuntamento non valida (record ${item.id}).`);
+      const durationMin = Number(appointment.durationMin || 45);
+      const suppliedEndAt = String(appointment.endAt || "");
+      const endAt = suppliedEndAt && !Number.isNaN(new Date(suppliedEndAt).getTime())
+        ? suppliedEndAt
+        : new Date(new Date(startAt).getTime() + durationMin * 60000).toISOString();
+      const saved = {
+        id: `appt_${sha256(`${importId}:appointment:${item.id}`).slice(0, 16)}`,
+        idempotencyKey: `gold-onboarding:${importId}:appointment:${item.id}`,
+        centerId: this.service.getCenterId(session), centerName: this.service.getCenterName(session),
+        clientId: client?.id || "", clientName: appointment.clientName || client?.name || "", walkInName: "", walkInPhone: "",
+        staffId: "", staffName: appointment.staffName, serviceId: "", serviceIds: [], serviceName: appointment.serviceName,
+        productSales: [], resourceId: "", resourceName: "", startAt, endAt,
+        status: appointment.status || "requested", notes: appointment.notes || "", durationMin, locked: 0, createdAt: now, updatedAt: now
+      };
+      appointmentsSnapshot.unshift(saved);
       created.appointments.push(saved);
     });
 
-    const importedAppointments = created.appointments.concat(this.service.filterByCenter(this.service.appointmentsRepository.list(), session));
+    const importedAppointments = this.service.filterByCenter(appointmentsSnapshot, session);
     const latestVisitByClientId = new Map();
     importedAppointments.forEach((appointment) => {
       const clientId = String(appointment.clientId || "").trim();
@@ -712,65 +784,41 @@ class GoldOnboardingEngine {
       }
     });
     latestVisitByClientId.forEach((visit, clientId) => {
-      this.service.clientsRepository.update(clientId, (current) => ({
-        ...current,
-        lastVisit: visit.startAt
-      }));
+      const index = clientsSnapshot.findIndex((item) => String(item.id) === clientId);
+      if (index >= 0) clientsSnapshot[index] = { ...clientsSnapshot[index], lastVisit: visit.startAt, updatedAt: now };
     });
 
     const appointmentByClientAndDay = new Map();
-    created.appointments.concat(this.service.filterByCenter(this.service.appointmentsRepository.list(), session)).forEach((appointment) => {
+    this.service.filterByCenter(appointmentsSnapshot, session).forEach((appointment) => {
       const key = `${normalizeText(appointment.clientName || appointment.walkInName || "")}:${String(appointment.startAt || "").slice(0, 10)}`;
       if (key !== ":") appointmentByClientAndDay.set(key, appointment);
     });
-    const paymentRows = [
-      ...(snapshots.import_payments_snapshot?.validRows || []),
-      ...(snapshots.import_payments_snapshot?.reviewRows || []).filter(shouldImportReview)
-    ];
-    (snapshots.import_payments_snapshot?.reviewRows || []).filter((item) => !shouldImportReview(item)).forEach((item) => skippedReview.push(item.id));
-    paymentRows.forEach((item) => {
-      const payment = item.normalized || {};
-      if (!payment.walkInName || Number(payment.amountCents || 0) <= 0) {
-        hardValidationErrors.push({
-          type: "payment",
-          id: item.id,
-          sourceRow: item.sourceRow || null,
-          reason: !payment.walkInName ? "Pagamento senza cliente" : "Pagamento con importo non valido"
-        });
-      }
-    });
-    if (hardValidationErrors.length) {
-      const first = hardValidationErrors[0];
-      throw new Error(`Import bloccato: ${first.reason} (record ${first.id}${first.sourceRow ? `, riga ${first.sourceRow}` : ""}).`);
-    }
-    paymentRows.forEach((item) => {
+    for (const item of paymentRows) {
       const payment = item.normalized || {};
       const client = clientByName.get(normalizeText(payment.walkInName || ""));
       const dateKey = `${normalizeText(payment.walkInName || "")}:${String(payment.createdAt || "").slice(0, 10)}`;
       const appointment = appointmentByClientAndDay.get(dateKey);
-      const duplicatePayment = this.service.filterByCenter(this.service.paymentsRepository.list(), session).find((existing) => (
+      const duplicatePayment = this.service.filterByCenter(paymentsSnapshot, session).find((existing) => (
         Number(existing.amountCents || 0) === Number(payment.amountCents || 0) &&
         String(existing.createdAt || "").slice(0, 10) === String(payment.createdAt || "").slice(0, 10) &&
         normalizeText(existing.walkInName || "") === normalizeText(payment.walkInName || "")
       ));
       if (duplicatePayment) {
         skippedDuplicates.payments += 1;
-        return;
+        continue;
       }
-      const saved = this.service.createPayment({
-        ...payment,
-        clientId: client?.id || "",
-        appointmentId: appointment?.id || "",
-        idempotencyKey: `gold-onboarding:${importId}:payment:${item.id}`
-      }, session);
+      const saved = {
+        id: `pay_${sha256(`${importId}:payment:${item.id}`).slice(0, 16)}`,
+        idempotencyKey: `gold-onboarding:${importId}:payment:${item.id}`,
+        centerId: this.service.getCenterId(session), centerName: this.service.getCenterName(session),
+        clientId: client?.id || "", walkInName: payment.walkInName || "", appointmentId: appointment?.id || "",
+        amountCents: Number(payment.amountCents), method: payment.method || "cash", description: payment.note || "", note: payment.note || "",
+        serviceLines: [], productSales: [], createdAt: payment.createdAt || now
+      };
+      paymentsSnapshot.unshift(saved);
       created.payments.push(saved);
-    });
+    }
 
-    const rebuild = this.service.rebuildGoldStateForCurrentGoldTenant(session, {
-      reason: "gold_onboarding_import",
-      importId
-    });
-    const pial = this.service.getProgressiveIntelligenceStatus(session, { force: true, reason: "gold_onboarding_import" });
     const summary = this.summarizeSnapshots(snapshots);
     const result = {
       success: true,
@@ -800,25 +848,33 @@ class GoldOnboardingEngine {
       skippedReview,
       skippedDuplicates,
       excludedInvalid: this.summarizeSnapshots(snapshots).invalidRecords,
-      rebuild: {
-        valid: rebuild.valid,
-        eventSeq: rebuild.eventSeq
-      },
-      progressiveIntelligence: {
-        maturityScore: pial.maturityScore,
-        activationLevel: pial.activationLevel,
-        enabledFeatures: pial.enabledFeatures
-      }
+      derivedState: { status: "pending_recompute", reason: "atomic_import_commit" }
     };
-    this.importRepository.update(importId, (current) => ({
-      ...current,
+    const importIndex = importsSnapshot.findIndex((item) => String(item.id) === importId);
+    if (importIndex < 0) throw new Error("Import Gold non trovato durante la preparazione del commit.");
+    importsSnapshot[importIndex] = {
+      ...importsSnapshot[importIndex],
       status: "imported",
       createdCounts: result.createdCounts,
       result,
       confirmedAt: nowIso(),
       importedAt: nowIso(),
-      updatedAt: nowIso()
-    }));
+      updatedAt: now
+    };
+    await this.service.commitRepositorySnapshots([
+      { repository: this.service.clientsRepository, payload: clientsSnapshot },
+      { repository: this.service.appointmentsRepository, payload: appointmentsSnapshot },
+      { repository: this.service.paymentsRepository, payload: paymentsSnapshot },
+      { repository: this.importRepository, payload: importsSnapshot }
+    ]);
+    const centerId = this.service.getCenterId(session);
+    this.service.invalidateAppointmentsDayCache(centerId, created.appointments.map((item) => item.startAt));
+    const dirtyBlocks = new Set([
+      ...this.service.dirtyBlocksForRepository(this.service.clientsRepository),
+      ...this.service.dirtyBlocksForRepository(this.service.appointmentsRepository),
+      ...this.service.dirtyBlocksForRepository(this.service.paymentsRepository)
+    ]);
+    this.service.invalidateBusinessSnapshot(centerId, Array.from(dirtyBlocks));
     console.log("[gold_onboarding_confirm]", JSON.stringify({
       centerId: this.service.getCenterId(session),
       importId,
@@ -826,8 +882,7 @@ class GoldOnboardingEngine {
       createdCounts: result.createdCounts,
       skippedDuplicates,
       invalidExcluded: result.excludedInvalid,
-      rebuildValid: rebuild.valid,
-      pialLevel: pial.activationLevel
+      atomic: true
     }));
     return result;
   }

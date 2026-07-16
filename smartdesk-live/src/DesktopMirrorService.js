@@ -3146,7 +3146,7 @@ class DesktopMirrorService {
     return this.getGoldOnboardingEngine().analyze(payload, session);
   }
 
-  confirmGoldOnboardingImport(payload = {}, session = null) {
+  async confirmGoldOnboardingImport(payload = {}, session = null) {
     this.assertCanOperate(session);
     assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
     return this.getGoldOnboardingEngine().confirm(payload, session);
@@ -6237,6 +6237,35 @@ class DesktopMirrorService {
     );
   }
 
+  async commitRepositorySnapshots(changes = []) {
+    if (!this.persistenceAdapter) {
+      changes.forEach(({ repository, payload }) => repository.write(payload));
+      return;
+    }
+    let revisions;
+    try {
+      revisions = await this.persistenceAdapter.writeCollectionsAtomically(
+        changes.map(({ repository, payload }) => ({
+          name: repository.collectionName,
+          payload,
+          expectedRevision: repository.revision
+        }))
+      );
+    } catch (error) {
+      if (error?.code === "persistence_conflict") {
+        const refreshed = await Promise.all(changes.map(async ({ repository }) => ({
+          repository,
+          remote: await this.persistenceAdapter.readCollection(repository.collectionName)
+        })));
+        refreshed.forEach(({ repository, remote }) => repository.acceptDurableCommit(remote.payload, remote.revision));
+      }
+      throw error;
+    }
+    changes.forEach(({ repository, payload }) => {
+      repository.acceptDurableCommit(payload, revisions.get(repository.collectionName));
+    });
+  }
+
   async init() {
     if (this.persistenceAdapter) {
       await this.persistenceAdapter.init([
@@ -6258,11 +6287,17 @@ class DesktopMirrorService {
         { name: "gold_state", filePath: path.join(DATA_DIR, "gold_state.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
         { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
+        { name: "gold_imports", filePath: path.join(DATA_DIR, "gold_imports.json"), defaultValue: [] },
         { name: "whatsapp_messages", filePath: path.join(DATA_DIR, "whatsapp_messages.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
       ]);
+      Object.values(this).forEach((value) => {
+        if (value instanceof JsonFileRepository && value.collectionName) {
+          value.setRevision(this.persistenceAdapter.getRevision(value.collectionName));
+        }
+      });
     }
 
     this.ensureInitialAdmin();
@@ -7120,7 +7155,7 @@ class DesktopMirrorService {
     };
   }
 
-  saveClient(payload = {}, session = null) {
+  async saveClient(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.clientsRepository, payload, session) : null;
     if (existing) return existing;
     const providedName = cleanText(payload.name || payload.fullName || "", "", 180);
@@ -7169,18 +7204,20 @@ class DesktopMirrorService {
     };
 
     if (!payload.id) {
-      this.clientsRepository.create(entity);
+      await this.clientsRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
       this.applyGoldStateEvent("client_created", { after: entity }, session);
       return entity;
     }
 
     const before = this.findByIdInCenter(this.clientsRepository, payload.id, session);
-    const updated = this.updateInCenter(this.clientsRepository, payload.id, (current) => ({
+    if (!before) throw new Error("Elemento non trovato");
+    const updated = await this.clientsRepository.updateDurable(payload.id, (current) => ({
       ...current,
       ...entity,
       createdAt: current.createdAt || entity.createdAt
-    }), session);
+    }));
+    this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
     this.applyGoldStateEvent("client_updated", { before, after: updated }, session);
     return updated;
   }
@@ -9071,7 +9108,7 @@ class DesktopMirrorService {
     };
   }
 
-  closeCashdesk(payload = {}, session = null) {
+  async closeCashdesk(payload = {}, session = null) {
     const closeDate = toDateOnly(payload.date || nowIso());
     const summary = this.getPaymentsSummary({ period: "day", anchorDate: closeDate }, session);
     const unlinkedPayments = this.listUnlinkedPayments(session, { forceRefresh: true })
@@ -9124,8 +9161,8 @@ class DesktopMirrorService {
     };
 
     const saved = existing
-      ? this.cashClosuresRepository.update(existing.id, () => closure)
-      : this.cashClosuresRepository.create(closure);
+      ? await this.cashClosuresRepository.updateDurable(existing.id, () => closure)
+      : await this.cashClosuresRepository.createDurable(closure);
     return {
       success: true,
       status: "closed",
@@ -9137,7 +9174,7 @@ class DesktopMirrorService {
     };
   }
 
-  createPayment(payload = {}, session = null) {
+  async createPayment(payload = {}, session = null) {
     const existing = this.findExistingByIdempotency(this.paymentsRepository, payload, session);
     if (existing) return existing;
     const amountCents = assertRange(payload.amountCents || payload.amount || 0, "Importo pagamento", { min: 1, max: 100000000 });
@@ -9193,19 +9230,45 @@ class DesktopMirrorService {
       productSales,
       createdAt
     };
-    this.paymentsRepository.create(payment);
-    productSales.forEach((line) => {
-      this.createInventoryMovement({
-        itemId: line.itemId,
-        type: "sale",
-        quantity: line.quantity,
-        paymentId: payment.id,
-        appointmentId: payment.appointmentId,
-        salePriceCents: line.salePriceCents,
-        lineTotalCents: line.salePriceCents * line.quantity,
-        note: `Vendita checkout: ${line.name || line.itemId}`
-      }, session);
-    });
+    if (!productSales.length) {
+      await this.paymentsRepository.createDurable(payment);
+    } else {
+      const nextInventory = [...this.inventoryRepository.list()];
+      const movements = [];
+      productSales.forEach((line) => {
+        const itemIndex = nextInventory.findIndex((item) => String(item.id || "") === line.itemId && this.belongsToCenter(item, this.getCenterId(session)));
+        assertValid(itemIndex >= 0, "Prodotto carrello non trovato in magazzino");
+        const current = nextInventory[itemIndex];
+        const nextQuantity = Math.max(0, Number(current.quantity || current.stockQuantity || 0) - line.quantity);
+        nextInventory[itemIndex] = {
+          ...current,
+          quantity: nextQuantity,
+          stockQuantity: nextQuantity,
+          updatedAt: nowIso()
+        };
+        movements.unshift({
+          id: makeId("move"),
+          centerId: this.getCenterId(session),
+          centerName: this.getCenterName(session),
+          itemId: line.itemId,
+          type: "sale",
+          quantity: line.quantity,
+          paymentId: payment.id,
+          appointmentId: payment.appointmentId,
+          salePriceCents: line.salePriceCents,
+          lineTotalCents: line.salePriceCents * line.quantity,
+          note: `Vendita checkout: ${line.name || line.itemId}`,
+          createdAt: nowIso()
+        });
+      });
+      await this.commitRepositorySnapshots([
+        { repository: this.paymentsRepository, payload: [payment, ...this.paymentsRepository.list()] },
+        { repository: this.inventoryMovementsRepository, payload: [...movements, ...this.inventoryMovementsRepository.list()] },
+        { repository: this.inventoryRepository, payload: nextInventory }
+      ]);
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
+    }
     this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.paymentsRepository));
     this.applyGoldStateEvent("payment_created", { after: payment }, session);
     return payment;

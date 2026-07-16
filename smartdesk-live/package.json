@@ -9,7 +9,8 @@
     "audit:gold": "node scripts/smartdesk_gold_product_audit.js",
     "test:external-ai-gold": "node scripts/external_ai_gold_bridge_test.js",
     "test:semantic-selection": "node scripts/universal_core_bridge_semantic_selection_test.js",
-    "test:cockpit-360-e2e": "node scripts/cockpit_360_e2e_test.js"
+    "test:cockpit-360-e2e": "node scripts/cockpit_360_e2e_test.js",
+    "test:persistence-p0": "node scripts/persistence_p0_test.js"
   },
   "dependencies": {
     "express": "^5.2.1",
