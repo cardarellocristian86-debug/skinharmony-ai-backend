@@ -7390,7 +7390,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.appointmentsRepository.list(), session);
   }
 
-  saveAppointment(payload = {}, session = null) {
+  async saveAppointment(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.appointmentsRepository, payload, session) : null;
     if (existing) return existing;
     const startAt = payload.startAt || toDateTime(payload.date, payload.time);
@@ -7441,7 +7441,7 @@ class DesktopMirrorService {
     };
 
     if (!payload.id) {
-      this.appointmentsRepository.create(entity);
+      await this.appointmentsRepository.createDurable(entity);
       this.invalidateAppointmentsDayCache(centerId, [entity.startAt]);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       this.applyGoldStateEvent("appointment_created", { after: entity }, session);
@@ -7449,11 +7449,14 @@ class DesktopMirrorService {
     }
 
     const currentAppointment = this.findByIdInCenter(this.appointmentsRepository, payload.id, session);
-    const updated = this.updateInCenter(this.appointmentsRepository, payload.id, (current) => ({
+    if (!currentAppointment) throw new Error("Elemento non trovato");
+    const updated = await this.appointmentsRepository.updateDurable(payload.id, (current) => ({
       ...current,
       ...entity,
       createdAt: current.createdAt || entity.createdAt
-    }), session);
+    }));
+    if (!updated) throw new Error("Elemento non trovato");
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.appointmentsRepository));
     this.invalidateAppointmentsDayCache(centerId, [
       currentAppointment?.startAt || "",
       updated?.startAt || entity.startAt
@@ -7462,10 +7465,13 @@ class DesktopMirrorService {
     return updated;
   }
 
-  deleteAppointment(id, session = null) {
+  async deleteAppointment(id, session = null) {
     const currentAppointment = this.findByIdInCenter(this.appointmentsRepository, id, session);
-    const result = this.deleteInCenter(this.appointmentsRepository, id, session);
-    if (result?.success) {
+    if (!currentAppointment) return { success: false };
+    const success = await this.appointmentsRepository.deleteDurable(id);
+    const result = { success };
+    if (success) {
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       this.invalidateAppointmentsDayCache(this.getCenterId(session), [currentAppointment?.startAt || ""]);
       this.applyGoldStateEvent("appointment_deleted", { before: currentAppointment }, session);
     }
