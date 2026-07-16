@@ -282,6 +282,74 @@ async function testAppointmentFailureDoesNotMutateRepository() {
   assert.strictEqual(repository.list().length, 0);
 }
 
+function makeDurableRepository(items = [], collectionName = "catalog", failure = null) {
+  return {
+    collectionName,
+    revision: 1,
+    items,
+    list() { return this.items; },
+    findById(id) { return this.items.find((item) => item.id === id) || null; },
+    async createDurable(item) {
+      if (failure) throw failure;
+      this.items = [item, ...this.items];
+      return item;
+    },
+    async updateDurable(id, updater) {
+      if (failure) throw failure;
+      const index = this.items.findIndex((item) => item.id === id);
+      if (index < 0) return null;
+      const updated = updater(this.items[index]);
+      this.items = this.items.map((item, currentIndex) => currentIndex === index ? updated : item);
+      return updated;
+    },
+    async deleteDurable(id) {
+      if (failure) throw failure;
+      const next = this.items.filter((item) => item.id !== id);
+      const removed = next.length !== this.items.length;
+      this.items = next;
+      return removed;
+    }
+  };
+}
+
+function makeCatalogService(repository, field) {
+  const service = Object.create(DesktopMirrorService.prototype);
+  service[field] = repository;
+  service.getCenterId = () => "center-a";
+  service.getCenterName = () => "Center A";
+  service.belongsToCenter = (item, centerId) => item.centerId === centerId;
+  service.filterByCenter = (items) => items.filter((item) => item.centerId === "center-a");
+  service.findExistingByIdempotency = () => null;
+  service.findByIdInCenter = (repo, id) => repo.list().find((item) => item.id === id && item.centerId === "center-a") || null;
+  service.invalidateBusinessSnapshot = () => undefined;
+  service.dirtyBlocksForRepository = () => [];
+  service.applyGoldStateEvent = () => undefined;
+  return service;
+}
+
+async function testServiceCatalogWritesAreDurable() {
+  const repository = makeDurableRepository([], "services");
+  const service = makeCatalogService(repository, "servicesRepository");
+  const created = await service.saveService({ name: "Servizio test", durationMin: 45, priceCents: 1000 }, { centerId: "center-a" });
+  assert.strictEqual(repository.list().length, 1);
+  const updated = await service.saveService({ id: created.id, name: "Servizio aggiornato", durationMin: 60, priceCents: 1200 }, { centerId: "center-a" });
+  assert.strictEqual(updated.name, "Servizio aggiornato");
+  assert.deepStrictEqual(await service.deleteService(created.id, { centerId: "center-a" }), { success: true });
+  assert.strictEqual(repository.list().length, 0);
+}
+
+async function testCatalogFailureDoesNotMutateRepository() {
+  const failure = new Error("simulated catalog persistence outage");
+  failure.code = "persistence_unavailable";
+  const repository = makeDurableRepository([], "services", failure);
+  const service = makeCatalogService(repository, "servicesRepository");
+  await assert.rejects(
+    service.saveService({ name: "Servizio test", durationMin: 45, priceCents: 1000 }, { centerId: "center-a" }),
+    (error) => error.code === "persistence_unavailable"
+  );
+  assert.strictEqual(repository.list().length, 0);
+}
+
 function makeGoldRepository(items, collectionName) {
   return {
     collectionName,
@@ -384,6 +452,8 @@ async function main() {
   await testManualInventoryMovementDoesNotMutateWhenCommitFails();
   await testAppointmentWritesAreDurableBeforeCacheInvalidation();
   await testAppointmentFailureDoesNotMutateRepository();
+  await testServiceCatalogWritesAreDurable();
+  await testCatalogFailureDoesNotMutateRepository();
   await testGoldConfirmPlansAndCommitsOneAtomicBatch();
   await testGoldConfirmDoesNotMutateWhenAtomicCommitFails();
   console.log("persistence P0 tests passed");

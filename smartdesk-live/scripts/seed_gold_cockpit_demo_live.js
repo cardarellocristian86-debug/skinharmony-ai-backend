@@ -399,8 +399,8 @@ async function runInternalRenderJob(data) {
     profitabilityTechnologyAnalysisEnabled: true
   }, demoSession);
 
-  const createdStaff = data.staff.map((item) => service.saveStaff(item, demoSession));
-  const createdServices = data.services.map((item) => service.saveService(item, demoSession));
+  const createdStaff = await Promise.all(data.staff.map((item) => service.saveStaff(item, demoSession)));
+  const createdServices = await Promise.all(data.services.map((item) => service.saveService(item, demoSession)));
   const createdClients = data.clients.map((item) => service.saveClient(item, demoSession));
   const createdInventory = data.inventory.map((item) => service.saveInventoryItem(item, demoSession));
 

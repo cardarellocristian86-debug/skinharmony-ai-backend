@@ -223,24 +223,24 @@ function buildMonthlyWorkRows(catalog, clients, monthStartDate, monthLabel, reve
   };
 }
 
-function saveCatalog(service, session, catalog) {
+async function saveCatalog(service, session, catalog) {
   const existingStaff = service.listStaff(session);
-  existingStaff.forEach((row, index) => {
+  await Promise.all(existingStaff.map((row, index) =>
     service.saveStaff({
       ...row,
       name: STAFF_NAMES[index % STAFF_NAMES.length],
       role: index < 2 ? "stylist" : "colorist",
       hourlyCostCents: 0
-    }, session);
-  });
-  return catalog.map((item) => service.saveService({
+    }, session)
+  ));
+  return Promise.all(catalog.map((item) => service.saveService({
     name: item.name,
     category: "hair",
     durationMin: item.durationMinSynthetic,
     priceCents: item.priceCents,
     estimatedProductCostCents: 0,
     technologyCostCents: 0
-  }, session));
+  }, session)));
 }
 
 function profileFn(iterations, fn) {
@@ -413,7 +413,7 @@ function buildFindings(report) {
   return findings;
 }
 
-function main() {
+async function main() {
   ensureDir(reportsDir);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), TEMP_PREFIX));
   const tempDataDir = path.join(tempDir, "data");
@@ -470,7 +470,7 @@ function main() {
     centerName: "Privilege Parrucchieri"
   };
 
-  saveCatalog(service, session, catalog);
+  await saveCatalog(service, session, catalog);
   const onboarding = service.getGoldOnboardingEngine();
   const analyze = onboarding.analyze({
     files: [
@@ -535,4 +535,7 @@ function main() {
   console.log(JSON.stringify(report, null, 2));
 }
 
-main();
+main().catch((error) => {
+  console.error(error.stack || error.message);
+  process.exit(1);
+});

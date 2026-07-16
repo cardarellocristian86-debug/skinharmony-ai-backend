@@ -1551,72 +1551,72 @@ app.get("/api/catalog/services", (req, res) => {
   res.json(service.listServices(req.session));
 });
 
-app.post("/api/catalog/services", (req, res) => {
+app.post("/api/catalog/services", async (req, res) => {
   try {
-    res.status(201).json(service.saveService(req.body || {}, req.session));
+    res.status(201).json(await service.saveService(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il servizio");
   }
 });
 
-app.put("/api/catalog/services/:id", (req, res) => {
+app.put("/api/catalog/services/:id", async (req, res) => {
   try {
-    res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il servizio");
   }
 });
 
-app.delete("/api/catalog/services/:id", (req, res) => {
-  res.json(service.deleteService(req.params.id, req.session));
+app.delete("/api/catalog/services/:id", async (req, res) => {
+  try { res.json(await service.deleteService(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare il servizio"); }
 });
 
 app.get("/api/catalog/staff", (req, res) => {
   res.json(service.listStaff(req.session));
 });
 
-app.post("/api/catalog/staff", (req, res) => {
+app.post("/api/catalog/staff", async (req, res) => {
   try {
-    res.status(201).json(service.saveStaff(req.body || {}, req.session));
+    res.status(201).json(await service.saveStaff(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'operatore");
   }
 });
 
-app.put("/api/catalog/staff/:id", (req, res) => {
+app.put("/api/catalog/staff/:id", async (req, res) => {
   try {
-    res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'operatore");
   }
 });
 
-app.delete("/api/catalog/staff/:id", (req, res) => {
-  res.json(service.deleteStaff(req.params.id, req.session));
+app.delete("/api/catalog/staff/:id", async (req, res) => {
+  try { res.json(await service.deleteStaff(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare l'operatore"); }
 });
 
 app.get("/api/shifts", (req, res) => {
   res.json(service.listShifts(req.query.view || "month", req.query.anchorDate || new Date().toISOString(), req.query.staffId || "", req.session));
 });
 
-app.post("/api/shifts", (req, res) => {
+app.post("/api/shifts", async (req, res) => {
   try {
-    res.status(201).json(service.saveShift(req.body || {}, req.session));
+    res.status(201).json(await service.saveShift(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il turno");
   }
 });
 
-app.put("/api/shifts/:id", (req, res) => {
+app.put("/api/shifts/:id", async (req, res) => {
   try {
-    res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il turno");
   }
 });
 
-app.delete("/api/shifts/:id", (req, res) => {
-  res.json(service.deleteShift(req.params.id, req.session));
+app.delete("/api/shifts/:id", async (req, res) => {
+  try { res.json(await service.deleteShift(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare il turno"); }
 });
 
 app.get("/api/shifts/export", requirePlan("silver"), (req, res) => {
@@ -1631,24 +1631,24 @@ app.get("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   res.json(service.listShiftTemplates(req.session));
 });
 
-app.post("/api/shifts/templates", requirePlan("silver"), (req, res) => {
+app.post("/api/shifts/templates", requirePlan("silver"), async (req, res) => {
   try {
-    res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
+    res.status(201).json(await service.saveShiftTemplate(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare lo schema turni");
   }
 });
 
-app.put("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
+app.put("/api/shifts/templates/:id", requirePlan("silver"), async (req, res) => {
   try {
-    res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare lo schema turni");
   }
 });
 
-app.delete("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
-  res.json(service.deleteShiftTemplate(req.params.id, req.session));
+app.delete("/api/shifts/templates/:id", requirePlan("silver"), async (req, res) => {
+  try { res.json(await service.deleteShiftTemplate(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare lo schema turni"); }
 });
 
 app.post("/api/shifts/templates/generate", requirePlan("silver"), (req, res) => {
@@ -1663,24 +1663,24 @@ app.get("/api/catalog/resources", (req, res) => {
   res.json(service.listResources(req.session));
 });
 
-app.post("/api/catalog/resources", (req, res) => {
+app.post("/api/catalog/resources", async (req, res) => {
   try {
-    res.status(201).json(service.saveResource(req.body || {}, req.session));
+    res.status(201).json(await service.saveResource(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare la risorsa");
   }
 });
 
-app.put("/api/catalog/resources/:id", (req, res) => {
+app.put("/api/catalog/resources/:id", async (req, res) => {
   try {
-    res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare la risorsa");
   }
 });
 
-app.delete("/api/catalog/resources/:id", (req, res) => {
-  res.json(service.deleteResource(req.params.id, req.session));
+app.delete("/api/catalog/resources/:id", async (req, res) => {
+  try { res.json(await service.deleteResource(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare la risorsa"); }
 });
 
 app.get("/api/inventory/items", (req, res) => {
