@@ -6321,7 +6321,7 @@ class DesktopMirrorService {
       });
     }
 
-    this.ensureInitialAdmin();
+    await this.ensureInitialAdmin();
     this.ensureSkinHarmonyProtocolLibrary();
     this.ensureDefaultStaffForCenter(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
   }
@@ -6360,7 +6360,7 @@ class DesktopMirrorService {
     }
   }
 
-  ensureInitialAdmin() {
+  async ensureInitialAdmin() {
     const users = this.usersRepository.list();
     const admin = users.find((item) => String(item.role || "").toLowerCase() === "superadmin");
     if (!admin) {
@@ -6368,7 +6368,7 @@ class DesktopMirrorService {
         console.error("[SmartDesk] Nessun superadmin presente: configura SMARTDESK_ADMIN_PASSWORD per il bootstrap iniziale.");
         return;
       }
-      this.usersRepository.create({
+      await this.usersRepository.createDurable({
         id: makeId("user"),
         username: DEFAULT_ADMIN_USERNAME,
         passwordHash: hashPassword(BOOTSTRAP_ADMIN_PASSWORD),
@@ -6399,7 +6399,7 @@ class DesktopMirrorService {
       updatedAt: nowIso()
     };
     const changed = Object.entries(next).some(([key, value]) => current[key] !== value);
-    if (changed) this.usersRepository.update(admin.id, () => next);
+    if (changed) await this.usersRepository.updateDurable(admin.id, () => next);
   }
 
   ensureDefaultStaffForCenter(centerId, centerName = DEFAULT_CENTER_NAME) {
@@ -6546,7 +6546,7 @@ class DesktopMirrorService {
     }
   }
 
-  login(payload = {}) {
+  async login(payload = {}) {
     const username = sanitizeUsername(payload.username || payload.email || "");
     const password = String(payload.password || "");
     const user = this.usersRepository.list().find((item) => String(item.username || "").toLowerCase() === username);
@@ -6564,7 +6564,7 @@ class DesktopMirrorService {
       throw new Error("Account sospeso. Contatta SkinHarmony.");
     }
     if (normalized.accountStatus !== user.accountStatus || normalized.trialEndsAt !== user.trialEndsAt) {
-      this.usersRepository.update(user.id, (current) => ({ ...current, ...normalized, updatedAt: nowIso() }));
+      await this.usersRepository.updateDurable(user.id, (current) => ({ ...current, ...normalized, updatedAt: nowIso() }));
     }
     return this.createSession(user);
   }
@@ -6609,7 +6609,7 @@ class DesktopMirrorService {
     return visible.map((item) => this.serializeUserSummary(item, { includeControlStats }));
   }
 
-  createAccessUser(payload = {}, session = null) {
+  async createAccessUser(payload = {}, session = null) {
     const username = sanitizeUsername(payload.username || payload.email || "");
     if (!username) throw new Error("Username obbligatorio");
     if (this.usersRepository.list().some((item) => String(item.username || "").toLowerCase() === username)) {
@@ -6651,16 +6651,36 @@ class DesktopMirrorService {
       createdAt: now,
       updatedAt: now
     };
-    this.usersRepository.create(user);
-    this.ensureDefaultStaffForCenter(centerId, centerName);
-    this.saveSettings({
+    const userItems = this.usersRepository.list();
+    const staffItems = this.staffRepository.list();
+    const settingsStore = this.readSettingsStore();
+    const existingSettings = settingsStore[centerId] || {};
+    const settings = {
+      ...defaultSettings,
+      ...existingSettings,
+      centerId,
       centerName,
-      businessModel: user.businessModel
-    }, { centerId, centerName, role: session?.role || "superadmin" });
+      businessModel: user.businessModel,
+      updatedAt: now
+    };
+    const changes = [
+      { repository: this.usersRepository, payload: [user, ...userItems] },
+      { repository: this.settingsRepository, payload: { ...settingsStore, [centerId]: settings } }
+    ];
+    if (!staffItems.some((item) => this.belongsToCenter(item, centerId))) {
+      changes.push({
+        repository: this.staffRepository,
+        payload: [
+          ...DEFAULT_STAFF.map((item) => ({ ...item, centerId, centerName, createdAt: now, updatedAt: now })),
+          ...staffItems
+        ]
+      });
+    }
+    await this.commitRepositorySnapshots(changes);
     return this.listAccessUsers(session).find((item) => item.id === user.id) || this.serializeUserSummary(user, { includeControlStats: this.isSuperAdminSession(session) });
   }
 
-  requestTrial(payload = {}) {
+  async requestTrial(payload = {}) {
     const centerName = String(payload.centerName || payload.businessName || "").trim();
     const ownerName = String(payload.ownerName || payload.referentName || "").trim();
     const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
@@ -6692,7 +6712,7 @@ class DesktopMirrorService {
     const verificationEnabled = isTrialEmailVerificationConfigured();
     const verificationToken = verificationEnabled ? makeSecureToken() : "";
     const verificationRequestedAt = nowIso();
-    const user = this.createAccessUser({
+    const user = await this.createAccessUser({
       username: chosenUsername,
       password: chosenPassword,
       role: "owner",
@@ -6732,7 +6752,7 @@ class DesktopMirrorService {
     };
   }
 
-  verifyTrialEmailToken(payload = {}) {
+  async verifyTrialEmailToken(payload = {}) {
     const token = String(payload.token || "").trim();
     if (!token) throw new Error("Token verifica obbligatorio");
     const tokenHash = hashToken(token);
@@ -6749,7 +6769,7 @@ class DesktopMirrorService {
       throw new Error("Link di verifica scaduto. Richiedi una nuova attivazione.");
     }
     const verifiedAt = nowIso();
-    const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
+    const next = await this.usersRepository.updateDurable(user.id, (current) => this.normalizeUserAccount({
       ...current,
       emailVerifiedAt: verifiedAt,
       emailVerificationCode: "",
@@ -6766,7 +6786,7 @@ class DesktopMirrorService {
     };
   }
 
-  requestPasswordReset(payload = {}) {
+  async requestPasswordReset(payload = {}) {
     const identifier = sanitizeUsername(payload.identifier || payload.username || payload.email || "").trim();
     const emailIdentifier = String(payload.identifier || payload.email || "").trim().toLowerCase();
     const user = this.usersRepository.list().find((item) =>
@@ -6781,7 +6801,7 @@ class DesktopMirrorService {
     }
     const resetToken = makeSecureToken();
     const resetIssuedAt = nowIso();
-    this.usersRepository.update(user.id, (current) => ({
+    await this.usersRepository.updateDurable(user.id, (current) => ({
       ...current,
       passwordResetTokenHash: hashToken(resetToken),
       passwordResetExpiresAt: addMinutesIso(resetIssuedAt, 30),
@@ -6798,7 +6818,7 @@ class DesktopMirrorService {
     };
   }
 
-  resetPasswordWithToken(payload = {}) {
+  async resetPasswordWithToken(payload = {}) {
     const token = String(payload.token || "").trim();
     const password = String(payload.password || "");
     if (!token) throw new Error("Token reset obbligatorio");
@@ -6810,7 +6830,7 @@ class DesktopMirrorService {
       throw new Error("Link reset scaduto. Richiedi una nuova email.");
     }
     const changedAt = nowIso();
-    const next = this.usersRepository.update(user.id, (current) => ({
+    const next = await this.usersRepository.updateDurable(user.id, (current) => ({
       ...current,
       passwordHash: hashPassword(password),
       passwordResetTokenHash: "",
@@ -6827,7 +6847,7 @@ class DesktopMirrorService {
     };
   }
 
-  updateAccessUserStatus(userId, payload = {}, session = null) {
+  async updateAccessUserStatus(userId, payload = {}, session = null) {
     if (!this.isSuperAdminSession(session)) {
       throw new Error("Operazione riservata al supporto SkinHarmony");
     }
@@ -6840,7 +6860,7 @@ class DesktopMirrorService {
       throw new Error("Utente pagante: sospensione automatica bloccata. Usa solo assistenza/supporto o procedura owner-confirmed fuori dal pannello operativo.");
     }
     const now = nowIso();
-    const next = this.usersRepository.update(userId, (user) => {
+    const next = await this.usersRepository.updateDurable(userId, (user) => {
       const merged = {
         ...user,
         active: payload.active === undefined ? user.active : payload.active !== false,
@@ -6885,7 +6905,7 @@ class DesktopMirrorService {
     return this.serializeUserSummary(next || current, { includeControlStats: this.isSuperAdminSession(session) });
   }
 
-  requestSubscriptionChange(payload = {}, session = null) {
+  async requestSubscriptionChange(payload = {}, session = null) {
     this.assertCanOperate(session);
     const requestedPlan = String(payload.subscriptionPlan || "").toLowerCase();
     if (!["base", "silver", "gold"].includes(requestedPlan)) {
@@ -6894,7 +6914,7 @@ class DesktopMirrorService {
     const current = this.usersRepository.findById(session.userId);
     if (!current) throw new Error("Utente non trovato");
     const now = nowIso();
-    const next = this.usersRepository.update(current.id, (user) => this.normalizeUserAccount({
+    const next = await this.usersRepository.updateDurable(current.id, (user) => this.normalizeUserAccount({
       ...user,
       requestedSubscriptionPlan: requestedPlan,
       subscriptionChangeRequestedAt: now,
@@ -6931,7 +6951,7 @@ class DesktopMirrorService {
     return { plan, cycle };
   }
 
-  activateSubscriptionFromWooCommerceOrder(order = {}) {
+  async activateSubscriptionFromWooCommerceOrder(order = {}) {
     const orderStatus = String(order.status || "").toLowerCase();
     if (!["processing", "completed"].includes(orderStatus)) {
       return {
@@ -6977,7 +6997,7 @@ class DesktopMirrorService {
         ? addMonthsIso(now, 1)
         : user.subscriptionEndsAt || "";
     const total = Number(order.total || 0);
-    const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
+    const next = await this.usersRepository.updateDurable(user.id, (current) => this.normalizeUserAccount({
       ...current,
       active: true,
       planType: "active",

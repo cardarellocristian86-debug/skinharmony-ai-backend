@@ -907,9 +907,9 @@ app.get("/web-preview", (_req, res) => {
   res.redirect(302, "/web-preview/");
 });
 
-app.post("/api/auth/login", loginRateLimit, (req, res) => {
+app.post("/api/auth/login", loginRateLimit, async (req, res) => {
   try {
-    res.json({ success: true, ...service.login(req.body || {}) });
+    res.json({ success: true, ...await service.login(req.body || {}) });
   } catch (error) {
     res.status(401).send(error instanceof Error ? error.message : "Credenziali non valide");
   }
@@ -921,7 +921,7 @@ app.get("/api/auth/trial-config", (_req, res) => {
 
 app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   try {
-    const result = service.requestTrial(req.body || {});
+    const result = await service.requestTrial(req.body || {});
     let emailDelivery = { status: "disabled" };
     if (result.verification?.required && result.verification?.token) {
       emailDelivery = await sendTrialVerificationMail({
@@ -948,9 +948,9 @@ app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   }
 });
 
-app.post("/api/auth/verify-trial-email", (req, res) => {
+app.post("/api/auth/verify-trial-email", async (req, res) => {
   try {
-    const result = service.verifyTrialEmailToken(req.body || {});
+    const result = await service.verifyTrialEmailToken(req.body || {});
     void sendTrialWelcomeMail({
       email: result.user.contactEmail || "",
       centerName: result.user.centerName || "",
@@ -965,7 +965,7 @@ app.post("/api/auth/verify-trial-email", (req, res) => {
 
 app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
   try {
-    const result = service.requestPasswordReset(req.body || {});
+    const result = await service.requestPasswordReset(req.body || {});
     if (result.delivery?.email && result.delivery?.token) {
       await sendPasswordResetMail({
         email: result.delivery.email,
@@ -980,7 +980,7 @@ app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
 
 app.post("/api/auth/reset-password", passwordRateLimit, async (req, res) => {
   try {
-    const result = service.resetPasswordWithToken(req.body || {});
+    const result = await service.resetPasswordWithToken(req.body || {});
     if (result.user.contactEmail) {
       await sendPasswordChangedMail({ email: result.user.contactEmail });
     }
@@ -1033,17 +1033,17 @@ app.get("/api/enterprise/control", requireAuth, requireSuperAdmin, (req, res) =>
   }
 });
 
-app.post("/api/auth/users", requireAuth, (req, res) => {
+app.post("/api/auth/users", requireAuth, async (req, res) => {
   try {
-    res.status(201).json(service.createAccessUser(req.body || {}, req.session));
+    res.status(201).json(await service.createAccessUser(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile creare l'accesso");
   }
 });
 
-app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
+app.post("/api/auth/users/:id/status", requireAuth, async (req, res) => {
   try {
-    res.json(service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
+    res.json(await service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare lo stato utente");
   }
@@ -1057,21 +1057,21 @@ app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
   }
 });
 
-app.post("/api/auth/subscription/request-change", requireAuth, (req, res) => {
+app.post("/api/auth/subscription/request-change", requireAuth, async (req, res) => {
   try {
-    res.json(service.requestSubscriptionChange(req.body || {}, req.session));
+    res.json(await service.requestSubscriptionChange(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare la richiesta abbonamento");
   }
 });
 
-app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
+app.post("/api/integrations/woocommerce/order-paid", async (req, res) => {
   const verification = verifyWooCommerceWebhook(req);
   if (!verification.ok) {
     return res.status(401).json({ success: false, ...verification });
   }
   try {
-    res.json(service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
+    res.json(await service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
   } catch (error) {
     res.status(400).json({
       success: false,
