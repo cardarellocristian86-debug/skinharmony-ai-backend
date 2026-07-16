@@ -7796,7 +7796,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.inventoryRepository.list(), session);
   }
 
-  saveInventoryItem(payload = {}, session = null) {
+  async saveInventoryItem(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.inventoryRepository, payload, session) : null;
     if (existing) return existing;
     const itemName = cleanText(payload.name || "", "", 160);
@@ -7829,20 +7829,20 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      this.inventoryRepository.create(entity);
+      await this.inventoryRepository.createDurable(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
       this.applyGoldStateEvent("inventory_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
-    const updated = this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const updated = await this.updateInCenterDurable(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
     this.applyGoldStateEvent("inventory_updated", { before, after: updated }, session);
     return updated;
   }
 
-  deleteInventoryItem(id, session = null) {
+  async deleteInventoryItem(id, session = null) {
     const before = this.findByIdInCenter(this.inventoryRepository, id, session);
-    const result = this.deleteInCenter(this.inventoryRepository, id, session);
+    const result = await this.deleteInCenterDurable(this.inventoryRepository, id, session);
     if (result?.success) this.applyGoldStateEvent("inventory_deleted", { before }, session);
     return result;
   }
@@ -7912,7 +7912,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.treatmentsRepository.list(), session).filter((item) => !clientId || item.clientId === clientId);
   }
 
-  createTreatment(payload = {}, session = null) {
+  async createTreatment(payload = {}, session = null) {
     const treatment = {
       id: makeId("treat"),
       centerId: this.getCenterId(session),
@@ -7922,7 +7922,7 @@ class DesktopMirrorService {
       note: String(payload.note || ""),
       createdAt: nowIso()
     };
-    this.treatmentsRepository.create(treatment);
+    await this.treatmentsRepository.createDurable(treatment);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return treatment;
   }
@@ -7935,7 +7935,7 @@ class DesktopMirrorService {
       .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime());
   }
 
-  saveProtocol(payload = {}, session = null) {
+  async saveProtocol(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.protocolsRepository, payload, session) : null;
     if (existing) return existing;
     const now = nowIso();
@@ -7973,7 +7973,7 @@ class DesktopMirrorService {
       updatedAt: now
     };
     if (payload.id) {
-      return this.updateInCenter(this.protocolsRepository, payload.id, (current) => ({
+      return this.updateInCenterDurable(this.protocolsRepository, payload.id, (current) => ({
         ...current,
         ...entity,
         id: current.id,
@@ -7985,13 +7985,13 @@ class DesktopMirrorService {
       ...entity,
       createdAt: now
     };
-    this.protocolsRepository.create(protocol);
+    await this.protocolsRepository.createDurable(protocol);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return protocol;
   }
 
-  deleteProtocol(id, session = null) {
-    return this.deleteInCenter(this.protocolsRepository, id, session);
+  async deleteProtocol(id, session = null) {
+    return this.deleteInCenterDurable(this.protocolsRepository, id, session);
   }
 
   async generateAiGoldProtocolDraft(payload = {}, session = null) {
