@@ -5,7 +5,7 @@ services:
     rootDir: services/suite-control-plane
     buildCommand: npm ci
     startCommand: npm start
-    healthCheckPath: /health
+    healthCheckPath: /readyz
     disk:
       name: suite-control-data
       mountPath: /var/data
@@ -17,6 +17,14 @@ services:
         value: /var/data/suite-control-plane
       - key: SUITE_NODE_STALE_AFTER_MS
         value: "900000"
+      - key: SUITE_REQUIRE_PERSISTENT_STORAGE
+        value: "true"
+      - key: SUITE_READINESS_PROBE_REMOTE
+        value: "true"
+      - key: SUITE_CONTROL_PLANE_TENANT_ID
+        value: skinharmony-suite
+      - key: UNIVERSAL_CORE_URL
+        value: https://skinharmony-universal-core.onrender.com
       - key: UNIVERSAL_CORE_TENANT_ID
         value: skinharmony-suite
       - key: UNIVERSAL_CORE_KEY

@@ -1,6 +1,6 @@
 {
   "name": "@skinharmony/suite-control-plane",
-  "version": "0.4.6-nyra-suite-branches",
+  "version": "0.6.0-suite-cockpit-360",
   "private": true,
   "type": "module",
   "scripts": {

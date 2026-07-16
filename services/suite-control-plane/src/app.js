@@ -3,8 +3,17 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
+import {
+  loadSuiteBranchArchitecture,
+  normalizeRequestedSuiteBranches,
+} from "./branchArchitecture.js";
+import {
+  buildCockpit360Summary,
+  buildNyraDecisionPreviewPayload,
+  sanitizeSuiteNodeSnapshot,
+} from "./cockpit360.js";
 
-const SERVICE_VERSION = "0.5.0-nyra-suite-bridge";
+const SERVICE_VERSION = "0.6.0-suite-cockpit-360";
 const DEFAULT_MAX_EVENTS_PER_NODE = 250;
 const DEFAULT_NODE_STALE_AFTER_MS = 15 * 60 * 1000;
 const NODE_STALE_AFTER_MS = Math.max(
@@ -51,37 +60,6 @@ const GOOGLE_PROVIDER_CONFIG_FIELDS = [
   "redirect_uri",
 ];
 const GOOGLE_OAUTH_CLIENT_ID = "1062915832418-t1i2r823u06ohuri3efhi5l92bm7oc4f.apps.googleusercontent.com";
-const NYRA_SUITE_BRANCH_MAP_PATH = path.resolve(process.cwd(), "config", "nyra-suite-branch-map.json");
-const DEFAULT_NYRA_SUITE_BRANCH_MAP = {
-  schema: "nyra_suite_branch_map_v1",
-  version: "2026-06-01",
-  mode: "read_only_owner_confirmed",
-  source: "suite-control-plane/default",
-  render_role: "reference_contract_for_suite_control_plane_and_core_bridge",
-  branch_keys: [
-    "analytics_insight",
-    "google_ads_ga4",
-    "marketing_recall",
-    "crm_sales",
-    "commerce_checkout",
-    "product_registry",
-    "technology_registry",
-    "pricing_margin",
-    "claim_content",
-    "license_waas",
-    "customer_success",
-    "render_operations",
-    "support_risk",
-    "visual_content",
-  ],
-  guardrails: {
-    execution_allowed: false,
-    owner_confirmation_required: true,
-    core_required_for_sensitive_actions: true,
-    nyra_read_only: true,
-    no_raw_customer_data_without_scoped_policy: true,
-  },
-};
 const RUNBOOK_CATALOG = [
   {
     id: "site_clone_readiness",
@@ -235,32 +213,6 @@ function nodeHeartbeatFresh(node, now = Date.now()) {
 function nodeStatus(node) {
   const status = String(node?.status || "registered");
   return status === "online" && !nodeHeartbeatFresh(node) ? "stale" : status;
-}
-
-function loadNyraSuiteBranchMap() {
-  try {
-    if (fs.existsSync(NYRA_SUITE_BRANCH_MAP_PATH)) {
-      const parsed = JSON.parse(fs.readFileSync(NYRA_SUITE_BRANCH_MAP_PATH, "utf8"));
-      const branchKeys = Array.isArray(parsed.branch_keys)
-        ? parsed.branch_keys.map(String).filter(Boolean)
-        : DEFAULT_NYRA_SUITE_BRANCH_MAP.branch_keys;
-      return {
-        ...DEFAULT_NYRA_SUITE_BRANCH_MAP,
-        ...parsed,
-        branch_keys: uniqueValues(branchKeys),
-        guardrails: {
-          ...DEFAULT_NYRA_SUITE_BRANCH_MAP.guardrails,
-          ...(parsed.guardrails && typeof parsed.guardrails === "object" ? parsed.guardrails : {}),
-        },
-      };
-    }
-  } catch (error) {
-    return {
-      ...DEFAULT_NYRA_SUITE_BRANCH_MAP,
-      load_warning: error instanceof Error ? error.message : "nyra_suite_branch_map_load_failed",
-    };
-  }
-  return DEFAULT_NYRA_SUITE_BRANCH_MAP;
 }
 
 function nodeReadiness(node) {
@@ -642,6 +594,10 @@ function sanitizeCommerceSnapshot(payload = {}) {
       order_value: Math.max(0, Number(summary.order_value || 0) || 0),
       open_leads: Math.max(0, Number(summary.open_leads || 0) || 0),
       active_licenses: Math.max(0, Number(summary.active_licenses || 0) || 0),
+      crm_erp_lite_orders: Math.max(0, Number(summary.crm_erp_lite_orders || 0) || 0),
+      crm_erp_lite_revenue_net: Math.max(0, Number(summary.crm_erp_lite_revenue_net || 0) || 0),
+      crm_erp_lite_margin_net: Number.isFinite(Number(summary.crm_erp_lite_margin_net)) ? Number(summary.crm_erp_lite_margin_net) : 0,
+      crm_erp_lite_owner_required: Math.max(0, Number(summary.crm_erp_lite_owner_required || 0) || 0),
     },
     sections: sections.slice(0, 30).map((section) => ({
       key: sanitizeId(section?.key || section?.id || "section", "section"),
@@ -668,6 +624,10 @@ function summarizeCommerceSnapshots(snapshots = []) {
     order_value: latest?.summary?.order_value || 0,
     open_leads: latest?.summary?.open_leads || 0,
     active_licenses: latest?.summary?.active_licenses || 0,
+    crm_erp_lite_orders: latest?.summary?.crm_erp_lite_orders || 0,
+    crm_erp_lite_revenue_net: latest?.summary?.crm_erp_lite_revenue_net || 0,
+    crm_erp_lite_margin_net: latest?.summary?.crm_erp_lite_margin_net || 0,
+    crm_erp_lite_owner_required: latest?.summary?.crm_erp_lite_owner_required || 0,
   };
   const readiness = latest
     ? (totals.crm_contacts || totals.product_items || totals.technology_items || totals.orders_count ? "ready" : "empty")
@@ -701,6 +661,96 @@ function getRunbook(runbookId) {
   return RUNBOOK_CATALOG.find((runbook) => runbook.id === id) || null;
 }
 
+function runbookCoreGate(runbook) {
+  if (runbook.risk === "high") return "confirm_or_sandbox";
+  if (runbook.risk === "medium") return "confirm";
+  return "read_only_advisory";
+}
+
+function buildRunbookCatalogSpec() {
+  const runbooks = RUNBOOK_CATALOG.map((runbook) => ({
+    ...runbook,
+    commercial_family: runbook.category,
+    risk_band: runbook.risk,
+    core_gate: runbookCoreGate(runbook),
+    execution_allowed: false,
+    dispatch_role: "proposal_queue_only",
+    action_bound_envelope_supported: true,
+  }));
+  return {
+    schema_version: "suite_runbook_catalog_spec_v1",
+    generated_at: nowIso(),
+    mode: "read_only_catalog_spec",
+    execution_allowed: false,
+    runbooks,
+    summary: {
+      runbooks_available: runbooks.length,
+      owner_confirmation_required: runbooks.filter((runbook) => runbook.owner_confirmation_required).length,
+      proposal_only: runbooks.filter((runbook) => runbook.execution_mode === "proposal_only").length,
+    },
+    dispatch_contract: {
+      state: "proposal_queue_only",
+      execution_allowed: false,
+      legacy_owner_flag_role: "queue_compatibility_only",
+      action_bound_fields: ["tenant_id", "node_id", "runbook_id", "action_id", "core_decision_id", "expires_at"],
+    },
+  };
+}
+
+function buildDispatchActionId(runbook, node) {
+  return `${runbook.id}:${node?.tenant_id || "tenant"}:${node?.node_id || "node"}`;
+}
+
+function validateDispatchApprovalEnvelope(payload, runbook, node) {
+  const envelope = payload?.approval_envelope && typeof payload.approval_envelope === "object"
+    ? payload.approval_envelope
+    : null;
+  const expectedActionId = buildDispatchActionId(runbook, node);
+  if (!envelope) {
+    return {
+      present: false,
+      valid: true,
+      mode: "legacy_owner_flag_proposal_only",
+      expected_action_id: expectedActionId,
+      errors: [],
+    };
+  }
+
+  const expiresAt = Date.parse(String(envelope.expires_at || ""));
+  const errors = [
+    ...(String(envelope.tenant_id || "") === String(node?.tenant_id || "") ? [] : ["tenant_id_mismatch"]),
+    ...(String(envelope.node_id || "") === String(node?.node_id || "") ? [] : ["node_id_mismatch"]),
+    ...(String(envelope.runbook_id || "") === String(runbook.id) ? [] : ["runbook_id_mismatch"]),
+    ...(String(envelope.action_id || "") === expectedActionId ? [] : ["action_id_mismatch"]),
+    ...(String(envelope.core_decision_id || "").trim() ? [] : ["core_decision_id_missing"]),
+    ...(Number.isFinite(expiresAt) && expiresAt > Date.now() ? [] : ["approval_expired_or_invalid"]),
+    ...(envelope.owner_confirmed === true ? [] : ["owner_confirmation_missing"]),
+  ];
+  return {
+    present: true,
+    valid: errors.length === 0,
+    mode: "action_bound_core_owner_envelope",
+    expected_action_id: expectedActionId,
+    core_decision_id: String(envelope.core_decision_id || "").slice(0, 160),
+    expires_at: Number.isFinite(expiresAt) ? new Date(expiresAt).toISOString() : "",
+    errors,
+  };
+}
+
+function sanitizeRunbookPayload(input = {}) {
+  const output = {};
+  const forbidden = /(secret|password|token|authorization|cookie|api.?key|email|phone|customer|profile|raw)/i;
+  for (const [key, value] of Object.entries(input && typeof input === "object" ? input : {}).slice(0, 40)) {
+    const safeKey = sanitizeId(key, "field");
+    if (forbidden.test(safeKey)) continue;
+    if (typeof value === "boolean") output[safeKey] = value;
+    else if (typeof value === "number" && Number.isFinite(value)) output[safeKey] = value;
+    else if (typeof value === "string") output[safeKey] = value.slice(0, 240);
+    else if (Array.isArray(value)) output[safeKey] = value.slice(0, 20).map((item) => String(item).slice(0, 120));
+  }
+  return output;
+}
+
 function buildRunbookPreview(runbook, node) {
   const nodeOnline = node && nodeStatus(node) === "online";
   const hasSnapshot = Boolean(node && node.latest_snapshot);
@@ -716,6 +766,9 @@ function buildRunbookPreview(runbook, node) {
     category: runbook.category,
     risk: runbook.risk,
     execution_mode: runbook.execution_mode,
+    execution_allowed: false,
+    dispatch_role: "proposal_queue_only",
+    expected_action_id: node ? buildDispatchActionId(runbook, node) : "",
     owner_confirmation_required: runbook.owner_confirmation_required,
     state,
     blocking,
@@ -1373,9 +1426,14 @@ function buildSuiteRuntimeMapContract() {
       contract: "/api/suite/runtime-map/contract",
       control_plane_dashboard: "/api/suite/control-plane/dashboard",
       tenant_dashboard: "/api/suite/tenants/:tenantId/dashboard",
+      cockpit_360: "/api/suite/tenants/:tenantId/cockpit-360",
       node_heartbeat: "/api/suite/nodes/heartbeat",
       node_snapshot: "/api/suite/nodes/snapshot",
       evidence: "/api/suite/evidence",
+      branch_architecture: "/api/suite/nyra/branch-map",
+      nyra_decision_preview: "/api/suite/nyra/decision-preview",
+      runbook_catalog_spec: "/api/suite/runbooks/catalog-spec",
+      readiness: "/readyz",
     },
     wordpress_keeps: SUITE_RUNTIME_WORDPRESS_KEEPS,
     render_moves: SUITE_RUNTIME_RENDER_MOVES,
@@ -1384,10 +1442,13 @@ function buildSuiteRuntimeMapContract() {
       "tenant_dashboard",
       "node_heartbeat",
       "node_snapshot",
+      "cockpit_360_summary_v1",
       "evidence_ledger",
       "core_bridge_status",
       "google_connector_contract",
       "runtime_map_contract",
+      "tenant_bound_scoped_keys",
+      "branch_architecture_v2",
     ],
     first_real_migration: {
       id: "analytics_event_spine",
@@ -1671,7 +1732,21 @@ function renderGoogleConnectPage(payload) {
 }
 
 function createMemoryStorage(options = {}) {
-  const nodes = new Map((options.nodes || []).map((node) => [node.node_id, node]));
+  const nodes = new Map((options.nodes || []).map((node) => {
+    const normalized = {
+      ...node,
+      tenant_id: sanitizeId(node?.tenant_id || "legacy_unknown_tenant", "tenant"),
+      node_id: sanitizeId(node?.node_id || "legacy_unknown_node", "node"),
+    };
+    if (node?.latest_snapshot) {
+      normalized.latest_snapshot = sanitizeSuiteNodeSnapshot({
+        ...node.latest_snapshot,
+        node_id: normalized.node_id,
+        tenant_id: normalized.tenant_id,
+      }, node.latest_snapshot.received_at || nowIso());
+    }
+    return [`${normalized.tenant_id}::${normalized.node_id}`, normalized];
+  }));
   const evidence = Array.isArray(options.evidence) ? options.evidence : [];
   const siteEvents = Array.isArray(options.siteEvents) ? options.siteEvents : [];
   const commerceSnapshots = Array.isArray(options.commerceSnapshots) ? options.commerceSnapshots : [];
@@ -1708,10 +1783,12 @@ function createMemoryStorage(options = {}) {
 
   function getOrCreateNode(nodeId, tenantId = "unknown") {
     const id = sanitizeId(nodeId, "node");
-    if (!nodes.has(id)) {
-      nodes.set(id, {
+    const tenantKey = sanitizeId(tenantId, "tenant");
+    const storageKey = `${tenantKey}::${id}`;
+    if (!nodes.has(storageKey)) {
+      nodes.set(storageKey, {
         node_id: id,
-        tenant_id: sanitizeId(tenantId, "tenant"),
+        tenant_id: tenantKey,
         first_seen_at: nowIso(),
         last_seen_at: null,
         status: "registered",
@@ -1725,7 +1802,7 @@ function createMemoryStorage(options = {}) {
         events: [],
       });
     }
-    return nodes.get(id);
+    return nodes.get(storageKey);
   }
 
   function appendNodeEvent(node, type, payload) {
@@ -1743,6 +1820,8 @@ function createMemoryStorage(options = {}) {
 
   return {
     mode: "memory",
+    persistent: false,
+    writable: true,
     heartbeat(payload) {
       const node = getOrCreateNode(payload.node_id, payload.tenant_id);
       node.tenant_id = sanitizeId(payload.tenant_id || node.tenant_id, "tenant");
@@ -1767,13 +1846,11 @@ function createMemoryStorage(options = {}) {
       const node = getOrCreateNode(payload.node_id, payload.tenant_id);
       node.snapshot_count += 1;
       node.last_seen_at = nowIso();
-      node.latest_snapshot = {
-        received_at: node.last_seen_at,
-        summary: payload.summary && typeof payload.summary === "object" ? payload.summary : {},
-        control_plane: payload.control_plane && typeof payload.control_plane === "object" ? payload.control_plane : {},
-        validation: payload.validation && typeof payload.validation === "object" ? payload.validation : {},
-        change_impact_orchestration: payload.change_impact_orchestration && typeof payload.change_impact_orchestration === "object" ? payload.change_impact_orchestration : null,
-      };
+      node.latest_snapshot = sanitizeSuiteNodeSnapshot({
+        ...payload,
+        node_id: node.node_id,
+        tenant_id: node.tenant_id,
+      }, node.last_seen_at);
       appendNodeEvent(node, "snapshot", node.latest_snapshot);
       emitChange();
       return node;
@@ -1958,16 +2035,20 @@ function createMemoryStorage(options = {}) {
     runbookPreview(payload) {
       const runbook = getRunbook(payload.runbook_id);
       if (!runbook) return null;
-      const node = nodes.get(sanitizeId(payload.node_id, "node")) || null;
+      const node = nodes.get(`${sanitizeId(payload.tenant_id, "tenant")}::${sanitizeId(payload.node_id, "node")}`) || null;
       return buildRunbookPreview(runbook, node);
     },
     runbookDispatch(payload) {
       const runbook = getRunbook(payload.runbook_id);
       if (!runbook) return null;
-      const node = nodes.get(sanitizeId(payload.node_id, "node")) || null;
+      const node = nodes.get(`${sanitizeId(payload.tenant_id, "tenant")}::${sanitizeId(payload.node_id, "node")}`) || null;
       const preview = buildRunbookPreview(runbook, node);
-      const ownerConfirmed = payload.owner_confirmed === true || payload.owner_confirmed === "true" || payload.owner_confirmed === "yes";
+      const approval = validateDispatchApprovalEnvelope(payload, runbook, node);
+      const ownerConfirmed = approval.present
+        ? approval.valid
+        : payload.owner_confirmed === true || payload.owner_confirmed === "true" || payload.owner_confirmed === "yes";
       const accepted = preview.state === "ready_for_owner_confirmation"
+        && approval.valid
         && (!runbook.owner_confirmation_required || ownerConfirmed);
       const dispatch = {
         id: `dispatch_${crypto.randomUUID()}`,
@@ -1979,9 +2060,12 @@ function createMemoryStorage(options = {}) {
         accepted,
         owner_confirmed: ownerConfirmed,
         execution_mode: runbook.execution_mode,
+        execution_allowed: false,
+        dispatch_role: "proposal_queue_only",
+        approval,
         risk: runbook.risk,
         preview,
-        payload: payload.payload && typeof payload.payload === "object" ? payload.payload : {},
+        payload: sanitizeRunbookPayload(payload.payload),
       };
       dispatches.unshift(dispatch);
       if (dispatches.length > 1000) dispatches.length = 1000;
@@ -2070,12 +2154,17 @@ function createMemoryStorage(options = {}) {
       emitChange();
       return { node, artifact };
     },
-    runbookArtifacts(nodeId, limit = 50) {
+    runbookArtifacts(nodeId, limit = 50, tenantId = "") {
       const id = sanitizeId(nodeId, "node");
-      return artifacts.filter((item) => item.node_id === id).slice(0, limit);
+      const tenantKey = tenantId ? sanitizeId(tenantId, "tenant") : "";
+      return artifacts.filter((item) => item.node_id === id && (!tenantKey || item.tenant_id === tenantKey)).slice(0, limit);
     },
-    dashboard(nodeId) {
-      const node = nodes.get(sanitizeId(nodeId, "node"));
+    dashboard(nodeId, tenantId = "") {
+      const id = sanitizeId(nodeId, "node");
+      const tenantKey = tenantId ? sanitizeId(tenantId, "tenant") : "";
+      const node = tenantKey
+        ? nodes.get(`${tenantKey}::${id}`)
+        : Array.from(nodes.values()).find((candidate) => candidate.node_id === id);
       if (!node) return null;
       return {
         node: {
@@ -2084,19 +2173,32 @@ function createMemoryStorage(options = {}) {
           heartbeat_fresh: nodeHeartbeatFresh(node),
         },
         recent_events: node.events.slice(0, 50),
-        evidence: evidence.filter((item) => item.node_id === node.node_id).slice(0, 50),
-        dispatches: dispatches.filter((item) => item.node_id === node.node_id).slice(0, 50),
-        runbook_artifacts: artifacts.filter((item) => item.node_id === node.node_id).slice(0, 50),
+        evidence: evidence.filter((item) => item.node_id === node.node_id && item.tenant_id === node.tenant_id).slice(0, 50),
+        dispatches: dispatches.filter((item) => item.node_id === node.node_id && item.tenant_id === node.tenant_id).slice(0, 50),
+        runbook_artifacts: artifacts.filter((item) => item.node_id === node.node_id && item.tenant_id === node.tenant_id).slice(0, 50),
       };
     },
-    overview() {
-      const allNodes = Array.from(nodes.values());
+    nodeForTenant(tenantId, nodeId = "") {
+      const tenantKey = sanitizeId(tenantId, "tenant");
+      if (nodeId) {
+        return nodes.get(`${tenantKey}::${sanitizeId(nodeId, "node")}`) || null;
+      }
+      return Array.from(nodes.values())
+        .filter((node) => node.tenant_id === tenantKey)
+        .sort((left, right) => String(right.last_seen_at || "").localeCompare(String(left.last_seen_at || "")))[0] || null;
+    },
+    overview(tenantId = "") {
+      const tenantKey = tenantId ? sanitizeId(tenantId, "tenant") : "";
+      const allNodes = Array.from(nodes.values()).filter((node) => !tenantKey || node.tenant_id === tenantKey);
+      const tenantEvidence = tenantKey ? evidence.filter((item) => item.tenant_id === tenantKey) : evidence;
+      const tenantDispatches = tenantKey ? dispatches.filter((item) => item.tenant_id === tenantKey) : dispatches;
+      const tenantArtifacts = tenantKey ? artifacts.filter((item) => item.tenant_id === tenantKey) : artifacts;
       return {
         nodes_total: allNodes.length,
         nodes_online: allNodes.filter((node) => nodeStatus(node) === "online").length,
-        evidence_total: evidence.length,
-        dispatches_total: dispatches.length,
-        runbook_artifacts_total: artifacts.length,
+        evidence_total: tenantEvidence.length,
+        dispatches_total: tenantDispatches.length,
+        runbook_artifacts_total: tenantArtifacts.length,
         runbooks_total: RUNBOOK_CATALOG.length,
         nodes: allNodes
           .map((node) => ({
@@ -2156,8 +2258,11 @@ function createMemoryStorage(options = {}) {
         evidence: summarizeEvidence(tenantEvidence),
       };
     },
-    controlPlaneDashboard() {
-      const tenantIds = uniqueValues(Array.from(nodes.values()).map((node) => node.tenant_id));
+    controlPlaneDashboard(tenantId = "") {
+      const tenantKey = tenantId ? sanitizeId(tenantId, "tenant") : "";
+      const tenantIds = tenantKey
+        ? [tenantKey]
+        : uniqueValues(Array.from(nodes.values()).map((node) => node.tenant_id));
       const tenants = tenantIds.map((tenantId) => this.tenantDashboard(tenantId));
       const blocked = tenants.filter((tenant) => tenant.readiness_status === "blocked").length;
       const warnings = tenants.filter((tenant) => tenant.readiness_status === "warning").length;
@@ -2169,8 +2274,8 @@ function createMemoryStorage(options = {}) {
         positioning: "Suite Control Plane read-only: stato tenant, nodi, Core bridge, evidence e readiness senza esecuzione automatica.",
         totals: {
           tenants: tenants.length,
-          nodes: Array.from(nodes.values()).length,
-          evidence: evidence.length,
+          nodes: tenants.reduce((sum, tenant) => sum + tenant.nodes_total, 0),
+          evidence: tenants.reduce((sum, tenant) => sum + tenant.evidence.total, 0),
           ready,
           warning: warnings,
           blocked,
@@ -2246,19 +2351,134 @@ function createSuiteControlStorage() {
     },
   });
   storage.mode = "file";
+  storage.persistent = true;
+  try {
+    fs.accessSync(storageRoot, fs.constants.W_OK);
+    storage.writable = true;
+  } catch {
+    storage.writable = false;
+  }
   storage.state_file = stateFile;
   return storage;
 }
 
-function createAuth() {
-  const configuredKey = process.env.SUITE_CONTROL_PLANE_API_KEY || "";
-  const devKey = process.env.NODE_ENV === "production" ? "" : "dev-suite-control-plane-key";
-  const expected = configuredKey || devKey;
+const SUITE_AUTH_SCOPES = Object.freeze([
+  "suite:read",
+  "suite:ingest",
+  "suite:preview",
+  "suite:govern",
+  "suite:dispatch",
+  "suite:admin",
+]);
 
-  return (req, res, next) => {
-    if (!expected) return publicError(res, 503, "suite_control_plane_key_not_configured");
-    if (readSecret(req) !== expected) return publicError(res, 401, "suite_control_plane_key_invalid");
-    return next();
+function normalizeAuthScopes(value) {
+  const list = Array.isArray(value) ? value : String(value || "").split(/[\s,]+/);
+  return uniqueValues(list).filter((scope) => SUITE_AUTH_SCOPES.includes(scope));
+}
+
+function safeSecretEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  if (!leftBuffer.length || leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseAuthBindings(options = {}) {
+  const production = options.production ?? process.env.NODE_ENV === "production";
+  const defaultTenantRaw = String(
+    options.defaultTenantId
+      || process.env.SUITE_CONTROL_PLANE_TENANT_ID
+      || process.env.UNIVERSAL_CORE_TENANT_ID
+      || process.env.NYRA_SUITE_TENANT_ID
+      || (production ? "" : "tenant_demo"),
+  ).trim();
+  const defaultTenantId = defaultTenantRaw ? sanitizeId(defaultTenantRaw, "tenant") : "";
+  let configured = Array.isArray(options.bindings) ? options.bindings : null;
+  if (!configured && process.env.SUITE_CONTROL_PLANE_KEYS_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.SUITE_CONTROL_PLANE_KEYS_JSON);
+      configured = Array.isArray(parsed)
+        ? parsed
+        : Object.entries(parsed && typeof parsed === "object" ? parsed : {}).map(([keyId, record]) => ({ key_id: keyId, ...record }));
+    } catch {
+      configured = [];
+    }
+  }
+  if (!configured) {
+    const configuredKey = String(options.apiKey || process.env.SUITE_CONTROL_PLANE_API_KEY || "").trim();
+    const devKey = production ? "" : "dev-suite-control-plane-key";
+    const secret = configuredKey || devKey;
+    configured = secret ? [{
+      key_id: configuredKey ? "suite_primary" : "suite_development",
+      secret,
+      tenant_id: defaultTenantId,
+      scopes: normalizeAuthScopes(options.scopes || process.env.SUITE_CONTROL_PLANE_SCOPES || SUITE_AUTH_SCOPES),
+    }] : [];
+  }
+  return configured.map((record, index) => {
+    const tenantRaw = String(record.tenant_id || defaultTenantId || "").trim();
+    return {
+      key_id: sanitizeId(record.key_id || record.id || `suite_key_${index + 1}`, "key"),
+      secret: String(record.secret || record.key || record.api_key || "").trim(),
+      tenant_id: tenantRaw ? sanitizeId(tenantRaw, "tenant") : "",
+      scopes: normalizeAuthScopes(record.scopes !== undefined ? record.scopes : SUITE_AUTH_SCOPES),
+      enabled: record.enabled !== false,
+    };
+  }).filter((record) => record.secret && record.enabled);
+}
+
+function requestTenantCandidates(req) {
+  return uniqueValues([
+    req.get("x-sh-tenant-id") || "",
+    req.params?.tenantId || "",
+    req.query?.tenant_id || "",
+    req.body?.tenant_id || "",
+    req.body?.action?.tenant_id || "",
+    req.body?.governance_manifest?.tenant_id || "",
+    req.body?.manifest?.tenant_id || "",
+    req.body?.approval_envelope?.tenant_id || "",
+  ]).map((tenantId) => sanitizeId(tenantId, "tenant"));
+}
+
+function createAuth(options = {}) {
+  const records = parseAuthBindings(options);
+  const production = options.production ?? process.env.NODE_ENV === "production";
+
+  function requireScopes(...requiredScopes) {
+    const required = normalizeAuthScopes(requiredScopes.flat());
+    return (req, res, next) => {
+      if (!records.length) return publicError(res, 503, "suite_control_plane_key_not_configured");
+      const presented = readSecret(req);
+      const record = records.find((candidate) => safeSecretEqual(presented, candidate.secret));
+      if (!record) return publicError(res, 401, "suite_control_plane_key_invalid");
+      if (!record.tenant_id) return publicError(res, 503, "suite_control_plane_tenant_binding_not_configured");
+      const missingScopes = required.filter((scope) => !record.scopes.includes(scope) && !record.scopes.includes("suite:admin"));
+      if (missingScopes.length) return publicError(res, 403, "suite_control_plane_scope_denied", "La chiave non possiede lo scope richiesto.");
+      const candidates = requestTenantCandidates(req);
+      if (candidates.length > 1) return publicError(res, 403, "suite_control_plane_tenant_mismatch", "Header, path e body dichiarano tenant differenti.");
+      if (candidates.length === 1 && candidates[0] !== record.tenant_id) {
+        return publicError(res, 403, "suite_control_plane_tenant_scope_mismatch", "La chiave non e autorizzata per il tenant richiesto.");
+      }
+      req.suiteAuth = {
+        key_id: record.key_id,
+        tenant_id: record.tenant_id,
+        scopes: [...record.scopes],
+      };
+      return next();
+    };
+  }
+
+  return {
+    require: requireScopes,
+    tenantId: (req) => req.suiteAuth?.tenant_id || records[0]?.tenant_id || "",
+    status: () => ({
+      configured: records.length > 0,
+      production,
+      key_bindings: records.length,
+      tenant_bindings: uniqueValues(records.map((record) => record.tenant_id)),
+      scopes: uniqueValues(records.flatMap((record) => record.scopes)),
+      tenant_bound: records.length > 0 && records.every((record) => Boolean(record.tenant_id)),
+    }),
   };
 }
 
@@ -2392,6 +2612,7 @@ function createUniversalCoreClient(options = {}) {
       { label: "action_evaluator", path: "/v1/action-evaluator", payload: toActionEvaluatorPayload(payload, tenantId) },
       { label: "legacy_action_mediation", path: "/v1/action-mediation/evaluate", payload },
     ], payload, tenantId),
+    probe: () => request("GET", "/healthz", undefined, defaultTenantId),
   };
 }
 
@@ -2456,6 +2677,85 @@ function createNyraSuiteClient(options = {}) {
     coreStatus: () => request("GET", "/api/nyra/suite/core/status"),
     customerIntelligenceContract: () => request("GET", "/api/nyra/suite/customer-intelligence/contract"),
     decisionPreview: (payload = {}) => request("POST", "/api/nyra/suite/decision-preview", payload),
+    probe: () => request("GET", "/healthz"),
+  };
+}
+
+function localRuntimeReadiness({ storage, auth, architecture, coreClient, nyraClient, production }) {
+  const authStatus = auth.status();
+  const boundTenant = authStatus.tenant_bindings[0] || "";
+  const coreStatus = coreClient.status(boundTenant || undefined);
+  const nyraStatus = nyraClient.status();
+  const persistentRequired = String(process.env.SUITE_REQUIRE_PERSISTENT_STORAGE || (production ? "true" : "false")).toLowerCase() !== "false";
+  const checks = {
+    auth_configured: authStatus.configured === true,
+    auth_tenant_bound: authStatus.tenant_bound === true,
+    branch_architecture_valid: architecture.validation?.ok === true,
+    storage_writable: storage.writable !== false,
+    storage_persistent: !persistentRequired || storage.persistent === true,
+    universal_core_configured: coreStatus.configured === true,
+    universal_core_tenant_scoped: coreStatus.scope_status === "scoped" || coreStatus.scope_match === true,
+    nyra_configured: nyraStatus.configured === true,
+    nyra_tenant_scoped: nyraStatus.scope_status === "scoped" && (!boundTenant || nyraStatus.tenant_id === boundTenant),
+  };
+  const missing = Object.entries(checks).filter(([, ready]) => !ready).map(([key]) => key);
+  return {
+    ready: missing.length === 0,
+    generated_at: nowIso(),
+    mode: "configuration_and_safe_dependency_probes",
+    checks,
+    missing,
+    storage: {
+      mode: storage.mode,
+      persistent: storage.persistent === true,
+      writable: storage.writable !== false,
+      persistent_required: persistentRequired,
+    },
+    auth: authStatus,
+    branch_architecture: architecture.validation,
+    universal_core: coreStatus,
+    nyra_suite: nyraStatus,
+  };
+}
+
+async function runtimeReadiness(context) {
+  const local = localRuntimeReadiness(context);
+  const remoteProbeEnabled = context.probeRemote ?? String(
+    process.env.SUITE_READINESS_PROBE_REMOTE || (context.production ? "true" : "false"),
+  ).toLowerCase() !== "false";
+  const dependencies = {
+    universal_core: { checked: false, ok: local.checks.universal_core_configured, code: "configuration_only" },
+    nyra_suite: { checked: false, ok: local.checks.nyra_configured, code: "configuration_only" },
+  };
+  if (remoteProbeEnabled) {
+    const [coreProbe, nyraProbe] = await Promise.all([
+      typeof context.coreClient.probe === "function" ? context.coreClient.probe() : Promise.resolve({ success: true, code: "probe_not_supported" }),
+      typeof context.nyraClient.probe === "function" ? context.nyraClient.probe() : Promise.resolve({ success: true, code: "probe_not_supported" }),
+    ]);
+    dependencies.universal_core = {
+      checked: true,
+      ok: coreProbe?.success === true,
+      http_status: Number(coreProbe?.http_status || 0),
+      code: String(coreProbe?.code || coreProbe?.error || (coreProbe?.success ? "ok" : "probe_failed")).slice(0, 120),
+    };
+    dependencies.nyra_suite = {
+      checked: true,
+      ok: nyraProbe?.success === true,
+      http_status: Number(nyraProbe?.http_status || 0),
+      code: String(nyraProbe?.code || nyraProbe?.error || (nyraProbe?.success ? "ok" : "probe_failed")).slice(0, 120),
+    };
+  }
+  const dependencyReady = Object.values(dependencies).every((probe) => probe.ok === true);
+  return {
+    ...local,
+    ready: local.ready && dependencyReady,
+    remote_probe_enabled: remoteProbeEnabled,
+    dependencies,
+    missing: [
+      ...local.missing,
+      ...(dependencies.universal_core.ok ? [] : ["universal_core_probe"]),
+      ...(dependencies.nyra_suite.ok ? [] : ["nyra_suite_probe"]),
+    ],
   };
 }
 
@@ -2464,39 +2764,117 @@ export function createSuiteControlPlane(options = {}) {
   const storage = options.storage || createSuiteControlStorage();
   const coreClient = options.coreClient || createUniversalCoreClient(options.universalCore || {});
   const nyraClient = options.nyraClient || createNyraSuiteClient(options.nyraSuite || {});
-  const auth = createAuth();
+  const architecture = options.branchArchitecture || loadSuiteBranchArchitecture();
+  const production = options.production ?? process.env.NODE_ENV === "production";
+  const auth = createAuth({ ...(options.auth || {}), production });
+  const readinessContext = {
+    storage,
+    auth,
+    architecture,
+    coreClient,
+    nyraClient,
+    production,
+    probeRemote: options.probeRemote,
+  };
+  const readinessProbeCacheMs = Math.max(5000, Number(process.env.SUITE_READINESS_PROBE_CACHE_MS || 30000));
+  let readinessProbeCache = { expires_at: 0, value: null };
 
   app.use(express.json({ limit: "1mb" }));
 
+  function cockpitForTenant(tenantId, nodeId = "") {
+    const rawNode = storage.nodeForTenant(tenantId, nodeId);
+    const node = rawNode ? {
+      ...rawNode,
+      status: nodeStatus(rawNode),
+      heartbeat_fresh: nodeHeartbeatFresh(rawNode),
+      readiness: nodeReadiness(rawNode),
+    } : null;
+    return buildCockpit360Summary({
+      tenantDashboard: storage.tenantDashboard(tenantId),
+      node,
+      architecture,
+      coreStatus: coreClient.status(tenantId),
+      nyraStatus: nyraClient.status(),
+      serviceReadiness: localRuntimeReadiness(readinessContext),
+    });
+  }
+
+  async function cachedRuntimeReadiness() {
+    if (readinessProbeCache.value && readinessProbeCache.expires_at > Date.now()) return readinessProbeCache.value;
+    const value = await runtimeReadiness(readinessContext);
+    readinessProbeCache = { expires_at: Date.now() + readinessProbeCacheMs, value };
+    return value;
+  }
+
+  function publicBoundTenant(req, res) {
+    const bindings = auth.status().tenant_bindings;
+    const requested = String(req.query?.tenant_id || req.get("x-sh-tenant-id") || bindings[0] || "").trim();
+    if (!requested) {
+      publicError(res, 503, "suite_control_plane_tenant_binding_not_configured");
+      return "";
+    }
+    const tenantId = sanitizeId(requested, "tenant");
+    if (!bindings.includes(tenantId)) {
+      publicError(res, 403, "suite_control_plane_tenant_scope_mismatch", "Tenant OAuth non autorizzato dal binding server-side.");
+      return "";
+    }
+    return tenantId;
+  }
+
+  app.get("/livez", (req, res) => {
+    res.json({ ok: true, live: true, service: "skinharmony-suite-control-plane", version: SERVICE_VERSION, generated_at: nowIso() });
+  });
+
   app.get("/health", (req, res) => {
+    const readiness = localRuntimeReadiness(readinessContext);
     res.json({
       ok: true,
       service: "skinharmony-suite-control-plane",
       version: SERVICE_VERSION,
       storage_mode: storage.mode,
-      storage_persistent: storage.mode === "file",
+      storage_persistent: storage.persistent === true,
+      storage_writable: storage.writable !== false,
       node_liveness: {
         stale_after_ms: NODE_STALE_AFTER_MS,
         stale_after_minutes: Number((NODE_STALE_AFTER_MS / 60000).toFixed(1)),
       },
-      universal_core: coreClient.status(),
+      universal_core: readiness.universal_core,
       nyra_suite: nyraClient.status(),
+      readiness: {
+        ready: readiness.ready,
+        checks: readiness.checks,
+        missing: readiness.missing,
+      },
       generated_at: nowIso(),
     });
   });
 
-  app.get("/api/suite/overview", auth, (req, res) => {
+  app.get("/readyz", async (req, res) => {
+    const readiness = await cachedRuntimeReadiness();
+    return res.status(readiness.ready ? 200 : 503).json({
+      ok: readiness.ready,
+      ready: readiness.ready,
+      service: "skinharmony-suite-control-plane",
+      version: SERVICE_VERSION,
+      probe_cache_ms: readinessProbeCacheMs,
+      ...readiness,
+    });
+  });
+
+  app.get("/api/suite/overview", auth.require("suite:read"), (req, res) => {
+    const tenantId = auth.tenantId(req);
     res.json({
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
-      overview: storage.overview(),
+      tenant_id: tenantId,
+      overview: storage.overview(tenantId),
     });
   });
 
-
-  app.get("/api/suite/control-plane/dashboard", auth, (req, res) => {
-    const dashboard = storage.controlPlaneDashboard();
+  app.get("/api/suite/control-plane/dashboard", auth.require("suite:read"), (req, res) => {
+    const tenantId = auth.tenantId(req);
+    const dashboard = storage.controlPlaneDashboard(tenantId);
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2511,7 +2889,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/tenants/:tenantId/dashboard", auth, (req, res) => {
+  app.get("/api/suite/tenants/:tenantId/dashboard", auth.require("suite:read"), (req, res) => {
     const dashboard = storage.tenantDashboard(req.params.tenantId);
     res.json({
       ok: true,
@@ -2524,7 +2902,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/runtime-map/contract", auth, (req, res) => {
+  app.get("/api/suite/runtime-map/contract", auth.require("suite:read"), (req, res) => {
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2533,8 +2911,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/nyra/branch-map", auth, (req, res) => {
-    const branchMap = loadNyraSuiteBranchMap();
+  app.get("/api/suite/nyra/branch-map", auth.require("suite:read"), (req, res) => {
+    const branchMap = architecture;
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2544,6 +2922,8 @@ export function createSuiteControlPlane(options = {}) {
       owner_confirmation_required: true,
       branch_count: branchMap.branch_keys.length,
       branch_keys: branchMap.branch_keys,
+      architecture_schema: branchMap.schema,
+      architecture_validation: branchMap.validation,
       branch_map: branchMap,
       safety_policy: {
         no_auto_execute: true,
@@ -2554,18 +2934,29 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/ecosystem/tracks", auth, (req, res) => {
-    const overview = storage.overview();
+  app.get("/api/suite/ecosystem/tracks", auth.require("suite:read"), (req, res) => {
+    const tenantId = auth.tenantId(req);
+    const overview = storage.overview(tenantId);
     res.json({
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
-      tracks: buildEcosystemTracks(overview, storage.runbookCatalog(), coreClient.status()),
+      tracks: buildEcosystemTracks(overview, storage.runbookCatalog(), coreClient.status(tenantId)),
     });
   });
 
-  app.get("/api/suite/nyra/core/status", auth, async (req, res) => {
-    const requestedTenant = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || nyraClient.status().tenant_id, "tenant");
+  app.get("/api/suite/tenants/:tenantId/cockpit-360", auth.require("suite:read"), (req, res) => {
+    const tenantId = sanitizeId(req.params.tenantId, "tenant");
+    return res.json(cockpitForTenant(tenantId, req.query.node_id || ""));
+  });
+
+  app.get("/api/suite/cockpit-360", auth.require("suite:read"), (req, res) => {
+    const tenantId = auth.tenantId(req);
+    return res.json(cockpitForTenant(tenantId, req.query.node_id || ""));
+  });
+
+  app.get("/api/suite/nyra/core/status", auth.require("suite:read"), async (req, res) => {
+    const requestedTenant = auth.tenantId(req);
     if (requestedTenant !== nyraClient.status().tenant_id) {
       return publicError(res, 403, "nyra_suite_tenant_scope_mismatch", "La route Nyra Suite e limitata al tenant configurato.");
     }
@@ -2583,8 +2974,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/nyra/customer-intelligence/contract", auth, async (req, res) => {
-    const requestedTenant = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || nyraClient.status().tenant_id, "tenant");
+  app.get("/api/suite/nyra/customer-intelligence/contract", auth.require("suite:read"), async (req, res) => {
+    const requestedTenant = auth.tenantId(req);
     if (requestedTenant !== nyraClient.status().tenant_id) {
       return publicError(res, 403, "nyra_suite_tenant_scope_mismatch", "La route Nyra Suite e limitata al tenant configurato.");
     }
@@ -2602,12 +2993,29 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/nyra/decision-preview", auth, async (req, res) => {
-    const requestedTenant = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || nyraClient.status().tenant_id, "tenant");
+  async function handleNyraDecisionPreview(req, res, compatibilityRoute = "") {
+    const requestedTenant = auth.tenantId(req);
     if (requestedTenant !== nyraClient.status().tenant_id) {
       return publicError(res, 403, "nyra_suite_tenant_scope_mismatch", "La route Nyra Suite e limitata al tenant configurato.");
     }
-    const result = await nyraClient.decisionPreview({ ...(req.body || {}), tenant_id: requestedTenant });
+    const branchSelection = normalizeRequestedSuiteBranches(architecture, req.body?.branches || req.body?.branch_keys || []);
+    if (!branchSelection.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: "nyra_suite_unknown_branch",
+        unknown_branches: branchSelection.unknown,
+        allowed_branches: architecture.branch_keys,
+      });
+    }
+    const cockpit = cockpitForTenant(requestedTenant, req.body?.node_id || "");
+    const hydratedPayload = buildNyraDecisionPreviewPayload({
+      body: req.body || {},
+      tenantId: requestedTenant,
+      cockpit,
+      architecture,
+      selectedBranches: branchSelection.selected,
+    });
+    const result = await nyraClient.decisionPreview(hydratedPayload);
     if (!result.success) {
       return publicError(res, result.http_status || 503, result.code || "nyra_suite_decision_preview_unavailable", result.message || "Preview Nyra/Core Suite non disponibile.");
     }
@@ -2615,16 +3023,28 @@ export function createSuiteControlPlane(options = {}) {
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
-      source: "nyra_suite_bridge",
+      source: compatibilityRoute ? "nyra_suite_compatibility_bridge" : "nyra_suite_bridge",
+      compatibility_route: compatibilityRoute || null,
+      canonical_route: "/api/suite/nyra/decision-preview",
       tenant_id: requestedTenant,
       mode: "preview_only",
       execution_allowed: false,
+      hydration: {
+        server_side: true,
+        cockpit_schema: cockpit.schema_version,
+        cockpit_revision_hash: cockpit.revision_hash || "",
+        selected_branches: hydratedPayload.branches,
+        raw_customer_data_included: false,
+      },
       nyra: result,
     });
-  });
+  }
 
-  app.post("/api/suite/nodes/heartbeat", auth, (req, res) => {
-    const node = storage.heartbeat(req.body || {});
+  app.post("/api/suite/nyra/decision-preview", auth.require("suite:preview"), (req, res) => handleNyraDecisionPreview(req, res));
+  app.post("/api/suite/core/nira-bridge", auth.require("suite:preview"), (req, res) => handleNyraDecisionPreview(req, res, "/api/suite/core/nira-bridge"));
+
+  app.post("/api/suite/nodes/heartbeat", auth.require("suite:ingest"), (req, res) => {
+    const node = storage.heartbeat({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.json({
       ok: true,
       accepted: true,
@@ -2635,8 +3055,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/nodes/snapshot", auth, (req, res) => {
-    const node = storage.snapshot(req.body || {});
+  app.post("/api/suite/nodes/snapshot", auth.require("suite:ingest"), (req, res) => {
+    const node = storage.snapshot({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.json({
       ok: true,
       accepted: true,
@@ -2647,8 +3067,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/evidence", auth, (req, res) => {
-    const { node, event } = storage.evidence(req.body || {});
+  app.post("/api/suite/evidence", auth.require("suite:ingest"), (req, res) => {
+    const { node, event } = storage.evidence({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.json({
       ok: true,
       accepted: true,
@@ -2659,8 +3079,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/events/ingest", auth, (req, res) => {
-    const { node, event } = storage.siteEvent(req.body || {});
+  app.post("/api/suite/events/ingest", auth.require("suite:ingest"), (req, res) => {
+    const { node, event } = storage.siteEvent({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.json({
       ok: true,
       accepted: true,
@@ -2675,7 +3095,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/tenants/:tenantId/events/summary", auth, (req, res) => {
+  app.get("/api/suite/tenants/:tenantId/events/summary", auth.require("suite:read"), (req, res) => {
     const days = Math.max(1, Math.min(90, Number(req.query.days || 30)));
     res.json({
       ok: true,
@@ -2686,7 +3106,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/tenants/:tenantId/analytics/action-plan", auth, (req, res) => {
+  app.get("/api/suite/tenants/:tenantId/analytics/action-plan", auth.require("suite:read"), (req, res) => {
     const days = Math.max(1, Math.min(90, Number(req.query.days || 30)));
     const summary = storage.siteEventsSummary(req.params.tenantId, days);
     res.json({
@@ -2698,8 +3118,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/commerce/snapshot", auth, (req, res) => {
-    const { node, snapshot } = storage.commerceSnapshot(req.body || {});
+  app.post("/api/suite/commerce/snapshot", auth.require("suite:ingest"), (req, res) => {
+    const { node, snapshot } = storage.commerceSnapshot({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.json({
       ok: true,
       accepted: true,
@@ -2715,8 +3135,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/marketing/journeys/dispatch", auth, (req, res) => {
-    const { node, dispatch } = storage.marketingJourneyDispatch(req.body || {});
+  app.post("/api/suite/marketing/journeys/dispatch", auth.require("suite:dispatch"), (req, res) => {
+    const { node, dispatch } = storage.marketingJourneyDispatch({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.json({
       ok: true,
       accepted: true,
@@ -2741,7 +3161,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/tenants/:tenantId/commerce/summary", auth, (req, res) => {
+  app.get("/api/suite/tenants/:tenantId/commerce/summary", auth.require("suite:read"), (req, res) => {
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2751,7 +3171,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/runbooks", auth, (req, res) => {
+  app.get("/api/suite/runbooks", auth.require("suite:read"), (req, res) => {
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2760,8 +3180,19 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/integrations/google/status", auth, (req, res) => {
-    const tenantId = req.query.tenant_id || req.get("x-sh-tenant-id") || "";
+  app.get("/api/suite/runbooks/catalog-spec", auth.require("suite:read"), (req, res) => {
+    const catalog = buildRunbookCatalogSpec();
+    res.json({
+      ok: true,
+      service: "suite_control_plane",
+      version: SERVICE_VERSION,
+      ...catalog,
+      catalog,
+    });
+  });
+
+  app.get("/api/suite/integrations/google/status", auth.require("suite:read"), (req, res) => {
+    const tenantId = auth.tenantId(req);
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2770,7 +3201,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/integrations/google/provider-config", auth, (req, res) => {
+  app.get("/api/suite/integrations/google/provider-config", auth.require("suite:read"), (req, res) => {
     res.json({
       ok: true,
       service: "suite_control_plane",
@@ -2781,7 +3212,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/integrations/google/provider-config", auth, (req, res) => {
+  app.post("/api/suite/integrations/google/provider-config", auth.require("suite:admin"), (req, res) => {
     const provider = req.body?.provider && typeof req.body.provider === "object" ? req.body.provider : req.body || {};
     const validation = validateGoogleConnectorSetup({
       provider,
@@ -2813,7 +3244,8 @@ export function createSuiteControlPlane(options = {}) {
   });
 
   app.get("/api/suite/integrations/google/connect", (req, res) => {
-    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const tenantId = publicBoundTenant(req, res);
+    if (!tenantId) return undefined;
     const status = buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId));
     const payload = {
       ok: true,
@@ -2841,7 +3273,8 @@ export function createSuiteControlPlane(options = {}) {
   });
 
   app.get("/api/suite/integrations/google/oauth/start", (req, res) => {
-    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+    const tenantId = publicBoundTenant(req, res);
+    if (!tenantId) return undefined;
     const provider = resolveGoogleProviderConfig(storage.googleProviderConfig());
     const status = buildGoogleConnectorStatus(tenantId, storage.googleProviderConfig(), storage.googleTenantConnection(tenantId));
     if (!status.provider_ready) {
@@ -2955,8 +3388,8 @@ export function createSuiteControlPlane(options = {}) {
     }));
   });
 
-  app.get("/api/suite/integrations/google/accounts", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+  app.get("/api/suite/integrations/google/accounts", auth.require("suite:read"), async (req, res) => {
+    const tenantId = auth.tenantId(req);
     const connection = storage.googleTenantConnection(tenantId);
     if (!connection || connection.connected !== true) {
       return publicError(res, 409, "google_tenant_not_connected", "Tenant Google non ancora collegato.");
@@ -2982,8 +3415,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/integrations/google/accounts/select", auth, (req, res) => {
-    const tenantId = sanitizeId(req.body?.tenant_id || req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+  app.post("/api/suite/integrations/google/accounts/select", auth.require("suite:govern"), (req, res) => {
+    const tenantId = auth.tenantId(req);
     const saved = storage.selectGoogleAccounts(tenantId, req.body || {});
     if (!saved) {
       return publicError(res, 409, "google_tenant_not_connected", "Tenant Google non ancora collegato.");
@@ -3000,8 +3433,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/integrations/google/funnel/overview", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || "tenant_demo", "tenant");
+  app.get("/api/suite/integrations/google/funnel/overview", auth.require("suite:read"), async (req, res) => {
+    const tenantId = auth.tenantId(req);
     const days = Math.max(7, Math.min(90, Number(req.query.days || 30)));
     const connection = storage.googleTenantConnection(tenantId);
     if (!connection || connection.connected !== true) {
@@ -3075,7 +3508,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/integrations/google/validate", auth, (req, res) => {
+  app.post("/api/suite/integrations/google/validate", auth.require("suite:preview"), (req, res) => {
     const validation = validateGoogleConnectorSetup(req.body || {});
     res.status(validation.allowed ? 200 : 409).json({
       ok: validation.allowed,
@@ -3087,7 +3520,7 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/governance/validate", auth, (req, res) => {
+  app.post("/api/suite/governance/validate", auth.require("suite:govern"), (req, res) => {
     const manifest = req.body?.governance_manifest || req.body?.manifest || req.body || {};
     const validation = validateGovernanceRequest(manifest);
     res.status(validation.allowed ? 200 : 409).json({
@@ -3100,8 +3533,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/customer-intelligence/contract", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.query.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
+  app.get("/api/suite/customer-intelligence/contract", auth.require("suite:read"), async (req, res) => {
+    const tenantId = auth.tenantId(req);
     const result = await coreClient.customerIntelligenceContract(tenantId);
     if (!result.success) {
       return publicError(res, result.http_status || 503, result.code || "customer_intelligence_contract_unavailable", result.message || "Contratto Customer Intelligence non disponibile.");
@@ -3116,8 +3549,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/customer-intelligence/readiness", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
+  app.post("/api/suite/customer-intelligence/readiness", auth.require("suite:preview"), async (req, res) => {
+    const tenantId = auth.tenantId(req);
     const result = await coreClient.customerIntelligenceReadiness(req.body || {}, tenantId);
     if (!result.success) {
       return publicError(res, result.http_status || 503, result.code || "customer_intelligence_readiness_unavailable", result.message || "Readiness Customer Intelligence non disponibile.");
@@ -3133,8 +3566,8 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/core/action-mediation", auth, async (req, res) => {
-    const tenantId = sanitizeId(req.body?.tenant_id || req.get("x-sh-tenant-id") || coreClient.status().tenant_id || "suite-control-plane", "tenant");
+  app.post("/api/suite/core/action-mediation", auth.require("suite:govern"), async (req, res) => {
+    const tenantId = auth.tenantId(req);
     const action = req.body?.action || req.body || {};
     const governanceManifest = req.body?.governance_manifest || req.body?.manifest || null;
 
@@ -3176,8 +3609,9 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/runbooks/preview", auth, (req, res) => {
-    const preview = storage.runbookPreview(req.body || {});
+  app.post("/api/suite/runbooks/preview", auth.require("suite:preview"), (req, res) => {
+    if (!storage.nodeForTenant(auth.tenantId(req), req.body?.node_id || "")) return publicError(res, 404, "suite_node_not_found");
+    const preview = storage.runbookPreview({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     if (!preview) return publicError(res, 404, "suite_runbook_not_found");
     res.json({
       ok: true,
@@ -3187,8 +3621,9 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/runbooks/dispatch", auth, (req, res) => {
-    const dispatch = storage.runbookDispatch(req.body || {});
+  app.post("/api/suite/runbooks/dispatch", auth.require("suite:dispatch"), (req, res) => {
+    if (!storage.nodeForTenant(auth.tenantId(req), req.body?.node_id || "")) return publicError(res, 404, "suite_node_not_found");
+    const dispatch = storage.runbookDispatch({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     if (!dispatch) return publicError(res, 404, "suite_runbook_not_found");
     res.status(dispatch.accepted ? 202 : 409).json({
       ok: dispatch.accepted,
@@ -3199,8 +3634,9 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.post("/api/suite/runbooks/artifacts", auth, (req, res) => {
-    const { node, artifact } = storage.runbookArtifact(req.body || {});
+  app.post("/api/suite/runbooks/artifacts", auth.require("suite:ingest"), (req, res) => {
+    if (!storage.nodeForTenant(auth.tenantId(req), req.body?.node_id || "")) return publicError(res, 404, "suite_node_not_found");
+    const { node, artifact } = storage.runbookArtifact({ ...(req.body || {}), tenant_id: auth.tenantId(req) });
     res.status(201).json({
       ok: true,
       accepted: true,
@@ -3213,19 +3649,21 @@ export function createSuiteControlPlane(options = {}) {
     });
   });
 
-  app.get("/api/suite/nodes/:nodeId/runbook-artifacts", auth, (req, res) => {
+  app.get("/api/suite/nodes/:nodeId/runbook-artifacts", auth.require("suite:read"), (req, res) => {
+    if (!storage.nodeForTenant(auth.tenantId(req), req.params.nodeId)) return publicError(res, 404, "suite_node_not_found");
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 50)));
     res.json({
       ok: true,
       service: "suite_control_plane",
       version: SERVICE_VERSION,
       node_id: sanitizeId(req.params.nodeId, "node"),
-      artifacts: storage.runbookArtifacts(req.params.nodeId, limit),
+      artifacts: storage.runbookArtifacts(req.params.nodeId, limit, auth.tenantId(req)),
     });
   });
 
-  app.get("/api/suite/nodes/:nodeId/dashboard", auth, (req, res) => {
-    const dashboard = storage.dashboard(req.params.nodeId);
+  app.get("/api/suite/nodes/:nodeId/dashboard", auth.require("suite:read"), (req, res) => {
+    if (!storage.nodeForTenant(auth.tenantId(req), req.params.nodeId)) return publicError(res, 404, "suite_node_not_found");
+    const dashboard = storage.dashboard(req.params.nodeId, auth.tenantId(req));
     if (!dashboard) return publicError(res, 404, "suite_node_not_found");
     res.json({
       ok: true,

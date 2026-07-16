@@ -1,9 +1,11 @@
 {
-  "schema": "nyra_suite_branch_map_v1",
-  "version": "2026-06-01",
+  "schema": "nyra_suite_branch_architecture_v2",
+  "compatibility_schema": "nyra_suite_branch_map_v1",
+  "version": "2026-07-16",
   "mode": "read_only_owner_confirmed",
   "source": "services/suite-control-plane/config/nyra-suite-branch-map.json",
-  "render_role": "reference_contract_for_suite_control_plane_and_core_bridge",
+  "render_role": "tenant_scoped_evidence_router_and_cockpit_builder",
+  "principle": "Suite raccoglie fatti minimizzati, Core giudica rischio e priorita, Nyra spiega, owner conferma ogni modifica reale.",
   "branch_keys": [
     "analytics_insight",
     "google_ads_ga4",
@@ -20,21 +22,504 @@
     "support_risk",
     "visual_content"
   ],
+  "pipeline": {
+    "stages": [
+      "bind_tenant",
+      "collect_evidence",
+      "validate_freshness",
+      "normalize_signals",
+      "apply_branch_rules",
+      "reconcile_dependencies",
+      "rank_attention",
+      "request_core_verdict",
+      "explain_with_nyra",
+      "prepare_owner_confirmed_action",
+      "verify_outcome",
+      "append_evidence"
+    ],
+    "state_precedence": ["blocked", "insufficient_data", "attention", "ready"],
+    "conflict_policy": [
+      "tenant_scope_failure_blocks_every_branch",
+      "stale_required_evidence_cannot_be_treated_as_ready",
+      "privacy_claim_pricing_license_and_payment_guards_override_growth_recommendations",
+      "core_block_overrides_nyra_recommendation",
+      "lower_confidence_reduces_actionability_but_never_hides_risk",
+      "no_branch_can_enable_execution"
+    ],
+    "priority_model": {
+      "type": "deterministic_attention_rank",
+      "inputs": ["blocking_evidence", "freshness_gap", "missing_required_evidence", "declared_business_impact", "owner_deadline"],
+      "confidence": "required_evidence_present_divided_by_required_evidence_total",
+      "prohibited": ["invented_revenue", "invented_customer_value", "opaque_ai_score", "cross_tenant_comparison"]
+    }
+  },
+  "branch_groups": {
+    "acquisition_intelligence": ["analytics_insight", "google_ads_ga4", "visual_content"],
+    "customer_intelligence": ["marketing_recall", "crm_sales", "customer_success"],
+    "commerce_governance": ["commerce_checkout", "product_registry", "technology_registry", "pricing_margin"],
+    "content_governance": ["claim_content", "visual_content"],
+    "platform_governance": ["license_waas", "render_operations", "support_risk"]
+  },
+  "branches": [
+    {
+      "key": "analytics_insight",
+      "label": "Insight sito",
+      "purpose": "Individuare dove il percorso digitale perde attenzione o conversione usando solo eventi aggregati e tracciabili.",
+      "owner_question": "Dove entrano le persone e dove si bloccano?",
+      "module_bindings": ["dashboard", "analytics", "lead_intelligence"],
+      "core_branch_bindings": ["event_taxonomy_guard", "funnel_conversion_guard", "customer_behavior_analysis", "observability_roi_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "decision_reasoning", "communication_explanation"],
+      "evidence_sources": [
+        { "id": "site_event_summary", "path": "tenant.site_events", "required": true, "aggregate_only": true },
+        { "id": "node_freshness", "path": "tenant.nodes[].readiness.checks.heartbeat_fresh", "required": true, "aggregate_only": true },
+        { "id": "google_funnel", "path": "connectors.google_funnel", "required": false, "aggregate_only": true }
+      ],
+      "signals": ["sessions", "cta_clicks", "form_submits", "checkout_events", "active_seconds", "top_paths", "top_sources", "tracking_gaps"],
+      "dependencies": { "hard": ["render_operations"], "soft": ["google_ads_ga4", "visual_content"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 0.67, "stale_after_seconds": 900, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_or_stale_event_spine_means_insufficient_data",
+          "tracking_gap_precedes_conversion_optimization",
+          "conversion_attention_requires_observed_events_not_estimates"
+        ]
+      },
+      "outputs": ["funnel_attention", "tracking_gap", "priority_path", "next_verification"],
+      "runbooks": ["customer_report", "smartdesk_bridge_check"],
+      "freshness_sla_seconds": 900,
+      "privacy": { "classification": "aggregate_behavioral", "raw_customer_data_allowed": false, "retention_role": "tenant_summary" },
+      "guardrails": ["no_page_mutation", "no_budget_change", "no_conversion_claim_without_event"],
+      "failure_fallback": { "state": "insufficient_data", "action": "refresh_event_spine_and_verify_tracking", "never": "infer_missing_sessions" },
+      "explainability": ["cite_event_window", "show_missing_events", "separate_observation_from_hypothesis"]
+    },
+    {
+      "key": "google_ads_ga4",
+      "label": "Google Ads e GA4",
+      "purpose": "Confrontare spesa, traffico e conversioni lette dai provider senza creare campagne o modificare budget.",
+      "owner_question": "I soldi spesi portano richieste vere?",
+      "module_bindings": ["google_ads", "analytics", "lead_intelligence"],
+      "core_branch_bindings": ["paid_ads_guard", "funnel_conversion_guard", "data_integration_orchestration", "observability_roi_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "research_evidence", "decision_reasoning"],
+      "evidence_sources": [
+        { "id": "google_connector", "path": "connectors.google", "required": true, "aggregate_only": true },
+        { "id": "google_funnel", "path": "connectors.google_funnel", "required": true, "aggregate_only": true },
+        { "id": "suite_events", "path": "tenant.site_events", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["impressions", "clicks", "cost", "ads_conversions", "ga4_sessions", "suite_leads", "landing_paths", "provider_diagnostics"],
+      "dependencies": { "hard": ["analytics_insight", "render_operations"], "soft": ["visual_content", "claim_content"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 3600, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "provider_or_account_not_connected_means_insufficient_data",
+          "tracking_mismatch_blocks_scale_recommendation",
+          "spend_without_verified_lead_requires_review_not_automatic_pause"
+        ]
+      },
+      "outputs": ["tracking_alignment", "paid_funnel_attention", "landing_priority", "budget_posture_preview"],
+      "runbooks": ["customer_report"],
+      "freshness_sla_seconds": 3600,
+      "privacy": { "classification": "aggregate_ad_metrics", "raw_customer_data_allowed": false, "retention_role": "tenant_summary" },
+      "guardrails": ["no_campaign_creation", "no_budget_mutation", "no_keyword_mutation", "no_auto_pause"],
+      "failure_fallback": { "state": "insufficient_data", "action": "repair_oauth_account_selection_or_tracking", "never": "equate_clicks_to_customers" },
+      "explainability": ["cite_provider_window", "show_ads_ga4_suite_delta", "state_tracking_limitations"]
+    },
+    {
+      "key": "marketing_recall",
+      "label": "Marketing e recall",
+      "purpose": "Preparare una coda prioritaria di follow-up consentiti, sempre come bozza da approvare.",
+      "owner_question": "Chi devo contattare oggi e perche?",
+      "module_bindings": ["lead_intelligence", "crm_b2b", "upsell_engine", "smartdesk_bridge"],
+      "core_branch_bindings": ["consent_ledger_guard", "lifecycle_crm_guard", "email_recall_guard", "journey_orchestration_guard", "customer_360_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "decision_reasoning", "risk_governance", "communication_explanation"],
+      "evidence_sources": [
+        { "id": "customer_360_summary", "path": "snapshot.cockpit_360_summary.customer", "required": true, "aggregate_only": true },
+        { "id": "journey_summary", "path": "snapshot.marketing_journey_builder", "required": true, "aggregate_only": true },
+        { "id": "consent_readiness", "path": "core.customer_intelligence", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["high_priority_profiles", "manual_review_profiles", "approval_queue_count", "consent_missing_count", "followup_due_count", "journey_block_count"],
+      "dependencies": { "hard": ["crm_sales", "customer_success", "claim_content", "license_waas"], "soft": ["analytics_insight"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 1800, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_or_revoked_consent_blocks_message_preparation_for_that_channel",
+          "manual_review_profile_never_enters_auto_send",
+          "priority_requires_source_reason_and_next_action"
+        ]
+      },
+      "outputs": ["recall_queue_summary", "consent_blocks", "message_draft_requirements", "owner_approval_queue"],
+      "runbooks": ["journey_builder_guarded_draft", "customer_360_profile_review"],
+      "freshness_sla_seconds": 1800,
+      "privacy": { "classification": "customer_aggregate_restricted", "raw_customer_data_allowed": false, "retention_role": "counts_and_reason_codes_only" },
+      "guardrails": ["no_auto_send", "consent_required", "owner_or_operator_confirmation", "no_raw_profile_in_cockpit"],
+      "failure_fallback": { "state": "blocked", "action": "refresh_consent_and_customer_summary", "never": "assume_consent" },
+      "explainability": ["show_reason_code", "show_consent_gate", "show_why_priority_changed"]
+    },
+    {
+      "key": "crm_sales",
+      "label": "CRM e vendite",
+      "purpose": "Ordinare account, opportunita e follow-up usando una sintesi CRM senza duplicare ERP o record cliente grezzi.",
+      "owner_question": "Quale cliente o azienda devo seguire prima?",
+      "module_bindings": ["crm_b2b", "b2b_engine", "waas_commercial", "lead_intelligence"],
+      "core_branch_bindings": ["customer_360_guard", "lifecycle_crm_guard", "customer_behavior_analysis", "support_success_guard", "billing_contract_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "decision_reasoning", "planning_prioritization"],
+      "evidence_sources": [
+        { "id": "customer_360_summary", "path": "snapshot.cockpit_360_summary.customer", "required": true, "aggregate_only": true },
+        { "id": "commerce_summary", "path": "tenant.commerce", "required": true, "aggregate_only": true },
+        { "id": "crm_freshness", "path": "snapshot.context_freshness_monitor", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["profiles_visible", "high_priority_profiles", "manual_review_profiles", "open_leads", "crm_erp_lite_orders", "owner_confirmation_required"],
+      "dependencies": { "hard": ["license_waas", "render_operations"], "soft": ["customer_success", "pricing_margin"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 1800, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_next_action_is_attention",
+          "owner_confirmation_required_is_never_auto_resolved",
+          "sales_priority_must_not_override_price_payment_or_privacy_block"
+        ]
+      },
+      "outputs": ["account_attention_summary", "pipeline_gap", "followup_priority", "commercial_guard_status"],
+      "runbooks": ["customer_360_profile_review", "customer_report"],
+      "freshness_sla_seconds": 1800,
+      "privacy": { "classification": "customer_aggregate_restricted", "raw_customer_data_allowed": false, "retention_role": "counts_scores_and_reason_codes" },
+      "guardrails": ["no_erp_duplication", "no_hard_delete", "no_order_creation", "no_payment_mutation"],
+      "failure_fallback": { "state": "insufficient_data", "action": "refresh_crm_cockpit_summary", "never": "rank_unknown_profiles" },
+      "explainability": ["cite_summary_source", "show_manual_review_reason", "separate_pipeline_fact_from_forecast"]
+    },
+    {
+      "key": "commerce_checkout",
+      "label": "Commerce e checkout",
+      "purpose": "Controllare il percorso ordine-pagamento-evasione senza catturare denaro o cambiare stock.",
+      "owner_question": "Il cliente riesce a comprare senza bloccarsi?",
+      "module_bindings": ["technology_ecommerce", "b2b_engine", "commerce_policy", "fulfillment_control", "payment_settlements"],
+      "core_branch_bindings": ["commerce_fulfillment_guard", "billing_contract_guard", "product_inventory_guard", "legal_privacy_compliance_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "risk_governance", "decision_reasoning"],
+      "evidence_sources": [
+        { "id": "commerce_summary", "path": "tenant.commerce", "required": true, "aggregate_only": true },
+        { "id": "checkout_events", "path": "tenant.site_events", "required": true, "aggregate_only": true },
+        { "id": "settlement_summary", "path": "snapshot.cockpit_360_summary.commerce", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["orders_count", "order_value", "checkout_events", "manual_settlement_rows", "owner_confirmation_required", "fulfillment_attention"],
+      "dependencies": { "hard": ["product_registry", "technology_registry", "pricing_margin", "license_waas"], "soft": ["analytics_insight", "crm_sales"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 900, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "payment_or_settlement_attention_blocks_fulfillment_recommendation",
+          "order_without_verified_checkout_event_is_attention",
+          "stock_price_and_license_guards_precede_commerce_action"
+        ]
+      },
+      "outputs": ["checkout_readiness", "settlement_attention", "fulfillment_block", "manual_verification_sequence"],
+      "runbooks": ["customer_report", "claim_price_guard_scan"],
+      "freshness_sla_seconds": 900,
+      "privacy": { "classification": "aggregate_commerce_restricted", "raw_customer_data_allowed": false, "retention_role": "counts_and_totals" },
+      "guardrails": ["no_payment_capture", "no_stock_mutation", "no_order_write", "no_checkout_change"],
+      "failure_fallback": { "state": "blocked", "action": "verify_order_payment_and_settlement_sources", "never": "infer_payment_state" },
+      "explainability": ["show_order_settlement_delta", "cite_source_window", "state_manual_verification"]
+    },
+    {
+      "key": "product_registry",
+      "label": "Product Registry",
+      "purpose": "Verificare completezza e coerenza del master prodotto prima dell uso in CRM, B2B o WooCommerce.",
+      "owner_question": "Il prodotto e pronto per CRM, B2B e WooCommerce?",
+      "module_bindings": ["technology_ecommerce", "warehouse_barcode", "price_list_engine"],
+      "core_branch_bindings": ["product_inventory_guard", "commerce_fulfillment_guard", "beauty_value_chain_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "risk_governance", "quality_verification"],
+      "evidence_sources": [
+        { "id": "commerce_inventory", "path": "tenant.commerce.latest.sections.product_inventory", "required": true, "aggregate_only": true },
+        { "id": "registry_summary", "path": "snapshot.cockpit_360_summary.registry.products", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["product_items", "low_stock_items", "missing_price_count", "missing_sku_count", "woo_unlinked_count", "visibility_attention_count"],
+      "dependencies": { "hard": ["render_operations"], "soft": ["pricing_margin", "commerce_checkout"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 3600, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_master_identifier_is_blocking_for_distribution",
+          "low_stock_is_attention_not_automatic_reorder",
+          "missing_official_price_blocks_publish_recommendation"
+        ]
+      },
+      "outputs": ["registry_completeness", "stock_attention", "channel_readiness", "data_repair_sequence"],
+      "runbooks": ["claim_price_guard_scan", "customer_report"],
+      "freshness_sla_seconds": 3600,
+      "privacy": { "classification": "commercial_master_aggregate", "raw_customer_data_allowed": false, "retention_role": "catalog_summary" },
+      "guardrails": ["no_stock_write", "no_price_publish", "no_channel_enable", "no_record_delete"],
+      "failure_fallback": { "state": "insufficient_data", "action": "refresh_product_registry_summary", "never": "invent_sku_price_or_stock" },
+      "explainability": ["show_missing_field_counts", "show_channel_dependency", "cite_registry_snapshot"]
+    },
+    {
+      "key": "technology_registry",
+      "label": "Technology Registry",
+      "purpose": "Verificare che tecnologie, modalita di vendita e requisiti di evasione siano completi e governati.",
+      "owner_question": "La tecnologia e pronta per vendita, ordine o preventivo?",
+      "module_bindings": ["technology_ecommerce", "warehouse_barcode", "fulfillment_control", "price_list_engine"],
+      "core_branch_bindings": ["product_inventory_guard", "technology_market", "beauty_value_chain_guard", "commerce_fulfillment_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "research_evidence", "risk_governance"],
+      "evidence_sources": [
+        { "id": "technology_inventory", "path": "tenant.commerce.latest.sections.technology_inventory", "required": true, "aggregate_only": true },
+        { "id": "technology_summary", "path": "snapshot.cockpit_360_summary.registry.technologies", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["technology_items", "missing_cost_count", "missing_sale_mode_count", "fulfillment_attention_count", "owner_confirmation_required", "claim_attention_count"],
+      "dependencies": { "hard": ["render_operations"], "soft": ["pricing_margin", "claim_content", "commerce_checkout"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 3600, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_sale_mode_or_fulfillment_is_attention",
+          "unverified_technical_claim_blocks_publish_recommendation",
+          "owner_confirmation_precedes_any_commercial_activation"
+        ]
+      },
+      "outputs": ["technology_readiness", "commercial_mode_gap", "fulfillment_gap", "claim_review_requirement"],
+      "runbooks": ["claim_price_guard_scan", "customer_report"],
+      "freshness_sla_seconds": 3600,
+      "privacy": { "classification": "commercial_master_aggregate", "raw_customer_data_allowed": false, "retention_role": "catalog_summary" },
+      "guardrails": ["no_fulfillment", "no_price_publish", "no_claim_publish", "no_inventory_write"],
+      "failure_fallback": { "state": "insufficient_data", "action": "refresh_technology_registry_summary", "never": "invent_specification_or_margin" },
+      "explainability": ["show_missing_commercial_fields", "show_claim_source_gap", "show_required_owner_gate"]
+    },
+    {
+      "key": "pricing_margin",
+      "label": "Prezzi e margini",
+      "purpose": "Segnalare incoerenze tra costo, listino, sconto e margine senza cambiare prezzi.",
+      "owner_question": "Il prezzo protegge il margine?",
+      "module_bindings": ["price_list_engine", "commerce_policy", "waas_commercial", "payment_settlements"],
+      "core_branch_bindings": ["beauty_value_chain_guard", "segmentation_offer_guard", "billing_contract_guard", "suite_governance", "codex_business_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "risk_governance", "decision_reasoning"],
+      "evidence_sources": [
+        { "id": "commerce_totals", "path": "tenant.commerce.totals", "required": true, "aggregate_only": true },
+        { "id": "margin_summary", "path": "snapshot.cockpit_360_summary.commerce", "required": true, "aggregate_only": true },
+        { "id": "official_list_status", "path": "snapshot.cockpit_360_summary.governance.pricing", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["revenue_net", "margin_net", "below_cost_count", "discount_attention_count", "missing_official_price_count", "settlement_attention_count"],
+      "dependencies": { "hard": ["product_registry", "technology_registry", "render_operations"], "soft": ["commerce_checkout", "crm_sales"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 3600, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_official_list_blocks_price_recommendation",
+          "below_cost_or_negative_margin_requires_owner_review",
+          "aggregate_margin_never_authorizes_item_price_change"
+        ]
+      },
+      "outputs": ["pricing_coherence", "margin_attention", "list_gap", "owner_review_requirement"],
+      "runbooks": ["claim_price_audit", "claim_price_guard_scan"],
+      "freshness_sla_seconds": 3600,
+      "privacy": { "classification": "commercial_financial_aggregate", "raw_customer_data_allowed": false, "retention_role": "totals_and_reason_codes" },
+      "guardrails": ["no_price_change", "no_discount_change", "official_list_required", "owner_confirmation_required"],
+      "failure_fallback": { "state": "blocked", "action": "load_official_list_and_refresh_cost_summary", "never": "invent_cost_price_or_margin" },
+      "explainability": ["cite_official_list_status", "show_formula_inputs", "separate_observed_margin_from_forecast"]
+    },
+    {
+      "key": "claim_content",
+      "label": "Claim e contenuti",
+      "purpose": "Valutare sicurezza, credibilita e coerenza di testi e claim prima della revisione umana.",
+      "owner_question": "Il testo e credibile, vendibile e sicuro?",
+      "module_bindings": ["claim_price_guard", "brand_governance", "social_channels", "dam_assets"],
+      "core_branch_bindings": ["ramo_testo", "marketing_copy", "content_localization_guard", "legal_privacy_compliance_guard", "translator_marketing_governance"],
+      "nyra_branch_bindings": ["research_evidence", "risk_governance", "communication_explanation"],
+      "evidence_sources": [
+        { "id": "claim_guard", "path": "snapshot.cockpit_360_summary.governance.claims", "required": true, "aggregate_only": true },
+        { "id": "content_freshness", "path": "snapshot.context_freshness_monitor", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["issues_total", "blocker_count", "medical_claim_count", "price_claim_count", "unverified_source_count", "review_required_count"],
+      "dependencies": { "hard": ["render_operations"], "soft": ["visual_content", "pricing_margin", "technology_registry"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 7200, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "medical_or_absolute_claim_is_blocking_for_publish",
+          "unverified_price_or_technical_claim_requires_source_review",
+          "rewrite_is_always_draft_until_owner_review"
+        ]
+      },
+      "outputs": ["claim_risk_summary", "publish_posture", "rewrite_requirements", "evidence_gap"],
+      "runbooks": ["claim_price_audit", "claim_price_guard_scan"],
+      "freshness_sla_seconds": 7200,
+      "privacy": { "classification": "content_aggregate", "raw_customer_data_allowed": false, "retention_role": "issue_counts_and_reason_codes" },
+      "guardrails": ["no_medical_claim", "no_absolute_guarantee", "no_auto_rewrite_publish", "source_required"],
+      "failure_fallback": { "state": "blocked", "action": "run_claim_guard_and_attach_sources", "never": "mark_publish_safe_without_scan" },
+      "explainability": ["show_issue_category", "cite_source_gap", "explain_publish_block"]
+    },
+    {
+      "key": "license_waas",
+      "label": "Licenze e WaaS",
+      "purpose": "Verificare entitlement, dominio, piano, scadenza e limiti prima di rendere disponibile un modulo.",
+      "owner_question": "Il cliente e attivo, in scadenza o a rischio?",
+      "module_bindings": ["license_registry", "license_renewals", "waas_onboarding", "update_server", "multi_site_dashboard"],
+      "core_branch_bindings": ["suite_governance", "billing_contract_guard", "support_success_guard", "workload_identity_delegation_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "risk_governance", "decision_provenance"],
+      "evidence_sources": [
+        { "id": "tenant_policy", "path": "snapshot.tenant_policy_surface", "required": true, "aggregate_only": true },
+        { "id": "license_summary", "path": "snapshot.cockpit_360_summary.license", "required": true, "aggregate_only": true },
+        { "id": "core_scope", "path": "core.scope_status", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["active_licenses", "expiring_licenses", "grace_period_count", "locked_modules", "scope_mismatch", "domain_mismatch"],
+      "dependencies": { "hard": ["render_operations"], "soft": ["customer_success", "support_risk"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 3600, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "tenant_or_domain_scope_mismatch_blocks_access",
+          "expiry_or_grace_period_creates_owner_followup_not_hard_delete",
+          "module_availability_follows_server_side_entitlement"
+        ]
+      },
+      "outputs": ["entitlement_posture", "renewal_attention", "module_scope", "domain_scope"],
+      "runbooks": ["setup_site_suite", "site_clone_readiness", "clone_waas_site"],
+      "freshness_sla_seconds": 3600,
+      "privacy": { "classification": "tenant_governance", "raw_customer_data_allowed": false, "retention_role": "entitlement_summary" },
+      "guardrails": ["no_hard_disable_without_audit", "no_cross_tenant_scope", "no_module_enable_without_entitlement", "no_key_exposure"],
+      "failure_fallback": { "state": "blocked", "action": "refresh_tenant_license_and_scope", "never": "assume_entitlement" },
+      "explainability": ["show_entitlement_source", "show_scope_mismatch", "show_expiry_and_grace_policy"]
+    },
+    {
+      "key": "customer_success",
+      "label": "Customer Success",
+      "purpose": "Rilevare onboarding incompleto, inattivita e rischio rinnovo usando indicatori di utilizzo minimizzati.",
+      "owner_question": "Il cliente sta usando davvero il sistema?",
+      "module_bindings": ["license_renewals", "smartdesk_bridge", "multi_site_dashboard", "core_reports"],
+      "core_branch_bindings": ["support_success_guard", "customer_360_guard", "customer_behavior_analysis", "lifecycle_crm_guard", "observability_roi_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "decision_reasoning", "planning_prioritization"],
+      "evidence_sources": [
+        { "id": "customer_summary", "path": "snapshot.cockpit_360_summary.customer", "required": true, "aggregate_only": true },
+        { "id": "license_summary", "path": "snapshot.cockpit_360_summary.license", "required": true, "aggregate_only": true },
+        { "id": "usage_summary", "path": "snapshot.cockpit_360_summary.operations", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["onboarding_attention_count", "inactive_nodes", "renewal_attention_count", "support_open_count", "module_adoption_gap_count", "followup_due_count"],
+      "dependencies": { "hard": ["crm_sales", "license_waas", "render_operations"], "soft": ["marketing_recall", "support_risk"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 1800, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "stale_node_is_not_evidence_of_customer_churn",
+          "renewal_attention_requires_license_and_usage_evidence",
+          "next_action_requires_owner_assignment"
+        ]
+      },
+      "outputs": ["onboarding_posture", "adoption_gap", "renewal_attention", "support_next_action"],
+      "runbooks": ["smartdesk_gold_customer_intelligence_sync", "customer_report", "customer_360_profile_review"],
+      "freshness_sla_seconds": 1800,
+      "privacy": { "classification": "customer_usage_aggregate", "raw_customer_data_allowed": false, "retention_role": "counts_and_statuses" },
+      "guardrails": ["no_churn_inference_from_single_signal", "no_automatic_promise", "no_auto_upsell", "owner_assignment_required"],
+      "failure_fallback": { "state": "insufficient_data", "action": "refresh_usage_license_and_crm_summary", "never": "label_customer_lost" },
+      "explainability": ["show_signal_window", "show_missing_usage_source", "separate_risk_from_confirmed_churn"]
+    },
+    {
+      "key": "render_operations",
+      "label": "Render e Control Plane",
+      "purpose": "Garantire tenant binding, heartbeat, snapshot, persistenza e dipendenze Core/Nyra prima di usare dati remoti.",
+      "owner_question": "Il nodo remoto e allineato e sicuro?",
+      "module_bindings": ["multi_site_dashboard", "update_server", "codex_automation", "core_reports"],
+      "core_branch_bindings": ["runtime_deployment_scaling_guard", "data_integration_orchestration", "observability_roi_guard", "change_impact_orchestration", "workload_identity_delegation_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "risk_governance", "quality_verification"],
+      "evidence_sources": [
+        { "id": "node_readiness", "path": "tenant.nodes[].readiness", "required": true, "aggregate_only": true },
+        { "id": "service_readiness", "path": "service.readyz", "required": true, "aggregate_only": true },
+        { "id": "core_scope", "path": "core.scope_status", "required": true, "aggregate_only": true },
+        { "id": "nyra_scope", "path": "nyra.scope_status", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["heartbeat_fresh", "snapshot_present", "storage_persistent", "storage_writable", "core_scoped", "nyra_scoped", "branch_map_valid"],
+      "dependencies": { "hard": [], "soft": ["support_risk"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 900, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "tenant_scope_mismatch_is_blocking",
+          "stale_heartbeat_blocks_node_dispatch_preview",
+          "nonpersistent_storage_blocks_production_readiness",
+          "dependency_probe_failure_blocks_readyz_not_livez"
+        ]
+      },
+      "outputs": ["runtime_posture", "node_freshness", "dependency_readiness", "recovery_sequence"],
+      "runbooks": ["smartdesk_bridge_check", "plugin_update_preflight"],
+      "freshness_sla_seconds": 900,
+      "privacy": { "classification": "runtime_metadata", "raw_customer_data_allowed": false, "retention_role": "operational_status" },
+      "guardrails": ["tenant_bound_key", "no_secret_echo", "no_cross_tenant_read", "no_auto_deploy"],
+      "failure_fallback": { "state": "blocked", "action": "restore_heartbeat_storage_or_dependency_scope", "never": "treat_last_seen_as_fresh_heartbeat" },
+      "explainability": ["show_each_readiness_check", "show_last_heartbeat_age", "show_dependency_code_without_secret"]
+    },
+    {
+      "key": "support_risk",
+      "label": "Supporto e rischio",
+      "purpose": "Raccogliere errori, permessi e regressioni in una coda verificabile senza allargare accessi.",
+      "owner_question": "Cosa puo rompersi o confondere il cliente?",
+      "module_bindings": ["dashboard", "core_reports", "update_server", "codex_automation"],
+      "core_branch_bindings": ["quality_verification_intelligence", "codex_security_guard", "legal_privacy_compliance_guard", "change_impact_orchestration", "decision_provenance_intelligence"],
+      "nyra_branch_bindings": ["research_evidence", "risk_governance", "quality_verification"],
+      "evidence_sources": [
+        { "id": "validation", "path": "snapshot.validation", "required": true, "aggregate_only": true },
+        { "id": "change_impact", "path": "snapshot.change_impact_orchestration", "required": true, "aggregate_only": true },
+        { "id": "evidence_summary", "path": "tenant.evidence", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["critical_issues", "missing_checks", "blocked_actions", "rollback_required", "permission_attention", "connector_attention"],
+      "dependencies": { "hard": ["render_operations"], "soft": ["license_waas", "claim_content"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 900, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "critical_issue_is_blocking_until_verified",
+          "missing_test_or_rollback_is_attention_for_change",
+          "permission_fix_must_be_minimum_scope"
+        ]
+      },
+      "outputs": ["risk_queue", "missing_verification", "rollback_posture", "minimum_scope_action"],
+      "runbooks": ["plugin_update_preflight", "smartdesk_bridge_check"],
+      "freshness_sla_seconds": 900,
+      "privacy": { "classification": "operational_security_metadata", "raw_customer_data_allowed": false, "retention_role": "reason_codes_and_evidence_ids" },
+      "guardrails": ["no_permission_widening", "no_error_suppression", "no_unverified_fix", "rollback_required_for_sensitive_change"],
+      "failure_fallback": { "state": "blocked", "action": "collect_test_rollback_and_permission_evidence", "never": "mark_issue_resolved_without_verify" },
+      "explainability": ["cite_failed_check", "show_required_test", "show_scope_delta"]
+    },
+    {
+      "key": "visual_content",
+      "label": "Visual Engine e pagine",
+      "purpose": "Ordinare problemi di gerarchia, CTA e resa visuale usando evidenze desktop/mobile e guardrail contenuto.",
+      "owner_question": "La pagina o immagine sembra premium e vende meglio?",
+      "module_bindings": ["waas_templates", "waas_project_builder", "dam_assets", "brand_governance"],
+      "core_branch_bindings": ["codex_website_visual_guard", "codex_ui_ux_guard", "ramo_testo", "marketing_copy", "codex_site_factory_guard"],
+      "nyra_branch_bindings": ["context_intelligence", "communication_explanation", "quality_verification"],
+      "evidence_sources": [
+        { "id": "visual_summary", "path": "snapshot.cockpit_360_summary.content", "required": true, "aggregate_only": true },
+        { "id": "analytics_summary", "path": "tenant.site_events", "required": true, "aggregate_only": true },
+        { "id": "claim_summary", "path": "snapshot.cockpit_360_summary.governance.claims", "required": true, "aggregate_only": true }
+      ],
+      "signals": ["desktop_review_missing", "mobile_review_missing", "cta_visibility_attention", "layout_attention", "claim_attention", "priority_path"],
+      "dependencies": { "hard": ["claim_content", "analytics_insight", "render_operations"], "soft": ["google_ads_ga4"] },
+      "decision_rules": {
+        "thresholds": { "minimum_evidence_ratio": 1, "stale_after_seconds": 7200, "attention_signal_count": 1, "blocking_signal_count": 1 },
+        "rules": [
+          "missing_desktop_or_mobile_evidence_means_insufficient_data",
+          "claim_block_overrides_visual_publish_recommendation",
+          "analytics_selects_priority_page_but_does_not_prove_design_causality"
+        ]
+      },
+      "outputs": ["visual_attention", "priority_surface", "responsive_verification", "draft_change_requirements"],
+      "runbooks": ["site_clone_readiness", "customer_report"],
+      "freshness_sla_seconds": 7200,
+      "privacy": { "classification": "content_design_metadata", "raw_customer_data_allowed": false, "retention_role": "issue_counts_and_asset_refs" },
+      "guardrails": ["no_auto_publish", "claim_guard_required", "desktop_mobile_verify", "approved_template_required"],
+      "failure_fallback": { "state": "insufficient_data", "action": "capture_desktop_mobile_and_claim_evidence", "never": "claim_conversion_lift_without_test" },
+      "explainability": ["cite_screenshot_or_audit_ref", "show_claim_dependency", "separate_design_observation_from_conversion_hypothesis"]
+    }
+  ],
   "guardrails": {
     "execution_allowed": false,
     "owner_confirmation_required": true,
     "core_required_for_sensitive_actions": true,
     "nyra_read_only": true,
-    "no_raw_customer_data_without_scoped_policy": true
+    "tenant_binding_required": true,
+    "no_raw_customer_data_without_scoped_policy": true,
+    "proposal_queue_is_not_execution": true
   },
   "bridge_payload_example": {
     "tenant_id": "tenant_id",
-    "text": "Leggi Suite e spiega cosa fare",
+    "text": "Leggi il Cockpit Suite e spiega cosa fare",
     "target_system": "suite",
     "branches": ["analytics_insight", "google_ads_ga4", "crm_sales"],
     "context": {
       "source": "suite_control_plane",
+      "cockpit_schema": "cockpit_360_summary_v1",
       "no_auto_execute": true
     }
+  },
+  "render_contract": {
+    "canonical_preview_endpoint": "/api/suite/nyra/decision-preview",
+    "compatibility_endpoint": "/api/suite/core/nira-bridge",
+    "cockpit_endpoint": "/api/suite/tenants/:tenantId/cockpit-360",
+    "execution_allowed": false,
+    "owner_confirmation_required": true
   }
 }

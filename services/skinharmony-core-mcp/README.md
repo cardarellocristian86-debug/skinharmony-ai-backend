@@ -23,6 +23,10 @@ MCP_SUPPORTED_SCOPES=core:read,core:govern
 UNIVERSAL_CORE_URL=https://your-universal-core.example.com
 UNIVERSAL_CORE_KEY=<server-side scoped Core key>
 UNIVERSAL_CORE_KEYS_JSON={"tenant-a":"server-side-key-a","tenant-b":"server-side-key-b"}
+SUITE_CONTROL_PLANE_URL=https://skinharmony-suite-control.onrender.com
+SUITE_CONTROL_PLANE_KEYS_JSON={"tenant-a":"server-side-suite-key-a","tenant-b":"server-side-suite-key-b"}
+SUITE_CONTROL_PLANE_TIMEOUT_MS=8000
+SUITE_CONTROL_PLANE_CACHE_TTL_MS=5000
 MCP_CHATGPT_TENANT_ID=tenant-a
 CORE_MCP_KEY=<server-side scoped Core key for MCP_CHATGPT_TENANT_ID>
 MCP_DEFAULT_TENANT_ID=owner-private
@@ -51,6 +55,34 @@ NYRA_GOD_MODE_EMERGENCY_STOP=false
 `UNIVERSAL_CORE_URL` is not set.
 
 Configure the Auth0 application as a public OAuth client for ChatGPT, allow only approved callback URLs, enable authorization code with PKCE, and disable password/implicit grants. Do not commit secrets. Auth0 must issue RS256 access tokens containing `scope` or `permissions`. The MCP merges both claims when Auth0 emits requested OAuth scopes in `scope` and RBAC API permissions in `permissions`; duplicate values are removed before per-tool authorization.
+
+## WordPress Suite Cockpit adapter
+
+Version `0.11.0` adds a tool-only adapter for the tenant-scoped Suite Control
+Plane. It exposes `suite_status`, `suite_cockpit_360`,
+`suite_branch_catalog`, `suite_branch_read`, `suite_decision_preview`,
+`suite_runbook_catalog` and `suite_runbook_preview`. No Suite dispatch,
+request, write or execution tool is registered.
+
+The adapter never accepts `tenant_id`, provider URLs or credentials in tool
+input. It derives the tenant from the authenticated MCP identity and selects a
+server-side key from `SUITE_CONTROL_PLANE_KEYS_JSON`. The compatibility pair
+`SUITE_CONTROL_PLANE_API_KEY` plus `SUITE_CONTROL_PLANE_TENANT_ID` may be used
+for one tenant only; configuring the key without its tenant fails startup.
+When the Auth0 tenant id and Suite tenant id intentionally differ, bind them
+explicitly, for example
+`{"codexai":{"tenant_id":"skinharmony-suite","secret":"server-side-key"}}`.
+
+Read tools retain the existing `core:read` OAuth scope. The two computational
+previews use the existing `core:govern` scope even though their MCP annotation
+remains read-only and they cannot execute: this avoids changing the deployed
+Auth0 consent surface while keeping preview access more restrictive. The
+server-to-server Suite key independently requires `suite:read` or
+`suite:preview` at the Control Plane.
+
+`search` and `fetch` keep the exact Company Knowledge input signatures
+`{query}` and `{id}`. Agent presence is derived from the MCP transport and is
+not added to those two public schemas.
 
 ## Nyra God Mode (`owner_root`)
 

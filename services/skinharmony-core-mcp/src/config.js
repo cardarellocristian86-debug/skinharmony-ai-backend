@@ -22,6 +22,58 @@ function jsonObject(value, name) {
   }
 }
 
+function parseSuiteControlPlaneKeys(value, singleKey, singleTenantId) {
+  const bindings = {};
+  const tenantMap = {};
+  const add = (identityTenantValue, suiteTenantValue, secretValue) => {
+    const identityTenantId = String(identityTenantValue || "").trim();
+    const suiteTenantId = String(suiteTenantValue || identityTenantId).trim();
+    const secret = String(secretValue || "").trim();
+    if (!identityTenantId || !suiteTenantId || !secret) return;
+    if (![identityTenantId, suiteTenantId].every((tenantId) => /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(tenantId))) {
+      throw new Error("SUITE_CONTROL_PLANE_KEYS_JSON contains an invalid tenant id");
+    }
+    if (bindings[identityTenantId] && (bindings[identityTenantId] !== secret || tenantMap[identityTenantId] !== suiteTenantId)) {
+      throw new Error(`SUITE_CONTROL_PLANE_KEYS_JSON contains duplicate tenant ${identityTenantId}`);
+    }
+    bindings[identityTenantId] = secret;
+    tenantMap[identityTenantId] = suiteTenantId;
+  };
+
+  if (value) {
+    let parsed;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error("SUITE_CONTROL_PLANE_KEYS_JSON must be valid JSON");
+    }
+    if (Array.isArray(parsed)) {
+      for (const record of parsed) {
+        const identityTenantId = record?.mcp_tenant_id || record?.identity_tenant_id || record?.tenant_id;
+        add(identityTenantId, record?.suite_tenant_id || record?.tenant_id || identityTenantId, record?.secret || record?.key || record?.api_key);
+      }
+    } else if (parsed && typeof parsed === "object") {
+      for (const [entryKey, entryValue] of Object.entries(parsed)) {
+        if (typeof entryValue === "string") add(entryKey, entryKey, entryValue);
+        else if (entryValue && typeof entryValue === "object") {
+          const identityTenantId = entryValue.mcp_tenant_id || entryValue.identity_tenant_id || entryKey;
+          add(identityTenantId, entryValue.suite_tenant_id || entryValue.tenant_id || identityTenantId, entryValue.secret || entryValue.key || entryValue.api_key);
+        }
+      }
+    } else {
+      throw new Error("SUITE_CONTROL_PLANE_KEYS_JSON must be an object or array");
+    }
+  }
+
+  const compatibilityKey = String(singleKey || "").trim();
+  const compatibilityTenant = String(singleTenantId || "").trim();
+  if (compatibilityKey && !compatibilityTenant) {
+    throw new Error("SUITE_CONTROL_PLANE_TENANT_ID is required with SUITE_CONTROL_PLANE_API_KEY");
+  }
+  add(compatibilityTenant, compatibilityTenant, compatibilityKey);
+  return { keys: bindings, tenantMap };
+}
+
 function integer(value, fallback, min, max) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) return fallback;
@@ -41,6 +93,12 @@ export function loadConfig(env = process.env) {
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
+  const suiteControlPlaneUrl = url(env.SUITE_CONTROL_PLANE_URL, "SUITE_CONTROL_PLANE_URL");
+  const suiteControlPlaneBindings = parseSuiteControlPlaneKeys(
+    env.SUITE_CONTROL_PLANE_KEYS_JSON,
+    env.SUITE_CONTROL_PLANE_API_KEY,
+    env.SUITE_CONTROL_PLANE_TENANT_ID,
+  );
   const agentSignatureSecret = String(env.AGENT_SIGNATURE_SECRET || "").trim();
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
@@ -78,6 +136,11 @@ export function loadConfig(env = process.env) {
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
+    suiteControlPlaneUrl,
+    suiteControlPlaneKeys: suiteControlPlaneBindings.keys,
+    suiteControlPlaneTenantMap: suiteControlPlaneBindings.tenantMap,
+    suiteControlPlaneTimeoutMs: integer(env.SUITE_CONTROL_PLANE_TIMEOUT_MS, 8_000, 100, 30_000),
+    suiteControlPlaneCacheTtlMs: integer(env.SUITE_CONTROL_PLANE_CACHE_TTL_MS, 5_000, 0, 60_000),
     agentSignatureSecret,
     defaultTenantId,
     tenantClaim,

@@ -39,6 +39,14 @@ services:
         sync: false
       - key: UNIVERSAL_CORE_KEY
         sync: false
+      - key: SUITE_CONTROL_PLANE_URL
+        value: https://skinharmony-suite-control.onrender.com
+      - key: SUITE_CONTROL_PLANE_KEYS_JSON
+        sync: false
+      - key: SUITE_CONTROL_PLANE_TIMEOUT_MS
+        value: "8000"
+      - key: SUITE_CONTROL_PLANE_CACHE_TTL_MS
+        value: "5000"
       - key: SHARED_WORK_MEMORY_ROOT
         value: ./shared-work-memory
       - key: DATABASE_URL

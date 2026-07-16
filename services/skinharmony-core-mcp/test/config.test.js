@@ -90,3 +90,40 @@ test("keeps an explicit tenant mapping over CORE_MCP_KEY", () => {
 
   assert.equal(config.universalCoreKeys.codexai, "explicit-key");
 });
+
+test("maps Suite Control Plane keys only to their configured tenants", () => {
+  const config = loadConfig({
+    SUITE_CONTROL_PLANE_URL: "https://suite.example.test/",
+    SUITE_CONTROL_PLANE_KEYS_JSON: JSON.stringify({
+      "tenant-a": "suite-key-a",
+      "tenant-b": { tenant_id: "tenant-b", secret: "suite-key-b", scopes: ["suite:read"] },
+      codexai: { tenant_id: "skinharmony-suite", secret: "suite-codex-key" },
+    }),
+    SUITE_CONTROL_PLANE_TIMEOUT_MS: "999999",
+    SUITE_CONTROL_PLANE_CACHE_TTL_MS: "-1",
+  });
+
+  assert.equal(config.suiteControlPlaneUrl, "https://suite.example.test");
+  assert.deepEqual(config.suiteControlPlaneKeys, { "tenant-a": "suite-key-a", "tenant-b": "suite-key-b", codexai: "suite-codex-key" });
+  assert.deepEqual(config.suiteControlPlaneTenantMap, { "tenant-a": "tenant-a", "tenant-b": "tenant-b", codexai: "skinharmony-suite" });
+  assert.equal(config.suiteControlPlaneTimeoutMs, 30000);
+  assert.equal(config.suiteControlPlaneCacheTtlMs, 0);
+});
+
+test("requires an explicit tenant binding for the single Suite key compatibility mode", () => {
+  assert.throws(() => loadConfig({ SUITE_CONTROL_PLANE_API_KEY: "suite-key" }), /SUITE_CONTROL_PLANE_TENANT_ID/);
+  const config = loadConfig({
+    SUITE_CONTROL_PLANE_URL: "https://suite.example.test",
+    SUITE_CONTROL_PLANE_API_KEY: "suite-key",
+    SUITE_CONTROL_PLANE_TENANT_ID: "tenant-a",
+  });
+  assert.deepEqual(config.suiteControlPlaneKeys, { "tenant-a": "suite-key" });
+  assert.deepEqual(config.suiteControlPlaneTenantMap, { "tenant-a": "tenant-a" });
+});
+
+test("rejects invalid Suite key maps", () => {
+  assert.throws(() => loadConfig({ SUITE_CONTROL_PLANE_KEYS_JSON: "{" }), /valid JSON/);
+  assert.throws(() => loadConfig({
+    SUITE_CONTROL_PLANE_KEYS_JSON: JSON.stringify({ "../tenant": "key" }),
+  }), /invalid tenant id/);
+});
