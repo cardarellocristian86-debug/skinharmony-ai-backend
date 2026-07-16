@@ -8,6 +8,7 @@
 - Scritture `await` e fail-closed per clienti, pagamenti e chiusure cassa.
 - Pagamento con prodotti: transazione PostgreSQL unica per pagamento, movimenti e stock (`BEGIN`/CAS/`COMMIT`); conflitto o errore esegue rollback e ricarica gli snapshot locali.
 - Movimento manuale di magazzino: movimento e giacenza vengono salvati nella stessa transazione snapshot; un errore non lascia movimenti senza aggiornamento stock.
+- Appuntamenti: creazione, modifica ed eliminazione attendono la persistenza PostgreSQL prima di invalidare cache agenda e snapshot analitici.
 - Conferma Gold onboarding: prevalidazione completa, snapshot in memoria per clienti/appuntamenti/pagamenti/import e un solo commit PostgreSQL. I duplicati nello stesso batch vengono scartati, il retry dopo successo è idempotente e una transazione fallita non modifica gli snapshot locali.
 - `409` per conflitto di revisione; `503` per indisponibilità della persistenza.
 - Flag `SMARTDESK_REQUIRE_DURABLE_PERSISTENCE=true`: il processo non parte senza `DATABASE_URL`.

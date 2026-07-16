@@ -1523,24 +1523,28 @@ app.get("/api/appointments", (req, res) => {
   }));
 });
 
-app.post("/api/appointments", (req, res) => {
+app.post("/api/appointments", async (req, res) => {
   try {
-    res.status(201).json(service.saveAppointment(req.body || {}, req.session));
+    res.status(201).json(await service.saveAppointment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'appuntamento");
   }
 });
 
-app.put("/api/appointments/:id", (req, res) => {
+app.put("/api/appointments/:id", async (req, res) => {
   try {
-    res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'appuntamento");
   }
 });
 
-app.delete("/api/appointments/:id", (req, res) => {
-  res.json(service.deleteAppointment(req.params.id, req.session));
+app.delete("/api/appointments/:id", async (req, res) => {
+  try {
+    res.json(await service.deleteAppointment(req.params.id, req.session));
+  } catch (error) {
+    sendBadRequest(res, error, "Impossibile eliminare l'appuntamento");
+  }
 });
 
 app.get("/api/catalog/services", (req, res) => {
