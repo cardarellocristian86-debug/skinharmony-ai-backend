@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createAgentPresence } from "./agent-presence.js";
+import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
@@ -188,7 +189,8 @@ function requireOwnedAgent(state, agentId, identity) {
 
 export function createCollaborationHandlers(config, options = {}) {
   const root = String(config.agentWorkspaceRoot || "").trim();
-  if (!root) throw new Error("agent_workspace_not_configured");
+  const postgres = createCollaborationPostgresStore(config, options);
+  if (!root && !postgres) throw new Error("agent_workspace_not_configured");
   const govern = options.govern;
 
   async function governed(identity, action, mutate) {
@@ -280,6 +282,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     task_list: async ({ status, limit = 50 }, identity) => {
+      if (postgres) return postgres.listTasks({ status, limit }, identity);
       if (status && !TASK_STATUSES.has(status)) fail("task_status_invalid");
       const state = readState(root, identity.tenantId);
       const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
@@ -288,6 +291,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     task_create: async ({ title, description = "", priority = "normal", idempotency_key = "" }, identity) => {
+      if (postgres) return postgres.createTask({ title, description, priority, idempotency_key }, identity);
       const taskTitle = requiredText(title, "task_title", 240);
       const taskDescription = optionalText(description, "task_description", 20_000);
       if (!PRIORITIES.has(priority)) fail("task_priority_invalid");
@@ -307,6 +311,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     task_claim: async ({ task_id, agent_id, expected_version }, identity) => {
+      if (postgres) return postgres.claimTask({ task_id, agent_id, expected_version }, identity);
       const taskId = requiredText(task_id, "task_id", 80);
       const agentId = safeId(agent_id, "agent");
       if (!Number.isInteger(Number(expected_version)) || Number(expected_version) < 1) fail("task_expected_version_required");
@@ -330,6 +335,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     task_update: async ({ task_id, agent_id, status, note = "", expected_version }, identity) => {
+      if (postgres) return postgres.updateTask({ task_id, agent_id, status, note, expected_version }, identity);
       const taskId = requiredText(task_id, "task_id", 80);
       const agentId = safeId(agent_id, "agent");
       if (!TASK_STATUSES.has(status) || status === "open") fail("task_status_invalid");
@@ -354,6 +360,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     agent_heartbeat: async ({ agent_id, client_type, session_id, display_name = "", capabilities = [] }, identity) => {
+      if (postgres) return postgres.heartbeat({ agent_id, client_type, session_id, display_name, capabilities }, identity);
       const presence = createAgentPresence(config, identity, { agent_id, client_type, session_id });
       const agentId = presence.agent_id;
       const clientType = presence.client_type;
@@ -396,11 +403,13 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     agent_list: async (_args, identity) => {
+      if (postgres) return postgres.listAgents(identity);
       const state = readState(root, identity.tenantId);
       return textResult({ agents: state.agents.map(publicAgent), revision: state.revision });
     },
 
     message_post: async ({ from_agent_id, to_agent_id = "all", body, thread_id = "", idempotency_key = "" }, identity) => {
+      if (postgres) return postgres.postMessage({ from_agent_id, to_agent_id, body, thread_id, idempotency_key }, identity);
       const fromAgentId = safeId(from_agent_id, "agent");
       const toAgentId = to_agent_id === "all" ? "all" : safeId(to_agent_id, "agent");
       const messageBody = requiredText(body, "message_body", 20_000);
@@ -433,6 +442,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     message_inbox: async ({ agent_id, unread_only = false, limit = 50 }, identity) => {
+      if (postgres) return postgres.inbox({ agent_id, unread_only, limit }, identity);
       const agentId = safeId(agent_id, "agent");
       const state = readState(root, identity.tenantId);
       requireOwnedAgent(state, agentId, identity);
@@ -444,6 +454,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     message_acknowledge: async ({ message_id, agent_id }, identity) => {
+      if (postgres) return postgres.acknowledge({ message_id, agent_id }, identity);
       const messageId = requiredText(message_id, "message_id", 80);
       const agentId = safeId(agent_id, "agent");
       return governed(identity, { action_type: "message.acknowledge", action_label: `Acknowledge agent message ${messageId}`, target: messageId }, async (state) => {

@@ -17,7 +17,7 @@ if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_deci
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
-const collaborationHandlers = config.agentWorkspaceRoot
+const collaborationHandlers = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
   ? createCollaborationHandlers(config, { govern })
   : {};
 const coreHandlers = createCoreHandlers(config, {
