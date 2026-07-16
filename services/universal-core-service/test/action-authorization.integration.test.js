@@ -56,6 +56,45 @@ test("allows high-risk deploy only with the existing strict reversible envelope"
   assert.equal(evaluate({ ...base, owner_confirmed: true }).authorization.allowed, true);
 });
 
+test("allows only the owner-confirmed, new PostgreSQL staging target through the action-risk gate", () => {
+  const base = {
+    action_type: "environment_configuration",
+    operation_class: "reversible_owner_confirmed_deploy",
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    configuration_changes: true,
+    environment: "staging",
+    target: "skinharmony-mcp-staging-db",
+    target_branch: "agent/multiagent-postgres-cloud",
+    resource_type: "postgresql",
+    create_new: true,
+    reuse_existing_database: false,
+    auth0_changes: false,
+    merge: false,
+    production_deploy: false,
+    delete: false,
+    target_commit: "6bd1aecda5defeb1c50e1e753d814b1e05c9b559",
+    confirmation_reference: "owner-confirmed-staging-postgres",
+  };
+  const allowed = evaluate({ ...base, owner_confirmed: true }).authorization;
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.state, "authorized_after_confirmation");
+  assert.equal(allowed.confirmation_satisfied, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_deploy");
+
+  for (const unsafe of [
+    { owner_confirmed: false }, { environment: "production" }, { target: "skinharmony-db" },
+    { rollback_ready: false }, { audit_ready: false }, { cross_tenant: true }, { destructive: true },
+    { bypass_orchestrator: true }, { target_branch: "main" }, { target: "another-db" },
+  ]) assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
+});
+
 test("allows only confirmed reversible internal writes", () => {
   const base = {
     action_type: "write",
