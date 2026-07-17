@@ -31,6 +31,11 @@ function normalizeRunInput(input = {}) {
     task: requireText(input.task, "task", 4_000),
     tools: normalizeTools(input.tools),
     metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? clone(input.metadata) : {},
+    learning_mode: input.learning_mode === undefined ? "governed_read_only" : (() => {
+      const mode = requireText(input.learning_mode, "learning_mode", 64);
+      if (!["frozen", "governed_read_only"].includes(mode)) throw new Error("learning_mode_invalid");
+      return mode;
+    })(),
   };
 }
 
@@ -163,21 +168,42 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       return clone(run);
     },
 
+    recordContextBuild({ run_id, tenant_id, phase = "compile", duration_ms }) {
+      const run = getRun(run_id, tenant_id);
+      const normalizedPhase = requireText(phase, "context_phase", 120);
+      const duration = Number(duration_ms);
+      if (!Number.isFinite(duration) || duration < 0 || duration > 300_000) throw new Error("context_duration_invalid");
+      appendTrace(run, "context_build", { phase: normalizedPhase, duration_ms: Number(duration.toFixed(3)) });
+      return clone(run);
+    },
+
     getMetrics({ tenant_id }) {
       const tenantId = requireText(tenant_id, "tenant_id", 120);
       const tenantRuns = [...runs.values()].filter((run) => run.tenant_id === tenantId);
       const status_counts = {};
       const tool_events = { success: 0, failure: 0, retry: 0 };
+      const context_build = { count: 0, total_ms: 0, max_ms: 0 };
       for (const run of tenantRuns) {
         status_counts[run.status] = (status_counts[run.status] || 0) + 1;
-        for (const trace of run.trace) if (trace.event === "tool_event" && tool_events[trace.data.outcome] !== undefined) tool_events[trace.data.outcome] += 1;
+        for (const trace of run.trace) {
+          if (trace.event === "tool_event" && tool_events[trace.data.outcome] !== undefined) tool_events[trace.data.outcome] += 1;
+          if (trace.event === "context_build") {
+            const duration = Number(trace.data.duration_ms || 0);
+            context_build.count += 1;
+            context_build.total_ms += duration;
+            context_build.max_ms = Math.max(context_build.max_ms, duration);
+          }
+        }
       }
+      context_build.total_ms = Number(context_build.total_ms.toFixed(3));
+      context_build.average_ms = context_build.count ? Number((context_build.total_ms / context_build.count).toFixed(3)) : 0;
       return {
         schema_version: "generic_agent_metrics_v1",
         tenant_id: tenantId,
         run_count: tenantRuns.length,
         status_counts,
         tool_events,
+        context_build,
       };
     },
 
