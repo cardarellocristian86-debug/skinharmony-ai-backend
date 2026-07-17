@@ -151,6 +151,30 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       return clone(run);
     },
 
+    restoreRun({ tenant_id, run_snapshot }) {
+      if (!run_snapshot || typeof run_snapshot !== "object" || Array.isArray(run_snapshot)) throw new Error("run_snapshot_invalid");
+      const normalized = normalizeRunInput({ ...run_snapshot, tenant_id });
+      const existing = runs.get(normalized.run_id);
+      if (existing) {
+        if (existing.tenant_id !== normalized.tenant_id) throw new Error("cross_tenant_run_denied");
+        return clone(existing);
+      }
+      const status = ["running", "waiting_handoff", "completed", "cancelled"].includes(run_snapshot.status) ? run_snapshot.status : "running";
+      const checkpoint = run_snapshot.checkpoint ? normalizeCheckpoint(run_snapshot.checkpoint) : null;
+      const trace = Array.isArray(run_snapshot.trace) ? clone(run_snapshot.trace).slice(-MAX_TRACE_EVENTS) : [];
+      const restored = {
+        ...normalized,
+        status,
+        created_at: run_snapshot.created_at || now(),
+        updated_at: now(),
+        checkpoint,
+        trace,
+      };
+      appendTrace(restored, "run_restored", { restored_from_checkpoint: true });
+      runs.set(restored.run_id, restored);
+      return clone(restored);
+    },
+
     getRun({ run_id, tenant_id }) {
       return clone(getRun(run_id, tenant_id));
     },
