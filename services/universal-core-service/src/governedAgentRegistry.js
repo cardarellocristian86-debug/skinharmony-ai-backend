@@ -59,6 +59,15 @@ export function governedAgentCatalog() {
   return clone(AGENT_CATALOG);
 }
 
+export function buildGovernedResearchWorkers({ task }) {
+  const researchTask = requireText(task, "task", 4_000);
+  return [
+    { worker_id: "research", agent_id: "research-scout", task: `Collect bounded cited evidence for: ${researchTask}`, dependencies: [], branch_depth: 1 },
+    { worker_id: "critic", agent_id: "evidence-critic", task: "Check freshness, contradictions, source quality, and policy compliance of the research evidence.", dependencies: ["research"], parent_worker_id: "research", branch_depth: 2 },
+    { worker_id: "synthesis", agent_id: "nyra-supervisor", task: "Synthesize verified evidence into a read-only recommendation and unresolved-risk list.", dependencies: ["critic"], parent_worker_id: "critic", branch_depth: 3 },
+  ];
+}
+
 export function createGovernedAgentRegistry({ now = () => new Date().toISOString(), idFactory = () => crypto.randomUUID() } = {}) {
   const activations = new Map();
 
