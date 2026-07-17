@@ -79,6 +79,7 @@ import { createGenericAgentRuntime } from "./genericAgentRuntime.js";
 import { createGenericAgentCheckpointStore } from "./genericAgentCheckpointStore.js";
 import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
+import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3242,6 +3243,24 @@ export function createUniversalCoreService(options = {}) {
     root: path.join(storageRoot, "generic-agent-checkpoints"),
   });
   const genericAgentOrchestrator = options.genericAgentOrchestrator || createGenericAgentOrchestrator(options.genericAgentOrchestratorOptions);
+  const genericAgentOrchestrationStore = options.genericAgentOrchestrationStore || createGenericAgentOrchestrationStore({
+    root: path.join(storageRoot, "generic-agent-orchestrations"),
+  });
+
+  function recoverGenericOrchestration(tenantId, planId) {
+    try {
+      return genericAgentOrchestrator.getPlan({ tenant_id: tenantId, plan_id: planId });
+    } catch (error) {
+      if (error.message !== "plan_not_found") throw error;
+      const record = genericAgentOrchestrationStore.load({ tenant_id: tenantId, plan_id: planId });
+      if (!record?.plan_snapshot) throw error;
+      return genericAgentOrchestrator.restorePlan({ tenant_id: tenantId, plan_snapshot: record.plan_snapshot });
+    }
+  }
+
+  function persistGenericOrchestration(plan) {
+    return genericAgentOrchestrationStore.save({ tenant_id: plan.tenant_id, plan_snapshot: plan });
+  }
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
   const app = express();
@@ -3334,6 +3353,7 @@ export function createUniversalCoreService(options = {}) {
     try {
       const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
       const plan = genericAgentOrchestrator.createPlan({ tenant_id: req.tenantId, run_id: run.run_id, workers: req.body?.workers });
+      persistGenericOrchestration(plan);
       audit.append("generic_agent_orchestration_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
       return res.status(201).json({ ok: true, tenant_id: req.tenantId, plan });
     } catch (error) {
@@ -3343,7 +3363,9 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/generic-agents/orchestration/:planId/claim", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
+      recoverGenericOrchestration(req.tenantId, req.params.planId);
       const claimed = genericAgentOrchestrator.claimReadyWorkers({ tenant_id: req.tenantId, plan_id: req.params.planId });
+      persistGenericOrchestration(genericAgentOrchestrator.getPlan({ tenant_id: req.tenantId, plan_id: req.params.planId }));
       audit.append("generic_agent_workers_claimed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: claimed.plan_id, worker_count: claimed.workers.length });
       return res.json({ ok: true, tenant_id: req.tenantId, ...claimed });
     } catch (error) {
@@ -3353,7 +3375,9 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/generic-agents/orchestration/:planId/workers/:workerId/complete", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
+      recoverGenericOrchestration(req.tenantId, req.params.planId);
       const plan = genericAgentOrchestrator.completeWorker({ tenant_id: req.tenantId, plan_id: req.params.planId, worker_id: req.params.workerId, result: req.body?.result });
+      persistGenericOrchestration(plan);
       audit.append("generic_agent_worker_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id, worker_id: req.params.workerId });
       return res.json({ ok: true, tenant_id: req.tenantId, plan });
     } catch (error) {
@@ -3363,7 +3387,9 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/generic-agents/orchestration/:planId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
+      recoverGenericOrchestration(req.tenantId, req.params.planId);
       const plan = genericAgentOrchestrator.cancelPlan({ tenant_id: req.tenantId, plan_id: req.params.planId });
+      persistGenericOrchestration(plan);
       audit.append("generic_agent_orchestration_cancelled", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id });
       return res.json({ ok: true, tenant_id: req.tenantId, plan });
     } catch (error) {
@@ -3373,7 +3399,9 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/generic-agents/orchestration/:planId/join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
+      recoverGenericOrchestration(req.tenantId, req.params.planId);
       const joined = genericAgentOrchestrator.coreJoin({ tenant_id: req.tenantId, plan_id: req.params.planId });
+      persistGenericOrchestration(genericAgentOrchestrator.getPlan({ tenant_id: req.tenantId, plan_id: req.params.planId }));
       audit.append("generic_agent_orchestration_core_joined", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: joined.plan_id, run_id: joined.run_id });
       return res.json({ ok: true, tenant_id: req.tenantId, joined, execution_allowed: false });
     } catch (error) {
