@@ -475,6 +475,9 @@ export const TOOLS = [
     worker_id: identifier,
     result: { type: "object", additionalProperties: true },
   }, ["plan_id", "worker_id"]), ["core:govern"], false, false),
+  tool("generic_agent_orchestration_cancel", "Cancel generic orchestration", "Cancel a tenant-scoped generic orchestration plan. Cancellation is terminal and does not execute any external action.", object({
+    plan_id: { type: "string", maxLength: 160 },
+  }, ["plan_id"]), ["core:govern"], false, false),
   tool("generic_agent_orchestration_join", "Join generic orchestration in Core", "Ask Core to join completed worker results after every planned worker has completed.", object({
     plan_id: { type: "string", maxLength: 160 },
   }, ["plan_id"]), ["core:govern"], false, false),
