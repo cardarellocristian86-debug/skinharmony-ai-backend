@@ -22,7 +22,7 @@ test("generic agent API persists tenant-scoped checkpoints and evaluates cases",
   };
 
   try {
-    const generated = await request("POST", "/v1/keys/generate", { tenant_id: "tenant-generic-agent", preset: "nyra_core_360_connector" });
+    const generated = await request("POST", "/v1/keys/generate", { tenant_id: "tenant-generic-agent", preset: "codex_automation" });
     const key = generated.json.key;
     const started = await request("POST", "/v1/generic-agents/runs", {
       agent_id: "researcher",
