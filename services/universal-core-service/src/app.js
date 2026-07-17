@@ -89,6 +89,8 @@ const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
 const SERVICE_VERSION = "0.10.2-nyra-live-validation";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
+const BUILD_COMMIT_SHA = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim() || null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -3564,6 +3566,11 @@ export function createUniversalCoreService(options = {}) {
       ok: true,
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
+      build: {
+        build_id: BUILD_ID,
+        commit_sha: BUILD_COMMIT_SHA,
+        commit_verifiable: Boolean(BUILD_COMMIT_SHA),
+      },
       mode: process.env.NODE_ENV || "development",
       render_ready: true,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
