@@ -3325,6 +3325,21 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  app.post("/v1/generic-agents/runs/:runId/model-reservations", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const run = genericAgentRuntime.reserveModelCall({
+        run_id: req.params.runId,
+        tenant_id: req.tenantId,
+        model_id: req.body?.model_id,
+        estimated_tokens: req.body?.estimated_tokens,
+      });
+      audit.append("generic_agent_model_reserved", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, model_id: req.body?.model_id, estimated_tokens: req.body?.estimated_tokens });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, run_id: run.run_id, model_usage: run.model_usage, model_budget: run.model_budget });
+    } catch (error) {
+      return publicError(res, error.message === "model_budget_exceeded" ? 429 : 400, error.message || "generic_agent_model_reservation_failed");
+    }
+  });
+
   app.post("/v1/generic-agents/runs/:runId/tool-events", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.recordToolEvent({
