@@ -32,6 +32,20 @@ test("generic agent API persists tenant-scoped checkpoints and evaluates cases",
     assert.equal(started.status, 201);
     assert.equal(started.json.run.tenant_id, "tenant-generic-agent");
 
+    const allowedToolEvent = await request("POST", `/v1/generic-agents/runs/${started.json.run.run_id}/tool-events`, {
+      tool_id: "web_search",
+      outcome: "success",
+    }, key);
+    assert.equal(allowedToolEvent.status, 200);
+    const deniedToolEvent = await request("POST", `/v1/generic-agents/runs/${started.json.run.run_id}/tool-events`, {
+      tool_id: "shell",
+      outcome: "success",
+    }, key);
+    assert.equal(deniedToolEvent.status, 400);
+    const metrics = await request("GET", "/v1/generic-agents/metrics", undefined, key);
+    assert.equal(metrics.status, 200);
+    assert.equal(metrics.json.metrics.tool_events.success, 1);
+
     const checkpointed = await request("POST", `/v1/generic-agents/runs/${started.json.run.run_id}/checkpoint`, {
       checkpoint: { cursor: "sources-collected", state: { sources: 3 }, idempotency_key: "checkpoint-1" },
       expected_revision: 0,
