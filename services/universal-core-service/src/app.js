@@ -86,6 +86,7 @@ import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
 import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQueueStore.js";
 import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js";
+import { createTenantProviderCredentialStore } from "./tenantProviderCredentialStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3264,6 +3265,10 @@ export function createUniversalCoreService(options = {}) {
     ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
     : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
   const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
+  const credentialVaultSecret = String(process.env.GOVERNED_AGENT_KEY_ENCRYPTION_SECRET || "").trim();
+  const tenantProviderCredentials = options.tenantProviderCredentials || (governedAgentDatabaseUrl && credentialVaultSecret
+    ? createTenantProviderCredentialStore({ connectionString: governedAgentDatabaseUrl, masterSecret: credentialVaultSecret })
+    : null);
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3441,6 +3446,20 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
   });
+  app.get("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
+    return res.json({ ok: true, tenant_id: req.tenantId, provider: await tenantProviderCredentials.status({ tenant_id: req.tenantId }) });
+  });
+  app.put("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
+    try { const provider = await tenantProviderCredentials.saveOpenAi({ tenant_id: req.tenantId, api_key: req.body?.api_key }); audit.append("tenant_openai_provider_configured", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, provider: "openai", key_hint: provider.key_hint }); return res.status(201).json({ ok: true, tenant_id: req.tenantId, provider: { ...provider, execution_enabled: false } }); }
+    catch (error) { return publicError(res, 400, error.message || "tenant_provider_configuration_failed"); }
+  });
+  app.delete("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    if (req.body?.owner_confirmed !== true) return publicError(res, 403, "owner_confirmation_required");
+    if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
+    const result = await tenantProviderCredentials.removeOpenAi({ tenant_id: req.tenantId }); audit.append("tenant_openai_provider_removed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, provider: "openai", removed: result.removed }); return res.json({ ok: true, tenant_id: req.tenantId, ...result });
+  });
 
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
@@ -3613,6 +3632,7 @@ export function createUniversalCoreService(options = {}) {
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       governed_agent_runner: { mode: "manual_dry_run", provider_execution: false, max_jobs_per_tick: 2 },
+      tenant_provider_vault: { configured: Boolean(tenantProviderCredentials), execution_enabled: false },
       uptime_seconds: Math.round(process.uptime()),
     });
   });
