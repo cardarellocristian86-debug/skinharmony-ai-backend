@@ -87,6 +87,7 @@ import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
 import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQueueStore.js";
 import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js";
 import { createTenantProviderCredentialStore } from "./tenantProviderCredentialStore.js";
+import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3269,6 +3270,8 @@ export function createUniversalCoreService(options = {}) {
   const tenantProviderCredentials = options.tenantProviderCredentials || (governedAgentDatabaseUrl && credentialVaultSecret
     ? createTenantProviderCredentialStore({ connectionString: governedAgentDatabaseUrl, masterSecret: credentialVaultSecret })
     : null);
+  const tenantProviderSetupLinks = options.tenantProviderSetupLinks || (governedAgentDatabaseUrl ? createTenantProviderSetupLinkStore({ connectionString: governedAgentDatabaseUrl }) : null);
+  const providerSetupBaseUrl = String(process.env.CORE_SERVICE_PUBLIC_URL || "https://skinharmony-universal-core.onrender.com").replace(/\/$/, "");
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3290,6 +3293,9 @@ export function createUniversalCoreService(options = {}) {
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
+  app.use(express.urlencoded({ extended: false, limit: "8kb" }));
+  app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => { const token=String(req.params.token||"").trim(); if(!/^[A-Za-z0-9_-]{30,120}$/.test(token)) return res.status(404).send("Link non valido."); return res.type("html").send(`<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post"><label>API key<input name="api_key" type="password" autocomplete="off" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit">Collega in modo sicuro</button></form></body></html>`); });
+  app.post("/v1/generic-agents/providers/openai/setup/:token", async (req,res)=>{ if(!tenantProviderSetupLinks||!tenantProviderCredentials)return res.status(503).type("html").send("Configurazione provider non disponibile."); try{const link=await tenantProviderSetupLinks.consume({token:req.params.token});if(!link)return res.status(410).type("html").send("Link scaduto o già usato.");await tenantProviderCredentials.saveOpenAi({tenant_id:link.tenant_id,api_key:req.body?.api_key});audit.append("tenant_openai_provider_setup_completed",{tenant_id:link.tenant_id,provider:"openai"});return res.type("html").send("<h1>OpenAI collegato</h1><p>Puoi chiudere questa pagina e tornare in ChatGPT.</p>");}catch{return res.status(400).type("html").send("Chiave non valida. Richiedi un nuovo link da ChatGPT.");}});
 
   app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const agents = governedAgentRegistry.listAgents();
@@ -3446,6 +3452,7 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
   });
+  app.post("/v1/generic-agents/providers/openai/setup-links", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req,res)=>{if(!tenantProviderSetupLinks)return publicError(res,503,"tenant_provider_setup_not_configured");const link=await tenantProviderSetupLinks.issue({tenant_id:req.tenantId,ttl_minutes:req.body?.ttl_minutes});audit.append("tenant_openai_provider_setup_link_issued",{tenant_id:req.tenantId,key_id:req.coreKey.key_id,expires_at:link.expires_at});return res.status(201).json({ok:true,tenant_id:req.tenantId,setup_url:`${providerSetupBaseUrl}/v1/generic-agents/providers/openai/setup/${link.token}`,expires_at:link.expires_at,execution_enabled:false});});
   app.get("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
     return res.json({ ok: true, tenant_id: req.tenantId, provider: await tenantProviderCredentials.status({ tenant_id: req.tenantId }) });
