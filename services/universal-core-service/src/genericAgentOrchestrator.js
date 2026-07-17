@@ -10,8 +10,8 @@ function requireText(value, field, max = 160) {
   return normalized;
 }
 
-function normalizeWorkers(workers) {
-  if (!Array.isArray(workers) || workers.length === 0 || workers.length > 200) throw new Error("workers_invalid");
+function normalizeWorkers(workers, maxWorkers, maxBranchDepth) {
+  if (!Array.isArray(workers) || workers.length === 0 || workers.length > maxWorkers) throw new Error("workers_invalid");
   const seen = new Set();
   return workers.map((worker) => {
     const workerId = requireText(worker?.worker_id, "worker_id", 120);
@@ -24,6 +24,8 @@ function normalizeWorkers(workers) {
       dependencies: Array.isArray(worker?.dependencies)
         ? [...new Set(worker.dependencies.map((id) => requireText(id, "dependency_id", 120)))]
         : [],
+      parent_worker_id: worker?.parent_worker_id ? requireText(worker.parent_worker_id, "parent_worker_id", 120) : null,
+      branch_depth: Number.isInteger(worker?.branch_depth) ? worker.branch_depth : 0,
       status: "pending",
       result: null,
       error: null,
@@ -31,9 +33,13 @@ function normalizeWorkers(workers) {
   });
 }
 
-export function createGenericAgentOrchestrator({ maxConcurrent = 6, now = () => new Date().toISOString(), idFactory = () => crypto.randomUUID() } = {}) {
+export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers = 200, maxBranchDepth = 3, now = () => new Date().toISOString(), idFactory = () => crypto.randomUUID() } = {}) {
   const limit = Number(maxConcurrent);
+  const workerLimit = Number(maxWorkers);
+  const depthLimit = Number(maxBranchDepth);
   if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error("max_concurrent_invalid");
+  if (!Number.isInteger(workerLimit) || workerLimit < 1 || workerLimit > 2_000) throw new Error("max_workers_invalid");
+  if (!Number.isInteger(depthLimit) || depthLimit < 0 || depthLimit > 16) throw new Error("max_branch_depth_invalid");
   const plans = new Map();
 
   function planFor({ tenant_id, plan_id }) {
@@ -58,9 +64,13 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, now = () => 
   return {
     createPlan({ tenant_id, run_id, workers }) {
       const tenantId = requireText(tenant_id, "tenant_id", 120);
-      const normalized = normalizeWorkers(workers);
+      const normalized = normalizeWorkers(workers, workerLimit, depthLimit);
       const ids = new Set(normalized.map((worker) => worker.worker_id));
-      for (const worker of normalized) for (const dependency of worker.dependencies) if (!ids.has(dependency)) throw new Error("dependency_not_found");
+      for (const worker of normalized) {
+        if (worker.branch_depth < 0 || worker.branch_depth > depthLimit) throw new Error("branch_depth_exceeded");
+        for (const dependency of worker.dependencies) if (!ids.has(dependency)) throw new Error("dependency_not_found");
+        if (worker.parent_worker_id && !ids.has(worker.parent_worker_id)) throw new Error("parent_worker_not_found");
+      }
       const plan = {
         schema_version: "generic_agent_orchestration_v1",
         plan_id: `plan_${idFactory()}`,
@@ -68,6 +78,8 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, now = () => 
         run_id: requireText(run_id, "run_id", 160),
         status: "pending",
         max_concurrent: limit,
+        max_workers: workerLimit,
+        max_branch_depth: depthLimit,
         workers: normalized,
         created_at: now(),
         updated_at: now(),
@@ -105,9 +117,15 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, now = () => 
     cancelPlan({ tenant_id, plan_id }) {
       const plan = planFor({ tenant_id, plan_id });
       if (["completed", "failed", "cancelled"].includes(plan.status)) throw new Error("plan_not_cancellable");
-      for (const worker of plan.workers) if (worker.status === "pending" || worker.status === "running") worker.status = "cancelled";
+      let cancelledWorkerCount = 0;
+      for (const worker of plan.workers) {
+        if (worker.status === "pending" || worker.status === "running") {
+          worker.status = "cancelled";
+          cancelledWorkerCount += 1;
+        }
+      }
       refresh(plan);
-      return clone(plan);
+      return clone({ ...plan, kill_signal: { propagated: true, cancelled_worker_count: cancelledWorkerCount } });
     },
 
     coreJoin({ tenant_id, plan_id }) {
