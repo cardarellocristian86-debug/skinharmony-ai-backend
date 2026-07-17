@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 72007)
-Total output lines: 5532
-
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
@@ -2080,7 +2077,1291 @@ function buildBranchPayload(branch, payload = {}) {
     const crossBrand = data.cross_brand_data === true || data.scan_unowned_brand === true;
     const territory = textValue(data.territory || data.area || data.country);
     addSignal("node_identity", "Ruolo e brand scope nodo", role && brandScope ? 10 : 78, "network_governance", ["identity"]);
-    addS…22007 tokens truncated…ror(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_workflow_failed");
+    addSignal("distributor_relation", "Relazione distributore/territorio", distributorId || territory ? 18 : 56, "network_governance", ["relation"]);
+    addSignal("brand_scope_safety", "Dati brand isolati", crossBrand ? 96 : multiBrand ? 38 : 8, "tenant", ["brand_scope"]);
+    branchOutput = {
+      network_mode: "brand_scoped_relation_graph",
+      role,
+      brand_scope: brandScope,
+      distributor_id: distributorId,
+      owner_review_required: crossBrand,
+      blocked_if: { missing_brand_scope: !brandScope, cross_brand_data_leak: crossBrand, unscoped_multi_brand: multiBrand && !brandScope },
+    };
+  } else if (branch === "product_inventory_guard") {
+    const sku = textValue(data.sku || data.barcode || data.product_id);
+    const quantity = Number(data.quantity ?? data.stock ?? 0);
+    const movementType = textValue(data.movement_type || data.causal || data.event_type);
+    const source = textValue(data.source || data.order_id || data.operator_id);
+    const sellUnavailable = data.sell_unavailable === true || data.allow_backorder === true;
+    const backorderPolicy = data.backorder_policy === true || data.order_on_request === true;
+    const decrement = data.stock_decrement === true || movementType === "decrement";
+    addSignal("sku_identity", "SKU/barcode/prodotto identificato", sku ? 10 : 82, "product_inventory", ["sku"]);
+    addSignal("movement_trace", "Movimento stock tracciato", movementType && source ? 12 : 70, "product_inventory", ["movement"]);
+    addSignal("stock_policy", "Disponibilita o backorder governato", quantity > 0 || !sellUnavailable || backorderPolicy ? 14 : 88, "commerce_fulfillment", ["stock"]);
+    branchOutput = {
+      inventory_mode: "audited_stock_movement",
+      sku,
+      quantity: Number.isFinite(quantity) ? quantity : 0,
+      owner_review_required: decrement || sellUnavailable,
+      blocked_if: { missing_sku: !sku, decrement_without_source: decrement && !source, sell_unavailable_without_policy: sellUnavailable && !backorderPolicy && quantity <= 0 },
+    };
+  } else if (branch === "smartdesk_operations_guard") {
+    const module = textValue(data.module || data.area);
+    const plan = textValue(data.plan || data.tier);
+    const sector = textValue(data.sector || data.center_type || data.industry, "beauty_center");
+    const dataQualityScore = clampScore(data.data_quality_score ?? data.data_quality?.score ?? 0);
+    const todayAppointments = Number(data.today_appointments ?? data.appointments_today ?? 0);
+    const servicesMissingCosts = Number(data.services_missing_costs ?? data.missing_service_costs ?? 0);
+    const clientsMissingContact = Number(data.clients_missing_contact ?? data.missing_client_contacts ?? 0);
+    const unlinkedPayments = Number(data.unlinked_payments ?? data.payments_unlinked ?? 0);
+    const operatorConfirmed = data.operator_confirmed === true || data.owner_confirmed === true;
+    const aiChangesNumbers = data.ai_changes_numbers === true || data.correct_real_data === true;
+    const autoSend = data.auto_send === true || data.send_now === true;
+    const medicalClaim = data.medical_claim === true || data.protocol_medical === true;
+    const missingData = [];
+    if (dataQualityScore > 0 && dataQualityScore < 75) missingData.push("affidabilita dati sotto soglia");
+    if (servicesMissingCosts > 0) missingData.push(`${servicesMissingCosts} costi servizio mancanti`);
+    if (clientsMissingContact > 0) missingData.push(`${clientsMissingContact} clienti senza contatto completo`);
+    if (unlinkedPayments > 0) missingData.push(`${unlinkedPayments} pagamenti da collegare`);
+    const nextActions = [];
+    if (servicesMissingCosts > 0) nextActions.push("apri servizi/operatori e completa i costi prima di leggere la redditivita");
+    if (unlinkedPayments > 0) nextActions.push("apri cassa e collega pagamenti/appuntamenti prima del report");
+    if (todayAppointments <= 2) nextActions.push("apri agenda e controlla slot scoperti o clienti da richiamare");
+    if (clientsMissingContact > 0) nextActions.push("apri clienti e completa telefono/consenso per recall manuale o Gold");
+    if (!nextActions.length) nextActions.push(plan === "gold" ? "leggi priorita Gold e scegli la prima azione da confermare" : "continua controllo manuale su agenda, cassa e report");
+    addSignal("module_scope", "Modulo e piano definiti", module && plan ? 12 : 60, "smartdesk_operations", ["plan"]);
+    addSignal("plan_boundary", "Differenza Silver/Gold rispettata", plan === "gold" || plan === "silver" || plan === "base" ? 10 : 58, "smartdesk_operations", ["tier"]);
+    addSignal("data_completion", "Dati sufficienti per priorita utile", missingData.length ? 70 : 18, "smartdesk_operations", ["data_quality"]);
+    addSignal("ai_boundary", "AI non corregge numeri reali", aiChangesNumbers ? 96 : 8, "smartdesk_operations", ["ai_gold"]);
+    addSignal("operator_confirmation", "Conferma operatore per azioni", operatorConfirmed ? 14 : 52, "smartdesk_operations", ["confirm"]);
+    addSignal("message_and_protocol_safety", "Messaggi/protocolli prudenti", autoSend || medicalClaim ? 94 : 8, "smartdesk_operations", ["safety"]);
+    branchOutput = {
+      smartdesk_mode: "operator_confirmed_actions",
+      module,
+      plan,
+      sector,
+      readout_mode: plan === "gold" ? "executive_priority" : plan === "silver" ? "readonly_operational_control" : "manual_assist",
+      missing_data: missingData,
+      next_actions: nextActions.slice(0, 4),
+      communication_contract: plan === "gold"
+        ? "dire cosa fare, perche conta, cosa manca e quale azione confermare"
+        : "mostrare cosa controllare e dove intervenire manualmente",
+      execution_allowed: false,
+      owner_review_required: true,
+      blocked_if: { ai_changes_real_numbers: aiChangesNumbers, auto_send_message: autoSend, medical_protocol_claim: medicalClaim, missing_operator_confirmation: !operatorConfirmed },
+    };
+  } else if (branch === "beauty_protocol_guard") {
+    const objective = textValue(data.objective || data.goal || data.client_need);
+    const area = textValue(data.area || data.zone);
+    const technologies = normalizeList(data.technologies || data.devices, 20);
+    const operatorConfirmed = data.operator_confirmed === true;
+    const medical = data.medical_diagnosis === true || data.therapy_claim === true || data.guaranteed_result === true;
+    const dataReady = Boolean(objective && area && technologies.length);
+    addSignal("protocol_brief", "Dati protocollo completi", dataReady ? 12 : 72, "beauty_protocol", ["brief"]);
+    addSignal("non_medical_boundary", "Confine non medicale rispettato", medical ? 98 : 8, "claim", ["protocol"]);
+    addSignal("operator_review", "Conferma operatore", operatorConfirmed ? 12 : 64, "beauty_protocol", ["confirm"]);
+    branchOutput = {
+      protocol_mode: "non_medical_draft",
+      objective,
+      area,
+      technologies,
+      draft_allowed: true,
+      execution_allowed: false,
+      owner_review_required: true,
+      blocked_if: { missing_brief: !dataReady, medical_or_guaranteed_claim: medical, missing_operator_confirmation: !operatorConfirmed },
+    };
+  } else if (branch === "segmentation_offer_guard") {
+    const segment = textValue(data.segment || data.customer_segment || data.audience);
+    const pricePolicyReady = data.price_policy_ready === true || data.price_guard_ready === true;
+    const marginReady = data.margin_checked === true || data.margin_guard_ready === true;
+    const officialPrice = data.has_official_price === true || data.price_source === "official";
+    const inventedOffer = data.invented_offer === true || data.invented_discount === true || data.price_source === "invented";
+    const crossTenantOffer = data.cross_tenant_offer === true || data.cross_tenant === true;
+    if (!segment) missing.push("segment");
+    if (!pricePolicyReady) missing.push("price_policy");
+    addSignal("price_policy", "Listino e policy prezzo pronti", pricePolicyReady && officialPrice ? 10 : 82, "pricing", ["price_guard"]);
+    addSignal("margin_policy", "Margine e sconto sostenibili", marginReady ? 12 : 62, "pricing", ["margin"]);
+    addSignal("offer_integrity", "Offerta non inventata e scoped", inventedOffer || crossTenantOffer ? 96 : 12, "offer_strategy", ["scope"]);
+    branchOutput = {
+      offer_mode: "draft_with_price_guard",
+      segment,
+      price_guard_required: true,
+      owner_review_required: true,
+      publish_allowed: false,
+      blocked_if: { invented_offer: inventedOffer, cross_tenant_offer: crossTenantOffer, missing_price_policy: !pricePolicyReady },
+    };
+  } else if (branch === "funnel_conversion_guard") {
+    const funnelGoal = textValue(data.funnel_goal || data.goal || data.conversion_event);
+    const cta = textValue(data.cta || data.call_to_action);
+    const trackingReady = data.tracking_ready === true || data.consent_tracking_ready === true;
+    const checkoutChange = data.checkout_change === true || data.checkout_modification === true;
+    const inventedConversion = data.invented_conversion_rate === true || data.claim_guaranteed_growth === true;
+    if (!funnelGoal) missing.push("funnel_goal");
+    if (!cta) missing.push("cta");
+    addSignal("funnel_completeness", "Obiettivo, CTA e tracking funnel", 100 - [funnelGoal, cta, trackingReady].filter(Boolean).length * 28, "conversion", ["funnel"]);
+    addSignal("tracking_privacy", "Tracking privacy-safe", trackingReady ? 12 : 70, "privacy", ["tracking"]);
+    addSignal("checkout_safety", "Checkout non modificato senza owner", checkoutChange ? 84 : 10, "commerce", ["checkout"]);
+    addSignal("proof_integrity", "Conversioni non inventate", inventedConversion ? 92 : 10, "conversion", ["proof"]);
+    branchOutput = {
+      funnel_mode: "conversion_plan_review",
+      funnel_goal: funnelGoal,
+      cta,
+      publish_allowed: false,
+      owner_review_required: checkoutChange || inventedConversion,
+      blocked_if: { checkout_change_without_owner: checkoutChange, invented_conversion_rate: inventedConversion, tracking_missing: !trackingReady },
+    };
+  } else if (branch === "content_localization_guard") {
+    const sourceLocale = textValue(data.source_locale || "it");
+    const targetLocale = textValue(data.target_locale || data.locale || "");
+    const stableKeyPath = data.stable_key_path === true || Boolean(textValue(data.key_path));
+    const htmlBlob = data.html_blob === true || data.translate_html === true;
+    const glossaryReady = data.glossary_ready === true || data.tenant_glossary_ready === true;
+    const claimRecheck = data.claim_recheck_ready === true || data.claim_guard_ready === true;
+    if (!targetLocale) missing.push("target_locale");
+    if (!stableKeyPath) missing.push("key_path");
+    addSignal("atomic_strings", "Stringhe atomiche e key_path stabili", stableKeyPath && !htmlBlob ? 10 : 86, "localization", ["key_path"]);
+    addSignal("glossary_readiness", "Glossario e tono tenant", glossaryReady ? 12 : 48, "translation", ["glossary"]);
+    addSignal("claim_recheck", "Claim ricontrollati dopo localizzazione", claimRecheck ? 12 : 72, "claim", ["translation"]);
+    branchOutput = {
+      localization_mode: "structured_strings_only",
+      source_locale: sourceLocale,
+      target_locale: targetLocale,
+      publish_allowed: false,
+      fallback_locale: sourceLocale,
+      owner_review_required: !claimRecheck || htmlBlob,
+      blocked_if: { html_blob_translation: htmlBlob, unstable_key_path: !stableKeyPath, missing_claim_recheck: !claimRecheck },
+    };
+  } else if (branch === "codex_site_factory_guard") {
+    const sourceUrl = textValue(data.source_url || data.source_site || data.clone_source);
+    const targetTenant = textValue(data.target_tenant || data.tenant_target || payload.tenant_id || data.tenant_id);
+    const sourceTenant = textValue(data.source_tenant || data.tenant_source);
+    const contentScope = arrayValue(data.content_scope || data.pages || data.modules, 50);
+    const hasBackup = data.has_backup === true || data.backup_ready === true;
+    const stagingMode = data.staging_mode === true || data.mode === "staging" || data.publish_mode === "staging";
+    const publishIntent = data.publish_intent === true || data.live_overwrite === true || data.mode === "live";
+    const credentialsIncluded = data.credentials_included === true || data.copy_credentials === true || data.has_secrets === true;
+    const privateDataIncluded = data.contains_private_data === true || data.copy_customer_data === true || data.copy_orders === true;
+    const trackingClone = data.copy_tracking_ids === true || data.tracking_ids_included === true;
+    const legalPagesIncluded = data.legal_pages_included === true || data.privacy_cookie_terms_ready === true;
+    const claimPriceGuard = data.claim_price_guard_enabled === true || (data.claim_guard_enabled === true && data.price_guard_enabled === true);
+    const coreConnector = data.core_connector_enabled === true || data.core_ready === true;
+    if (!sourceUrl) missing.push("source_url");
+    if (!targetTenant) missing.push("target_tenant");
+    if (!contentScope.length) missing.push("content_scope");
+    if (!legalPagesIncluded) missing.push("legal_pages");
+    const tenantMismatch = Boolean(sourceTenant && targetTenant && sourceTenant !== targetTenant && data.cross_tenant_approved !== true);
+    const cloneLeakRisk = credentialsIncluded || privateDataIncluded || trackingClone;
+    const liveOverwriteRisk = publishIntent && (!hasBackup || !stagingMode);
+    const governanceMissing = [legalPagesIncluded, claimPriceGuard, coreConnector].filter(Boolean).length;
+    addSignal("missing_clone_inputs", "Input clonazione sito mancanti", missing.length * 18, "site_factory", ["clone_plan"]);
+    addSignal("tenant_scope_risk", "Rischio scope tenant nella clonazione", tenantMismatch ? 95 : 10, "tenant", ["tenant_isolation"]);
+    addSignal("data_leak_risk", "Rischio copia credenziali/dati privati/tracking", cloneLeakRisk ? 96 : 8, "security", ["privacy"]);
+    addSignal("live_overwrite_risk", "Rischio sovrascrittura sito live", liveOverwriteRisk ? 90 : 12, "release", ["staging"]);
+    addSignal("governance_readiness", "Readiness Core, claim, price e pagine legali", 100 - governanceMissing * 28, "governance", ["guardrails"]);
+    branchOutput = {
+      clone_mode: "staging_plan_only",
+      source_url: sourceUrl,
+      target_tenant: targetTenant,
+      source_tenant: sourceTenant || null,
+      content_scope_count: contentScope.length,
+      publish_allowed: false,
+      required_steps: [
+        "mappa pagine, menu, form, media, prodotti/offerte e shortcode",
+        "escludi credenziali, gateway, tracking ID, ordini, clienti e segreti",
+        "crea staging o bozza prima del live",
+        "collega Core, licenza, update policy, Claim Guard e Price Guard",
+        "verifica legal pages, SEO, redirect e traduzioni strutturate",
+        "richiedi owner confirmation prima di pubblicare o sovrascrivere",
+      ],
+      blocked_if: {
+        tenant_mismatch: tenantMismatch,
+        clone_leak_risk: cloneLeakRisk,
+        live_overwrite_risk: liveOverwriteRisk,
+      },
+    };
+  } else if (branch === "codex_website_visual_guard") {
+    const tenant = textValue(payload.tenant_id || data.tenant_id);
+    const brandKitReady = data.brand_tokens_ready === true || data.brand_kit_ready === true || data.uses_skinharmony_palette === true;
+    const responsiveReady = data.responsive === true || data.mobile_verified === true;
+    const textOverflow = data.text_overflow === true || data.overflowing_text === true;
+    const deadButtons = Number(data.dead_buttons ?? 0);
+    const nestedCards = data.nested_cards === true || data.card_inside_card === true;
+    const technicalLabels = data.technical_labels === true || data.internal_labels_public === true;
+    const mediaReady = data.has_media_assets === true || data.media_assets_ready === true;
+    const assetRights = data.asset_rights === true || data.asset_policy === "approved";
+    const buttonTargets = data.button_targets_verified === true || data.cta_links_verified === true;
+    const contrast = clampScore(data.contrast_score ?? 78, 78);
+    if (!brandKitReady) missing.push("brand_tokens");
+    if (!responsiveReady) missing.push("mobile_responsive_check");
+    if (!mediaReady) missing.push("media_assets");
+    if (!buttonTargets) missing.push("button_targets");
+    const brandRisk = brandKitReady ? 10 : 78;
+    const layoutRisk = (textOverflow ? 45 : 0) + (nestedCards ? 25 : 0) + (!responsiveReady ? 30 : 0);
+    const interactionRisk = Math.min(100, deadButtons * 25 + (buttonTargets ? 0 : 45));
+    const assetRisk = mediaReady && assetRights ? 10 : mediaReady ? 45 : 70;
+    const publicLabelRisk = technicalLabels ? 82 : 10;
+    addSignal("brand_system_mismatch", "Brand kit o palette non pronti", brandRisk, "visual", ["brand"]);
+    addSignal("layout_integrity", "Integrita layout, card e responsive", layoutRisk, "ux", ["layout"]);
+    addSignal("interaction_readiness", "Pulsanti e CTA verificati", interactionRisk, "ux", ["buttons"]);
+    addSignal("asset_readiness", "Asset visuali pertinenti e autorizzati", assetRisk, "visual", ["assets"]);
+    addSignal("public_language", "Etichette tecniche esposte al pubblico", publicLabelRisk, "ux", ["copy"]);
+    addSignal("contrast", "Contrasto e leggibilita", 100 - contrast, "accessibility", ["readability"]);
+    branchOutput = {
+      visual_mode: "premium_site_review",
+      tenant,
+      publish_allowed: false,
+      skinharmony_palette: tenant.includes("skin") || data.uses_skinharmony_palette === true ? "#4FB6D6" : "tenant_brand_tokens_required",
+      required_checks: [
+        "desktop e mobile senza testo fuori contenitore",
+        "card con dimensioni stabili e senza nesting inutile",
+        "ogni pulsante collegato a pagina, dialog, salvataggio o feedback",
+        "brand kit o palette SkinHarmony applicati",
+        "media pertinenti con diritti/sorgente approvati",
+        "nessuna etichetta tecnica interna nella UI pubblica",
+      ],
+      blocked_if: {
+        text_overflow: textOverflow,
+        dead_buttons: deadButtons > 0,
+        nested_cards: nestedCards,
+        technical_labels_public: technicalLabels,
+        missing_asset_rights: mediaReady && !assetRights,
+      },
+    };
+  } else if (branch === "codex_wordpress_platform_guard") {
+    const platform = textValue(data.platform || data.cms || "wordpress").toLowerCase();
+    const pluginType = textValue(data.plugin_type || data.module_type || "plugin");
+    const usesWooCommerce = data.uses_woocommerce === true || data.woocommerce === true;
+    const hasNonce = data.has_nonce === true || data.nonce === true;
+    const hasCapability = data.has_capability_check === true || data.capability_check === true;
+    const sanitizesInput = data.sanitizes_input === true || data.sanitize_input === true;
+    const escapesOutput = data.escapes_output === true || data.escape_output === true;
+    const configInZip = data.config_in_zip === true || data.writes_runtime_data_to_zip === true;
+    const shortcodeMutates = data.shortcode_mutates_state === true || data.shortcode_writes_data === true;
+    const assumesDependency = data.assumes_dependency === true || data.fatal_if_dependency_missing === true;
+    const hardcodedSecret = data.hardcoded_secret === true || data.secret_in_code === true || data.logs_secret === true;
+    const bypassCheckout = data.bypass_checkout === true || data.custom_checkout_without_woocommerce === true;
+    const autoUpdate = data.auto_update_without_preflight === true || data.aggressive_auto_update === true;
+    const crossTenant = data.cross_tenant_data_access === true || data.cross_tenant === true;
+    const hasRestPermission = data.rest_permission_callback === true || data.rest_permissions === true || data.uses_rest !== true;
+    const hasAdminFeedback = data.admin_feedback === true || data.buttons_have_feedback === true;
+    const hasTests = data.has_tests === true || data.smoke_test === true || data.tested === true;
+    const hasRollback = data.has_rollback === true || data.rollback_ready === true || data.update_touched !== true;
+    const securityMissing = [hasNonce, hasCapability, sanitizesInput, escapesOutput, hasRestPermission].filter(Boolean).length;
+    const structuralRisk = configInZip || shortcodeMutates || assumesDependency || bypassCheckout || autoUpdate || crossTenant;
+    if (!platform.includes("wordpress")) warnings.push("Ramo ottimizzato per WordPress/WooCommerce: verificare adapter se piattaforma diversa.");
+    if (usesWooCommerce && bypassCheckout) warnings.push("WooCommerce presente: evitare checkout parallelo non governato.");
+    addSignal("wp_security_baseline", "Nonce, capability, sanitize, escape e REST permission", 100 - securityMissing * 18, "security", ["wordpress"]);
+    addSignal("runtime_data_location", "Configurazione/dati runtime fuori dallo zip", configInZip ? 92 : 8, "architecture", ["plugin_data"]);
+    addSignal("shortcode_contract", "Shortcode senza mutazioni di stato", shortcodeMutates ? 88 : 8, "wordpress", ["shortcode"]);
+    addSignal("dependency_safety", "Feature detection e fallback dipendenze", assumesDependency ? 82 : 12, "compatibility", ["dependency"]);
+    addSignal("secret_handling", "Segreti non hardcoded e non loggati", hardcodedSecret ? 98 : 6, "security", ["secret"]);
+    addSignal("woocommerce_contract", "Checkout WooCommerce rispettato", bypassCheckout ? 86 : 10, "commerce", ["woocommerce"]);
+    addSignal("update_safety", "Update con preflight, manifest e rollback", autoUpdate || !hasRollback ? 72 : 12, "release", ["update"]);
+    addSignal("admin_operability", "Admin UI con feedback e test", hasAdminFeedback && hasTests ? 12 : 46, "ux", ["admin"]);
+    branchOutput = {
+      platform_mode: "wordpress_plugin_engineering_guard",
+      platform,
+      plugin_type: pluginType,
+      publish_allowed: false,
+      required_checks: [
+        "verifica nonce, capability, sanitize input ed escape output",
+        "usa option/post meta/CPT/storage controllato per dati runtime, non lo zip",
+        "shortcode solo render/read; mutazioni tramite REST/admin-post/AJAX autorizzati",
+        "WooCommerce tramite product/order meta, status hook e thank-you flow",
+        "feature detection per dipendenze opzionali e fallback senza fatal error",
+        "manifest/update con checksum, preflight, rollback e owner confirmation",
+        "admin UI con pulsanti collegati, feedback visibile e test smoke",
+      ],
+      blocked_if: {
+        missing_security_baseline: securityMissing < 5,
+        config_inside_zip: configInZip,
+        shortcode_mutates_state: shortcodeMutates,
+        fatal_dependency_assumption: assumesDependency,
+        hardcoded_secret: hardcodedSecret,
+        checkout_bypass: bypassCheckout,
+        unsafe_update: autoUpdate,
+        cross_tenant_data_access: crossTenant,
+      },
+      recommended_architecture: {
+        data_layer: "options/post_meta/cpt/custom_tables_if_needed",
+        render_layer: "shortcodes_blocks_templates_read_only",
+        mutation_layer: "rest_admin_post_ajax_with_nonce_capability",
+        commerce_layer: usesWooCommerce ? "woocommerce_hooks_order_meta_license_gate" : "adapter_or_quote_first",
+        external_layer: "adapter_timeout_retry_audit_no_secret_logs",
+      },
+      structural_risk: structuralRisk,
+    };
+  } else if (branch === "data_integration_orchestration") {
+    const sourceSystems = arrayValue(data.source_systems || data.sources || data.source_system, 20);
+    const targetSystems = arrayValue(data.target_systems || data.targets || data.target_system, 20);
+    const hasSchemaMapping = data.has_schema_mapping === true || data.schema_mapping_ready === true;
+    const idempotent = data.idempotent === true || data.idempotency_key === true;
+    const retryReady = data.retry_policy === true || data.has_retry_policy === true;
+    const timeoutReady = data.timeout_ready === true || data.has_timeout === true;
+    const dedupReady = data.deduplication === true || data.has_deduplication === true;
+    const webhookSigned = data.webhook_signature === true || data.signed_webhook === true || data.webhook !== true;
+    const containsPii = data.contains_pii === true || data.personal_data === true;
+    const directDb = data.direct_db_access === true || data.direct_cross_tenant_db_access === true;
+    const crossTenant = data.cross_tenant === true || data.cross_tenant_data_access === true;
+    const secretsInPayload = data.secrets_in_payload === true || data.logs_secret === true || data.secret_in_payload === true;
+    const bulkSync = data.bulk_sync === true || data.sync_mode === "bulk";
+    if (!sourceSystems.length) missing.push("source_systems");
+    if (!targetSystems.length) missing.push("target_systems");
+    if (!hasSchemaMapping) missing.push("schema_mapping");
+    const reliabilityReady = [idempotent, retryReady, timeoutReady, dedupReady, webhookSigned].filter(Boolean).length;
+    addSignal("mapping_readiness", "Readiness mapping dati sorgente/destinazione", hasSchemaMapping ? 12 : 78, "data_integration", ["mapping"]);
+    addSignal("idempotency_reliability", "Idempotenza, retry, timeout, deduplica e firma webhook", 100 - reliabilityReady * 18, "data_integration", ["sync"]);
+    addSignal("tenant_data_risk", "Rischio cross-tenant o accesso DB diretto", directDb || crossTenant ? 96 : 8, "tenant", ["tenant_isolation"]);
+    addSignal("payload_sensitivity", "PII o segreti nel payload/log", secretsInPayload ? 98 : containsPii ? 58 : 8, "privacy", ["payload"]);
+    addSignal("bulk_sync_risk", "Sync massivo senza controlli completi", bulkSync && reliabilityReady < 4 ? 78 : 14, "data_integration", ["bulk_sync"]);
+    branchOutput = {
+      integration_mode: "adapter_snapshot_sync",
+      source_systems: sourceSystems,
+      target_systems: targetSystems,
+      required_checks: [
+        "mappa schema, owner del dato e tenant scope",
+        "usa idempotency key, retry bounded, timeout e deduplica",
+        "firma/verifica webhook e niente segreti nei log",
+        "usa snapshot minimali o aggregati per PII e dati cliente",
+        "audit per import/export/sync e dead-letter manuale se fallisce",
+      ],
+      blocked_if: {
+        missing_schema_mapping: !hasSchemaMapping,
+        direct_db_access: directDb,
+        cross_tenant_scope: crossTenant,
+        secrets_in_payload: secretsInPayload,
+        non_idempotent_bulk_sync: bulkSync && !idempotent,
+      },
+    };
+  } else if (branch === "commerce_fulfillment_guard") {
+    const hasOfficialPrice = data.has_official_price === true || data.official_price === true || data.price_source === "official";
+    const checkoutConfirmed = data.checkout_confirmed === true || data.payment_status === "paid" || data.order_status === "paid";
+    const contractOrTrial = data.contract_approved === true || data.trial_authorized === true || data.owner_override === true;
+    const idempotency = data.order_idempotency_key === true || Boolean(textValue(data.idempotency_key));
+    const stockPolicy = data.stock_policy_ready === true || data.stock_policy === "configured";
+    const licensePolicy = data.license_policy_ready === true || data.license_policy === "configured";
+    const refundPolicy = data.refund_policy_ready === true || data.refund_policy === "configured";
+    const settlementPolicy = data.settlement_policy_ready === true || data.settlement_policy === "configured" || data.settlement_required !== true;
+    const inventedPrice = data.invented_price === true || data.price_source === "invented";
+    const licenseWithoutPayment = data.license_without_payment === true || (data.generate_license === true && !checkoutConfirmed && !contractOrTrial);
+    const chargeWithoutCheckout = data.charge_without_checkout === true || data.manual_charge === true;
+    const oversellStock = data.oversell_stock === true || data.stock_negative_allowed === true;
+    const doubleFulfillment = data.double_fulfillment === true || data.duplicate_order_processing === true;
+    if (!hasOfficialPrice) missing.push("official_price");
+    if (!idempotency) missing.push("idempotency_key");
+    const policyReady = [stockPolicy, licensePolicy, refundPolicy, settlementPolicy].filter(Boolean).length;
+    addSignal("price_source", "Prezzo da listino ufficiale/contratto", inventedPrice ? 98 : hasOfficialPrice ? 8 : 64, "commerce", ["price"]);
+    addSignal("fulfillment_auth", "Evento commerciale prima di licenza/seat/key", licenseWithoutPayment || chargeWithoutCheckout ? 94 : 12, "commerce", ["license"]);
+    addSignal("idempotency", "Fulfillment idempotente", idempotency && !doubleFulfillment ? 10 : 76, "commerce", ["order"]);
+    addSignal("policy_readiness", "Policy stock/licenze/refund/settlement", 100 - policyReady * 22, "commerce", ["policy"]);
+    addSignal("stock_risk", "Stock e riserva merce coerenti", oversellStock ? 84 : 12, "stock", ["warehouse"]);
+    branchOutput = {
+      fulfillment_mode: "quote_or_checkout_first",
+      activation_allowed: false,
+      policy_ready_count: policyReady,
+      required_checks: [
+        "usa prezzo ufficiale, contratto o preventivo approvato",
+        "ordine/pagamento/trial/override owner prima di licenza o App Key",
+        "idempotency key per ordini, seat, stock e chiavi",
+        "stock, acconto/saldo e settlement configurabili per azienda",
+        "refund e chargeback con audit e nessun payout automatico non autorizzato",
+      ],
+      blocked_if: {
+        invented_price: inventedPrice,
+        license_without_commercial_event: licenseWithoutPayment,
+        charge_without_checkout: chargeWithoutCheckout,
+        double_fulfillment: doubleFulfillment,
+        oversell_stock: oversellStock,
+      },
+    };
+  } else if (branch === "observability_roi_guard") {
+    const hasAudit = data.has_audit_id === true || Boolean(textValue(data.audit_id));
+    const hasTrace = data.has_trace_id === true || Boolean(textValue(data.trace_id));
+    const metricsDefined = data.metrics_defined === true || Array.isArray(data.metrics);
+    const evidenceEnabled = data.evidence_enabled === true || data.audit_evidence === true;
+    const healthcheck = data.health_check === true || data.healthcheck_ready === true;
+    const logsPii = data.logs_pii === true || data.pii_in_logs === true;
+    const logsSecret = data.logs_secret === true || data.secret_in_logs === true;
+    const roiMetrics = arrayValue(data.roi_metrics || data.value_metrics, 20);
+    const budget = Number(data.performance_budget_ms ?? data.latency_budget_ms ?? 0);
+    const latency = Number(data.latency_ms ?? 0);
+    const budgetExceeded = budget > 0 && latency > budget;
+    if (!hasAudit) missing.push("audit_id");
+    if (!metricsDefined) missing.push("metrics_defined");
+    if (!healthcheck) missing.push("health_check");
+    const observabilityReady = [hasAudit, hasTrace, metricsDefined, evidenceEnabled, healthcheck].filter(Boolean).length;
+    addSignal("audit_traceability", "Audit, trace ed evidence layer", 100 - observabilityReady * 18, "observability", ["audit"]);
+    addSignal("roi_measurability", "Metriche ROI e valore operativo", roiMetrics.length ? 12 : 68, "roi", ["telemetry"]);
+    addSignal("log_safety", "PII o segreti nei log", logsSecret ? 98 : logsPii ? 82 : 8, "privacy", ["logs"]);
+    addSignal("performance_budget", "Budget performance e health", budgetExceeded ? 72 : healthcheck ? 12 : 52, "performance", ["health"]);
+    branchOutput = {
+      observability_mode: "audit_evidence_roi",
+      roi_metrics: roiMetrics,
+      required_checks: [
+        "audit_id e trace_id per ogni automazione",
+        "log senza PII/segreti e con dati mascherati",
+        "metriche ROI: tempo risparmiato, errori evitati, lead recuperati, costi ridotti",
+        "health check, latency budget e stato degradato leggibile",
+      ],
+      blocked_if: {
+        automation_without_audit: !hasAudit,
+        pii_in_logs: logsPii,
+        secret_in_logs: logsSecret,
+        no_healthcheck: !healthcheck,
+        roi_claim_without_metrics: data.roi_claim === true && !roiMetrics.length,
+      },
+    };
+  } else if (branch === "legal_privacy_compliance_guard") {
+    const consentRequired = data.consent_required === true || data.contains_personal_data === true || data.contains_sensitive_data === true;
+    const consentCollected = data.consent_collected === true || data.consent_status === "collected";
+    const sensitive = data.contains_sensitive_data === true || data.health_data === true || data.images === true || data.payment_data === true;
+    const retention = data.retention_policy === true || data.retention_policy_ready === true;
+    const dpaReady = data.dpa_ready === true || data.processor_agreement_ready === true || data.external_processor !== true;
+    const claimReviewed = data.claim_reviewed === true || data.owner_claim_approval === true || data.publish_claim !== true;
+    const deleteExportReady = data.delete_export_ready === true || data.data_subject_request_ready === true;
+    const legalGuarantee = data.legal_guarantee_claimed === true || /compliance assoluta|garantito per legge|legalmente garantito/i.test(textValue(data.text || data.claim || data.copy));
+    const crossBrand = data.cross_brand_policy_leak === true || data.cross_tenant === true;
+    const privacyRisk = consentRequired && !consentCollected;
+    if (consentRequired && !consentCollected) missing.push("consent");
+    if (!retention) missing.push("retention_policy");
+    addSignal("consent_readiness", "Consenso e finalita dati", privacyRisk ? 92 : 10, "privacy", ["gdpr"]);
+    addSignal("sensitive_data_scope", "Dati sensibili, immagini, pagamenti o salute", sensitive && !dpaReady ? 84 : sensitive ? 48 : 8, "privacy", ["sensitive"]);
+    addSignal("claim_review", "Claim/revisione owner prima della pubblicazione", claimReviewed ? 12 : 82, "compliance", ["claim"]);
+    addSignal("tenant_policy_isolation", "Isolamento policy brand/tenant", crossBrand ? 96 : 8, "tenant", ["brand_scope"]);
+    addSignal("legal_language", "Promesse legali/compliance assoluta", legalGuarantee ? 94 : 8, "legal", ["wording"]);
+    branchOutput = {
+      compliance_mode: "advisory_with_owner_review",
+      legal_advice_replacement: false,
+      required_checks: [
+        "consenso, finalita, minimizzazione e retention",
+        "DPA/processor agreement se dati passano da fornitori esterni",
+        "claim pubblici e pricing come governance/advisory, non imposizione",
+        "data export/delete request con audit",
+        "nessuna garanzia legale automatica nel copy pubblico",
+      ],
+      blocked_if: {
+        personal_data_without_consent: privacyRisk,
+        sensitive_data_without_scope: sensitive && !dpaReady,
+        unreviewed_claim_publish: !claimReviewed,
+        cross_brand_policy_leak: crossBrand,
+        legal_guarantee_claim: legalGuarantee,
+        missing_retention_policy: !retention,
+      },
+      delete_export_ready: deleteExportReady,
+    };
+  } else if (branch === "agent_orchestration_guard") {
+    const actionType = textValue(data.action_type || payload.action_type, "advisory");
+    const gatewayMode = textValue(data.gateway_mode || payload.gateway_mode, "advisory");
+    const ownerConfirmation = data.owner_confirmation === true || data.owner_confirmed === true || data.owner_confirmation_received === true;
+    const sandbox = data.sandbox === true || data.dry_run === true || data.local_only === true;
+    const rollback = data.rollback === true || data.rollback_ready === true || data.undo_ready === true;
+    const runbookId = textValue(data.runbook_id || data.workflow_id);
+    const autonomous = data.autonomous_execution === true || data.agent_auto_execute === true;
+    const destructive = data.destructive_action === true || ["delete", "git_reset_hard", "drop_database"].includes(actionType);
+    const publish = data.publish_intent === true || actionType === "publish";
+    const payment = data.payment_action === true || actionType === "payment" || actionType === "charge";
+    const crossTenant = data.cross_tenant === true || data.cross_tenant_data_access === true;
+    const sensitive = destructive || publish || payment || crossTenant || actionType === "update" || actionType === "deploy";
+    if (sensitive && !ownerConfirmation) missing.push("owner_confirmation");
+    if (sensitive && !rollback && !sandbox) missing.push("rollback_or_sandbox");
+    addSignal("action_sensitivity", "Sensibilita azione agente", destructive ? 98 : payment ? 88 : publish || crossTenant ? 76 : actionType === "update" || actionType === "deploy" ? 58 : 18, "agent_orchestration", ["action"]);
+    addSignal("owner_confirmation", "Conferma owner tracciata", sensitive && !ownerConfirmation ? 86 : 8, "agent_orchestration", ["confirm"]);
+    addSignal("rollback_sandbox", "Sandbox, dry-run o rollback", sensitive && !rollback && !sandbox ? 76 : 10, "agent_orchestration", ["rollback"]);
+    addSignal("prompt_only_decision", "Decisione non affidata solo al prompt", autonomous && !runbookId ? 74 : 10, "agent_orchestration", ["runbook"]);
+    branchOutput = {
+      orchestration_mode: "core_decides_agent_executes",
+      action_type: actionType,
+      gateway_mode: gatewayMode,
+      mediation_states: ["allow", "rewrite", "confirm", "defer", "sandbox", "block", "rollback_required"],
+      execution_allowed_advisory: false,
+      required_checks: [
+        "decision contract prima di scrivere, pubblicare, deployare, pagare o modificare tenant",
+        "owner confirmation esplicita e limitata allo scope",
+        "dry-run/sandbox o rollback per azioni sensibili",
+        "audit con input, verdict, branch usato, azione, esito",
+      ],
+      blocked_if: {
+        destructive_without_owner: destructive && !ownerConfirmation,
+        autonomous_sensitive_action: autonomous && sensitive,
+        cross_tenant_write: crossTenant,
+        no_rollback_or_sandbox: sensitive && !rollback && !sandbox,
+      },
+    };
+  } else if (branch === "runtime_deployment_scaling_guard") {
+    const targetRuntime = textValue(data.target_runtime || data.runtime_mode || "local");
+    const envReady = data.env_vars_configured === true || data.environment_ready === true;
+    const secretsInEnv = data.secrets_in_env === true || data.secret_store_ready === true || data.has_secrets !== true;
+    const secretLeak = data.secret_in_repo === true || data.secret_in_zip === true || data.secret_in_logs === true;
+    const migrationPlan = data.migration_plan === true || data.migration_plan_ready === true || data.database_migration !== true;
+    const backupReady = data.backup_ready === true || data.has_backup === true || data.database_migration !== true;
+    const rollbackReady = data.rollback_ready === true || data.has_rollback === true;
+    const healthcheckReady = data.healthcheck_ready === true || data.health_check === true;
+    const canary = data.canary_enabled === true || data.rollout_strategy === "canary" || data.deploy_to_production !== true;
+    const preflight = data.preflight_passed === true || data.preflight_ready === true || data.deploy_to_production !== true;
+    const queueRequired = data.queue_required === true || data.high_volume === true;
+    const queueReady = data.queue_ready === true || queueRequired === false;
+    const storageReady = data.storage_ready === true || data.database_ready === true || targetRuntime === "local";
+    const productionDeploy = data.deploy_to_production === true || data.environment === "production";
+    const unsafeProduction = productionDeploy && (!preflight || !rollbackReady || !healthcheckReady);
+    if (!envReady && targetRuntime !== "local") missing.push("env_vars");
+    if (!healthcheckReady) missing.push("healthcheck");
+    if (productionDeploy && !rollbackReady) missing.push("rollback");
+    addSignal("runtime_readiness", "Runtime, env e storage pronti", envReady && storageReady ? 12 : 66, "runtime", ["render"]);
+    addSignal("secret_handling", "Segreti fuori da repo/zip/log", secretLeak ? 98 : secretsInEnv ? 8 : 62, "security", ["secret"]);
+    addSignal("migration_safety", "Migrazione con piano e backup", migrationPlan && backupReady ? 12 : 82, "deployment", ["migration"]);
+    addSignal("release_safety", "Preflight, healthcheck, rollback e canary", unsafeProduction ? 92 : productionDeploy ? 38 : 12, "release", ["deploy"]);
+    addSignal("scaling_readiness", "Queue/cache/rate limit per carico alto", queueRequired && !queueReady ? 76 : 10, "scaling", ["queue"]);
+    branchOutput = {
+      deployment_mode: "local_shared_dedicated_runtime_guard",
+      target_runtime: targetRuntime,
+      production_deploy: productionDeploy,
+      required_checks: [
+        "segreti solo in env/secret store",
+        "preflight, healthcheck, rollback e canary prima del live",
+        "backup e migration plan per cambio schema/storage",
+        "queue/cache/rate limit se high-volume",
+        "degrade-safe se Core remoto non risponde",
+      ],
+      blocked_if: {
+        production_deploy_without_preflight: productionDeploy && !preflight,
+        migration_without_backup: !migrationPlan || !backupReady,
+        secret_leak: secretLeak,
+        missing_rollback: productionDeploy && !rollbackReady,
+        missing_healthcheck: !healthcheckReady,
+        queue_required_not_ready: queueRequired && !queueReady,
+      },
+    };
+  } else if (branch === "cosmetic_chemistry") {
+    const active = textValue(data.active || data.ingredient || data.hero_ingredient);
+    const functionText = textValue(data.function || data.cosmetic_function);
+    if (!active) missing.push("active");
+    if (!functionText) missing.push("cosmetic_function");
+    const evidenceScore = clampScore(data.evidence_score ?? (data.sources_provided ? 75 : 35));
+    const claimResult = claimShieldCheck({ text: `${active} ${functionText} ${textValue(data.claims)}`, context: data.context || {} });
+    addSignal("evidence_quality", "Qualita supporto attivo cosmetico", evidenceScore, "product", ["cosmetic"]);
+    addSignal("claim_risk", "Rischio claim su attivo cosmetico", claimResult.risk_score, "claim", ["claim_guard"]);
+    branchOutput = {
+      active,
+      cosmetic_function: functionText,
+      positioning_rule: "Posizionare come supporto cosmetico/beauty, non come cura, terapia o effetto medico.",
+      web_research_required: !data.sources_provided,
+      owner_review_required: true,
+    };
+  } else if (branch === "skinharmony_analyzer") {
+    const scores = Array.isArray(data.scores) ? data.scores.map((item) => ({
+      key: textValue(item?.key),
+      label: textValue(item?.label || item?.key),
+      score: Number.isFinite(Number(item?.score)) ? Number(item.score) : null,
+    })).filter((item) => item.key) : [];
+    if (!scores.length) missing.push("scores");
+    const byKey = Object.fromEntries(scores.map((item) => [item.key, item]));
+    const expectedKeys = ["skin_tone_brightness", "water_oil_balance", "texture_fine_lines", "redness_sensitivity_signals", "spots_pigmentation_signals", "pores_texture"];
+    const missingScores = expectedKeys.filter((key) => !byKey[key]);
+    const acquisition = data.acquisition && typeof data.acquisition === "object" ? data.acquisition : {};
+    const explicitQuality = Number.isFinite(Number(data.data_quality_score));
+    const dataQualityScore = clampScore(explicitQuality ? data.data_quality_score : 70);
+    const qualityReasons = [...(dataQualityScore < 65 ? ["aggregate_quality_low"] : []), ...(Number(acquisition.focus_score) < 65 ? ["focus_low"] : []), ...(Number(acquisition.illumination_score) < 65 ? ["illumination_low"] : []), ...(!acquisition.capture_protocol_id ? ["capture_protocol_missing"] : []), ...(!acquisition.device_model ? ["device_provenance_missing"] : [])];
+    const abstain = explicitQuality && dataQualityScore < 65;
+    const getScore = (key) => Number.isFinite(Number(byKey[key]?.score)) ? Number(byKey[key].score) : null;
+    const attention = (key, fallback = 52) => {
+      const score = getScore(key);
+      return score == null ? fallback : clampScore(100 - score);
+    };
+    const relationshipRules = [];
+    const pores = getScore("pores_texture");
+    const texture = getScore("texture_fine_lines");
+    const hydration = getScore("water_oil_balance");
+    const redness = getScore("redness_sensitivity_signals");
+    const pigment = getScore("spots_pigmentation_signals");
+    const tone = getScore("skin_tone_brightness");
+    if (pores != null && pores < 50 && hydration != null && hydration >= 80) {
+      relationshipRules.push("Pori bassi con idratazione buona: priorita su grana, film superficiale e pulizia progressiva, non su idratazione generica.");
+    }
+    if (pores != null && pores < 55 && texture != null && texture < 80) {
+      relationshipRules.push("Pori e texture sono collegati: la pelle va letta come qualita della superficie, non come parametro isolato.");
+    }
+    if (redness != null && redness <= 55 && pores != null && pores < 60) {
+      relationshipRules.push("Reattivita media con pori bassi: percorso estetico graduale, evitando approcci aggressivi iniziali.");
+    }
+    if (pigment != null && pigment >= 85) {
+      relationshipRules.push("Discromie alte/stabili: non spostare la priorita sulle macchie se il quadro indica pori o texture.");
+    }
+    if (tone != null && tone < 70 && hydration != null && hydration >= 75) {
+      relationshipRules.push("Luminosita da sostenere con idratazione gia buona: lavorare su uniformita superficiale e grana.");
+    }
+    const domains = [
+      {
+        id: "pores_texture_matrix",
+        label: "pori, grana e texture",
+        score: Math.round(clampScore(attention("pores_texture") * 0.55 + attention("texture_fine_lines") * 0.25 + attention("water_oil_balance") * 0.1 + attention("redness_sensitivity_signals") * 0.1 + (pores != null && pores < 50 && hydration != null && hydration >= 80 ? 10 : 0) + (pores != null && pores < 55 && texture != null && texture < 80 ? 8 : 0) + (redness != null && redness <= 55 && pores != null && pores < 60 ? 7 : 0))),
+      },
+      {
+        id: "sensitivity_reactivity_matrix",
+        label: "reattivita e tolleranza cutanea",
+        score: Math.round(clampScore(attention("redness_sensitivity_signals") * 0.55 + attention("skin_tone_brightness") * 0.2 + attention("water_oil_balance") * 0.15 + attention("pores_texture") * 0.1 + (redness != null && redness <= 55 && pores != null && pores < 60 ? 7 : 0))),
+      },
+      {
+        id: "barrier_hydration_matrix",
+        label: "barriera, idratazione e comfort",
+        score: Math.round(clampScore(attention("water_oil_balance") * 0.45 + attention("skin_tone_brightness") * 0.25 + attention("redness_sensitivity_signals") * 0.2 + attention("texture_fine_lines") * 0.1)),
+      },
+      {
+        id: "pigmentation_tone_matrix",
+        label: "discromie e uniformita del tono",
+        score: Math.round(clampScore(attention("spots_pigmentation_signals") * 0.55 + attention("skin_tone_brightness") * 0.25 + attention("redness_sensitivity_signals") * 0.1 + attention("texture_fine_lines") * 0.1 - (pigment != null && pigment >= 85 ? 8 : 0))),
+      },
+      {
+        id: "aging_texture_matrix",
+        label: "qualita della superficie e segni di eta cutanea",
+        score: Math.round(clampScore(attention("texture_fine_lines") * 0.45 + attention("skin_tone_brightness") * 0.25 + attention("water_oil_balance") * 0.2 + attention("spots_pigmentation_signals") * 0.1)),
+      },
+    ].sort((a, b) => b.score - a.score);
+    const dominant = domains[0] || null;
+    const secondary = domains.filter((item) => item.id !== dominant?.id && item.score >= 42).slice(0, 3);
+    const products = Array.isArray(data.products) ? data.products : [];
+    const protocols = Array.isArray(data.protocols) ? data.protocols : [];
+    const reportText = textValue(data.report_text || data.proposed_text || data.client_language);
+    const claimResult = reportText ? claimShieldCheck({ text: reportText, context: data.context || {} }) : { risk_score: 10, issues: [] };
+    domains.forEach((domain) => addSignal(domain.id, `Skin analyzer ${domain.label}`, domain.score, "skin_analysis", ["ensemble", domain.id]));
+    addSignal("claim_risk", "Rischio claim testo analyzer", claimResult.risk_score, "claim", ["claim_guard"]);
+    addSignal("catalog_readiness", "Catalogo prodotti/protocolli disponibile", products.length || protocols.length ? 20 : 65, "catalog", ["products", "protocols"]);
+    addSignal("acquisition_quality", "Qualita e provenienza acquisizione", 100 - dataQualityScore, "skin_analysis", ["quality", "provenance"]);
+    const previousScores = Array.isArray(data.previous_scores) ? Object.fromEntries(data.previous_scores.map((item) => [textValue(item?.key), Number(item?.score)])) : {};
+    const comparable = Boolean(data.previous_scores?.length && acquisition.capture_protocol_id && acquisition.device_model && acquisition.capture_protocol_id === data.previous_acquisition?.capture_protocol_id && acquisition.device_model === data.previous_acquisition?.device_model);
+    const longitudinalDeltas = comparable ? Object.fromEntries(scores.filter((item) => Number.isFinite(previousScores[item.key])).map((item) => [item.key, Math.round((item.score - previousScores[item.key]) * 10) / 10])) : {};
+    const learningContext = data.learning_context && typeof data.learning_context === "object" ? data.learning_context : {};
+    const learningEligible = comparable && learningContext.outcome_verified === true && learningContext.human_reviewed === true && Number(learningContext.comparable_capture_count) >= 2;
+    branchOutput = {
+      branch: "skinharmony_skin_ensemble_v2",
+      dominant_pattern: abstain ? null : dominant,
+      secondary_patterns: abstain ? [] : secondary,
+      all_patterns: domains,
+      score_relationships: relationshipRules,
+      protective_signals: [
+        ...(hydration != null && hydration >= 80 ? ["idratazione rilevata buona"] : []),
+        ...(pigment != null && pigment >= 85 ? ["discromie non prioritarie nel quadro attuale"] : []),
+        ...(redness != null && redness <= 55 ? ["reattivita da rispettare nella progressione"] : []),
+      ],
+      products_loaded: products.length,
+      protocols_loaded: protocols.length,
+      data_quality: { score: dataQualityScore, abstained: abstain, repeat_acquisition_recommended: abstain, reasons: qualityReasons, missing_scores: missingScores },
+      longitudinal: { available: Boolean(data.previous_scores?.length), comparable, deltas: longitudinalDeltas, interpretation_allowed: comparable && !abstain },
+      fairness: { audit_required: true, individual_group_adjustment_allowed: false, minimum_rule: "report quality and abstention rates by represented skin-tone groups" },
+      learning: { eligible_candidate: learningEligible, activation_allowed: false, requires: ["verified_outcome", "human_review", "comparable_capture_series", "core_regression_gate"] },
+      suggested_direction: abstain ? "Ripetere l'acquisizione con qualita e protocollo controllati prima di interpretare." : dominant?.id === "pores_texture_matrix"
+        ? "Percorso riequilibrante su grana, pori e texture, con progressione rispettosa della reattivita."
+        : dominant?.id === "sensitivity_reactivity_matrix"
+          ? "Percorso comfort e tolleranza prima di stimoli estetici piu intensivi."
+          : "Percorso estetico basato sul pattern dominante e sui segnali secondari.",
+      product_rule: products.length ? "Selezionare solo prodotti taggati sui pattern dominanti." : "Nessun prodotto caricato: non inventare nomi commerciali.",
+      protocol_rule: protocols.length ? "Selezionare solo protocolli caricati e coerenti con pattern dominante e tolleranza." : "Nessun protocollo caricato: indicare solo direzione estetica generale.",
+      blocked_claims: claimResult.issues.map((issue) => issue.term),
+      visible_language_rule: "Report professionale finito, non linguaggio provvisorio o medico.",
+    };
+  } else if (branch === "technology_market") {
+    const technology = textValue(data.technology || data.device || data.protocol);
+    if (!technology) missing.push("technology");
+    const demand = clampScore(data.demand_score ?? data.trend_strength ?? 50);
+    const maturity = clampScore(data.maturity_score ?? data.protocol_readiness ?? 50);
+    const compliance = clampScore(data.compliance_readiness ?? 60);
+    addSignal("demand", "Domanda tecnologia", demand, "market", ["technology"]);
+    addSignal("maturity", "Maturita protocollo/uso", maturity, "technology", ["readiness"]);
+    addSignal("compliance", "Prudenza claim tecnologia", 100 - compliance, "claim", ["claim_guard"]);
+    branchOutput = {
+      technology,
+      suggested_positioning: demand >= 65 && maturity >= 60 ? "priority_offer" : "education_first",
+      publish_rule: "Prima education e proof controllata, poi CTA. Nessun claim terapeutico.",
+    };
+  } else if (branch === "business_strategy") {
+    const revenue = clampScore(data.revenue_health ?? data.mrr_health ?? 50);
+    const churn = clampScore(data.churn_risk ?? data.inactivity_risk ?? 45);
+    const pipeline = clampScore(data.pipeline_quality ?? data.forecast_quality ?? 50);
+    const ops = clampScore(data.operational_readiness ?? data.readiness ?? 55);
+    addSignal("revenue_health", "Salute revenue/MRR", 100 - revenue, "finance", ["revenue"]);
+    addSignal("churn_risk", "Rischio churn/inattivita", churn, "crm", ["churn"]);
+    addSignal("pipeline_quality", "Qualita pipeline commerciale", 100 - pipeline, "crm", ["pipeline"]);
+    addSignal("operational_readiness", "Readiness operativa", 100 - ops, "operations", ["readiness"]);
+    branchOutput = {
+      next_best_focus: churn >= 65 ? "retention_first" : pipeline < 55 ? "pipeline_cleanup" : "controlled_growth",
+      manager_view: "Mostrare prima rischi e prossime azioni, poi numeri.",
+    };
+  } else if (branch === "translation_governance") {
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) missing.push("items");
+    const unstableKeys = items.filter((item) => !textValue(item.key_path) || !textValue(item.source_text)).length;
+    const sourceLang = textValue(data.source_lang, "it");
+    const targetLang = textValue(data.target_lang, "en");
+    const supportedLanguages = ["it", "en", "fr", "es"];
+    const unsupportedLanguage = !supportedLanguages.includes(sourceLang) || !supportedLanguages.includes(targetLang);
+    const htmlBlob = items.some((item) => /<\/?[a-z][\s\S]*>/i.test(textValue(item.source_text)));
+    const alteredProtectedTokens = items.filter((item) => {
+      const source = textValue(item.source_text);
+      const translated = textValue(item.translated_text || item.target_text);
+      if (!translated) return false;
+      const tokens = source.match(/(\[[^\]]+\]|\{[^}]+\}|%[a-zA-Z0-9_$]+%|https?:\/\/\S+|\b\d+[,.]?\d*\s?(?:€|EUR|%))/g) || [];
+      return tokens.some((token) => !translated.includes(token));
+    }).length;
+    const readiness = Math.max(0, 100 - missing.length * 35 - unstableKeys * 12 - (unsupportedLanguage ? 25 : 0) - (htmlBlob ? 30 : 0) - alteredProtectedTokens * 18);
+    addSignal("payload_readiness", "Readiness payload traduzioni strutturate", readiness, "translation", ["core_translation"]);
+    addSignal("unstable_keys", "Key path instabili o stringhe mancanti", Math.min(100, unstableKeys * 18), "translation", ["key_path"]);
+    addSignal("protected_tokens", "Placeholder, shortcode, URL, prezzi o variabili alterati", Math.min(100, alteredProtectedTokens * 30), "translation", ["protected_tokens"]);
+    addSignal("html_blob", "HTML intero inviato alla traduzione", htmlBlob ? 86 : 6, "translation", ["html"]);
+    branchOutput = {
+      translation_mode: "structured_strings_only",
+      source_lang: sourceLang,
+      target_lang: targetLang,
+      item_count: items.length,
+      unstable_item_count: unstableKeys,
+      altered_protected_token_count: alteredProtectedTokens,
+      html_blob_detected: htmlBlob,
+      supported_languages: supportedLanguages,
+      fallback_policy: "fallback_to_it",
+      review_required: unsupportedLanguage || htmlBlob || alteredProtectedTokens > 0 || unstableKeys > 0,
+    };
+  } else if (branch === "translator_marketing_governance") {
+    const items = Array.isArray(data.items) ? data.items : [];
+    const surfaceType = textValue(data.surface_type || data.surface || data.copy_surface, "ui_strings");
+    const copyClass = textValue(data.copy_class || data.text_type || data.intent, "ui_label");
+    const sourceLang = textValue(data.source_lang, "it");
+    const targetLang = textValue(data.target_lang, "en");
+    const pluginId = textValue(data.plugin_id || data.app_id || data.integration_id);
+    const appName = textValue(data.app_name || data.product_name || data.application);
+    const fallbackPolicy = textValue(data.fallback_policy || data.fallback, "fallback_to_it");
+    const localeTarget = textValue(data.locale_target || data.locale || targetLang);
+    if (!items.length) missing.push("items");
+    if (!pluginId && !appName) missing.push("plugin_or_app_identity");
+    const unstableItems = items.filter((item) => !textValue(item.key_path) || !textValue(item.source_text)).length;
+    const ctaItems = items.filter((item) => /cta|button|call.?to.?action|hero/i.test(textValue(item?.surface || item?.key_path || item?.type)));
+    const pricingItems = items.filter((item) => /price|pricing|sconto|offerta|promo|canone|monthly|annuale/i.test(textValue(item?.source_text) + " " + textValue(item?.key_path)));
+    const claimItems = items.filter((item) => /garant|risultat|tratt|cura|medical|terap/i.test(textValue(item?.source_text)));
+    const htmlBlobItems = items.filter((item) => /<[^>]+>/.test(textValue(item?.source_text)) || /html|rich_text|wysiwyg/i.test(textValue(item?.surface || item?.type)));
+    const localizedLabelsOnly = items.every((item) => ["localized_label", "ui_label", "cta", "help_text", "onboarding", "status", ""].includes(textValue(item?.surface || item?.type)));
+    const requiresFallback = fallbackPolicy !== "none" && (sourceLang === "it" || data.require_fallback !== false);
+    const marketingReviewRequired = copyClass !== "ui_label" || ctaItems.length > 0 || surfaceType === "landing_copy" || surfaceType === "marketing_microcopy";
+    const pricingReviewRequired = pricingItems.length > 0 || data.contains_pricing === true;
+    const claimReviewRequired = claimItems.length > 0 || data.contains_claims === true;
+    const publishReady = missing.length === 0 && unstableItems === 0 && htmlBlobItems.length === 0 && !pricingReviewRequired && !claimReviewRequired && data.owner_review_confirmed === true;
+    const readiness = Math.max(0, 100 - missing.length * 25 - unstableItems * 10 - htmlBlobItems.length * 18 - (pricingReviewRequired ? 12 : 0) - (claimReviewRequired ? 16 : 0));
+    addSignal("translator_payload_readiness", "Readiness payload traduttore marketing/app", readiness, "translation_marketing", ["translator_plugin"]);
+    addSignal("key_stability_risk", "Rischio key path instabili o stringhe mancanti", Math.min(100, unstableItems * 18), "translation", ["key_path"]);
+    addSignal("marketing_surface_risk", "Rischio su superfici CTA/marketing/app copy", marketingReviewRequired ? 68 : 18, "marketing", ["surface_copy"]);
+    addSignal("pricing_claim_risk", "Rischio prezzi o claim nel copy tradotto", pricingReviewRequired || claimReviewRequired ? 84 : 12, "claim", ["pricing", "claim_guard"]);
+    addSignal("html_blob_risk", "Rischio HTML finale o rich text nel traduttore", htmlBlobItems.length ? 92 : 6, "translation", ["html_blob"]);
+    warnings.push(...htmlBlobItems.slice(0, 5).map((item) => `payload surface non consentita per traduzione strutturata: ${textValue(item.key_path || item.source_text, "item")}`));
+    branchOutput = {
+      translation_mode: "atomic_ui_and_marketing_review",
+      plugin_id: pluginId || null,
+      app_name: appName || null,
+      source_lang: sourceLang,
+      target_lang: targetLang,
+      locale_target: localeTarget,
+      surface_type: surfaceType,
+      copy_class: copyClass,
+      item_count: items.length,
+      unstable_item_count: unstableItems,
+      cta_item_count: ctaItems.length,
+      pricing_item_count: pricingItems.length,
+      claim_item_count: claimItems.length,
+      html_blob_item_count: htmlBlobItems.length,
+      fallback_required: requiresFallback,
+      fallback_policy: requiresFallback ? fallbackPolicy : "no_fallback_required",
+      safe_translation_mode: localizedLabelsOnly ? "plugin_structured_copy" : "mixed_surface_review",
+      marketing_review_required: marketingReviewRequired,
+      pricing_review_required: pricingReviewRequired,
+      claim_review_required: claimReviewRequired,
+      owner_review_required: true,
+      publish_ready: publishReady,
+      recommended_companion_branches: ["translation_governance", "marketing_copy", "ramo_testo"],
+      blocked_surfaces: htmlBlobItems.length ? ["html_blob"] : [],
+      rule: "Usare per plugin traduttore e applicazioni che devono tradurre microcopy strutturato senza perdere guardrail marketing/compliance.",
+    };
+  } else if (branch === "ramo_testo") {
+    const text = textValue(data.text || data.content || data.copy || data.draft);
+    const providedIssues = normalizeTextGuardIssues(data.issues);
+    const issues = providedIssues.length ? providedIssues : buildTextGuardIssuesFromClaimShield(text, data);
+    if (!text) missing.push("text");
+    const locale = textValue(data.locale || payload.locale, "it");
+    const publicText = data.public_text === true || data.publish_intent === true || data.context === "page_copy";
+    const hasKeyPath = Boolean(textValue(data.key_path || payload.key_path));
+    const hasDomain = Boolean(textValue(data.domain || payload.domain));
+    const hasTarget = Boolean(textValue(data.target || data.audience));
+    const hasCta = Boolean(textValue(data.cta || data.call_to_action)) || publicText === false;
+    const mixedLanguage = locale === "it"
+      ? /\b(the|and|with|for|results|guaranteed)\b/i.test(text)
+      : locale === "en"
+        ? /\b(che|con|per|risultati|garantiti|paggina)\b/i.test(text)
+        : false;
+    const unsupportedProof = (data.mentions_study === true || data.mentions_trend === true || /studio|study|clinicamente|clinically|trend/i.test(text)) && data.sources_provided !== true;
+    const highIssues = issues.filter((issue) => issue.severity === "high" || issue.severity === "blocker").length;
+    const claimIssues = issues.filter((issue) => issue.type === "claim_risk" || issue.type === "publish_safety").length;
+    const structureMissing = [hasKeyPath, hasDomain, hasTarget, hasCta].filter(Boolean).length;
+    addSignal("issue_severity", "Gravita problemi testo/content guard", Math.min(100, highIssues * 32 + claimIssues * 24), "content_guard", ["text"]);
+    addSignal("publish_safety", "Sicurezza pubblicazione testo", claimIssues ? 88 : 20, "content_guard", ["publish_safety"]);
+    addSignal("text_structure", "Contesto, domain, key_path, target e CTA", 100 - structureMissing * 22, "content_guard", ["structure"]);
+    addSignal("language_consistency", "Coerenza lingua del testo", mixedLanguage ? 68 : 8, "content_guard", ["language"]);
+    addSignal("unsupported_proof", "Studio, trend o prova non supportati", unsupportedProof ? 84 : 8, "content_guard", ["proof"]);
+    branchOutput = {
+      text_context: textValue(data.context, "manual_review"),
+      locale,
+      issue_count: issues.length,
+      claim_issue_count: claimIssues,
+      structure_missing: {
+        key_path: !hasKeyPath,
+        domain: !hasDomain,
+        target: !hasTarget,
+        cta: !hasCta,
+      },
+      mixed_language: mixedLanguage,
+      unsupported_proof: unsupportedProof,
+      publish_safe_advisory: issues.every((issue) => issue.type !== "claim_risk" && issue.type !== "publish_safety" && issue.severity !== "blocker") && !unsupportedProof && !mixedLanguage,
+      rule: "Ramo Testo produce review e suggested action; non salva, non pubblica e non corregge automaticamente.",
+    };
+  } else if (branch === "change_impact_orchestration") {
+    const changeType = textValue(data.change_type || data.action_type || data.type, "code_change");
+    const targetSystem = textValue(data.target_system || data.system || data.target, "unknown");
+    const affectedSurfaces = arrayValue(data.affected_surfaces || data.surfaces || data.modules, 50);
+    const changedFiles = arrayValue(data.changed_files || data.files, 100);
+    const declaredTests = arrayValue(data.tests_declared || data.tests || data.verification, 50);
+    const declaredDocs = arrayValue(data.docs_declared || data.docs || data.documentation, 50);
+    const hasRollbackPlan = data.rollback_plan === true || Boolean(textValue(data.rollback_plan_text || data.rollback));
+    const ownerConfirmed = data.owner_confirmation === true || data.owner_confirmed === true;
+    const touchesUi = affectedSurfaces.some((item) => /ui|panel|dashboard|card|frontend|wordpress_admin/i.test(item)) || changedFiles.some((item) => /\.(tsx?|jsx?|css|php)$/i.test(item) && /admin|view|page|component|suite/i.test(item));
+    const touchesRest = affectedSurfaces.some((item) => /rest|api|endpoint|route|payload|schema/i.test(item)) || changedFiles.some((item) => /src\/app|api|route|controller|rest/i.test(item));
+    const touchesSnapshot = affectedSurfaces.some((item) => /snapshot|registry|manual|state/i.test(item));
+    const touchesRelease = affectedSurfaces.some((item) => /zip|version|release|manifest|render|health|package/i.test(item)) || /release|version|zip|render/i.test(changeType);
+    const touchesTenant = affectedSurfaces.some((item) => /tenant|scope|key|permission|policy|role|plan|license/i.test(item));
+    const touchesConnector = affectedSurfaces.some((item) => /connector|codex|smart.?desk|suite|mcp|sdk|webhook/i.test(item));
+    const touchesData = affectedSurfaces.some((item) => /data|customer|client|order|payment|lead|consent/i.test(item));
+    const requiredActions = new Set(["record_core_audit", "declare_affected_surfaces"]);
+    const testsRequired = new Set(["smoke_test"]);
+    const docsRequired = new Set();
+    const blockedUntil = new Set();
+
+    if (!affectedSurfaces.length) blockedUntil.add("affected_surfaces_declared");
+    if (touchesUi) {
+      requiredActions.add("update_ui_contract");
+      requiredActions.add("verify_rest_snapshot_pairing");
+      testsRequired.add("ui_smoke_or_panel_preflight");
+      docsRequired.add("manual_how_to_use");
+    }
+    if (touchesRest) {
+      requiredActions.add("verify_api_contract");
+      testsRequired.add("endpoint_contract_test");
+      blockedUntil.add("connector_contract_review");
+    }
+    if (touchesSnapshot) {
+      requiredActions.add("update_snapshot_map");
+      docsRequired.add("map_snapshot");
+      testsRequired.add("snapshot_readiness_check");
+    }
+    if (touchesRelease) {
+      requiredActions.add("prepare_versioned_artifact");
+      requiredActions.add("verify_health_after_publish");
+      testsRequired.add("package_preflight");
+      blockedUntil.add("rollback_plan");
+    }
+    if (touchesTenant) {
+      requiredActions.add("verify_tenant_policy");
+      requiredActions.add("verify_key_scope");
+      testsRequired.add("permission_scope_test");
+      blockedUntil.add("owner_confirmation");
+    }
+    if (touchesConnector) {
+      requiredActions.add("verify_connector_payload");
+      requiredActions.add("run_connector_doctor");
+      testsRequired.add("connector_doctor");
+    }
+    if (touchesData) {
+      requiredActions.add("verify_data_isolation");
+      requiredActions.add("verify_consent_or_scope");
+      blockedUntil.add("tenant_scope_check");
+    }
+    if (!declaredTests.length) blockedUntil.add("tests_declared");
+    if (!hasRollbackPlan && (touchesRelease || touchesRest || touchesTenant || touchesData)) blockedUntil.add("rollback_plan");
+    if (!ownerConfirmed && (touchesRelease || touchesTenant || touchesData)) blockedUntil.add("owner_confirmation");
+    if (docsRequired.size && !declaredDocs.length) blockedUntil.add("docs_impact_declared");
+
+    const impactScore = Math.min(100, affectedSurfaces.length * 7 + changedFiles.length * 2 + blockedUntil.size * 10 + (touchesTenant ? 15 : 0) + (touchesData ? 15 : 0) + (touchesRelease ? 12 : 0));
+    const readinessScore = clampScore(100 - impactScore + declaredTests.length * 5 + declaredDocs.length * 4 + (hasRollbackPlan ? 10 : 0) + (ownerConfirmed ? 8 : 0), 50);
+    addSignal("cascade_impact", "Ampiezza impatto a cascata", impactScore, "change_impact", ["cascade"]);
+    addSignal("readiness", "Readiness modifica controllata", readinessScore, "change_impact", ["readiness"]);
+    addSignal("blocked_until", "Blocchi prima dell'esecuzione", Math.min(100, blockedUntil.size * 18), "governance", ["blockers"]);
+    branchOutput = {
+      mode: "impact_plan_only",
+      change_type: changeType,
+      target_system: targetSystem,
+      affected_surfaces: affectedSurfaces,
+      subbranches_used: [
+        "dependency_impact_scan",
+        "compatibility_guard",
+        "documentation_impact",
+        "test_impact",
+        "release_impact",
+        "tenant_policy_impact",
+        "connector_contract_impact",
+        "rollback_impact",
+        "audit_evidence_impact",
+      ],
+      required_actions: [...requiredActions],
+      tests_required: [...testsRequired],
+      docs_required: [...docsRequired],
+      blocked_until: [...blockedUntil],
+      release_required: touchesRelease,
+      rollback_required: touchesRelease || touchesRest || touchesTenant || touchesData,
+      owner_confirmation_required: touchesRelease || touchesTenant || touchesData,
+      audit_required: true,
+      execution_allowed: false,
+      nyra_explanation_contract: "Spiegare in linguaggio umano cosa cambia, perche serve, cosa blocca e quale primo passo sblocca il lavoro.",
+      rule: "Questo ramo non esegue modifiche: produce il piano di impatto che Codex deve rispettare prima di implementare.",
+    };
+  } else if (branch === "nyra_finance_beauty_test") {
+    const beta = clampScore(data.beauty_market_correlation ?? data.correlation_score ?? 40);
+    const volatility = clampScore(data.volatility ?? data.market_volatility ?? 50);
+    const commercial = clampScore(data.commercial_relevance ?? 45);
+    addSignal("beauty_market_correlation", "Correlazione mercato beauty test", beta, "market_test", ["nyra_finance"]);
+    addSignal("volatility", "Volatilita segnale finanziario test", volatility, "market_test", ["finance_test"]);
+    addSignal("commercial_relevance", "Rilevanza commerciale beauty", commercial, "market_test", ["beauty"]);
+    branchOutput = {
+      test_area: true,
+      production_connected: false,
+      rule: "Nyra finanza resta area test separata; nessuna decisione prodotto o trading automatico.",
+    };
+  }
+
+  if (missing.length) warnings.push(`Dati mancanti: ${missing.join(", ")}`);
+  if (profile.production_status === "test_only") warnings.push("Ramo test-only: non usare per automazioni prodotto.");
+
+  return {
+    profile,
+    core_input: {
+      request_id: String(payload.request_id || `${branch}_${crypto.randomUUID()}`),
+      generated_at: nowIso(),
+      domain: profile.domain,
+      context: {
+        tenant_id: textValue(payload.tenant_id || data.tenant_id),
+        actor_id: textValue(payload.actor_id || data.actor_id) || undefined,
+        plan: textValue(payload.plan || data.plan) || undefined,
+        locale: textValue(payload.locale || data.locale, "it"),
+        metadata: {
+          branch,
+          production_status: profile.production_status,
+          source: "universal_core_branch_router",
+        },
+      },
+      signals: signals.length ? signals : [normalizeSignal({ id: `${branch}:empty`, label: "Payload ramo senza segnali sufficienti", normalized_score: 20, tags: [branch] })],
+      data_quality: {
+        score: clampScore(data.data_quality_score ?? (missing.length ? 55 : 78)),
+        missing_fields: missing,
+      },
+      constraints: {
+        allow_automation: false,
+        require_confirmation: true,
+        safety_mode: true,
+        blocked_actions: ["publish_without_owner_review", "send_without_consent", "change_price_without_owner_confirmation"],
+      },
+    },
+    branch_output: branchOutput,
+    warnings,
+  };
+}
+
+function severityToScore(status) {
+  if (status === "critical") return 95;
+  if (status === "high") return 78;
+  if (status === "warning") return 55;
+  if (status === "unknown") return 35;
+  return 10;
+}
+
+function summarizeAuditPulse(auditEvents = []) {
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const last24h = auditEvents.filter((event) => {
+    const ts = new Date(event.created_at || 0).getTime();
+    return Number.isFinite(ts) && ts >= since;
+  });
+
+  const byType = last24h.reduce((acc, event) => {
+    acc[event.event_type] = (acc[event.event_type] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    total_events_24h: last24h.length,
+    guardrail_events_24h:
+      (byType.core_claim_checked || 0) +
+      (byType.core_pricing_checked || 0) +
+      (byType.core_policy_checked || 0),
+    auth_failures_24h: byType.core_auth_failed || 0,
+    scope_denied_24h: byType.core_scope_denied || 0,
+    by_type: byType,
+  };
+}
+
+function buildEcosystemPulse({ tenantId, keyRecord, snapshot, auditEvents }) {
+  const payload = snapshot?.payload || {};
+  const health = payload.health || payload.enterprise_health || {};
+  const analytics = payload.analytics || payload.stats || {};
+  const nyra = payload.nyra || payload.market || {};
+  const auditPulse = summarizeAuditPulse(auditEvents);
+
+  const technicalScore = Number(health.readiness_score ?? health.score ?? 80);
+  const pricingPressure = String(nyra.pricing_pressure || nyra.market_posture || analytics.pricing_pressure || "unknown");
+  const nodeStatus = String(health.node_status || health.status || "local_snapshot");
+  const guardrailLoad = Math.min(100, auditPulse.guardrail_events_24h * 8 + auditPulse.auth_failures_24h * 15 + auditPulse.scope_denied_24h * 12);
+  const riskScore = Math.max(0, Math.min(100, 100 - technicalScore + guardrailLoad));
+
+  return {
+    tenant_id: tenantId,
+    brand_scope: keyRecord?.brand_scope || "",
+    generated_at: nowIso(),
+    source_snapshot_id: snapshot?.snapshot_id || null,
+    mode: "read_only_command_center",
+    nyra_weather: {
+      market_posture: pricingPressure,
+      advisory: "Nyra legge segnali aggregati e suggerisce priorita; non esegue azioni automatiche.",
+    },
+    infrastructure: {
+      node_status: nodeStatus,
+      service_version: SERVICE_VERSION,
+      render_ready: true,
+      uptime_seconds: Math.round(process.uptime()),
+    },
+    guardrails: {
+      ...auditPulse,
+      hard_block: false,
+      owner_confirmation_required: true,
+    },
+    score: {
+      technical_score: Math.max(0, Math.min(100, technicalScore)),
+      risk_score: riskScore,
+      risk_status: riskScore >= 80 ? "critical" : riskScore >= 55 ? "high" : riskScore >= 25 ? "warning" : "ok",
+    },
+    recommended_action:
+      riskScore >= 55
+        ? "Aprire Control Room, verificare guardrail recenti e confermare manualmente le azioni critiche."
+        : "Continuare monitoraggio, mantenendo audit e conferma owner sulle azioni operative.",
+  };
+}
+
+function calibrationStatus() {
+  return {
+    status: "advisory_ready",
+    mode: "monthly_auto_tuning_candidate",
+    live_mutation_enabled: false,
+    hard_block: false,
+    recommended_cadence: "monthly",
+    last_run_at: null,
+    next_step: "Raccogliere snapshot reali, confrontare varianti e salvare solo raccomandazioni approvabili dall'owner.",
+    guardrails: [
+      "nessuna modifica automatica ai pesi live",
+      "nessuna pubblicazione automatica",
+      "owner confirmation obbligatoria",
+      "audit di ogni valutazione",
+    ],
+  };
+}
+
+function calibrationEvaluate(payload = {}) {
+  const variants = Array.isArray(payload.variants) && payload.variants.length ? payload.variants : [];
+  const metrics = typeof payload.metrics === "object" && payload.metrics ? payload.metrics : {};
+  const baseline = Number(metrics.baseline_accuracy ?? metrics.baseline_score ?? 0);
+  const scored = variants.map((variant, index) => {
+    const accuracy = Number(variant.accuracy ?? variant.score ?? baseline);
+    const risk = Number(variant.risk ?? variant.regression_risk ?? 20);
+    const coverage = Number(variant.coverage ?? 70);
+    const final_score = Math.max(0, Math.min(100, accuracy * 0.55 + coverage * 0.25 + (100 - risk) * 0.2));
+    return {
+      id: String(variant.id || `variant_${index + 1}`),
+      label: String(variant.label || variant.id || `Variante ${index + 1}`),
+      final_score,
+      accuracy,
+      coverage,
+      risk,
+      selected: false,
+    };
+  });
+  scored.sort((a, b) => b.final_score - a.final_score);
+  if (scored[0]) scored[0].selected = true;
+
+  return {
+    status: scored.length ? "candidate_selected" : "insufficient_data",
+    advisory_only: true,
+    live_mutation_enabled: false,
+    selected_variant: scored[0] || null,
+    ranking: scored,
+    recommended_action: scored[0]
+      ? "Salvare la variante come proposta, testarla in staging e applicarla solo dopo conferma owner."
+      : "Aggiungere varianti, metriche reali e dati di regressione prima di calibrare.",
+  };
+}
+
+function claimShieldSources() {
+  return [
+    {
+      id: "eu_cosmetics_reg_1223_2009",
+      label: "Regolamento cosmetici UE CE n. 1223/2009",
+      scope: "cosmetic_claim_governance_reference",
+      status: "reference_registry",
+      legal_review_required: true,
+    },
+    {
+      id: "internal_brand_claim_policy",
+      label: "Policy claim approvati dal brand",
+      scope: "brand_specific_claims",
+      status: "tenant_policy_required",
+      legal_review_required: true,
+    },
+  ];
+}
+
+function claimShieldCheck(payload = {}) {
+  const lexical = claimGuardCheck(payload);
+  const statusScore = severityToScore(lexical.status);
+  const contextRisk = payload.context?.medical_context === true || payload.context?.before_after_promise === true ? 20 : 0;
+  const riskScore = Math.max(0, Math.min(100, statusScore + contextRisk));
+  return {
+    ...lexical,
+    shield_status: riskScore >= 80 ? "critical_review" : riskScore >= 50 ? "legal_review_recommended" : "watch",
+    risk_score: riskScore,
+    sources: claimShieldSources(),
+    legal_guarantee: false,
+    compliance_note:
+      "Supporto di governance e pre-review: non sostituisce validazione legale, regolatoria o responsabilita del brand.",
+    owner_confirmation_required: lexical.issue_count > 0,
+  };
+}
+
+export function createUniversalCoreService(options = {}) {
+  const storageRoot = options.storageRoot || process.env.CORE_SERVICE_STORAGE_ROOT || DEFAULT_STORAGE_ROOT;
+  ensureDir(storageRoot);
+
+  const audit = createAudit(storageRoot);
+  const keyStore = createKeyStore(storageRoot, audit);
+  const setupTokens = createSetupTokenStore(storageRoot, audit);
+  const snapshots = snapshotStore(storageRoot);
+  const reviews = reviewStore(storageRoot);
+  const evidence = evidenceStore(storageRoot);
+  const tenants = tenantRegistryStore(storageRoot);
+  const entityGraph = entityGraphStore(storageRoot);
+  const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
+  const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
+  const coreRuntime = options.coreRuntime || createCoreRuntimeWorker(options.coreRuntimeOptions);
+  const genericAgentRuntime = options.genericAgentRuntime || createGenericAgentRuntime();
+  const genericAgentCheckpoints = options.genericAgentCheckpointStore || createGenericAgentCheckpointStore({
+    root: path.join(storageRoot, "generic-agent-checkpoints"),
+  });
+  const genericAgentOrchestrator = options.genericAgentOrchestrator || createGenericAgentOrchestrator(options.genericAgentOrchestratorOptions);
+  const genericAgentOrchestrationStore = options.genericAgentOrchestrationStore || createGenericAgentOrchestrationStore({
+    root: path.join(storageRoot, "generic-agent-orchestrations"),
+  });
+  const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
+  const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
+    root: path.join(storageRoot, "governed-agent-activations"),
+  });
+  const governedAgentBudgetStore = options.governedAgentBudgetStore || createGovernedAgentBudgetStore({ root: path.join(storageRoot, "governed-agent-budgets") });
+  const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
+  const governedAgentQueueStore = options.governedAgentQueueStore || (governedAgentDatabaseUrl
+    ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
+    : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
+  const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
+
+  function recoverGenericOrchestration(tenantId, planId) {
+    try {
+      return genericAgentOrchestrator.getPlan({ tenant_id: tenantId, plan_id: planId });
+    } catch (error) {
+      if (error.message !== "plan_not_found") throw error;
+      const record = genericAgentOrchestrationStore.load({ tenant_id: tenantId, plan_id: planId });
+      if (!record?.plan_snapshot) throw error;
+      return genericAgentOrchestrator.restorePlan({ tenant_id: tenantId, plan_snapshot: record.plan_snapshot });
+    }
+  }
+
+  function persistGenericOrchestration(plan) {
+    return genericAgentOrchestrationStore.save({ tenant_id: plan.tenant_id, plan_snapshot: plan });
+  }
+  const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
+  const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
+  const app = express();
+
+  app.disable("x-powered-by");
+  app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
+
+  app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const agents = governedAgentRegistry.listAgents();
+    audit.append("governed_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, agent_count: agents.length });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      agents,
+      defaults: { activation_mode: "dry_run", learning_mode: "frozen", model_budget_required: true, external_actions: "owner_confirmation_required" },
+    });
+  });
+
+  app.post("/v1/generic-agents/activations", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const existing = req.body?.idempotency_key
+        ? governedAgentActivationStore.findByIdempotency({ tenant_id: req.tenantId, idempotency_key: req.body.idempotency_key })
+        : null;
+      if (existing) {
+        const run = genericAgentRuntime.restoreRun({ tenant_id: req.tenantId, run_snapshot: existing.run_snapshot });
+        return res.json({ ok: true, tenant_id: req.tenantId, activation: { ...existing.activation, reused: true }, run, workflow: existing.workflow, reused: true, restored_from_durable_activation: true, execution_allowed: false });
+      }
+      const activation = governedAgentRegistry.proposeActivation({ ...(req.body || {}), tenant_id: req.tenantId });
+      if (activation.reused) {
+        const run = genericAgentRuntime.getRun({ run_id: `run_${activation.activation_id}`, tenant_id: req.tenantId });
+        return res.json({ ok: true, tenant_id: req.tenantId, activation, run, reused: true, execution_allowed: false });
+      }
+      const run = genericAgentRuntime.startRun({
+        run_id: `run_${activation.activation_id}`,
+        tenant_id: req.tenantId,
+        agent_id: activation.agent_id,
+        task: activation.task,
+        metadata: { activation_id: activation.activation_id, trigger: activation.trigger, role: activation.role },
+        learning_mode: "frozen",
+        model_budget: { max_model_calls: 0, max_total_tokens: 0 },
+      });
+      governedAgentActivationStore.save({ tenant_id: req.tenantId, activation, run_snapshot: run });
+      audit.append("governed_agent_activation_proposed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: activation.activation_id, run_id: run.run_id, agent_id: activation.agent_id, trigger: activation.trigger });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation, run, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, 400, error.message || "governed_agent_activation_invalid");
+    }
+  });
+
+  app.get("/v1/generic-agents/activations/:activationId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
+      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
+      return res.json({ ok: true, tenant_id: req.tenantId, activation: record.activation, workflow: record.workflow, revision: record.revision, updated_at: record.updated_at, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, 403, error.message || "governed_agent_activation_read_failed");
+    }
+  });
+
+  app.post("/v1/generic-agents/activations/:activationId/research-workflow", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    try {
+      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
+      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
+      if (record.activation.agent_id !== "nyra-supervisor") return publicError(res, 400, "research_workflow_requires_nyra_supervisor");
+      if (record.workflow?.plan_id) {
+        const plan = recoverGenericOrchestration(req.tenantId, record.workflow.plan_id);
+        return res.json({ ok: true, tenant_id: req.tenantId, activation: record.activation, plan, reused: true, execution_allowed: false });
+      }
+      const plan = genericAgentOrchestrator.createPlan({
+        tenant_id: req.tenantId,
+        run_id: record.run_snapshot.run_id,
+        workers: buildGovernedResearchWorkers({ task: record.activation.task }),
+      });
+      const budget = governedAgentBudgetStore.reserveWorkflow({ tenant_id: req.tenantId, worker_count: plan.workers.length, deadline_ms: req.body?.deadline_ms ?? 120_000 });
+      persistGenericOrchestration(plan);
+      const workflow = { schema_version: "governed_research_workflow_v1", plan_id: plan.plan_id, status: plan.status, execution_mode: "dry_run", model_invocation: false, tool_invocation: false, external_action: false, operational_budget: budget, telemetry: { queue_ms: 0, context_build_ms: 0, retry_events: 0, timeout_events: 0, cancellation_events: 0, zombie_branches: 0 } };
+      const queueJobs = await governedAgentQueueStore.enqueue({ tenant_id: req.tenantId, activation_id: record.activation.activation_id, plan_id: plan.plan_id, workers: plan.workers, deadline_at: budget.deadline_at, max_retries: budget.limits.max_retries_per_worker });
+      workflow.queue = { job_count: queueJobs.length, status: "queued" };
+      const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
+      audit.append("governed_agent_research_workflow_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: record.activation.activation_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation: saved.activation, workflow: saved.workflow, plan, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_workflow_failed");
     }
   });
 
