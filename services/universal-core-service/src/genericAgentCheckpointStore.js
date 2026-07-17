@@ -34,7 +34,7 @@ export function createGenericAgentCheckpointStore({ root, now = () => new Date()
   const storageRoot = requireText(root, "root", 2_000);
 
   return {
-    save({ tenant_id, run_id, checkpoint, expected_revision = null }) {
+    save({ tenant_id, run_id, checkpoint, run_snapshot = null, expected_revision = null }) {
       const tenantId = requireText(tenant_id, "tenant_id", 120);
       const runId = requireText(run_id, "run_id", 160);
       if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) throw new Error("checkpoint_invalid");
@@ -48,6 +48,7 @@ export function createGenericAgentCheckpointStore({ root, now = () => new Date()
         run_id: runId,
         revision: currentRevision + 1,
         checkpoint: clone(checkpoint),
+        ...(run_snapshot && typeof run_snapshot === "object" && !Array.isArray(run_snapshot) ? { run_snapshot: clone(run_snapshot) } : {}),
         updated_at: now(),
       };
       atomicWrite(file, record);
