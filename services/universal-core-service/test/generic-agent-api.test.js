@@ -39,6 +39,24 @@ test("generic agent API persists tenant-scoped checkpoints and evaluates cases",
     assert.equal(checkpointed.status, 200);
     assert.equal(checkpointed.json.checkpoint_record.revision, 1);
 
+    const orchestration = await request("POST", `/v1/generic-agents/runs/${started.json.run.run_id}/orchestration`, {
+      workers: [
+        { worker_id: "research", agent_id: "researcher", task: "Collect sources" },
+        { worker_id: "review", agent_id: "reviewer", task: "Review sources", dependencies: ["research"] },
+      ],
+    }, key);
+    assert.equal(orchestration.status, 201);
+    const planId = orchestration.json.plan.plan_id;
+    const firstClaim = await request("POST", `/v1/generic-agents/orchestration/${planId}/claim`, {}, key);
+    assert.deepEqual(firstClaim.json.workers.map((worker) => worker.worker_id), ["research"]);
+    await request("POST", `/v1/generic-agents/orchestration/${planId}/workers/research/complete`, { result: { sources: 2 } }, key);
+    const secondClaim = await request("POST", `/v1/generic-agents/orchestration/${planId}/claim`, {}, key);
+    assert.deepEqual(secondClaim.json.workers.map((worker) => worker.worker_id), ["review"]);
+    await request("POST", `/v1/generic-agents/orchestration/${planId}/workers/review/complete`, { result: { approved: true } }, key);
+    const joined = await request("POST", `/v1/generic-agents/orchestration/${planId}/join`, {}, key);
+    assert.equal(joined.status, 200);
+    assert.equal(joined.json.joined.status, "completed");
+
     const fetched = await request("GET", `/v1/generic-agents/runs/${started.json.run.run_id}`, undefined, key);
     assert.equal(fetched.status, 200);
     assert.equal(fetched.json.durable_checkpoint.revision, 1);

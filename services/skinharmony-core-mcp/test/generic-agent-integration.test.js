@@ -46,6 +46,23 @@ test("generic agent MCP handlers run a tenant-scoped lifecycle through Core", as
     }, identity)).structuredContent;
     assert.equal(checkpointed.checkpoint_record.revision, 1);
 
+    const orchestration = (await handlers.generic_agent_orchestration_create({
+      run_id: started.run.run_id,
+      workers: [
+        { worker_id: "collect", agent_id: "planner", task: "Collect evidence" },
+        { worker_id: "review", agent_id: "reviewer", task: "Review evidence", dependencies: ["collect"] },
+      ],
+    }, identity)).structuredContent;
+    const planId = orchestration.plan.plan_id;
+    const firstClaim = (await handlers.generic_agent_orchestration_claim({ plan_id: planId }, identity)).structuredContent;
+    assert.equal(firstClaim.workers[0].worker_id, "collect");
+    await handlers.generic_agent_orchestration_complete({ plan_id: planId, worker_id: "collect", result: { sources: 2 } }, identity);
+    const secondClaim = (await handlers.generic_agent_orchestration_claim({ plan_id: planId }, identity)).structuredContent;
+    assert.equal(secondClaim.workers[0].worker_id, "review");
+    await handlers.generic_agent_orchestration_complete({ plan_id: planId, worker_id: "review", result: { approved: true } }, identity);
+    const joined = (await handlers.generic_agent_orchestration_join({ plan_id: planId }, identity)).structuredContent;
+    assert.equal(joined.joined.status, "completed");
+
     const fetched = (await handlers.generic_agent_run_read({ run_id: started.run.run_id }, identity)).structuredContent;
     assert.equal(fetched.durable_checkpoint.revision, 1);
 

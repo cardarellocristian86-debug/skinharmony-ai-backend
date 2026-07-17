@@ -1,0 +1,132 @@
+import crypto from "node:crypto";
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function requireText(value, field, max = 160) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.length > max) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
+function normalizeWorkers(workers) {
+  if (!Array.isArray(workers) || workers.length === 0 || workers.length > 200) throw new Error("workers_invalid");
+  const seen = new Set();
+  return workers.map((worker) => {
+    const workerId = requireText(worker?.worker_id, "worker_id", 120);
+    if (seen.has(workerId)) throw new Error("worker_id_duplicate");
+    seen.add(workerId);
+    return {
+      worker_id: workerId,
+      agent_id: requireText(worker?.agent_id, "agent_id", 120),
+      task: requireText(worker?.task, "task", 4_000),
+      dependencies: Array.isArray(worker?.dependencies)
+        ? [...new Set(worker.dependencies.map((id) => requireText(id, "dependency_id", 120)))]
+        : [],
+      status: "pending",
+      result: null,
+      error: null,
+    };
+  });
+}
+
+export function createGenericAgentOrchestrator({ maxConcurrent = 6, now = () => new Date().toISOString(), idFactory = () => crypto.randomUUID() } = {}) {
+  const limit = Number(maxConcurrent);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 32) throw new Error("max_concurrent_invalid");
+  const plans = new Map();
+
+  function planFor({ tenant_id, plan_id }) {
+    const plan = plans.get(requireText(plan_id, "plan_id", 160));
+    if (!plan) throw new Error("plan_not_found");
+    if (plan.tenant_id !== requireText(tenant_id, "tenant_id", 120)) throw new Error("cross_tenant_plan_denied");
+    return plan;
+  }
+
+  function refresh(plan) {
+    const running = plan.workers.filter((worker) => worker.status === "running").length;
+    const completed = plan.workers.filter((worker) => worker.status === "completed").length;
+    const failed = plan.workers.some((worker) => worker.status === "failed");
+    const cancelled = plan.workers.some((worker) => worker.status === "cancelled");
+    if (failed) plan.status = "failed";
+    else if (cancelled) plan.status = "cancelled";
+    else if (completed === plan.workers.length) plan.status = "ready_for_core_join";
+    else if (running > 0) plan.status = "running";
+    plan.updated_at = now();
+  }
+
+  return {
+    createPlan({ tenant_id, run_id, workers }) {
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const normalized = normalizeWorkers(workers);
+      const ids = new Set(normalized.map((worker) => worker.worker_id));
+      for (const worker of normalized) for (const dependency of worker.dependencies) if (!ids.has(dependency)) throw new Error("dependency_not_found");
+      const plan = {
+        schema_version: "generic_agent_orchestration_v1",
+        plan_id: `plan_${idFactory()}`,
+        tenant_id: tenantId,
+        run_id: requireText(run_id, "run_id", 160),
+        status: "pending",
+        max_concurrent: limit,
+        workers: normalized,
+        created_at: now(),
+        updated_at: now(),
+        core_joined_at: null,
+      };
+      plans.set(plan.plan_id, plan);
+      return clone(plan);
+    },
+
+    claimReadyWorkers({ tenant_id, plan_id }) {
+      const plan = planFor({ tenant_id, plan_id });
+      if (!["pending", "running"].includes(plan.status)) throw new Error("plan_not_schedulable");
+      const running = plan.workers.filter((worker) => worker.status === "running").length;
+      const slots = Math.max(0, plan.max_concurrent - running);
+      const completed = new Set(plan.workers.filter((worker) => worker.status === "completed").map((worker) => worker.worker_id));
+      const ready = plan.workers
+        .filter((worker) => worker.status === "pending" && worker.dependencies.every((dependency) => completed.has(dependency)))
+        .slice(0, slots);
+      for (const worker of ready) worker.status = "running";
+      refresh(plan);
+      return clone({ plan_id: plan.plan_id, workers: ready });
+    },
+
+    completeWorker({ tenant_id, plan_id, worker_id, result = {} }) {
+      const plan = planFor({ tenant_id, plan_id });
+      const worker = plan.workers.find((item) => item.worker_id === requireText(worker_id, "worker_id", 120));
+      if (!worker) throw new Error("worker_not_found");
+      if (worker.status !== "running") throw new Error("worker_not_running");
+      worker.status = "completed";
+      worker.result = result && typeof result === "object" && !Array.isArray(result) ? clone(result) : {};
+      refresh(plan);
+      return clone(plan);
+    },
+
+    cancelPlan({ tenant_id, plan_id }) {
+      const plan = planFor({ tenant_id, plan_id });
+      if (["completed", "failed", "cancelled"].includes(plan.status)) throw new Error("plan_not_cancellable");
+      for (const worker of plan.workers) if (worker.status === "pending" || worker.status === "running") worker.status = "cancelled";
+      refresh(plan);
+      return clone(plan);
+    },
+
+    coreJoin({ tenant_id, plan_id }) {
+      const plan = planFor({ tenant_id, plan_id });
+      if (plan.status !== "ready_for_core_join") throw new Error("plan_not_ready_for_core_join");
+      plan.status = "completed";
+      plan.core_joined_at = now();
+      plan.updated_at = plan.core_joined_at;
+      return clone({
+        plan_id: plan.plan_id,
+        run_id: plan.run_id,
+        status: plan.status,
+        worker_results: plan.workers.map((worker) => ({ worker_id: worker.worker_id, agent_id: worker.agent_id, result: worker.result })),
+        core_joined_at: plan.core_joined_at,
+      });
+    },
+
+    getPlan({ tenant_id, plan_id }) {
+      return clone(planFor({ tenant_id, plan_id }));
+    },
+  };
+}

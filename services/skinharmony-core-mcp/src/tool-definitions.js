@@ -458,6 +458,26 @@ export const TOOLS = [
   tool("scalp_analyzer", "Interpret Scalp Analyzer metrics", "Read-only Scalp v2 for medical-study documentation support, salon technical trichology and pharmacy dermocosmetic counselling. It never impersonates a physician, diagnoses, prescribes or auto-publishes marketing.", object({
     overall: scalpMetrics, zones: { type: "array", maxItems: 12, items: object({ zone: identifier, metrics: scalpMetrics }, ["zone", "metrics"]) }, acquisition: scalpAcquisition, previous: object({ overall: scalpMetrics, acquisition: scalpAcquisition }), reported_warning_signals: { type: "array", maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["sudden_change", "pain", "bleeding", "open_lesion", "infection_suspected"] } }, professional_profile: { type: "string", enum: ["medical_study", "salon_trichology", "pharmacy_dermocosmetic"] }, learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }), locale: { type: "string", enum: ["it", "en"] }, session_id: identifier,
   }, ["overall"]), ["core:read"], true, true),
+  tool("generic_agent_orchestration_create", "Create generic agent orchestration", "Create a bounded tenant-scoped worker plan for an existing generic agent run. This plans internal work only and never authorizes external execution.", object({
+    run_id: { type: "string", maxLength: 160 },
+    workers: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: {
+      worker_id: identifier,
+      agent_id: identifier,
+      task: text(4_000),
+      dependencies: { type: "array", maxItems: 200, items: identifier },
+    }, required: ["worker_id", "agent_id", "task"], additionalProperties: false } },
+  }, ["run_id", "workers"]), ["core:govern"], false, false),
+  tool("generic_agent_orchestration_claim", "Claim ready generic workers", "Claim only dependency-ready workers within the orchestration concurrency limit.", object({
+    plan_id: { type: "string", maxLength: 160 },
+  }, ["plan_id"]), ["core:govern"], false, false),
+  tool("generic_agent_orchestration_complete", "Complete generic orchestration worker", "Record one worker's bounded internal result and unlock its dependents; no external action is executed.", object({
+    plan_id: { type: "string", maxLength: 160 },
+    worker_id: identifier,
+    result: { type: "object", additionalProperties: true },
+  }, ["plan_id", "worker_id"]), ["core:govern"], false, false),
+  tool("generic_agent_orchestration_join", "Join generic orchestration in Core", "Ask Core to join completed worker results after every planned worker has completed.", object({
+    plan_id: { type: "string", maxLength: 160 },
+  }, ["plan_id"]), ["core:govern"], false, false),
   tool("generic_agent_start", "Start a generic agent run", "Start a tenant-scoped generic agent runtime with an explicit task and declared tools. This creates an internal run only; it does not authorize external execution.", object({
     agent_id: identifier,
     task: text(4_000),
