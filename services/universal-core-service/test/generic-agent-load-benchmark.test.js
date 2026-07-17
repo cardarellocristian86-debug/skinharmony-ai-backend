@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createGenericAgentOrchestrator } from "../src/genericAgentOrchestrator.js";
+import { createGenericAgentRuntime } from "../src/genericAgentRuntime.js";
 
 function completePlan(orchestrator, tenantId, planId) {
   let safety = 0;
@@ -62,4 +63,48 @@ test("generic orchestration benchmark keeps cancellation isolated under load", (
   for (const plan of plans.slice(15)) completePlan(orchestrator, "tenant-cancellation", plan.plan_id);
   assert.equal(plans.filter((plan) => orchestrator.getPlan({ tenant_id: "tenant-cancellation", plan_id: plan.plan_id }).status === "cancelled").length, 15);
   assert.equal(plans.filter((plan) => orchestrator.getPlan({ tenant_id: "tenant-cancellation", plan_id: plan.plan_id }).status === "completed").length, 15);
+});
+
+
+test("branch governor bounds tree depth and propagates the kill signal to every pending branch", () => {
+  const orchestrator = createGenericAgentOrchestrator({ maxBranchDepth: 3 });
+  assert.throws(() => orchestrator.createPlan({
+    tenant_id: "tenant-governor",
+    run_id: "depth-overflow",
+    workers: [{ worker_id: "deep", agent_id: "agent", task: "Too deep", branch_depth: 4 }],
+  }), /branch_depth_exceeded/);
+
+  const plan = orchestrator.createPlan({
+    tenant_id: "tenant-governor",
+    run_id: "kill-propagation",
+    workers: Array.from({ length: 12 }, (_, index) => ({
+      worker_id: `branch_${index}`,
+      agent_id: "agent",
+      task: "Branch task",
+      branch_depth: index % 4,
+    })),
+  });
+  orchestrator.claimReadyWorkers({ tenant_id: "tenant-governor", plan_id: plan.plan_id });
+  const cancelled = orchestrator.cancelPlan({ tenant_id: "tenant-governor", plan_id: plan.plan_id });
+  assert.equal(cancelled.kill_signal.propagated, true);
+  assert.equal(cancelled.kill_signal.cancelled_worker_count, 12);
+  assert(cancelled.workers.every((worker) => worker.status === "cancelled"));
+});
+
+test("performance benchmark freezes learning and separates context-build latency from tool timing", () => {
+  const runtime = createGenericAgentRuntime();
+  const run = runtime.startRun({
+    tenant_id: "tenant-performance",
+    agent_id: "benchmark",
+    task: "Deterministic performance run",
+    tools: ["search"],
+    learning_mode: "frozen",
+  });
+  runtime.recordContextBuild({ tenant_id: "tenant-performance", run_id: run.run_id, phase: "nyra_context_compile", duration_ms: 18.5 });
+  runtime.recordToolEvent({ tenant_id: "tenant-performance", run_id: run.run_id, tool_id: "search", outcome: "success" });
+  const metrics = runtime.getMetrics({ tenant_id: "tenant-performance" });
+  assert.equal(runtime.getRun({ tenant_id: "tenant-performance", run_id: run.run_id }).learning_mode, "frozen");
+  assert.equal(metrics.context_build.count, 1);
+  assert.equal(metrics.context_build.total_ms, 18.5);
+  assert.equal(metrics.tool_events.success, 1);
 });
