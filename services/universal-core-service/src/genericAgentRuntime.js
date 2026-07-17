@@ -106,6 +106,10 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
 
     createHandoff({ run_id, tenant_id, to_agent_id, summary, idempotency_key = null }) {
       const run = getRun(run_id, tenant_id);
+      const normalizedIdempotencyKey = idempotency_key ? requireText(idempotency_key, "idempotency_key", 160) : null;
+      for (const existing of handoffs.values()) {
+        if (normalizedIdempotencyKey && existing.tenant_id === run.tenant_id && existing.run_id === run.run_id && existing.idempotency_key === normalizedIdempotencyKey) return clone(existing);
+      }
       if (run.status !== "running") throw new Error("run_not_handoffable");
       const handoff = {
         schema_version: "generic_agent_handoff_v1",
@@ -115,14 +119,11 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         to_agent_id: requireText(to_agent_id, "to_agent_id", 120),
         run_id: run.run_id,
         summary: requireText(summary, "summary", 4_000),
-        idempotency_key: idempotency_key ? requireText(idempotency_key, "idempotency_key", 160) : null,
+        idempotency_key: normalizedIdempotencyKey,
         status: "open",
         created_at: now(),
         claimed_at: null,
       };
-      for (const existing of handoffs.values()) {
-        if (handoff.idempotency_key && existing.tenant_id === handoff.tenant_id && existing.idempotency_key === handoff.idempotency_key) return clone(existing);
-      }
       handoffs.set(handoff.handoff_id, handoff);
       run.status = "waiting_handoff";
       appendTrace(run, "handoff_created", { handoff_id: handoff.handoff_id, to_agent_id: handoff.to_agent_id });
