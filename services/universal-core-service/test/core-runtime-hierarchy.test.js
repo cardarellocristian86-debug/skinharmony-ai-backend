@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateCoreRuntimeHierarchy, routeCoreV7, runDigestV1Canonical } from "../src/coreRuntimeHierarchy.js";
+import { applyCoreV2SupervisionPrefilter, evaluateCoreRuntimeHierarchy, routeCoreV7, runDigestV1Canonical } from "../src/coreRuntimeHierarchy.js";
 
 function input(overrides = {}) {
   return {
@@ -59,4 +59,16 @@ test("normalizza il payload parziale del middleware MCP", async () => {
   }, { mode: "shadow" });
   assert.equal(result.hierarchy_version, "core_runtime_hierarchy_v1");
   assert.equal(result.execution_allowed, false);
+});
+
+test("il pre-filtro V2 sopprime heartbeat informativi senza nascondere escalation", async () => {
+  const telemetryOnly = applyCoreV2SupervisionPrefilter({ flags: ["manca_pulse_operativo", "pulse_scaduto_o_non_aggiornato", "rischio_non_classificato"] });
+  assert.equal(telemetryOnly.verdict, "on_track");
+  assert.equal(telemetryOnly.disposition, "suppress_informational_attention");
+  assert.deepEqual(telemetryOnly.suppressed_flags, ["manca_pulse_operativo", "pulse_scaduto_o_non_aggiornato", "rischio_non_classificato"]);
+
+  const escalation = await evaluateCoreRuntimeHierarchy(input({ supervision: { flags: ["pulse_scaduto_o_non_aggiornato", "file_fuori_scope_task_contract"] } }), { mode: "shadow" });
+  assert.equal(escalation.supervision_prefilter.verdict, "recover");
+  assert.equal(escalation.supervision_prefilter.disposition, "escalate");
+  assert.deepEqual(escalation.supervision_prefilter.hard_flags, ["file_fuori_scope_task_contract"]);
 });
