@@ -17,6 +17,15 @@ function normalizeTools(tools) {
   return [...new Set(tools.map((tool) => requireText(tool, "tool_id", 120)))].slice(0, 64);
 }
 
+function normalizeModelBudget(value) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const maxModelCalls = input.max_model_calls === undefined ? 0 : Number(input.max_model_calls);
+  const maxTotalTokens = input.max_total_tokens === undefined ? 0 : Number(input.max_total_tokens);
+  if (!Number.isInteger(maxModelCalls) || maxModelCalls < 0 || maxModelCalls > 10_000) throw new Error("max_model_calls_invalid");
+  if (!Number.isInteger(maxTotalTokens) || maxTotalTokens < 0 || maxTotalTokens > 100_000_000) throw new Error("max_total_tokens_invalid");
+  return { max_model_calls: maxModelCalls, max_total_tokens: maxTotalTokens };
+}
+
 function normalizeRunInput(input = {}) {
   const tenantId = requireText(input.tenant_id, "tenant_id", 120);
   const agentId = requireText(input.agent_id, "agent_id", 120);
@@ -36,6 +45,7 @@ function normalizeRunInput(input = {}) {
       if (!["frozen", "governed_read_only"].includes(mode)) throw new Error("learning_mode_invalid");
       return mode;
     })(),
+    model_budget: normalizeModelBudget(input.model_budget),
   };
 }
 
@@ -84,6 +94,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         created_at: now(),
         updated_at: now(),
         checkpoint: null,
+        model_usage: { model_calls: 0, reserved_tokens: 0 },
         trace: [],
       };
       appendTrace(run, "run_started", { tools: run.tools, parent_run_id: run.parent_run_id });
@@ -156,6 +167,20 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       return clone(run);
     },
 
+    reserveModelCall({ run_id, tenant_id, model_id, estimated_tokens }) {
+      const run = getRun(run_id, tenant_id);
+      const model = requireText(model_id, "model_id", 160);
+      const tokens = Number(estimated_tokens);
+      if (!Number.isInteger(tokens) || tokens < 1 || tokens > 10_000_000) throw new Error("estimated_tokens_invalid");
+      const nextCalls = run.model_usage.model_calls + 1;
+      const nextTokens = run.model_usage.reserved_tokens + tokens;
+      if (nextCalls > run.model_budget.max_model_calls || nextTokens > run.model_budget.max_total_tokens) throw new Error("model_budget_exceeded");
+      run.model_usage.model_calls = nextCalls;
+      run.model_usage.reserved_tokens = nextTokens;
+      appendTrace(run, "model_call_reserved", { model_id: model, estimated_tokens: tokens, model_call_number: nextCalls });
+      return clone(run);
+    },
+
     recordToolEvent({ run_id, tenant_id, tool_id, outcome = "success", retry_count = 0 }) {
       const run = getRun(run_id, tenant_id);
       const normalizedTool = requireText(tool_id, "tool_id", 120);
@@ -183,7 +208,12 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       const status_counts = {};
       const tool_events = { success: 0, failure: 0, retry: 0 };
       const context_build = { count: 0, total_ms: 0, max_ms: 0 };
+      const model_usage = { model_calls: 0, reserved_tokens: 0, max_model_calls: 0, max_total_tokens: 0 };
       for (const run of tenantRuns) {
+        model_usage.model_calls += run.model_usage?.model_calls || 0;
+        model_usage.reserved_tokens += run.model_usage?.reserved_tokens || 0;
+        model_usage.max_model_calls += run.model_budget?.max_model_calls || 0;
+        model_usage.max_total_tokens += run.model_budget?.max_total_tokens || 0;
         status_counts[run.status] = (status_counts[run.status] || 0) + 1;
         for (const trace of run.trace) {
           if (trace.event === "tool_event" && tool_events[trace.data.outcome] !== undefined) tool_events[trace.data.outcome] += 1;
@@ -204,6 +234,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         status_counts,
         tool_events,
         context_build,
+        model_usage,
       };
     },
 
@@ -224,6 +255,12 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         created_at: run_snapshot.created_at || now(),
         updated_at: now(),
         checkpoint,
+        model_usage: run_snapshot.model_usage && typeof run_snapshot.model_usage === "object"
+          ? {
+            model_calls: Number(run_snapshot.model_usage.model_calls || 0),
+            reserved_tokens: Number(run_snapshot.model_usage.reserved_tokens || 0),
+          }
+          : { model_calls: 0, reserved_tokens: 0 },
         trace,
       };
       appendTrace(restored, "run_restored", { restored_from_checkpoint: true });
