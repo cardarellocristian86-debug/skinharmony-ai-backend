@@ -47,7 +47,7 @@ test("generic agent MCP handlers run a tenant-scoped lifecycle through Core", as
     assert.equal(checkpointed.checkpoint_record.revision, 1);
 
     const fetched = (await handlers.generic_agent_run_read({ run_id: started.run.run_id }, identity)).structuredContent;
-    assert.equal(fetched.durable_checkpoint.revision, "planned");
+    assert.equal(fetched.durable_checkpoint.revision, 1);
 
     const evaluation = (await handlers.generic_agent_evaluate({
       cases: [{ id: "plan-valid", expected: { valid: true }, actual: { valid: true } }],
