@@ -539,6 +539,10 @@ export function createCoreHandlers(config, options = {}) {
       method: "POST",
       body: { result: args.result, tenant_id: identity.tenantId },
     })),
+    generic_agent_orchestration_cancel: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/orchestration/${encodeURIComponent(args.plan_id)}/cancel`, identity.tenantId, {
+      method: "POST",
+      body: { tenant_id: identity.tenantId },
+    })),
     generic_agent_orchestration_join: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/orchestration/${encodeURIComponent(args.plan_id)}/join`, identity.tenantId, {
       method: "POST",
       body: { tenant_id: identity.tenantId },
