@@ -6,6 +6,12 @@ The repository path and package name retain the historical SkinHarmony name for 
 
 ## Authentication
 
+## ChatGPT install and tenant API-key onboarding
+
+Users install this connector in ChatGPT and authenticate with their own account; they never need access to Render. On first use, ChatGPT should explain that Nyra plans and coordinates while Universal Core remains the final safety authority.
+
+An API key for an external model provider must **never** be pasted into a ChatGPT message or tool argument. A ChatGPT/Codex subscription is separate from API billing. When tenant-provided model execution is enabled, the connector will return a one-time secure setup link outside the chat. The user enters their own provider API key there; Core stores only encrypted data in the tenant-scoped database, returns a masked status, and supports rotation or removal. Until that flow is available and a provider is explicitly enabled, all agent execution remains dry-run.
+
 - Codex: `Authorization: Bearer <key>` from `CODEX_BEARER_KEYS`; scopes come only from trusted server configuration.
 - ChatGPT: Auth0 RS256 access token verified against JWKS, exact issuer, audience, expiry and optional `nbf`.
 - OAuth discovery: `/.well-known/oauth-protected-resource` and the RFC 9728 path-specific `/.well-known/oauth-protected-resource/mcp` advertise the protected resource. The compatibility authorization-server endpoint advertises authorization-code flow with PKCE `S256` only.
