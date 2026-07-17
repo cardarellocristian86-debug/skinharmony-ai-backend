@@ -122,6 +122,9 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /nyra_research_plan/);
   assert.match(body.result.instructions, /host ChatGPT or Codex web tool/);
   assert.match(body.result.instructions, /Never include secrets/);
+  assert.match(body.result.instructions, /installed as a ChatGPT connector/);
+  assert.match(body.result.instructions, /never ask them to paste or reveal it in ChatGPT/);
+  assert.match(body.result.instructions, /secure link/);
 }));
 
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {
