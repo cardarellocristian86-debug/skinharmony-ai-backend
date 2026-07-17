@@ -10,8 +10,8 @@ function requireText(value, field, max = 160) {
   return normalized;
 }
 
-function normalizeWorkers(workers, maxConcurrent) {
-  if (!Array.isArray(workers) || workers.length === 0 || workers.length > maxConcurrent) throw new Error("workers_invalid");
+function normalizeWorkers(workers) {
+  if (!Array.isArray(workers) || workers.length === 0 || workers.length > 200) throw new Error("workers_invalid");
   const seen = new Set();
   return workers.map((worker) => {
     const workerId = requireText(worker?.worker_id, "worker_id", 120);
@@ -58,7 +58,7 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, now = () => 
   return {
     createPlan({ tenant_id, run_id, workers }) {
       const tenantId = requireText(tenant_id, "tenant_id", 120);
-      const normalized = normalizeWorkers(workers, limit);
+      const normalized = normalizeWorkers(workers);
       const ids = new Set(normalized.map((worker) => worker.worker_id));
       for (const worker of normalized) for (const dependency of worker.dependencies) if (!ids.has(dependency)) throw new Error("dependency_not_found");
       const plan = {
