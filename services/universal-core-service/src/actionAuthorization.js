@@ -46,6 +46,24 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
   const stagingPostgresAttempt =
     body.operation_class === "reversible_owner_confirmed_deploy" &&
     String(body.action_type || "").toLowerCase() === "environment_configuration";
+  const nyraGovernancePostgresConfiguration =
+    body.operation_class === "reversible_owner_confirmed_deploy" &&
+    String(body.action_type || "").toLowerCase() === "environment_configuration" &&
+    body.external_side_effect === true && body.contains_customer_data === false && body.contains_secret === false &&
+    body.cross_tenant === false && body.destructive === false && body.bypass_orchestrator === false &&
+    body.rollback_ready === true && body.audit_ready === true && body.configuration_changes === true && exactCommit &&
+    String(body.environment || "") === "production" && String(body.target || "") === "skinharmony-nyra-governance-db" &&
+    String(body.target_service || "") === "skinharmony-universal-core" &&
+    String(body.resource_type || "") === "postgresql" && body.create_new === true &&
+    body.reuse_existing_database === false && body.database_public_access === false && body.allow_data_migration === false &&
+    body.auth0_changes !== true && body.merge !== true && body.production_deploy !== true && body.delete !== true &&
+    body.provider_execution === false && Array.isArray(body.allowed_environment_variables) &&
+    body.allowed_environment_variables.length === 1 && body.allowed_environment_variables[0] === "GOVERNED_AGENT_DATABASE_URL" &&
+    cleanReference(body.confirmation_reference).length > 0;
+  const nyraGovernancePostgresAttempt =
+    body.operation_class === "reversible_owner_confirmed_deploy" &&
+    String(body.action_type || "").toLowerCase() === "environment_configuration" &&
+    String(body.target || "") === "skinharmony-nyra-governance-db";
   const reversibleInternalWrite =
     body.operation_class === "reversible_internal_collaboration_write" &&
     body.external_side_effect === false &&
@@ -163,19 +181,19 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     (!body.allowed_modes.includes("frida_local_agent") || (Array.isArray(body.target_allowlist) && body.target_allowlist.length > 0));
   const confirmationRequired = tenantScopedRead || sandboxedScopedWork
     ? false
-    : decisionContract.control_level === "confirm" || reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+    : decisionContract.control_level === "confirm" || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
   // The owner confirmation is bound to the exact staging target and branch. A
   // changed target or branch must never inherit a confirmation issued for it.
   const confirmationSatisfied = confirmationRequired && ownerConfirmed &&
-    (!stagingPostgresAttempt || stagingPostgresConfiguration) &&
+    (!stagingPostgresAttempt || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration) &&
     (!draftPullRequestAttempt || reversibleDraftPullRequest) &&
     (!pullRequestMergeAttempt || reversiblePullRequestMerge) &&
     (!pullRequestReadyAttempt || reversiblePullRequestReady);
   const hardBlocked = decisionContract.state === "blocked" ||
     decisionContract.recommended_actions?.some?.((action) => action.blocked === true) === true ||
-    (stagingPostgresAttempt && (body.cross_tenant === true || body.destructive === true || body.bypass_orchestrator === true));
-  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
-  const riskAllowed = reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
+    ((stagingPostgresAttempt || nyraGovernancePostgresAttempt) && (body.cross_tenant === true || body.destructive === true || body.bypass_orchestrator === true));
+  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+  const riskAllowed = reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
     ? ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""))
     : decisionContract.risk_band === "low";
   const executionAllowed = Boolean(
@@ -204,7 +222,7 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
         ? "sandboxed_scoped_work"
         : reversibleInternalWrite
           ? "reversible_internal_collaboration_write"
-          : reversibleDeploy || stagingPostgresConfiguration
+          : reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration
             ? "reversible_owner_confirmed_deploy"
           : reversibleBranchChange
               ? "reversible_owner_confirmed_branch_change"
@@ -217,6 +235,6 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
                   : deepSoftwareAnalysis
               ? "governed_deep_software_analysis"
               : "evaluation_only",
-    target_commit: reversibleDeploy || stagingPostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady ? String(body.target_commit).toLowerCase() : null,
+    target_commit: reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady ? String(body.target_commit).toLowerCase() : null,
   };
 }

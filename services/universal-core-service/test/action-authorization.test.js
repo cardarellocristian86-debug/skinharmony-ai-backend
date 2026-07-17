@@ -121,6 +121,27 @@ test("authorizes only the exact owner-confirmed staging PostgreSQL configuration
   }
 });
 
+
+const nyraGovernancePostgres = {
+  action_type: "environment_configuration", operation_class: "reversible_owner_confirmed_deploy",
+  external_side_effect: true, contains_customer_data: false, contains_secret: false, cross_tenant: false,
+  destructive: false, bypass_orchestrator: false, rollback_ready: true, audit_ready: true, configuration_changes: true,
+  environment: "production", target: "skinharmony-nyra-governance-db", target_service: "skinharmony-universal-core",
+  resource_type: "postgresql", create_new: true, reuse_existing_database: false, database_public_access: false,
+  allow_data_migration: false, auth0_changes: false, merge: false, production_deploy: false, delete: false,
+  provider_execution: false, allowed_environment_variables: ["GOVERNED_AGENT_DATABASE_URL"],
+  target_commit: "a9ae0a8de13ce36281d60aab5dd64c470afaf62a", confirmation_reference: "owner confirmed Nyra governance database",
+};
+test("authorizes only the owner-confirmed Nyra governance database configuration", () => {
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...nyraGovernancePostgres, owner_confirmed: true });
+  assert.equal(allowed.allowed, true); assert.equal(allowed.state, "authorized_after_confirmation");
+  for (const unsafe of [
+    { target: "another-db" }, { target_service: "another-service" }, { environment: "staging" }, { database_public_access: true },
+    { allow_data_migration: true }, { allowed_environment_variables: ["DATABASE_URL"] }, { allowed_environment_variables: ["GOVERNED_AGENT_DATABASE_URL", "OTHER"] },
+    { provider_execution: true }, { production_deploy: true }, { delete: true }, { destructive: true }, { cross_tenant: true },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...nyraGovernancePostgres, owner_confirmed: true, ...unsafe }).allowed, false);
+});
+
 const deepSoftware = {
   action_type: "software_analysis",
   operation_class: "governed_deep_software_analysis",
