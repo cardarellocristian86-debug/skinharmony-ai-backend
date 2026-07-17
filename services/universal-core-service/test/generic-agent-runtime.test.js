@@ -29,3 +29,16 @@ test("generic runtime makes handoffs idempotent and recipient-scoped", () => {
   assert.throws(() => subject.claimHandoff({ handoff_id: first.handoff_id, tenant_id: "tenant_a", agent_id: "other" }), /handoff_recipient_mismatch/);
   assert.equal(subject.claimHandoff({ handoff_id: first.handoff_id, tenant_id: "tenant_a", agent_id: "reviewer" }).status, "claimed");
 });
+
+
+test("generic runtime enforces declared tools and reports redacted metrics", () => {
+  const runtime = createGenericAgentRuntime();
+  const run = runtime.startRun({ tenant_id: "tenant-metrics", agent_id: "agent", task: "Observe tools", tools: ["search"] });
+  runtime.recordToolEvent({ tenant_id: "tenant-metrics", run_id: run.run_id, tool_id: "search", outcome: "retry", retry_count: 1 });
+  runtime.recordToolEvent({ tenant_id: "tenant-metrics", run_id: run.run_id, tool_id: "search", outcome: "success" });
+  assert.throws(() => runtime.recordToolEvent({ tenant_id: "tenant-metrics", run_id: run.run_id, tool_id: "shell", outcome: "success" }), /tool_not_allowed_for_run/);
+  const metrics = runtime.getMetrics({ tenant_id: "tenant-metrics" });
+  assert.equal(metrics.run_count, 1);
+  assert.equal(metrics.tool_events.retry, 1);
+  assert.equal(metrics.tool_events.success, 1);
+});
