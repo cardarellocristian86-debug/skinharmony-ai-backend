@@ -75,6 +75,9 @@ import {
   issueSoftwareAuthorizationEnvelope,
   universalSoftwareComponentManifest,
 } from "./universalSoftwareIntelligence.js";
+import { createGenericAgentRuntime } from "./genericAgentRuntime.js";
+import { createGenericAgentCheckpointStore } from "./genericAgentCheckpointStore.js";
+import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3233,12 +3236,62 @@ export function createUniversalCoreService(options = {}) {
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
   const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
   const coreRuntime = options.coreRuntime || createCoreRuntimeWorker(options.coreRuntimeOptions);
+  const genericAgentRuntime = options.genericAgentRuntime || createGenericAgentRuntime();
+  const genericAgentCheckpoints = options.genericAgentCheckpointStore || createGenericAgentCheckpointStore({
+    root: path.join(storageRoot, "generic-agent-checkpoints"),
+  });
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
   const app = express();
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
+
+  app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const run = genericAgentRuntime.startRun({ ...(req.body || {}), tenant_id: req.tenantId });
+      audit.append("generic_agent_run_started", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, agent_id: run.agent_id });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, run });
+    } catch (error) {
+      return publicError(res, 400, error.message || "generic_agent_run_invalid");
+    }
+  });
+
+  app.post("/v1/generic-agents/runs/:runId/checkpoint", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const run = genericAgentRuntime.checkpointRun({ run_id: req.params.runId, tenant_id: req.tenantId, checkpoint: req.body?.checkpoint });
+      const record = genericAgentCheckpoints.save({
+        tenant_id: req.tenantId,
+        run_id: run.run_id,
+        checkpoint: run.checkpoint,
+        expected_revision: req.body?.expected_revision ?? null,
+      });
+      audit.append("generic_agent_checkpoint_saved", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, revision: record.revision });
+      return res.json({ ok: true, tenant_id: req.tenantId, run, checkpoint_record: { revision: record.revision, updated_at: record.updated_at } });
+    } catch (error) {
+      return publicError(res, error.message === "checkpoint_revision_conflict" ? 409 : 400, error.message || "generic_agent_checkpoint_failed");
+    }
+  });
+
+  app.get("/v1/generic-agents/runs/:runId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
+      const checkpoint = genericAgentCheckpoints.load({ tenant_id: req.tenantId, run_id: run.run_id });
+      return res.json({ ok: true, tenant_id: req.tenantId, run, durable_checkpoint: checkpoint ? { revision: checkpoint.revision, updated_at: checkpoint.updated_at } : null });
+    } catch (error) {
+      return publicError(res, error.message === "run_not_found" ? 404 : 403, error.message || "generic_agent_run_read_failed");
+    }
+  });
+
+  app.post("/v1/generic-agents/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const report = evaluateGenericAgentRun(req.body?.cases);
+      audit.append("generic_agent_evaluation_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, case_count: report.case_count, score: report.score });
+      return res.json({ ok: true, tenant_id: req.tenantId, evaluation: report, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, 400, error.message || "generic_agent_evaluation_failed");
+    }
+  });
 
   app.get("/healthz", (req, res) => {
     res.json({
