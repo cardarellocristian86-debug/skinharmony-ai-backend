@@ -80,6 +80,7 @@ import { createGenericAgentCheckpointStore } from "./genericAgentCheckpointStore
 import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
 import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
+import { createGovernedAgentRegistry } from "./governedAgentRegistry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3246,6 +3247,7 @@ export function createUniversalCoreService(options = {}) {
   const genericAgentOrchestrationStore = options.genericAgentOrchestrationStore || createGenericAgentOrchestrationStore({
     root: path.join(storageRoot, "generic-agent-orchestrations"),
   });
+  const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3267,6 +3269,40 @@ export function createUniversalCoreService(options = {}) {
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
+
+  app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const agents = governedAgentRegistry.listAgents();
+    audit.append("governed_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, agent_count: agents.length });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      agents,
+      defaults: { activation_mode: "dry_run", learning_mode: "frozen", model_budget_required: true, external_actions: "owner_confirmation_required" },
+    });
+  });
+
+  app.post("/v1/generic-agents/activations", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const activation = governedAgentRegistry.proposeActivation({ ...(req.body || {}), tenant_id: req.tenantId });
+      if (activation.reused) {
+        const run = genericAgentRuntime.getRun({ run_id: `run_${activation.activation_id}`, tenant_id: req.tenantId });
+        return res.json({ ok: true, tenant_id: req.tenantId, activation, run, reused: true, execution_allowed: false });
+      }
+      const run = genericAgentRuntime.startRun({
+        run_id: `run_${activation.activation_id}`,
+        tenant_id: req.tenantId,
+        agent_id: activation.agent_id,
+        task: activation.task,
+        metadata: { activation_id: activation.activation_id, trigger: activation.trigger, role: activation.role },
+        learning_mode: "frozen",
+        model_budget: { max_model_calls: 0, max_total_tokens: 0 },
+      });
+      audit.append("governed_agent_activation_proposed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: activation.activation_id, run_id: run.run_id, agent_id: activation.agent_id, trigger: activation.trigger });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation, run, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, 400, error.message || "governed_agent_activation_invalid");
+    }
+  });
 
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
