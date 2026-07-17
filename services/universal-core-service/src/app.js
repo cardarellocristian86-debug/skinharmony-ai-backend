@@ -85,6 +85,7 @@ import { createGovernedAgentActivationStore } from "./governedAgentActivationSto
 import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
 import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQueueStore.js";
+import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3262,6 +3263,7 @@ export function createUniversalCoreService(options = {}) {
   const governedAgentQueueStore = options.governedAgentQueueStore || (governedAgentDatabaseUrl
     ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
     : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
+  const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3415,6 +3417,11 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/generic-agents/queue/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     res.json(await governedAgentQueueStore.metrics({ tenant_id: req.tenantId }));
+  });
+  app.post("/v1/generic-agents/queue/tick", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    const outcome = await governedAgentDryRunRunner.tick({ tenant_id: req.tenantId });
+    audit.append("governed_agent_queue_dry_run_tick", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, completed: outcome.completed.length, expired: outcome.expired });
+    return res.json({ ok: true, tenant_id: req.tenantId, ...outcome });
   });
   app.post("/v1/generic-agents/queue/claim", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     const job = await governedAgentQueueStore.claim({ tenant_id: req.tenantId });
@@ -3605,6 +3612,7 @@ export function createUniversalCoreService(options = {}) {
       render_ready: true,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
+      governed_agent_runner: { mode: "manual_dry_run", provider_execution: false, max_jobs_per_tick: 2 },
       uptime_seconds: Math.round(process.uptime()),
     });
   });
