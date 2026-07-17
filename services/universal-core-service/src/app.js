@@ -3350,6 +3350,50 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  app.post("/v1/generic-agents/activations/:activationId/research-evidence", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
+      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
+      if (!record.workflow?.plan_id) return publicError(res, 400, "research_workflow_required");
+      const plan = buildResearchPlan({ question: record.activation.task, allowed_domains: req.body?.allowed_domains });
+      const validation = validateResearchEvidence({ question: record.activation.task, plan, sources: req.body?.sources, claims: req.body?.claims });
+      const priorTelemetry = record.workflow.telemetry || { evidence_validation_attempts: 0, quarantined_count: 0 };
+      const workflow = {
+        ...record.workflow,
+        evidence: {
+          validation_id: validation.validation_id,
+          state: validation.state,
+          quality_score: validation.quality_score,
+          source_count: validation.source_count,
+          independent_host_count: validation.independent_host_count,
+          contradictions: validation.contradictions,
+          release_readiness: validation.release_readiness,
+          threat_assessment: validation.threat_assessment,
+        },
+        telemetry: {
+          evidence_validation_attempts: priorTelemetry.evidence_validation_attempts + 1,
+          quarantined_count: priorTelemetry.quarantined_count + (validation.state === "quarantined" ? 1 : 0),
+          last_evidence_validation_at: validation.validated_at,
+        },
+      };
+      const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
+      audit.append("governed_agent_research_evidence_validated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        activation_id: record.activation.activation_id,
+        validation_id: validation.validation_id,
+        state: validation.state,
+        quality_score: validation.quality_score,
+        source_count: validation.source_count,
+        prompt_injection_count: validation.threat_assessment.prompt_injection_count,
+        contradiction_count: validation.contradictions.length,
+      });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, plan, validation, workflow: saved.workflow, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_evidence_failed");
+    }
+  });
+
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.startRun({ ...(req.body || {}), tenant_id: req.tenantId });
