@@ -25,7 +25,7 @@ Status date: 2026-07-17. Automatic activation is introduced only as a bounded, a
 
 - [x] Persist activation records and idempotent schedule keys with optimistic concurrency.
 - [x] Let Nyra propose a bounded research → critic → supervisor plan in dry-run.
-- [ ] Require source provenance, freshness window, prompt-injection quarantine, and contradiction reporting.
+- [x] Require source provenance, freshness window, prompt-injection quarantine, contradiction reporting, and per-workflow validation telemetry.
 - [ ] Apply per-tenant daily run, worker, tool, token, and deadline budgets.
 - [ ] Add cancellation, timeout and retry telemetry at each handoff.
 - [ ] Add complex multi-agent evaluation fixtures with deterministic frozen learning.
