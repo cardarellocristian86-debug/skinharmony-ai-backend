@@ -12,6 +12,17 @@ Users install this connector in ChatGPT and authenticate with their own account;
 
 An API key for an external model provider must **never** be pasted into a ChatGPT message or tool argument. A ChatGPT/Codex subscription is separate from API billing. When tenant-provided model execution is enabled, the connector will return a one-time secure setup link outside the chat. The user enters their own provider API key there; Core stores only encrypted data in the tenant-scoped database, returns a masked status, and supports rotation or removal. Until that flow is available and a provider is explicitly enabled, all agent execution remains dry-run.
 
+### What users need to know
+
+1. **Install and sign in.** Add the connector in ChatGPT and complete OAuth. This binds the session to the correct tenant; Render is never visible to the user.
+2. **Describe the job.** State the objective, desired result, constraints, deadline and whether it is research, analysis or planning. Nyra and Core prepare a bounded plan before work begins.
+3. **Build agents safely.** An agent is a role in a governed plan, not an autonomous account. Typical roles are supervisor, researcher and critic. The plan has explicit dependencies, limits and a deadline; keep specialist fan-out to three or fewer.
+4. **What is automatic.** Core performs tenant isolation, memory recall, preflight, routing, plan persistence, queue/retry/cancellation controls, audit and dry-run simulation.
+5. **What is not automatic.** Model/API calls, browser or tool side effects, messages to customers, payments, publishing, deployment and data deletion remain disabled or require a separate Core verdict plus explicit owner confirmation.
+6. **Current execution mode.** The deployed runner is `manual_dry_run`: it validates the multi-agent workflow without calling a model, provider API, tool or external system, so it creates no tenant API charge.
+7. **Provider setup.** ChatGPT Pro/Codex and API billing are separate. Never paste an API key into ChatGPT. When enabled, the connector will open a one-time secure link; the user enters their own key there, sees only a masked status, and can rotate or remove it.
+8. **Research and privacy.** Research is planned first, then evidence is sourced and reviewed. Do not send secrets, raw customer records or full pages to the connector.
+
 - Codex: `Authorization: Bearer <key>` from `CODEX_BEARER_KEYS`; scopes come only from trusted server configuration.
 - ChatGPT: Auth0 RS256 access token verified against JWKS, exact issuer, audience, expiry and optional `nbf`.
 - OAuth discovery: `/.well-known/oauth-protected-resource` and the RFC 9728 path-specific `/.well-known/oauth-protected-resource/mcp` advertise the protected resource. The compatibility authorization-server endpoint advertises authorization-code flow with PKCE `S256` only.
