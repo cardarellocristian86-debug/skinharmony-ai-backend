@@ -3266,6 +3266,7 @@ export function createUniversalCoreService(options = {}) {
         tenant_id: req.tenantId,
         run_id: run.run_id,
         checkpoint: run.checkpoint,
+        run_snapshot: run,
         expected_revision: req.body?.expected_revision ?? null,
       });
       audit.append("generic_agent_checkpoint_saved", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, revision: record.revision });
@@ -3277,9 +3278,19 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/generic-agents/runs/:runId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     try {
-      const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
+      let restored = false;
+      let run;
+      try {
+        run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
+      } catch (error) {
+        if (error.message !== "run_not_found") throw error;
+        const durable = genericAgentCheckpoints.load({ tenant_id: req.tenantId, run_id: req.params.runId });
+        if (!durable?.run_snapshot) throw error;
+        run = genericAgentRuntime.restoreRun({ tenant_id: req.tenantId, run_snapshot: durable.run_snapshot });
+        restored = true;
+      }
       const checkpoint = genericAgentCheckpoints.load({ tenant_id: req.tenantId, run_id: run.run_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, run, durable_checkpoint: checkpoint ? { revision: checkpoint.revision, updated_at: checkpoint.updated_at } : null });
+      return res.json({ ok: true, tenant_id: req.tenantId, run, restored_from_checkpoint: restored, durable_checkpoint: checkpoint ? { revision: checkpoint.revision, updated_at: checkpoint.updated_at } : null });
     } catch (error) {
       return publicError(res, error.message === "run_not_found" ? 404 : 403, error.message || "generic_agent_run_read_failed");
     }
