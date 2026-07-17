@@ -41,7 +41,7 @@ test("generic agent API persists tenant-scoped checkpoints and evaluates cases",
 
     const fetched = await request("GET", `/v1/generic-agents/runs/${started.json.run.run_id}`, undefined, key);
     assert.equal(fetched.status, 200);
-    assert.equal(fetched.json.durable_checkpoint.revision, "sources-collected");
+    assert.equal(fetched.json.durable_checkpoint.revision, 1);
 
     const evaluated = await request("POST", "/v1/generic-agents/evaluate", {
       cases: [{ id: "correct-output", expected: { status: "ok" }, actual: { status: "ok" } }],
