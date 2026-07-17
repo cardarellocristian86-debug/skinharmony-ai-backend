@@ -3427,7 +3427,7 @@ export function createUniversalCoreService(options = {}) {
     return res.json(job);
   });
   app.post("/v1/generic-agents/queue/:jobId/fail", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
-    const job = await governedAgentQueueStore.fail({ tenant_id: req.tenantId, job_id: req.params.jobId, error: req.body?.error || "worker_failed");
+    const job = await governedAgentQueueStore.fail({ tenant_id: req.tenantId, job_id: req.params.jobId, error: req.body?.error || "worker_failed" });
     if (!job) return publicError(res, 404, "queue_job_not_found");
     return res.json(job);
   });
