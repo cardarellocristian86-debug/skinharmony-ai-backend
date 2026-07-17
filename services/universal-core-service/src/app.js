@@ -82,6 +82,7 @@ import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
 import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
 import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./governedAgentRegistry.js";
 import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
+import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3252,6 +3253,7 @@ export function createUniversalCoreService(options = {}) {
   const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
     root: path.join(storageRoot, "governed-agent-activations"),
   });
+  const governedAgentBudgetStore = options.governedAgentBudgetStore || createGovernedAgentBudgetStore({ root: path.join(storageRoot, "governed-agent-budgets") });
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3340,8 +3342,9 @@ export function createUniversalCoreService(options = {}) {
         run_id: record.run_snapshot.run_id,
         workers: buildGovernedResearchWorkers({ task: record.activation.task }),
       });
+      const budget = governedAgentBudgetStore.reserveWorkflow({ tenant_id: req.tenantId, worker_count: plan.workers.length, deadline_ms: req.body?.deadline_ms ?? 120_000 });
       persistGenericOrchestration(plan);
-      const workflow = { schema_version: "governed_research_workflow_v1", plan_id: plan.plan_id, status: plan.status, execution_mode: "dry_run", model_invocation: false, tool_invocation: false, external_action: false };
+      const workflow = { schema_version: "governed_research_workflow_v1", plan_id: plan.plan_id, status: plan.status, execution_mode: "dry_run", model_invocation: false, tool_invocation: false, external_action: false, operational_budget: budget, telemetry: { queue_ms: 0, context_build_ms: 0, retry_events: 0, timeout_events: 0, cancellation_events: 0, zombie_branches: 0 } };
       const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
       audit.append("governed_agent_research_workflow_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: record.activation.activation_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
       return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation: saved.activation, workflow: saved.workflow, plan, execution_allowed: false });
@@ -3371,8 +3374,9 @@ export function createUniversalCoreService(options = {}) {
           threat_assessment: validation.threat_assessment,
         },
         telemetry: {
-          evidence_validation_attempts: priorTelemetry.evidence_validation_attempts + 1,
-          quarantined_count: priorTelemetry.quarantined_count + (validation.state === "quarantined" ? 1 : 0),
+          ...priorTelemetry,
+          evidence_validation_attempts: Number(priorTelemetry.evidence_validation_attempts || 0) + 1,
+          quarantined_count: Number(priorTelemetry.quarantined_count || 0) + (validation.state === "quarantined" ? 1 : 0),
           last_evidence_validation_at: validation.validated_at,
         },
       };
@@ -3392,6 +3396,11 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) {
       return publicError(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_evidence_failed");
     }
+  });
+
+  app.get("/v1/generic-agents/operational-budget", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const budget = governedAgentBudgetStore.get({ tenant_id: req.tenantId });
+    return res.json({ ok: true, tenant_id: req.tenantId, budget, execution_allowed: false });
   });
 
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
