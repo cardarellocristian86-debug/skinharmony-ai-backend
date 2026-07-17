@@ -121,7 +121,14 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.equal(response.headers.get("mcp-session-id"), "mcp-app-test-session");
   assert.match(body.result.instructions, /nyra_research_plan/);
   assert.match(body.result.instructions, /host ChatGPT or Codex web tool/);
-  assert.match(body.result.instructions, /Never include secrets/);
+  assert.match(body.result.instructions, /never include secrets/i);
+  assert.match(body.result.instructions, /installed as a ChatGPT connector/);
+  assert.match(body.result.instructions, /Never ask a user to paste or reveal an API key in ChatGPT/);
+  assert.match(body.result.instructions, /secure link/);
+  assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
+  assert.match(body.result.instructions, /AUTOMATIC/);
+  assert.match(body.result.instructions, /NOT AUTOMATIC/);
+  assert.match(body.result.instructions, /manual_dry_run/);
 }));
 
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {
