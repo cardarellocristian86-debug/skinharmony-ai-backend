@@ -84,6 +84,7 @@ import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./gov
 import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
 import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
+import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQueueStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3257,7 +3258,10 @@ export function createUniversalCoreService(options = {}) {
     root: path.join(storageRoot, "governed-agent-activations"),
   });
   const governedAgentBudgetStore = options.governedAgentBudgetStore || createGovernedAgentBudgetStore({ root: path.join(storageRoot, "governed-agent-budgets") });
-  const governedAgentQueueStore = options.governedAgentQueueStore || createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") });
+  const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
+  const governedAgentQueueStore = options.governedAgentQueueStore || (governedAgentDatabaseUrl
+    ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
+    : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3332,7 +3336,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/activations/:activationId/research-workflow", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/activations/:activationId/research-workflow", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
       if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
@@ -3349,7 +3353,7 @@ export function createUniversalCoreService(options = {}) {
       const budget = governedAgentBudgetStore.reserveWorkflow({ tenant_id: req.tenantId, worker_count: plan.workers.length, deadline_ms: req.body?.deadline_ms ?? 120_000 });
       persistGenericOrchestration(plan);
       const workflow = { schema_version: "governed_research_workflow_v1", plan_id: plan.plan_id, status: plan.status, execution_mode: "dry_run", model_invocation: false, tool_invocation: false, external_action: false, operational_budget: budget, telemetry: { queue_ms: 0, context_build_ms: 0, retry_events: 0, timeout_events: 0, cancellation_events: 0, zombie_branches: 0 } };
-      const queueJobs = governedAgentQueueStore.enqueue({ tenant_id: req.tenantId, activation_id: record.activation.activation_id, plan_id: plan.plan_id, workers: plan.workers, deadline_at: budget.deadline_at, max_retries: budget.limits.max_retries_per_worker });
+      const queueJobs = await governedAgentQueueStore.enqueue({ tenant_id: req.tenantId, activation_id: record.activation.activation_id, plan_id: plan.plan_id, workers: plan.workers, deadline_at: budget.deadline_at, max_retries: budget.limits.max_retries_per_worker });
       workflow.queue = { job_count: queueJobs.length, status: "queued" };
       const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
       audit.append("governed_agent_research_workflow_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: record.activation.activation_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
@@ -3409,26 +3413,26 @@ export function createUniversalCoreService(options = {}) {
     return res.json({ ok: true, tenant_id: req.tenantId, budget, execution_allowed: false });
   });
 
-  app.get("/v1/generic-agents/queue/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
-    res.json(governedAgentQueueStore.metrics({ tenant_id: req.tenantId }));
+  app.get("/v1/generic-agents/queue/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    res.json(await governedAgentQueueStore.metrics({ tenant_id: req.tenantId }));
   });
-  app.post("/v1/generic-agents/queue/claim", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
-    const job = governedAgentQueueStore.claim({ tenant_id: req.tenantId });
+  app.post("/v1/generic-agents/queue/claim", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    const job = await governedAgentQueueStore.claim({ tenant_id: req.tenantId });
     if (!job) return res.status(204).end();
     return res.json(job);
   });
-  app.post("/v1/generic-agents/queue/:jobId/complete", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
-    const job = governedAgentQueueStore.complete({ tenant_id: req.tenantId, job_id: req.params.jobId, result: req.body?.result || null });
+  app.post("/v1/generic-agents/queue/:jobId/complete", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    const job = await governedAgentQueueStore.complete({ tenant_id: req.tenantId, job_id: req.params.jobId, result: req.body?.result || null });
     if (!job) return publicError(res, 404, "queue_job_not_found");
     return res.json(job);
   });
-  app.post("/v1/generic-agents/queue/:jobId/fail", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
-    const job = governedAgentQueueStore.fail({ tenant_id: req.tenantId, job_id: req.params.jobId, error: req.body?.error || "worker_failed" });
+  app.post("/v1/generic-agents/queue/:jobId/fail", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    const job = await governedAgentQueueStore.fail({ tenant_id: req.tenantId, job_id: req.params.jobId, error: req.body?.error || "worker_failed" });
     if (!job) return publicError(res, 404, "queue_job_not_found");
     return res.json(job);
   });
-  app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
-    return res.json(governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
+  app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
   });
 
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
@@ -3600,6 +3604,7 @@ export function createUniversalCoreService(options = {}) {
       mode: process.env.NODE_ENV || "development",
       render_ready: true,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
+      governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       uptime_seconds: Math.round(process.uptime()),
     });
   });
