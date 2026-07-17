@@ -5,12 +5,10 @@ import { createGenericAgentOrchestrator } from "../src/genericAgentOrchestrator.
 function completePlan(orchestrator, tenantId, planId) {
   let safety = 0;
   while (safety++ < 1_000) {
+    const current = orchestrator.getPlan({ tenant_id: tenantId, plan_id: planId });
+    if (current.status === "ready_for_core_join") return orchestrator.coreJoin({ tenant_id: tenantId, plan_id: planId });
     const claimed = orchestrator.claimReadyWorkers({ tenant_id: tenantId, plan_id: planId });
-    if (claimed.workers.length === 0) {
-      const plan = orchestrator.getPlan({ tenant_id: tenantId, plan_id: planId });
-      if (plan.status === "ready_for_core_join") return orchestrator.coreJoin({ tenant_id: tenantId, plan_id: planId });
-      continue;
-    }
+    if (claimed.workers.length === 0) continue;
     for (const worker of claimed.workers) {
       orchestrator.completeWorker({ tenant_id: tenantId, plan_id: planId, worker_id: worker.worker_id, result: { variant: worker.worker_id } });
     }
@@ -43,9 +41,7 @@ test("generic orchestration benchmark handles complex shared multi-agent scenari
   assert(joined.every((item) => item.status === "completed"));
   assert(joined.every((item) => item.worker_results.length === 11));
 
-  const tenantA = orchestrator.getMetrics ? null : null;
   assert.throws(() => orchestrator.getPlan({ tenant_id: "tenant-benchmark-b", plan_id: projects[0].plan.plan_id }), /cross_tenant_plan_denied/);
-  assert.equal(tenantA, null);
 });
 
 test("generic orchestration benchmark keeps cancellation isolated under load", () => {
