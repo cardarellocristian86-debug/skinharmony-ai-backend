@@ -3306,6 +3306,30 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  app.post("/v1/generic-agents/runs/:runId/tool-events", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const run = genericAgentRuntime.recordToolEvent({
+        run_id: req.params.runId,
+        tenant_id: req.tenantId,
+        tool_id: req.body?.tool_id,
+        outcome: req.body?.outcome,
+        retry_count: req.body?.retry_count,
+      });
+      audit.append("generic_agent_tool_event", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, tool_id: req.body?.tool_id, outcome: req.body?.outcome || "success" });
+      return res.json({ ok: true, tenant_id: req.tenantId, run_id: run.run_id });
+    } catch (error) {
+      return publicError(res, 400, error.message || "generic_agent_tool_event_failed");
+    }
+  });
+
+  app.get("/v1/generic-agents/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      return res.json({ ok: true, metrics: genericAgentRuntime.getMetrics({ tenant_id: req.tenantId }) });
+    } catch (error) {
+      return publicError(res, 403, error.message || "generic_agent_metrics_read_failed");
+    }
+  });
+
   app.post("/v1/generic-agents/runs/:runId/orchestration", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
