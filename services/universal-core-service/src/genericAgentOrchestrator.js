@@ -143,6 +143,38 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
       });
     },
 
+    restorePlan({ tenant_id, plan_snapshot }) {
+      if (!plan_snapshot || typeof plan_snapshot !== "object" || Array.isArray(plan_snapshot)) throw new Error("plan_snapshot_invalid");
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      if (plan_snapshot.tenant_id !== tenantId) throw new Error("cross_tenant_plan_denied");
+      const planId = requireText(plan_snapshot.plan_id, "plan_id", 160);
+      const existing = plans.get(planId);
+      if (existing) return clone(existing);
+      const workers = normalizeWorkers(plan_snapshot.workers, workerLimit, depthLimit);
+      for (const worker of workers) {
+        const snapshotWorker = plan_snapshot.workers.find((item) => item?.worker_id === worker.worker_id) || {};
+        worker.status = ["pending", "running", "completed", "failed", "cancelled"].includes(snapshotWorker.status) ? snapshotWorker.status : "pending";
+        worker.result = snapshotWorker.result && typeof snapshotWorker.result === "object" && !Array.isArray(snapshotWorker.result) ? clone(snapshotWorker.result) : null;
+        worker.error = snapshotWorker.error ? String(snapshotWorker.error).slice(0, 500) : null;
+      }
+      const restored = {
+        schema_version: "generic_agent_orchestration_v1",
+        plan_id: planId,
+        tenant_id: tenantId,
+        run_id: requireText(plan_snapshot.run_id, "run_id", 160),
+        status: ["pending", "running", "ready_for_core_join", "completed", "failed", "cancelled"].includes(plan_snapshot.status) ? plan_snapshot.status : "pending",
+        max_concurrent: Math.min(Number(plan_snapshot.max_concurrent || limit), limit),
+        max_workers: workerLimit,
+        max_branch_depth: depthLimit,
+        workers,
+        created_at: plan_snapshot.created_at || now(),
+        updated_at: now(),
+        core_joined_at: plan_snapshot.core_joined_at || null,
+      };
+      plans.set(restored.plan_id, restored);
+      return clone(restored);
+    },
+
     getPlan({ tenant_id, plan_id }) {
       return clone(planFor({ tenant_id, plan_id }));
     },
