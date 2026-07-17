@@ -3,6 +3,28 @@ import { runAssistantDigestRuntimeV2 } from "../../../universal-core/packages/br
 
 const VERSION = "core_runtime_hierarchy_v1";
 
+// Supervision telemetry is intentionally separated from the decision digest.
+// A missing heartbeat is useful for observability, but is not itself evidence
+// that an agent performed an unsafe action.  Core V2 suppresses those low-risk
+// observations while preserving deterministic escalation for scope violations.
+const V2_SUPERVISION_INFORMATIONAL_FLAGS = new Set([
+  "summary_troppo_superficiale_per_intento_ampio",
+  "mancano_file_o_test_di_evidenza",
+  "manca_prossima_azione_verificabile",
+  "possibile_deriva_dal_comando_owner",
+  "rischio_non_classificato",
+  "manca_pulse_operativo",
+  "pulse_scaduto_o_non_aggiornato",
+]);
+
+const V2_SUPERVISION_HARD_FLAGS = new Set([
+  "file_vietati_dal_task_contract",
+  "file_fuori_scope_task_contract",
+  "file_modificati_dopo_ultimo_pulse",
+  "outside_scope",
+  "forbidden_path",
+]);
+
 function clamp(value, min = 0, max = 1) {
   return Math.min(Math.max(Number(value) || 0, min), max);
 }
@@ -25,6 +47,22 @@ export function routeCoreV7(raw = {}, mode = "normal") {
   const guard = risk > 85 || sensitivity > 0.80;
   const route = guard || alpha >= 0.75 ? "V0" : alpha >= 0.55 ? "V1" : "V2";
   return { version: "universal_core_router_v7", route, alpha, guard_triggered: guard };
+}
+
+export function applyCoreV2SupervisionPrefilter(supervision = {}) {
+  const flags = Array.from(new Set(Array.isArray(supervision.flags) ? supervision.flags.filter((flag) => typeof flag === "string" && flag) : []));
+  const hardFlags = flags.filter((flag) => V2_SUPERVISION_HARD_FLAGS.has(flag));
+  const actionableFlags = flags.filter((flag) => !V2_SUPERVISION_HARD_FLAGS.has(flag) && !V2_SUPERVISION_INFORMATIONAL_FLAGS.has(flag));
+  const suppressedFlags = flags.filter((flag) => V2_SUPERVISION_INFORMATIONAL_FLAGS.has(flag));
+  const disposition = hardFlags.length ? "escalate" : actionableFlags.length ? "review" : "suppress_informational_attention";
+  return {
+    engine: "core_v2_supervision_prefilter_v1",
+    disposition,
+    verdict: hardFlags.length ? "recover" : actionableFlags.length ? "attention" : "on_track",
+    hard_flags: hardFlags,
+    actionable_flags: actionableFlags,
+    suppressed_flags: suppressedFlags,
+  };
 }
 
 function routingSignals(input, v1, explicit = {}) {
@@ -99,6 +137,7 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
   input = normalizeHierarchyInput(input);
   const mode = ["shadow", "active", "disabled"].includes(options.mode) ? options.mode : "shadow";
   const v1 = runDigestV1Canonical(input);
+  const supervisionPrefilter = applyCoreV2SupervisionPrefilter(input.supervision);
   const v7 = routeCoreV7(routingSignals(input, v1, options.routing), options.ownerMode);
   const mustEscalate =
     v7.route === "V0" || ["protection", "critical", "blocked"].includes(v1.state) ||
@@ -126,6 +165,7 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
     execution_allowed: false,
     governance: { V7: "routing_only", V0: "final_judge", V1: "canonical_digest", V2: mode === "shadow" ? "shadow_accelerator" : "accelerator" },
     parity,
+    supervision_prefilter: supervisionPrefilter,
     results: { V0: v0 ? { state: v0.state, control_level: v0.control_level, risk_score: v0.risk?.score } : null, V1: compactDigest(v1), V2: compactDigest(v2) },
   };
 }
