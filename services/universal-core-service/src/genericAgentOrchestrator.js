@@ -151,6 +151,12 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
       const existing = plans.get(planId);
       if (existing) return clone(existing);
       const workers = normalizeWorkers(plan_snapshot.workers, workerLimit, depthLimit);
+      for (const worker of workers) {
+        const snapshotWorker = plan_snapshot.workers.find((item) => item?.worker_id === worker.worker_id) || {};
+        worker.status = ["pending", "running", "completed", "failed", "cancelled"].includes(snapshotWorker.status) ? snapshotWorker.status : "pending";
+        worker.result = snapshotWorker.result && typeof snapshotWorker.result === "object" && !Array.isArray(snapshotWorker.result) ? clone(snapshotWorker.result) : null;
+        worker.error = snapshotWorker.error ? String(snapshotWorker.error).slice(0, 500) : null;
+      }
       const restored = {
         schema_version: "generic_agent_orchestration_v1",
         plan_id: planId,
