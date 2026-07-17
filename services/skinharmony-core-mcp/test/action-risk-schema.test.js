@@ -16,4 +16,7 @@ test("core_gate_action exposes deterministic risk inputs", () => {
   ]) {
     assert.equal(gate.inputSchema.properties[property]?.type, "boolean", property);
   }
+  assert.equal(gate.inputSchema.properties.confirmed_action_digest?.pattern, "^[a-f0-9]{64}$");
+  assert.equal(gate.inputSchema.properties.deployment_spec?.type, "object");
+  assert.equal(gate.inputSchema.properties.target?.type, "string");
 });

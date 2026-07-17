@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createCoreHandlers, createCoreWriteGuard } from "../src/core-handlers.js";
+import { verifyActionConfirmationAssertion } from "../../universal-core-service/src/actionConfirmation.js";
+import { evaluateDomainActionAuthorization } from "../../universal-core-service/src/domainActionAuthorization.js";
+import { skinHarmonyMcpStagingActionTemplate } from "../../universal-core-service/src/domainAdapters/skinharmonyMcpStagingAction.js";
 
 test("maps MCP tools to Universal Core without forwarding the ChatGPT token", async () => {
   const calls = [];
@@ -51,6 +54,80 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
 test("rejects a tenant without its own Core key", async () => {
   const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: {}, defaultTenantId: "owner-private", universalCoreKey: "owner-key" });
   await assert.rejects(handlers.core_health({}, { tenantId: "tenant-b" }), /core_tenant_key_missing/);
+});
+
+test("issues a short-lived action-digest assertion only after explicit scoped confirmation", async () => {
+  const calls = [];
+  const coreKey = "tenant-a-core-key";
+  const tenantId = "codexai";
+  const keyId = "key_12345678-abcd-4321";
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { [tenantId]: coreKey },
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const template = skinHarmonyMcpStagingActionTemplate();
+  const pendingBody = { ...template, tenant_id: tenantId };
+  const pending = evaluateDomainActionAuthorization({
+    body: pendingBody,
+    tenantId,
+    keyId,
+    domainPackId: "skinharmony",
+  });
+  assert.equal(pending.eligible, true);
+  const args = {
+    ...template,
+    confirmed_action_digest: pending.action_digest,
+    action_confirmation: { assertion: "forged-client-value" },
+    agent_id: "codex-staging-gate",
+    client_type: "codex",
+    session_id: "session-staging-gate",
+    project_id: "project-staging-gate",
+  };
+
+  await handlers.core_gate_action(args, {
+    tenantId,
+    kind: "codex",
+    subject: "codex",
+    ownerConfirmed: true,
+  });
+  const confirmed = calls[0];
+  assert.equal(confirmed.owner_confirmed, true);
+  assert.notEqual(confirmed.action_confirmation.assertion, "forged-client-value");
+  assert.match(confirmed.action_confirmation.assertion, /^acs_[a-f0-9]{64}$/);
+  assert.equal(verifyActionConfirmationAssertion(confirmed.action_confirmation, {
+    secret: coreKey,
+    tenantId,
+  }).verified, true);
+  const verified = verifyActionConfirmationAssertion(confirmed.action_confirmation, { secret: coreKey, tenantId });
+  const domainAction = evaluateDomainActionAuthorization({
+    body: confirmed,
+    tenantId,
+    keyId,
+    domainPackId: "skinharmony",
+    actionConfirmation: verified,
+  });
+  assert.equal(domainAction.eligible, true);
+  assert.equal(domainAction.confirmation_satisfied, true);
+  assert.equal(JSON.stringify(confirmed.action_confirmation).includes(coreKey), false);
+  for (const contextOnlyKey of ["agent_id", "client_type", "session_id", "project_id"]) {
+    assert.equal(contextOnlyKey in confirmed, false);
+  }
+
+  await handlers.core_gate_action(args, { tenantId, kind: "codex", subject: "codex" });
+  assert.equal(calls[1].owner_confirmed, false);
+  assert.equal("action_confirmation" in calls[1], false);
+
+  await handlers.core_gate_action({
+    ...args,
+    confirmation_reference: [args.confirmation_reference],
+    confirmed_action_digest: [args.confirmed_action_digest],
+  }, { tenantId, kind: "codex", subject: "codex", ownerConfirmed: true });
+  assert.equal("action_confirmation" in calls[2], false);
 });
 
 test("runtime hierarchy is tenant-scoped, redacts V2 fallback details, and never authorizes execution", async () => {

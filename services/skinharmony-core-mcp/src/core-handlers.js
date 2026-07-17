@@ -3,6 +3,7 @@ import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const ACTION_CONFIRMATION_ASSERTION_VERSION = "action_confirmation_assertion_v1";
 
 function ownerContextCanonical(context) {
   return JSON.stringify({
@@ -14,6 +15,21 @@ function ownerContextCanonical(context) {
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
     issued_at: context.issued_at,
+  });
+}
+
+function actionConfirmationCanonical(context) {
+  return JSON.stringify({
+    version: context.assertion_version,
+    audience: context.audience,
+    tenant_id: context.tenant_id,
+    actor_id: context.actor_id,
+    owner_confirmed: context.owner_confirmed,
+    confirmation_reference: context.confirmation_reference,
+    action_digest: context.action_digest,
+    issued_at: context.issued_at,
+    expires_at: context.expires_at,
+    nonce: context.nonce,
   });
 }
 
@@ -279,6 +295,34 @@ export function createCoreHandlers(config, options = {}) {
       .update(`owner-context\u0000${ownerContextCanonical(context)}`)
       .digest("hex");
     return { ...context, assertion: `ocs_${digest}` };
+  }
+
+  function actionConfirmation(identity, args = {}) {
+    const reference = typeof args.confirmation_reference === "string" ? args.confirmation_reference : "";
+    const actionDigest = typeof args.confirmed_action_digest === "string" ? args.confirmed_action_digest : "";
+    if (identity.ownerConfirmed !== true || !/^ucr_[a-z0-9][a-z0-9_-]{7,119}$/.test(reference) || !/^[a-f0-9]{64}$/.test(actionDigest)) {
+      return null;
+    }
+    const issuedAt = new Date();
+    const actor = `${identity.kind || "authenticated"}:${identity.subject || identity.clientId || "client"}`
+      .replace(/[^a-z0-9:_-]+/gi, "_")
+      .slice(0, 120);
+    const context = {
+      assertion_version: ACTION_CONFIRMATION_ASSERTION_VERSION,
+      audience: "universal_core_action_evaluator",
+      tenant_id: identity.tenantId,
+      actor_id: actor,
+      owner_confirmed: true,
+      confirmation_reference: reference,
+      action_digest: actionDigest,
+      issued_at: issuedAt.toISOString(),
+      expires_at: new Date(issuedAt.getTime() + 120_000).toISOString(),
+      nonce: `acn_${crypto.randomBytes(16).toString("hex")}`,
+    };
+    const digest = crypto.createHmac("sha256", coreKey(identity.tenantId))
+      .update(`action-confirmation\u0000${actionConfirmationCanonical(context)}`)
+      .digest("hex");
+    return { ...context, assertion: `acs_${digest}` };
   }
 
   async function memoryContext(input, identity) {
@@ -567,9 +611,25 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
+      const {
+        action_confirmation: _untrustedActionConfirmation,
+        tenant_id: _untrustedTenantId,
+        agent_id: _agentId,
+        client_type: _clientType,
+        session_id: _sessionId,
+        project_id: _projectId,
+        ...sanitizedArgs
+      } = args;
+      const signedActionConfirmation = actionConfirmation(identity, sanitizedArgs);
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
-        body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId }
+        body: {
+          ...sanitizedArgs,
+          owner_confirmed: identity.ownerConfirmed === true,
+          ...(signedActionConfirmation ? { action_confirmation: signedActionConfirmation } : {}),
+          ...(sharedContext ? { memory_context: sharedContext } : {}),
+          tenant_id: identity.tenantId,
+        }
       }));
     }
   };

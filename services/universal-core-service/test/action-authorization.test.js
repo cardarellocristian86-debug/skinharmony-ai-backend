@@ -49,6 +49,7 @@ test("keeps hard blocks, higher risk and external writes closed", () => {
 const reversibleDeploy = {
   action_type: "deploy",
   operation_class: "reversible_owner_confirmed_deploy",
+  target: "render:web_service:unrelated-staging",
   external_side_effect: true,
   contains_customer_data: false,
   cross_tenant: false,
@@ -71,18 +72,101 @@ test("authorizes only an exact reversible deploy after owner confirmation", () =
   assert.equal(authorized.allowed, true);
   assert.equal(authorized.scope, "reversible_owner_confirmed_deploy");
   assert.equal(authorized.target_commit, reversibleDeploy.target_commit);
+  assert.equal(authorized.target, reversibleDeploy.target);
+  assert.match(authorized.action_digest, /^[a-f0-9]{64}$/);
+  assert.match(authorized.executor_contract_id, /^deploy_[a-f0-9]{20}$/);
+  assert.equal(authorized.revalidation_required, true);
+
+  const otherTarget = buildActionAuthorization(contract({ control_level: "suggest" }), {
+    ...reversibleDeploy,
+    target: "render:web_service:another-staging",
+    owner_confirmed: true,
+  });
+  assert.notEqual(otherTarget.action_digest, authorized.action_digest);
+  assert.notEqual(otherTarget.executor_contract_id, authorized.executor_contract_id);
 });
 
 test("keeps incomplete, configuration-changing and cross-tenant deploys closed", () => {
   for (const unsafe of [
     { ...reversibleDeploy, owner_confirmed: true, target_commit: "main" },
+    { ...reversibleDeploy, owner_confirmed: true, target_commit: reversibleDeploy.target_commit.toUpperCase() },
+    { ...reversibleDeploy, owner_confirmed: true, target: undefined },
+    { ...reversibleDeploy, owner_confirmed: true, target: [reversibleDeploy.target] },
+    { ...reversibleDeploy, owner_confirmed: true, action_type: ["deploy"] },
     { ...reversibleDeploy, owner_confirmed: true, rollback_ready: false },
     { ...reversibleDeploy, owner_confirmed: true, audit_ready: false },
     { ...reversibleDeploy, owner_confirmed: true, configuration_changes: true },
     { ...reversibleDeploy, owner_confirmed: true, cross_tenant: true },
     { ...reversibleDeploy, owner_confirmed: true, confirmation_reference: "" },
+    { ...reversibleDeploy, owner_confirmed: true, confirmation_reference: [reversibleDeploy.confirmation_reference] },
+    { ...reversibleDeploy, owner_confirmed: true, confirmation_reference: "owner token=must-not-leak" },
   ]) {
     assert.equal(buildActionAuthorization(contract(), unsafe).allowed, false);
+  }
+});
+
+const domainAction = {
+  reserved: true,
+  eligible: true,
+  hard_block: false,
+  scope: "reversible_owner_confirmed_mcp_staging_service",
+  domain_action_id: "skinharmony_mcp_staging_render_create_v1",
+  action_digest: "a".repeat(64),
+  executor_contract_id: "domain_action_aaaaaaaaaaaaaaaaaaaa",
+  target_commit: "f435aafb709a26c77e82e2688056d73056d69c82",
+  confirmation_required: true,
+  confirmation_satisfied: false,
+  confirmation_reference: null,
+  revalidation_required: true,
+};
+
+test("prevents recursively reserved staging identifiers from falling through generic scopes", () => {
+  const protectedRead = {
+    action_type: "read_status",
+    operation_class: "tenant_scoped_read",
+    nested: { service: { name: "skinharmony-core-mcp-staging" } },
+  };
+  const result = buildActionAuthorization(contract({ control_level: "suggest" }), protectedRead, {
+    domainAction: { reserved: true, eligible: false, hard_block: false },
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.scope, "evaluation_only");
+  assert.equal(result.state, "not_authorized");
+});
+
+test("propagates only an exact target-bound domain digest and executor contract", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high", control_level: "suggest" }), {}, { domainAction });
+  assert.equal(pending.allowed, false);
+  assert.equal(pending.state, "confirmation_required");
+  assert.equal(pending.scope, domainAction.scope);
+  assert.equal(pending.action_digest, domainAction.action_digest);
+  assert.equal(pending.executor_contract_id, domainAction.executor_contract_id);
+  assert.equal(pending.target_commit, domainAction.target_commit);
+  assert.equal(pending.revalidation_required, true);
+
+  const confirmed = buildActionAuthorization(contract({ risk_band: "high", control_level: "suggest" }), {}, {
+    domainAction: {
+      ...domainAction,
+      confirmation_satisfied: true,
+      confirmation_reference: "ucr_mcp_staging_20260716_01",
+    },
+  });
+  assert.equal(confirmed.allowed, true);
+  assert.equal(confirmed.state, "authorized_after_confirmation");
+  assert.equal(confirmed.confirmation_reference, "ucr_mcp_staging_20260716_01");
+
+  for (const malformed of [
+    { action_digest: [domainAction.action_digest] },
+    { action_digest: "A".repeat(64) },
+    { executor_contract_id: [domainAction.executor_contract_id] },
+    { target_commit: domainAction.target_commit.toUpperCase() },
+    { revalidation_required: "true" },
+    { confirmation_required: "true" },
+  ]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), {}, {
+      domainAction: { ...domainAction, confirmation_satisfied: true, ...malformed },
+    });
+    assert.equal(result.allowed, false);
   }
 });
 
