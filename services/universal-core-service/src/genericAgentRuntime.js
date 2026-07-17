@@ -151,6 +151,36 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       return clone(run);
     },
 
+    recordToolEvent({ run_id, tenant_id, tool_id, outcome = "success", retry_count = 0 }) {
+      const run = getRun(run_id, tenant_id);
+      const normalizedTool = requireText(tool_id, "tool_id", 120);
+      if (!run.tools.includes(normalizedTool)) throw new Error("tool_not_allowed_for_run");
+      const normalizedOutcome = ["success", "failure", "retry"].includes(outcome) ? outcome : null;
+      if (!normalizedOutcome) throw new Error("tool_outcome_invalid");
+      const retries = Number(retry_count);
+      if (!Number.isInteger(retries) || retries < 0 || retries > 20) throw new Error("retry_count_invalid");
+      appendTrace(run, "tool_event", { tool_id: normalizedTool, outcome: normalizedOutcome, retry_count: retries });
+      return clone(run);
+    },
+
+    getMetrics({ tenant_id }) {
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const tenantRuns = [...runs.values()].filter((run) => run.tenant_id === tenantId);
+      const status_counts = {};
+      const tool_events = { success: 0, failure: 0, retry: 0 };
+      for (const run of tenantRuns) {
+        status_counts[run.status] = (status_counts[run.status] || 0) + 1;
+        for (const trace of run.trace) if (trace.event === "tool_event" && tool_events[trace.data.outcome] !== undefined) tool_events[trace.data.outcome] += 1;
+      }
+      return {
+        schema_version: "generic_agent_metrics_v1",
+        tenant_id: tenantId,
+        run_count: tenantRuns.length,
+        status_counts,
+        tool_events,
+      };
+    },
+
     restoreRun({ tenant_id, run_snapshot }) {
       if (!run_snapshot || typeof run_snapshot !== "object" || Array.isArray(run_snapshot)) throw new Error("run_snapshot_invalid");
       const normalized = normalizeRunInput({ ...run_snapshot, tenant_id });
