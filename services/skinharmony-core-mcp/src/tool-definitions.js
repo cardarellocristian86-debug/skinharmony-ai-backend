@@ -458,6 +458,35 @@ export const TOOLS = [
   tool("scalp_analyzer", "Interpret Scalp Analyzer metrics", "Read-only Scalp v2 for medical-study documentation support, salon technical trichology and pharmacy dermocosmetic counselling. It never impersonates a physician, diagnoses, prescribes or auto-publishes marketing.", object({
     overall: scalpMetrics, zones: { type: "array", maxItems: 12, items: object({ zone: identifier, metrics: scalpMetrics }, ["zone", "metrics"]) }, acquisition: scalpAcquisition, previous: object({ overall: scalpMetrics, acquisition: scalpAcquisition }), reported_warning_signals: { type: "array", maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["sudden_change", "pain", "bleeding", "open_lesion", "infection_suspected"] } }, professional_profile: { type: "string", enum: ["medical_study", "salon_trichology", "pharmacy_dermocosmetic"] }, learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }), locale: { type: "string", enum: ["it", "en"] }, session_id: identifier,
   }, ["overall"]), ["core:read"], true, true),
+  tool("generic_agent_start", "Start a generic agent run", "Start a tenant-scoped generic agent runtime with an explicit task and declared tools. This creates an internal run only; it does not authorize external execution.", object({
+    agent_id: identifier,
+    task: text(4_000),
+    tools: { type: "array", maxItems: 64, items: identifier },
+    run_id: { type: "string", maxLength: 160 },
+    session_id: { type: "string", maxLength: 160 },
+    parent_run_id: { type: "string", maxLength: 160 },
+    metadata: { type: "object", additionalProperties: true },
+  }, ["agent_id", "task"]), ["core:govern"], false, false),
+  tool("generic_agent_checkpoint", "Save generic agent checkpoint", "Persist a tenant-scoped generic agent checkpoint with optimistic revision control so governed work can recover safely.", object({
+    run_id: { type: "string", maxLength: 160 },
+    checkpoint: { type: "object", properties: {
+      state: { type: "object", additionalProperties: true },
+      cursor: { type: "string", maxLength: 1_000 },
+      idempotency_key: { type: "string", maxLength: 160 },
+    }, required: ["state"], additionalProperties: false },
+    expected_revision: { type: "integer", minimum: 0 },
+  }, ["run_id", "checkpoint"]), ["core:govern"], false, false),
+  tool("generic_agent_run_read", "Read generic agent run", "Read a tenant-scoped generic agent run and its latest durable checkpoint metadata.", object({
+    run_id: { type: "string", maxLength: 160 },
+  }, ["run_id"]), ["core:read"]),
+  tool("generic_agent_evaluate", "Evaluate generic agent output", "Score explicit expected-versus-actual generic agent cases. This evaluation never mutates live agent behavior.", object({
+    cases: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: {
+      id: identifier,
+      expected: { type: "object", additionalProperties: true },
+      actual: { type: "object", additionalProperties: true },
+      weight: { type: "number", exclusiveMinimum: 0 },
+    }, required: ["id"], additionalProperties: false } },
+  }, ["cases"]), ["core:read"]),
   tool("memory_context", "Read tenant AI context", "Read the authenticated tenant's current checkpoint, relevant memories, pending handoffs and recent redacted activity.", object({ ...memoryScopeProperties, activity_limit: { type: "integer", minimum: 1, maximum: 50 } }), ["core:read"]),
   tool("memory_search", "Search tenant AI memory", "Search durable, redacted memory belonging only to the authenticated tenant.", object(memoryScopeProperties), ["core:read"]),
   tool("memory_append", "Append tenant AI memory", "Store an explicit durable memory after Core governance, consent checks and secret redaction.", object({ kind: memoryKind, ...memoryProperties }, ["title", "summary"]), ["core:govern"], false, true),
