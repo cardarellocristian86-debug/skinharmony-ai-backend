@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { classifyActionRisk, applyActionRiskProfile } from "../src/actionRisk.js";
 import { buildActionAuthorization } from "../src/actionAuthorization.js";
+import { evaluateDomainActionAuthorization } from "../src/domainActionAuthorization.js";
+import { skinHarmonyMcpStagingActionTemplate } from "../src/domainAdapters/skinharmonyMcpStagingAction.js";
 
 const generic = {
   state: "attention",
@@ -43,6 +45,7 @@ test("allows high-risk deploy only with the existing strict reversible envelope"
   const base = {
     action_type: "deploy",
     operation_class: "reversible_owner_confirmed_deploy",
+    target: "render:web_service:unrelated-staging",
     external_side_effect: true,
     contains_customer_data: false,
     cross_tenant: false,
@@ -105,4 +108,38 @@ test("allows only confirmed reversible internal writes", () => {
   };
   assert.equal(evaluate(base).authorization.allowed, false);
   assert.equal(evaluate({ ...base, owner_confirmed: true }).authorization.allowed, true);
+});
+
+test("classifies the exact MCP staging action as high risk and requires its signed digest", () => {
+  const context = { tenantId: "codexai", keyId: "key_12345678-abcd-4321", domainPackId: "skinharmony" };
+  const body = { ...skinHarmonyMcpStagingActionTemplate(), tenant_id: context.tenantId };
+  const risk = classifyActionRisk(body);
+  const contract = applyActionRiskProfile(generic, risk);
+  const pendingDomain = evaluateDomainActionAuthorization({ body, ...context });
+  const pending = buildActionAuthorization(contract, body, { domainAction: pendingDomain });
+  assert.equal(risk.classification, "high_impact_change");
+  assert.equal(risk.risk_band, "high");
+  assert.equal(pending.allowed, false);
+  assert.equal(pending.state, "confirmation_required");
+
+  const confirmedBody = { ...body, owner_confirmed: true, confirmed_action_digest: pending.action_digest };
+  const actionConfirmation = {
+    verified: true,
+    tenant_id: context.tenantId,
+    confirmation_reference: confirmedBody.confirmation_reference,
+    action_digest: pending.action_digest,
+  };
+  const confirmedDomain = evaluateDomainActionAuthorization({ body: confirmedBody, ...context, actionConfirmation });
+  const confirmed = buildActionAuthorization(contract, confirmedBody, { domainAction: confirmedDomain });
+  assert.equal(confirmed.allowed, true);
+
+  for (const mutated of [
+    { ...confirmedBody, tenant_id: "other-tenant" },
+    { ...confirmedBody, target_commit: "a".repeat(40) },
+    { ...confirmedBody, DATABASE_URL: "password=synthetic-test-only" },
+    { ...confirmedBody, AUTH0_ISSUER: "https://example.auth0.com" },
+  ]) {
+    const domainAction = evaluateDomainActionAuthorization({ body: mutated, ...context, actionConfirmation });
+    assert.equal(buildActionAuthorization(contract, mutated, { domainAction }).allowed, false);
+  }
 });

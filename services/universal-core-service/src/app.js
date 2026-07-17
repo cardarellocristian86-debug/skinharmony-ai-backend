@@ -61,6 +61,8 @@ import {
   verifyOutcome,
 } from "./intelligenceEngine.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
+import { verifyActionConfirmationAssertion } from "./actionConfirmation.js";
+import { evaluateDomainActionAuthorization } from "./domainActionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
@@ -4505,9 +4507,22 @@ export function createUniversalCoreService(options = {}) {
       action_type: req.body?.action_type || input.context.metadata.action_type,
       publish_intent: req.body?.publish_intent === true,
     }), riskClassification);
+    const actionConfirmation = verifyActionConfirmationAssertion(req.body?.action_confirmation, {
+      secret: readSecret(req),
+      tenantId: req.tenantId,
+    });
+    const domainAction = evaluateDomainActionAuthorization({
+      body: req.body || {},
+      tenantId: req.tenantId,
+      keyId: req.coreKey.key_id,
+      domainPackId: domainPackAccess.pack.id,
+      actionConfirmation,
+    });
     const authorization = buildActionAuthorization(decisionContract, {
       ...(req.body || {}),
       operation_class: req.body?.operation_class || riskClassification.operation_class,
+    }, {
+      domainAction,
     });
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
@@ -4523,6 +4538,8 @@ export function createUniversalCoreService(options = {}) {
       action_risk_band: riskClassification.risk_band,
       action_reason_codes: riskClassification.reason_codes,
       confirmation_satisfied: authorization.confirmation_satisfied,
+      domain_action_id: authorization.domain_action_id,
+      action_digest: authorization.action_digest,
     });
     res.json({
       ok: true,
