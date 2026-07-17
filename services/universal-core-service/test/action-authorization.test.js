@@ -156,7 +156,10 @@ const reversibleBranchChange = {
   operation_class: "reversible_owner_confirmed_branch_change",
   external_side_effect: true,
   contains_customer_data: false,
+  contains_secret: false,
   cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
   configuration_changes: false,
   rollback_ready: true,
   audit_ready: true,
@@ -176,5 +179,120 @@ test("authorizes only a confirmed reversible code-only agent branch update", () 
     { ...reversibleBranchChange, owner_confirmed: true, rollback_ready: false },
     { ...reversibleBranchChange, owner_confirmed: true, audit_ready: false },
     { ...reversibleBranchChange, owner_confirmed: true, configuration_changes: true },
+    { ...reversibleBranchChange, owner_confirmed: true, contains_secret: true },
+    { ...reversibleBranchChange, owner_confirmed: true, destructive: true },
+    { ...reversibleBranchChange, owner_confirmed: true, bypass_orchestrator: true },
   ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), unsafe).allowed, false);
+});
+
+const draftPullRequest = {
+  action_type: "github_draft_pull_request",
+  operation_class: "reversible_owner_confirmed_draft_pull_request",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: false,
+  rollback_ready: true,
+  audit_ready: true,
+  target_commit: "66023353621801f54336f282a0b42c545adab32d",
+  target_branch: "agent/smartdesk-durable-completion",
+  base_branch: "main",
+  repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+  draft: true,
+  merge: false,
+  deploy: false,
+  delete: false,
+  confirmation_reference: "owner-confirmed-draft-pr",
+};
+
+test("authorizes only an exact owner-confirmed GitHub draft pull request", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high" }), draftPullRequest);
+  assert.equal(pending.allowed, false);
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...draftPullRequest, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_draft_pull_request");
+  for (const unsafe of [
+    { draft: false }, { merge: true }, { deploy: true }, { delete: true },
+    { base_branch: "release" }, { target_branch: "main" }, { configuration_changes: true },
+    { contains_secret: true }, { cross_tenant: true }, { rollback_ready: false },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...draftPullRequest, owner_confirmed: true, ...unsafe }).allowed, false);
+  for (const changedConfirmationBinding of [{ draft: false }, { merge: true }, { base_branch: "release" }]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), { ...draftPullRequest, owner_confirmed: true, ...changedConfirmationBinding });
+    assert.equal(result.confirmation_satisfied, false);
+  }
+});
+
+const pullRequestMerge = {
+  action_type: "github_pull_request_merge",
+  operation_class: "reversible_owner_confirmed_pull_request_merge",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: false,
+  rollback_ready: true,
+  audit_ready: true,
+  target_commit: "66023353621801f54336f282a0b42c545adab32d",
+  target_branch: "agent/smartdesk-durable-completion",
+  base_branch: "main",
+  repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+  pull_request: 59,
+  draft: false,
+  merge: true,
+  deploy: false,
+  delete: false,
+  force: false,
+  admin_bypass: false,
+  merge_method: "squash",
+  checks_verified: true,
+  checks_commit: "66023353621801f54336f282a0b42c545adab32d",
+  confirmation_pull_request: 59,
+  confirmation_target_commit: "66023353621801f54336f282a0b42c545adab32d",
+  confirmation_target_branch: "agent/smartdesk-durable-completion",
+  confirmation_base_branch: "main",
+  confirmation_repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+  confirmation_reference: "owner-confirmed-merge-pr59",
+};
+
+test("authorizes only a verified owner-confirmed protected-branch pull request merge", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high" }), pullRequestMerge);
+  assert.equal(pending.allowed, false);
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...pullRequestMerge, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_pull_request_merge");
+  assert.equal(allowed.target_commit, pullRequestMerge.target_commit);
+  for (const unsafe of [
+    { pull_request: 0 }, { target_branch: "main" }, { base_branch: "release" },
+    { draft: true }, { merge: false }, { deploy: true }, { delete: true },
+    { force: true }, { admin_bypass: true }, { merge_method: "auto" },
+    { checks_verified: false }, { checks_commit: "7".repeat(40) },
+    { configuration_changes: true }, { contains_secret: true }, { cross_tenant: true },
+    { rollback_ready: false }, { audit_ready: false },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...pullRequestMerge, owner_confirmed: true, ...unsafe }).allowed, false);
+  for (const changedConfirmationBinding of [
+    { pull_request: 60 }, { target_branch: "agent/other" }, { checks_commit: "7".repeat(40) }, { merge: false },
+  ]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), { ...pullRequestMerge, owner_confirmed: true, ...changedConfirmationBinding });
+    assert.equal(result.confirmation_satisfied, false);
+  }
+});
+
+test("allows a bound owner-confirmed draft-to-review transition and nothing else", () => {
+  const transition = {
+    ...pullRequestMerge,
+    action_type: "github_pull_request_ready_for_review",
+    operation_class: "reversible_owner_confirmed_pull_request_review_transition",
+    draft: true, ready_for_review: true, merge: false,
+  };
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...transition, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_pull_request_review_transition");
+  for (const unsafe of [{ ready_for_review: false }, { merge: true }, { deploy: true }, { delete: true }, { force: true }, { pull_request: 60 }]) {
+    assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...transition, owner_confirmed: true, ...unsafe }).allowed, false);
+  }
 });
