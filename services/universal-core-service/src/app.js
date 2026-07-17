@@ -3361,6 +3361,16 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  app.post("/v1/generic-agents/orchestration/:planId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const plan = genericAgentOrchestrator.cancelPlan({ tenant_id: req.tenantId, plan_id: req.params.planId });
+      audit.append("generic_agent_orchestration_cancelled", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id });
+      return res.json({ ok: true, tenant_id: req.tenantId, plan });
+    } catch (error) {
+      return publicError(res, 400, error.message || "generic_agent_orchestration_cancel_failed");
+    }
+  });
+
   app.post("/v1/generic-agents/orchestration/:planId/join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const joined = genericAgentOrchestrator.coreJoin({ tenant_id: req.tenantId, plan_id: req.params.planId });
