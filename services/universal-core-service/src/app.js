@@ -80,7 +80,8 @@ import { createGenericAgentCheckpointStore } from "./genericAgentCheckpointStore
 import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
 import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
-import { createGovernedAgentRegistry } from "./governedAgentRegistry.js";
+import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./governedAgentRegistry.js";
+import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3248,6 +3249,9 @@ export function createUniversalCoreService(options = {}) {
     root: path.join(storageRoot, "generic-agent-orchestrations"),
   });
   const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
+  const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
+    root: path.join(storageRoot, "governed-agent-activations"),
+  });
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3283,6 +3287,13 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/generic-agents/activations", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
+      const existing = req.body?.idempotency_key
+        ? governedAgentActivationStore.findByIdempotency({ tenant_id: req.tenantId, idempotency_key: req.body.idempotency_key })
+        : null;
+      if (existing) {
+        const run = genericAgentRuntime.restoreRun({ tenant_id: req.tenantId, run_snapshot: existing.run_snapshot });
+        return res.json({ ok: true, tenant_id: req.tenantId, activation: { ...existing.activation, reused: true }, run, workflow: existing.workflow, reused: true, restored_from_durable_activation: true, execution_allowed: false });
+      }
       const activation = governedAgentRegistry.proposeActivation({ ...(req.body || {}), tenant_id: req.tenantId });
       if (activation.reused) {
         const run = genericAgentRuntime.getRun({ run_id: `run_${activation.activation_id}`, tenant_id: req.tenantId });
@@ -3297,10 +3308,45 @@ export function createUniversalCoreService(options = {}) {
         learning_mode: "frozen",
         model_budget: { max_model_calls: 0, max_total_tokens: 0 },
       });
+      governedAgentActivationStore.save({ tenant_id: req.tenantId, activation, run_snapshot: run });
       audit.append("governed_agent_activation_proposed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: activation.activation_id, run_id: run.run_id, agent_id: activation.agent_id, trigger: activation.trigger });
       return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation, run, execution_allowed: false });
     } catch (error) {
       return publicError(res, 400, error.message || "governed_agent_activation_invalid");
+    }
+  });
+
+  app.get("/v1/generic-agents/activations/:activationId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
+      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
+      return res.json({ ok: true, tenant_id: req.tenantId, activation: record.activation, workflow: record.workflow, revision: record.revision, updated_at: record.updated_at, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, 403, error.message || "governed_agent_activation_read_failed");
+    }
+  });
+
+  app.post("/v1/generic-agents/activations/:activationId/research-workflow", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
+      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
+      if (record.activation.agent_id !== "nyra-supervisor") return publicError(res, 400, "research_workflow_requires_nyra_supervisor");
+      if (record.workflow?.plan_id) {
+        const plan = recoverGenericOrchestration(req.tenantId, record.workflow.plan_id);
+        return res.json({ ok: true, tenant_id: req.tenantId, activation: record.activation, plan, reused: true, execution_allowed: false });
+      }
+      const plan = genericAgentOrchestrator.createPlan({
+        tenant_id: req.tenantId,
+        run_id: record.run_snapshot.run_id,
+        workers: buildGovernedResearchWorkers({ task: record.activation.task }),
+      });
+      persistGenericOrchestration(plan);
+      const workflow = { schema_version: "governed_research_workflow_v1", plan_id: plan.plan_id, status: plan.status, execution_mode: "dry_run", model_invocation: false, tool_invocation: false, external_action: false };
+      const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
+      audit.append("governed_agent_research_workflow_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: record.activation.activation_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation: saved.activation, workflow: saved.workflow, plan, execution_allowed: false });
+    } catch (error) {
+      return publicError(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_workflow_failed");
     }
   });
 
