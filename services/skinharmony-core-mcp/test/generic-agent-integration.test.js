@@ -22,7 +22,7 @@ test("generic agent MCP handlers run a tenant-scoped lifecycle through Core", as
     const generated = await fetch(`${core.url}/v1/keys/generate`, {
       method: "POST",
       headers: { authorization: "Bearer generic-mcp-admin", "content-type": "application/json" },
-      body: JSON.stringify({ tenant_id: "tenant-generic-mcp", preset: "nyra_core_360_connector" }),
+      body: JSON.stringify({ tenant_id: "tenant-generic-mcp", preset: "codex_automation" }),
     }).then((response) => response.json());
     const handlers = createCoreHandlers({
       universalCoreUrl: core.url,
