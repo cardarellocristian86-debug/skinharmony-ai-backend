@@ -9,6 +9,8 @@ import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
+import { createAuthenticator } from "./auth.js";
+import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
@@ -24,6 +26,13 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
 });
+const browserAuthenticate = createAuthenticator(config);
+async function coreProvider(path, tenantId, method = "GET") {
+  const key = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
+  if (!key) throw new Error("core_tenant_key_missing");
+  const response = await fetch(`${config.universalCoreUrl}${path}`, { method, headers: { authorization: `Bearer ${key}`, accept: "application/json", ...(method === "POST" ? { "content-type": "application/json" } : {}) }, ...(method === "POST" ? { body: JSON.stringify({ ttl_minutes: 10 }) } : {}) });
+  const payload = await response.json(); if (!response.ok) throw new Error("core_provider_unavailable"); return payload;
+}
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -102,4 +111,8 @@ const app = createApp(config, {
     if (memoryFabric) await memoryFabric.recordToolActivity(event);
   },
 });
+const openAiPortal = createOpenAiConnectPortal({ config, authenticate: browserAuthenticate, issueSetupLink: (tenantId) => coreProvider("/v1/generic-agents/providers/openai/setup-links", tenantId, "POST"), providerStatus: (tenantId) => coreProvider("/v1/generic-agents/providers/openai", tenantId) });
+app.get("/connect/openai", openAiPortal.start);
+app.get("/connect/openai/callback", openAiPortal.callback);
+app.get("/connect/openai/continue", openAiPortal.continue);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));
