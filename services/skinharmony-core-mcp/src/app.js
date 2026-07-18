@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import express from "express";
+import { OPENAI_PROVIDER_SETUP_WIDGET, OPENAI_PROVIDER_SETUP_WIDGET_URI } from "./openai-provider-setup-widget.js";
 import { createAuthenticator, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
@@ -247,9 +248,25 @@ export function createApp(config, options = {}) {
       if (method === "initialize") {
         const sessionId = normalizeTransportSession(req.headers["mcp-session-id"]) || `mcp_${crypto.randomBytes(16).toString("hex")}`;
         res.set("Mcp-Session-Id", sessionId);
-        return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
+        return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
+      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [{
+        uri: OPENAI_PROVIDER_SETUP_WIDGET_URI,
+        name: "Collega OpenAI a Nyra",
+        title: "Collega OpenAI",
+        description: "Pannello fisso per creare un link monouso e inserire la chiave solo nella pagina protetta.",
+        mimeType: "text/html;profile=mcp-app",
+      }] } });
+      if (method === "resources/read") {
+        if (params.uri !== OPENAI_PROVIDER_SETUP_WIDGET_URI) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
+        return res.json({ jsonrpc: "2.0", id, result: { contents: [{
+          uri: OPENAI_PROVIDER_SETUP_WIDGET_URI,
+          mimeType: "text/html;profile=mcp-app",
+          text: OPENAI_PROVIDER_SETUP_WIDGET,
+          _meta: { "openai/widgetDescription": "A fixed secure setup panel for the user's own OpenAI API key.", "openai/widgetPrefersBorder": true },
+        }] } });
+      }
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
         const schemes = securitySchemes(scopes);
         return {

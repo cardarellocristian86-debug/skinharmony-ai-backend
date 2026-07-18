@@ -561,3 +561,18 @@ test("returns an explicit client error for a cloud-memory checksum mismatch", as
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+
+test("publishes the fixed secure OpenAI setup panel", async () => serve(async (base) => {
+  const init = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "initialize" }) }).then((response) => response.json());
+  assert.equal(init.result.capabilities.resources != null, true);
+  const resources = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "resources/list" }) }).then((response) => response.json());
+  const resource = resources.result.resources.find((item) => item.uri === "ui://skinharmony/openai-provider-setup.html");
+  assert(resource);
+  const read = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "resources/read", params: { uri: resource.uri } }) }).then((response) => response.json());
+  assert.match(read.result.contents[0].text, /Crea link sicuro/);
+  const listed = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 43, method: "tools/list" }) }).then((response) => response.json());
+  const panel = listed.result.tools.find((tool) => tool.name === "tenant_provider_openai_setup_panel");
+  assert.equal(panel.annotations.readOnlyHint, true);
+  assert.equal(panel._meta["openai/outputTemplate"], resource.uri);
+}));

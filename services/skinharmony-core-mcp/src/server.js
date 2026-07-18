@@ -36,6 +36,7 @@ const suiteHandlers = createSuiteHandlers(config);
 
 const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
   "work_preflight",
+  "tenant_provider_openai_setup_panel",
 ]);
 
 function summarizeToolRequest(toolName, args = {}) {
@@ -47,6 +48,17 @@ function summarizeToolRequest(toolName, args = {}) {
 
 const app = createApp(config, {
   handlers: {
+    tenant_provider_openai_setup_panel: async (_args, identity) => ({
+      structuredContent: {
+        ok: true,
+        tenant_id: identity.tenantId,
+        provider: "openai",
+        execution_enabled: false,
+        key_entry: "one_time_secure_link_only",
+      },
+      content: [{ type: "text", text: "Apri il pannello Collega OpenAI e premi Crea link sicuro." }],
+      _meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
+    }),
     ...coreHandlers,
     ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
