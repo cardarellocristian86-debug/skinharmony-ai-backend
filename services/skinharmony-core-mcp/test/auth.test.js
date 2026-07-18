@@ -112,15 +112,6 @@ test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });
 });
 
-test("accepts the browser audience only when the browser authenticator explicitly selects it", async () => {
-  const fixture = auth0Fixture({ aud: "https://browser-api", scope: "openid" });
-  const browserConfig = { ...fixture.config, auth0Audience: "https://mcp-api", codexKeys: [], godModeEnabled: false };
-  const browserAuth = createAuthenticator(browserConfig, { audience: "https://browser-api", jwksCache: fixture.cache });
-  await assert.doesNotReject(browserAuth(`Bearer ${fixture.token}`));
-  const mcpAuth = createAuthenticator(browserConfig, { jwksCache: fixture.cache });
-  await assert.rejects(mcpAuth(`Bearer ${fixture.token}`), /jwt_audience_invalid/);
-});
-
 test("merges Auth0 scope and permissions claims without duplicates", async () => {
   const { token, config, cache } = auth0Fixture({
     scope: "openid core:read core:govern",

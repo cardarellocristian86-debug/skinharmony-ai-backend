@@ -26,7 +26,7 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
 });
-const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
+const browserAuthenticate = createAuthenticator(config);
 async function coreProvider(path, tenantId, method = "GET") {
   const key = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
   if (!key) throw new Error("core_tenant_key_missing");

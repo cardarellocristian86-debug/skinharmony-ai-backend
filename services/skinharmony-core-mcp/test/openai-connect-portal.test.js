@@ -3,7 +3,7 @@ import test from "node:test";
 import express from "express";
 import { createOpenAiConnectPortal } from "../src/openai-connect-portal.js";
 
-const config = { auth0Issuer: "https://tenant.auth0.com", auth0Audience: "https://core/mcp", auth0BrowserAudience: "https://core/browser", auth0BrowserClientId: "browser-client", auth0BrowserCallbackUrl: "https://mcp.example.test/connect/openai/callback", auth0BrowserStateSecret: "test-state-secret" };
+const config = { auth0Issuer: "https://tenant.auth0.com", auth0Audience: "https://core", auth0BrowserClientId: "browser-client", auth0BrowserCallbackUrl: "https://mcp.example.test/connect/openai/callback", auth0BrowserStateSecret: "test-state-secret" };
 async function serve(portal, run) { const app = express(); app.get("/connect/openai", portal.start); app.get("/connect/openai/callback", portal.callback); app.get("/connect/openai/continue", portal.continue); const server = app.listen(0); await new Promise((r) => server.once("listening", r)); try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((r) => server.close(r)); } }
 
 test("uses Authorization Code PKCE, authenticates the owner, and scopes setup link to the authenticated tenant", async () => {
@@ -12,8 +12,6 @@ test("uses Authorization Code PKCE, authenticates the owner, and scopes setup li
   await serve(portal, async (base) => {
     const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
     assert.equal(start.status, 302); const authorization = new URL(start.headers.get("location"));
-    assert.equal(authorization.searchParams.get("audience"), config.auth0BrowserAudience);
-    assert.notEqual(authorization.searchParams.get("audience"), config.auth0Audience);
     assert.equal(authorization.searchParams.get("code_challenge_method"), "S256"); assert(authorization.searchParams.get("code_challenge"));
     const cookie = start.headers.get("set-cookie").split(";")[0];
     const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`, { headers: { cookie }, redirect: "manual" });

@@ -22,7 +22,7 @@ function open(secret, value) {
 }
 
 export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink, providerStatus, fetchImpl = fetch, now = () => Date.now() }) {
-  const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0BrowserAudience && config.auth0Issuer);
+  const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0Issuer);
   const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(maxAge / 1000)}`);
   const load = (req) => open(config.auth0BrowserStateSecret, cookie(req, COOKIE));
   const owner = (identity) => identity?.godMode === true && identity?.role === "owner_root";
@@ -38,7 +38,7 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
       const verifier = crypto.randomBytes(48).toString("base64url"), state = crypto.randomBytes(32).toString("base64url");
       setCookie(res, seal(config.auth0BrowserStateSecret, { verifier, state, expires_at: now() + MAX_AGE_MS }));
       const authorize = new URL(`${config.auth0Issuer}/authorize`);
-      authorize.search = new URLSearchParams({ response_type: "code", client_id: config.auth0BrowserClientId, redirect_uri: config.auth0BrowserCallbackUrl, scope: "openid profile", audience: config.auth0BrowserAudience, state, code_challenge: challenge(verifier), code_challenge_method: "S256" }).toString();
+      authorize.search = new URLSearchParams({ response_type: "code", client_id: config.auth0BrowserClientId, redirect_uri: config.auth0BrowserCallbackUrl, scope: "openid profile", audience: config.auth0Audience, state, code_challenge: challenge(verifier), code_challenge_method: "S256" }).toString();
       return res.redirect(302, authorize.toString());
     },
     async callback(req, res) {
