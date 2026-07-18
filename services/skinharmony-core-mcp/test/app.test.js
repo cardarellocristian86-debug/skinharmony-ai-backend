@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachProviderOnboarding, createApp, inferClientType, TOOLS } from "../src/app.js";
+import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, TOOLS } from "../src/app.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -29,10 +29,18 @@ test("classifies verified connector identities by host", () => {
   assert.equal(inferClientType({ kind: "service" }), "api_agent");
 });
 
+test("publishes only a verifiable build identity", () => {
+  const commit = "e".repeat(40);
+  assert.deepEqual(buildIdentity({ RENDER_GIT_COMMIT: commit }), { commit_sha: commit, commit_verifiable: true });
+  assert.equal(buildIdentity({ RENDER_GIT_COMMIT: "not-a-commit" }), null);
+  assert.equal(buildIdentity({}), null);
+});
+
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.1-openai-owner-connect");
+  assert.equal(health.version, "0.11.2-stateless-bootstrap");
+  assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);

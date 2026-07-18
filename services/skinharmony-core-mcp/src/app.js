@@ -6,7 +6,7 @@ import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 
-const SERVER_VERSION = "0.11.1-openai-owner-connect";
+const SERVER_VERSION = "0.11.2-stateless-bootstrap";
 const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: just start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work, researches, coordinates branches and summarizes; Universal Core enforces tenant isolation, budget, evidence, cancellation and final governance. HOW TO BUILD AN AGENT: the user describes goal, expected output, constraints, deadline and whether work is research, analysis or planning. Call work_preflight first, then use the governed generic-agent/orchestration tools to create a bounded plan. Keep fan-out at three or fewer and explain the plan before any sensitive step. AUTOMATIC: tenant-scoped memory recall, preflight, routing, plan persistence, dependency ordering, queue/retry/cancellation controls, audit and dry-run worker simulation. NOT AUTOMATIC: model-provider calls, browser/tool side effects, customer contact, payments, publishing, deployments, data deletion and other external actions; these stay disabled or require an explicit Core verdict and owner confirmation. CURRENT MODE: worker execution is manual_dry_run only, so no model, API, tool or external action is invoked and no tenant incurs AI API cost. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from API credits. At the start of every new connected conversation, call tenant_provider_openai_status before work. If the tenant has no configured OpenAI key, immediately call tenant_provider_openai_setup_panel and show only two simple choices: Collega API key or Non ora. Never ask a user to paste or reveal an API key in ChatGPT or a tool argument. When the user says crea agenti, collega API key, collega OpenAI, abilita OpenAI, configura provider, or any equivalent, call tenant_provider_openai_status first: if the key is missing, open tenant_provider_openai_setup_panel; if it is configured, continue with the requested work. secure link setup: the panel creates the one-time secure link automatically after the user presses Collega API key. The key is entered only on the Core page outside chat, stored encrypted, and returns only masked status. Link issuance does not enable provider execution. RESEARCH: call nyra_research_plan, use the host ChatGPT or Codex web tool, then submit short sourced evidence with nyra_research_ingest. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "work_preflight",
@@ -35,6 +35,12 @@ function normalizeTransportSession(value) {
 
 function serverIssuedBootstrapSession() {
   return `mcp_bootstrap_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function buildIdentity(env = process.env) {
+  const commitSha = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim();
+  if (!/^[a-f0-9]{40}$/i.test(commitSha)) return null;
+  return { commit_sha: commitSha, commit_verifiable: true };
 }
 
 function setBounded(map, key, value, maximum = 5_000) {
@@ -204,6 +210,7 @@ export function createApp(config, options = {}) {
     ok: true,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
+    build: buildIdentity(),
     mode: process.env.NODE_ENV || "development",
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
@@ -437,4 +444,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachProviderOnboarding, attachWorkPreflight, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
+export { attachProviderOnboarding, attachWorkPreflight, buildIdentity, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
