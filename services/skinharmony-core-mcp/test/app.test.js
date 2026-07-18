@@ -62,6 +62,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(preflight);
   assert(preflight.outputSchema?.properties?.core_runtime);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
+  assert.equal(preflight._meta["openai/outputTemplate"], "ui://skinharmony/openai-provider-setup.html");
   assert(body.result.tools.every((tool) => tool._meta["skinharmony/mandatory_first_tool"] === "work_preflight"));
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
