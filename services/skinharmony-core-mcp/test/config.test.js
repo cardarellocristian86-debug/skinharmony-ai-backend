@@ -103,6 +103,30 @@ test("keeps an explicit tenant mapping over CORE_MCP_KEY", () => {
   assert.equal(config.universalCoreKeys.codexai, "explicit-key");
 });
 
+test("keeps browser OAuth audience separate from the MCP resource audience", () => {
+  const config = loadConfig({
+    NODE_ENV: "production",
+    MCP_PUBLIC_URL: "https://mcp.example.test",
+    AUTH0_ISSUER: "https://tenant.auth0.com",
+    AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
+    AUTH0_BROWSER_CLIENT_ID: "browser-client",
+    AUTH0_BROWSER_STATE_SECRET: "state-secret",
+    AUTH0_BROWSER_AUDIENCE: "https://mcp.example.test/browser",
+    CODEX_BEARER_KEYS: "local-test-key",
+  });
+  assert.equal(config.auth0Audience, "https://mcp.example.test/mcp");
+  assert.equal(config.auth0BrowserAudience, "https://mcp.example.test/browser");
+});
+
+test("requires a dedicated browser audience when the owner portal is configured", () => {
+  assert.throws(() => loadConfig({
+    AUTH0_ISSUER: "https://tenant.auth0.com",
+    AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
+    AUTH0_BROWSER_CLIENT_ID: "browser-client",
+    AUTH0_BROWSER_STATE_SECRET: "state-secret",
+  }), /AUTH0_BROWSER_AUDIENCE/);
+});
+
 test("maps Suite Control Plane keys only to their configured tenants", () => {
   const config = loadConfig({
     SUITE_CONTROL_PLANE_URL: "https://suite.example.test/",
