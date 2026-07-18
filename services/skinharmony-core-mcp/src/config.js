@@ -89,6 +89,7 @@ export function loadConfig(env = process.env) {
   const publicUrl = url(env.MCP_PUBLIC_URL || "http://localhost:8790", "MCP_PUBLIC_URL");
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
   const auth0Audience = String(env.AUTH0_AUDIENCE || "").trim();
+  const auth0BrowserAudience = String(env.AUTH0_BROWSER_AUDIENCE || "").trim();
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
@@ -126,12 +127,15 @@ export function loadConfig(env = process.env) {
     throw new Error("At least one authentication method is required in production");
   }
   if (auth0Issuer && !auth0Audience) throw new Error("AUTH0_AUDIENCE is required with AUTH0_ISSUER");
+  const browserPortalConfigured = Boolean(env.AUTH0_BROWSER_CLIENT_ID || env.AUTH0_BROWSER_STATE_SECRET);
+  if (browserPortalConfigured && !auth0BrowserAudience) throw new Error("AUTH0_BROWSER_AUDIENCE is required when the owner browser portal is configured");
   return {
     port: Number(env.PORT || 8790),
     publicUrl,
     resource: `${publicUrl}/mcp`,
     auth0Issuer,
     auth0Audience,
+    auth0BrowserAudience,
     jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
     codexKeys,
     codexScopes: csv(env.CODEX_BEARER_SCOPES || "core:read,core:govern"),

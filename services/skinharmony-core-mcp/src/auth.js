@@ -88,6 +88,7 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
 
 export function createAuthenticator(config, options = {}) {
   const cache = options.jwksCache || new JwksCache(options.fetchImpl);
+  const jwtConfig = options.audience ? { ...config, auth0Audience: options.audience } : config;
   return async function authenticate(header) {
     const match = String(header || "").match(/^Bearer\s+(.+)$/i);
     if (!match) throw new Error("bearer_required");
@@ -96,7 +97,7 @@ export function createAuthenticator(config, options = {}) {
       return applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config);
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
-    return applyOwnerRoot(await verifyAuth0Jwt(token, config, cache), config);
+    return applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config);
   };
 }
 

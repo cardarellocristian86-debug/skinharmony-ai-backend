@@ -77,7 +77,9 @@ Configure the Auth0 application as a public OAuth client for ChatGPT, allow only
 
 The fixed page `https://skinharmony-core-mcp.onrender.com/connect/openai` never accepts a tenant identifier. It uses Authorization Code + PKCE, verifies the authenticated owner and tenant claim, then redirects to the existing one-time Core vault page. It never enables provider execution.
 
-Configure these Render secrets only after deploying the code: `AUTH0_BROWSER_CLIENT_ID`, optional `AUTH0_BROWSER_CLIENT_SECRET` for a confidential Auth0 application, `AUTH0_BROWSER_CALLBACK_URL=https://skinharmony-core-mcp.onrender.com/connect/openai/callback`, and a separate random `AUTH0_BROWSER_STATE_SECRET`. Do not use `OPENAI_API_KEY` for this feature. The Core service must already have its governed provider vault configured; no key is written to Render configuration.
+The MCP resource server and browser owner portal use different Auth0 audiences. `AUTH0_AUDIENCE` remains the MCP API identifier (`https://.../mcp`); `AUTH0_BROWSER_AUDIENCE` must be the identifier of a separately authorized Auth0 API for the Regular Web Application. The portal never sends the MCP resource audience to the browser client.
+
+Configure these Render values only after deploying the code: `AUTH0_BROWSER_CLIENT_ID`, `AUTH0_BROWSER_AUDIENCE`, optional `AUTH0_BROWSER_CLIENT_SECRET` for a confidential Auth0 application, `AUTH0_BROWSER_CALLBACK_URL=https://skinharmony-core-mcp.onrender.com/connect/openai/callback`, and a separate random `AUTH0_BROWSER_STATE_SECRET`. Do not use `OPENAI_API_KEY` for this feature. The Core service must already have its governed provider vault configured; no key is written to Render configuration.
 
 ## WordPress Suite Cockpit adapter
 
