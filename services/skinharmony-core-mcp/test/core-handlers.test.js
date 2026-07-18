@@ -44,7 +44,6 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.equal(JSON.parse(calls[2].init.body).memory_context.tenant_id, "tenant-a");
   assert.equal(JSON.parse(calls[7].init.body).memory_context.revision, 7);
   assert.equal(JSON.parse(calls[8].init.body).ttl_minutes, 10);
-  assert.equal(JSON.parse(calls[8].init.body).memory_context.revision, 7);
   assert.equal(contextCalls.length, 4);
   assert.equal(contextCalls[2].input.query, "analizza");
   assert.equal(contextCalls[2].input.agent_id, "nyra");
