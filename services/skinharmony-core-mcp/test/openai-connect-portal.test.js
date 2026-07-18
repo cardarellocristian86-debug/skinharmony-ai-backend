@@ -15,7 +15,7 @@ test("uses Authorization Code PKCE, authenticates the owner, and scopes setup li
     assert.equal(authorization.searchParams.get("audience"), config.auth0BrowserAudience);
     assert.notEqual(authorization.searchParams.get("audience"), config.auth0Audience);
     assert.equal(authorization.searchParams.get("code_challenge_method"), "S256"); assert(authorization.searchParams.get("code_challenge"));
-    const cookie = start.headers.get("set-cookie").split(";")[0];
+    assert.match(start.headers.get("set-cookie"), /HttpOnly; Secure; SameSite=None/); const cookie = start.headers.get("set-cookie").split(";")[0];
     const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`, { headers: { cookie }, redirect: "manual" });
     assert.equal(callback.status, 303); const ownerCookie = callback.headers.get("set-cookie").split(";")[0];
     const connected = await fetch(`${base}/connect/openai`, { headers: { cookie: ownerCookie } }); assert.match(await connected.text(), /OpenAI già collegato/);

@@ -23,7 +23,10 @@ function open(secret, value) {
 
 export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink, providerStatus, fetchImpl = fetch, now = () => Date.now() }) {
   const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0BrowserAudience && config.auth0Issuer);
-  const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(maxAge / 1000)}`);
+  // Auth0 returns from a different site. Keep the sealed, HttpOnly state cookie
+  // available to that top-level OAuth callback, including embedded host browsers.
+  // CSRF protection still comes from the cryptographically random state value.
+  const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=None; Max-Age=${Math.floor(maxAge / 1000)}`);
   const load = (req) => open(config.auth0BrowserStateSecret, cookie(req, COOKIE));
   const owner = (identity) => identity?.godMode === true && identity?.role === "owner_root";
   return {
