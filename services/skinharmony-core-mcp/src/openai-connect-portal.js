@@ -8,6 +8,15 @@ function unb64(value) { return Buffer.from(value, "base64url"); }
 function challenge(value) { return crypto.createHash("sha256").update(value).digest("base64url"); }
 function cookie(req, name) { return String(req.headers.cookie || "").split(/;\s*/).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || ""; }
 function page(title, body) { return `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>${title}</h1>${body}</body></html>`; }
+function accessFailure(error) {
+  switch (error?.message) {
+    case "jwt_tenant_missing": return "Il login è valido, ma manca il tenant nel token Auth0.";
+    case "jwt_audience_invalid": return "Il login è valido, ma l’audience Auth0 non coincide con quella del servizio.";
+    case "owner_required": return "Il login è valido, ma l’account non viene riconosciuto come owner_root.";
+    case "oauth_exchange_failed": return "Non è stato possibile completare il login Auth0.";
+    default: return "Non è stato possibile verificare l’accesso owner.";
+  }
+}
 
 function seal(secret, payload) {
   const key = crypto.scryptSync(secret, "skinharmony-openai-connect-v1", 32);
@@ -53,7 +62,7 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
         const identity = await authenticate(`Bearer ${tokens.access_token}`); if (!owner(identity)) throw new Error("owner_required");
         setCookie(res, seal(config.auth0BrowserStateSecret, { identity, tenant_id: identity.tenantId, expires_at: now() + MAX_AGE_MS }));
         return res.redirect(303, "/connect/openai");
-      } catch { return res.status(403).type("html").send(page("Accesso non autorizzato", "<p>È richiesto l’accesso owner del tenant autenticato.</p>")); }
+      } catch (error) { return res.status(403).type("html").send(page("Accesso non autorizzato", `<p>${accessFailure(error)}</p><p>Riprova dal link iniziale.</p>`)); }
     },
     async continue(req, res) {
       const session = load(req); if (!session?.tenant_id || session.expires_at <= now() || !owner(session.identity)) return res.redirect(303, "/connect/openai");
