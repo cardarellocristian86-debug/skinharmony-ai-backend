@@ -106,3 +106,43 @@ test("allows only confirmed reversible internal writes", () => {
   assert.equal(evaluate(base).authorization.allowed, false);
   assert.equal(evaluate({ ...base, owner_confirmed: true }).authorization.allowed, true);
 });
+
+test("allows only a reference-only tenant provider vault secret configuration", () => {
+  const base = {
+    action_type: "environment_configuration",
+    operation_class: "reversible_owner_confirmed_deploy",
+    action_label: "Activate tenant provider vault secret reference",
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    configuration_changes: true,
+    environment: "production",
+    target_service: "skinharmony-universal-core",
+    resource_type: "render_environment_secret_reference",
+    create_new: false,
+    rotate_existing: false,
+    delete: false,
+    merge: false,
+    production_deploy: false,
+    provider_execution: false,
+    allowed_environment_variables: ["GOVERNED_AGENT_KEY_ENCRYPTION_SECRET"],
+    target_commit: "8dde9d68270e743d2b1a773d72ed5283af7e15b3",
+    confirmation_reference: "owner-confirmed-tenant-provider-vault-secret-reference",
+  };
+  const allowed = evaluate({ ...base, owner_confirmed: true }).authorization;
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_deploy");
+
+  for (const unsafe of [
+    { owner_confirmed: false }, { contains_secret: true }, { secret_value_transmitted: true },
+    { target_service: "another-service" }, { resource_type: "postgresql" },
+    { allowed_environment_variables: ["DATABASE_URL"] }, { rotate_existing: true },
+    { production_deploy: true }, { provider_execution: true }, { cross_tenant: true },
+  ]) assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
+});
