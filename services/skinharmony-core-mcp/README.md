@@ -73,6 +73,12 @@ NYRA_GOD_MODE_EMERGENCY_STOP=false
 
 Configure the Auth0 application as a public OAuth client for ChatGPT, allow only approved callback URLs, enable authorization code with PKCE, and disable password/implicit grants. Do not commit secrets. Auth0 must issue RS256 access tokens containing `scope` or `permissions`. The MCP merges both claims when Auth0 emits requested OAuth scopes in `scope` and RBAC API permissions in `permissions`; duplicate values are removed before per-tool authorization.
 
+## Owner OpenAI connection page
+
+The fixed page `https://skinharmony-core-mcp.onrender.com/connect/openai` never accepts a tenant identifier. It uses Authorization Code + PKCE, verifies the authenticated owner and tenant claim, then redirects to the existing one-time Core vault page. It never enables provider execution.
+
+Configure these Render secrets only after deploying the code: `AUTH0_BROWSER_CLIENT_ID`, optional `AUTH0_BROWSER_CLIENT_SECRET` for a confidential Auth0 application, `AUTH0_BROWSER_CALLBACK_URL=https://skinharmony-core-mcp.onrender.com/connect/openai/callback`, and a separate random `AUTH0_BROWSER_STATE_SECRET`. Do not use `OPENAI_API_KEY` for this feature. The Core service must already have its governed provider vault configured; no key is written to Render configuration.
+
 ## WordPress Suite Cockpit adapter
 
 Version `0.11.0` adds a tool-only adapter for the tenant-scoped Suite Control
