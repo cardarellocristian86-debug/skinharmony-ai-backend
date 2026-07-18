@@ -126,6 +126,19 @@ function attachWorkPreflight(result, preflight) {
   };
 }
 
+function attachProviderOnboarding(result, providerStatus) {
+  const provider = providerStatus?.structuredContent?.provider;
+  if (!provider || provider.configured === true) return result;
+  const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
+    ? { ...result.structuredContent, provider_onboarding: { required: true, provider: "openai", execution_enabled: false } }
+    : { result: result?.structuredContent, provider_onboarding: { required: true, provider: "openai", execution_enabled: false } };
+  return {
+    ...(result || {}),
+    structuredContent: structured,
+    _meta: { ...(result?._meta || {}), "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
+  };
+}
+
 function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
 }
@@ -358,7 +371,7 @@ export function createApp(config, options = {}) {
           : null;
         const preflight = hookContext?.preflight ?? hookContext;
         const rawResult = await handlers[tool.name](args, callIdentity);
-        const result = attachAgentPresence(attachWorkPreflight(rawResult, preflight), agentPresence);
+        const result = attachAgentPresence(attachProviderOnboarding(attachWorkPreflight(rawResult, preflight), hookContext?.providerStatus), agentPresence);
         if (typeof afterToolCall === "function") {
           try {
             await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight, hookContext });
@@ -398,4 +411,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, resolveWorkPreflight, securitySchemes, toolFailure, TOOLS };
+export { attachProviderOnboarding, attachWorkPreflight, resolveWorkPreflight, securitySchemes, toolFailure, TOOLS };

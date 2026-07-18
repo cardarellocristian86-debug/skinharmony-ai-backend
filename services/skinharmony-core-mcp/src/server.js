@@ -72,7 +72,11 @@ const app = createApp(config, {
   },
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
-    if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext };
+    let providerStatus = null;
+    if (!["tenant_provider_openai_status", "tenant_provider_openai_setup_panel", "tenant_provider_openai_setup_link"].includes(toolName)) {
+      try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
+    }
+    if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext, providerStatus };
     const result = await coreHandlers.work_preflight({
       request: summarizeToolRequest(toolName, args),
       operation_type: toolName,
@@ -91,7 +95,7 @@ const app = createApp(config, {
       reason_summary: preflight?.work_preflight?.state || preflight?.state || "preflight_completed",
       metadata: { execution_allowed: preflight?.work_preflight?.governance?.execution_allowed_by_preflight === true },
     });
-    return { preflight, ledgerContext };
+    return { preflight, ledgerContext, providerStatus };
   },
   afterToolCall: async (event) => {
     if (decisionLedger && event.hookContext?.ledgerContext) await decisionLedger.finishWork(event.hookContext.ledgerContext, event);

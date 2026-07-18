@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createApp, TOOLS } from "../src/app.js";
+import { attachProviderOnboarding, createApp, TOOLS } from "../src/app.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -576,3 +576,12 @@ test("publishes the fixed secure OpenAI setup panel", async () => serve(async (b
   assert.equal(panel.annotations.readOnlyHint, true);
   assert.equal(panel._meta["openai/outputTemplate"], resource.uri);
 }));
+
+
+test("attaches the fixed setup panel when the tenant key is missing", () => {
+  const result = attachProviderOnboarding({ structuredContent: { ok: true } }, { structuredContent: { provider: { configured: false } } });
+  assert.equal(result.structuredContent.provider_onboarding.required, true);
+  assert.equal(result._meta["openai/outputTemplate"], "ui://skinharmony/openai-provider-setup.html");
+  const connected = attachProviderOnboarding({ structuredContent: { ok: true } }, { structuredContent: { provider: { configured: true } } });
+  assert.equal(connected._meta, undefined);
+});
