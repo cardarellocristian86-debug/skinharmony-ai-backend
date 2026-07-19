@@ -5,13 +5,14 @@ import { createCoreHandlers, createCoreWriteGuard } from "../src/core-handlers.j
 test("maps MCP tools to Universal Core without forwarding the ChatGPT token", async () => {
   const calls = [];
   const contextCalls = [];
-  const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key" }, {
+  const handlers = createCoreHandlers({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, universalCoreProviderSetupLinkKeys: { "tenant-a": "provider-setup-link-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key" }, {
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       if (new URL(url).pathname === "/v1/runtime/hierarchy/evaluate") {
         return new Response(JSON.stringify({ ok: true, result: { hierarchy_version: "core_runtime_hierarchy_v1", mode: "shadow", router: { route: "V2" }, selected_authority: "V1", parity: { attempted: true, matched: false, fallback: "V1" }, execution_allowed: true } }), { status: 200, headers: { "content-type": "application/json" } });
       }
-      return new Response(JSON.stringify({ ok: true, path: new URL(url).pathname }), { status: 200, headers: { "content-type": "application/json" } });
+      const path = new URL(url).pathname;
+      return new Response(JSON.stringify({ ok: true, path, ...(path === "/v1/generic-agents/providers/openai/setup-links" ? { setup_url: "https://core.test/provider-setup/opaque" } : {}) }), { status: 200, headers: { "content-type": "application/json" } });
     },
     contextProvider: async (input, identity) => {
       contextCalls.push({ input, identity });
@@ -27,10 +28,11 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.research_validate({ evidence_pack: { question: "ricerca", sources: [], claims: [] }, domain_pack: "analyzer" }, identity);
   await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.tenant_provider_openai_status({}, identity);
-  await handlers.tenant_provider_openai_setup_link({ ttl_minutes: 10 }, identity);
+  await handlers.tenant_provider_openai_setup_link({ ttl_minutes: 10 }, { ...identity, godMode: true, role: "owner_root" });
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/generic-agents/providers/openai", "/v1/generic-agents/providers/openai/setup-links", "/v1/action-evaluator"]);
-  assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert(calls.filter((call) => new URL(call.url).pathname !== "/v1/generic-agents/providers/openai/setup-links").every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert.equal(calls[9].init.headers.authorization, "Bearer provider-setup-link-key");
   assert(calls.filter((call) => call.init.body && new URL(call.url).pathname !== "/v1/runtime/hierarchy/evaluate").every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert.equal(JSON.parse(calls[1].init.body).core_input.context.tenant_id, "tenant-a");
   assert.deepEqual(JSON.parse(calls[2].init.body).available_capabilities, ["github_connected_app"]);
@@ -49,6 +51,78 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.equal(contextCalls.length, 4);
   assert.equal(contextCalls[2].input.query, "analizza");
   assert.equal(contextCalls[2].input.agent_id, "nyra");
+});
+
+test("uses the dedicated provider setup-link key only for its exact Core route", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "normal-core-key" },
+    universalCoreProviderSetupLinkKeys: { "tenant-a": "one-time-link-key" },
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ok: true, setup_url: "https://core.test/provider-setup/opaque" }), { status: 200 });
+    },
+  });
+
+  await handlers.tenant_provider_openai_status({}, { tenantId: "tenant-a" });
+  await handlers.tenant_provider_openai_setup_link({ ttl_minutes: 10 }, { tenantId: "tenant-a", godMode: true, role: "owner_root" });
+
+  assert.equal(calls[0].init.headers.authorization, "Bearer normal-core-key");
+  assert.equal(calls[1].init.headers.authorization, "Bearer one-time-link-key");
+  assert.equal(new URL(calls[1].url).pathname, "/v1/generic-agents/providers/openai/setup-links");
+  assert.equal(JSON.stringify(calls).includes("normal-core-key"), true);
+  assert.equal(JSON.stringify(calls[1]).includes("normal-core-key"), false);
+});
+
+test("never falls back to a normal Core key when the scoped provider key is absent", async () => {
+  let called = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "normal-core-key" },
+    universalCoreProviderSetupLinkKeys: {},
+  }, {
+    fetchImpl: async () => { called = true; throw new Error("must not call Core"); },
+  });
+
+  await assert.rejects(
+    handlers.tenant_provider_openai_setup_link({}, { tenantId: "tenant-a", godMode: true, role: "owner_root" }),
+    /provider_setup_link_key_missing/,
+  );
+  assert.equal(called, false);
+});
+
+test("does not resolve inherited object properties as provider setup-link keys", async () => {
+  let called = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreProviderSetupLinkKeys: {},
+  }, {
+    fetchImpl: async () => { called = true; throw new Error("must not call Core"); },
+  });
+
+  await assert.rejects(
+    handlers.tenant_provider_openai_setup_link({}, { tenantId: "toString", godMode: true, role: "owner_root" }),
+    /provider_setup_link_key_missing/,
+  );
+  assert.equal(called, false);
+});
+
+test("requires a verified owner before issuing a provider setup link", async () => {
+  let called = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreProviderSetupLinkKeys: { "tenant-a": "one-time-link-key" },
+  }, {
+    fetchImpl: async () => { called = true; throw new Error("must not call Core"); },
+  });
+
+  await assert.rejects(
+    handlers.tenant_provider_openai_setup_link({}, { tenantId: "tenant-a", godMode: false, role: "standard" }),
+    /owner_required/,
+  );
+  assert.equal(called, false);
 });
 
 test("rejects a tenant without its own Core key", async () => {

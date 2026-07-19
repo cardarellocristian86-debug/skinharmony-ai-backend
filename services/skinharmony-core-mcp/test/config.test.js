@@ -103,6 +103,48 @@ test("keeps an explicit tenant mapping over CORE_MCP_KEY", () => {
   assert.equal(config.universalCoreKeys.codexai, "explicit-key");
 });
 
+test("maps the generated provider setup-link key only to the configured ChatGPT tenant", () => {
+  const config = loadConfig({
+    MCP_CHATGPT_TENANT_ID: "codexai",
+    CORE_MCP_KEY: "normal-core-key",
+    CORE_PROVIDER_SETUP_LINK_KEY: "scoped-provider-link-key",
+  });
+
+  assert.deepEqual(config.universalCoreKeys, { codexai: "normal-core-key" });
+  assert.deepEqual(config.universalCoreProviderSetupLinkKeys, { codexai: "scoped-provider-link-key" });
+});
+
+test("requires a tenant binding for the dedicated provider setup-link key", () => {
+  assert.throws(
+    () => loadConfig({ CORE_PROVIDER_SETUP_LINK_KEY: "scoped-provider-link-key" }),
+    /MCP_CHATGPT_TENANT_ID/,
+  );
+});
+
+test("keeps an explicit provider setup-link mapping over the generated single-tenant key", () => {
+  const config = loadConfig({
+    MCP_CHATGPT_TENANT_ID: "codexai",
+    CORE_PROVIDER_SETUP_LINK_KEY: "generated-key",
+    UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ codexai: "explicit-scoped-key", "tenant-b": "tenant-b-scoped-key" }),
+  });
+
+  assert.deepEqual(config.universalCoreProviderSetupLinkKeys, {
+    codexai: "explicit-scoped-key",
+    "tenant-b": "tenant-b-scoped-key",
+  });
+});
+
+test("rejects invalid provider setup-link key maps", () => {
+  assert.throws(
+    () => loadConfig({ UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ "../tenant": "key" }) }),
+    /invalid tenant id/,
+  );
+  assert.throws(
+    () => loadConfig({ UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ codexai: "" }) }),
+    /empty key/,
+  );
+});
+
 test("keeps browser OAuth audience separate from the MCP resource audience", () => {
   const config = loadConfig({
     NODE_ENV: "production",

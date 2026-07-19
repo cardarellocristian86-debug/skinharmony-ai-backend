@@ -139,6 +139,33 @@ function publicError(res, status, code, message = code) {
   return res.status(status).json({ ok: false, error: code, message });
 }
 
+function providerSetupHtml(res, status, html) {
+  return res
+    .status(status)
+    .set({
+      "cache-control": "no-store, max-age=0",
+      pragma: "no-cache",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "content-security-policy": "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; style-src 'unsafe-inline'",
+    })
+    .type("html")
+    .send(html);
+}
+
+function providerSetupLinkBootstrapErrorCode(error) {
+  const code = error instanceof Error ? error.message : "";
+  return new Set([
+    "provider_setup_link_key_required",
+    "provider_setup_link_tenant_required",
+    "provider_setup_link_key_conflict",
+    "provider_setup_link_key_rotation_required",
+  ]).has(code)
+    ? code
+    : "provider_setup_link_bootstrap_unavailable";
+}
+
 function readJsonFile(file, fallback) {
   if (!fs.existsSync(file)) return fallback;
   try {
@@ -3239,6 +3266,29 @@ export function createUniversalCoreService(options = {}) {
 
   const audit = createAudit(storageRoot);
   const keyStore = createKeyStore(storageRoot, audit);
+  const providerSetupLinkBootstrapKey = String(
+    options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
+  ).trim();
+  const providerSetupLinkTenantId = String(
+    options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
+  ).trim();
+  let providerSetupLinkBootstrapConfigured = false;
+  if (providerSetupLinkBootstrapKey || providerSetupLinkTenantId) {
+    try {
+      keyStore.ensureProviderSetupLinkKey({
+        secret: providerSetupLinkBootstrapKey,
+        tenant_id: providerSetupLinkTenantId,
+      });
+      providerSetupLinkBootstrapConfigured = true;
+    } catch (error) {
+      // The privileged setup path must fail closed without taking down the
+      // rest of Universal Core. Do not log the seed or its hash.
+      audit.append("core_provider_setup_link_key_bootstrap_unavailable", {
+        tenant_id: providerSetupLinkTenantId || null,
+        reason: providerSetupLinkBootstrapErrorCode(error),
+      });
+    }
+  }
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
   const reviews = reviewStore(storageRoot);
@@ -3294,8 +3344,23 @@ export function createUniversalCoreService(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
-  app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => { const token=String(req.params.token||"").trim(); if(!/^[A-Za-z0-9_-]{30,120}$/.test(token)) return res.status(404).send("Link non valido."); return res.type("html").send(`<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post"><label>API key<input name="api_key" type="password" autocomplete="off" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit">Collega in modo sicuro</button></form></body></html>`); });
-  app.post("/v1/generic-agents/providers/openai/setup/:token", async (req,res)=>{ if(!tenantProviderSetupLinks||!tenantProviderCredentials)return res.status(503).type("html").send("Configurazione provider non disponibile."); try{const link=await tenantProviderSetupLinks.consume({token:req.params.token});if(!link)return res.status(410).type("html").send("Link scaduto o già usato.");await tenantProviderCredentials.saveOpenAi({tenant_id:link.tenant_id,api_key:req.body?.api_key});audit.append("tenant_openai_provider_setup_completed",{tenant_id:link.tenant_id,provider:"openai"});return res.type("html").send("<h1>OpenAI collegato</h1><p>Puoi chiudere questa pagina e tornare in ChatGPT.</p>");}catch{return res.status(400).type("html").send("Chiave non valida. Richiedi un nuovo link da ChatGPT.");}});
+  app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => {
+    const token = String(req.params.token || "").trim();
+    if (!/^[A-Za-z0-9_-]{30,120}$/.test(token)) return providerSetupHtml(res, 404, "Link non valido.");
+    return providerSetupHtml(res, 200, `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post"><label>API key<input name="api_key" type="password" autocomplete="off" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit">Collega in modo sicuro</button></form></body></html>`);
+  });
+  app.post("/v1/generic-agents/providers/openai/setup/:token", async (req, res) => {
+    if (!tenantProviderSetupLinks || !tenantProviderCredentials) return providerSetupHtml(res, 503, "Configurazione provider non disponibile.");
+    try {
+      const link = await tenantProviderSetupLinks.consume({ token: req.params.token });
+      if (!link) return providerSetupHtml(res, 410, "Link scaduto o già usato.");
+      await tenantProviderCredentials.saveOpenAi({ tenant_id: link.tenant_id, api_key: req.body?.api_key });
+      audit.append("tenant_openai_provider_setup_completed", { tenant_id: link.tenant_id, provider: "openai" });
+      return providerSetupHtml(res, 200, "<h1>OpenAI collegato</h1><p>Puoi chiudere questa pagina e tornare in ChatGPT.</p>");
+    } catch {
+      return providerSetupHtml(res, 400, "Chiave non valida. Richiedi un nuovo link da ChatGPT.");
+    }
+  });
 
   app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const agents = governedAgentRegistry.listAgents();
@@ -3640,6 +3705,7 @@ export function createUniversalCoreService(options = {}) {
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       governed_agent_runner: { mode: "manual_dry_run", provider_execution: false, max_jobs_per_tick: 2 },
       tenant_provider_vault: { configured: Boolean(tenantProviderCredentials), execution_enabled: false },
+      provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
       uptime_seconds: Math.round(process.uptime()),
     });
   });
