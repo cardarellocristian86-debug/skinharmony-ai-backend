@@ -136,6 +136,11 @@ export function loadConfig(env = process.env) {
   if (chatgptTenantId && chatgptProviderSetupLinkKey && !hasOwn(universalCoreProviderSetupLinkKeys, chatgptTenantId)) {
     universalCoreProviderSetupLinkKeys[chatgptTenantId] = chatgptProviderSetupLinkKey;
   }
+  // Health exposes only this boolean, never a tenant id, map entry, or key.
+  // It represents the dedicated source binding used by the owner portal.
+  const providerSetupLinkSourceConfigured = Boolean(
+    chatgptTenantId && hasOwn(universalCoreProviderSetupLinkKeys, chatgptTenantId),
+  );
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
@@ -174,6 +179,7 @@ export function loadConfig(env = process.env) {
     universalCoreKey,
     universalCoreKeys,
     universalCoreProviderSetupLinkKeys,
+    providerSetupLinkSourceConfigured,
     suiteControlPlaneUrl,
     suiteControlPlaneKeys: suiteControlPlaneBindings.keys,
     suiteControlPlaneTenantMap: suiteControlPlaneBindings.tenantMap,

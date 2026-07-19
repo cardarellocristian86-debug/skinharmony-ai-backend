@@ -14,9 +14,9 @@ const config = {
   supportedScopes: ["core:read", "core:govern"]
 };
 
-async function serve(run) {
+async function serve(run, configOverride = {}) {
   const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
-  const app = createApp(config, { handlers });
+  const app = createApp({ ...config, ...configOverride }, { handlers });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
@@ -45,6 +45,7 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
   assert.equal(health.openai_research_fallback_configured, false);
+  assert.equal(health.provider_setup_link_source_configured, false);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
@@ -53,6 +54,13 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   const oauth = await fetch(`${base}/.well-known/oauth-authorization-server`).then((r) => r.json());
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
 }));
+
+test("reports only the dedicated provider setup-link source readiness", async () => serve(async (base) => {
+  const health = await fetch(`${base}/healthz`).then((response) => response.json());
+  assert.equal(health.provider_setup_link_source_configured, true);
+  assert.equal(Object.hasOwn(health, "universalCoreProviderSetupLinkKeys"), false);
+  assert.equal(Object.hasOwn(health, "provider_setup_link_source_tenant"), false);
+}, { providerSetupLinkSourceConfigured: true }));
 
 test("returns RFC 9728 challenge when bearer is absent", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });

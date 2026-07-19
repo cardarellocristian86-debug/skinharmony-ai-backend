@@ -63,6 +63,8 @@ test("provider setup-link bootstrap seeds one opaque, tenant-scoped key without 
     const healthJson = await health.json();
     assert.equal(health.status, 200);
     assert.equal(healthJson.provider_setup_link_bootstrap_configured, true);
+    assert.equal(healthJson.provider_setup_link_bootstrap_state, "ready");
+    assert.equal(Object.hasOwn(healthJson, "provider_setup_link_bootstrap_error"), false);
 
     const setupPage = await fetch(`${base}/v1/generic-agents/providers/openai/setup/local_bootstrap_setup_token_abcdefghijklmnopqrstuvwxyz`);
     assert.equal(setupPage.status, 200);
@@ -127,6 +129,7 @@ test("provider setup-link bootstrap seeds one opaque, tenant-scoped key without 
       const conflictedHealthJson = await conflictedHealth.json();
       assert.equal(conflictedHealth.status, 200);
       assert.equal(conflictedHealthJson.provider_setup_link_bootstrap_configured, false);
+      assert.equal(conflictedHealthJson.provider_setup_link_bootstrap_state, "binding_conflict");
     } finally {
       await new Promise((resolve) => conflictedServer.close(resolve));
     }
@@ -148,6 +151,42 @@ test("provider setup-link bootstrap fails closed without taking down Core when i
     const healthJson = await health.json();
     assert.equal(health.status, 200);
     assert.equal(healthJson.provider_setup_link_bootstrap_configured, false);
+    assert.equal(healthJson.provider_setup_link_bootstrap_state, "incomplete");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("provider setup-link bootstrap reports a missing target key without exposing binding details", async () => {
+  const service = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `provider-setup-bootstrap-missing-key-${Date.now()}-${Math.random()}`),
+    providerSetupLinkTenantId: "codexai",
+  });
+  const { server, base } = await listen(service.app);
+  try {
+    const health = await fetch(`${base}/healthz`);
+    const healthJson = await health.json();
+    assert.equal(health.status, 200);
+    assert.equal(healthJson.provider_setup_link_bootstrap_configured, false);
+    assert.equal(healthJson.provider_setup_link_bootstrap_state, "binding_missing");
+    assert.equal(Object.hasOwn(healthJson, "provider_setup_link_bootstrap_error"), false);
+    assert.equal(Object.hasOwn(healthJson, "provider_setup_link_bootstrap_tenant"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("provider setup-link bootstrap reports incomplete when no target binding is configured", async () => {
+  const service = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `provider-setup-bootstrap-unconfigured-${Date.now()}-${Math.random()}`),
+  });
+  const { server, base } = await listen(service.app);
+  try {
+    const health = await fetch(`${base}/healthz`);
+    const healthJson = await health.json();
+    assert.equal(health.status, 200);
+    assert.equal(healthJson.provider_setup_link_bootstrap_configured, false);
+    assert.equal(healthJson.provider_setup_link_bootstrap_state, "incomplete");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

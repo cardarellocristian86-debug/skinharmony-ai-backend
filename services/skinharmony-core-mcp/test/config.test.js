@@ -112,6 +112,7 @@ test("maps the generated provider setup-link key only to the configured ChatGPT 
 
   assert.deepEqual(config.universalCoreKeys, { codexai: "normal-core-key" });
   assert.deepEqual(config.universalCoreProviderSetupLinkKeys, { codexai: "scoped-provider-link-key" });
+  assert.equal(config.providerSetupLinkSourceConfigured, true);
 });
 
 test("requires a tenant binding for the dedicated provider setup-link key", () => {
@@ -143,6 +144,14 @@ test("rejects invalid provider setup-link key maps", () => {
     () => loadConfig({ UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ codexai: "" }) }),
     /empty key/,
   );
+});
+
+test("reports no owner portal source when its dedicated tenant binding is absent", () => {
+  const config = loadConfig({
+    UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ "tenant-b": "tenant-b-scoped-key" }),
+  });
+
+  assert.equal(config.providerSetupLinkSourceConfigured, false);
 });
 
 test("keeps browser OAuth audience separate from the MCP resource audience", () => {
