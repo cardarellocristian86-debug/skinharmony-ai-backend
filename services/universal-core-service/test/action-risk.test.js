@@ -98,6 +98,30 @@ test("keeps reversible internal writes low-risk but owner-confirmed", () => {
   assert.equal(result.confirmation_required, true);
 });
 
+test("classifies verified outcome persistence as a low-risk confirmed learning write", () => {
+  const result = classifyActionRisk({
+    action_type: "outcome_record",
+    operation_class: "verified_outcome_record",
+    verified_outcome: true,
+  });
+  assert.equal(result.classification, "verified_outcome_record");
+  assert.equal(result.risk_band, "low");
+  assert.equal(result.control_level, "confirm");
+  assert.equal(result.confirmation_required, true);
+  assert.equal(result.governance_verdict, "CONFIRM");
+});
+
+test("classifies connector refresh and key rotation as bound high-risk confirmation gates", () => {
+  const refresh = classifyActionRisk({ operation_class: "reversible_owner_confirmed_connector_metadata_refresh" });
+  const rotation = classifyActionRisk({ operation_class: "reversible_owner_confirmed_core_connector_key_rotation" });
+  assert.equal(refresh.classification, "connector_metadata_refresh");
+  assert.equal(refresh.risk_band, "high");
+  assert.equal(refresh.governance_verdict, "CONFIRM");
+  assert.equal(rotation.classification, "core_connector_key_rotation");
+  assert.equal(rotation.risk_band, "high");
+  assert.equal(rotation.governance_verdict, "CONFIRM");
+});
+
 test("deterministic profile overrides generic Core safety fallback", () => {
   const generic = {
     state: "attention",

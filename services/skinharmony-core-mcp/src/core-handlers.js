@@ -14,7 +14,23 @@ function ownerContextCanonical(context) {
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
     issued_at: context.issued_at,
+    binding_version: context.binding_version,
+    binding_hash: context.binding_hash,
   });
+}
+
+function stableCanonical(value) {
+  if (Array.isArray(value)) return value.map(stableCanonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    if (value[key] !== undefined) result[key] = stableCanonical(value[key]);
+    return result;
+  }, {});
+}
+
+function ownerRequestBinding(purpose, body = {}) {
+  const { owner_context: _ownerContext, ...payload } = body;
+  return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
 }
 
 function textResult(payload) {
@@ -244,10 +260,14 @@ export function createCoreHandlers(config, options = {}) {
     return selected;
   }
 
-  async function coreRequest(path, tenantId, { method = "GET", body } = {}) {
-    const sanitizedBody = body && typeof body === "object" && !Array.isArray(body)
+  function sanitizeCoreBody(body) {
+    return body && typeof body === "object" && !Array.isArray(body)
       ? (({ domain_pack: _domainPack, domain_pack_id: _domainPackId, ...rest }) => rest)(body)
       : body;
+  }
+
+  async function coreRequest(path, tenantId, { method = "GET", body } = {}) {
+    const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${coreKey(tenantId)}`;
@@ -261,7 +281,7 @@ export function createCoreHandlers(config, options = {}) {
     return payload;
   }
 
-  function ownerContext(identity) {
+  function ownerContext(identity, requestBinding) {
     if (identity.godMode !== true) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
@@ -274,6 +294,10 @@ export function createCoreHandlers(config, options = {}) {
       delegated_actor: identity.kind || "unknown",
       owner_verified: true,
       issued_at: new Date().toISOString(),
+      ...(requestBinding === undefined ? {} : {
+        binding_version: "owner_request_binding_v1",
+        binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
+      }),
     };
     const digest = crypto.createHmac("sha256", coreKey(identity.tenantId))
       .update(`owner-context\u0000${ownerContextCanonical(context)}`)
@@ -311,9 +335,13 @@ export function createCoreHandlers(config, options = {}) {
       session_id: args.session_id,
       agent_id: args.agent_id || "nyra",
     }, identity);
+    const requestBody = { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId };
+    const requestBinding = options.ownerBindingPurpose
+      ? ownerRequestBinding(options.ownerBindingPurpose, requestBody)
+      : undefined;
     const coreAnalysis = await coreRequest(path, identity.tenantId, {
       method: "POST",
-      body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), owner_context: ownerContext(identity), tenant_id: identity.tenantId },
+      body: { ...requestBody, owner_context: ownerContext(identity, requestBinding) },
     });
     if (options.nyraInterpretation !== true) return textResult(coreAnalysis);
 
@@ -524,7 +552,7 @@ export function createCoreHandlers(config, options = {}) {
     counterfactual_analysis: async (args, identity) => intelligenceRequest("/v1/intelligence/counterfactuals/evaluate", args, identity),
     decision_select: async (args, identity) => intelligenceRequest("/v1/intelligence/decisions/select", args, identity),
     outcome_verify: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/verify", args, identity),
-    outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity),
+    outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity, { ownerBindingPurpose: "intelligence_outcome_record" }),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     tenant_provider_openai_status: async (_args, identity) => textResult(await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId)),
@@ -572,9 +600,13 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
+      const requestBody = sanitizeCoreBody({ ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId });
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
-        body: { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId }
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, ownerRequestBinding("core_action_evaluator", requestBody)),
+        }
       }));
     }
   };

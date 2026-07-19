@@ -138,6 +138,45 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
+  if (operationClass === "reversible_owner_confirmed_connector_metadata_refresh") {
+    return profile({
+      classification: "connector_metadata_refresh",
+      operationClass,
+      state: "attention",
+      riskBand: "high",
+      riskScore: 70,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: ["owner_confirmation_required", "metadata_refresh_target_binding_required"],
+    });
+  }
+
+  if (operationClass === "reversible_owner_confirmed_core_connector_key_rotation") {
+    return profile({
+      classification: "core_connector_key_rotation",
+      operationClass,
+      state: "attention",
+      riskBand: "high",
+      riskScore: 85,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: ["owner_confirmation_required", "least_privilege_scope_rotation"],
+    });
+  }
+
+  if (operationClass === "verified_outcome_record") {
+    return profile({
+      classification: "verified_outcome_record",
+      operationClass,
+      state: "attention",
+      riskBand: "low",
+      riskScore: 30,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: ["owner_confirmation_required", "verified_outcome_required"],
+    });
+  }
+
   if (
     body.operation_class === "reversible_internal_collaboration_write" &&
     body.external_side_effect === false &&

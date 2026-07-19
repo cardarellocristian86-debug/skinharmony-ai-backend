@@ -92,29 +92,34 @@ const app = createApp(config, {
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     let providerStatus = null;
-    if (!PROVIDER_ONBOARDING_EXEMPT_TOOLS.has(toolName)) {
-      try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
+    try {
+      if (!PROVIDER_ONBOARDING_EXEMPT_TOOLS.has(toolName)) {
+        try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
+      }
+      if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext, providerStatus };
+      const result = await coreHandlers.work_preflight({
+        request: summarizeToolRequest(toolName, args),
+        operation_type: toolName,
+        tool_name: toolName,
+        project_id: args.project_id,
+        session_id: identity.agentPresence?.session_id || args.session_id,
+        agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
+        client_type: identity.agentPresence?.client_type || args.client_type,
+        available_capabilities: ["skinharmony_core_mcp", toolName],
+        owner_confirmed: identity.ownerConfirmed === true,
+        confirmation_reference: identity.confirmationReference,
+      }, identity);
+      const preflight = result.structuredContent;
+      if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
+        preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,
+        reason_summary: preflight?.work_preflight?.state || preflight?.state || "preflight_completed",
+        metadata: { execution_allowed: preflight?.work_preflight?.governance?.execution_allowed_by_preflight === true },
+      });
+      return { preflight, ledgerContext, providerStatus };
+    } catch (error) {
+      error.hookContext = { ledgerContext, providerStatus };
+      throw error;
     }
-    if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext, providerStatus };
-    const result = await coreHandlers.work_preflight({
-      request: summarizeToolRequest(toolName, args),
-      operation_type: toolName,
-      tool_name: toolName,
-      project_id: args.project_id,
-      session_id: identity.agentPresence?.session_id || args.session_id,
-      agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
-      client_type: identity.agentPresence?.client_type || args.client_type,
-      available_capabilities: ["skinharmony_core_mcp", toolName],
-      owner_confirmed: identity.ownerConfirmed === true,
-      confirmation_reference: identity.confirmationReference,
-    }, identity);
-    const preflight = result.structuredContent;
-    if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
-      preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,
-      reason_summary: preflight?.work_preflight?.state || preflight?.state || "preflight_completed",
-      metadata: { execution_allowed: preflight?.work_preflight?.governance?.execution_allowed_by_preflight === true },
-    });
-    return { preflight, ledgerContext, providerStatus };
   },
   afterToolCall: async (event) => {
     if (decisionLedger && event.hookContext?.ledgerContext) await decisionLedger.finishWork(event.hookContext.ledgerContext, event);

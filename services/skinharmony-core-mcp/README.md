@@ -263,6 +263,15 @@ Le probabilita sono stime decisionali, non certezze. Ogni risultato include
 assunzioni, qualita dati, range di incertezza e traccia dei fattori. Nessun tool
 esegue autonomamente pubblicazioni, deploy o modifiche esterne.
 
+Da `0.11.3`, `outcome_record` usa sul collegamento MCP → Universal Core il solo
+scope interno `write:intelligence_outcome`; la prova owner usa separatamente
+`owner:assertion`. Core richiede un esito verificato,
+tenant identico a quello autenticato e conferma owner firmata; registra il
+verdetto ma non modifica mai automaticamente i pesi live. `write:snapshot`
+rimane accettato temporaneamente solo per chiavi legacy che dispongono gia di
+una prova owner attendibile (`owner:assertion` o automazione controllata); non
+deve essere aggiunto a una nuova chiave MCP.
+
 ## Production boundary
 
 The MCP service calls Universal Core server-to-server with a tenant-scoped key; it never forwards the ChatGPT OAuth token to Core. Explicit memory and collaboration writes affect only the authenticated tenant's internal server-side state and require Core governance. They do not merge, deploy, publish, modify customer systems, or grant cross-tenant access.
