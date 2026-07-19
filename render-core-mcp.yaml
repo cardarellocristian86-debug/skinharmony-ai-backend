@@ -1,6 +1,7 @@
 services:
   - type: web
     name: skinharmony-core-mcp
+    branch: main
     env: node
     plan: starter
     buildCommand: npm ci
