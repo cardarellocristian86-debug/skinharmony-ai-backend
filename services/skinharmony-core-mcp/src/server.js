@@ -1,4 +1,5 @@
 import { createApp } from "./app.js";
+import express from "express";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
@@ -11,6 +12,7 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
+import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
@@ -27,10 +29,10 @@ const coreHandlers = createCoreHandlers(config, {
   sharedMemoryBootstrap,
 });
 const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
-async function coreProvider(path, tenantId, method = "GET") {
+async function coreProvider(path, tenantId) {
   const key = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
   if (!key) throw new Error("core_tenant_key_missing");
-  const response = await fetch(`${config.universalCoreUrl}${path}`, { method, headers: { authorization: `Bearer ${key}`, accept: "application/json", ...(method === "POST" ? { "content-type": "application/json" } : {}) }, ...(method === "POST" ? { body: JSON.stringify({ ttl_minutes: 10 }) } : {}) });
+  const response = await fetch(`${config.universalCoreUrl}${path}`, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } });
   const payload = await response.json(); if (!response.ok) throw new Error("core_provider_unavailable"); return payload;
 }
 const researchCortex = config.researchCortexRoot
@@ -121,8 +123,13 @@ const app = createApp(config, {
     if (memoryFabric) await memoryFabric.recordToolActivity(event);
   },
 });
-const openAiPortal = createOpenAiConnectPortal({ config, authenticate: browserAuthenticate, issueSetupLink: (tenantId) => coreProvider("/v1/generic-agents/providers/openai/setup-links", tenantId, "POST"), providerStatus: (tenantId) => coreProvider("/v1/generic-agents/providers/openai", tenantId) });
+const openAiPortal = createOpenAiConnectPortal({
+  config,
+  authenticate: browserAuthenticate,
+  issueSetupLink: (tenantId) => issueOpenAiProviderSetupLink({ config, tenantId, ttlMinutes: 10 }),
+  providerStatus: (tenantId) => coreProvider("/v1/generic-agents/providers/openai", tenantId),
+});
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);
-app.get("/connect/openai/continue", openAiPortal.continue);
+app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));

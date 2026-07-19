@@ -22,6 +22,25 @@ function jsonObject(value, name) {
   }
 }
 
+function tenantKeyMap(value, name) {
+  const parsed = jsonObject(value, name);
+  const result = {};
+  for (const [tenantIdValue, secretValue] of Object.entries(parsed)) {
+    const tenantId = String(tenantIdValue || "").trim();
+    const secret = typeof secretValue === "string" ? secretValue.trim() : "";
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(tenantId)) {
+      throw new Error(`${name} contains an invalid tenant id`);
+    }
+    if (!secret) throw new Error(`${name} contains an empty key`);
+    result[tenantId] = secret;
+  }
+  return result;
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
 function parseSuiteControlPlaneKeys(value, singleKey, singleTenantId) {
   const bindings = {};
   const tenantMap = {};
@@ -94,6 +113,10 @@ export function loadConfig(env = process.env) {
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
+  const universalCoreProviderSetupLinkKeys = tenantKeyMap(
+    env.UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON,
+    "UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON",
+  );
   const suiteControlPlaneUrl = url(env.SUITE_CONTROL_PLANE_URL, "SUITE_CONTROL_PLANE_URL");
   const suiteControlPlaneBindings = parseSuiteControlPlaneKeys(
     env.SUITE_CONTROL_PLANE_KEYS_JSON,
@@ -103,8 +126,15 @@ export function loadConfig(env = process.env) {
   const agentSignatureSecret = String(env.AGENT_SIGNATURE_SECRET || "").trim();
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
+  const chatgptProviderSetupLinkKey = String(env.CORE_PROVIDER_SETUP_LINK_KEY || "").trim();
   if (chatgptTenantId && chatgptCoreKey && !universalCoreKeys[chatgptTenantId]) {
     universalCoreKeys[chatgptTenantId] = chatgptCoreKey;
+  }
+  if (chatgptProviderSetupLinkKey && !chatgptTenantId) {
+    throw new Error("MCP_CHATGPT_TENANT_ID is required with CORE_PROVIDER_SETUP_LINK_KEY");
+  }
+  if (chatgptTenantId && chatgptProviderSetupLinkKey && !hasOwn(universalCoreProviderSetupLinkKeys, chatgptTenantId)) {
+    universalCoreProviderSetupLinkKeys[chatgptTenantId] = chatgptProviderSetupLinkKey;
   }
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
@@ -143,6 +173,7 @@ export function loadConfig(env = process.env) {
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
+    universalCoreProviderSetupLinkKeys,
     suiteControlPlaneUrl,
     suiteControlPlaneKeys: suiteControlPlaneBindings.keys,
     suiteControlPlaneTenantMap: suiteControlPlaneBindings.tenantMap,

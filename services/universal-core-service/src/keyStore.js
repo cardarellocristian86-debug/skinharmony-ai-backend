@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { DEFAULT_AUTOMATION_SCOPES, DEFAULT_CONNECTOR_SCOPES, KEY_PRESETS, sanitizeScopes } from "./scope.js";
+import { DEFAULT_AUTOMATION_SCOPES, DEFAULT_CONNECTOR_SCOPES, KEY_PRESETS, SCOPES, sanitizeScopes } from "./scope.js";
 import { ensureDir } from "./audit.js";
 import { normalizeAllowedDomains, normalizeSuiteLimits, sanitizeSuiteModules } from "./suitePolicy.js";
 import { getDomainPack } from "./domainPacks.js";
@@ -27,6 +27,26 @@ function publicRecord(record) {
   if (!record) return null;
   const { key_hash, ...safe } = record;
   return safe;
+}
+
+const PROVIDER_SETUP_LINK_BOOTSTRAP_KIND = "provider_setup_link";
+const PROVIDER_SETUP_LINK_SCOPES = Object.freeze([SCOPES.WRITE_PROVIDER_SETUP_LINK]);
+
+function isDedicatedProviderSetupLinkRecord(record, tenantId, keyHash) {
+  return Boolean(
+    record &&
+    record.key_hash === keyHash &&
+    record.tenant_id === tenantId &&
+    record.key_type === "connector" &&
+    record.status === "active" &&
+    record.expires_at === null &&
+    record.preset === null &&
+    record.brand_scope === "" &&
+    Array.isArray(record.allowed_scopes) &&
+    record.allowed_scopes.length === PROVIDER_SETUP_LINK_SCOPES.length &&
+    record.allowed_scopes.every((scope, index) => scope === PROVIDER_SETUP_LINK_SCOPES[index]) &&
+    record.metadata?.bootstrap_kind === PROVIDER_SETUP_LINK_BOOTSTRAP_KIND,
+  );
 }
 
 export function createKeyStore(storageRoot, audit) {
@@ -120,6 +140,65 @@ export function createKeyStore(storageRoot, audit) {
     return { key: secret, record: publicRecord(record) };
   }
 
+  function ensureProviderSetupLinkKey(input = {}) {
+    const secret = String(input.secret || "").trim();
+    const tenantId = String(input.tenant_id || "").trim();
+    if (!secret) throw new Error("provider_setup_link_key_required");
+    if (!tenantId) throw new Error("provider_setup_link_tenant_required");
+
+    const keyHash = sha256(secret);
+    const records = listAll();
+    const existing = records.find((record) => record.key_hash === keyHash);
+    if (existing) {
+      if (!isDedicatedProviderSetupLinkRecord(existing, tenantId, keyHash)) {
+        throw new Error("provider_setup_link_key_conflict");
+      }
+      return { created: false, record: publicRecord(existing) };
+    }
+
+    const existingBootstrap = records.find((record) => (
+      record.tenant_id === tenantId &&
+      record.metadata?.bootstrap_kind === PROVIDER_SETUP_LINK_BOOTSTRAP_KIND
+    ));
+    if (existingBootstrap) throw new Error("provider_setup_link_key_rotation_required");
+
+    const record = {
+      key_id: `key_${crypto.randomUUID()}`,
+      key_type: "connector",
+      key_hash: keyHash,
+      tenant_id: tenantId,
+      brand_scope: "",
+      label: "Provider setup-link issuer",
+      preset: null,
+      allowed_scopes: [...PROVIDER_SETUP_LINK_SCOPES],
+      status: "active",
+      created_at: new Date().toISOString(),
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: null,
+      metadata: {
+        bootstrap_kind: PROVIDER_SETUP_LINK_BOOTSTRAP_KIND,
+        suite_modules: [],
+        suite_limits: normalizeSuiteLimits({}),
+        allowed_domains: [],
+        suite_policy: {
+          soft_gate: true,
+          hard_block: false,
+        },
+      },
+    };
+
+    records.push(record);
+    saveAll(records);
+    audit?.append("core_provider_setup_link_key_seeded", {
+      key_id: record.key_id,
+      tenant_id: record.tenant_id,
+      key_type: record.key_type,
+      scopes: record.allowed_scopes,
+    });
+    return { created: true, record: publicRecord(record) };
+  }
+
   function authenticate(secret) {
     if (!secret) return { ok: false, error: "missing_key" };
     const records = listAll();
@@ -155,6 +234,7 @@ export function createKeyStore(storageRoot, audit) {
 
   return {
     createKey,
+    ensureProviderSetupLinkKey,
     authenticate,
     revokeKey,
     listKeys,

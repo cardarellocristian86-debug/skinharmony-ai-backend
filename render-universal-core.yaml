@@ -15,6 +15,13 @@ services:
         value: /var/data/universal-core-service
       - key: CORE_SERVICE_ADMIN_KEY
         sync: false
+      - key: CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: CORE_PROVIDER_SETUP_LINK_KEY
+      - key: CORE_PROVIDER_SETUP_LINK_TENANT_ID
+        value: codexai
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
       - key: NYRA_DEEP_RUNTIME_ENABLED
