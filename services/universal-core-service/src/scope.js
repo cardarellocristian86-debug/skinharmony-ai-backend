@@ -3,6 +3,7 @@ export const SCOPES = Object.freeze({
   WRITE_SNAPSHOT: "write:snapshot",
   READ_DECISION: "read:decision",
   WRITE_DECISION: "write:decision",
+  WRITE_PROVIDER_SETUP_LINK: "write:provider_setup_link",
   READ_REVIEW: "read:review",
   WRITE_REVIEW: "write:review",
   WRITE_SYNC_SUITE: "write:sync_suite",
