@@ -6,7 +6,7 @@ import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 
-const SERVER_VERSION = "0.11.2-stateless-bootstrap";
+const SERVER_VERSION = "0.11.3-governed-outcomes";
 const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: just start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work, researches, coordinates branches and summarizes; Universal Core enforces tenant isolation, budget, evidence, cancellation and final governance. HOW TO BUILD AN AGENT: the user describes goal, expected output, constraints, deadline and whether work is research, analysis or planning. Call work_preflight first, then use the governed generic-agent/orchestration tools to create a bounded plan. Keep fan-out at three or fewer and explain the plan before any sensitive step. AUTOMATIC: tenant-scoped memory recall, preflight, routing, plan persistence, dependency ordering, queue/retry/cancellation controls, audit and dry-run worker simulation. NOT AUTOMATIC: model-provider calls, browser/tool side effects, customer contact, payments, publishing, deployments, data deletion and other external actions; these stay disabled or require an explicit Core verdict and owner confirmation. CURRENT MODE: worker execution is manual_dry_run only, so no model, API, tool or external action is invoked and no tenant incurs AI API cost. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from API credits. At the start of every new connected conversation, call tenant_provider_openai_status before work. If the tenant has no configured OpenAI key, immediately call tenant_provider_openai_setup_panel and show only two simple choices: Collega API key or Non ora. Never ask a user to paste or reveal an API key in ChatGPT or a tool argument. When the user says crea agenti, collega API key, collega OpenAI, abilita OpenAI, configura provider, or any equivalent, call tenant_provider_openai_status first: if the key is missing, open tenant_provider_openai_setup_panel; if it is configured, continue with the requested work. secure link setup: the panel creates the one-time secure link automatically after the user presses Collega API key. The key is entered only on the Core page outside chat, stored encrypted, and returns only masked status. Link issuance does not enable provider execution. RESEARCH: call nyra_research_plan, use the host ChatGPT or Codex web tool, then submit short sourced evidence with nyra_research_ingest. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "work_preflight",
@@ -279,6 +279,8 @@ export function createApp(config, options = {}) {
       return res.status(401).json({ jsonrpc: "2.0", id: req.body?.id ?? null, error: { code: -32001, message: "Unauthorized" } });
     }
     const { id = null, method, params = {} } = req.body || {};
+    let activeToolCall = null;
+    let afterToolCallAttempted = false;
     try {
       if (method === "initialize") {
         const sessionId = normalizeTransportSession(req.headers["mcp-session-id"]) || `mcp_${crypto.randomBytes(16).toString("hex")}`;
@@ -400,13 +402,22 @@ export function createApp(config, options = {}) {
           ownerConfirmed: identity.godMode === true || args.owner_confirmed === true,
           confirmationReference: String(args.confirmation_reference || "").slice(0, 240),
         };
-        const hookContext = typeof beforeToolCall === "function"
-          ? await beforeToolCall({ identity: callIdentity, toolName: tool.name, args })
-          : null;
+        activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
+        let hookContext = null;
+        if (typeof beforeToolCall === "function") {
+          try {
+            hookContext = await beforeToolCall({ identity: callIdentity, toolName: tool.name, args });
+          } catch (error) {
+            if (error?.hookContext) activeToolCall.hookContext = error.hookContext;
+            throw error;
+          }
+        }
         const preflight = hookContext?.preflight ?? hookContext;
+        activeToolCall = { ...activeToolCall, hookContext, preflight };
         const rawResult = await handlers[tool.name](args, callIdentity);
         const result = attachAgentPresence(attachProviderOnboarding(attachWorkPreflight(rawResult, preflight), hookContext?.providerStatus), agentPresence);
         if (typeof afterToolCall === "function") {
+          afterToolCallAttempted = true;
           try {
             await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight, hookContext });
           } catch (hookError) {
@@ -424,8 +435,12 @@ export function createApp(config, options = {}) {
           error: { code: -32602, message: error.code },
         });
       }
-      if (typeof afterToolCall === "function" && method === "tools/call") {
-        try { await afterToolCall({ identity, toolName: params.name, args: params.arguments || {}, error }); } catch {}
+      if (typeof afterToolCall === "function" && method === "tools/call" && !afterToolCallAttempted) {
+        try {
+          await afterToolCall(activeToolCall
+            ? { ...activeToolCall, error }
+            : { identity, toolName: params.name, args: params.arguments || {}, error });
+        } catch {}
       }
       if (error.message === "insufficient_scope") {
         res.set("WWW-Authenticate", challenge(config, "insufficient_scope", error.missing.join(" ")));

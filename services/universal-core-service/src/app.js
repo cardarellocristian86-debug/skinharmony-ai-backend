@@ -91,7 +91,7 @@ import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkSto
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.2-nyra-live-validation";
+const SERVICE_VERSION = "0.10.3-governed-outcomes";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -111,10 +111,26 @@ function ownerContextCanonical(context) {
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
     issued_at: context.issued_at,
+    binding_version: context.binding_version,
+    binding_hash: context.binding_hash,
   });
 }
 
-function verifyOwnerContextAssertion(context, secret, tenantId, now = Date.now()) {
+function stableCanonical(value) {
+  if (Array.isArray(value)) return value.map(stableCanonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    if (value[key] !== undefined) result[key] = stableCanonical(value[key]);
+    return result;
+  }, {});
+}
+
+function ownerRequestBinding(purpose, body = {}) {
+  const { owner_context: _ownerContext, ...payload } = body;
+  return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
+}
+
+function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding, now = Date.now()) {
   if (!context || typeof context !== "object" || !secret) return false;
   if (context.assertion_version !== OWNER_CONTEXT_ASSERTION_VERSION) return false;
   if (context.audience !== "nira_core_bridge" || context.tenant_id !== tenantId) return false;
@@ -123,6 +139,13 @@ function verifyOwnerContextAssertion(context, secret, tenantId, now = Date.now()
   if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
   const supplied = String(context.assertion || "");
   if (!/^ocs_[a-f0-9]{64}$/i.test(supplied)) return false;
+  if (expectedBinding !== undefined) {
+    if (context.binding_version !== "owner_request_binding_v1") return false;
+    const suppliedBindingHash = String(context.binding_hash || "");
+    const expectedBindingHash = crypto.createHash("sha256").update(String(expectedBinding)).digest("hex");
+    if (!/^[a-f0-9]{64}$/i.test(suppliedBindingHash)) return false;
+    if (!crypto.timingSafeEqual(Buffer.from(suppliedBindingHash), Buffer.from(expectedBindingHash))) return false;
+  }
   const expected = `ocs_${crypto.createHmac("sha256", secret)
     .update(`owner-context\u0000${ownerContextCanonical(context)}`)
     .digest("hex")}`;
@@ -221,6 +244,15 @@ function sanitizeMemoryText(value, max = 2_000) {
     .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_SECRET]")
     .replace(/\b(?:password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED_SECRET]")
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
+}
+
+function outcomeContainsSensitiveContent(body = {}) {
+  if (body.contains_secret === true || body.contains_customer_data === true) return true;
+  const values = [body.outcome_id, body.prediction_id, body.domain, body.horizon, body.notes, ...(Array.isArray(body.lessons) ? body.lessons : [])];
+  return values.some((value) => {
+    const raw = String(value ?? "");
+    return raw.length > 2_000 || sanitizeMemoryText(raw, 2_000) !== raw;
+  });
 }
 
 function normalizeTenantMemoryContext(raw, tenantId) {
@@ -440,9 +472,10 @@ function createAuth(keyStore, audit, requiredScope) {
       return publicError(res, 403, "tenant_scope_denied");
     }
 
-    if (requiredScope && !hasScope(auth.record, requiredScope)) {
-      audit.append("core_scope_denied", { key_id: auth.record.key_id, required_scope: requiredScope, path: req.path });
-      return publicError(res, 403, "scope_denied", `Required scope: ${requiredScope}`);
+    const requiredScopes = Array.isArray(requiredScope) ? requiredScope : [requiredScope].filter(Boolean);
+    if (requiredScopes.length && !requiredScopes.some((scope) => hasScope(auth.record, scope))) {
+      audit.append("core_scope_denied", { key_id: auth.record.key_id, required_scopes: requiredScopes, path: req.path });
+      return publicError(res, 403, "scope_denied", `Required scope: ${requiredScopes.join(" or ")}`);
     }
 
     req.coreKey = auth.record;
@@ -4514,7 +4547,7 @@ export function createUniversalCoreService(options = {}) {
     intelligenceResponse(req, res, "outcome_verification", verifyOutcome);
   });
 
-  app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+  app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, [SCOPES.WRITE_INTELLIGENCE_OUTCOME, SCOPES.WRITE_SNAPSHOT]), (req, res) => {
     if (!String(req.body?.outcome_id || "").trim()) return publicError(res, 400, "outcome_id_required");
     if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
       return publicError(res, 400, "predicted_probability_required");
@@ -4523,8 +4556,77 @@ export function createUniversalCoreService(options = {}) {
     if (![true, false, 0, 1, "occurred", "not_occurred"].includes(req.body.actual_outcome)) {
       return publicError(res, 400, "actual_outcome_invalid");
     }
+    if (outcomeContainsSensitiveContent(req.body || {})) {
+      audit.append("core_intelligence_outcome_sensitive_content_rejected", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+      });
+      return publicError(res, 400, "outcome_sensitive_content_rejected");
+    }
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
+    const dedicatedOutcomeScope = hasScope(req.coreKey, SCOPES.WRITE_INTELLIGENCE_OUTCOME);
+    let outcomeAuthorization = null;
+    {
+      const trustedOwnerContext = hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
+        req.body?.owner_context,
+        readSecret(req),
+        req.tenantId,
+        ownerRequestBinding("intelligence_outcome_record", req.body || {}),
+      );
+      const explicitAutomationConfirmation = req.body?.owner_confirmed === true &&
+        req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
+      const gateBody = {
+        action_label: "Record tenant-scoped verified intelligence outcome",
+        action_type: "outcome_record",
+        operation_class: "verified_outcome_record",
+        external_side_effect: false,
+        contains_customer_data: false,
+        contains_secret: false,
+        secret_value_transmitted: false,
+        cross_tenant: false,
+        destructive: false,
+        bypass_orchestrator: false,
+        configuration_changes: false,
+        rollback_ready: true,
+        audit_ready: true,
+        verified_outcome: true,
+        live_weight_mutation: false,
+        owner_confirmed: trustedOwnerContext || explicitAutomationConfirmation,
+        confirmation_reference: trustedOwnerContext ? "signed_owner_context" : req.body?.confirmation_reference,
+        target_tenant_id: req.tenantId,
+        authenticated_tenant_id: req.tenantId,
+        outcome_id: String(req.body.outcome_id).trim(),
+        predicted_probability: req.body.predicted_probability ?? req.body.prediction?.probability,
+        actual_outcome: req.body.actual_outcome,
+        confirmation_outcome_id: String(req.body.outcome_id).trim(),
+        confirmation_target_tenant_id: req.tenantId,
+      };
+      const riskClassification = classifyActionRisk(gateBody);
+      const gateReq = Object.create(req);
+      gateReq.body = gateBody;
+      const output = runUniversalCore(buildActionEvaluatorInput(gateReq, req.coreKey));
+      const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
+        action_type: gateBody.action_type,
+        publish_intent: false,
+      }), riskClassification);
+      outcomeAuthorization = buildActionAuthorization(decisionContract, gateBody);
+      audit.append("core_intelligence_outcome_authorized", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        outcome_id: gateBody.outcome_id,
+        authorization_state: outcomeAuthorization.state,
+        confirmation_satisfied: outcomeAuthorization.confirmation_satisfied,
+      });
+      if (!outcomeAuthorization.allowed) {
+        return res.status(403).json({
+          ok: false,
+          error: "outcome_record_not_authorized",
+          authorization: outcomeAuthorization,
+          decision_contract: decisionContract,
+        });
+      }
+    }
     const verified = verifyOutcome({ ...(req.body || {}), memory_context: memoryContext.value });
     const stored = intelligenceOutcomes.append(req.tenantId, verified);
     if (stored.conflict) {
@@ -4556,6 +4658,8 @@ export function createUniversalCoreService(options = {}) {
       calibration,
       evidence: evidenceRecord,
       live_weight_mutation_enabled: false,
+      authorization: outcomeAuthorization,
+      legacy_scope_compatibility: !dedicatedOutcomeScope,
     });
   });
 
@@ -4618,20 +4722,34 @@ export function createUniversalCoreService(options = {}) {
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
-    const workPreflight = composeMandatoryWorkPreflight(req, {
+    const trustedOwnerContext = hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
+      req.body?.owner_context,
+      readSecret(req),
+      req.tenantId,
+      ownerRequestBinding("core_action_evaluator", req.body || {}),
+    );
+    const explicitAutomationConfirmation = req.body?.owner_confirmed === true &&
+      req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
+    const governedReq = Object.create(req);
+    governedReq.body = {
+      ...(req.body || {}),
+      owner_confirmed: trustedOwnerContext || explicitAutomationConfirmation,
+    };
+    const workPreflight = composeMandatoryWorkPreflight(governedReq, {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
     });
-    const riskClassification = classifyActionRisk(req.body || {});
-    const input = buildActionEvaluatorInput(req, req.coreKey);
+    const riskClassification = classifyActionRisk(governedReq.body);
+    const input = buildActionEvaluatorInput(governedReq, req.coreKey);
     const output = runUniversalCore(input);
     const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
-      action_type: req.body?.action_type || input.context.metadata.action_type,
-      publish_intent: req.body?.publish_intent === true,
+      action_type: governedReq.body.action_type || input.context.metadata.action_type,
+      publish_intent: governedReq.body.publish_intent === true,
     }), riskClassification);
     const authorization = buildActionAuthorization(decisionContract, {
-      ...(req.body || {}),
-      operation_class: req.body?.operation_class || riskClassification.operation_class,
+      ...governedReq.body,
+      operation_class: governedReq.body.operation_class || riskClassification.operation_class,
+      authenticated_tenant_id: req.tenantId,
     });
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
@@ -4647,6 +4765,7 @@ export function createUniversalCoreService(options = {}) {
       action_risk_band: riskClassification.risk_band,
       action_reason_codes: riskClassification.reason_codes,
       confirmation_satisfied: authorization.confirmation_satisfied,
+      owner_identity_verified: trustedOwnerContext,
     });
     res.json({
       ok: true,

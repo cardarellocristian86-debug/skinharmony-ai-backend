@@ -39,7 +39,7 @@ test("publishes only a verifiable build identity", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.2-stateless-bootstrap");
+  assert.equal(health.version, "0.11.3-governed-outcomes");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -475,6 +475,40 @@ test("journals successful and failed tool calls without changing client response
     assert.equal(events[0].error, undefined);
     assert.equal(events[1].toolName, "core_gate_action");
     assert.match(events[1].error.message, /expected_failure/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("preserves ledger hook context when mandatory preflight fails", async () => {
+  const events = [];
+  const ledgerContext = { workId: "work-before-failure", traceId: "trace-before-failure" };
+  const app = createApp(config, {
+    handlers: {
+      core_health: async () => ({ content: [{ type: "text", text: "must not run" }] }),
+    },
+    beforeToolCall: async () => {
+      const error = new Error("preflight_failed_after_ledger_start");
+      error.hookContext = { ledgerContext };
+      throw error;
+    },
+    afterToolCall: async (event) => events.push(event),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-ledger-failure-session" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "core_health", arguments: {} } }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.result.isError, true);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].hookContext.ledgerContext.workId, "work-before-failure");
+    assert.match(events[0].error.message, /preflight_failed_after_ledger_start/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

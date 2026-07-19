@@ -7,8 +7,15 @@ BIN="$ROOT_DIR/skinharmony-rust-extractor-governor/target/release/skinharmony-ex
 CORE_RUNTIME_MANIFEST="$ROOT_DIR/services/universal-core-service/native/core-runtime/Cargo.toml"
 CORE_RUNTIME_BIN="$ROOT_DIR/services/universal-core-service/native/core-runtime/target/release/skinharmony-core-runtime"
 
-export CARGO_HOME="${CARGO_HOME:-$ROOT_DIR/.render-rust/cargo}"
-export RUSTUP_HOME="${RUSTUP_HOME:-$ROOT_DIR/.render-rust/rustup}"
+# Reuse a complete host installation for local verification. Render has no
+# preinstalled user toolchain, so it still receives the isolated, cached setup.
+if [ -z "${CARGO_HOME:-}" ] && [ -z "${RUSTUP_HOME:-}" ] && [ -x "${HOME:-}/.cargo/bin/rustup" ] && [ -d "${HOME:-}/.rustup" ]; then
+  export CARGO_HOME="$HOME/.cargo"
+  export RUSTUP_HOME="$HOME/.rustup"
+else
+  export CARGO_HOME="${CARGO_HOME:-$ROOT_DIR/.render-rust/cargo}"
+  export RUSTUP_HOME="${RUSTUP_HOME:-$ROOT_DIR/.render-rust/rustup}"
+fi
 export PATH="$CARGO_HOME/bin:$PATH"
 mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
 

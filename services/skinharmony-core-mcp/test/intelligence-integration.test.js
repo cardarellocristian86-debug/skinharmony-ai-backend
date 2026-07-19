@@ -45,6 +45,12 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
       universalCoreKey: "",
       universalCoreKeys: { "tenant-integrated": generated.key },
       defaultTenantId: "tenant-integrated",
+      godModeEnabled: true,
+      godModeEmergencyStop: false,
+      godModeTenantIds: ["tenant-integrated"],
+      godModeSubjects: [],
+      godModeClientIds: [],
+      godModeCodexEnabled: true,
     };
     const handlers = createCoreHandlers(config, {
       contextProvider: async (_input, identity) => ({
@@ -103,6 +109,9 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
     });
     assert.equal(recorded.tenant_id, "tenant-integrated");
     assert.equal(recorded.outcome.brier_score, 0.0784);
+    assert.equal(recorded.authorization.allowed, true);
+    assert.equal(recorded.authorization.scope, "verified_outcome_record");
+    assert.equal(recorded.legacy_scope_compatibility, false);
 
     const calibration = await call("calibration_status", { limit: 20 });
     assert.equal(calibration.tenant_id, "tenant-integrated");

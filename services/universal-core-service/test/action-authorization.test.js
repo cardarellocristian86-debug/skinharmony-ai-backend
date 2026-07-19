@@ -317,3 +317,149 @@ test("allows a bound owner-confirmed draft-to-review transition and nothing else
     assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...transition, owner_confirmed: true, ...unsafe }).allowed, false);
   }
 });
+
+const connectorMetadataRefresh = {
+  action_type: "chatgpt_app_metadata_refresh",
+  operation_class: "reversible_owner_confirmed_connector_metadata_refresh",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: false,
+  endpoint_changes: false,
+  oauth_changes: false,
+  scope_changes: false,
+  permission_changes: false,
+  tenant_binding_changes: false,
+  rollback_ready: true,
+  audit_ready: true,
+  target_commit: "1".repeat(40),
+  target_client: "chatgpt",
+  connector_id: "skinharmony_core",
+  configured_endpoint: "https://skinharmony-core-mcp.onrender.com/mcp",
+  refresh_endpoint: "https://skinharmony-core-mcp.onrender.com/mcp",
+  target_tenant_id: "codexai",
+  authenticated_tenant_id: "codexai",
+  metadata_refresh_only: true,
+  expected_tool_count: 67,
+  installed_tool_count_before: 43,
+  create_app: false,
+  delete_app: false,
+  reconnect: false,
+  deploy: false,
+  merge: false,
+  confirmation_connector_id: "skinharmony_core",
+  confirmation_endpoint: "https://skinharmony-core-mcp.onrender.com/mcp",
+  confirmation_target_commit: "1".repeat(40),
+  confirmation_expected_tool_count: 67,
+  confirmation_target_tenant_id: "codexai",
+  confirmation_reference: "owner-confirmed-chatgpt-metadata-refresh",
+};
+
+test("authorizes only the exact owner-confirmed ChatGPT connector metadata refresh", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high" }), connectorMetadataRefresh);
+  assert.equal(pending.allowed, false);
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...connectorMetadataRefresh, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_connector_metadata_refresh");
+  for (const unsafe of [
+    { endpoint_changes: true }, { oauth_changes: true }, { scope_changes: true }, { permission_changes: true },
+    { target_tenant_id: "other" }, { reconnect: true }, { deploy: true }, { expected_tool_count: 66 },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...connectorMetadataRefresh, owner_confirmed: true, ...unsafe }).allowed, false);
+});
+
+const connectorKeyRotation = {
+  action_type: "render_core_connector_key_rotation",
+  operation_class: "reversible_owner_confirmed_core_connector_key_rotation",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: true,
+  endpoint_changes: false,
+  oauth_changes: false,
+  scope_changes: true,
+  permission_changes: true,
+  tenant_binding_changes: false,
+  rollback_ready: true,
+  audit_ready: true,
+  target_commit: "2".repeat(40),
+  environment: "production",
+  source_service: "skinharmony-universal-core",
+  target_service: "skinharmony-core-mcp",
+  target_environment_variable: "CORE_MCP_KEY",
+  resource_type: "render_environment_secret_reference",
+  target_tenant_id: "codexai",
+  authenticated_tenant_id: "codexai",
+  current_key_id: "key_a92869f0-0f1b-46d3-8f2a-065655ef5a72",
+  target_scope: "write:intelligence_outcome",
+  owner_assertion_scope: "owner:assertion",
+  allowed_scope_changes: ["write:intelligence_outcome", "owner:assertion"],
+  create_new_key: true,
+  replace_secret_reference: true,
+  revoke_old_key: false,
+  provider_execution: false,
+  service_restart_required: true,
+  deploy: true,
+  merge: false,
+  delete: false,
+  confirmation_current_key_id: "key_a92869f0-0f1b-46d3-8f2a-065655ef5a72",
+  confirmation_target_scope: "write:intelligence_outcome",
+  confirmation_owner_assertion_scope: "owner:assertion",
+  confirmation_target_service: "skinharmony-core-mcp",
+  confirmation_target_tenant_id: "codexai",
+  confirmation_target_commit: "2".repeat(40),
+  confirmation_reference: "owner-confirmed-least-privilege-core-key-rotation",
+};
+
+test("authorizes a least-privilege Core connector key rotation without secret material", () => {
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...connectorKeyRotation, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_core_connector_key_rotation");
+  for (const unsafe of [
+    { target_scope: "write:snapshot" }, { owner_assertion_scope: "automation:codex" },
+    { allowed_scope_changes: ["write:intelligence_outcome", "write:snapshot"] },
+    { contains_secret: true }, { secret_value_transmitted: true }, { revoke_old_key: true }, { target_tenant_id: "other" },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...connectorKeyRotation, owner_confirmed: true, ...unsafe }).allowed, false);
+});
+
+const verifiedOutcomeRecord = {
+  action_type: "outcome_record",
+  operation_class: "verified_outcome_record",
+  external_side_effect: false,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: false,
+  rollback_ready: true,
+  audit_ready: true,
+  verified_outcome: true,
+  live_weight_mutation: false,
+  target_tenant_id: "codexai",
+  authenticated_tenant_id: "codexai",
+  outcome_id: "deploy-check:2026-07-19",
+  predicted_probability: 0.92,
+  actual_outcome: true,
+  confirmation_outcome_id: "deploy-check:2026-07-19",
+  confirmation_target_tenant_id: "codexai",
+  confirmation_reference: "signed_owner_context",
+};
+
+test("authorizes only a verified, tenant-bound and owner-confirmed outcome record", () => {
+  const allowed = buildActionAuthorization(contract(), { ...verifiedOutcomeRecord, owner_confirmed: true });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "verified_outcome_record");
+  for (const unsafe of [
+    { verified_outcome: false }, { live_weight_mutation: true }, { target_tenant_id: "other" },
+    { predicted_probability: 2 }, { actual_outcome: "unknown" }, { confirmation_outcome_id: "different" },
+  ]) assert.equal(buildActionAuthorization(contract(), { ...verifiedOutcomeRecord, owner_confirmed: true, ...unsafe }).allowed, false);
+});
