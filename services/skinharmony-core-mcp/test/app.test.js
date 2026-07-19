@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachProviderOnboarding, createApp, TOOLS } from "../src/app.js";
+import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, TOOLS } from "../src/app.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -22,10 +22,25 @@ async function serve(run) {
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
 }
 
+test("classifies verified connector identities by host", () => {
+  assert.equal(inferClientType({ kind: "oauth" }), "chatgpt");
+  assert.equal(inferClientType({ kind: "chatgpt" }), "chatgpt");
+  assert.equal(inferClientType({ kind: "codex" }), "codex");
+  assert.equal(inferClientType({ kind: "service" }), "api_agent");
+});
+
+test("publishes only a verifiable build identity", () => {
+  const commit = "e".repeat(40);
+  assert.deepEqual(buildIdentity({ RENDER_GIT_COMMIT: commit }), { commit_sha: commit, commit_verifiable: true });
+  assert.equal(buildIdentity({ RENDER_GIT_COMMIT: "not-a-commit" }), null);
+  assert.equal(buildIdentity({}), null);
+});
+
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.1-openai-owner-connect");
+  assert.equal(health.version, "0.11.2-stateless-bootstrap");
+  assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
   assert.equal(health.openai_research_fallback_enabled, false);
@@ -365,6 +380,60 @@ test("keeps one logical chat signature stable across rotated MCP transports", as
     const identityConflict = await call("rotated-transport-four", "logical-chat-one", "chatgpt-chat-two");
     assert.equal(identityConflict.response.status, 409);
     assert.equal(identityConflict.body.error.message, "agent_presence_conflict");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("bootstraps authenticated stateless hosts without a transport session header", async () => {
+  const app = createApp(config, {
+    handlers: {
+      work_preflight: async () => ({ structuredContent: { ok: true }, content: [] }),
+      core_health: async () => ({ structuredContent: { ok: true }, content: [] }),
+      nyra_runtime_context: async () => ({ structuredContent: { ok: true }, content: [] }),
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const call = async (name, argumentsValue = {}, sessionId = "") => {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: argumentsValue },
+        }),
+      });
+      return { response, body: await response.json() };
+    };
+
+    const first = await call("work_preflight", { request: "Bootstrap this authenticated chat" });
+    const replay = await call("core_health", { agent_id: "untrusted-agent-label", client_type: "other" });
+    const blockedStateful = await call("nyra_runtime_context");
+    const resumedStateful = await call("nyra_runtime_context", {}, first.response.headers.get("mcp-session-id"));
+    assert.equal(first.response.status, 200);
+    assert.equal(replay.response.status, 200);
+    assert.match(first.response.headers.get("mcp-session-id"), /^mcp_bootstrap_[a-f0-9]{32}$/);
+    assert.match(replay.response.headers.get("mcp-session-id"), /^mcp_bootstrap_[a-f0-9]{32}$/);
+    assert.notEqual(first.response.headers.get("mcp-session-id"), replay.response.headers.get("mcp-session-id"));
+    assert.equal(blockedStateful.response.status, 400);
+    assert.equal(blockedStateful.body.error.message, "agent_presence_session_required");
+    assert.equal(resumedStateful.response.status, 200);
+    const firstPresence = first.body.result.structuredContent.agent_presence;
+    const replayPresence = replay.body.result.structuredContent.agent_presence;
+    const resumedPresence = resumedStateful.body.result.structuredContent.agent_presence;
+    assert.notEqual(firstPresence.signature, replayPresence.signature);
+    assert.equal(firstPresence.signature, resumedPresence.signature);
+    assert.equal(firstPresence.client_type, "codex");
+    assert.notEqual(replayPresence.agent_id, "untrusted-agent-label");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

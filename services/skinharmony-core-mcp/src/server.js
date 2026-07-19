@@ -45,7 +45,17 @@ const suiteHandlers = createSuiteHandlers(config);
 
 const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
   "work_preflight",
+  "core_health",
+  "nyra_branch_catalog",
   "tenant_provider_openai_setup_panel",
+]);
+
+const PROVIDER_ONBOARDING_EXEMPT_TOOLS = new Set([
+  "core_health",
+  "nyra_branch_catalog",
+  "tenant_provider_openai_status",
+  "tenant_provider_openai_setup_panel",
+  "tenant_provider_openai_setup_link",
 ]);
 
 function summarizeToolRequest(toolName, args = {}) {
@@ -82,7 +92,7 @@ const app = createApp(config, {
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     let providerStatus = null;
-    if (!["tenant_provider_openai_status", "tenant_provider_openai_setup_panel", "tenant_provider_openai_setup_link"].includes(toolName)) {
+    if (!PROVIDER_ONBOARDING_EXEMPT_TOOLS.has(toolName)) {
       try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
     }
     if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext, providerStatus };

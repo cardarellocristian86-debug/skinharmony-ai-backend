@@ -6,12 +6,22 @@ import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 
-const SERVER_VERSION = "0.11.1-openai-owner-connect";
+const SERVER_VERSION = "0.11.2-stateless-bootstrap";
 const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: just start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work, researches, coordinates branches and summarizes; Universal Core enforces tenant isolation, budget, evidence, cancellation and final governance. HOW TO BUILD AN AGENT: the user describes goal, expected output, constraints, deadline and whether work is research, analysis or planning. Call work_preflight first, then use the governed generic-agent/orchestration tools to create a bounded plan. Keep fan-out at three or fewer and explain the plan before any sensitive step. AUTOMATIC: tenant-scoped memory recall, preflight, routing, plan persistence, dependency ordering, queue/retry/cancellation controls, audit and dry-run worker simulation. NOT AUTOMATIC: model-provider calls, browser/tool side effects, customer contact, payments, publishing, deployments, data deletion and other external actions; these stay disabled or require an explicit Core verdict and owner confirmation. CURRENT MODE: worker execution is manual_dry_run only, so no model, API, tool or external action is invoked and no tenant incurs AI API cost. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from API credits. At the start of every new connected conversation, call tenant_provider_openai_status before work. If the tenant has no configured OpenAI key, immediately call tenant_provider_openai_setup_panel and show only two simple choices: Collega API key or Non ora. Never ask a user to paste or reveal an API key in ChatGPT or a tool argument. When the user says crea agenti, collega API key, collega OpenAI, abilita OpenAI, configura provider, or any equivalent, call tenant_provider_openai_status first: if the key is missing, open tenant_provider_openai_setup_panel; if it is configured, continue with the requested work. secure link setup: the panel creates the one-time secure link automatically after the user presses Collega API key. The key is entered only on the Core page outside chat, stored encrypted, and returns only masked status. Link issuance does not enable provider execution. RESEARCH: call nyra_research_plan, use the host ChatGPT or Codex web tool, then submit short sourced evidence with nyra_research_ingest. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
+  "work_preflight",
+  "core_health",
+  "nyra_branch_catalog",
+  "tenant_provider_openai_status",
+  "tenant_provider_openai_setup_panel",
+]);
 
 function inferClientType(identity) {
   const kind = String(identity?.kind || "").toLowerCase();
-  if (kind.includes("chatgpt")) return "chatgpt";
+  // This gateway reserves verified OAuth identities for the ChatGPT connector;
+  // Codex uses its scoped server-side bearer path below. The distinction is
+  // correlation metadata only and never changes scopes or authorization.
+  if (kind === "oauth" || kind.includes("chatgpt")) return "chatgpt";
   if (kind.includes("codex")) return "codex";
   return "api_agent";
 }
@@ -21,6 +31,16 @@ function normalizeTransportSession(value) {
   if (!raw) return "";
   if (/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(raw)) return raw;
   return `mcp_${crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32)}`;
+}
+
+function serverIssuedBootstrapSession() {
+  return `mcp_bootstrap_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function buildIdentity(env = process.env) {
+  const commitSha = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim();
+  if (!/^[a-f0-9]{40}$/i.test(commitSha)) return null;
+  return { commit_sha: commitSha, commit_verifiable: true };
 }
 
 function setBounded(map, key, value, maximum = 5_000) {
@@ -190,6 +210,7 @@ export function createApp(config, options = {}) {
     ok: true,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
+    build: buildIdentity(),
     mode: process.env.NODE_ENV || "development",
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
@@ -320,11 +341,19 @@ export function createApp(config, options = {}) {
         const transportPresence = transportSessionId
           ? transportPresenceBindings.get(transportSessionId)
           : null;
-        if (!transportSessionId && !declaredSessionId) {
+        // Some MCP hosts omit the optional transport session header on the first
+        // call. Permit only bootstrap/diagnostic tools and issue a fresh opaque
+        // session that the host can reuse. Stateful tools still fail closed, and
+        // concurrent chats never collapse into one identity-derived session.
+        const needsBootstrapSession = !transportSessionId && !declaredSessionId;
+        if (needsBootstrapSession && !SESSIONLESS_BOOTSTRAP_TOOLS.has(tool.name)) {
           const presenceError = new Error("agent_presence_session_required");
           presenceError.code = "agent_presence_session_required";
           throw presenceError;
         }
+        const serverIssuedSessionId = needsBootstrapSession
+          ? serverIssuedBootstrapSession()
+          : "";
         if (
           transportPresence?.binding_source === "declared" &&
           declaredSessionId &&
@@ -334,12 +363,13 @@ export function createApp(config, options = {}) {
           presenceError.code = "agent_presence_conflict";
           throw presenceError;
         }
-        const sessionId = transportPresence?.session_id || declaredSessionId || transportSessionId;
-        const requestedAgentId = rawArgs.agent_id || rawArgs.from_agent_id || transportPresence?.agent_id ||
+        const sessionId = transportPresence?.session_id || declaredSessionId || transportSessionId || serverIssuedSessionId;
+        const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
+        const requestedAgentId = (!serverIssuedBootstrap && (rawArgs.agent_id || rawArgs.from_agent_id)) || transportPresence?.agent_id ||
           `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
         const presenceInput = {
           agent_id: requestedAgentId,
-          client_type: rawArgs.client_type || transportPresence?.client_type || inferClientType(identity),
+          client_type: (!serverIssuedBootstrap && rawArgs.client_type) || transportPresence?.client_type || inferClientType(identity),
           session_id: sessionId,
         };
         const agentPresence = createAgentPresence(config, identity, presenceInput);
@@ -355,10 +385,13 @@ export function createApp(config, options = {}) {
         const presenceBinding = {
           ...agentPresence,
           session_id: sessionId,
-          binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : "transport"),
+          binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
         };
         setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
-        if (transportSessionId) setBounded(transportPresenceBindings, transportSessionId, presenceBinding);
+        if (transportSessionId || serverIssuedSessionId) {
+          setBounded(transportPresenceBindings, sessionId, presenceBinding);
+        }
+        if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
         const callIdentity = {
           ...identity,
@@ -411,4 +444,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachProviderOnboarding, attachWorkPreflight, resolveWorkPreflight, securitySchemes, toolFailure, TOOLS };
+export { attachProviderOnboarding, attachWorkPreflight, buildIdentity, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
