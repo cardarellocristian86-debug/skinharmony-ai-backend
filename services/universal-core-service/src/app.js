@@ -166,6 +166,26 @@ function providerSetupLinkBootstrapErrorCode(error) {
     : "provider_setup_link_bootstrap_unavailable";
 }
 
+// This status is intentionally coarse because /healthz is public. It is only
+// enough to distinguish an absent binding from a persistent-key conflict; it
+// never includes a tenant id, secret, hash, or the underlying storage error.
+function getProviderSetupLinkBootstrapState({ key, tenantId, configured, error } = {}) {
+  if (configured === true) return "ready";
+  const hasKey = Boolean(key);
+  const hasTenant = Boolean(tenantId);
+  if (!hasKey && !hasTenant) return "incomplete";
+  if (!hasKey && hasTenant) return "binding_missing";
+  if (hasKey && !hasTenant) return "incomplete";
+
+  const code = providerSetupLinkBootstrapErrorCode(error);
+  if (code === "provider_setup_link_key_conflict" || code === "provider_setup_link_key_rotation_required") {
+    return "binding_conflict";
+  }
+  if (code === "provider_setup_link_key_required") return "binding_missing";
+  if (code === "provider_setup_link_tenant_required") return "incomplete";
+  return "unavailable";
+}
+
 function readJsonFile(file, fallback) {
   if (!fs.existsSync(file)) return fallback;
   try {
@@ -3273,6 +3293,10 @@ export function createUniversalCoreService(options = {}) {
     options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
   ).trim();
   let providerSetupLinkBootstrapConfigured = false;
+  let providerSetupLinkBootstrapState = getProviderSetupLinkBootstrapState({
+    key: providerSetupLinkBootstrapKey,
+    tenantId: providerSetupLinkTenantId,
+  });
   if (providerSetupLinkBootstrapKey || providerSetupLinkTenantId) {
     try {
       keyStore.ensureProviderSetupLinkKey({
@@ -3280,7 +3304,13 @@ export function createUniversalCoreService(options = {}) {
         tenant_id: providerSetupLinkTenantId,
       });
       providerSetupLinkBootstrapConfigured = true;
+      providerSetupLinkBootstrapState = "ready";
     } catch (error) {
+      providerSetupLinkBootstrapState = getProviderSetupLinkBootstrapState({
+        key: providerSetupLinkBootstrapKey,
+        tenantId: providerSetupLinkTenantId,
+        error,
+      });
       // The privileged setup path must fail closed without taking down the
       // rest of Universal Core. Do not log the seed or its hash.
       audit.append("core_provider_setup_link_key_bootstrap_unavailable", {
@@ -3706,6 +3736,7 @@ export function createUniversalCoreService(options = {}) {
       governed_agent_runner: { mode: "manual_dry_run", provider_execution: false, max_jobs_per_tick: 2 },
       tenant_provider_vault: { configured: Boolean(tenantProviderCredentials), execution_enabled: false },
       provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
+      provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
       uptime_seconds: Math.round(process.uptime()),
     });
   });

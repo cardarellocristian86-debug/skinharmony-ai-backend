@@ -214,6 +214,7 @@ export function createApp(config, options = {}) {
     mode: process.env.NODE_ENV || "development",
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
+    provider_setup_link_source_configured: config.providerSetupLinkSourceConfigured === true,
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
     cloud_memory: {
       configured: Boolean(config.databaseUrl),
