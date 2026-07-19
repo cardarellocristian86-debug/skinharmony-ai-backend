@@ -49,6 +49,8 @@ services:
         sync: false
       - key: UNIVERSAL_CORE_KEY
         sync: false
+      - key: CORE_PROVIDER_SETUP_LINK_KEY
+        generateValue: true
       - key: SUITE_CONTROL_PLANE_URL
         value: https://skinharmony-suite-control.onrender.com
       - key: SUITE_CONTROL_PLANE_KEYS_JSON
