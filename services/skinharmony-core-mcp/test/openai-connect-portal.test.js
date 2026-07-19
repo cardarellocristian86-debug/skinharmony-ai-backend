@@ -27,3 +27,18 @@ test("rejects CSRF state mismatch, expired state, and non-owner callback without
   let clock = 0; const portal = createOpenAiConnectPortal({ config, now: () => clock, fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }), authenticate: async () => ({ tenantId: "other", godMode: false }), providerStatus: async () => ({}), issueSetupLink: async () => ({}) });
   await serve(portal, async (base) => { const start = await fetch(`${base}/connect/openai`, { redirect: "manual" }); const cookie = start.headers.get("set-cookie").split(";")[0]; const bad = await fetch(`${base}/connect/openai/callback?code=x&state=bad`, { headers: { cookie } }); assert.equal(bad.status, 400); clock = 700_000; const expired = await fetch(`${base}/connect/openai/callback?code=x&state=bad`, { headers: { cookie } }); assert.equal(expired.status, 400); });
 });
+
+
+test("shows a safe actionable reason when Auth0 omits the tenant claim", async () => {
+  const portal = createOpenAiConnectPortal({ config, fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }), authenticate: async () => { throw new Error("jwt_tenant_missing"); }, providerStatus: async () => ({}), issueSetupLink: async () => ({}) });
+  await serve(portal, async (base) => {
+    const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
+    const authorization = new URL(start.headers.get("location"));
+    const cookie = start.headers.get("set-cookie").split(";")[0];
+    const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`, { headers: { cookie } });
+    assert.equal(callback.status, 403);
+    const html = await callback.text();
+    assert.match(html, /manca il tenant nel token Auth0/);
+    assert.doesNotMatch(html, /opaque-code|access_token/);
+  });
+});
