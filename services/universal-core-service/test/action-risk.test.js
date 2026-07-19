@@ -122,6 +122,21 @@ test("classifies connector refresh and key rotation as bound high-risk confirmat
   assert.equal(rotation.governance_verdict, "CONFIRM");
 });
 
+test("classifies the exact MCP default tenant correction as high-risk and request-bound", () => {
+  const result = classifyActionRisk({
+    action_type: "render_mcp_default_tenant_correction",
+    operation_class: "reversible_owner_confirmed_mcp_default_tenant_correction",
+  });
+  assert.equal(result.classification, "mcp_default_tenant_correction");
+  assert.equal(result.risk_band, "high");
+  assert.equal(result.risk_score, 80);
+  assert.equal(result.control_level, "confirm");
+  assert.equal(result.confirmation_required, true);
+  assert.equal(result.governance_verdict, "CONFIRM");
+  assert(result.reason_codes.includes("request_bound_owner_proof_required"));
+  assert(result.reason_codes.includes("exact_tenant_binding_correction"));
+});
+
 test("deterministic profile overrides generic Core safety fallback", () => {
   const generic = {
     state: "attention",
