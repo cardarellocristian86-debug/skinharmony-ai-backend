@@ -112,16 +112,32 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
         if (!csrf) return res.redirect(303, "/connect/openai");
         return portalHtml(res, 200, page(label, `<p>${configured ? "La chiave è già salvata in forma cifrata. Puoi sostituirla con una nuova." : "Inserirai la chiave solo nella pagina protetta, mai in chat."}</p><form method="post" action="/connect/openai/continue"><input type="hidden" name="csrf" value="${csrf}"><button type="submit">${actionLabel}</button></form>`));
       }
-      const verifier = crypto.randomBytes(48).toString("base64url"), state = crypto.randomBytes(32).toString("base64url");
-      setCookie(res, seal(config.auth0BrowserStateSecret, { verifier, state, expires_at: now() + MAX_AGE_MS }));
+      const verifier = crypto.randomBytes(48).toString("base64url");
+      // Do not depend on a browser cookie surviving the cross-site Auth0
+      // round-trip. Privacy browsers and in-app browsers may discard it before
+      // the callback, which made the portal fail before the user even saw the
+      // protected key form. The state is instead an authenticated, encrypted,
+      // short-lived PKCE envelope that Auth0 returns unchanged.
+      const state = seal(config.auth0BrowserStateSecret, {
+        kind: "openai_connect_pkce_v2",
+        verifier,
+        nonce: crypto.randomBytes(32).toString("base64url"),
+        expires_at: now() + MAX_AGE_MS,
+      });
+      // Retain a harmless short-lived attempt cookie for compatibility and
+      // normal browser cleanup. The callback deliberately does not rely on it.
+      setCookie(res, seal(config.auth0BrowserStateSecret, {
+        kind: "openai_connect_attempt_v2",
+        expires_at: now() + MAX_AGE_MS,
+      }));
       const authorize = new URL(`${config.auth0Issuer}/authorize`);
       authorize.search = new URLSearchParams({ response_type: "code", client_id: config.auth0BrowserClientId, redirect_uri: config.auth0BrowserCallbackUrl, scope: "openid profile", audience: config.auth0BrowserAudience, state, code_challenge: challenge(verifier), code_challenge_method: "S256" }).toString();
       return res.redirect(302, authorize.toString());
     },
     async callback(req, res) {
-      const session = load(req), state = String(req.query.state || ""), code = String(req.query.code || "");
-      const expected = Buffer.from(String(session?.state || "")), received = Buffer.from(state);
-      if (!session || session.expires_at <= now() || !code || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) return portalHtml(res, 400, page("Accesso non valido", "<p>Riprova dal link iniziale.</p>"));
+      const state = String(req.query.state || ""), code = String(req.query.code || "");
+      const session = open(config.auth0BrowserStateSecret, state);
+      if (!session || session.kind !== "openai_connect_pkce_v2" || session.expires_at <= now() || !session.verifier || !code) return portalHtml(res, 400, page("Accesso non valido", "<p>Riprova dal link iniziale.</p>"));
       try {
         const body = new URLSearchParams({ grant_type: "authorization_code", client_id: config.auth0BrowserClientId, code, redirect_uri: config.auth0BrowserCallbackUrl, code_verifier: session.verifier });
         if (config.auth0BrowserClientSecret) body.set("client_secret", config.auth0BrowserClientSecret);
