@@ -223,7 +223,6 @@ function requireProviderSetupOwner(identity) {
   // authorize this subject-allowlisted owner-only flow.
   if (
     identity?.kind !== "oauth" ||
-    !isVerifiedOwnerRoot(identity) ||
     identity?.providerSetupOwner !== true ||
     !String(identity?.subject || "").trim()
   ) {
@@ -327,7 +326,6 @@ export function createCoreHandlers(config, options = {}) {
     // Core owner assertion (or vice versa).
     if (providerSetup) {
       if (
-        !isVerifiedOwnerRoot(identity) ||
         identity.kind !== "oauth" ||
         identity.providerSetupOwner !== true ||
         !String(identity.subject || "").trim() ||
@@ -346,8 +344,8 @@ export function createCoreHandlers(config, options = {}) {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
       audience: "nira_core_bridge",
       tenant_id: identity.tenantId,
-      access_mode: "god_mode",
-      role: "owner_root",
+      access_mode: isVerifiedOwnerRoot(identity) ? "god_mode" : "tenant_owner",
+      role: isVerifiedOwnerRoot(identity) ? "owner_root" : "tenant_owner",
       delegated_actor: identity.kind || "unknown",
       owner_verified: true,
       issued_at: new Date().toISOString(),
