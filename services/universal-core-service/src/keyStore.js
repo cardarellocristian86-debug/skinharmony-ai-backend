@@ -32,6 +32,9 @@ function publicRecord(record) {
 const PROVIDER_SETUP_LINK_BOOTSTRAP_KIND = "provider_setup_link";
 const PROVIDER_SETUP_LINK_SERVICE_KIND = "provider_setup_link_service";
 const PROVIDER_SETUP_LINK_SERVICE_TENANT = "__provider_setup_service__";
+const MCP_TENANT_GATEWAY_KIND = "mcp_tenant_gateway";
+const MCP_TENANT_GATEWAY_TENANT = "__mcp_tenant_gateway__";
+const MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES]);
 const PROVIDER_SETUP_LINK_SCOPES = Object.freeze([SCOPES.WRITE_PROVIDER_SETUP_LINK]);
 
 function isDedicatedProviderSetupLinkRecord(record, tenantId, keyHash) {
@@ -60,6 +63,18 @@ export function isProviderSetupLinkServiceRecord(record) {
     record.allowed_scopes.length === PROVIDER_SETUP_LINK_SCOPES.length &&
     record.allowed_scopes.every((scope, index) => scope === PROVIDER_SETUP_LINK_SCOPES[index]) &&
     record.metadata?.bootstrap_kind === PROVIDER_SETUP_LINK_SERVICE_KIND,
+  );
+}
+
+export function isMcpTenantGatewayRecord(record) {
+  return Boolean(
+    record && record.tenant_id === MCP_TENANT_GATEWAY_TENANT &&
+    record.key_type === "connector" && record.status === "active" &&
+    record.expires_at === null && record.preset === null && record.brand_scope === "" &&
+    Array.isArray(record.allowed_scopes) &&
+    record.allowed_scopes.length === MCP_TENANT_GATEWAY_SCOPES.length &&
+    MCP_TENANT_GATEWAY_SCOPES.every((scope) => record.allowed_scopes.includes(scope)) &&
+    record.metadata?.bootstrap_kind === MCP_TENANT_GATEWAY_KIND,
   );
 }
 
@@ -248,6 +263,41 @@ export function createKeyStore(storageRoot, audit) {
     return { created: true, record: publicRecord(record) };
   }
 
+  function ensureMcpTenantGatewayKey(input = {}) {
+    const secret = String(input.secret || "").trim();
+    if (!secret) throw new Error("mcp_tenant_gateway_key_required");
+    const keyHash = sha256(secret);
+    const records = listAll();
+    const existing = records.find((record) => record.key_hash === keyHash);
+    if (existing) {
+      if (!isMcpTenantGatewayRecord(existing)) throw new Error("mcp_tenant_gateway_key_conflict");
+      return { created: false, record: publicRecord(existing) };
+    }
+    if (records.some((record) => record.metadata?.bootstrap_kind === MCP_TENANT_GATEWAY_KIND)) {
+      throw new Error("mcp_tenant_gateway_key_rotation_required");
+    }
+    const record = {
+      key_id: `key_${crypto.randomUUID()}`,
+      key_type: "connector",
+      key_hash: keyHash,
+      tenant_id: MCP_TENANT_GATEWAY_TENANT,
+      brand_scope: "",
+      label: "MCP verified tenant gateway",
+      preset: null,
+      allowed_scopes: [...MCP_TENANT_GATEWAY_SCOPES],
+      status: "active",
+      created_at: new Date().toISOString(),
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: null,
+      metadata: { bootstrap_kind: MCP_TENANT_GATEWAY_KIND, suite_modules: [], suite_limits: normalizeSuiteLimits({}), allowed_domains: [], suite_policy: { soft_gate: true, hard_block: false } },
+    };
+    records.push(record);
+    saveAll(records);
+    audit?.append("core_mcp_tenant_gateway_key_seeded", { key_id: record.key_id, key_type: record.key_type, scopes: record.allowed_scopes });
+    return { created: true, record: publicRecord(record) };
+  }
+
   function authenticate(secret) {
     if (!secret) return { ok: false, error: "missing_key" };
     const records = listAll();
@@ -285,6 +335,7 @@ export function createKeyStore(storageRoot, audit) {
     createKey,
     ensureProviderSetupLinkKey,
     ensureProviderSetupLinkServiceKey,
+    ensureMcpTenantGatewayKey,
     authenticate,
     revokeKey,
     listKeys,

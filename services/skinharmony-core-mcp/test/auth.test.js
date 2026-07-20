@@ -165,6 +165,46 @@ test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });
 });
 
+test("gives an ordinary ChatGPT login a stable personal tenant when self-service is enabled", async () => {
+  const fixture = auth0Fixture({
+    sub: "google-oauth2|ordinary-user",
+    scope: "core:read",
+    "https://skinharmony.it/tenant_id": "shared-tenant-that-must-not-be-used",
+  });
+  const config = {
+    ...fixture.config,
+    selfServiceTenantsEnabled: true,
+    tenantOwnerRoleClaim: "https://skinharmony.it/role",
+    tenantOwnerRoles: ["tenant_owner", "tenant_admin"],
+    codexKeys: [],
+    godModeEnabled: false,
+  };
+  const first = await createAuthenticator(config, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  const second = await createAuthenticator(config, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.match(first.tenantId, /^chatgpt_[a-f0-9]{32}$/);
+  assert.equal(first.tenantId, second.tenantId);
+  assert.equal(first.tenantId === "shared-tenant-that-must-not-be-used", false);
+  assert.equal(first.selfServiceTenant, true);
+  assert.equal(first.providerSetupOwner, true);
+});
+
+test("keeps a configured tenant administrator on their shared tenant", async () => {
+  const fixture = auth0Fixture({
+    scope: "core:read",
+    "https://skinharmony.it/role": "tenant_admin",
+  });
+  const identity = await createAuthenticator({
+    ...fixture.config,
+    selfServiceTenantsEnabled: true,
+    tenantOwnerRoleClaim: "https://skinharmony.it/role",
+    tenantOwnerRoles: ["tenant_admin"],
+    codexKeys: [], godModeEnabled: false,
+  }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.equal(identity.tenantId, "tenant-a");
+  assert.equal(identity.selfServiceTenant, undefined);
+  assert.equal(identity.providerSetupOwner, true);
+});
+
 test("accepts the browser audience only when the browser authenticator explicitly selects it", async () => {
   const fixture = auth0Fixture({ aud: "https://browser-api", scope: "openid" });
   const browserConfig = { ...fixture.config, auth0Audience: "https://mcp-api", codexKeys: [], godModeEnabled: false };

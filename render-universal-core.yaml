@@ -25,6 +25,11 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: CORE_PROVIDER_SETUP_LINK_SERVICE_KEY
+      - key: CORE_MCP_TENANT_GATEWAY_KEY
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: CORE_MCP_TENANT_GATEWAY_KEY
       - key: CORE_PROVIDER_SETUP_LINK_TENANT_ID
         value: codexai
       # Reference the MCP-generated signing secret internally. It signs the

@@ -51,6 +51,10 @@ services:
         generateValue: true
       - key: CORE_PROVIDER_SETUP_LINK_SERVICE_KEY
         generateValue: true
+      - key: CORE_MCP_TENANT_GATEWAY_KEY
+        generateValue: true
+      - key: MCP_SELF_SERVICE_TENANTS_ENABLED
+        value: "true"
       - key: MCP_TENANT_OWNER_ROLE_CLAIM
         value: https://skinharmony.it/role
       - key: MCP_TENANT_OWNER_ROLES

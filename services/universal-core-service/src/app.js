@@ -10,7 +10,7 @@ import { runTextBranch } from "../../../universal-core/packages/branches/ramo-te
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
 import { createAudit, ensureDir } from "./audit.js";
-import { createKeyStore, isProviderSetupLinkServiceRecord } from "./keyStore.js";
+import { createKeyStore, isMcpTenantGatewayRecord, isProviderSetupLinkServiceRecord } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
@@ -162,6 +162,18 @@ function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding,
     .update(`owner-context\u0000${ownerContextCanonical(context)}`)
     .digest("hex")}`;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+}
+
+function verifyMcpTenantContextAssertion(value, secret, tenantId, now = Date.now()) {
+  if (!secret) return false;
+  let context;
+  try { context = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8")); } catch { return false; }
+  if (!context || context.version !== "mcp_tenant_context_v1" || context.tenant_id !== tenantId) return false;
+  const issuedAt = Date.parse(String(context.issued_at || ""));
+  if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
+  const canonical = JSON.stringify({ version: context.version, tenant_id: context.tenant_id, issued_at: context.issued_at });
+  const expected = `mtc_${crypto.createHmac("sha256", secret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
+  return typeof context.assertion === "string" && context.assertion.length === expected.length && crypto.timingSafeEqual(Buffer.from(context.assertion), Buffer.from(expected));
 }
 
 function hasProviderSetupOwnerContext(context) {
@@ -529,7 +541,7 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService = false } = {}) {
+function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService = false, tenantContextSigningSecret = "" } = {}) {
   return (req, res, next) => {
     const auth = keyStore.authenticate(readSecret(req));
     if (!auth.ok) {
@@ -539,7 +551,13 @@ function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService 
 
     const tenantId = safeTenantId(req, auth.record);
     const serviceIssuer = allowProviderSetupService === true && isProviderSetupLinkServiceRecord(auth.record);
-    if (!tenantId || (!serviceIssuer && !requireTenantAccess(auth.record, tenantId))) {
+    const tenantGateway = isMcpTenantGatewayRecord(auth.record);
+    const validGatewayContext = tenantGateway && verifyMcpTenantContextAssertion(
+      req.get("x-sh-tenant-context"),
+      tenantContextSigningSecret || process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET || "",
+      tenantId,
+    );
+    if (!tenantId || (!serviceIssuer && !validGatewayContext && !requireTenantAccess(auth.record, tenantId))) {
       audit.append("core_tenant_scope_denied", { key_id: auth.record.key_id, requested_tenant: tenantId, path: req.path });
       return publicError(res, 403, "tenant_scope_denied");
     }
@@ -3397,6 +3415,7 @@ export function createUniversalCoreService(options = {}) {
   const providerSetupLinkServiceKey = String(
     options.providerSetupLinkServiceKey ?? process.env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY ?? "",
   ).trim();
+  const mcpTenantGatewayKey = String(options.mcpTenantGatewayKey ?? process.env.CORE_MCP_TENANT_GATEWAY_KEY ?? "").trim();
   const providerSetupLinkTenantId = String(
     options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
   ).trim();
@@ -3447,6 +3466,10 @@ export function createUniversalCoreService(options = {}) {
         reason: providerSetupLinkBootstrapErrorCode(error),
       });
     }
+  }
+  if (mcpTenantGatewayKey) {
+    try { keyStore.ensureMcpTenantGatewayKey({ secret: mcpTenantGatewayKey }); }
+    catch (error) { audit.append("core_mcp_tenant_gateway_key_bootstrap_unavailable", { reason: providerSetupLinkBootstrapErrorCode(error) }); }
   }
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
