@@ -22,10 +22,13 @@ services:
           envVarKey: CORE_PROVIDER_SETUP_LINK_KEY
       - key: CORE_PROVIDER_SETUP_LINK_TENANT_ID
         value: codexai
-      # Must match the MCP service value. It signs the short-lived,
-      # owner-confirmed binding envelope; it is not an OpenAI API key.
+      # Reference the MCP-generated signing secret internally. It signs the
+      # short-lived, owner-confirmed binding envelope; it is not an OpenAI key.
       - key: CORE_OWNER_CONTEXT_SIGNING_SECRET
-        sync: false
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: CORE_OWNER_CONTEXT_SIGNING_SECRET
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
       - key: NYRA_DEEP_RUNTIME_ENABLED
