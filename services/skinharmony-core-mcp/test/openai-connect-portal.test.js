@@ -116,6 +116,23 @@ test("uses Authorization Code PKCE, authenticates the owner, and scopes a one-ti
   });
 });
 
+test("completes the Auth0 callback when a privacy browser discards the initial cookie", async () => {
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    providerStatus: async () => ({ provider: { configured: false } }),
+    issueSetupLink: async () => issuedSetupLink(),
+  });
+  await serve(portal, async (base) => {
+    const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
+    const state = new URL(start.headers.get("location")).searchParams.get("state");
+    const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${encodeURIComponent(state)}`, { redirect: "manual" });
+    assert.equal(callback.status, 303);
+    assert.match(callback.headers.get("set-cookie") || "", /HttpOnly; Secure; SameSite=Lax/);
+  });
+});
+
 test("rejects CSRF state mismatch, expired state, and non-owner callback without exposing secrets", async () => {
   let clock = 0;
   const portal = createOpenAiConnectPortal({
