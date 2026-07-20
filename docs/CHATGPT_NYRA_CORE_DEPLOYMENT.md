@@ -60,6 +60,28 @@ Use this order so every intermediate state fails closed:
    restoring the old MCP secret reference and forward-reverting the release;
    revoke the replacement key only after rollback or final acceptance.
 
+## Codex bearer tenant binding
+
+`MCP_DEFAULT_TENANT_ID` applies only to the allowlisted Codex bearer path; Auth0
+OAuth identities continue to use the verified tenant claim. The deployment
+blueprint and the live Render value must point Codex to the same tenant as its
+server-side Core key. For the owner deployment this is `codexai`.
+
+Changing this production binding requires the dedicated
+`reversible_owner_confirmed_mcp_default_tenant_correction` Core gate. The gate
+is available from Universal Core `0.10.4-tenant-binding-gate`. It
+accepts only the exact `owner-private` → `codexai` repair for
+`MCP_DEFAULT_TENANT_ID`, requires a request-bound owner proof, readback, restart,
+audit and rollback, and rejects changes to keys, secrets, OAuth, scopes,
+permissions, endpoints, other environment variables or stored tenant data.
+
+After live readback succeeds, the same operation class exposes a separate
+`github_mcp_default_tenant_blueprint_alignment` action for source-of-truth
+alignment. It allows only `render-core-mcp.yaml` plus the CI workflow guard and
+requires a new request-bound proof for each phase: branch publication, draft
+PR, ready-for-review, and merge. The merge phase explicitly records the
+expected Core/MCP auto-deploy and coordinated forward-revert rollback.
+
 ## Smoke checks
 
 ```bash

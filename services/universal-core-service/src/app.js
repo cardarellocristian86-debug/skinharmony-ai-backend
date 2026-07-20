@@ -96,7 +96,7 @@ import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkSto
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.3-governed-outcomes";
+const SERVICE_VERSION = "0.10.4-tenant-binding-gate";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -4897,7 +4897,11 @@ export function createUniversalCoreService(options = {}) {
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
-    const trustedOwnerContext = hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
+    // An owner assertion is a connector capability. An automation key may keep
+    // its legacy explicit-confirmation path, but it must never become an owner
+    // connector merely by being issued the same named scope.
+    const trustedOwnerContext = req.coreKey?.key_type === "connector" &&
+      hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
       req.body?.owner_context,
       readSecret(req),
       req.tenantId,
@@ -4929,10 +4933,21 @@ export function createUniversalCoreService(options = {}) {
       req.body?.owner_confirmed === true;
     const explicitAutomationConfirmation = req.body?.owner_confirmed === true &&
       req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
+    const tenantBindingAttempt = req.body?.operation_class ===
+      "reversible_owner_confirmed_mcp_default_tenant_correction";
+    const requestBoundOwnerConfirmation = trustedOwnerContext && req.body?.owner_confirmed === true;
     const governedReq = Object.create(req);
     governedReq.body = {
       ...(req.body || {}),
       owner_confirmed: trustedOwnerContext || providerSetupLinkOwnerConfirmed || explicitAutomationConfirmation,
+      // Server-derived and deliberately written after the caller payload. The
+      // production tenant correction below must never accept a caller boolean
+      // or the broader automation compatibility path in place of an exact,
+      // request-bound owner proof.
+      ...(tenantBindingAttempt ? {
+        request_bound_owner_confirmation: requestBoundOwnerConfirmation,
+        authenticated_key_type: req.coreKey?.key_type || null,
+      } : {}),
     };
     const workPreflight = composeMandatoryWorkPreflight(governedReq, {
       domainPack: domainPackAccess.pack,
@@ -4965,6 +4980,10 @@ export function createUniversalCoreService(options = {}) {
       owner_context_approval_bound: providerSetupLinkApprovalBound,
     };
     const authorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
+    const tenantBindingAuthorization = authorization.allowed === true && [
+      "reversible_owner_confirmed_mcp_default_tenant_correction",
+      "reversible_owner_confirmed_mcp_default_tenant_blueprint_alignment",
+    ].includes(authorization.scope);
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -4982,6 +5001,19 @@ export function createUniversalCoreService(options = {}) {
       owner_identity_verified: trustedOwnerContext || providerSetupLinkOwnerVerified,
       provider_setup_link_binding_authorized: authorization.allowed === true && providerSetupLinkAttempt,
       ...providerSetupLinkBindingAuditFields(evaluatedActionBody),
+      request_bound_owner_confirmation: requestBoundOwnerConfirmation,
+      authenticated_key_type: req.coreKey?.key_type || null,
+      authorization_scope: authorization.scope,
+      authorization_target_commit: authorization.target_commit,
+      authorization_workflow_phase: authorization.workflow_phase,
+      // Never persist caller-controlled target strings from a denied attempt.
+      // Successful tenant-binding gates can be represented by these canonical,
+      // non-secret constants because their predicates require exact matches.
+      authorization_target_service: tenantBindingAuthorization ? "skinharmony-core-mcp" : null,
+      authorization_target_service_id: tenantBindingAuthorization ? "srv-d99ef1mcjfls73857m40" : null,
+      authorization_target_environment_variable: tenantBindingAuthorization ? "MCP_DEFAULT_TENANT_ID" : null,
+      authorization_current_tenant_id: tenantBindingAuthorization ? "owner-private" : null,
+      authorization_target_tenant_id: tenantBindingAuthorization ? "codexai" : null,
     });
     res.json({
       ok: true,

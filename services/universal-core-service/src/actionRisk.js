@@ -164,6 +164,24 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
+  if (operationClass === "reversible_owner_confirmed_mcp_default_tenant_correction") {
+    return profile({
+      classification: "mcp_default_tenant_correction",
+      operationClass,
+      state: "attention",
+      riskBand: "high",
+      riskScore: 80,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: [
+        "owner_confirmation_required",
+        "request_bound_owner_proof_required",
+        "exact_tenant_binding_correction",
+        "production_configuration_change",
+      ],
+    });
+  }
+
   if (operationClass === "verified_outcome_record") {
     return profile({
       classification: "verified_outcome_record",

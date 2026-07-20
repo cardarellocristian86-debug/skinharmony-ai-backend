@@ -539,6 +539,376 @@ test("authorizes a least-privilege Core connector key rotation without secret ma
   ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...connectorKeyRotation, owner_confirmed: true, ...unsafe }).allowed, false);
 });
 
+const mcpDefaultTenantCorrection = {
+  action_type: "render_mcp_default_tenant_correction",
+  operation_class: "reversible_owner_confirmed_mcp_default_tenant_correction",
+  request_bound_owner_confirmation: true,
+  authenticated_key_type: "connector",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  secret_changes: false,
+  key_changes: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: true,
+  tenant_binding_changes: true,
+  endpoint_changes: false,
+  oauth_changes: false,
+  scope_changes: false,
+  permission_changes: false,
+  other_environment_changes: false,
+  other_configuration_changes: false,
+  render_environment_update: true,
+  source_of_truth_update_only: false,
+  data_migration: false,
+  memory_migration: false,
+  rollback_ready: true,
+  audit_ready: true,
+  readback_required: true,
+  target_commit: "4".repeat(40),
+  deployed_commit: "4".repeat(40),
+  environment: "production",
+  target_service: "skinharmony-core-mcp",
+  target_service_id: "srv-d99ef1mcjfls73857m40",
+  resource_type: "render_environment_variable",
+  target_environment_variable: "MCP_DEFAULT_TENANT_ID",
+  allowed_environment_variables: ["MCP_DEFAULT_TENANT_ID"],
+  current_tenant_id: "owner-private",
+  target_tenant_id: "codexai",
+  authenticated_tenant_id: "codexai",
+  current_value_verified: true,
+  rollback_tenant_id: "owner-private",
+  service_restart_required: true,
+  deploy: true,
+  create_new: false,
+  delete: false,
+  merge: false,
+  provider_execution: false,
+  confirmation_target_commit: "4".repeat(40),
+  confirmation_target_service: "skinharmony-core-mcp",
+  confirmation_target_service_id: "srv-d99ef1mcjfls73857m40",
+  confirmation_environment_variable: "MCP_DEFAULT_TENANT_ID",
+  confirmation_current_tenant_id: "owner-private",
+  confirmation_target_tenant_id: "codexai",
+  confirmation_reference: "owner-confirmed-mcp-default-tenant-correction",
+};
+
+test("authorizes only the exact request-bound MCP default tenant correction", () => {
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...mcpDefaultTenantCorrection,
+    owner_confirmed: true,
+  });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_mcp_default_tenant_correction");
+  assert.equal(allowed.target_commit, "4".repeat(40));
+  for (const unsafe of [
+    { request_bound_owner_confirmation: false }, { authenticated_key_type: "automation" },
+    { target_commit: "main" }, { deployed_commit: "5".repeat(40) },
+    { target_service: "another-service" }, { target_service_id: "srv-other" },
+    { target_environment_variable: "MCP_CHATGPT_TENANT_ID" },
+    { allowed_environment_variables: ["MCP_DEFAULT_TENANT_ID", "MCP_CHATGPT_TENANT_ID"] },
+    { current_tenant_id: "codexai" }, { target_tenant_id: "owner-private" },
+    { authenticated_tenant_id: "owner-private" }, { current_value_verified: false },
+    { endpoint_changes: true }, { oauth_changes: true }, { scope_changes: true }, { permission_changes: true },
+    { secret_changes: true }, { key_changes: true }, { other_environment_changes: true },
+    { other_configuration_changes: true }, { render_environment_update: false }, { source_of_truth_update_only: true },
+    { data_migration: true }, { memory_migration: true }, { rollback_ready: false }, { audit_ready: false },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...mcpDefaultTenantCorrection,
+    owner_confirmed: true,
+    ...unsafe,
+  }).allowed, false);
+});
+
+const mcpDefaultTenantBlueprintBase = {
+  action_type: "github_mcp_default_tenant_blueprint_alignment",
+  operation_class: "reversible_owner_confirmed_mcp_default_tenant_correction",
+  request_bound_owner_confirmation: true,
+  authenticated_key_type: "connector",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  secret_changes: false,
+  key_changes: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  configuration_changes: true,
+  tenant_binding_changes: true,
+  endpoint_changes: false,
+  oauth_changes: false,
+  scope_changes: false,
+  permission_changes: false,
+  other_environment_changes: false,
+  other_configuration_changes: false,
+  data_migration: false,
+  memory_migration: false,
+  provider_execution: false,
+  render_environment_update: false,
+  source_of_truth_update_only: true,
+  rollback_ready: true,
+  audit_ready: true,
+  readback_required: true,
+  target_commit: "8".repeat(40),
+  base_commit: "7".repeat(40),
+  target_parent_commit: "7".repeat(40),
+  base_commit_verified: true,
+  changed_files_verified: true,
+  diff_verified: true,
+  changed_file_count: 2,
+  blueprint_change_count: 1,
+  blueprint_diff_additions: 1,
+  blueprint_diff_deletions: 1,
+  ci_guardrail_change: true,
+  ci_guardrail_verified: true,
+  environment: "production",
+  target_service: "skinharmony-core-mcp",
+  target_service_id: "srv-d99ef1mcjfls73857m40",
+  resource_type: "render_blueprint_source_of_truth",
+  repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+  base_branch: "main",
+  target_branch: "agent/align-mcp-default-tenant-blueprint",
+  target_file: "render-core-mcp.yaml",
+  ci_workflow_file: ".github/workflows/nyra-core-intelligence.yml",
+  allowed_files: ["render-core-mcp.yaml", ".github/workflows/nyra-core-intelligence.yml"],
+  target_environment_variable: "MCP_DEFAULT_TENANT_ID",
+  blueprint_current_tenant_id: "owner-private",
+  target_tenant_id: "codexai",
+  authenticated_tenant_id: "codexai",
+  live_tenant_id: "codexai",
+  blueprint_current_value_verified: true,
+  live_value_verified: true,
+  live_canary_verified: true,
+  blueprint_apply_idempotent: true,
+  rollback_tenant_id: "owner-private",
+  create_new: false,
+  delete: false,
+  force: false,
+  admin_bypass: false,
+  confirmation_target_commit: "8".repeat(40),
+  confirmation_base_commit: "7".repeat(40),
+  confirmation_target_service: "skinharmony-core-mcp",
+  confirmation_target_service_id: "srv-d99ef1mcjfls73857m40",
+  confirmation_repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+  confirmation_base_branch: "main",
+  confirmation_target_branch: "agent/align-mcp-default-tenant-blueprint",
+  confirmation_target_file: "render-core-mcp.yaml",
+  confirmation_environment_variable: "MCP_DEFAULT_TENANT_ID",
+  confirmation_current_tenant_id: "owner-private",
+  confirmation_target_tenant_id: "codexai",
+  confirmation_allowed_files: ["render-core-mcp.yaml", ".github/workflows/nyra-core-intelligence.yml"],
+  confirmation_reference: "owner-confirmed-mcp-default-tenant-blueprint-alignment",
+};
+
+function mcpDefaultTenantBlueprintPhase(workflowPhase) {
+  const base = {
+    ...mcpDefaultTenantBlueprintBase,
+    workflow_phase: workflowPhase,
+    confirmation_workflow_phase: workflowPhase,
+    branch_publish: false,
+    create_new_branch: false,
+    create_pull_request: false,
+    draft: false,
+    ready_for_review: false,
+    merge: false,
+    deploy: false,
+    automatic_deploy_expected: false,
+    service_restart_required: false,
+    post_merge_commit_readback_required: false,
+    automatic_deploy_services: [],
+    automatic_deploy_service_ids: [],
+  };
+  if (workflowPhase === "branch_publish") {
+    return {
+      ...base,
+      branch_publish: true,
+      create_new_branch: true,
+      remote_branch_absent_verified: true,
+      rollback_strategy: "delete_unmerged_branch",
+    };
+  }
+  if (workflowPhase === "draft_pull_request") {
+    return {
+      ...base,
+      remote_branch_commit_verified: true,
+      create_pull_request: true,
+      draft: true,
+      rollback_strategy: "close_draft_pull_request",
+    };
+  }
+  if (workflowPhase === "ready_for_review") {
+    return {
+      ...base,
+      pull_request: 103,
+      confirmation_pull_request: 103,
+      checks_verified: true,
+      required_checks_verified: true,
+      checks_commit: "8".repeat(40),
+      pull_request_head_verified: true,
+      draft: true,
+      ready_for_review: true,
+      rollback_strategy: "return_pull_request_to_draft",
+    };
+  }
+  if (workflowPhase === "merge") {
+    return {
+      ...base,
+      pull_request: 103,
+      confirmation_pull_request: 103,
+      checks_verified: true,
+      required_checks_verified: true,
+      checks_commit: "8".repeat(40),
+      pull_request_head_verified: true,
+      review_verified: true,
+      reviewed_diff_verified: true,
+      current_pull_request_draft: false,
+      merge: true,
+      deploy: true,
+      automatic_deploy_expected: true,
+      service_restart_required: true,
+      post_merge_commit_readback_required: true,
+      merge_result_commit_pending: true,
+      automatic_deploy_services: ["skinharmony-universal-core", "skinharmony-core-mcp"],
+      automatic_deploy_service_ids: ["srv-d82c9j3tqb8s73cgriag", "srv-d99ef1mcjfls73857m40"],
+      merge_method: "squash",
+      confirmation_merge_method: "squash",
+      rollback_strategy: "forward_revert_with_coordinated_runtime_rollback",
+    };
+  }
+  return base;
+}
+
+for (const workflowPhase of ["branch_publish", "draft_pull_request", "ready_for_review", "merge"]) {
+  test(`authorizes only the exact MCP tenant blueprint ${workflowPhase} phase`, () => {
+    const input = mcpDefaultTenantBlueprintPhase(workflowPhase);
+    const pending = buildActionAuthorization(contract({ risk_band: "high" }), input);
+    assert.equal(pending.allowed, false);
+    assert.equal(pending.confirmation_required, true);
+    const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...input, owner_confirmed: true });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.scope, "reversible_owner_confirmed_mcp_default_tenant_blueprint_alignment");
+    assert.equal(allowed.target_commit, "8".repeat(40));
+    assert.equal(allowed.workflow_phase, workflowPhase);
+  });
+}
+
+test("MCP tenant blueprint alignment fails closed on any common-scope drift", () => {
+  const merge = mcpDefaultTenantBlueprintPhase("merge");
+  for (const unsafe of [
+    { action_type: "repository_file_update" }, { workflow_phase: "unknown" },
+    { confirmation_workflow_phase: "ready_for_review" }, { request_bound_owner_confirmation: false },
+    { authenticated_key_type: "automation" }, { contains_secret: true }, { secret_value_transmitted: true },
+    { secret_changes: true }, { key_changes: true }, { cross_tenant: true }, { destructive: true },
+    { bypass_orchestrator: true }, { configuration_changes: false }, { tenant_binding_changes: false },
+    { endpoint_changes: true }, { oauth_changes: true }, { scope_changes: true }, { permission_changes: true },
+    { other_environment_changes: true }, { other_configuration_changes: true }, { data_migration: true },
+    { memory_migration: true }, { provider_execution: true }, { render_environment_update: true },
+    { source_of_truth_update_only: false }, { rollback_ready: false }, { audit_ready: false }, { readback_required: false },
+    { target_commit: "main" }, { target_commit: "7".repeat(40) }, { base_commit: "main" },
+    { target_parent_commit: "6".repeat(40) }, { base_commit_verified: false },
+    { changed_files_verified: false }, { diff_verified: false }, { changed_file_count: "2" },
+    { changed_file_count: 1 }, { blueprint_change_count: 2 }, { blueprint_diff_additions: 2 },
+    { blueprint_diff_deletions: 0 }, { ci_guardrail_change: false }, { ci_guardrail_verified: false },
+    { environment: "staging" }, { target_service: "another-service" }, { target_service_id: "srv-other" },
+    { resource_type: "repository_file" }, { repository: "other/repository" }, { base_branch: "release" },
+    { target_branch: "agent/other" }, { target_file: "render.yaml" }, { ci_workflow_file: ".github/workflows/other.yml" },
+    { allowed_files: ["render-core-mcp.yaml"] },
+    { allowed_files: [".github/workflows/nyra-core-intelligence.yml", "render-core-mcp.yaml"] },
+    { target_environment_variable: "MCP_CHATGPT_TENANT_ID" }, { blueprint_current_tenant_id: "codexai" },
+    { target_tenant_id: "owner-private" }, { authenticated_tenant_id: "owner-private" },
+    { live_tenant_id: "owner-private" }, { blueprint_current_value_verified: false },
+    { live_value_verified: false }, { live_canary_verified: false }, { blueprint_apply_idempotent: false },
+    { rollback_tenant_id: "codexai" }, { create_new: true }, { delete: true }, { force: true }, { admin_bypass: true },
+    { confirmation_target_commit: "9".repeat(40) }, { confirmation_base_commit: "6".repeat(40) },
+    { confirmation_target_service: "other" }, { confirmation_target_service_id: "srv-other" },
+    { confirmation_repository: "other/repository" }, { confirmation_base_branch: "release" },
+    { confirmation_target_branch: "agent/other" }, { confirmation_target_file: "render.yaml" },
+    { confirmation_environment_variable: "MCP_CHATGPT_TENANT_ID" },
+    { confirmation_current_tenant_id: "codexai" }, { confirmation_target_tenant_id: "owner-private" },
+    { confirmation_allowed_files: ["render-core-mcp.yaml"] }, { confirmation_reference: "token=unsafe" },
+  ]) {
+    const denied = buildActionAuthorization(contract({ risk_band: "high" }), {
+      ...merge,
+      owner_confirmed: true,
+      ...unsafe,
+    });
+    assert.equal(denied.allowed, false, JSON.stringify(unsafe));
+  }
+
+  const unknownAction = buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...merge,
+    owner_confirmed: true,
+    action_type: "unknown_mcp_default_tenant_action",
+  });
+  assert.equal(unknownAction.allowed, false);
+  assert.equal(unknownAction.confirmation_required, true);
+  assert.equal(unknownAction.confirmation_satisfied, false);
+});
+
+test("MCP tenant blueprint branch publication cannot inherit another phase", () => {
+  const branch = mcpDefaultTenantBlueprintPhase("branch_publish");
+  for (const unsafe of [
+    { branch_publish: false }, { create_new_branch: false }, { remote_branch_absent_verified: false },
+    { create_pull_request: true }, { draft: true }, { ready_for_review: true }, { merge: true }, { deploy: true },
+    { automatic_deploy_expected: true }, { service_restart_required: true },
+    { post_merge_commit_readback_required: true }, { automatic_deploy_services: ["skinharmony-core-mcp"] },
+    { automatic_deploy_service_ids: ["srv-d99ef1mcjfls73857m40"] }, { rollback_strategy: "close_draft_pull_request" },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...branch, owner_confirmed: true, ...unsafe,
+  }).allowed, false, JSON.stringify(unsafe));
+});
+
+test("MCP tenant blueprint draft PR cannot publish, review, merge or deploy", () => {
+  const draft = mcpDefaultTenantBlueprintPhase("draft_pull_request");
+  for (const unsafe of [
+    { branch_publish: true }, { create_new_branch: true }, { remote_branch_commit_verified: false },
+    { create_pull_request: false }, { draft: false }, { ready_for_review: true }, { merge: true }, { deploy: true },
+    { automatic_deploy_expected: true }, { service_restart_required: true },
+    { post_merge_commit_readback_required: true }, { automatic_deploy_services: ["skinharmony-core-mcp"] },
+    { automatic_deploy_service_ids: ["srv-d99ef1mcjfls73857m40"] }, { rollback_strategy: "delete_unmerged_branch" },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...draft, owner_confirmed: true, ...unsafe,
+  }).allowed, false, JSON.stringify(unsafe));
+});
+
+test("MCP tenant blueprint review transition requires the exact checked PR head", () => {
+  const ready = mcpDefaultTenantBlueprintPhase("ready_for_review");
+  for (const unsafe of [
+    { pull_request: 0 }, { confirmation_pull_request: 104 }, { checks_verified: false },
+    { required_checks_verified: false }, { checks_commit: "9".repeat(40) }, { pull_request_head_verified: false },
+    { branch_publish: true }, { create_new_branch: true }, { create_pull_request: true },
+    { draft: false }, { ready_for_review: false }, { merge: true }, { deploy: true },
+    { automatic_deploy_expected: true }, { service_restart_required: true },
+    { post_merge_commit_readback_required: true }, { automatic_deploy_services: ["skinharmony-core-mcp"] },
+    { automatic_deploy_service_ids: ["srv-d99ef1mcjfls73857m40"] }, { rollback_strategy: "close_draft_pull_request" },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...ready, owner_confirmed: true, ...unsafe,
+  }).allowed, false, JSON.stringify(unsafe));
+});
+
+test("MCP tenant blueprint merge exposes auto-deploy and coordinated rollback", () => {
+  const merge = mcpDefaultTenantBlueprintPhase("merge");
+  for (const unsafe of [
+    { pull_request: 0 }, { confirmation_pull_request: 104 }, { checks_verified: false },
+    { required_checks_verified: false }, { checks_commit: "9".repeat(40) }, { pull_request_head_verified: false },
+    { review_verified: false }, { reviewed_diff_verified: false }, { current_pull_request_draft: true },
+    { branch_publish: true }, { create_new_branch: true }, { create_pull_request: true },
+    { draft: true }, { ready_for_review: true }, { merge: false }, { deploy: false },
+    { automatic_deploy_expected: false }, { service_restart_required: false },
+    { post_merge_commit_readback_required: false }, { merge_result_commit_pending: false },
+    { automatic_deploy_services: ["skinharmony-core-mcp", "skinharmony-universal-core"] },
+    { automatic_deploy_service_ids: ["srv-d99ef1mcjfls73857m40", "srv-d82c9j3tqb8s73cgriag"] },
+    { merge_method: "auto" }, { confirmation_merge_method: "merge" },
+    { rollback_strategy: "forward_revert" },
+  ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...merge, owner_confirmed: true, ...unsafe,
+  }).allowed, false, JSON.stringify(unsafe));
+});
+
 const verifiedOutcomeRecord = {
   action_type: "outcome_record",
   operation_class: "verified_outcome_record",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -55,7 +56,8 @@ function signedOwnerContext(key, tenantId, body, purpose = "intelligence_outcome
 async function fixture(run) {
   const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
   process.env.CORE_SERVICE_ADMIN_KEY = "intel-test-admin";
-  const { app } = createUniversalCoreService({ storageRoot: path.join(os.tmpdir(), `core-intel-${Date.now()}-${Math.random()}`) });
+  const storageRoot = path.join(os.tmpdir(), `core-intel-${Date.now()}-${Math.random()}`);
+  const { app } = createUniversalCoreService({ storageRoot });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -63,7 +65,7 @@ async function fixture(run) {
     const response = await fetch(`${base}${pathname}`, { method, headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, json: await response.json() };
   };
-  try { await run(request); } finally {
+  try { await run(request, { storageRoot }); } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY; else process.env.CORE_SERVICE_ADMIN_KEY = previousAdmin;
   }
@@ -288,6 +290,125 @@ test("action evaluator rejects a caller boolean and accepts only a scoped reques
   const replay = await request("POST", "/v1/action-evaluator", {
     ...changed,
     owner_context: signedOwnerContext(ownerScoped.json.key, "codexai", signedBody, "core_action_evaluator"),
+  }, ownerScoped.json.key);
+  assert.equal(replay.json.authorization.allowed, false);
+}));
+
+test("MCP default tenant correction rejects automation and requires an exact explicit owner proof", async () => fixture(async (request, { storageRoot }) => {
+  const base = {
+    action_label: "Correct the Codex default tenant binding",
+    action_type: "render_mcp_default_tenant_correction",
+    operation_class: "reversible_owner_confirmed_mcp_default_tenant_correction",
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    secret_changes: false,
+    key_changes: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    configuration_changes: true,
+    tenant_binding_changes: true,
+    endpoint_changes: false,
+    oauth_changes: false,
+    scope_changes: false,
+    permission_changes: false,
+    other_environment_changes: false,
+    other_configuration_changes: false,
+    render_environment_update: true,
+    source_of_truth_update_only: false,
+    data_migration: false,
+    memory_migration: false,
+    rollback_ready: true,
+    audit_ready: true,
+    readback_required: true,
+    target_commit: "6".repeat(40),
+    deployed_commit: "6".repeat(40),
+    environment: "production",
+    target_service: "skinharmony-core-mcp",
+    target_service_id: "srv-d99ef1mcjfls73857m40",
+    resource_type: "render_environment_variable",
+    target_environment_variable: "MCP_DEFAULT_TENANT_ID",
+    allowed_environment_variables: ["MCP_DEFAULT_TENANT_ID"],
+    current_tenant_id: "owner-private",
+    target_tenant_id: "codexai",
+    current_value_verified: true,
+    rollback_tenant_id: "owner-private",
+    service_restart_required: true,
+    deploy: true,
+    create_new: false,
+    delete: false,
+    merge: false,
+    provider_execution: false,
+    confirmation_target_commit: "6".repeat(40),
+    confirmation_target_service: "skinharmony-core-mcp",
+    confirmation_target_service_id: "srv-d99ef1mcjfls73857m40",
+    confirmation_environment_variable: "MCP_DEFAULT_TENANT_ID",
+    confirmation_current_tenant_id: "owner-private",
+    confirmation_target_tenant_id: "codexai",
+    confirmation_reference: "bound-default-tenant-confirmation",
+    tenant_id: "codexai",
+  };
+
+  const automation = await request("POST", "/v1/keys/generate", {
+    tenant_id: "codexai",
+    key_type: "automation",
+    allowed_scopes: ["read:decision", "automation:codex", "owner:assertion"],
+  });
+  const automationBody = {
+    ...base,
+    owner_confirmed: true,
+    request_bound_owner_confirmation: true,
+    authenticated_key_type: "connector",
+  };
+  const automationAttempt = await request("POST", "/v1/action-evaluator", {
+    ...automationBody,
+    owner_context: signedOwnerContext(automation.json.key, "codexai", automationBody, "core_action_evaluator"),
+  }, automation.json.key);
+  assert.equal(automationAttempt.status, 200);
+  assert.equal(automationAttempt.json.authorization.allowed, false);
+
+  const ownerScoped = await request("POST", "/v1/keys/generate", {
+    tenant_id: "codexai",
+    key_type: "connector",
+    allowed_scopes: ["read:decision", "owner:assertion"],
+  });
+  const auditMarker = "token=SHOULD_NOT_ENTER_TENANT_GATE_AUDIT";
+  const rejectedAuditPoisonBody = {
+    ...base,
+    target_service: auditMarker,
+    owner_confirmed: true,
+  };
+  const rejectedAuditPoison = await request("POST", "/v1/action-evaluator", {
+    ...rejectedAuditPoisonBody,
+    owner_context: signedOwnerContext(ownerScoped.json.key, "codexai", rejectedAuditPoisonBody, "core_action_evaluator"),
+  }, ownerScoped.json.key);
+  assert.equal(rejectedAuditPoison.json.authorization.allowed, false);
+  const auditLog = fs.readFileSync(path.join(storageRoot, "audit", "events.jsonl"), "utf8");
+  assert.equal(auditLog.includes(auditMarker), false);
+
+  const proofWithoutConfirmationBody = { ...base, owner_confirmed: false };
+  const proofWithoutConfirmation = await request("POST", "/v1/action-evaluator", {
+    ...proofWithoutConfirmationBody,
+    owner_context: signedOwnerContext(ownerScoped.json.key, "codexai", proofWithoutConfirmationBody, "core_action_evaluator"),
+  }, ownerScoped.json.key);
+  assert.equal(proofWithoutConfirmation.json.authorization.allowed, false);
+
+  const signedBody = { ...base, owner_confirmed: true };
+  const ownerContext = signedOwnerContext(ownerScoped.json.key, "codexai", signedBody, "core_action_evaluator");
+  const authorized = await request("POST", "/v1/action-evaluator", {
+    ...signedBody,
+    owner_context: ownerContext,
+  }, ownerScoped.json.key);
+  assert.equal(authorized.status, 200);
+  assert.equal(authorized.json.authorization.allowed, true);
+  assert.equal(authorized.json.authorization.scope, "reversible_owner_confirmed_mcp_default_tenant_correction");
+
+  const replay = await request("POST", "/v1/action-evaluator", {
+    ...signedBody,
+    action_label: "Mutated label",
+    owner_context: ownerContext,
   }, ownerScoped.json.key);
   assert.equal(replay.json.authorization.allowed, false);
 }));
