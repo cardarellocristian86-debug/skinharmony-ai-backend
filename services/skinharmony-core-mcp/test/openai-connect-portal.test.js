@@ -54,22 +54,7 @@ async function serve(portal, run) {
   }
 }
 
-function csrf(html) {
-  return html.match(/name="csrf" value="([^"]+)"/)?.[1] || "";
-}
-
-async function ownerSession(base) {
-  const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
-  const authorization = new URL(start.headers.get("location"));
-  const cookie = start.headers.get("set-cookie").split(";")[0];
-  const callback = await fetch(
-    `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
-    { headers: { cookie }, redirect: "manual" },
-  );
-  return { authorization, callback, ownerCookie: callback.headers.get("set-cookie")?.split(";")[0] || "" };
-}
-
-test("uses Authorization Code PKCE, authenticates the owner, and scopes a one-time setup link to that owner", async () => {
+test("uses Authorization Code PKCE and sends the verified owner directly to a one-time setup link", async () => {
   let issuedFor = null;
   const portal = createOpenAiConnectPortal({
     config,
@@ -89,30 +74,15 @@ test("uses Authorization Code PKCE, authenticates the owner, and scopes a one-ti
     assert.notEqual(authorization.searchParams.get("audience"), config.auth0Audience);
     assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
     assert(authorization.searchParams.get("code_challenge"));
-    assert.match(start.headers.get("set-cookie"), /HttpOnly; Secure; SameSite=Lax/);
-    const cookie = start.headers.get("set-cookie").split(";")[0];
     const callback = await fetch(
       `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
-      { headers: { cookie }, redirect: "manual" },
+      { redirect: "manual" },
     );
     assert.equal(callback.status, 303);
-    const ownerCookie = callback.headers.get("set-cookie").split(";")[0];
-    const connected = await fetch(`${base}/connect/openai`, { headers: { cookie: ownerCookie } });
-    const connectedHtml = await connected.text();
-    assert.match(connectedHtml, /OpenAI già collegato/);
-    assert.equal(connected.headers.get("cache-control"), "no-store, max-age=0");
-    assert.equal(connected.headers.get("referrer-policy"), "no-referrer");
-    assert.match(connected.headers.get("content-security-policy") || "", /frame-ancestors 'none'/);
-    const next = await fetch(`${base}/connect/openai/continue`, {
-      method: "POST",
-      headers: { cookie: ownerCookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf: csrf(connectedHtml) }),
-      redirect: "manual",
-    });
-    assert.equal(next.status, 303);
-    assert.equal(next.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
+    assert.equal(callback.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
     assert.deepEqual(issuedFor, ownerIdentity());
-    assert.doesNotMatch(next.headers.get("location"), /tenant_id|google-oauth2/);
+    assert.doesNotMatch(callback.headers.get("location"), /tenant_id|google-oauth2/);
+    assert.equal(callback.headers.get("set-cookie"), null);
   });
 });
 
@@ -129,7 +99,8 @@ test("completes the Auth0 callback when a privacy browser discards the initial c
     const state = new URL(start.headers.get("location")).searchParams.get("state");
     const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${encodeURIComponent(state)}`, { redirect: "manual" });
     assert.equal(callback.status, 303);
-    assert.match(callback.headers.get("set-cookie") || "", /HttpOnly; Secure; SameSite=Lax/);
+    assert.equal(callback.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
+    assert.equal(callback.headers.get("set-cookie"), null);
   });
 });
 
@@ -145,20 +116,17 @@ test("rejects CSRF state mismatch, expired state, and non-owner callback without
   });
   await serve(portal, async (base) => {
     const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
-    const cookie = start.headers.get("set-cookie").split(";")[0];
-    const bad = await fetch(`${base}/connect/openai/callback?code=x&state=bad`, { headers: { cookie } });
+    const bad = await fetch(`${base}/connect/openai/callback?code=x&state=bad`);
     assert.equal(bad.status, 400);
     clock = 700_000;
-    const expired = await fetch(`${base}/connect/openai/callback?code=x&state=bad`, { headers: { cookie } });
+    const expired = await fetch(`${base}/connect/openai/callback?code=x&state=bad`);
     assert.equal(expired.status, 400);
 
     clock = 0;
     const fresh = await fetch(`${base}/connect/openai`, { redirect: "manual" });
-    const freshCookie = fresh.headers.get("set-cookie").split(";")[0];
     const authorization = new URL(fresh.headers.get("location"));
     const nonOwner = await fetch(
       `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
-      { headers: { cookie: freshCookie } },
     );
     assert.equal(nonOwner.status, 403);
     assert.doesNotMatch(await nonOwner.text(), /opaque-code|access_token/);
@@ -176,10 +144,8 @@ test("shows a safe actionable reason when Auth0 omits the tenant claim", async (
   await serve(portal, async (base) => {
     const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
     const authorization = new URL(start.headers.get("location"));
-    const cookie = start.headers.get("set-cookie").split(";")[0];
     const callback = await fetch(
       `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
-      { headers: { cookie } },
     );
     assert.equal(callback.status, 403);
     const html = await callback.text();
@@ -197,13 +163,9 @@ test("shows a safe activation message when the dedicated setup-link credential i
     issueSetupLink: async () => { throw new Error("provider_setup_link_scope_required"); },
   });
   await serve(portal, async (base) => {
-    const { ownerCookie } = await ownerSession(base);
-    const connected = await fetch(`${base}/connect/openai`, { headers: { cookie: ownerCookie } });
-    const failed = await fetch(`${base}/connect/openai/continue`, {
-      method: "POST",
-      headers: { cookie: ownerCookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf: csrf(await connected.text()) }),
-    });
+    const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
+    const authorization = new URL(start.headers.get("location"));
+    const failed = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`);
     const html = await failed.text();
     assert.equal(failed.status, 503);
     assert.match(html, /Collegamento in preparazione/);
@@ -211,7 +173,7 @@ test("shows a safe activation message when the dedicated setup-link credential i
   });
 });
 
-test("keeps the owner flow available when status is unavailable, rejects cross-site continue requests, and rejects unsafe redirects", async () => {
+test("rejects unsafe Core redirects and makes stale Continue pages harmless", async () => {
   let issued = 0;
   const portal = createOpenAiConnectPortal({
     config,
@@ -224,29 +186,19 @@ test("keeps the owner flow available when status is unavailable, rejects cross-s
     },
   });
   await serve(portal, async (base) => {
-    const { ownerCookie } = await ownerSession(base);
-    const connected = await fetch(`${base}/connect/openai`, { headers: { cookie: ownerCookie } });
-    const connectedHtml = await connected.text();
-    assert.equal(connected.status, 200);
-    assert.match(connectedHtml, /Collega OpenAI/);
-    const getAttempt = await fetch(`${base}/connect/openai/continue`, { headers: { cookie: ownerCookie }, redirect: "manual" });
+    const getAttempt = await fetch(`${base}/connect/openai/continue`, { redirect: "manual" });
     assert.equal(getAttempt.status, 404);
-    const invalidPost = await fetch(`${base}/connect/openai/continue`, {
+    const stalePost = await fetch(`${base}/connect/openai/continue`, {
       method: "POST",
-      headers: { cookie: ownerCookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf: "not-the-session-token" }),
     });
-    assert.equal(invalidPost.status, 400);
+    assert.equal(stalePost.status, 410);
     assert.equal(issued, 0);
-    const unsafePost = await fetch(`${base}/connect/openai/continue`, {
-      method: "POST",
-      headers: { cookie: ownerCookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf: csrf(connectedHtml) }),
-      redirect: "manual",
-    });
-    assert.equal(unsafePost.status, 503);
-    assert.equal(unsafePost.headers.get("location"), null);
-    assert.doesNotMatch(await unsafePost.text(), new RegExp(setupProof));
+    const start = await fetch(`${base}/connect/openai`, { redirect: "manual" });
+    const authorization = new URL(start.headers.get("location"));
+    const unsafeCallback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`);
+    assert.equal(unsafeCallback.status, 503);
+    assert.equal(unsafeCallback.headers.get("location"), null);
+    assert.doesNotMatch(await unsafeCallback.text(), new RegExp(setupProof));
     assert.equal(issued, 1);
   });
 });
