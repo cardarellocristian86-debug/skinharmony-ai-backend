@@ -87,10 +87,12 @@ function open(secret, value) {
 
 export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink, providerStatus, fetchImpl = fetch, now = () => Date.now() }) {
   const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0BrowserAudience && config.auth0Issuer);
-  // Auth0 returns from a different site. Keep the sealed, HttpOnly state cookie
-  // available to that top-level OAuth callback, including embedded host browsers.
-  // CSRF protection still comes from the cryptographically random state value.
-  const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=None; Max-Age=${Math.floor(maxAge / 1000)}`);
+  // The Auth0 callback is a top-level GET navigation. SameSite=Lax keeps the
+  // sealed state cookie available for that callback while avoiding the
+  // third-party-cookie restrictions that can reject SameSite=None in embedded
+  // and privacy-focused browsers. CSRF protection still comes from the random
+  // state value and the cookie remains HttpOnly, Secure and short-lived.
+  const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(maxAge / 1000)}`);
   const load = (req) => open(config.auth0BrowserStateSecret, cookie(req, COOKIE));
   // `providerSetupOwner` is minted only by the OAuth authenticator after it
   // matched the human subject against the owner allowlist. An application

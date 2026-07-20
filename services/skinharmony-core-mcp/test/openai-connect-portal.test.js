@@ -89,7 +89,7 @@ test("uses Authorization Code PKCE, authenticates the owner, and scopes a one-ti
     assert.notEqual(authorization.searchParams.get("audience"), config.auth0Audience);
     assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
     assert(authorization.searchParams.get("code_challenge"));
-    assert.match(start.headers.get("set-cookie"), /HttpOnly; Secure; SameSite=None/);
+    assert.match(start.headers.get("set-cookie"), /HttpOnly; Secure; SameSite=Lax/);
     const cookie = start.headers.get("set-cookie").split(";")[0];
     const callback = await fetch(
       `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
