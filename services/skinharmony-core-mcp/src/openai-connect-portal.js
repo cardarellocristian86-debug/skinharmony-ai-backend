@@ -94,11 +94,11 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
   // state value and the cookie remains HttpOnly, Secure and short-lived.
   const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(maxAge / 1000)}`);
   const load = (req) => open(config.auth0BrowserStateSecret, cookie(req, COOKIE));
-  // `providerSetupOwner` is minted only by the OAuth authenticator after it
-  // matched the human subject against the owner allowlist. An application
-  // client ID alone is never sufficient to enter a credential.
-  const owner = (identity) => identity?.kind === "oauth" && identity?.godMode === true &&
-    identity?.role === "owner_root" && identity?.providerSetupOwner === true;
+  // `providerSetupOwner` comes only from a verified OAuth tenant-role claim.
+  // A client ID, a URL parameter, or an arbitrary tenant string can never
+  // authorize credential entry.
+  const owner = (identity) => identity?.kind === "oauth" && identity?.providerSetupOwner === true &&
+    ["tenant_owner", "tenant_admin", "owner_root"].includes(identity?.role);
   return {
     async start(req, res) {
       if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
