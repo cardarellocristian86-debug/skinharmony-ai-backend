@@ -13,8 +13,21 @@ export function createTenantProviderCredentialStore({ connectionString, masterSe
   async function init() { if(initialized)return; await db.query(`CREATE TABLE IF NOT EXISTS governed_agent_provider_credentials (
     tenant_id TEXT NOT NULL, provider TEXT NOT NULL, ciphertext TEXT NOT NULL, iv TEXT NOT NULL, tag TEXT NOT NULL, key_hint TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (tenant_id, provider)
   )`); initialized=true; }
+  async function saveOpenAiInTransaction({ tenant_id, api_key, client }) {
+    if (!client || typeof client.query !== "function") throw new Error("credential_transaction_client_required");
+    const tenantId=text(tenant_id,"tenant_id",120), key=validateOpenAiKey(api_key), encrypted=encrypt(secret,key);
+    const result=await client.query(`INSERT INTO governed_agent_provider_credentials (tenant_id,provider,ciphertext,iv,tag,key_hint) VALUES ($1,'openai',$2,$3,$4,$5) ON CONFLICT (tenant_id,provider) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,iv=EXCLUDED.iv,tag=EXCLUDED.tag,key_hint=EXCLUDED.key_hint,updated_at=NOW() RETURNING provider,key_hint,updated_at`,[tenantId,encrypted.ciphertext,encrypted.iv,encrypted.tag,keyHint(key)]);
+    if (!result.rows[0]) throw new Error("credential_save_failed");
+    return { provider:result.rows[0].provider, configured:true, key_hint:result.rows[0].key_hint, updated_at:result.rows[0].updated_at };
+  }
   return {
-    async saveOpenAi({ tenant_id, api_key }) { const tenantId=text(tenant_id,"tenant_id",120), key=validateOpenAiKey(api_key), encrypted=encrypt(secret,key); await init(); const result=await db.query(`INSERT INTO governed_agent_provider_credentials (tenant_id,provider,ciphertext,iv,tag,key_hint) VALUES ($1,'openai',$2,$3,$4,$5) ON CONFLICT (tenant_id,provider) DO UPDATE SET ciphertext=EXCLUDED.ciphertext,iv=EXCLUDED.iv,tag=EXCLUDED.tag,key_hint=EXCLUDED.key_hint,updated_at=NOW() RETURNING provider,key_hint,updated_at`,[tenantId,encrypted.ciphertext,encrypted.iv,encrypted.tag,keyHint(key)]); return { provider:result.rows[0].provider, configured:true, key_hint:result.rows[0].key_hint, updated_at:result.rows[0].updated_at }; },
+    // Setup-link consumption initializes both tables before its transaction,
+    // then calls saveOpenAiInTransaction with the link store's checked-out
+    // client. Keeping this public helper narrow avoids a second, independent
+    // credential write transaction.
+    async ensureInitialized() { await init(); },
+    async saveOpenAiInTransaction(input) { return saveOpenAiInTransaction(input); },
+    async saveOpenAi({ tenant_id, api_key }) { await init(); return saveOpenAiInTransaction({ tenant_id, api_key, client:db }); },
     async status({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query("SELECT provider,key_hint,updated_at FROM governed_agent_provider_credentials WHERE tenant_id=$1 AND provider='openai'",[tenantId]); return result.rows[0] ? { provider:"openai", configured:true, key_hint:result.rows[0].key_hint, updated_at:result.rows[0].updated_at, execution_enabled:false } : { provider:"openai", configured:false, execution_enabled:false }; },
     async removeOpenAi({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query("DELETE FROM governed_agent_provider_credentials WHERE tenant_id=$1 AND provider='openai'",[tenantId]); return { removed:result.rowCount > 0 }; },
     async getOpenAiForExecution({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query("SELECT ciphertext,iv,tag FROM governed_agent_provider_credentials WHERE tenant_id=$1 AND provider='openai'",[tenantId]); if(!result.rows[0]) return null; return decrypt(secret,result.rows[0]); },

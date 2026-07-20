@@ -3,9 +3,10 @@ export const OPENAI_PROVIDER_SETUP_LINK_PATH = "/v1/generic-agents/providers/ope
 function providerSetupLinkFailure(status, payload) {
   if (status === 401) return "provider_setup_link_authentication_failed";
   if (status === 403) {
-    return payload?.error === "scope_denied"
-      ? "provider_setup_link_scope_required"
-      : "provider_setup_link_access_denied";
+    if (payload?.error === "scope_denied") return "provider_setup_link_scope_required";
+    if (payload?.error === "owner_context_required") return "provider_setup_link_owner_required";
+    if (payload?.error === "provider_setup_link_issuer_required") return "provider_setup_link_issuer_required";
+    return "provider_setup_link_access_denied";
   }
   if (status === 404) return "provider_setup_link_route_unavailable";
   return "provider_setup_link_unavailable";
@@ -22,10 +23,56 @@ export function providerSetupLinkKey(config, tenantId) {
   return key;
 }
 
-export async function issueOpenAiProviderSetupLink({ config, tenantId, ttlMinutes, fetchImpl = fetch }) {
+export function validateOpenAiProviderSetupLink(payload, config) {
+  const setupUrl = String(payload?.setup_url || "");
+  const setupProof = String(payload?.setup_proof || "");
+  const linkId = String(payload?.link_id || "");
+  if (!/^[A-Za-z0-9_-]{32,120}$/.test(setupProof) || !/^psl_[A-Za-z0-9_-]{16,120}$/.test(linkId)) {
+    throw new Error("provider_setup_link_invalid_response");
+  }
+  let received;
+  let expected;
+  try {
+    received = new URL(setupUrl);
+    expected = new URL(config.universalCoreUrl);
+  } catch {
+    throw new Error("provider_setup_link_invalid_response");
+  }
+  if (
+    received.protocol !== "https:" ||
+    expected.protocol !== "https:" ||
+    received.origin !== expected.origin ||
+    !/^\/v1\/generic-agents\/providers\/openai\/setup\/[A-Za-z0-9_-]{30,120}$/.test(received.pathname) ||
+    received.search ||
+    received.hash ||
+    received.username ||
+    received.password
+  ) {
+    throw new Error("provider_setup_link_invalid_response");
+  }
+  return {
+    ok: payload?.ok === true,
+    tenant_id: String(payload?.tenant_id || ""),
+    setup_url: received.toString(),
+    setup_proof: setupProof,
+    link_id: linkId,
+    expires_at: String(payload?.expires_at || ""),
+    execution_enabled: false,
+  };
+}
+
+export async function issueOpenAiProviderSetupLink({ config, tenantId, ttlMinutes, ownerContext, fetchImpl = fetch }) {
+  if (!ownerContext || typeof ownerContext !== "object" || Array.isArray(ownerContext)) {
+    throw new Error("provider_setup_link_owner_context_unavailable");
+  }
   // The tenant is derived by the MCP from the verified identity, never from
-  // tool input. Core checks that it also matches the restricted bearer key.
-  const body = { tenant_id: tenantId, ...(ttlMinutes === undefined ? {} : { ttl_minutes: ttlMinutes }) };
+  // tool input. Core checks that it also matches the restricted bootstrap key
+  // and fresh OAuth owner assertion.
+  const body = {
+    tenant_id: tenantId,
+    owner_context: ownerContext,
+    ...(ttlMinutes === undefined ? {} : { ttl_minutes: ttlMinutes }),
+  };
   const key = providerSetupLinkKey(config, tenantId);
   let response;
   try {
@@ -43,8 +90,5 @@ export async function issueOpenAiProviderSetupLink({ config, tenantId, ttlMinute
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(providerSetupLinkFailure(response.status, payload));
-  if (!payload || typeof payload.setup_url !== "string" || !payload.setup_url) {
-    throw new Error("provider_setup_link_invalid_response");
-  }
-  return payload;
+  return validateOpenAiProviderSetupLink(payload, config);
 }

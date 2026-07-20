@@ -6,7 +6,11 @@ import test from "node:test";
 import { createUniversalCoreService } from "../src/app.js";
 
 test("health exposes a non-secret build identity and commit-verification state", async () => {
-  const { app } = createUniversalCoreService({ storageRoot: path.join(os.tmpdir(), `health-build-${Date.now()}-${Math.random()}`) });
+  const ownerContextSigningSecret = "health-owner-context-signing-secret";
+  const { app } = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `health-build-${Date.now()}-${Math.random()}`),
+    ownerContextSigningSecret,
+  });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -17,5 +21,7 @@ test("health exposes a non-secret build identity and commit-verification state",
     assert.equal(typeof health.build.build_id, "string");
     assert.equal(typeof health.build.commit_verifiable, "boolean");
     assert.ok(health.build.commit_sha === null || /^[a-f0-9]{7,}$/i.test(health.build.commit_sha));
+    assert.equal(health.owner_context_signing_configured, true);
+    assert.equal(JSON.stringify(health).includes(ownerContextSigningSecret), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });

@@ -142,6 +142,116 @@ test("authorizes only the owner-confirmed Nyra governance database configuration
   ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...nyraGovernancePostgres, owner_confirmed: true, ...unsafe }).allowed, false);
 });
 
+const providerSetupLinkBlueprintBinding = {
+  action_label: "Bind Core provider setup-link validation",
+  action_type: "render_blueprint_environment_binding",
+  operation_class: "reversible_owner_confirmed_provider_setup_link_blueprint_binding",
+  authenticated_tenant_id: "codexai",
+  tenant_id: "codexai",
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  rollback_ready: true,
+  audit_ready: true,
+  configuration_changes: true,
+  owner_context_verified: true,
+  owner_context_approval_bound: true,
+  environment: "production",
+  target_branch: "main",
+  resource_type: "render_blueprint_from_service_env_binding",
+  render_blueprint_id: "exs-d99edqgki2s73e29nug",
+  blueprint_path: "render-universal-core.yaml",
+  source_service: "skinharmony-core-mcp",
+  target_service: "skinharmony-universal-core",
+  source_environment_variable: "CORE_PROVIDER_SETUP_LINK_KEY",
+  target_environment_variable: "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY",
+  tenant_environment_variable: "CORE_PROVIDER_SETUP_LINK_TENANT_ID",
+  tenant_environment_value: "codexai",
+  create_new: false,
+  rotate_existing: false,
+  delete: false,
+  merge: false,
+  production_deploy: false,
+  deploy: false,
+  auth0_changes: false,
+  provider_execution: false,
+  execution_enabled: false,
+  force: false,
+  admin_bypass: false,
+  allowed_environment_variables: ["CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY", "CORE_PROVIDER_SETUP_LINK_TENANT_ID"],
+  target_commit: "18b689e5cde9622a280b9d34651dc18ec2d675a8",
+  confirmation_target_commit: "18b689e5cde9622a280b9d34651dc18ec2d675a8",
+  confirmation_target_branch: "main",
+  confirmation_render_blueprint_id: "exs-d99edqgki2s73e29nug",
+  confirmation_blueprint_path: "render-universal-core.yaml",
+  confirmation_source_service: "skinharmony-core-mcp",
+  confirmation_target_service: "skinharmony-universal-core",
+  confirmation_source_environment_variable: "CORE_PROVIDER_SETUP_LINK_KEY",
+  confirmation_target_environment_variable: "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY",
+  confirmation_tenant_id: "codexai",
+  confirmation_reference: "owner confirmed provider setup-link Blueprint binding",
+};
+
+test("authorizes only the exact owner-confirmed provider setup-link Blueprint binding", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high" }), providerSetupLinkBlueprintBinding);
+  assert.equal(pending.allowed, false);
+  assert.equal(pending.state, "confirmation_required");
+
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...providerSetupLinkBlueprintBinding,
+    owner_confirmed: true,
+  });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.state, "authorized_after_confirmation");
+  assert.equal(allowed.scope, "reversible_owner_confirmed_provider_setup_link_blueprint_binding");
+  assert.equal(allowed.target_commit, providerSetupLinkBlueprintBinding.target_commit);
+});
+
+test("keeps every variation of the provider setup-link Blueprint binding closed", () => {
+  for (const unsafe of [
+    { authenticated_tenant_id: "another-tenant" }, { tenant_id: "another-tenant" }, { owner_context_verified: false }, { owner_context_approval_bound: false },
+    { render_blueprint_id: "another-blueprint" }, { confirmation_render_blueprint_id: "another-blueprint" },
+    { blueprint_path: "universal-core/render.yaml" }, { target_service: "other-service" }, { target_branch: "feature/other" },
+    { source_service: "other-mcp" }, { source_environment_variable: "OTHER_KEY" },
+    { target_environment_variable: "DATABASE_URL" }, { tenant_environment_variable: "TENANT_ID" },
+    { tenant_environment_value: "another-tenant" }, { resource_type: "render_environment_secret_reference" },
+    { allowed_environment_variables: ["CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY"] },
+    { allowed_environment_variables: ["CORE_PROVIDER_SETUP_LINK_TENANT_ID", "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY"] },
+    { create_new: true }, { rotate_existing: true }, { delete: true }, { merge: true }, { production_deploy: true }, { deploy: true },
+    { auth0_changes: true }, { provider_execution: true }, { execution_enabled: true }, { force: true }, { admin_bypass: true },
+    { contains_secret: true }, { secret_value_transmitted: true }, { cross_tenant: true }, { destructive: true }, { bypass_orchestrator: true },
+    { target_commit: "main" }, { confirmation_target_commit: "7".repeat(40) }, { confirmation_target_branch: "release" },
+    { confirmation_blueprint_path: "universal-core/render.yaml" }, { confirmation_source_service: "other-mcp" },
+    { confirmation_target_service: "other-service" }, { confirmation_source_environment_variable: "OTHER_KEY" },
+    { confirmation_target_environment_variable: "DATABASE_URL" }, { confirmation_tenant_id: "another-tenant" },
+  ]) {
+    assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+      ...providerSetupLinkBlueprintBinding,
+      owner_confirmed: true,
+      ...unsafe,
+    }).allowed, false);
+  }
+
+  for (const hardBlock of [
+    { contains_secret: true }, { secret_value_transmitted: true }, { cross_tenant: true }, { destructive: true }, { bypass_orchestrator: true },
+    { auth0_changes: true }, { provider_execution: true }, { execution_enabled: true },
+    { create_new: true }, { rotate_existing: true }, { delete: true }, { merge: true }, { production_deploy: true }, { deploy: true },
+    { force: true }, { admin_bypass: true }, { unrecognized_render_change: true },
+  ]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), {
+      ...providerSetupLinkBlueprintBinding,
+      owner_confirmed: true,
+      ...hardBlock,
+    });
+    assert.equal(result.state, "blocked");
+    assert.equal(result.mediation, "hard_block");
+  }
+});
+
 const deepSoftware = {
   action_type: "software_analysis",
   operation_class: "governed_deep_software_analysis",

@@ -38,10 +38,39 @@ function setupLinkFailure(error) {
     case "provider_setup_link_authentication_failed":
     case "provider_setup_link_scope_required":
     case "provider_setup_link_access_denied":
+    case "provider_setup_link_owner_context_unavailable":
       return ["Collegamento in preparazione", "<p>Il collegamento sicuro si sta attivando. Riprova tra pochi minuti.</p>"];
     default:
       return ["Servizio non disponibile", "<p>Riprova più tardi.</p>"];
   }
+}
+
+function secureSetupRedirect(link, config) {
+  const setupUrl = String(link?.setup_url || "");
+  const proof = String(link?.setup_proof || "");
+  if (!/^[A-Za-z0-9_-]{32,120}$/.test(proof)) throw new Error("provider_setup_link_invalid_response");
+  let target;
+  let core;
+  try {
+    target = new URL(setupUrl);
+    core = new URL(config.universalCoreUrl);
+  } catch {
+    throw new Error("provider_setup_link_invalid_response");
+  }
+  if (
+    target.protocol !== "https:" ||
+    core.protocol !== "https:" ||
+    target.origin !== core.origin ||
+    !/^\/v1\/generic-agents\/providers\/openai\/setup\/[A-Za-z0-9_-]{30,120}$/.test(target.pathname) ||
+    target.search ||
+    target.hash ||
+    target.username ||
+    target.password
+  ) {
+    throw new Error("provider_setup_link_invalid_response");
+  }
+  target.hash = `proof=${encodeURIComponent(proof)}`;
+  return target.toString();
 }
 
 function seal(secret, payload) {
@@ -63,7 +92,11 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
   // CSRF protection still comes from the cryptographically random state value.
   const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=None; Max-Age=${Math.floor(maxAge / 1000)}`);
   const load = (req) => open(config.auth0BrowserStateSecret, cookie(req, COOKIE));
-  const owner = (identity) => identity?.godMode === true && identity?.role === "owner_root";
+  // `providerSetupOwner` is minted only by the OAuth authenticator after it
+  // matched the human subject against the owner allowlist. An application
+  // client ID alone is never sufficient to enter a credential.
+  const owner = (identity) => identity?.kind === "oauth" && identity?.godMode === true &&
+    identity?.role === "owner_root" && identity?.providerSetupOwner === true;
   return {
     async start(req, res) {
       if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
@@ -109,7 +142,15 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
       if (!session?.tenant_id || session.expires_at <= now() || !owner(session.identity) || !expected.length || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
         return portalHtml(res, 400, page("Accesso non valido", "<p>Riprova dal link iniziale.</p>"));
       }
-      try { const link = await issueSetupLink(session.tenant_id); setCookie(res, "", 0); return res.redirect(303, link.setup_url); } catch (error) { const [title, body] = setupLinkFailure(error); return portalHtml(res, 503, page(title, body)); }
+      try {
+        const link = await issueSetupLink(session.identity);
+        const redirect = secureSetupRedirect(link, config);
+        setCookie(res, "", 0);
+        return res.redirect(303, redirect);
+      } catch (error) {
+        const [title, body] = setupLinkFailure(error);
+        return portalHtml(res, 503, page(title, body));
+      }
     },
   };
 }

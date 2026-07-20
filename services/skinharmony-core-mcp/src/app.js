@@ -215,6 +215,7 @@ export function createApp(config, options = {}) {
     auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
     core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
     provider_setup_link_source_configured: config.providerSetupLinkSourceConfigured === true,
+    owner_context_signing_configured: Boolean(config.ownerContextSigningSecret),
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
     cloud_memory: {
       configured: Boolean(config.databaseUrl),
@@ -396,11 +397,16 @@ export function createApp(config, options = {}) {
         }
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
+        // A request flag is never an identity assertion. Only a verified
+        // owner-root identity may make an explicit confirmation effective.
+        const explicitOwnerConfirmation = identity.godMode === true && args.owner_confirmed === true;
         const callIdentity = {
           ...identity,
           agentPresence,
-          ownerConfirmed: identity.godMode === true || args.owner_confirmed === true,
-          confirmationReference: String(args.confirmation_reference || "").slice(0, 240),
+          ownerConfirmed: explicitOwnerConfirmation,
+          confirmationReference: explicitOwnerConfirmation
+            ? String(args.confirmation_reference || "").slice(0, 240)
+            : "",
         };
         activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
         let hookContext = null;

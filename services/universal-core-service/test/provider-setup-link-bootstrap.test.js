@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -25,17 +26,55 @@ async function request(base, method, pathname, body, key) {
   return { status: response.status, json: await response.json() };
 }
 
+const OWNER_SUBJECT_FINGERPRINT = `osf_${"b".repeat(64)}`;
+
+function signedOwnerContext(tenantId, signingSecret, issuedAt = new Date().toISOString()) {
+  const context = {
+    assertion_version: "owner_context_assertion_v1",
+    audience: "nira_core_bridge",
+    tenant_id: tenantId,
+    access_mode: "god_mode",
+    role: "owner_root",
+    delegated_actor: "oauth",
+    owner_verified: true,
+    owner_subject_fingerprint: OWNER_SUBJECT_FINGERPRINT,
+    issued_at: issuedAt,
+    approval_digest: "",
+  };
+  const canonical = JSON.stringify({
+    version: context.assertion_version,
+    audience: context.audience,
+    tenant_id: context.tenant_id,
+    access_mode: context.access_mode,
+    role: context.role,
+    delegated_actor: context.delegated_actor,
+    owner_verified: context.owner_verified,
+    owner_subject_fingerprint: context.owner_subject_fingerprint,
+    issued_at: context.issued_at,
+    approval_digest: context.approval_digest,
+  });
+  return {
+    ...context,
+    assertion: `ocs_${crypto.createHmac("sha256", signingSecret)
+      .update(`owner-context\u0000${canonical}`)
+      .digest("hex")}`,
+  };
+}
+
 test("provider setup-link bootstrap seeds one opaque, tenant-scoped key without expanding its authority", async () => {
   const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
   process.env.CORE_SERVICE_ADMIN_KEY = "provider-bootstrap-admin";
   const storageRoot = path.join(os.tmpdir(), `provider-setup-bootstrap-${Date.now()}-${Math.random()}`);
   const providerSetupLinkKey = "render-generated-provider-setup-test-key";
+  const ownerContextSigningSecret = "provider-bootstrap-owner-context-signing-secret";
   const issued = [];
   const tenantProviderSetupLinks = {
     async issue(input) {
       issued.push(input);
       return {
         token: "local_bootstrap_setup_token_abcdefghijklmnopqrstuvwxyz",
+        proof: "local_bootstrap_setup_proof_abcdefghijklmnopqrstuvwxyz",
+        link_id: "psl_local_bootstrap_setup_link",
         expires_at: "2026-07-19T20:00:00.000Z",
       };
     },
@@ -45,6 +84,7 @@ test("provider setup-link bootstrap seeds one opaque, tenant-scoped key without 
     providerSetupLinkBootstrapKey: providerSetupLinkKey,
     providerSetupLinkTenantId: "codexai",
     tenantProviderSetupLinks,
+    ownerContextSigningSecret,
   });
   const { server, base } = await listen(service.app);
 
@@ -75,14 +115,21 @@ test("provider setup-link bootstrap seeds one opaque, tenant-scoped key without 
     const issuedLink = await request(base, "POST", "/v1/generic-agents/providers/openai/setup-links", {
       tenant_id: "codexai",
       ttl_minutes: 15,
+      owner_context: signedOwnerContext("codexai", ownerContextSigningSecret),
     }, providerSetupLinkKey);
     assert.equal(issuedLink.status, 201);
     assert.equal(issuedLink.json.tenant_id, "codexai");
     assert.equal(issuedLink.json.execution_enabled, false);
-    assert.deepEqual(issued, [{ tenant_id: "codexai", ttl_minutes: 15 }]);
+    assert.equal(issuedLink.json.setup_proof, "local_bootstrap_setup_proof_abcdefghijklmnopqrstuvwxyz");
+    assert.deepEqual(issued, [{
+      tenant_id: "codexai",
+      owner_subject_fingerprint: OWNER_SUBJECT_FINGERPRINT,
+      ttl_minutes: 15,
+    }]);
 
     const crossTenant = await request(base, "POST", "/v1/generic-agents/providers/openai/setup-links", {
       tenant_id: "another-tenant",
+      owner_context: signedOwnerContext("another-tenant", ownerContextSigningSecret),
     }, providerSetupLinkKey);
     assert.equal(crossTenant.status, 403);
     assert.equal(crossTenant.json.error, "tenant_scope_denied");

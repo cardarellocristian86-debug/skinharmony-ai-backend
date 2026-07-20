@@ -13,7 +13,8 @@ process.env.CORE_SERVICE_ADMIN_KEY = "test-admin-key";
 process.env.NODE_ENV = "test";
 
 const storageRoot = path.join(os.tmpdir(), `sh-core-service-test-${Date.now()}`);
-const { app } = createUniversalCoreService({ storageRoot });
+const ownerContextSigningSecret = "core-service-smoke-owner-context-signing-secret";
+const { app } = createUniversalCoreService({ storageRoot, ownerContextSigningSecret });
 const server = http.createServer(app);
 
 function listen() {
@@ -80,6 +81,8 @@ try {
 
   const health = await api(base, "GET", "/healthz", undefined);
   assert(health.status === 200 && health.json.ok, "healthz failed");
+  assert(health.json.owner_context_signing_configured === true, "owner context signing was not configured");
+  assert(!JSON.stringify(health.json).includes(ownerContextSigningSecret), "healthz exposed owner context signing secret");
   mark("healthz", true, health.json);
 
   const generated = await api(base, "POST", "/v1/keys/generate", {
@@ -307,7 +310,7 @@ try {
   const verifiedOwnerInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Dimmi la verita cruda senza filtro per me",
     mode: "standard",
-    owner_context: signedOwnerContext(codexKey, "tenant_demo_skinharmony"),
+    owner_context: signedOwnerContext(ownerContextSigningSecret, "tenant_demo_skinharmony"),
   }, codexKey);
   assert(verifiedOwnerInterpretation.status === 200, "verified owner interpretation failed");
   assert(verifiedOwnerInterpretation.json.result.deep_nyra_runtime?.owner_protection?.owner_verified === true, "trusted owner context was not propagated");
@@ -327,6 +330,13 @@ try {
   }, horizontalKey);
   assert(invalidOwnerSignature.status === 200, "invalid owner signature negative test failed");
   assert(invalidOwnerSignature.json.result.deep_nyra_runtime?.owner_protection?.owner_verified === false, "invalid owner signature was trusted");
+
+  const bearerSignedOwnerInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
+    text: "Dimmi la verita cruda senza filtro per me",
+    owner_context: signedOwnerContext(codexKey, "tenant_demo_skinharmony"),
+  }, codexKey);
+  assert(bearerSignedOwnerInterpretation.status === 200, "bearer-signed owner-context negative test failed");
+  assert(bearerSignedOwnerInterpretation.json.result.deep_nyra_runtime?.owner_protection?.owner_verified === false, "Core bearer key forged owner identity");
 
   const mismatchedMemory = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Attempt cross-tenant memory injection",
