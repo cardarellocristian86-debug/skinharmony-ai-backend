@@ -118,12 +118,15 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
       // the callback, which made the portal fail before the user even saw the
       // protected key form. The state is instead an authenticated, encrypted,
       // short-lived PKCE envelope that Auth0 returns unchanged.
-      const state = seal(config.auth0BrowserStateSecret, {
+      // Wrap the sealed envelope once more as base64url. Some embedded OAuth
+      // navigators normalize punctuation in query values; a single URL-safe
+      // token avoids separator rewriting while retaining authenticated PKCE.
+      const state = b64(seal(config.auth0BrowserStateSecret, {
         kind: "openai_connect_pkce_v2",
         verifier,
         nonce: crypto.randomBytes(32).toString("base64url"),
         expires_at: now() + MAX_AGE_MS,
-      });
+      }));
       // Retain a harmless short-lived attempt cookie for compatibility and
       // normal browser cleanup. The callback deliberately does not rely on it.
       setCookie(res, seal(config.auth0BrowserStateSecret, {
@@ -136,7 +139,8 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
     },
     async callback(req, res) {
       const state = String(req.query.state || ""), code = String(req.query.code || "");
-      const session = open(config.auth0BrowserStateSecret, state);
+      let session = null;
+      try { session = open(config.auth0BrowserStateSecret, unb64(state).toString("utf8")); } catch {}
       if (!session || session.kind !== "openai_connect_pkce_v2" || session.expires_at <= now() || !session.verifier || !code) return portalHtml(res, 400, page("Accesso non valido", "<p>Riprova dal link iniziale.</p>"));
       try {
         const body = new URLSearchParams({ grant_type: "authorization_code", client_id: config.auth0BrowserClientId, code, redirect_uri: config.auth0BrowserCallbackUrl, code_verifier: session.verifier });
