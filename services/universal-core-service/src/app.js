@@ -10,7 +10,7 @@ import { runTextBranch } from "../../../universal-core/packages/branches/ramo-te
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
 import { createAudit, ensureDir } from "./audit.js";
-import { createKeyStore } from "./keyStore.js";
+import { createKeyStore, isProviderSetupLinkServiceRecord } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
@@ -144,7 +144,9 @@ function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding,
   if (!context || typeof context !== "object" || !secret) return false;
   if (context.assertion_version !== OWNER_CONTEXT_ASSERTION_VERSION) return false;
   if (context.audience !== "nira_core_bridge" || context.tenant_id !== tenantId) return false;
-  if (context.owner_verified !== true || context.role !== "owner_root" || context.access_mode !== "god_mode") return false;
+  const tenantOwner = context.role === "tenant_owner" && context.access_mode === "tenant_owner";
+  const globalOwner = context.role === "owner_root" && context.access_mode === "god_mode";
+  if (context.owner_verified !== true || (!tenantOwner && !globalOwner)) return false;
   const issuedAt = Date.parse(String(context.issued_at || ""));
   if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
   const supplied = String(context.assertion || "");
@@ -181,6 +183,10 @@ function isDedicatedProviderSetupLinkIssuer(keyRecord, tenantId) {
     keyRecord.allowed_scopes.length === 1 &&
     keyRecord.allowed_scopes[0] === SCOPES.WRITE_PROVIDER_SETUP_LINK
   );
+}
+
+function isProviderSetupLinkIssuer(keyRecord, tenantId) {
+  return isDedicatedProviderSetupLinkIssuer(keyRecord, tenantId) || isProviderSetupLinkServiceRecord(keyRecord);
 }
 
 function trustedProviderSetupBaseUrl(value) {
@@ -523,7 +529,7 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function createAuth(keyStore, audit, requiredScope) {
+function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService = false } = {}) {
   return (req, res, next) => {
     const auth = keyStore.authenticate(readSecret(req));
     if (!auth.ok) {
@@ -532,7 +538,8 @@ function createAuth(keyStore, audit, requiredScope) {
     }
 
     const tenantId = safeTenantId(req, auth.record);
-    if (!requireTenantAccess(auth.record, tenantId)) {
+    const serviceIssuer = allowProviderSetupService === true && isProviderSetupLinkServiceRecord(auth.record);
+    if (!tenantId || (!serviceIssuer && !requireTenantAccess(auth.record, tenantId))) {
       audit.append("core_tenant_scope_denied", { key_id: auth.record.key_id, requested_tenant: tenantId, path: req.path });
       return publicError(res, 403, "tenant_scope_denied");
     }
@@ -3387,6 +3394,9 @@ export function createUniversalCoreService(options = {}) {
   const providerSetupLinkBootstrapKey = String(
     options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
   ).trim();
+  const providerSetupLinkServiceKey = String(
+    options.providerSetupLinkServiceKey ?? process.env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY ?? "",
+  ).trim();
   const providerSetupLinkTenantId = String(
     options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
   ).trim();
@@ -3425,6 +3435,15 @@ export function createUniversalCoreService(options = {}) {
       // rest of Universal Core. Do not log the seed or its hash.
       audit.append("core_provider_setup_link_key_bootstrap_unavailable", {
         tenant_id: providerSetupLinkTenantId || null,
+        reason: providerSetupLinkBootstrapErrorCode(error),
+      });
+    }
+  }
+  if (providerSetupLinkServiceKey) {
+    try {
+      keyStore.ensureProviderSetupLinkServiceKey({ secret: providerSetupLinkServiceKey });
+    } catch (error) {
+      audit.append("core_provider_setup_link_service_key_bootstrap_unavailable", {
         reason: providerSetupLinkBootstrapErrorCode(error),
       });
     }
@@ -3698,12 +3717,12 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
   });
-  app.post("/v1/generic-agents/providers/openai/setup-links", createAuth(keyStore, audit, SCOPES.WRITE_PROVIDER_SETUP_LINK), async (req, res) => {
+  app.post("/v1/generic-agents/providers/openai/setup-links", createAuth(keyStore, audit, SCOPES.WRITE_PROVIDER_SETUP_LINK, { allowProviderSetupService: true }), async (req, res) => {
     if (!tenantProviderSetupLinks) return publicError(res, 503, "tenant_provider_setup_not_configured");
     // `admin:tenant` is intentionally not a wildcard here. This endpoint
     // mints a credential-entry capability, so it accepts only the exact
     // bootstrap key created from the approved MCP→Core binding.
-    if (!isDedicatedProviderSetupLinkIssuer(req.coreKey, req.tenantId)) {
+    if (!isProviderSetupLinkIssuer(req.coreKey, req.tenantId)) {
       audit.append("tenant_openai_provider_setup_link_issuer_blocked", {
         tenant_id: req.tenantId,
         key_id: req.coreKey.key_id,

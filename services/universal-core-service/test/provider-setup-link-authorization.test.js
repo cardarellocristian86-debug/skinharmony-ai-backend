@@ -33,13 +33,13 @@ async function request(base, method, pathname, body, key) {
 
 const OWNER_SUBJECT_FINGERPRINT = `osf_${"a".repeat(64)}`;
 
-function signedOwnerContext(tenantId, signingSecret, approvalDigest, issuedAt = new Date().toISOString()) {
+function signedOwnerContext(tenantId, signingSecret, approvalDigest, issuedAt = new Date().toISOString(), tenantOwner = false) {
   const context = {
     assertion_version: "owner_context_assertion_v1",
     audience: "nira_core_bridge",
     tenant_id: tenantId,
-    access_mode: "god_mode",
-    role: "owner_root",
+    access_mode: tenantOwner ? "tenant_owner" : "god_mode",
+    role: tenantOwner ? "tenant_owner" : "owner_root",
     // The provider setup route accepts only the OAuth owner assertion emitted
     // by the browser connection. A test-only delegated actor would make this
     // look like an MCP bearer bypass rather than exercising the real gate.
@@ -259,6 +259,41 @@ test("provider setup-link issuance requires the bound bootstrap key and a signed
     }, broadLegacy.json.key);
     assert.equal(directDelete.status, 410);
     assert.equal(directDelete.json.error, "provider_setup_link_required");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
+    else process.env.CORE_SERVICE_ADMIN_KEY = previousAdmin;
+  }
+});
+
+test("a service issuer is limited to each signed tenant-owner context", async () => {
+  const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
+  process.env.CORE_SERVICE_ADMIN_KEY = "provider-setup-service-admin";
+  const signingSecret = "provider-setup-service-owner-context-signing-secret";
+  const serviceKey = "provider-setup-service-key";
+  const issued = [];
+  const service = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `provider-setup-service-${Date.now()}-${Math.random()}`),
+    providerSetupLinkServiceKey: serviceKey,
+    ownerContextSigningSecret: signingSecret,
+    tenantProviderSetupLinks: { async issue(input) { issued.push(input); return { token: "local_test_setup_token_abcdefghijklmnopqrstuvwxyz", proof: "local_test_setup_proof_abcdefghijklmnopqrstuvwxyz", link_id: "psl_local_test_setup_link", expires_at: "2030-01-01T00:00:00.000Z" }; } },
+  });
+  const { server, base } = await listen(service.app);
+  try {
+    const ownerA = signedOwnerContext("tenant-a", signingSecret, "", new Date().toISOString(), true);
+    const allowedA = await request(base, "POST", "/v1/generic-agents/providers/openai/setup-links", { tenant_id: "tenant-a", owner_context: ownerA }, serviceKey);
+    assert.equal(allowedA.status, 201);
+    assert.equal(allowedA.json.tenant_id, "tenant-a");
+
+    const forged = { ...ownerA, tenant_id: "tenant-b" };
+    const denied = await request(base, "POST", "/v1/generic-agents/providers/openai/setup-links", { tenant_id: "tenant-b", owner_context: forged }, serviceKey);
+    assert.equal(denied.status, 403);
+    assert.equal(denied.json.error, "owner_context_required");
+
+    const ownerB = signedOwnerContext("tenant-b", signingSecret, "", new Date().toISOString(), true);
+    const allowedB = await request(base, "POST", "/v1/generic-agents/providers/openai/setup-links", { tenant_id: "tenant-b", owner_context: ownerB }, serviceKey);
+    assert.equal(allowedB.status, 201);
+    assert.deepEqual(issued.map((entry) => entry.tenant_id), ["tenant-a", "tenant-b"]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;

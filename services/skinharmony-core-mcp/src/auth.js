@@ -42,6 +42,16 @@ function applyOwnerRoot(identity, config) {
   };
 }
 
+function applyTenantProviderOwner(identity, config) {
+  // A tenant administrator may manage only the provider credentials of the
+  // tenant carried by their verified token. This is deliberately separate
+  // from SkinHarmony's global owner_root emergency/governance role.
+  if (identity.kind !== "oauth" || identity.providerSetupOwner === true) return identity;
+  const role = String(identity.tenantRole || "").trim();
+  if (!role || !(config.tenantOwnerRoles || []).includes(role)) return identity;
+  return { ...identity, role: role === "owner_root" ? "tenant_owner" : role, providerSetupOwner: true };
+}
+
 export class JwksCache {
   constructor(fetchImpl = fetch, ttlMs = 300_000) {
     this.fetch = fetchImpl;
@@ -82,11 +92,13 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (payload.nbf && payload.nbf > now + 30) throw new Error("jwt_not_active");
   const tenantId = String(payload[config.tenantClaim] || "").trim();
   if (!tenantId) throw new Error("jwt_tenant_missing");
+  const tenantRole = String(payload[config.tenantOwnerRoleClaim] || "").trim();
   return {
     kind: "oauth",
     subject: String(payload.sub || ""),
     ...(payload.azp || payload.client_id ? { clientId: String(payload.azp || payload.client_id) } : {}),
     tenantId,
+    ...(tenantRole ? { tenantRole } : {}),
     scopes: tokenScopes(payload)
   };
 }
@@ -102,7 +114,7 @@ export function createAuthenticator(config, options = {}) {
       return applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config);
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
-    return applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config);
+    return applyTenantProviderOwner(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);
   };
 }
 

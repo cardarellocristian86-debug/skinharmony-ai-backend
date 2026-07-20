@@ -49,6 +49,12 @@ services:
         sync: false
       - key: CORE_PROVIDER_SETUP_LINK_KEY
         generateValue: true
+      - key: CORE_PROVIDER_SETUP_LINK_SERVICE_KEY
+        generateValue: true
+      - key: MCP_TENANT_OWNER_ROLE_CLAIM
+        value: https://skinharmony.it/role
+      - key: MCP_TENANT_OWNER_ROLES
+        value: tenant_owner,tenant_admin,owner_root
       # Render generates this once; Universal Core consumes it through an
       # internal fromService reference. It is not an OpenAI key.
       - key: CORE_OWNER_CONTEXT_SIGNING_SECRET

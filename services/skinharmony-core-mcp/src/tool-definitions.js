@@ -464,7 +464,7 @@ export const TOOLS = [
     provider: { type: "object", additionalProperties: true },
   }, ["ok", "tenant_id", "provider"]) }),
   tool("tenant_provider_openai_setup_panel", "Open secure OpenAI setup", "Use this to open the fixed OpenAI connection panel. The user presses one button there to generate a one-time secure link; never ask them to paste an API key into chat.", object(), ["core:read"], true, true, { meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html", "openai/toolInvocation/invoking": "Apro la configurazione sicura…", "openai/toolInvocation/invoked": "Configurazione sicura pronta." } }),
-  tool("tenant_provider_openai_setup_link", "Connect OpenAI securely", "Use immediately when the user asks to connect OpenAI or configure an existing API key. Returns the fixed protected owner portal; only after fresh OAuth verification does that portal mint a short-lived one-time page for entering the key. Never ask for the key in ChatGPT or Codex. Opening the portal does not enable model execution.", object(), ["core:govern"], false, false, { outputSchema: object({
+  tool("tenant_provider_openai_setup_link", "Connect OpenAI securely", "Use immediately when the user asks to connect OpenAI, configure an existing API key, or create agents and no provider is connected. Returns the fixed protected portal for the authenticated tenant administrator; only after fresh OAuth verification does that portal mint a short-lived one-time page for entering the key. Never ask for the key in ChatGPT or Codex. Opening the portal does not enable model execution.", object(), ["core:govern"], false, false, { outputSchema: object({
     ok: { type: "boolean" },
     tenant_id: { type: "string" },
     setup_url: { type: "string", format: "uri" },

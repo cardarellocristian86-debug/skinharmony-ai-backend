@@ -135,6 +135,31 @@ test("never elevates an OAuth identity from a client ID alone", async () => {
   assert.equal(identity.providerSetupOwner, undefined);
 });
 
+test("grants provider setup only to a tenant-owner role in the verified token", async () => {
+  const fixture = auth0Fixture({
+    sub: "google-oauth2|tenant-owner",
+    scope: "core:read",
+    "https://skinharmony.it/role": "tenant_owner",
+  });
+  const identity = await createAuthenticator({
+    ...fixture.config,
+    tenantOwnerRoleClaim: "https://skinharmony.it/role",
+    tenantOwnerRoles: ["tenant_owner", "tenant_admin", "owner_root"],
+    codexKeys: [], godModeEnabled: false, godModeEmergencyStop: false,
+  }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.equal(identity.tenantId, "tenant-a");
+  assert.equal(identity.role, "tenant_owner");
+  assert.equal(identity.providerSetupOwner, true);
+
+  const memberFixture = auth0Fixture({ "https://skinharmony.it/role": "member" });
+  const member = await createAuthenticator({
+    ...memberFixture.config,
+    tenantOwnerRoleClaim: "https://skinharmony.it/role",
+    tenantOwnerRoles: ["tenant_owner"], codexKeys: [], godModeEnabled: false,
+  }, { jwksCache: memberFixture.cache })(`Bearer ${memberFixture.token}`);
+  assert.equal(member.providerSetupOwner, undefined);
+});
+
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   const { token, config, cache } = auth0Fixture({ scope: "core:read" });
   assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });

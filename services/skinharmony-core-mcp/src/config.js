@@ -141,6 +141,10 @@ export function loadConfig(env = process.env) {
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
   const chatgptProviderSetupLinkKey = String(env.CORE_PROVIDER_SETUP_LINK_KEY || "").trim();
+  // Unlike the legacy tenant-pinned bootstrap key, this key can only mint a
+  // setup link after Core verifies a signed tenant-owner context. It has no
+  // read, execution, vault-read, or generic tenant scopes.
+  const providerSetupLinkServiceKey = String(env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY || "").trim();
   if (chatgptTenantId && chatgptCoreKey && !universalCoreKeys[chatgptTenantId]) {
     universalCoreKeys[chatgptTenantId] = chatgptCoreKey;
   }
@@ -153,7 +157,7 @@ export function loadConfig(env = process.env) {
   // Health exposes only this boolean, never a tenant id, map entry, or key.
   // It represents the dedicated source binding used by the owner portal.
   const providerSetupLinkSourceConfigured = Boolean(
-    chatgptTenantId && hasOwn(universalCoreProviderSetupLinkKeys, chatgptTenantId),
+    providerSetupLinkServiceKey || (chatgptTenantId && hasOwn(universalCoreProviderSetupLinkKeys, chatgptTenantId)),
   );
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
@@ -193,6 +197,7 @@ export function loadConfig(env = process.env) {
     universalCoreKey,
     universalCoreKeys,
     universalCoreProviderSetupLinkKeys,
+    providerSetupLinkServiceKey,
     providerSetupLinkSourceConfigured,
     suiteControlPlaneUrl,
     suiteControlPlaneKeys: suiteControlPlaneBindings.keys,
@@ -204,6 +209,8 @@ export function loadConfig(env = process.env) {
     runtimeBuildCommit,
     defaultTenantId,
     tenantClaim,
+    tenantOwnerRoleClaim: String(env.MCP_TENANT_OWNER_ROLE_CLAIM || "https://skinharmony.it/role").trim(),
+    tenantOwnerRoles: csv(env.MCP_TENANT_OWNER_ROLES || "tenant_owner,tenant_admin,owner_root"),
     sharedMemoryRoot,
     databaseUrl,
     collaborationDatabaseUrl,

@@ -115,6 +115,16 @@ test("maps the generated provider setup-link key only to the configured ChatGPT 
   assert.equal(config.providerSetupLinkSourceConfigured, true);
 });
 
+test("accepts a tenant-neutral provider setup-link service key", () => {
+  const config = loadConfig({
+    CORE_PROVIDER_SETUP_LINK_SERVICE_KEY: "service-provider-link-key",
+  });
+
+  assert.equal(config.providerSetupLinkServiceKey, "service-provider-link-key");
+  assert.equal(config.providerSetupLinkSourceConfigured, true);
+  assert.deepEqual(config.universalCoreProviderSetupLinkKeys, {});
+});
+
 test("requires a tenant binding for the dedicated provider setup-link key", () => {
   assert.throws(
     () => loadConfig({ CORE_PROVIDER_SETUP_LINK_KEY: "scoped-provider-link-key" }),
