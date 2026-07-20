@@ -46,6 +46,7 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.openai_research_fallback_enabled, false);
   assert.equal(health.openai_research_fallback_configured, false);
   assert.equal(health.provider_setup_link_source_configured, false);
+  assert.equal(health.owner_context_signing_configured, false);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
@@ -58,9 +59,11 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
 test("reports only the dedicated provider setup-link source readiness", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((response) => response.json());
   assert.equal(health.provider_setup_link_source_configured, true);
+  assert.equal(health.owner_context_signing_configured, true);
+  assert.equal(JSON.stringify(health).includes("test-owner-context-signing-secret"), false);
   assert.equal(Object.hasOwn(health, "universalCoreProviderSetupLinkKeys"), false);
   assert.equal(Object.hasOwn(health, "provider_setup_link_source_tenant"), false);
-}, { providerSetupLinkSourceConfigured: true }));
+}, { providerSetupLinkSourceConfigured: true, ownerContextSigningSecret: "test-owner-context-signing-secret" }));
 
 test("returns RFC 9728 challenge when bearer is absent", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
@@ -558,7 +561,13 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
 
 test("records explicit owner confirmation and completes a write after the Core gate", async () => {
   let seenIdentity;
-  const app = createApp(config, {
+  const app = createApp({
+    ...config,
+    godModeEnabled: true,
+    godModeTenantIds: ["owner-private"],
+    godModeCodexEnabled: true,
+    godModeEmergencyStop: false,
+  }, {
     handlers: {
       workspace_write_document: async (_args, identity) => {
         seenIdentity = identity;
@@ -615,6 +624,45 @@ test("records explicit owner confirmation and completes a write after the Core g
     assert.equal(body.result.structuredContent.work_preflight.gate.allowed, true);
     assert.equal(body.result.structuredContent.work_preflight.governance.execution_authorized_by_core_gate, true);
     assert.equal(JSON.parse(body.result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("does not accept a raw confirmation flag from a non-owner MCP caller", async () => {
+  let seenIdentity;
+  const app = createApp(config, {
+    handlers: {
+      workspace_write_document: async (_args, identity) => {
+        seenIdentity = identity;
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 23,
+        method: "tools/call",
+        params: {
+          name: "workspace_write_document",
+          arguments: {
+            path: "reports/fix.md",
+            content: "untrusted",
+            owner_confirmed: true,
+            confirmation_reference: "caller supplied confirmation",
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(seenIdentity.ownerConfirmed, false);
+    assert.equal(seenIdentity.confirmationReference, "");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -682,7 +730,9 @@ test("publishes the fixed secure OpenAI setup panel", async () => serve(async (b
   const resource = resources.result.resources.find((item) => item.uri === "ui://skinharmony/openai-provider-setup.html");
   assert(resource);
   const read = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "resources/read", params: { uri: resource.uri } }) }).then((response) => response.json());
-  assert.match(read.result.contents[0].text, /Crea link sicuro/);
+  assert.match(read.result.contents[0].text, /Collega API key/);
+  assert.match(read.result.contents[0].text, /link monouso verrà creato solo nella pagina protetta/);
+  assert.doesNotMatch(read.result.contents[0].text, /setup_proof|setup_url.*provider-setup/);
   const listed = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 43, method: "tools/list" }) }).then((response) => response.json());
   const panel = listed.result.tools.find((tool) => tool.name === "tenant_provider_openai_setup_panel");
   assert.equal(panel.annotations.readOnlyHint, true);

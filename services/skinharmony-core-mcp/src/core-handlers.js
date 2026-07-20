@@ -2,6 +2,11 @@ import crypto from "node:crypto";
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
+import {
+  PROVIDER_SETUP_LINK_BINDING_OPERATION_CLASS,
+  buildProviderSetupLinkBindingEnvelope,
+  providerSetupLinkBindingApprovalDigest,
+} from "../../universal-core-service/src/providerSetupLinkBinding.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 
@@ -14,9 +19,11 @@ function ownerContextCanonical(context) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
     binding_hash: context.binding_hash,
+    approval_digest: context.approval_digest,
   });
 }
 
@@ -195,26 +202,46 @@ function ownerBindingStatus(config, identity) {
     kind: identity.kind || "unknown",
     role: identity.role || "standard",
     god_mode: identity.godMode === true,
-    owner_confirmation_satisfied: identity.godMode === true,
+    owner_confirmation_satisfied: isVerifiedOwnerRoot(identity),
     binding_checks: {
       enabled: config.godModeEnabled === true,
       emergency_stop: config.godModeEmergencyStop === true,
       tenant_allowed: tenantIds.includes(identity.tenantId),
       subject_allowed: (config.godModeSubjects || []).includes(identity.subject),
-      client_allowed: (config.godModeClientIds || []).includes(identity.clientId),
       codex_delegate_allowed: identity.kind === "codex" && config.godModeCodexEnabled === true,
     },
   };
 }
 
+function isVerifiedOwnerRoot(identity) {
+  return identity?.godMode === true && identity?.role === "owner_root";
+}
+
 function requireProviderSetupOwner(identity) {
-  if (identity?.godMode !== true || identity?.role !== "owner_root") {
+  // A provider setup link ultimately accepts a credential. A generic Codex
+  // bearer or a client-ID-only OAuth elevation can coordinate work but cannot
+  // authorize this subject-allowlisted owner-only flow.
+  if (
+    identity?.kind !== "oauth" ||
+    !isVerifiedOwnerRoot(identity) ||
+    identity?.providerSetupOwner !== true ||
+    !String(identity?.subject || "").trim()
+  ) {
     throw new Error("owner_required");
   }
 }
 
+function hasExplicitVerifiedOwnerConfirmation(identity) {
+  return isVerifiedOwnerRoot(identity) && identity?.ownerConfirmed === true;
+}
+
+function verifiedConfirmationReference(identity) {
+  if (!hasExplicitVerifiedOwnerConfirmation(identity)) return "";
+  return String(identity?.confirmationReference || "").slice(0, 240);
+}
+
 function applyVerifiedOwnerConfirmation(payload, identity) {
-  if (identity.godMode !== true) return payload;
+  if (!hasExplicitVerifiedOwnerConfirmation(identity)) return payload;
   const verifiedGovernance = (governance) => ({
     ...(governance || {}),
     owner_confirmation_satisfied: true,
@@ -288,10 +315,33 @@ export function createCoreHandlers(config, options = {}) {
     return payload;
   }
 
-  function ownerContext(identity, requestBinding) {
-    if (identity.godMode !== true) {
+  function ownerContext(identity, options = {}) {
+    const optionObject = options && typeof options === "object" && !Array.isArray(options);
+    const requestBinding = optionObject ? options.requestBinding : options;
+    const approvalEnvelope = optionObject ? options.approvalEnvelope : undefined;
+    const providerSetup = optionObject && options.providerSetup === true;
+
+    // Generic owner assertions are signed with the tenant Core key and bind
+    // the exact request body. Provider setup uses a separate signing key and
+    // an OAuth-subject fingerprint, so it cannot be replayed as a generic
+    // Core owner assertion (or vice versa).
+    if (providerSetup) {
+      if (
+        !isVerifiedOwnerRoot(identity) ||
+        identity.kind !== "oauth" ||
+        identity.providerSetupOwner !== true ||
+        !String(identity.subject || "").trim() ||
+        String(config.ownerContextSigningSecret || "").length < 32
+      ) {
+        return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      }
+    } else if (identity.godMode !== true) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
+    const approvalDigest = approvalEnvelope
+      ? providerSetupLinkBindingApprovalDigest(approvalEnvelope, identity.tenantId)
+      : "";
+    const signingKey = providerSetup ? config.ownerContextSigningSecret : coreKey(identity.tenantId);
     const context = {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
       audience: "nira_core_bridge",
@@ -305,11 +355,44 @@ export function createCoreHandlers(config, options = {}) {
         binding_version: "owner_request_binding_v1",
         binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
       }),
+      ...(providerSetup
+        ? {
+          owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", signingKey)
+            .update(`provider-setup-owner\u0000${String(identity.subject).trim()}`)
+            .digest("hex")}`,
+        }
+        : {}),
+      ...(approvalDigest ? { approval_digest: approvalDigest } : {}),
     };
-    const digest = crypto.createHmac("sha256", coreKey(identity.tenantId))
+    const digest = crypto.createHmac("sha256", signingKey)
       .update(`owner-context\u0000${ownerContextCanonical(context)}`)
       .digest("hex");
     return { ...context, assertion: `ocs_${digest}` };
+  }
+
+  async function issueOwnerOpenAiSetupLink(identity, ttlMinutes = 10) {
+    requireProviderSetupOwner(identity);
+    const signedOwnerContext = ownerContext(identity, { providerSetup: true });
+    if (
+      !/^ocs_[a-f0-9]{64}$/.test(String(signedOwnerContext.assertion || "")) ||
+      !/^osf_[a-f0-9]{64}$/.test(String(signedOwnerContext.owner_subject_fingerprint || ""))
+    ) {
+      throw new Error("provider_setup_link_owner_context_unavailable");
+    }
+    return issueOpenAiProviderSetupLink({
+      config,
+      fetchImpl,
+      tenantId: identity.tenantId,
+      ttlMinutes,
+      ownerContext: signedOwnerContext,
+    });
+  }
+
+  function providerSetupPortalUrl() {
+    const portal = new URL("/connect/openai", config.publicUrl);
+    portal.search = "";
+    portal.hash = "";
+    return portal.toString();
   }
 
   async function memoryContext(input, identity) {
@@ -389,7 +472,7 @@ export function createCoreHandlers(config, options = {}) {
     }
   }
 
-  return {
+  const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
       tenant_id: identity.tenantId,
@@ -416,10 +499,10 @@ export function createCoreHandlers(config, options = {}) {
           source_tool: args.tool_name,
           ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
           ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
-          owner_confirmed: args.owner_confirmed === true || identity.ownerConfirmed === true,
+          owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
           owner_context: ownerContext(identity),
-          ...(args.confirmation_reference || identity.confirmationReference
-            ? { confirmation_reference: args.confirmation_reference || identity.confirmationReference }
+          ...(verifiedConfirmationReference(identity)
+            ? { confirmation_reference: verifiedConfirmationReference(identity) }
             : {}),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
           agent_presence: agentPresence,
@@ -563,14 +646,17 @@ export function createCoreHandlers(config, options = {}) {
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     tenant_provider_openai_status: async (_args, identity) => textResult(await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId)),
-    tenant_provider_openai_setup_link: async (args, identity) => {
+    tenant_provider_openai_setup_link: async (_args, identity) => {
       requireProviderSetupOwner(identity);
-      return textResult(await issueOpenAiProviderSetupLink({
-        config,
-        fetchImpl,
-        tenantId: identity.tenantId,
-        ttlMinutes: args.ttl_minutes,
-      }));
+      // The MCP response contains only the fixed owner portal. The actual
+      // one-time Core capability and its fragment-only proof are minted after
+      // a fresh OAuth owner session inside that portal, never in chat.
+      return textResult({
+        ok: true,
+        tenant_id: identity.tenantId,
+        setup_url: providerSetupPortalUrl(),
+        execution_enabled: false,
+      });
     },
     generic_agent_orchestration_create: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/runs/${encodeURIComponent(args.run_id)}/orchestration`, identity.tenantId, {
       method: "POST",
@@ -606,13 +692,56 @@ export function createCoreHandlers(config, options = {}) {
       body: { cases: args.cases, tenant_id: identity.tenantId },
     })),
     core_gate_action: async (args, identity) => {
+      const confirmed = hasExplicitVerifiedOwnerConfirmation(identity);
+      const confirmationReference = verifiedConfirmationReference(identity);
+      if (args.operation_class === PROVIDER_SETUP_LINK_BINDING_OPERATION_CLASS) {
+        requireProviderSetupOwner(identity);
+        // The caller never selects the commit for this binding. It is bound to
+        // the full SHA of the MCP process currently running on Render; if that
+        // identity is absent, the rule fails closed rather than minting an
+        // authorization for an arbitrary commit.
+        if (!/^[a-f0-9]{40}$/i.test(String(config.runtimeBuildCommit || ""))) {
+          throw new Error("provider_setup_link_build_identity_unavailable");
+        }
+        const binding = buildProviderSetupLinkBindingEnvelope({
+          tenantId: identity.tenantId,
+          targetCommit: config.runtimeBuildCommit,
+          confirmationReference,
+        });
+        const approvedBinding = { ...binding, owner_confirmed: confirmed };
+        return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
+          method: "POST",
+          body: {
+            ...approvedBinding,
+            owner_context: ownerContext(identity, {
+              providerSetup: true,
+              approvalEnvelope: approvedBinding,
+              requestBinding: ownerRequestBinding("core_action_evaluator", approvedBinding),
+            }),
+          },
+        }));
+      }
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
         project_id: args.project_id,
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
-      const requestBody = sanitizeCoreBody({ ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId });
+      const {
+        owner_confirmed: _untrustedOwnerConfirmation,
+        confirmation_reference: _untrustedConfirmationReference,
+        tenant_id: _untrustedTenantId,
+        authenticated_tenant_id: _untrustedAuthenticatedTenantId,
+        owner_context: _untrustedOwnerContext,
+        ...safeArgs
+      } = args;
+      const requestBody = sanitizeCoreBody({
+        ...safeArgs,
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        tenant_id: identity.tenantId,
+        owner_confirmed: confirmed,
+        ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
+      });
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
         body: {
@@ -622,6 +751,14 @@ export function createCoreHandlers(config, options = {}) {
       }));
     }
   };
+  // The browser portal is part of this MCP process, but it is not an MCP tool.
+  // Keep its raw link/proof issuance helper out of the enumerable tool map so
+  // it cannot be discovered or invoked through the connector protocol.
+  Object.defineProperty(handlers, "issueOwnerOpenAiSetupLink", {
+    value: issueOwnerOpenAiSetupLink,
+    enumerable: false,
+  });
+  return handlers;
 }
 
 export function createCoreWriteGuard(config, options = {}) {
@@ -635,8 +772,8 @@ export function createCoreWriteGuard(config, options = {}) {
       external_side_effect: action.external_side_effect === true,
       contains_customer_data: action.contains_customer_data === true,
       rollback_ready: action.rollback_ready === undefined ? action.external_side_effect !== true : action.rollback_ready === true,
-      owner_confirmed: identity.ownerConfirmed === true,
-      ...(identity.confirmationReference ? { confirmation_reference: identity.confirmationReference } : {})
+      owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
+      ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {})
     }, identity);
     const payload = result.structuredContent || {};
     const authorization = payload.authorization || {};

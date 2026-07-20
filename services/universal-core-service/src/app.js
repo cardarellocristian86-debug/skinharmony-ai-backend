@@ -62,6 +62,11 @@ import {
 } from "./intelligenceEngine.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
+import {
+  isProviderSetupLinkBindingAttempt,
+  providerSetupLinkBindingApprovalDigest,
+  providerSetupLinkBindingAuditFields,
+} from "./providerSetupLinkBinding.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
 import {
@@ -96,6 +101,9 @@ const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-ser
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
 const BUILD_COMMIT_SHA = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim() || null;
+const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
+const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
+const TRUSTED_PROVIDER_SETUP_ORIGIN = "https://skinharmony-universal-core.onrender.com";
 
 function nowIso() {
   return new Date().toISOString();
@@ -110,9 +118,11 @@ function ownerContextCanonical(context) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
     binding_hash: context.binding_hash,
+    approval_digest: context.approval_digest,
   });
 }
 
@@ -152,6 +162,56 @@ function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding,
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
 }
 
+function hasProviderSetupOwnerContext(context) {
+  return context?.delegated_actor === "oauth" &&
+    PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN.test(String(context?.owner_subject_fingerprint || ""));
+}
+
+function isDedicatedProviderSetupLinkIssuer(keyRecord, tenantId) {
+  return Boolean(
+    keyRecord &&
+    keyRecord.tenant_id === tenantId &&
+    keyRecord.key_type === "connector" &&
+    keyRecord.status === "active" &&
+    keyRecord.expires_at === null &&
+    keyRecord.preset === null &&
+    keyRecord.brand_scope === "" &&
+    keyRecord.metadata?.bootstrap_kind === PROVIDER_SETUP_LINK_ISSUER_KIND &&
+    Array.isArray(keyRecord.allowed_scopes) &&
+    keyRecord.allowed_scopes.length === 1 &&
+    keyRecord.allowed_scopes[0] === SCOPES.WRITE_PROVIDER_SETUP_LINK
+  );
+}
+
+function trustedProviderSetupBaseUrl(value) {
+  const raw = String(value || TRUSTED_PROVIDER_SETUP_ORIGIN).trim();
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("provider_setup_public_url_invalid");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.origin !== TRUSTED_PROVIDER_SETUP_ORIGIN ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new Error("provider_setup_public_url_invalid");
+  }
+  return parsed.origin;
+}
+
+function sameDigest(left, right) {
+  const actual = String(left || "");
+  const expected = String(right || "");
+  if (!/^pslb_[a-f0-9]{64}$/i.test(actual) || actual.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
+}
+
 function readSecret(req) {
   const auth = req.get("authorization") || "";
   if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
@@ -162,7 +222,8 @@ function publicError(res, status, code, message = code) {
   return res.status(status).json({ ok: false, error: code, message });
 }
 
-function providerSetupHtml(res, status, html) {
+function providerSetupHtml(res, status, html, { scriptNonce = "" } = {}) {
+  const scriptPolicy = scriptNonce ? `; script-src 'nonce-${scriptNonce}'` : "";
   return res
     .status(status)
     .set({
@@ -171,10 +232,14 @@ function providerSetupHtml(res, status, html) {
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
-      "content-security-policy": "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; style-src 'unsafe-inline'",
+      "content-security-policy": `default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; style-src 'unsafe-inline'${scriptPolicy}`,
     })
     .type("html")
     .send(html);
+}
+
+function providerSetupFormHtml(scriptNonce) {
+  return `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post" id="provider-setup-form"><input type="hidden" name="setup_proof" id="setup-proof"><label>API key<input name="api_key" type="password" autocomplete="new-password" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit" id="submit">Collega in modo sicuro</button></form><p id="link-error" role="alert"></p><script nonce="${scriptNonce}">(function(){const proof=new URLSearchParams(location.hash.slice(1)).get("proof")||"";const input=document.getElementById("setup-proof");const button=document.getElementById("submit");const error=document.getElementById("link-error");if(!/^[A-Za-z0-9_-]{32,120}$/.test(proof)){input.disabled=true;button.disabled=true;error.textContent="Link incompleto. Torna a ChatGPT e apri di nuovo il collegamento sicuro.";return;}input.value=proof;history.replaceState(null,document.title,location.pathname);})();</script></body></html>`;
 }
 
 function providerSetupLinkBootstrapErrorCode(error) {
@@ -3325,6 +3390,18 @@ export function createUniversalCoreService(options = {}) {
   const providerSetupLinkTenantId = String(
     options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
   ).trim();
+  // This is intentionally distinct from every Core bearer key. It proves an
+  // owner confirmation originated at the MCP bridge, rather than from any
+  // caller that can reach the action-evaluator endpoint.
+  const ownerContextSigningSecretCandidate = String(
+    options.ownerContextSigningSecret ?? process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET ?? "",
+  ).trim();
+  // The bridge assertion is an authorization credential, not a convenience
+  // flag. Short values are treated as absent so the sensitive setup flow
+  // fails closed rather than silently using weak signing material.
+  const ownerContextSigningSecret = ownerContextSigningSecretCandidate.length >= 32
+    ? ownerContextSigningSecretCandidate
+    : "";
   let providerSetupLinkBootstrapConfigured = false;
   let providerSetupLinkBootstrapState = getProviderSetupLinkBootstrapState({
     key: providerSetupLinkBootstrapKey,
@@ -3384,7 +3461,12 @@ export function createUniversalCoreService(options = {}) {
     ? createTenantProviderCredentialStore({ connectionString: governedAgentDatabaseUrl, masterSecret: credentialVaultSecret })
     : null);
   const tenantProviderSetupLinks = options.tenantProviderSetupLinks || (governedAgentDatabaseUrl ? createTenantProviderSetupLinkStore({ connectionString: governedAgentDatabaseUrl }) : null);
-  const providerSetupBaseUrl = String(process.env.CORE_SERVICE_PUBLIC_URL || "https://skinharmony-universal-core.onrender.com").replace(/\/$/, "");
+  // A setup URL carries an opaque capability in its path. Never make its
+  // destination configurable to an arbitrary host: that would turn a bad
+  // environment value into a token exfiltration redirect.
+  const providerSetupBaseUrl = trustedProviderSetupBaseUrl(
+    options.providerSetupBaseUrl ?? process.env.CORE_SERVICE_PUBLIC_URL,
+  );
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3410,19 +3492,55 @@ export function createUniversalCoreService(options = {}) {
   app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => {
     const token = String(req.params.token || "").trim();
     if (!/^[A-Za-z0-9_-]{30,120}$/.test(token)) return providerSetupHtml(res, 404, "Link non valido.");
-    return providerSetupHtml(res, 200, `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post"><label>API key<input name="api_key" type="password" autocomplete="off" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit">Collega in modo sicuro</button></form></body></html>`);
+    const scriptNonce = crypto.randomBytes(18).toString("base64");
+    return providerSetupHtml(res, 200, providerSetupFormHtml(scriptNonce), { scriptNonce });
   });
   app.post("/v1/generic-agents/providers/openai/setup/:token", async (req, res) => {
     if (!tenantProviderSetupLinks || !tenantProviderCredentials) return providerSetupHtml(res, 503, "Configurazione provider non disponibile.");
-    try {
-      const link = await tenantProviderSetupLinks.consume({ token: req.params.token });
-      if (!link) return providerSetupHtml(res, 410, "Link scaduto o già usato.");
-      await tenantProviderCredentials.saveOpenAi({ tenant_id: link.tenant_id, api_key: req.body?.api_key });
-      audit.append("tenant_openai_provider_setup_completed", { tenant_id: link.tenant_id, provider: "openai" });
-      return providerSetupHtml(res, 200, "<h1>OpenAI collegato</h1><p>Puoi chiudere questa pagina e tornare in ChatGPT.</p>");
-    } catch {
-      return providerSetupHtml(res, 400, "Chiave non valida. Richiedi un nuovo link da ChatGPT.");
+    // A setup proof is an irreversible credential-entry capability. Do not use
+    // the legacy claim → save → finalize sequence here: the link store locks
+    // and consumes the active row only inside the very same transaction that
+    // receives the encrypted credential upsert.
+    if (
+      typeof tenantProviderSetupLinks.consumeAndPersist !== "function" ||
+      typeof tenantProviderCredentials.ensureInitialized !== "function" ||
+      typeof tenantProviderCredentials.saveOpenAiInTransaction !== "function"
+    ) {
+      return providerSetupHtml(res, 503, "Configurazione provider non disponibile.");
     }
+    let completed;
+    try {
+      completed = await tenantProviderSetupLinks.consumeAndPersist({
+        token: req.params.token,
+        proof: req.body?.setup_proof,
+        prepare: () => tenantProviderCredentials.ensureInitialized(),
+        persist: ({ tenant_id, client }) => tenantProviderCredentials.saveOpenAiInTransaction({
+          tenant_id,
+          api_key: req.body?.api_key,
+          client,
+        }),
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "openai_api_key_format_invalid") {
+        // Validation happens inside the transaction, so the rollback leaves
+        // this short-lived proof active. Let the owner correct a typo without
+        // forcing another OAuth/link-issuance round trip.
+        return providerSetupHtml(res, 400, "Chiave non valida. Correggila e riprova.");
+      }
+      if (code === "setup_token_invalid" || code === "setup_proof_invalid") {
+        return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
+      }
+      return providerSetupHtml(res, 503, "Il collegamento non è stato completato. Torna a ChatGPT e verifica lo stato prima di riprovare.");
+    }
+    if (!completed) return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
+    audit.append("tenant_openai_provider_setup_completed", {
+      tenant_id: completed.tenant_id,
+      provider: "openai",
+      link_id: completed.link_id,
+      owner_subject_fingerprint: completed.owner_subject_fingerprint,
+    });
+    return providerSetupHtml(res, 200, "<h1>OpenAI collegato</h1><p>Puoi chiudere questa pagina e tornare in ChatGPT.</p>");
   });
 
   app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
@@ -3580,20 +3698,76 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
   });
-  app.post("/v1/generic-agents/providers/openai/setup-links", createAuth(keyStore, audit, SCOPES.WRITE_PROVIDER_SETUP_LINK), async (req,res)=>{if(!tenantProviderSetupLinks)return publicError(res,503,"tenant_provider_setup_not_configured");const link=await tenantProviderSetupLinks.issue({tenant_id:req.tenantId,ttl_minutes:req.body?.ttl_minutes});audit.append("tenant_openai_provider_setup_link_issued",{tenant_id:req.tenantId,key_id:req.coreKey.key_id,expires_at:link.expires_at});return res.status(201).json({ok:true,tenant_id:req.tenantId,setup_url:`${providerSetupBaseUrl}/v1/generic-agents/providers/openai/setup/${link.token}`,expires_at:link.expires_at,execution_enabled:false});});
+  app.post("/v1/generic-agents/providers/openai/setup-links", createAuth(keyStore, audit, SCOPES.WRITE_PROVIDER_SETUP_LINK), async (req, res) => {
+    if (!tenantProviderSetupLinks) return publicError(res, 503, "tenant_provider_setup_not_configured");
+    // `admin:tenant` is intentionally not a wildcard here. This endpoint
+    // mints a credential-entry capability, so it accepts only the exact
+    // bootstrap key created from the approved MCP→Core binding.
+    if (!isDedicatedProviderSetupLinkIssuer(req.coreKey, req.tenantId)) {
+      audit.append("tenant_openai_provider_setup_link_issuer_blocked", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+      });
+      return publicError(res, 403, "provider_setup_link_issuer_required");
+    }
+    const ownerContext = req.body?.owner_context;
+    if (!verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId) || !hasProviderSetupOwnerContext(ownerContext)) {
+      audit.append("tenant_openai_provider_setup_link_owner_context_blocked", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+      });
+      return publicError(res, 403, "owner_context_required");
+    }
+    let link;
+    try {
+      link = await tenantProviderSetupLinks.issue({
+        tenant_id: req.tenantId,
+        owner_subject_fingerprint: ownerContext.owner_subject_fingerprint,
+        ttl_minutes: req.body?.ttl_minutes,
+      });
+    } catch {
+      // Keep database/provider-link implementation details out of this
+      // credential-capability endpoint. The portal can safely ask the owner
+      // to retry without exposing a token, proof, database error or secret.
+      audit.append("tenant_openai_provider_setup_link_issue_failed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+      });
+      return publicError(res, 503, "tenant_provider_setup_link_unavailable");
+    }
+    audit.append("tenant_openai_provider_setup_link_issued", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      link_id: link.link_id,
+      owner_subject_fingerprint: ownerContext.owner_subject_fingerprint,
+      expires_at: link.expires_at,
+    });
+    return res.status(201).json({
+      ok: true,
+      tenant_id: req.tenantId,
+      setup_url: `${providerSetupBaseUrl}/v1/generic-agents/providers/openai/setup/${link.token}`,
+      // This is delivered only to the server-side owner portal, which moves it
+      // into the URL fragment. It is never included in an MCP tool response.
+      setup_proof: link.proof,
+      link_id: link.link_id,
+      expires_at: link.expires_at,
+      execution_enabled: false,
+    });
+  });
   app.get("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
     return res.json({ ok: true, tenant_id: req.tenantId, provider: await tenantProviderCredentials.status({ tenant_id: req.tenantId }) });
   });
-  app.put("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
-    if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
-    try { const provider = await tenantProviderCredentials.saveOpenAi({ tenant_id: req.tenantId, api_key: req.body?.api_key }); audit.append("tenant_openai_provider_configured", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, provider: "openai", key_hint: provider.key_hint }); return res.status(201).json({ ok: true, tenant_id: req.tenantId, provider: { ...provider, execution_enabled: false } }); }
-    catch (error) { return publicError(res, 400, error.message || "tenant_provider_configuration_failed"); }
+  // Provider credentials are intentionally accepted only by a consumed, short-lived
+  // setup link. A normal Core key must never become a second, bypassable secret
+  // input channel, even when it has a broad write scope.
+  app.put("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    audit.append("tenant_openai_provider_direct_write_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    return publicError(res, 410, "provider_setup_link_required", "Use a one-time owner setup link.");
   });
-  app.delete("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
-    if (req.body?.owner_confirmed !== true) return publicError(res, 403, "owner_confirmation_required");
-    if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
-    const result = await tenantProviderCredentials.removeOpenAi({ tenant_id: req.tenantId }); audit.append("tenant_openai_provider_removed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, provider: "openai", removed: result.removed }); return res.json({ ok: true, tenant_id: req.tenantId, ...result });
+  app.delete("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    audit.append("tenant_openai_provider_direct_delete_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
+    return publicError(res, 410, "provider_setup_link_required", "Provider changes require the owner setup flow.");
   });
 
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
@@ -3770,6 +3944,7 @@ export function createUniversalCoreService(options = {}) {
       tenant_provider_vault: { configured: Boolean(tenantProviderCredentials), execution_enabled: false },
       provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
       provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
+      owner_context_signing_configured: Boolean(ownerContextSigningSecret),
       uptime_seconds: Math.round(process.uptime()),
     });
   });
@@ -4728,12 +4903,36 @@ export function createUniversalCoreService(options = {}) {
       req.tenantId,
       ownerRequestBinding("core_action_evaluator", req.body || {}),
     );
+    const providerSetupLinkAttempt = isProviderSetupLinkBindingAttempt(req.body);
+    // Provider setup has a second, deliberately separate assertion scheme.
+    // A Core bearer key must never be enough to mint a credential-entry link:
+    // the assertion must instead come from the OAuth owner bridge and be
+    // signed with the dedicated bridge secret.
+    const providerSetupLinkOwnerVerified = providerSetupLinkAttempt &&
+      Boolean(ownerContextSigningSecret) &&
+      verifyOwnerContextAssertion(
+        req.body?.owner_context,
+        ownerContextSigningSecret,
+        req.tenantId,
+      ) &&
+      hasProviderSetupOwnerContext(req.body?.owner_context);
+    const providerSetupLinkApprovalBound = providerSetupLinkAttempt &&
+      providerSetupLinkOwnerVerified &&
+      sameDigest(
+        req.body?.owner_context?.approval_digest,
+        providerSetupLinkBindingApprovalDigest(req.body, req.tenantId),
+      );
+    // The signed provider context proves who approved the request, while the
+    // envelope's own boolean proves that this exact request was actually
+    // confirmed. Do not promote a signed-but-explicitly-unconfirmed envelope.
+    const providerSetupLinkOwnerConfirmed = providerSetupLinkOwnerVerified &&
+      req.body?.owner_confirmed === true;
     const explicitAutomationConfirmation = req.body?.owner_confirmed === true &&
       req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
     const governedReq = Object.create(req);
     governedReq.body = {
       ...(req.body || {}),
-      owner_confirmed: trustedOwnerContext || explicitAutomationConfirmation,
+      owner_confirmed: trustedOwnerContext || providerSetupLinkOwnerConfirmed || explicitAutomationConfirmation,
     };
     const workPreflight = composeMandatoryWorkPreflight(governedReq, {
       domainPack: domainPackAccess.pack,
@@ -4746,11 +4945,26 @@ export function createUniversalCoreService(options = {}) {
       action_type: governedReq.body.action_type || input.context.metadata.action_type,
       publish_intent: governedReq.body.publish_intent === true,
     }), riskClassification);
-    const authorization = buildActionAuthorization(decisionContract, {
+    // Normalize the request *once* before both evaluation and audit. In
+    // particular, a caller-controlled tenant label must never influence either
+    // the authorization decision or the evidence emitted for it.
+    const evaluatedActionBody = {
       ...governedReq.body,
       operation_class: governedReq.body.operation_class || riskClassification.operation_class,
+      // The body is untrusted. The authorization gate must bind a scoped
+      // operation to the tenant authenticated by the Core key, not to a tenant
+      // label supplied by a caller.
       authenticated_tenant_id: req.tenantId,
-    });
+      tenant_id: req.tenantId,
+      // A caller cannot assert this flag itself. The provider setup-link
+      // binding requires a short-lived owner context signed by the MCP with a
+      // separate bridge secret, bound to this exact Blueprint envelope.
+      owner_context_verified: providerSetupLinkAttempt
+        ? providerSetupLinkOwnerVerified
+        : trustedOwnerContext,
+      owner_context_approval_bound: providerSetupLinkApprovalBound,
+    };
+    const authorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -4765,7 +4979,9 @@ export function createUniversalCoreService(options = {}) {
       action_risk_band: riskClassification.risk_band,
       action_reason_codes: riskClassification.reason_codes,
       confirmation_satisfied: authorization.confirmation_satisfied,
-      owner_identity_verified: trustedOwnerContext,
+      owner_identity_verified: trustedOwnerContext || providerSetupLinkOwnerVerified,
+      provider_setup_link_binding_authorized: authorization.allowed === true && providerSetupLinkAttempt,
+      ...providerSetupLinkBindingAuditFields(evaluatedActionBody),
     });
     res.json({
       ok: true,
@@ -5289,7 +5505,7 @@ export function createUniversalCoreService(options = {}) {
     const ownerContext = req.body?.owner_context && typeof req.body.owner_context === "object"
       ? req.body.owner_context
       : {};
-    const trustedOwnerContext = verifyOwnerContextAssertion(ownerContext, readSecret(req), req.tenantId);
+    const trustedOwnerContext = verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId);
     const explicitOwnerConfirmation = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const ownerConfirmed = explicitOwnerConfirmation || trustedOwnerContext;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only"

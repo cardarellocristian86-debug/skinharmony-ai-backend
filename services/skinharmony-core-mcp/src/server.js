@@ -12,7 +12,6 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
-import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
@@ -131,7 +130,7 @@ const app = createApp(config, {
 const openAiPortal = createOpenAiConnectPortal({
   config,
   authenticate: browserAuthenticate,
-  issueSetupLink: (tenantId) => issueOpenAiProviderSetupLink({ config, tenantId, ttlMinutes: 10 }),
+  issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
   providerStatus: (tenantId) => coreProvider("/v1/generic-agents/providers/openai", tenantId),
 });
 app.get("/connect/openai", openAiPortal.start);

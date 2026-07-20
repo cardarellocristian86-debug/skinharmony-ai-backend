@@ -27,13 +27,18 @@ function applyOwnerRoot(identity, config) {
   const tenantMatch = (config.godModeTenantIds || [config.godModeTenantId].filter(Boolean)).includes(identity.tenantId);
   const subjectAllowed = identity.kind === "codex"
     ? config.godModeCodexEnabled === true
-    : (config.godModeSubjects || []).includes(identity.subject) || (config.godModeClientIds || []).includes(identity.clientId);
+    // A client/application ID identifies an OAuth application, not a human
+    // owner. It must never elevate every user of that application. OAuth
+    // owner-root therefore requires the authenticated subject to be allowlisted
+    // explicitly; an empty subject allowlist fails closed.
+    : (config.godModeSubjects || []).includes(identity.subject);
   if (!enabled || !tenantMatch || !subjectAllowed) return identity;
   return {
     ...identity,
     role: "owner_root",
     godMode: true,
     scopes: [...new Set([...identity.scopes, ...config.supportedScopes, "owner:root"])],
+    ...(identity.kind === "oauth" ? { providerSetupOwner: true } : {}),
   };
 }
 

@@ -154,6 +154,21 @@ test("reports no owner portal source when its dedicated tenant binding is absent
   assert.equal(config.providerSetupLinkSourceConfigured, false);
 });
 
+test("loads the separate owner-context signing secret without exposing it through status flags", () => {
+  const signingSecret = "test-owner-context-signing-secret-0123456789";
+  const config = loadConfig({
+    CORE_OWNER_CONTEXT_SIGNING_SECRET: signingSecret,
+  });
+
+  assert.equal(config.ownerContextSigningSecret, signingSecret);
+  assert.equal(loadConfig({ CORE_OWNER_CONTEXT_SIGNING_SECRET: "too-short" }).ownerContextSigningSecret, "");
+});
+
+test("requires a full immutable build identity for the strict provider binding", () => {
+  assert.equal(loadConfig({ RENDER_GIT_COMMIT: "a".repeat(40) }).runtimeBuildCommit, "a".repeat(40));
+  assert.throws(() => loadConfig({ RENDER_GIT_COMMIT: "a".repeat(7) }), /full 40-character commit SHA/);
+});
+
 test("keeps browser OAuth audience separate from the MCP resource audience", () => {
   const config = loadConfig({
     NODE_ENV: "production",

@@ -37,8 +37,6 @@ services:
         value: "true"
       - key: NYRA_GOD_MODE_TENANT_IDS
         value: owner-private,codexai
-      - key: NYRA_GOD_MODE_CLIENT_IDS
-        value: tpc_nSXQ4C5oyjBo77MhtJnWXE
       - key: NYRA_GOD_MODE_CODEX_ENABLED
         value: "true"
       - key: NYRA_GOD_MODE_EMERGENCY_STOP
@@ -51,6 +49,9 @@ services:
         sync: false
       - key: CORE_PROVIDER_SETUP_LINK_KEY
         generateValue: true
+      # Set the same secret on Universal Core. Do not use an OpenAI key.
+      - key: CORE_OWNER_CONTEXT_SIGNING_SECRET
+        sync: false
       - key: SUITE_CONTROL_PLANE_URL
         value: https://skinharmony-suite-control.onrender.com
       - key: SUITE_CONTROL_PLANE_KEYS_JSON

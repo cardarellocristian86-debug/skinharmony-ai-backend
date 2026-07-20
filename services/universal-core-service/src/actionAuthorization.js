@@ -1,3 +1,11 @@
+import {
+  PROVIDER_SETUP_LINK_BINDING_ACTION_LABEL,
+  PROVIDER_SETUP_LINK_BINDING_BLUEPRINT_ID,
+  hasExactProviderSetupLinkBindingScope,
+  hasOnlyProviderSetupLinkBindingFields,
+  isProviderSetupLinkBindingAttempt,
+} from "./providerSetupLinkBinding.js";
+
 function cleanReference(value) {
   return String(value || "")
     .slice(0, 240)
@@ -164,6 +172,50 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     Number(body.predicted_probability) <= 1 && [true, false, 0, 1, "occurred", "not_occurred"].includes(body.actual_outcome) &&
     body.confirmation_outcome_id === body.outcome_id &&
     body.confirmation_target_tenant_id === body.target_tenant_id && isCleanReference(body.confirmation_reference);
+  // This is deliberately limited to the internal, Render-managed reference
+  // which lets Universal Core validate a one-time setup link issued by the
+  // MCP service. No secret value is present in the envelope: Render copies the
+  // existing source variable internally. It cannot create a provider, enable
+  // provider execution, alter Auth0, or target another tenant or service.
+  const providerSetupLinkBlueprintBinding =
+    isProviderSetupLinkBindingAttempt(body) &&
+    hasExactProviderSetupLinkBindingScope(body) &&
+    String(body.action_label || "") === PROVIDER_SETUP_LINK_BINDING_ACTION_LABEL &&
+    String(body.authenticated_tenant_id || "") === "codexai" && String(body.tenant_id || "") === "codexai" &&
+    body.external_side_effect === true && body.contains_customer_data === false && body.contains_secret === false &&
+    body.secret_value_transmitted === false && body.cross_tenant === false && body.destructive === false &&
+    body.bypass_orchestrator === false && body.rollback_ready === true && body.audit_ready === true &&
+    body.configuration_changes === true && exactCommit &&
+    ownerConfirmed === true &&
+    body.owner_context_verified === true && body.owner_context_approval_bound === true &&
+    String(body.environment || "") === "production" && String(body.target_branch || "") === "main" &&
+    String(body.resource_type || "") === "render_blueprint_from_service_env_binding" &&
+    String(body.render_blueprint_id || "") === PROVIDER_SETUP_LINK_BINDING_BLUEPRINT_ID &&
+    String(body.blueprint_path || "") === "render-universal-core.yaml" &&
+    String(body.source_service || "") === "skinharmony-core-mcp" &&
+    String(body.target_service || "") === "skinharmony-universal-core" &&
+    String(body.source_environment_variable || "") === "CORE_PROVIDER_SETUP_LINK_KEY" &&
+    String(body.target_environment_variable || "") === "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY" &&
+    String(body.tenant_environment_variable || "") === "CORE_PROVIDER_SETUP_LINK_TENANT_ID" &&
+    String(body.tenant_environment_value || "") === "codexai" &&
+    body.create_new === false && body.rotate_existing === false && body.delete === false &&
+    body.merge === false && body.production_deploy === false && body.deploy === false && body.auth0_changes === false &&
+    body.provider_execution === false && body.execution_enabled === false && body.force === false && body.admin_bypass === false &&
+    Array.isArray(body.allowed_environment_variables) && body.allowed_environment_variables.length === 2 &&
+    body.allowed_environment_variables[0] === "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY" &&
+    body.allowed_environment_variables[1] === "CORE_PROVIDER_SETUP_LINK_TENANT_ID" &&
+    String(body.confirmation_target_commit || "").toLowerCase() === String(body.target_commit || "").toLowerCase() &&
+    String(body.confirmation_target_branch || "") === "main" &&
+    String(body.confirmation_render_blueprint_id || "") === PROVIDER_SETUP_LINK_BINDING_BLUEPRINT_ID &&
+    String(body.confirmation_blueprint_path || "") === "render-universal-core.yaml" &&
+    String(body.confirmation_source_service || "") === "skinharmony-core-mcp" &&
+    String(body.confirmation_target_service || "") === "skinharmony-universal-core" &&
+    String(body.confirmation_source_environment_variable || "") === "CORE_PROVIDER_SETUP_LINK_KEY" &&
+    String(body.confirmation_target_environment_variable || "") === "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY" &&
+    String(body.confirmation_tenant_id || "") === "codexai" &&
+    isCleanReference(body.confirmation_reference);
+  const providerSetupLinkBlueprintBindingAttempt =
+    isProviderSetupLinkBindingAttempt(body);
   const reversibleInternalWrite =
     body.operation_class === "reversible_internal_collaboration_write" &&
     body.external_side_effect === false &&
@@ -281,7 +333,7 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     (!body.allowed_modes.includes("frida_local_agent") || (Array.isArray(body.target_allowlist) && body.target_allowlist.length > 0));
   const confirmationRequired = tenantScopedRead || sandboxedScopedWork
     ? false
-    : decisionContract.control_level === "confirm" || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || connectorMetadataRefreshAttempt || connectorKeyRotationAttempt || verifiedOutcomeRecordAttempt || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+    : decisionContract.control_level === "confirm" || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || providerSetupLinkBlueprintBindingAttempt || connectorMetadataRefreshAttempt || connectorKeyRotationAttempt || verifiedOutcomeRecordAttempt || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
   // The owner confirmation is bound to the exact staging target and branch. A
   // changed target or branch must never inherit a confirmation issued for it.
   const confirmationSatisfied = confirmationRequired && ownerConfirmed &&
@@ -290,14 +342,23 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     (!connectorMetadataRefreshAttempt || connectorMetadataRefresh) &&
     (!connectorKeyRotationAttempt || connectorKeyRotation) &&
     (!verifiedOutcomeRecordAttempt || verifiedOutcomeRecord) &&
+    (!providerSetupLinkBlueprintBindingAttempt || providerSetupLinkBlueprintBinding) &&
     (!draftPullRequestAttempt || reversibleDraftPullRequest) &&
     (!pullRequestMergeAttempt || reversiblePullRequestMerge) &&
     (!pullRequestReadyAttempt || reversiblePullRequestReady);
   const hardBlocked = decisionContract.state === "blocked" ||
     decisionContract.recommended_actions?.some?.((action) => action.blocked === true) === true ||
-    ((stagingPostgresAttempt || nyraGovernancePostgresAttempt || tenantProviderVaultSecretAttempt || connectorMetadataRefreshAttempt || connectorKeyRotationAttempt || verifiedOutcomeRecordAttempt) && (body.cross_tenant === true || body.destructive === true || body.bypass_orchestrator === true || body.contains_secret === true || body.secret_value_transmitted === true));
-  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || connectorMetadataRefresh || connectorKeyRotation || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
-  const riskAllowed = reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || connectorMetadataRefresh || connectorKeyRotation || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
+    ((stagingPostgresAttempt || nyraGovernancePostgresAttempt || tenantProviderVaultSecretAttempt || connectorMetadataRefreshAttempt || connectorKeyRotationAttempt || verifiedOutcomeRecordAttempt || providerSetupLinkBlueprintBindingAttempt) && (body.cross_tenant === true || body.destructive === true || body.bypass_orchestrator === true || body.contains_secret === true || body.secret_value_transmitted === true)) ||
+    (providerSetupLinkBlueprintBindingAttempt && (body.auth0_changes === true || body.provider_execution === true || body.execution_enabled === true)) ||
+    (providerSetupLinkBlueprintBindingAttempt && (
+      hasOnlyProviderSetupLinkBindingFields(body) === false ||
+      hasExactProviderSetupLinkBindingScope(body) === false ||
+      body.create_new === true || body.rotate_existing === true || body.delete === true ||
+      body.merge === true || body.production_deploy === true || body.deploy === true ||
+      body.force === true || body.admin_bypass === true
+    ));
+  const authorizedScope = tenantScopedRead || sandboxedScopedWork || reversibleInternalWrite || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+  const riskAllowed = reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
     ? ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""))
     : decisionContract.risk_band === "low";
   const executionAllowed = Boolean(
@@ -334,7 +395,9 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
                 ? "reversible_owner_confirmed_core_connector_key_rotation"
               : verifiedOutcomeRecord
                   ? "verified_outcome_record"
-              : reversibleBranchChange
+          : providerSetupLinkBlueprintBinding
+            ? "reversible_owner_confirmed_provider_setup_link_blueprint_binding"
+          : reversibleBranchChange
               ? "reversible_owner_confirmed_branch_change"
               : reversibleDraftPullRequest
                 ? "reversible_owner_confirmed_draft_pull_request"
@@ -345,6 +408,6 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
                   : deepSoftwareAnalysis
               ? "governed_deep_software_analysis"
               : "evaluation_only",
-    target_commit: reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || connectorMetadataRefresh || connectorKeyRotation || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady ? String(body.target_commit).toLowerCase() : null,
+    target_commit: reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady ? String(body.target_commit).toLowerCase() : null,
   };
 }

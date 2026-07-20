@@ -104,6 +104,13 @@ function flag(value, fallback = false) {
   return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
 }
 
+function optionalFullCommit(value, name) {
+  const commit = String(value || "").trim().toLowerCase();
+  if (!commit) return "";
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error(`${name} must be a full 40-character commit SHA`);
+  return commit;
+}
+
 export function loadConfig(env = process.env) {
   const publicUrl = url(env.MCP_PUBLIC_URL || "http://localhost:8790", "MCP_PUBLIC_URL");
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
@@ -124,6 +131,13 @@ export function loadConfig(env = process.env) {
     env.SUITE_CONTROL_PLANE_TENANT_ID,
   );
   const agentSignatureSecret = String(env.AGENT_SIGNATURE_SECRET || "").trim();
+  const ownerContextSigningSecretCandidate = String(env.CORE_OWNER_CONTEXT_SIGNING_SECRET || "").trim();
+  // Keep this independent from Core bearer credentials. A short value is not
+  // a usable signature key and therefore deliberately behaves as missing.
+  const ownerContextSigningSecret = ownerContextSigningSecretCandidate.length >= 32
+    ? ownerContextSigningSecretCandidate
+    : "";
+  const runtimeBuildCommit = optionalFullCommit(env.RENDER_GIT_COMMIT || env.GIT_COMMIT, "RENDER_GIT_COMMIT");
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
   const chatgptProviderSetupLinkKey = String(env.CORE_PROVIDER_SETUP_LINK_KEY || "").trim();
@@ -186,6 +200,8 @@ export function loadConfig(env = process.env) {
     suiteControlPlaneTimeoutMs: integer(env.SUITE_CONTROL_PLANE_TIMEOUT_MS, 8_000, 100, 30_000),
     suiteControlPlaneCacheTtlMs: integer(env.SUITE_CONTROL_PLANE_CACHE_TTL_MS, 5_000, 0, 60_000),
     agentSignatureSecret,
+    ownerContextSigningSecret,
+    runtimeBuildCommit,
     defaultTenantId,
     tenantClaim,
     sharedMemoryRoot,

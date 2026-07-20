@@ -91,6 +91,7 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   const ownerIdentity = await createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache })(`Bearer ${ownerFixture.token}`);
   assert.equal(ownerIdentity.role, "owner_root");
   assert.equal(ownerIdentity.godMode, true);
+  assert.equal(ownerIdentity.providerSetupOwner, true);
   assert.equal(ownerIdentity.clientId, "dynamic-chatgpt-client");
 
   const otherFixture = auth0Fixture({
@@ -105,6 +106,33 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   }, { jwksCache: otherFixture.cache })(`Bearer ${otherFixture.token}`);
   assert.equal(otherIdentity.role, undefined);
   assert.equal(otherIdentity.godMode, undefined);
+  assert.equal(otherIdentity.providerSetupOwner, undefined);
+});
+
+test("never elevates an OAuth identity from a client ID alone", async () => {
+  const fixture = auth0Fixture({
+    sub: "google-oauth2|not-allowlisted",
+    scope: "core:read",
+    azp: "shared-browser-client",
+    "https://skinharmony.it/tenant_id": "codexai",
+  });
+  const identity = await createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["codexai"],
+    godModeSubjects: [],
+    // Retained for configuration compatibility, but deliberately ignored for
+    // OAuth owner elevation.
+    godModeClientIds: ["shared-browser-client"],
+    godModeCodexEnabled: false,
+  }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+
+  assert.equal(identity.role, undefined);
+  assert.equal(identity.godMode, undefined);
+  assert.equal(identity.providerSetupOwner, undefined);
 });
 
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {

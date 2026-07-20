@@ -146,3 +146,78 @@ test("allows only a reference-only tenant provider vault secret configuration", 
     { production_deploy: true }, { provider_execution: true }, { cross_tenant: true },
   ]) assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
 });
+
+test("allows only the exact authenticated codexai provider setup-link Blueprint binding", () => {
+  const base = {
+    action_label: "Bind Core provider setup-link validation",
+    action_type: "render_blueprint_environment_binding",
+    operation_class: "reversible_owner_confirmed_provider_setup_link_blueprint_binding",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    configuration_changes: true,
+    owner_context_verified: true,
+    owner_context_approval_bound: true,
+    environment: "production",
+    target_branch: "main",
+    resource_type: "render_blueprint_from_service_env_binding",
+    render_blueprint_id: "exs-d99edqgki2s73e29nug",
+    blueprint_path: "render-universal-core.yaml",
+    source_service: "skinharmony-core-mcp",
+    target_service: "skinharmony-universal-core",
+    source_environment_variable: "CORE_PROVIDER_SETUP_LINK_KEY",
+    target_environment_variable: "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY",
+    tenant_environment_variable: "CORE_PROVIDER_SETUP_LINK_TENANT_ID",
+    tenant_environment_value: "codexai",
+    create_new: false,
+    rotate_existing: false,
+    delete: false,
+    merge: false,
+    production_deploy: false,
+    deploy: false,
+    auth0_changes: false,
+    provider_execution: false,
+    execution_enabled: false,
+    force: false,
+    admin_bypass: false,
+    allowed_environment_variables: ["CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY", "CORE_PROVIDER_SETUP_LINK_TENANT_ID"],
+    target_commit: "18b689e5cde9622a280b9d34651dc18ec2d675a8",
+    confirmation_target_commit: "18b689e5cde9622a280b9d34651dc18ec2d675a8",
+    confirmation_target_branch: "main",
+    confirmation_render_blueprint_id: "exs-d99edqgki2s73e29nug",
+    confirmation_blueprint_path: "render-universal-core.yaml",
+    confirmation_source_service: "skinharmony-core-mcp",
+    confirmation_target_service: "skinharmony-universal-core",
+    confirmation_source_environment_variable: "CORE_PROVIDER_SETUP_LINK_KEY",
+    confirmation_target_environment_variable: "CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY",
+    confirmation_tenant_id: "codexai",
+    confirmation_reference: "owner-confirmed-provider-setup-link-Blueprint-binding",
+  };
+
+  const pending = evaluate(base);
+  assert.equal(pending.risk.risk_band, "high");
+  assert.equal(pending.contract.control_level, "confirm");
+  assert.equal(pending.authorization.allowed, false);
+
+  const allowed = evaluate({ ...base, owner_confirmed: true }).authorization;
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_provider_setup_link_blueprint_binding");
+
+  for (const unsafe of [
+    { authenticated_tenant_id: "tenant-b" }, { tenant_id: "tenant-b" }, { owner_context_verified: false }, { owner_context_approval_bound: false },
+    { render_blueprint_id: "another-blueprint" }, { confirmation_render_blueprint_id: "another-blueprint" }, { blueprint_path: "universal-core/render.yaml" },
+    { contains_secret: true }, { secret_value_transmitted: true }, { cross_tenant: true }, { auth0_changes: true },
+    { provider_execution: true }, { execution_enabled: true }, { confirmation_target_commit: "7".repeat(40) },
+  ]) {
+    const result = evaluate({ ...base, owner_confirmed: true, ...unsafe });
+    assert.equal(result.authorization.allowed, false);
+  }
+});

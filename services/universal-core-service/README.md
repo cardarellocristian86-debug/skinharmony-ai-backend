@@ -137,6 +137,14 @@ Regola architetturale:
 
 `OpenAI genera. Universal Core decide. Nyra spiega. I client eseguono solo entro i limiti del Core.`
 
+## Provider OpenAI: link monouso e binding Core
+
+Una chiave OpenAI esistente entra esclusivamente nella pagina protetta raggiunta dal flusso proprietario. Il link fisso del MCP apre un login OAuth; soltanto dopo aver verificato il tenant e il soggetto owner autorizzato, il Core emette un link monouso a vita breve. Il token nel percorso e la prova nel frammento URL sono entrambi necessari, il frammento non viene inviato al server e il consumo del link con il salvataggio cifrato avvengono nella stessa transazione PostgreSQL. Un errore o una revoca non lasciano una chiave modificata né un link consumato a metà. Il Core non accetta chiavi provider tramite normali bearer key: le route legacy `PUT` e `DELETE /v1/generic-agents/providers/openai` rispondono `410 provider_setup_link_required`.
+
+La regola `reversible_owner_confirmed_provider_setup_link_blueprint_binding` consente solo il binding Render interno da `skinharmony-core-mcp` a `skinharmony-universal-core`, sul Blueprint `exs-d99edqgki2s73e29nug`, ramo `main`, tenant `codexai`, e solo per `CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY` e `CORE_PROVIDER_SETUP_LINK_TENANT_ID`. Vieta esecuzione provider, modifiche Auth0, deploy, merge, rotazioni, cancellazioni, target alternativi e campi non previsti.
+
+Il MCP e il Core devono avere lo stesso `CORE_OWNER_CONTEXT_SIGNING_SECRET` di almeno 32 caratteri, impostato come segreto Render separato e mai come valore in repository, URL o chat. Il segreto firma una conferma OAuth owner con scadenza breve e legata crittograficamente all’envelope esatto. Un valore mancante, debole o diverso fa fallire il controllo senza memorizzare una chiave. Questo gate autorizza e registra il binding: non e un esecutore Render. Un Blueprint Render può sincronizzare il proprio `fromService` senza consumare un verdict Core, quindi non va presentato come un blocco fisico del deploy finché non verrà aggiunto un executor CI/Render che verifichi un'approvazione firmata. L'enforcement dell'infrastruttura rimane nei controlli Render/GitHub e `provider_execution` resta `false` finché non viene autorizzato separatamente.
+
 ## Work preflight obbligatorio
 
 Ogni AI collegata tramite Core/MCP deve passare la richiesta a
