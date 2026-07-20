@@ -10,6 +10,14 @@ import {
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 
+function tenantContextHeader(tenantId, signingSecret) {
+  if (!signingSecret || signingSecret.length < 32) return "";
+  const context = { version: "mcp_tenant_context_v1", tenant_id: tenantId, issued_at: new Date().toISOString() };
+  const canonical = JSON.stringify(context);
+  const assertion = `mtc_${crypto.createHmac("sha256", signingSecret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
+  return Buffer.from(JSON.stringify({ ...context, assertion })).toString("base64url");
+}
+
 function ownerContextCanonical(context) {
   return JSON.stringify({
     version: context.assertion_version,
@@ -288,7 +296,7 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   function coreKey(tenantId) {
-    const selected = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
+    const selected = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "") || config.tenantGatewayKey || "").trim();
     if (!selected) throw new Error("core_tenant_key_missing");
     return selected;
   }
@@ -304,6 +312,10 @@ export function createCoreHandlers(config, options = {}) {
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${coreKey(tenantId)}`;
+    if (config.tenantGatewayKey && coreKey(tenantId) === config.tenantGatewayKey) {
+      const context = tenantContextHeader(tenantId, config.ownerContextSigningSecret);
+      if (context) headers["x-sh-tenant-context"] = context;
+    }
     const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
       method,
       headers,

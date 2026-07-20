@@ -47,6 +47,7 @@ function applyTenantProviderOwner(identity, config) {
   // tenant carried by their verified token. This is deliberately separate
   // from SkinHarmony's global owner_root emergency/governance role.
   if (identity.kind !== "oauth" || identity.providerSetupOwner === true) return identity;
+  if (identity.selfServiceTenant === true) return { ...identity, role: "tenant_owner", providerSetupOwner: true };
   const role = String(identity.tenantRole || "").trim();
   if (!role || !(config.tenantOwnerRoles || []).includes(role)) return identity;
   return { ...identity, role: role === "owner_root" ? "tenant_owner" : role, providerSetupOwner: true };
@@ -90,14 +91,25 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (!audiences.includes(config.auth0Audience)) throw new Error("jwt_audience_invalid");
   if (!Number.isFinite(payload.exp) || payload.exp <= now) throw new Error("jwt_expired");
   if (payload.nbf && payload.nbf > now + 30) throw new Error("jwt_not_active");
-  const tenantId = String(payload[config.tenantClaim] || "").trim();
-  if (!tenantId) throw new Error("jwt_tenant_missing");
+  const subject = String(payload.sub || "").trim();
+  if (!subject) throw new Error("jwt_subject_missing");
+  const claimedTenantId = String(payload[config.tenantClaim] || "").trim();
   const tenantRole = String(payload[config.tenantOwnerRoleClaim] || "").trim();
+  // Consumer users do not need an Auth0 administrator to pre-provision a
+  // tenant or role. When the feature is enabled, an unprivileged login is
+  // assigned a stable personal tenant derived only from its verified subject.
+  // Explicit tenant administrators retain their configured shared tenant.
+  const selfServiceTenant = config.selfServiceTenantsEnabled === true && !tenantRole;
+  const tenantId = selfServiceTenant
+    ? `chatgpt_${crypto.createHash("sha256").update(`self-service-tenant\u0000${subject}`).digest("hex").slice(0, 32)}`
+    : claimedTenantId;
+  if (!tenantId) throw new Error("jwt_tenant_missing");
   return {
     kind: "oauth",
-    subject: String(payload.sub || ""),
+    subject,
     ...(payload.azp || payload.client_id ? { clientId: String(payload.azp || payload.client_id) } : {}),
     tenantId,
+    ...(selfServiceTenant ? { selfServiceTenant: true } : {}),
     ...(tenantRole ? { tenantRole } : {}),
     scopes: tokenScopes(payload)
   };

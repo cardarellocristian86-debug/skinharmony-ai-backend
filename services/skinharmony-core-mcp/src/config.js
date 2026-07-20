@@ -145,6 +145,7 @@ export function loadConfig(env = process.env) {
   // setup link after Core verifies a signed tenant-owner context. It has no
   // read, execution, vault-read, or generic tenant scopes.
   const providerSetupLinkServiceKey = String(env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY || "").trim();
+  const tenantGatewayKey = String(env.CORE_MCP_TENANT_GATEWAY_KEY || "").trim();
   if (chatgptTenantId && chatgptCoreKey && !universalCoreKeys[chatgptTenantId]) {
     universalCoreKeys[chatgptTenantId] = chatgptCoreKey;
   }
@@ -161,6 +162,9 @@ export function loadConfig(env = process.env) {
   );
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
+  // Enabled by the production Blueprint. Keep the code default fail-closed so
+  // an existing installation does not silently change tenant routing on update.
+  const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const databaseUrl = String(env.DATABASE_URL || "").trim();
   // Collaboration state must never silently share the service's existing
@@ -198,6 +202,7 @@ export function loadConfig(env = process.env) {
     universalCoreKeys,
     universalCoreProviderSetupLinkKeys,
     providerSetupLinkServiceKey,
+    tenantGatewayKey,
     providerSetupLinkSourceConfigured,
     suiteControlPlaneUrl,
     suiteControlPlaneKeys: suiteControlPlaneBindings.keys,
@@ -209,6 +214,7 @@ export function loadConfig(env = process.env) {
     runtimeBuildCommit,
     defaultTenantId,
     tenantClaim,
+    selfServiceTenantsEnabled,
     tenantOwnerRoleClaim: String(env.MCP_TENANT_OWNER_ROLE_CLAIM || "https://skinharmony.it/role").trim(),
     tenantOwnerRoles: csv(env.MCP_TENANT_OWNER_ROLES || "tenant_owner,tenant_admin,owner_root"),
     sharedMemoryRoot,
