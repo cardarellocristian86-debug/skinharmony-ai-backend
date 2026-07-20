@@ -15,6 +15,8 @@ function providerSetupLinkFailure(status, payload) {
 export function providerSetupLinkKey(config, tenantId) {
   // This is intentionally a separate, opt-in binding. It must never fall back
   // to the normal Core key: that key has a different responsibility and scope.
+  const serviceKey = String(config.providerSetupLinkServiceKey || "").trim();
+  if (serviceKey) return serviceKey;
   const keys = config.universalCoreProviderSetupLinkKeys || {};
   const key = Object.prototype.hasOwnProperty.call(keys, tenantId)
     ? String(keys[tenantId] || "").trim()
