@@ -1,12 +1,10 @@
 import crypto from "node:crypto";
 
-const COOKIE = "sh_openai_connect";
 const MAX_AGE_MS = 10 * 60 * 1000;
 
 function b64(value) { return Buffer.from(value).toString("base64url"); }
 function unb64(value) { return Buffer.from(value, "base64url"); }
 function challenge(value) { return crypto.createHash("sha256").update(value).digest("base64url"); }
-function cookie(req, name) { return String(req.headers.cookie || "").split(/;\s*/).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) || ""; }
 function page(title, body) { return `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>${title}</h1>${body}</body></html>`; }
 function portalHtml(res, status, html) {
   return res
@@ -82,18 +80,15 @@ function seal(secret, payload) {
 function open(secret, value) {
   const [iv, tag, ciphertext] = String(value).split(".");
   if (!iv || !tag || !ciphertext) return null;
-  try { const key = crypto.scryptSync(secret, "skinharmony-openai-connect-v1", 32), decipher = crypto.createDecipheriv("aes-256-gcm", key, unb64(iv)); decipher.setAuthTag(unb64(tag)); return JSON.parse(Buffer.concat([decipher.update(unb64(ciphertext)), decipher.final()]).toString("utf8")); } catch { return null; }
+  try {
+    const key = crypto.scryptSync(secret, "skinharmony-openai-connect-v1", 32);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, unb64(iv));
+    decipher.setAuthTag(unb64(tag));
+    return JSON.parse(Buffer.concat([decipher.update(unb64(ciphertext)), decipher.final()]).toString("utf8"));
+  } catch { return null; }
 }
-
 export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink, providerStatus, fetchImpl = fetch, now = () => Date.now() }) {
   const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0BrowserAudience && config.auth0Issuer);
-  // The Auth0 callback is a top-level GET navigation. SameSite=Lax keeps the
-  // sealed state cookie available for that callback while avoiding the
-  // third-party-cookie restrictions that can reject SameSite=None in embedded
-  // and privacy-focused browsers. CSRF protection still comes from the random
-  // state value and the cookie remains HttpOnly, Secure and short-lived.
-  const setCookie = (res, value, maxAge = MAX_AGE_MS) => res.set("set-cookie", `${COOKIE}=${value}; Path=/connect/openai; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(maxAge / 1000)}`);
-  const load = (req) => open(config.auth0BrowserStateSecret, cookie(req, COOKIE));
   // `providerSetupOwner` comes only from a verified OAuth tenant-role claim.
   // A client ID, a URL parameter, or an arbitrary tenant string can never
   // authorize credential entry.
@@ -102,22 +97,11 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
   return {
     async start(req, res) {
       if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
-      const session = load(req);
-      if (session?.tenant_id && session.expires_at > now() && owner(session.identity)) {
-        let configured = false;
-        try { configured = (await providerStatus(session.tenant_id))?.provider?.configured === true; } catch {}
-        const label = configured ? "OpenAI già collegato" : "Collega OpenAI";
-        const actionLabel = configured ? "Sostituisci in modo sicuro" : "Continua";
-        const csrf = String(session.continue_csrf || "");
-        if (!csrf) return res.redirect(303, "/connect/openai");
-        return portalHtml(res, 200, page(label, `<p>${configured ? "La chiave è già salvata in forma cifrata. Puoi sostituirla con una nuova." : "Inserirai la chiave solo nella pagina protetta, mai in chat."}</p><form method="post" action="/connect/openai/continue"><input type="hidden" name="csrf" value="${csrf}"><button type="submit">${actionLabel}</button></form>`));
-      }
       const verifier = crypto.randomBytes(48).toString("base64url");
-      // Do not depend on a browser cookie surviving the cross-site Auth0
-      // round-trip. Privacy browsers and in-app browsers may discard it before
-      // the callback, which made the portal fail before the user even saw the
-      // protected key form. The state is instead an authenticated, encrypted,
-      // short-lived PKCE envelope that Auth0 returns unchanged.
+      // The complete short-lived PKCE attempt lives in the authenticated state
+      // envelope. Embedded and privacy browsers frequently discard cookies
+      // during the cross-site Auth0 round trip, so this flow intentionally does
+      // not rely on a browser cookie at any point.
       // Wrap the sealed envelope once more as base64url. Some embedded OAuth
       // navigators normalize punctuation in query values; a single URL-safe
       // token avoids separator rewriting while retaining authenticated PKCE.
@@ -125,12 +109,6 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
         kind: "openai_connect_pkce_v2",
         verifier,
         nonce: crypto.randomBytes(32).toString("base64url"),
-        expires_at: now() + MAX_AGE_MS,
-      }));
-      // Retain a harmless short-lived attempt cookie for compatibility and
-      // normal browser cleanup. The callback deliberately does not rely on it.
-      setCookie(res, seal(config.auth0BrowserStateSecret, {
-        kind: "openai_connect_attempt_v2",
         expires_at: now() + MAX_AGE_MS,
       }));
       const authorize = new URL(`${config.auth0Issuer}/authorize`);
@@ -148,31 +126,23 @@ export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink
         const response = await fetchImpl(`${config.auth0Issuer}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
         const tokens = await response.json(); if (!response.ok || !tokens.access_token) throw new Error("oauth_exchange_failed");
         const identity = await authenticate(`Bearer ${tokens.access_token}`); if (!owner(identity)) throw new Error("owner_required");
-        setCookie(res, seal(config.auth0BrowserStateSecret, {
-          identity,
-          tenant_id: identity.tenantId,
-          continue_csrf: crypto.randomBytes(32).toString("base64url"),
-          expires_at: now() + MAX_AGE_MS,
-        }));
-        return res.redirect(303, "/connect/openai");
+        // Mint and consume the browser-independent one-time capability in the
+        // same verified OAuth callback. This deliberately removes the former
+        // callback -> cookie -> Continue POST hop, which fails in in-app and
+        // privacy browsers even after a successful login.
+        try {
+          const link = await issueSetupLink(identity);
+          return res.redirect(303, secureSetupRedirect(link, config));
+        } catch (error) {
+          const [title, body] = setupLinkFailure(error);
+          return portalHtml(res, 503, page(title, body));
+        }
       } catch (error) { return portalHtml(res, 403, page("Accesso non autorizzato", `<p>${accessFailure(error)}</p><p>Riprova dal link iniziale.</p>`)); }
     },
-    async continue(req, res) {
-      const session = load(req);
-      const expected = Buffer.from(String(session?.continue_csrf || ""));
-      const received = Buffer.from(String(req.body?.csrf || ""));
-      if (!session?.tenant_id || session.expires_at <= now() || !owner(session.identity) || !expected.length || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
-        return portalHtml(res, 400, page("Accesso non valido", "<p>Riprova dal link iniziale.</p>"));
-      }
-      try {
-        const link = await issueSetupLink(session.identity);
-        const redirect = secureSetupRedirect(link, config);
-        setCookie(res, "", 0);
-        return res.redirect(303, redirect);
-      } catch (error) {
-        const [title, body] = setupLinkFailure(error);
-        return portalHtml(res, 503, page(title, body));
-      }
+    async continue(_req, res) {
+      // Kept only as a safe response for stale pages cached before the direct
+      // callback flow. It never relies on cookies and never creates a link.
+      return portalHtml(res, 410, page("Link scaduto", "<p>Apri di nuovo il collegamento iniziale.</p>"));
     },
   };
 }
