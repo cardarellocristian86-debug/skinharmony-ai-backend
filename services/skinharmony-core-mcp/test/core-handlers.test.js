@@ -110,6 +110,27 @@ test("uses the dedicated provider setup-link key only for its exact Core route",
   assert.equal(link.link_id, `psl_${"l".repeat(24)}`);
 });
 
+test("reports bounded provider readiness without treating the global execution switch as onboarding", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "normal-core-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: true,
+      tenant_id: "tenant-a",
+      provider: { configured: true, execution_available: true, execution_enabled: false, key_hint: "sk-proj-...1234" },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+
+  const result = await handlers.tenant_provider_openai_status({}, { tenantId: "tenant-a" });
+  assert.equal(result.structuredContent.provider.configured, true);
+  assert.equal(result.structuredContent.provider.execution_enabled, false);
+  assert.equal(result.structuredContent.provider.bounded_execution_ready, true);
+  assert.equal(result.structuredContent.provider.onboarding_required, false);
+  assert.equal(result.structuredContent.provider.readiness_rule, "configured_and_execution_available");
+  assert.equal(JSON.stringify(result).includes("normal-core-key"), false);
+});
+
 test("Core gate overwrites caller confirmation and tenant fields with verified identity", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

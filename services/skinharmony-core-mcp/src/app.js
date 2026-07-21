@@ -6,8 +6,24 @@ import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 
-const SERVER_VERSION = "0.11.6-tenant-openai-multiagent";
-const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from OpenAI API credits. At the start of every connected conversation call tenant_provider_openai_status. If OpenAI is not configured, open tenant_provider_openai_setup_panel and offer only Collega API key or Non ora. Never ask for or accept an API key in chat or a tool argument: it is entered only on the protected one-time Core page and stored encrypted per tenant. LIVE MULTI-AGENT TEST: if a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: preflight, tenant isolation, audit and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+const SERVER_VERSION = "0.11.7-native-provider-preflight";
+const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from OpenAI API credits. At the start of every connected conversation call tenant_provider_openai_status. If OpenAI is not configured, open tenant_provider_openai_setup_panel and offer only Collega API key or Non ora. Never ask for or accept an API key in chat or a tool argument: it is entered only on the protected one-time Core page and stored encrypted per tenant. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run directly with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+
+export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
+  "work_preflight",
+  "core_health",
+  "nyra_branch_catalog",
+  "tenant_provider_openai_status",
+  "tenant_provider_openai_setup_panel",
+  "tenant_provider_openai_setup_link",
+  "tenant_provider_openai_multi_agent_smoke_run",
+  "tenant_provider_openai_multi_agent_run_read",
+  "tenant_provider_openai_multi_agent_run_cancel",
+]);
+
+export function requiresGenericWorkPreflight(toolName) {
+  return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
+}
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "work_preflight",
   "core_health",
@@ -307,6 +323,7 @@ export function createApp(config, options = {}) {
       }
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
         const schemes = securitySchemes(scopes);
+        const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
         return {
           ...tool,
           securitySchemes: schemes,
@@ -314,7 +331,8 @@ export function createApp(config, options = {}) {
             ...(tool._meta || {}),
             securitySchemes: schemes,
             "skinharmony/scopes": scopes,
-            "skinharmony/mandatory_first_tool": "work_preflight",
+            ...(genericPreflightRequired ? { "skinharmony/mandatory_first_tool": "work_preflight" } : {}),
+            ...(!genericPreflightRequired ? { "skinharmony/native_governance": "authenticated_tenant_control_plane" } : {}),
             "skinharmony/preflight_entrypoint": tool.name === "work_preflight",
             "skinharmony/shared_memory_lifecycle": "automatic_task_contract_and_checkpoint",
             "skinharmony/research_entrypoint": tool.name === "nyra_research_plan",
@@ -427,7 +445,13 @@ export function createApp(config, options = {}) {
             throw error;
           }
         }
-        const preflight = hookContext?.preflight ?? hookContext;
+        // Provider setup and the fixed bounded run have their own authenticated
+        // Core gates. Even if a host hook accidentally returns a generic
+        // preflight, never attach that unrelated shared-memory verdict to these
+        // native control-plane results.
+        const preflight = requiresGenericWorkPreflight(tool.name)
+          ? (hookContext?.preflight ?? hookContext)
+          : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
         const rawResult = await handlers[tool.name](args, callIdentity);
         const result = attachAgentPresence(attachProviderOnboarding(attachWorkPreflight(rawResult, preflight), hookContext?.providerStatus), agentPresence);

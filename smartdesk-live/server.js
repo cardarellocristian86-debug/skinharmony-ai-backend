@@ -1505,14 +1505,6 @@ app.get("/api/clients/:id/consultation", (req, res) => {
   }
 });
 
-app.get("/api/clients/:id/recall-profiles", async (req, res) => {
-  try {
-    res.json(await service.getClientRecallProfiles(req.params.id, req.session));
-  } catch (error) {
-    res.status(404).send(error instanceof Error ? error.message : "Cliente non trovato");
-  }
-});
-
 app.get("/api/clients/:id/consent-document", (req, res) => {
   try {
     res.json(service.generateClientConsentDocument(req.params.id, req.session));
