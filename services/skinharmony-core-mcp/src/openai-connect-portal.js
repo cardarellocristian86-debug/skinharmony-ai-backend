@@ -87,7 +87,7 @@ function open(secret, value) {
     return JSON.parse(Buffer.concat([decipher.update(unb64(ciphertext)), decipher.final()]).toString("utf8"));
   } catch { return null; }
 }
-export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink, providerStatus, fetchImpl = fetch, now = () => Date.now() }) {
+export function createOpenAiConnectPortal({ config, authenticate, issueSetupLink, fetchImpl = fetch, now = () => Date.now() }) {
   const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0BrowserAudience && config.auth0Issuer);
   // `providerSetupOwner` comes only from a verified OAuth tenant-role claim.
   // A client ID, a URL parameter, or an arbitrary tenant string can never
