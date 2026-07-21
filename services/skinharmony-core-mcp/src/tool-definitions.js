@@ -470,6 +470,20 @@ export const TOOLS = [
     setup_url: { type: "string", format: "uri" },
     execution_enabled: { const: false },
   }, ["ok", "tenant_id", "setup_url", "execution_enabled"]) }),
+  tool("tenant_provider_openai_multi_agent_smoke_run", "Run bounded OpenAI multi-agent test", "Start the bounded OpenAI multi-agent test using the authenticated tenant's already-encrypted OpenAI key: Researcher → Reviewer → Nyra Synthesizer. A completed run makes three sequential real calls; cancellation or a safety failure stops before every remaining call. Use only after the tenant owner explicitly confirms this exact test. The response immediately returns a run id; then read or cancel it. Fixed first-live budget: at most three sequential calls, 200 output tokens per stage, no browser, tools, external actions, writes, learning, or automatic retries. Never pass an API key, tenant id, model, agents, or budget in arguments.", object({
+    task: text(300),
+  }, ["task"]), ["core:govern"], false, false, { outputSchema: object({
+    ok: { type: "boolean" },
+    tenant_id: { type: "string" },
+    run: { type: "object", additionalProperties: true },
+    governance: { type: "object", additionalProperties: true },
+  }, ["ok", "tenant_id", "run", "governance"]), meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" } }),
+  tool("tenant_provider_openai_multi_agent_run_read", "Read bounded multi-agent test", "Read status and tenant-scoped output of a bounded OpenAI multi-agent test. Requires the authenticated provider owner, never invokes the provider, and spends no API credits.", object({
+    run_id: { type: "string", maxLength: 160 },
+  }, ["run_id"]), ["core:read"], true, true),
+  tool("tenant_provider_openai_multi_agent_run_cancel", "Cancel bounded multi-agent test", "Immediately cancel a tenant-scoped bounded OpenAI multi-agent test. The kill signal aborts the in-flight provider request and all remaining stages; it never starts a replacement call.", object({
+    run_id: { type: "string", maxLength: 160 },
+  }, ["run_id"]), ["core:govern"], false, true, { meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" } }),
   tool("generic_agent_orchestration_create", "Create generic agent orchestration", "Create a bounded tenant-scoped worker plan for an existing generic agent run. This plans internal work only and never authorizes external execution.", object({
     run_id: { type: "string", maxLength: 160 },
     workers: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: {
