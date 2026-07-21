@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, TOOLS } from "../src/app.js";
+import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -39,7 +39,7 @@ test("publishes only a verifiable build identity", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.6-tenant-openai-multiagent");
+  assert.equal(health.version, "0.11.7-native-provider-preflight");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -89,7 +89,23 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(preflight.outputSchema?.properties?.core_runtime);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert.equal(preflight._meta["openai/outputTemplate"], "ui://skinharmony/openai-provider-setup.html");
-  assert(body.result.tools.every((tool) => tool._meta["skinharmony/mandatory_first_tool"] === "work_preflight"));
+  const nativeProviderTools = [
+    "tenant_provider_openai_status",
+    "tenant_provider_openai_setup_panel",
+    "tenant_provider_openai_setup_link",
+    "tenant_provider_openai_multi_agent_smoke_run",
+    "tenant_provider_openai_multi_agent_run_read",
+    "tenant_provider_openai_multi_agent_run_cancel",
+  ];
+  for (const name of nativeProviderTools) {
+    const nativeTool = body.result.tools.find((tool) => tool.name === name);
+    assert(nativeTool, `missing native provider tool ${name}`);
+    assert.equal(nativeTool._meta["skinharmony/mandatory_first_tool"], undefined);
+    assert.equal(nativeTool._meta["skinharmony/native_governance"], "authenticated_tenant_control_plane");
+  }
+  const genericTool = body.result.tools.find((tool) => tool.name === "memory_document_upsert");
+  assert.equal(genericTool._meta["skinharmony/mandatory_first_tool"], "work_preflight");
+  assert.equal(genericTool._meta["skinharmony/native_governance"], undefined);
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
   assert.deepEqual(gate._meta.securitySchemes, gate.securitySchemes);
@@ -157,7 +173,62 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
   assert.match(body.result.instructions, /manual_dry_run/);
   assert.match(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
+  assert.match(body.result.instructions, /Never call work_preflight before provider status/i);
+  assert.match(body.result.instructions, /bounded_execution_ready=true/);
 }));
+
+test("keeps only the bounded provider control plane outside generic shared-memory preflight", () => {
+  for (const name of [
+    "work_preflight",
+    "tenant_provider_openai_status",
+    "tenant_provider_openai_setup_panel",
+    "tenant_provider_openai_setup_link",
+    "tenant_provider_openai_multi_agent_smoke_run",
+    "tenant_provider_openai_multi_agent_run_read",
+    "tenant_provider_openai_multi_agent_run_cancel",
+  ]) assert.equal(requiresGenericWorkPreflight(name), false, `${name} must use its native gate`);
+
+  for (const name of ["memory_document_upsert", "generic_agent_start", "nyra_research_ingest"]) {
+    assert.equal(requiresGenericWorkPreflight(name), true, `${name} must remain fail-closed by generic preflight`);
+  }
+});
+
+test("never attaches an unrelated blocked generic preflight to the bounded provider start", async () => {
+  const handlers = {
+    tenant_provider_openai_multi_agent_smoke_run: async () => ({
+      structuredContent: { ok: true, run: { run_id: "run_native_01", status: "running" } },
+      content: [{ type: "text", text: "started" }],
+    }),
+  };
+  const app = createApp(config, {
+    handlers,
+    beforeToolCall: async () => ({ preflight: {
+      work_preflight: {
+        preflight_id: "preflight_generic_blocked",
+        state: "shared_memory_bootstrap_required",
+        governance: { execution_allowed_by_preflight: false, shared_memory_bootstrap_required: true },
+        shared_memory_bootstrap: { loaded: false },
+      },
+    } }),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const body = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "native-provider-session" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 44, method: "tools/call", params: {
+        name: "tenant_provider_openai_multi_agent_smoke_run",
+        arguments: { task: "Run the fixed bounded test", owner_confirmed: true },
+      } }),
+    }).then((response) => response.json());
+    assert.equal(body.result.structuredContent.ok, true);
+    assert.equal(body.result.structuredContent.work_preflight, undefined);
+    assert.equal(JSON.stringify(body.result).includes("shared_memory_bootstrap_required"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {

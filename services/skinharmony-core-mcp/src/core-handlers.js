@@ -663,7 +663,20 @@ export function createCoreHandlers(config, options = {}) {
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity, { ownerBindingPurpose: "intelligence_outcome_record" }),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
-    tenant_provider_openai_status: async (_args, identity) => textResult(await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId)),
+    tenant_provider_openai_status: async (_args, identity) => {
+      const payload = await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId);
+      const provider = payload?.provider || {};
+      const boundedExecutionReady = provider.configured === true && provider.execution_available === true;
+      return textResult({
+        ...payload,
+        provider: {
+          ...provider,
+          onboarding_required: provider.configured !== true,
+          bounded_execution_ready: boundedExecutionReady,
+          readiness_rule: "configured_and_execution_available",
+        },
+      });
+    },
     tenant_provider_openai_setup_link: async (_args, identity) => {
       requireProviderSetupOwner(identity);
       // The MCP response contains only the fixed owner portal. The actual

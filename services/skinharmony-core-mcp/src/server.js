@@ -1,4 +1,4 @@
-import { createApp } from "./app.js";
+import { createApp, requiresGenericWorkPreflight } from "./app.js";
 import express from "express";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
@@ -38,19 +38,14 @@ const researchCortex = config.researchCortexRoot
   : null;
 const suiteHandlers = createSuiteHandlers(config);
 
-const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
-  "work_preflight",
-  "core_health",
-  "nyra_branch_catalog",
-  "tenant_provider_openai_setup_panel",
-]);
-
 const PROVIDER_ONBOARDING_EXEMPT_TOOLS = new Set([
   "core_health",
   "nyra_branch_catalog",
   "tenant_provider_openai_status",
   "tenant_provider_openai_setup_panel",
   "tenant_provider_openai_setup_link",
+  "tenant_provider_openai_multi_agent_run_read",
+  "tenant_provider_openai_multi_agent_run_cancel",
 ]);
 
 function summarizeToolRequest(toolName, args = {}) {
@@ -91,7 +86,7 @@ const app = createApp(config, {
       if (!PROVIDER_ONBOARDING_EXEMPT_TOOLS.has(toolName)) {
         try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
       }
-      if (CORE_PREFLIGHT_NATIVE_TOOLS.has(toolName)) return { preflight: null, ledgerContext, providerStatus };
+      if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext, providerStatus };
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(toolName, args),
         operation_type: toolName,
