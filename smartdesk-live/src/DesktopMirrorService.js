@@ -7280,9 +7280,16 @@ class DesktopMirrorService {
 
   getClientConsultation(clientId, session = null) {
     const detail = this.getClientDetail(clientId, session);
+    const history = [...detail.appointments]
+      .sort((left, right) => {
+        const leftTime = new Date(left.startAt || left.createdAt || 0).getTime();
+        const rightTime = new Date(right.startAt || right.createdAt || 0).getTime();
+        return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+      })
+      .slice(0, 10);
     return {
       client: detail.client,
-      history: detail.appointments.slice(0, 10),
+      history,
       recommendations: []
     };
   }
