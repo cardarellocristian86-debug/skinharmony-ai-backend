@@ -12,7 +12,19 @@ export function createTenantProviderCredentialStore({ connectionString, masterSe
   const url=text(connectionString,"governed_agent_database_url",4_000), secret=text(masterSecret,"credential_vault_secret",4_000); const db=pool || new Pool({ connectionString:url, max:2, idleTimeoutMillis:10_000 }); let initialized=false;
   async function init() { if(initialized)return; await db.query(`CREATE TABLE IF NOT EXISTS governed_agent_provider_credentials (
     tenant_id TEXT NOT NULL, provider TEXT NOT NULL, ciphertext TEXT NOT NULL, iv TEXT NOT NULL, tag TEXT NOT NULL, key_hint TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (tenant_id, provider)
-  )`); initialized=true; }
+  )`);
+    // A signed owner approval is one-use. Keeping it next to the tenant vault
+    // makes replay prevention durable across Core restarts and instances while
+    // storing only a digest of the assertion, never its contents or a key.
+    await db.query(`CREATE TABLE IF NOT EXISTS governed_agent_provider_execution_approvals (
+      tenant_id TEXT NOT NULL,
+      approval_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, approval_hash)
+    )`);
+    await db.query("CREATE INDEX IF NOT EXISTS governed_agent_provider_execution_approvals_expiry_idx ON governed_agent_provider_execution_approvals (expires_at)");
+    initialized=true; }
   async function saveOpenAiInTransaction({ tenant_id, api_key, client }) {
     if (!client || typeof client.query !== "function") throw new Error("credential_transaction_client_required");
     const tenantId=text(tenant_id,"tenant_id",120), key=validateOpenAiKey(api_key), encrypted=encrypt(secret,key);
@@ -29,6 +41,21 @@ export function createTenantProviderCredentialStore({ connectionString, masterSe
     async saveOpenAiInTransaction(input) { return saveOpenAiInTransaction(input); },
     async saveOpenAi({ tenant_id, api_key }) { await init(); return saveOpenAiInTransaction({ tenant_id, api_key, client:db }); },
     async status({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query("SELECT provider,key_hint,updated_at FROM governed_agent_provider_credentials WHERE tenant_id=$1 AND provider='openai'",[tenantId]); return result.rows[0] ? { provider:"openai", configured:true, key_hint:result.rows[0].key_hint, updated_at:result.rows[0].updated_at, execution_enabled:false } : { provider:"openai", configured:false, execution_enabled:false }; },
+    async consumeOpenAiExecutionApproval({ tenant_id, approval_hash, expires_at }) {
+      const tenantId=text(tenant_id,"tenant_id",120);
+      const approvalHash=text(approval_hash,"approval_hash",160);
+      if (!/^sha256:[a-f0-9]{64}$/i.test(approvalHash)) throw new Error("approval_hash_invalid");
+      const expiresAt=new Date(String(expires_at||""));
+      if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) throw new Error("approval_expired");
+      await init();
+      // Cleanup is best-effort and intentionally precedes the atomic insert.
+      try { await db.query("DELETE FROM governed_agent_provider_execution_approvals WHERE expires_at<NOW()"); } catch {}
+      const result=await db.query(
+        "INSERT INTO governed_agent_provider_execution_approvals (tenant_id,approval_hash,expires_at) VALUES ($1,$2,$3) ON CONFLICT (tenant_id,approval_hash) DO NOTHING RETURNING tenant_id",
+        [tenantId,approvalHash,expiresAt.toISOString()],
+      );
+      return { consumed:Boolean(result.rows[0]) };
+    },
     async removeOpenAi({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query("DELETE FROM governed_agent_provider_credentials WHERE tenant_id=$1 AND provider='openai'",[tenantId]); return { removed:result.rowCount > 0 }; },
     async getOpenAiForExecution({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query("SELECT ciphertext,iv,tag FROM governed_agent_provider_credentials WHERE tenant_id=$1 AND provider='openai'",[tenantId]); if(!result.rows[0]) return null; return decrypt(secret,result.rows[0]); },
   };

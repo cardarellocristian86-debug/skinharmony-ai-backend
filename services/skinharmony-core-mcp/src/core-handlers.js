@@ -238,6 +238,14 @@ function requireProviderSetupOwner(identity) {
   }
 }
 
+function requireProviderExecutionOwner(identity) {
+  requireProviderSetupOwner(identity);
+  // This is intentionally separate from god-mode confirmation. A normal
+  // tenant OAuth owner may explicitly approve their own bounded provider
+  // spend, while generic Core writes remain owner-root-only.
+  if (identity?.providerExecutionConfirmed !== true) throw new Error("owner_confirmation_required");
+}
+
 function hasExplicitVerifiedOwnerConfirmation(identity) {
   return isVerifiedOwnerRoot(identity) && identity?.ownerConfirmed === true;
 }
@@ -667,6 +675,65 @@ export function createCoreHandlers(config, options = {}) {
         setup_url: providerSetupPortalUrl(),
         execution_enabled: false,
       });
+    },
+    tenant_provider_openai_multi_agent_smoke_run: async (args, identity) => {
+      requireProviderExecutionOwner(identity);
+      const confirmationReference = String(identity.providerExecutionConfirmationReference || "").trim().slice(0, 240);
+      const requestBody = {
+        tenant_id: identity.tenantId,
+        task: String(args.task || "").trim(),
+        owner_confirmed: true,
+        ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
+      };
+      return textResult(await coreRequest("/v1/generic-agents/providers/openai/multi-agent-runs", identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            providerSetup: true,
+            requestBinding: ownerRequestBinding("tenant_openai_multiagent_run", requestBody),
+          }),
+        },
+      }));
+    },
+    tenant_provider_openai_multi_agent_run_read: async (args, identity) => {
+      // Model output can contain the owner's own work. It is never exposed to
+      // an arbitrary same-tenant read key: an authenticated provider owner is
+      // required and the Core request is signed and bound to this run id.
+      requireProviderSetupOwner(identity);
+      const requestBody = { tenant_id: identity.tenantId, run_id: String(args.run_id || "").trim() };
+      return textResult(await coreRequest(
+        `/v1/generic-agents/providers/openai/multi-agent-runs/${encodeURIComponent(requestBody.run_id)}/result`,
+        identity.tenantId,
+        {
+          method: "POST",
+          body: {
+            ...requestBody,
+            owner_context: ownerContext(identity, {
+              providerSetup: true,
+              requestBinding: ownerRequestBinding("tenant_openai_multiagent_read", requestBody),
+            }),
+          },
+        },
+      ));
+    },
+    tenant_provider_openai_multi_agent_run_cancel: async (args, identity) => {
+      requireProviderSetupOwner(identity);
+      const requestBody = { tenant_id: identity.tenantId, run_id: String(args.run_id || "").trim() };
+      return textResult(await coreRequest(
+        `/v1/generic-agents/providers/openai/multi-agent-runs/${encodeURIComponent(requestBody.run_id)}/cancel`,
+        identity.tenantId,
+        {
+          method: "POST",
+          body: {
+            ...requestBody,
+            owner_context: ownerContext(identity, {
+              providerSetup: true,
+              requestBinding: ownerRequestBinding("tenant_openai_multiagent_cancel", requestBody),
+            }),
+          },
+        },
+      ));
     },
     generic_agent_orchestration_create: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/runs/${encodeURIComponent(args.run_id)}/orchestration`, identity.tenantId, {
       method: "POST",

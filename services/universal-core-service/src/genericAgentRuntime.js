@@ -114,7 +114,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       const run = getRun(run_id, tenant_id);
       if (!run.checkpoint) throw new Error("checkpoint_not_found");
       if (expected_checkpoint_key && run.checkpoint.idempotency_key !== expected_checkpoint_key) throw new Error("checkpoint_idempotency_mismatch");
-      if (run.status === "completed" || run.status === "cancelled") throw new Error("run_not_resumable");
+      if (run.status === "completed" || run.status === "cancelled" || run.status === "failed") throw new Error("run_not_resumable");
       run.status = "running";
       appendTrace(run, "run_resumed", { cursor: run.checkpoint.cursor });
       return clone(run);
@@ -162,8 +162,27 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
     completeRun({ run_id, tenant_id, result = {} }) {
       const run = getRun(run_id, tenant_id);
       if (run.status === "cancelled") throw new Error("run_cancelled");
+      if (run.status === "failed") throw new Error("run_failed");
       run.status = "completed";
       appendTrace(run, "run_completed", { result: result && typeof result === "object" ? clone(result) : {} });
+      return clone(run);
+    },
+
+    cancelRun({ run_id, tenant_id, reason = "cancelled_by_owner" }) {
+      const run = getRun(run_id, tenant_id);
+      if (run.status === "completed" || run.status === "failed") throw new Error("run_not_cancellable");
+      if (run.status === "cancelled") return clone(run);
+      run.status = "cancelled";
+      appendTrace(run, "run_cancelled", { reason: requireText(reason, "cancellation_reason", 120) });
+      return clone(run);
+    },
+
+    failRun({ run_id, tenant_id, reason = "run_failed" }) {
+      const run = getRun(run_id, tenant_id);
+      if (run.status === "completed" || run.status === "cancelled") throw new Error("run_not_failable");
+      if (run.status === "failed") return clone(run);
+      run.status = "failed";
+      appendTrace(run, "run_failed", { reason: requireText(reason, "failure_reason", 120) });
       return clone(run);
     },
 
@@ -246,7 +265,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         if (existing.tenant_id !== normalized.tenant_id) throw new Error("cross_tenant_run_denied");
         return clone(existing);
       }
-      const status = ["running", "waiting_handoff", "completed", "cancelled"].includes(run_snapshot.status) ? run_snapshot.status : "running";
+      const status = ["running", "waiting_handoff", "completed", "cancelled", "failed"].includes(run_snapshot.status) ? run_snapshot.status : "running";
       const checkpoint = run_snapshot.checkpoint ? normalizeCheckpoint(run_snapshot.checkpoint) : null;
       const trace = Array.isArray(run_snapshot.trace) ? clone(run_snapshot.trace).slice(-MAX_TRACE_EVENTS) : [];
       const restored = {

@@ -93,10 +93,11 @@ import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQu
 import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js";
 import { createTenantProviderCredentialStore } from "./tenantProviderCredentialStore.js";
 import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkStore.js";
+import { createTenantOpenAiMultiAgentRunner } from "./tenantOpenAiMultiAgentRunner.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.4-tenant-binding-gate";
+const SERVICE_VERSION = "0.10.6-tenant-openai-multiagent";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -162,6 +163,53 @@ function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding,
     .update(`owner-context\u0000${ownerContextCanonical(context)}`)
     .digest("hex")}`;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+}
+
+// A signed owner context is intentionally short-lived, but a short lifetime
+// alone does not make it one-use. Prefer the vault's PostgreSQL-backed
+// implementation; the file fallback is an atomic, persistent guard for test
+// doubles and single-instance local deployments. It stores only assertion
+// hashes, never owner payloads or provider credentials.
+function createOwnerExecutionApprovalStore({ root, credentialStore }) {
+  const fallbackRoot = path.join(root, "owner-execution-approvals");
+  return {
+    async consume({ tenant_id, approval_hash, expires_at }) {
+      if (typeof credentialStore?.consumeOpenAiExecutionApproval === "function") {
+        return credentialStore.consumeOpenAiExecutionApproval({ tenant_id, approval_hash, expires_at });
+      }
+      const tenantHash = crypto.createHash("sha256").update(String(tenant_id)).digest("hex");
+      const approvalHash = String(approval_hash || "");
+      if (!/^sha256:[a-f0-9]{64}$/i.test(approvalHash)) throw new Error("approval_hash_invalid");
+      const expiry = Date.parse(String(expires_at || ""));
+      if (!Number.isFinite(expiry) || expiry <= Date.now()) throw new Error("approval_expired");
+      const file = path.join(fallbackRoot, tenantHash, `${approvalHash.slice("sha256:".length)}.json`);
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      const write = () => {
+        const descriptor = fs.openSync(file, "wx", 0o600);
+        try { fs.writeFileSync(descriptor, JSON.stringify({ expires_at: new Date(expiry).toISOString() }), "utf8"); }
+        finally { fs.closeSync(descriptor); }
+      };
+      try {
+        write();
+        return { consumed: true };
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        try {
+          const existing = JSON.parse(fs.readFileSync(file, "utf8"));
+          if (Date.parse(String(existing?.expires_at || "")) <= Date.now()) {
+            fs.unlinkSync(file);
+            write();
+            return { consumed: true };
+          }
+        } catch (readError) {
+          if (readError?.code === "ENOENT") {
+            try { write(); return { consumed: true }; } catch {}
+          }
+        }
+        return { consumed: false };
+      }
+    },
+  };
 }
 
 function verifyMcpTenantContextAssertion(value, secret, tenantId, now = Date.now()) {
@@ -3502,7 +3550,30 @@ export function createUniversalCoreService(options = {}) {
   const tenantProviderCredentials = options.tenantProviderCredentials || (governedAgentDatabaseUrl && credentialVaultSecret
     ? createTenantProviderCredentialStore({ connectionString: governedAgentDatabaseUrl, masterSecret: credentialVaultSecret })
     : null);
+  const ownerExecutionApprovals = options.ownerExecutionApprovals || createOwnerExecutionApprovalStore({
+    root: storageRoot,
+    credentialStore: tenantProviderCredentials,
+  });
   const tenantProviderSetupLinks = options.tenantProviderSetupLinks || (governedAgentDatabaseUrl ? createTenantProviderSetupLinkStore({ connectionString: governedAgentDatabaseUrl }) : null);
+  // This runner is deliberately distinct from the existing queue/tick
+  // simulation. It can only execute the fixed, tenant-scoped three-stage
+  // workflow after a separately signed OAuth-owner confirmation.
+  const tenantOpenAiMultiAgentRunner = options.tenantOpenAiMultiAgentRunner || (tenantProviderCredentials && typeof tenantProviderCredentials.getOpenAiForExecution === "function"
+    ? createTenantOpenAiMultiAgentRunner({
+      tenantProviderCredentials,
+      genericAgentRuntime,
+      genericAgentOrchestrator,
+      genericAgentOrchestrationStore,
+      genericAgentCheckpointStore: genericAgentCheckpoints,
+      governedAgentBudgetStore,
+      audit,
+      fetchImpl: options.openAiFetchImpl || fetch,
+      model: options.tenantOpenAiModel || process.env.NYRA_TENANT_OPENAI_MODEL,
+      // Domain-separated HMAC use inside the runner prevents persisted task
+      // fingerprints from being reversible dictionary hashes.
+      taskFingerprintSecret: ownerContextSigningSecret,
+    })
+    : null);
   // A setup URL carries an opaque capability in its path. Never make its
   // destination configurable to an arbitrary host: that would turn a bad
   // environment value into a token exfiltration redirect.
@@ -3523,6 +3594,67 @@ export function createUniversalCoreService(options = {}) {
 
   function persistGenericOrchestration(plan) {
     return genericAgentOrchestrationStore.save({ tenant_id: plan.tenant_id, plan_snapshot: plan });
+  }
+
+  function boundedProviderExecutionBody(req, purpose) {
+    const raw = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    if (raw.tenant_id !== undefined && String(raw.tenant_id) !== req.tenantId) throw new Error("tenant_scope_denied");
+    if (purpose === "tenant_openai_multiagent_run") {
+      const task = String(raw.task || "").trim();
+      const confirmationReference = String(raw.confirmation_reference || "").trim().slice(0, 240);
+      return {
+        tenant_id: req.tenantId,
+        task,
+        owner_confirmed: raw.owner_confirmed === true,
+        ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
+      };
+    }
+    return {
+      tenant_id: req.tenantId,
+      run_id: String(raw.run_id || "").trim(),
+    };
+  }
+
+  function requireBoundedProviderExecutionOwner(req, purpose) {
+    if (!tenantOpenAiMultiAgentRunner) throw new Error("tenant_openai_execution_not_configured");
+    const body = boundedProviderExecutionBody(req, purpose);
+    if (purpose === "tenant_openai_multiagent_run" && body.owner_confirmed !== true) throw new Error("owner_confirmation_required");
+    const ownerContext = req.body?.owner_context;
+    const binding = ownerRequestBinding(purpose, body);
+    if (
+      !verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId, binding) ||
+      !hasProviderSetupOwnerContext(ownerContext)
+    ) {
+      throw new Error("owner_context_required");
+    }
+    return body;
+  }
+
+  async function consumeBoundedProviderExecutionOwner(req) {
+    const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_run");
+    if (!tenantProviderCredentials || typeof tenantProviderCredentials.status !== "function") throw new Error("tenant_openai_execution_not_configured");
+    let provider;
+    try { provider = await tenantProviderCredentials.status({ tenant_id: req.tenantId }); }
+    catch { throw new Error("tenant_provider_credential_unavailable"); }
+    if (provider?.configured !== true) throw new Error("tenant_openai_provider_not_configured");
+    const ownerContext = req.body?.owner_context;
+    const issuedAt = Date.parse(String(ownerContext?.issued_at || ""));
+    const approvalHash = `sha256:${crypto.createHash("sha256")
+      .update(`tenant-openai-execution-approval\u0000${String(ownerContext?.assertion || "")}`)
+      .digest("hex")}`;
+    let consumed;
+    try {
+      consumed = await ownerExecutionApprovals.consume({
+        tenant_id: req.tenantId,
+        approval_hash: approvalHash,
+        expires_at: new Date(issuedAt + 120_000).toISOString(),
+      });
+    } catch (error) {
+      if (error?.message === "approval_expired") throw new Error("owner_context_required");
+      throw new Error("owner_confirmation_consume_unavailable");
+    }
+    if (consumed?.consumed !== true) throw new Error("owner_confirmation_replayed");
+    return body;
   }
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
@@ -3798,7 +3930,22 @@ export function createUniversalCoreService(options = {}) {
   });
   app.get("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
-    return res.json({ ok: true, tenant_id: req.tenantId, provider: await tenantProviderCredentials.status({ tenant_id: req.tenantId }) });
+    const provider = await tenantProviderCredentials.status({ tenant_id: req.tenantId });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      provider: {
+        ...provider,
+        // A configured key is still never a global execution switch. The
+        // capability below means an OAuth owner can start the fixed workflow
+        // after a fresh request-bound confirmation; every run is separate.
+        execution_enabled: provider.execution_enabled === true,
+        execution_available: provider.configured === true && Boolean(tenantOpenAiMultiAgentRunner),
+        execution_mode: provider.configured === true && tenantOpenAiMultiAgentRunner
+          ? "bounded_owner_confirmed_multiagent"
+          : "disabled",
+      },
+    });
   });
   // Provider credentials are intentionally accepted only by a consumed, short-lived
   // setup link. A normal Core key must never become a second, bypassable secret
@@ -3810,6 +3957,73 @@ export function createUniversalCoreService(options = {}) {
   app.delete("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     audit.append("tenant_openai_provider_direct_delete_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     return publicError(res, 410, "provider_setup_link_required", "Provider changes require the owner setup flow.");
+  });
+
+  // The only live provider path. Its graph, model, token cap, concurrency and
+  // tool policy are all fixed in the runner; callers can supply only a bounded
+  // task plus a fresh, request-bound OAuth owner confirmation.
+  app.post("/v1/generic-agents/providers/openai/multi-agent-runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    try {
+      const body = await consumeBoundedProviderExecutionOwner(req);
+      const run = tenantOpenAiMultiAgentRunner.start({ tenant_id: req.tenantId, task: body.task });
+      const response = { ok: true, tenant_id: req.tenantId, run, governance: {
+        scope: "bounded_tenant_provider_execution",
+        owner_confirmation_required: true,
+        owner_confirmation_satisfied: true,
+        external_tools: false,
+        fixed_workflow: "research_review_synthesis_v1",
+      } };
+      // The caller receives a run id before the first provider request can
+      // complete, so it can poll or propagate cancellation immediately.
+      return res.status(202).json(response);
+    } catch (error) {
+      const code = error.message || "tenant_openai_multi_agent_run_failed";
+      const status = ["owner_context_required", "owner_confirmation_required", "tenant_scope_denied"].includes(code)
+        ? 403
+        : ["tenant_openai_provider_not_configured", "tenant_provider_credential_unavailable", "tenant_openai_execution_not_configured", "owner_confirmation_replayed", "owner_confirmation_consume_unavailable"].includes(code)
+          ? 409
+          : ["tenant_multi_agent_run_in_progress", "multi_agent_execution_capacity_reached", "daily_workflow_budget_exceeded", "model_budget_exceeded"].includes(code)
+            ? 429
+            : 400;
+      return publicError(res, status, code);
+    }
+  });
+
+  app.get("/v1/generic-agents/providers/openai/multi-agent-runs/:runId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    if (!tenantOpenAiMultiAgentRunner) return publicError(res, 503, "tenant_openai_execution_not_configured");
+    try {
+      // Status can be read by a tenant decision key; model output remains
+      // owner-only and is available through the signed POST result endpoint.
+      const run = tenantOpenAiMultiAgentRunner.get({ tenant_id: req.tenantId, run_id: req.params.runId, include_output: false });
+      return res.json({ ok: true, tenant_id: req.tenantId, run });
+    } catch (error) {
+      const code = error.message || "tenant_openai_multi_agent_run_read_failed";
+      return publicError(res, code === "tenant_openai_multi_agent_run_not_found" ? 404 : 403, code);
+    }
+  });
+
+  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/result", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_read");
+      if (body.run_id !== req.params.runId) return publicError(res, 400, "run_id_mismatch");
+      const run = tenantOpenAiMultiAgentRunner.get({ tenant_id: req.tenantId, run_id: req.params.runId, include_output: true });
+      return res.json({ ok: true, tenant_id: req.tenantId, run });
+    } catch (error) {
+      const code = error.message || "tenant_openai_multi_agent_run_result_failed";
+      return publicError(res, code === "tenant_openai_multi_agent_run_not_found" ? 404 : 403, code);
+    }
+  });
+
+  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_cancel");
+      if (body.run_id !== req.params.runId) return publicError(res, 400, "run_id_mismatch");
+      const run = tenantOpenAiMultiAgentRunner.cancel({ tenant_id: req.tenantId, run_id: req.params.runId });
+      return res.json({ ok: true, tenant_id: req.tenantId, run });
+    } catch (error) {
+      const code = error.message || "tenant_openai_multi_agent_run_cancel_failed";
+      return publicError(res, code === "tenant_openai_multi_agent_run_not_found" ? 404 : 403, code);
+    }
   });
 
   app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
@@ -3982,8 +4196,21 @@ export function createUniversalCoreService(options = {}) {
       render_ready: true,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
-      governed_agent_runner: { mode: "manual_dry_run", provider_execution: false, max_jobs_per_tick: 2 },
-      tenant_provider_vault: { configured: Boolean(tenantProviderCredentials), execution_enabled: false },
+      governed_agent_runner: {
+        mode: tenantOpenAiMultiAgentRunner ? "manual_dry_run_plus_bounded_provider" : "manual_dry_run",
+        // Availability is not a global permission to call a provider: every
+        // real run still needs a configured tenant vault and a fresh signed
+        // OAuth-owner confirmation.
+        provider_execution_available: Boolean(tenantOpenAiMultiAgentRunner),
+        fixed_provider_workflow: tenantOpenAiMultiAgentRunner ? "research_review_synthesis_v1" : null,
+        max_jobs_per_tick: 2,
+      },
+      tenant_provider_vault: {
+        configured: Boolean(tenantProviderCredentials),
+        execution_available: Boolean(tenantOpenAiMultiAgentRunner),
+        execution_enabled: false,
+        tenant_scoped: true,
+      },
       provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
       provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
       owner_context_signing_configured: Boolean(ownerContextSigningSecret),

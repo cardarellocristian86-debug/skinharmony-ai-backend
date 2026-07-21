@@ -39,7 +39,7 @@ test("publishes only a verifiable build identity", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.4-direct-provider-setup");
+  assert.equal(health.version, "0.11.6-tenant-openai-multiagent");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -150,12 +150,13 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /host ChatGPT or Codex web tool/);
   assert.match(body.result.instructions, /never include secrets/i);
   assert.match(body.result.instructions, /installed as a ChatGPT connector/);
-  assert.match(body.result.instructions, /Never ask a user to paste or reveal an API key in ChatGPT/);
-  assert.match(body.result.instructions, /secure link/);
+  assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
+  assert.match(body.result.instructions, /protected one-time Core page/);
   assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
   assert.match(body.result.instructions, /AUTOMATIC/);
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
   assert.match(body.result.instructions, /manual_dry_run/);
+  assert.match(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
 }));
 
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {

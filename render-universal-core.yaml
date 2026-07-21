@@ -3,6 +3,10 @@ services:
     name: skinharmony-universal-core
     env: node
     plan: starter
+    # The first bounded provider runner keeps active cancellation state only
+    # in this Core process. Pin it explicitly until a shared worker lease is
+    # introduced; the attached persistent disk is likewise single-instance.
+    numInstances: 1
     buildCommand: npm ci && bash scripts/build-rust-extractor-render.sh
     startCommand: npm run core:service
     healthCheckPath: /healthz
