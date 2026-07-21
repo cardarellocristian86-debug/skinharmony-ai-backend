@@ -2218,6 +2218,10 @@ class DesktopMirrorService {
     this.goldActionOutcomesRepository = this.createRepository("gold_action_outcomes", []);
     this.goldImportRepository = this.createRepository("gold_imports", []);
     this.whatsappMessagesRepository = this.createRepository("whatsapp_messages", []);
+    // Derived, minimal CRM data: no notes, allergies or contact values are copied here.
+    // Each record is isolated by centre, client and service and represents a suggested
+    // operator review only; it is never a messaging queue.
+    this.clientRecallProfilesRepository = this.createRepository("client_recall_profiles", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
@@ -6110,6 +6114,7 @@ class DesktopMirrorService {
       aiMarketingActions: this.aiMarketingActionsRepository,
       goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
+      clientRecallProfiles: this.clientRecallProfilesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -6182,6 +6187,7 @@ class DesktopMirrorService {
       aiMarketingActions: this.aiMarketingActionsRepository,
       goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
+      clientRecallProfiles: this.clientRecallProfilesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -6236,6 +6242,7 @@ class DesktopMirrorService {
       aiMarketingActions: this.aiMarketingActionsRepository,
       goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
+      clientRecallProfiles: this.clientRecallProfilesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -7260,6 +7267,7 @@ class DesktopMirrorService {
     }));
     this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
     this.applyGoldStateEvent("client_updated", { before, after: updated }, session);
+    await this.syncClientRecallProfiles(updated.id, session);
     return updated;
   }
 
@@ -7276,6 +7284,151 @@ class DesktopMirrorService {
       payments,
       treatments
     };
+  }
+
+  getClientRecallServiceKey(appointment = {}, serviceById = new Map()) {
+    const serviceId = String(appointment.serviceId || "").trim();
+    const configuredService = serviceId ? serviceById.get(serviceId) : null;
+    const serviceName = cleanText(
+      appointment.serviceName || configuredService?.name || "",
+      "",
+      160
+    );
+    if (serviceId) return { key: `id:${serviceId}`, serviceId, serviceName };
+    const normalizedName = normalizeText(serviceName).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!normalizedName) return null;
+    return { key: `name:${normalizedName}`, serviceId: "", serviceName };
+  }
+
+  isCompletedRecallAppointment(appointment = {}, nowAt = nowIso()) {
+    const status = normalizeText(appointment.status || "");
+    if (!["completed", "completato", "done", "closed", "erogato"].includes(status)) return false;
+    const timestamp = new Date(appointment.startAt || appointment.completedAt || appointment.updatedAt || "").getTime();
+    const nowTimestamp = new Date(nowAt).getTime();
+    return Number.isFinite(timestamp) && Number.isFinite(nowTimestamp) && timestamp <= nowTimestamp;
+  }
+
+  buildClientRecallProfiles(clientId, session = null, options = {}) {
+    const client = this.findByIdInCenter(this.clientsRepository, clientId, session);
+    if (!client) throw new Error("Cliente non trovato");
+    const nowAt = options.nowAt || nowIso();
+    const nowTimestamp = new Date(nowAt).getTime();
+    const centerId = this.getCenterId(session);
+    const serviceById = new Map(
+      this.filterByCenter(this.servicesRepository.list(), session)
+        .map((service) => [String(service.id || ""), service])
+        .filter(([id]) => id)
+    );
+    const visitsByService = new Map();
+    this.filterByCenter(this.appointmentsRepository.list(), session)
+      .filter((appointment) => String(appointment.clientId || "") === String(clientId || ""))
+      .filter((appointment) => this.isCompletedRecallAppointment(appointment, nowAt))
+      .forEach((appointment) => {
+        const service = this.getClientRecallServiceKey(appointment, serviceById);
+        if (!service) return;
+        const timestamp = new Date(appointment.startAt || appointment.completedAt || appointment.updatedAt).getTime();
+        const visits = visitsByService.get(service.key) || { ...service, timestamps: [] };
+        visits.timestamps.push(timestamp);
+        visitsByService.set(service.key, visits);
+      });
+
+    return Array.from(visitsByService.values())
+      .map((service) => {
+        const timestamps = Array.from(new Set(service.timestamps)).sort((left, right) => left - right);
+        const intervalsDays = timestamps.slice(1).map((timestamp, index) =>
+          Math.max(1, Math.round((timestamp - timestamps[index]) / 86400000))
+        );
+        const lastVisitTimestamp = timestamps[timestamps.length - 1];
+        const profileId = `recall:${centerId}:${client.id}:${crypto.createHash("sha256").update(service.key).digest("hex").slice(0, 16)}`;
+        if (!intervalsDays.length) {
+          return {
+            id: profileId,
+            centerId,
+            clientId: String(client.id),
+            serviceId: service.serviceId,
+            serviceName: service.serviceName,
+            state: "insufficient_history",
+            confidence: "insufficient",
+            completedVisits: timestamps.length,
+            intervalDays: [],
+            cadenceDays: null,
+            lastCompletedAt: new Date(lastVisitTimestamp).toISOString(),
+            nextDueAt: null,
+            marketingEligible: false,
+            contactable: Boolean(client.phone || client.email),
+            manualActionRequired: true,
+            automaticMessageAllowed: false,
+            explanation: "Una sola visita completata: non viene dedotta una routine individuale.",
+            updatedAt: nowAt
+          };
+        }
+        const sortedIntervals = [...intervalsDays].sort((left, right) => left - right);
+        const midpoint = Math.floor(sortedIntervals.length / 2);
+        const cadenceDays = sortedIntervals.length % 2
+          ? sortedIntervals[midpoint]
+          : Math.round((sortedIntervals[midpoint - 1] + sortedIntervals[midpoint]) / 2);
+        const nextDueTimestamp = lastVisitTimestamp + cadenceDays * 86400000;
+        const overdueTimestamp = nextDueTimestamp + Math.max(7, Math.round(cadenceDays * 0.35)) * 86400000;
+        const approachingTimestamp = nextDueTimestamp - Math.max(1, Math.round(cadenceDays * 0.2)) * 86400000;
+        const state = nowTimestamp > overdueTimestamp
+          ? "overdue"
+          : nowTimestamp >= nextDueTimestamp
+            ? "due"
+            : nowTimestamp >= approachingTimestamp
+              ? "approaching"
+              : "not_due";
+        const confidence = intervalsDays.length >= 3 ? "high" : intervalsDays.length === 2 ? "medium" : "low";
+        return {
+          id: profileId,
+          centerId,
+          clientId: String(client.id),
+          serviceId: service.serviceId,
+          serviceName: service.serviceName,
+          state,
+          confidence,
+          completedVisits: timestamps.length,
+          intervalDays: sortedIntervals,
+          cadenceDays,
+          lastCompletedAt: new Date(lastVisitTimestamp).toISOString(),
+          nextDueAt: new Date(nextDueTimestamp).toISOString(),
+          marketingEligible: Boolean(client.marketingConsent && (client.phone || client.email)),
+          contactable: Boolean(client.phone || client.email),
+          manualActionRequired: true,
+          automaticMessageAllowed: false,
+          explanation: `Routine stimata dalla mediana di ${intervalsDays.length} intervalli tra appuntamenti completati.`,
+          updatedAt: nowAt
+        };
+      })
+      .sort((left, right) => String(left.nextDueAt || "9999").localeCompare(String(right.nextDueAt || "9999")));
+  }
+
+  async syncClientRecallProfiles(clientId, session = null, options = {}) {
+    const profiles = this.buildClientRecallProfiles(clientId, session, options);
+    const centerId = this.getCenterId(session);
+    const existing = this.filterByCenter(this.clientRecallProfilesRepository.list(), session)
+      .filter((profile) => String(profile.clientId || "") === String(clientId || ""));
+    const nextIds = new Set(profiles.map((profile) => profile.id));
+    for (const profile of profiles) {
+      const current = this.clientRecallProfilesRepository.findById(profile.id);
+      if (current && this.belongsToCenter(current, centerId)) {
+        await this.clientRecallProfilesRepository.updateDurable(profile.id, () => profile);
+      } else {
+        await this.clientRecallProfilesRepository.createDurable(profile);
+      }
+    }
+    for (const profile of existing) {
+      if (!nextIds.has(profile.id)) await this.clientRecallProfilesRepository.deleteDurable(profile.id);
+    }
+    return {
+      clientId: String(clientId),
+      profiles,
+      automaticMessaging: false,
+      message: "Profili aggiornati da visite completate; ogni eventuale contatto richiede consenso marketing e conferma dell'operatore."
+    };
+  }
+
+  async getClientRecallProfiles(clientId, session = null) {
+    return this.syncClientRecallProfiles(clientId, session);
   }
 
   getClientConsultation(clientId, session = null) {
@@ -7493,6 +7646,7 @@ class DesktopMirrorService {
       this.invalidateAppointmentsDayCache(centerId, [entity.startAt]);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       this.applyGoldStateEvent("appointment_created", { after: entity }, session);
+      if (entity.clientId) await this.syncClientRecallProfiles(entity.clientId, session);
       return entity;
     }
 
@@ -7510,6 +7664,10 @@ class DesktopMirrorService {
       updated?.startAt || entity.startAt
     ]);
     this.applyGoldStateEvent("appointment_updated", { before: currentAppointment, after: updated }, session);
+    if (currentAppointment.clientId && currentAppointment.clientId !== updated.clientId) {
+      await this.syncClientRecallProfiles(currentAppointment.clientId, session);
+    }
+    if (updated.clientId) await this.syncClientRecallProfiles(updated.clientId, session);
     return updated;
   }
 
@@ -7522,6 +7680,7 @@ class DesktopMirrorService {
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       this.invalidateAppointmentsDayCache(this.getCenterId(session), [currentAppointment?.startAt || ""]);
       this.applyGoldStateEvent("appointment_deleted", { before: currentAppointment }, session);
+      if (currentAppointment.clientId) await this.syncClientRecallProfiles(currentAppointment.clientId, session);
     }
     return result;
   }
