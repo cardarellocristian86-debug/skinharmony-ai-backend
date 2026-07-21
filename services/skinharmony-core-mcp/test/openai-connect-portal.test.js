@@ -60,7 +60,6 @@ test("uses Authorization Code PKCE and sends the verified owner directly to a on
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
-    providerStatus: async (tenant) => ({ provider: { configured: tenant === "codexai" } }),
     issueSetupLink: async (identity) => {
       issuedFor = identity;
       return issuedSetupLink();
@@ -91,7 +90,6 @@ test("completes the Auth0 callback when a privacy browser discards the initial c
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
-    providerStatus: async () => ({ provider: { configured: false } }),
     issueSetupLink: async () => issuedSetupLink(),
   });
   await serve(portal, async (base) => {
@@ -111,7 +109,6 @@ test("rejects CSRF state mismatch, expired state, and non-owner callback without
     now: () => clock,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity({ godMode: false, providerSetupOwner: false, role: "standard" }),
-    providerStatus: async () => ({}),
     issueSetupLink: async () => ({}),
   });
   await serve(portal, async (base) => {
@@ -138,7 +135,6 @@ test("shows a safe actionable reason when Auth0 omits the tenant claim", async (
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => { throw new Error("jwt_tenant_missing"); },
-    providerStatus: async () => ({}),
     issueSetupLink: async () => ({}),
   });
   await serve(portal, async (base) => {
@@ -159,7 +155,6 @@ test("shows a safe activation message when the dedicated setup-link credential i
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
-    providerStatus: async () => ({ provider: { configured: false } }),
     issueSetupLink: async () => { throw new Error("provider_setup_link_scope_required"); },
   });
   await serve(portal, async (base) => {
@@ -179,7 +174,6 @@ test("rejects unsafe Core redirects and makes stale Continue pages harmless", as
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
-    providerStatus: async () => { throw new Error("normal_core_key_unavailable"); },
     issueSetupLink: async () => {
       issued += 1;
       return issuedSetupLink({ setup_url: "https://attacker.example/setup/opaque" });
