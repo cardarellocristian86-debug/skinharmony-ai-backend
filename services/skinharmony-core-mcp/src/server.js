@@ -28,12 +28,6 @@ const coreHandlers = createCoreHandlers(config, {
   sharedMemoryBootstrap,
 });
 const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
-async function coreProvider(path, tenantId) {
-  const key = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "")).trim();
-  if (!key) throw new Error("core_tenant_key_missing");
-  const response = await fetch(`${config.universalCoreUrl}${path}`, { headers: { authorization: `Bearer ${key}`, accept: "application/json" } });
-  const payload = await response.json(); if (!response.ok) throw new Error("core_provider_unavailable"); return payload;
-}
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -131,7 +125,6 @@ const openAiPortal = createOpenAiConnectPortal({
   config,
   authenticate: browserAuthenticate,
   issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
-  providerStatus: (tenantId) => coreProvider("/v1/generic-agents/providers/openai", tenantId),
 });
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);
