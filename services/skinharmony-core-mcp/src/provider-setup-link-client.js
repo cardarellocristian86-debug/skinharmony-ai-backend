@@ -25,10 +25,15 @@ export function providerSetupLinkKey(config, tenantId) {
   return key;
 }
 
-export function validateOpenAiProviderSetupLink(payload, config) {
+export function validateOpenAiProviderSetupLink(payload, config, expectedTenantId) {
   const setupUrl = String(payload?.setup_url || "");
   const setupProof = String(payload?.setup_proof || "");
   const linkId = String(payload?.link_id || "");
+  const tenantId = String(payload?.tenant_id || "").trim();
+  const expectedTenant = String(expectedTenantId || "").trim();
+  if (!expectedTenant || tenantId !== expectedTenant) {
+    throw new Error("provider_setup_link_tenant_mismatch");
+  }
   if (!/^[A-Za-z0-9_-]{32,120}$/.test(setupProof) || !/^psl_[A-Za-z0-9_-]{16,120}$/.test(linkId)) {
     throw new Error("provider_setup_link_invalid_response");
   }
@@ -54,7 +59,7 @@ export function validateOpenAiProviderSetupLink(payload, config) {
   }
   return {
     ok: payload?.ok === true,
-    tenant_id: String(payload?.tenant_id || ""),
+    tenant_id: tenantId,
     setup_url: received.toString(),
     setup_proof: setupProof,
     link_id: linkId,
@@ -66,6 +71,10 @@ export function validateOpenAiProviderSetupLink(payload, config) {
 export async function issueOpenAiProviderSetupLink({ config, tenantId, ttlMinutes, ownerContext, fetchImpl = fetch }) {
   if (!ownerContext || typeof ownerContext !== "object" || Array.isArray(ownerContext)) {
     throw new Error("provider_setup_link_owner_context_unavailable");
+  }
+  const expectedTenant = String(tenantId || "").trim();
+  if (!expectedTenant || String(ownerContext.tenant_id || "").trim() !== expectedTenant) {
+    throw new Error("provider_setup_link_tenant_mismatch");
   }
   // The tenant is derived by the MCP from the verified identity, never from
   // tool input. Core checks that it also matches the restricted bootstrap key
@@ -92,5 +101,5 @@ export async function issueOpenAiProviderSetupLink({ config, tenantId, ttlMinute
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(providerSetupLinkFailure(response.status, payload));
-  return validateOpenAiProviderSetupLink(payload, config);
+  return validateOpenAiProviderSetupLink(payload, config, expectedTenant);
 }

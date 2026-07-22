@@ -95,7 +95,7 @@ async function rawPost(url, { headers = {}, body = "" } = {}) {
   });
 }
 
-test("uses Authorization Code PKCE and sends the verified owner directly to a one-time setup link", async () => {
+test("uses Authorization Code PKCE, refreshes the portal session, and sends the verified owner directly to a one-time setup link", async () => {
   let issuedFor = null;
   const portal = createOpenAiConnectPortal({
     config,
@@ -120,9 +120,19 @@ test("uses Authorization Code PKCE and sends the verified owner directly to a on
     );
     assert.equal(callback.status, 303);
     assert.equal(callback.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
-    assert.deepEqual(issuedFor, ownerIdentity());
+    assert.deepEqual(issuedFor, {
+      kind: "oauth",
+      subject: ownerIdentity().subject,
+      tenantId: "codexai",
+      role: "owner_root",
+      providerSetupOwner: true,
+    });
     assert.doesNotMatch(callback.headers.get("location"), /tenant_id|google-oauth2/);
-    assert.equal(callback.headers.get("set-cookie"), null);
+    const sessionCookie = callback.headers.get("set-cookie");
+    assert.match(sessionCookie, /__Host-skinharmony_agents=/);
+    assert.match(sessionCookie, /HttpOnly/);
+    assert.match(sessionCookie, /Secure/);
+    assert.match(sessionCookie, /SameSite=Lax/);
   });
 });
 
@@ -139,7 +149,7 @@ test("completes the Auth0 callback when a privacy browser discards the initial c
     const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${encodeURIComponent(state)}`, { redirect: "manual" });
     assert.equal(callback.status, 303);
     assert.equal(callback.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
-    assert.equal(callback.headers.get("set-cookie"), null);
+    assert.match(callback.headers.get("set-cookie"), /__Host-skinharmony_agents=/);
   });
 });
 
@@ -248,7 +258,7 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     issueSetupLink: async () => issuedSetupLink(),
     providerStatus: async (_args, identity) => {
       calls.push({ operation: "status", identity });
-      return { structuredContent: { ok: true, provider: { configured: true, execution_available: true } } };
+      return { structuredContent: { ok: true, tenant_id: identity.tenantId, provider: { configured: true, execution_available: true } } };
     },
     startMultiAgentRun: async (args, identity) => {
       calls.push({ operation: "start", args, identity });
@@ -395,7 +405,7 @@ test("first agent login sends an unconfigured tenant directly to the secure setu
       issuedFor.push(identity);
       return issuedSetupLink();
     },
-    providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: false, execution_available: false } } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: false, execution_available: false } } }),
     startMultiAgentRun: async () => { throw new Error("must_not_start"); },
     readMultiAgentRun: async () => ({}),
     cancelMultiAgentRun: async () => ({}),
@@ -417,7 +427,7 @@ test("first agent login sends an unconfigured tenant directly to the secure setu
   });
 });
 
-test("an unready portal page uses the cookie-independent setup link instead of a POST Continue button", async () => {
+test("an unready portal page reuses the tenant-bound owner session through a CSRF-protected POST", async () => {
   let statusChecks = 0;
   const portal = createOpenAiConnectPortal({
     config,
@@ -426,7 +436,7 @@ test("an unready portal page uses the cookie-independent setup link instead of a
     issueSetupLink: async () => issuedSetupLink(),
     providerStatus: async () => {
       statusChecks += 1;
-      return { structuredContent: { ok: true, provider: statusChecks === 1
+      return { structuredContent: { ok: true, tenant_id: "codexai", provider: statusChecks === 1
         ? { configured: true, execution_available: true }
         : { configured: false, execution_available: false } } };
     },
@@ -445,8 +455,9 @@ test("an unready portal page uses the cookie-independent setup link instead of a
     const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
     const home = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
     const html = await home.text();
-    assert.match(html, /href="\/connect\/openai"/);
-    assert.doesNotMatch(html, /action="\/agents\/connect"/);
+    assert.match(html, /action="\/agents\/connect"/);
+    assert.match(html, /name="csrf" value="[A-Za-z0-9_-]+"/);
+    assert.doesNotMatch(html, /href="\/connect\/openai"/);
     assert.match(html, /pagina protetta|modulo sicuro/i);
     assert.doesNotMatch(html, /codexai|google-oauth2|sk-proj/);
 
@@ -498,7 +509,7 @@ test("agent login does not mint a setup link from a malformed provider status", 
       linksIssued += 1;
       return issuedSetupLink();
     },
-    providerStatus: async () => ({ structuredContent: { ok: true } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai" } }),
     startMultiAgentRun: async () => ({}),
     readMultiAgentRun: async () => ({}),
     cancelMultiAgentRun: async () => ({}),
@@ -516,6 +527,95 @@ test("agent login does not mint a setup link from a malformed provider status", 
   });
 });
 
+for (const [label, statusPayload] of [
+  ["different tenant", { tenant_id: "tenant-b", provider: { configured: true, execution_available: true } }],
+  ["missing tenant", { provider: { configured: true, execution_available: true } }],
+]) {
+  test(`agent login fails closed when provider status has ${label}`, async () => {
+    const statusIdentities = [];
+    let linksIssued = 0;
+    const portal = createOpenAiConnectPortal({
+      config,
+      fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+      authenticate: async () => ownerIdentity(),
+      issueSetupLink: async () => {
+        linksIssued += 1;
+        return issuedSetupLink();
+      },
+      providerStatus: async (_args, identity) => {
+        statusIdentities.push(identity);
+        return { structuredContent: { ok: true, ...statusPayload } };
+      },
+      startMultiAgentRun: async () => { throw new Error("must_not_start"); },
+      readMultiAgentRun: async () => ({}),
+      cancelMultiAgentRun: async () => ({}),
+    });
+
+    await serve(portal, async (base) => {
+      const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+      const authorization = new URL(login.headers.get("location"));
+      const callback = await fetch(
+        `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+        { redirect: "manual" },
+      );
+
+      assert.equal(callback.status, 503);
+      assert.equal(callback.headers.get("location"), null);
+      assert.equal(linksIssued, 0);
+      assert.equal(statusIdentities.length, 1);
+      assert.equal(statusIdentities[0].tenantId, "codexai");
+      const html = await callback.text();
+      assert.match(html, /Verifica non disponibile|stato incompleto/);
+      assert.doesNotMatch(html, /tenant-b|codexai|setup_proof|sk-proj/);
+    });
+  });
+}
+
+test("agent callback never redirects when Core returns a setup link for another tenant", async () => {
+  const statusIdentities = [];
+  const linkIdentities = [];
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    providerStatus: async (_args, identity) => {
+      statusIdentities.push(identity);
+      return {
+        structuredContent: {
+          ok: true,
+          tenant_id: "codexai",
+          provider: { configured: false, execution_available: false },
+        },
+      };
+    },
+    issueSetupLink: async (identity) => {
+      linkIdentities.push(identity);
+      return issuedSetupLink({ tenant_id: "tenant-b" });
+    },
+    startMultiAgentRun: async () => { throw new Error("must_not_start"); },
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+
+    assert.equal(callback.status, 503);
+    assert.equal(callback.headers.get("location"), null);
+    assert.deepEqual(statusIdentities.map((identity) => identity.tenantId), ["codexai"]);
+    assert.deepEqual(linkIdentities.map((identity) => identity.tenantId), ["codexai"]);
+    const html = await callback.text();
+    assert.match(html, /Servizio non disponibile/);
+    assert.doesNotMatch(html, /tenant-b|codexai|setup_proof|sk-proj/);
+    assert.doesNotMatch(html, new RegExp(setupProof));
+  });
+});
+
 test("a stale CSRF token cannot be replayed with a newer owner session", async () => {
   let started = 0;
   const portal = createOpenAiConnectPortal({
@@ -523,7 +623,7 @@ test("a stale CSRF token cannot be replayed with a newer owner session", async (
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
     issueSetupLink: async () => issuedSetupLink(),
-    providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: true, execution_available: true } } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: true, execution_available: true } } }),
     startMultiAgentRun: async () => {
       started += 1;
       return { structuredContent: { ok: true, run: { run_id: "run_replay_guard", status: "running" } } };
@@ -599,7 +699,7 @@ test("cross-client portal rejects tampered and expired session cookies", async (
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
     issueSetupLink: async () => issuedSetupLink(),
-    providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: true, execution_available: true } } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: true, execution_available: true } } }),
   });
   await serve(portal, async (base) => {
     const response = await fetch(`${base}/agents`, {

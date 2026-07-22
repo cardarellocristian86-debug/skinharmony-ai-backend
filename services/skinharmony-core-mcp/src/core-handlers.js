@@ -321,6 +321,11 @@ export function createCoreHandlers(config, options = {}) {
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${coreKey(tenantId)}`;
     if (config.tenantGatewayKey && coreKey(tenantId) === config.tenantGatewayKey) {
+      // The gateway key has a synthetic tenant. Core therefore needs the
+      // requested tenant alongside the signed context even for body-less GET
+      // requests. The header is not trusted by itself: Core accepts it only
+      // when the HMAC context below is valid for the exact same tenant.
+      headers["x-sh-tenant-id"] = tenantId;
       const context = tenantContextHeader(tenantId, config.ownerContextSigningSecret);
       if (context) headers["x-sh-tenant-context"] = context;
     }
@@ -665,6 +670,9 @@ export function createCoreHandlers(config, options = {}) {
     skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     tenant_provider_openai_status: async (_args, identity) => {
       const payload = await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId);
+      if (String(payload?.tenant_id || "").trim() !== String(identity.tenantId || "").trim()) {
+        throw new Error("provider_status_tenant_mismatch");
+      }
       const provider = payload?.provider || {};
       const boundedExecutionReady = provider.configured === true && provider.execution_available === true;
       return textResult({

@@ -38,6 +38,9 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
         return new Response(JSON.stringify({ ok: true, result: { hierarchy_version: "core_runtime_hierarchy_v1", mode: "shadow", router: { route: "V2" }, selected_authority: "V1", parity: { attempted: true, matched: false, fallback: "V1" }, execution_allowed: true } }), { status: 200, headers: { "content-type": "application/json" } });
       }
       const path = new URL(url).pathname;
+      if (path === "/v1/generic-agents/providers/openai") {
+        return new Response(JSON.stringify({ ok: true, path, tenant_id: "tenant-a" }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({ ok: true, path }), { status: 200, headers: { "content-type": "application/json" } });
     },
     contextProvider: async (input, identity) => {
