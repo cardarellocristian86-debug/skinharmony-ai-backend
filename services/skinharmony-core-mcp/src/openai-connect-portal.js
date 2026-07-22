@@ -278,7 +278,10 @@ export function createOpenAiConnectPortal({
           } catch {
             return portalHtml(res, 503, agentPortalPage("Verifica non disponibile", `<p>La sessione owner è valida, ma non è stato possibile controllare il vault. Nessun collegamento è stato creato.</p>${button("Riprova", AGENT_PORTAL_PATH)}`));
           }
-          const provider = status?.provider || {};
+          const provider = status?.provider;
+          if (!provider || typeof provider.configured !== "boolean" || typeof provider.execution_available !== "boolean") {
+            return portalHtml(res, 503, agentPortalPage("Verifica non disponibile", `<p>Il vault ha restituito uno stato incompleto. Nessun collegamento è stato creato.</p>${button("Riprova", AGENT_PORTAL_PATH)}`));
+          }
           if (provider.configured !== true || provider.execution_available !== true) {
             try {
               const link = await issueSetupLink(identityForPortal);
