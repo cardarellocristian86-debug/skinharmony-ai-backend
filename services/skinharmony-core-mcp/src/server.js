@@ -128,8 +128,19 @@ const openAiPortal = createOpenAiConnectPortal({
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);
 app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
+app.get("/agents", openAiPortal.agentsHome);
+app.get("/agents/login", openAiPortal.agentsLogin);
+app.post("/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
+app.post("/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
+app.get("/agents/runs/:runId", openAiPortal.agentsRunRead);
+app.post("/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
+app.post("/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
+
+// Preserve previously issued mobile-first links while keeping `/agents` as
+// the device- and client-neutral entrypoint for ChatGPT, Codex and browsers.
 app.get("/mobile/agents", openAiPortal.agentsHome);
 app.get("/mobile/agents/login", openAiPortal.agentsLogin);
+app.post("/mobile/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
 app.post("/mobile/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
 app.get("/mobile/agents/runs/:runId", openAiPortal.agentsRunRead);
 app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);

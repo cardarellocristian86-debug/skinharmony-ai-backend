@@ -45,12 +45,15 @@ async function serve(portal, run) {
   app.get("/connect/openai", portal.start);
   app.get("/connect/openai/callback", portal.callback);
   app.post("/connect/openai/continue", express.urlencoded({ extended: false }), portal.continue);
-  app.get("/mobile/agents", portal.agentsHome);
-  app.get("/mobile/agents/login", portal.agentsLogin);
-  app.post("/mobile/agents/run", express.urlencoded({ extended: false }), portal.agentsRunStart);
-  app.get("/mobile/agents/runs/:runId", portal.agentsRunRead);
-  app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false }), portal.agentsRunCancel);
-  app.post("/mobile/agents/logout", express.urlencoded({ extended: false }), portal.agentsLogout);
+  for (const root of ["/agents", "/mobile/agents"]) {
+    app.get(root, portal.agentsHome);
+    app.get(`${root}/login`, portal.agentsLogin);
+    app.post(`${root}/connect`, express.urlencoded({ extended: false }), portal.agentsConnect);
+    app.post(`${root}/run`, express.urlencoded({ extended: false }), portal.agentsRunStart);
+    app.get(`${root}/runs/:runId`, portal.agentsRunRead);
+    app.post(`${root}/runs/:runId/cancel`, express.urlencoded({ extended: false }), portal.agentsRunCancel);
+    app.post(`${root}/logout`, express.urlencoded({ extended: false }), portal.agentsLogout);
+  }
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try {
@@ -203,9 +206,9 @@ test("rejects unsafe Core redirects and makes stale Continue pages harmless", as
   });
 });
 
-test("runs the bounded tenant multi-agent flow from a secure iPhone portal session", async () => {
+test("runs the bounded tenant multi-agent flow from a secure cross-client portal session", async () => {
   const calls = [];
-  const runId = "run_iphone_owner_1";
+  const runId = "run_cross_client_owner_1";
   const portal = createOpenAiConnectPortal({
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
@@ -238,11 +241,11 @@ test("runs the bounded tenant multi-agent flow from a secure iPhone portal sessi
   });
 
   await serve(portal, async (base) => {
-    const anonymous = await fetch(`${base}/mobile/agents`);
+    const anonymous = await fetch(`${base}/agents`);
     assert.equal(anonymous.status, 200);
     assert.match(await anonymous.text(), /Accedi e continua/);
 
-    const login = await fetch(`${base}/mobile/agents/login`, { redirect: "manual" });
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
     assert.equal(login.status, 302);
     const authorization = new URL(login.headers.get("location"));
     const callback = await fetch(
@@ -250,14 +253,14 @@ test("runs the bounded tenant multi-agent flow from a secure iPhone portal sessi
       { redirect: "manual" },
     );
     assert.equal(callback.status, 303);
-    assert.equal(callback.headers.get("location"), "/mobile/agents");
+    assert.equal(callback.headers.get("location"), "/agents");
     const setCookie = callback.headers.get("set-cookie");
     assert.match(setCookie, /HttpOnly/);
     assert.match(setCookie, /Secure/);
     assert.match(setCookie, /SameSite=Lax/);
     const sessionCookie = setCookie.split(";")[0];
 
-    const home = await fetch(`${base}/mobile/agents`, { headers: { cookie: sessionCookie } });
+    const home = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
     assert.equal(home.status, 200);
     const homeHtml = await home.text();
     assert.match(homeHtml, /Researcher → Reviewer → Nyra/);
@@ -265,7 +268,7 @@ test("runs the bounded tenant multi-agent flow from a secure iPhone portal sessi
     const csrf = homeHtml.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
     assert(csrf);
 
-    const denied = await fetch(`${base}/mobile/agents/run`, {
+    const denied = await fetch(`${base}/agents/run`, {
       method: "POST",
       headers: { cookie: sessionCookie, origin: "https://attacker.test", "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ csrf, confirmed: "yes", task: "Test tenant isolato" }),
@@ -273,7 +276,7 @@ test("runs the bounded tenant multi-agent flow from a secure iPhone portal sessi
     assert.equal(denied.status, 403);
     assert.equal(calls.filter((call) => call.operation === "start").length, 0);
 
-    const started = await fetch(`${base}/mobile/agents/run`, {
+    const started = await fetch(`${base}/agents/run`, {
       method: "POST",
       headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -290,18 +293,18 @@ test("runs the bounded tenant multi-agent flow from a secure iPhone portal sessi
     assert.deepEqual(startCall.args, { task: "Test tenant isolato" });
     assert.equal(startCall.identity.tenantId, "codexai");
     assert.equal(startCall.identity.providerExecutionConfirmed, true);
-    assert.match(startCall.identity.providerExecutionConfirmationReference, /^iphone_portal_[a-f0-9]{32}$/);
+    assert.match(startCall.identity.providerExecutionConfirmationReference, /^agent_portal_[a-f0-9]{32}$/);
     assert.equal(JSON.stringify(startCall).includes("tenant-victim"), false);
     assert.equal(JSON.stringify(startCall).includes("must-not-be-forwarded"), false);
 
-    const read = await fetch(`${base}/mobile/agents/runs/${runId}`, { headers: { cookie: sessionCookie } });
+    const read = await fetch(`${base}/agents/runs/${runId}`, { headers: { cookie: sessionCookie } });
     assert.equal(read.status, 200);
     const readHtml = await read.text();
     assert.doesNotMatch(readHtml, /<script>|<b>test<\/b>/);
     assert.match(readHtml, /&lt;script&gt;alert\(&#39;no&#39;\)&lt;\/script&gt;/);
     assert.match(readHtml, /&lt;b&gt;test&lt;\/b&gt;/);
 
-    const cancelled = await fetch(`${base}/mobile/agents/runs/${runId}/cancel`, {
+    const cancelled = await fetch(`${base}/agents/runs/${runId}/cancel`, {
       method: "POST",
       headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ csrf }),
@@ -311,46 +314,78 @@ test("runs the bounded tenant multi-agent flow from a secure iPhone portal sessi
     assert.deepEqual(cancelCall.args, { run_id: runId });
     assert.equal(cancelCall.identity.tenantId, "codexai");
 
-    // Safari privacy modes can omit Origin. SameSite + the secret CSRF token
+    // In-app and privacy browsers can omit Origin. SameSite + the secret CSRF token
     // still authorize a same-origin form, while explicit cross-site metadata
     // remains rejected.
-    const logout = await fetch(`${base}/mobile/agents/logout`, {
+    const logout = await fetch(`${base}/agents/logout`, {
       method: "POST",
       redirect: "manual",
       headers: { cookie: sessionCookie, "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ csrf }),
     });
     assert.equal(logout.status, 303);
-    assert.equal(logout.headers.get("location"), "/mobile/agents");
+    assert.equal(logout.headers.get("location"), "/agents");
     assert.match(logout.headers.get("set-cookie"), /Max-Age=0/);
   });
 });
 
-test("iPhone portal sends an unconfigured tenant only to the existing secure setup flow", async () => {
+test("cross-client portal sends an unconfigured tenant only to the existing secure setup flow", async () => {
+  const issuedFor = [];
   const portal = createOpenAiConnectPortal({
     config,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity({ role: "tenant_owner", godMode: false }),
-    issueSetupLink: async () => issuedSetupLink(),
+    issueSetupLink: async (identity) => {
+      issuedFor.push(identity);
+      return issuedSetupLink();
+    },
     providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: false, execution_available: false } } }),
     startMultiAgentRun: async () => { throw new Error("must_not_start"); },
     readMultiAgentRun: async () => ({}),
     cancelMultiAgentRun: async () => ({}),
   });
   await serve(portal, async (base) => {
-    const login = await fetch(`${base}/mobile/agents/login`, { redirect: "manual" });
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
     const authorization = new URL(login.headers.get("location"));
     const callback = await fetch(`${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`, { redirect: "manual" });
     const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
-    const home = await fetch(`${base}/mobile/agents`, { headers: { cookie: sessionCookie } });
+    const home = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
     const html = await home.text();
-    assert.match(html, /href="\/connect\/openai"/);
+    assert.match(html, /action="\/agents\/connect"/);
     assert.match(html, /La chiave OpenAI resta nel vault|non verrà mostrata in chat/i);
     assert.doesNotMatch(html, /codexai|google-oauth2|sk-proj/);
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
+    assert(csrf);
+
+    const denied = await fetch(`${base}/agents/connect`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie: sessionCookie, origin: "https://attacker.test", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf }),
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(issuedFor.length, 0);
+
+    const connect = await fetch(`${base}/agents/connect`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf }),
+    });
+    assert.equal(connect.status, 303);
+    assert.equal(connect.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
+    assert.equal(issuedFor.length, 1);
+    assert.equal(issuedFor[0].tenantId, "codexai");
+    assert.equal(issuedFor[0].subject, ownerIdentity().subject);
+
+    const verified = await fetch(`${base}/agents?verify=1`, { headers: { cookie: sessionCookie } });
+    const verifiedHtml = await verified.text();
+    assert.match(verifiedHtml, /Controllo eseguito adesso/);
+    assert.match(verifiedHtml, /non risulta ancora collegata a questo account/);
   });
 });
 
-test("iPhone portal rejects tampered and expired session cookies", async () => {
+test("cross-client portal rejects tampered and expired session cookies", async () => {
   let clock = 0;
   const portal = createOpenAiConnectPortal({
     config,
@@ -361,18 +396,50 @@ test("iPhone portal rejects tampered and expired session cookies", async () => {
     providerStatus: async () => { throw new Error("must_not_call"); },
   });
   await serve(portal, async (base) => {
-    const response = await fetch(`${base}/mobile/agents`, {
+    const response = await fetch(`${base}/agents`, {
       headers: { cookie: "__Host-skinharmony_agents=tampered.value" },
     });
     assert.equal(response.status, 200);
     assert.match(await response.text(), /Accedi e continua/);
 
-    const login = await fetch(`${base}/mobile/agents/login`, { redirect: "manual" });
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
     const authorization = new URL(login.headers.get("location"));
     const callback = await fetch(`${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`, { redirect: "manual" });
     const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
     clock = 20 * 60 * 1000 + 1;
-    const expired = await fetch(`${base}/mobile/agents`, { headers: { cookie: sessionCookie } });
+    const expired = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
     assert.match(await expired.text(), /Accedi e continua/);
+  });
+});
+
+test("serves the same canonical portal across clients and keeps the legacy mobile alias", async () => {
+  const portal = createOpenAiConnectPortal({
+    config,
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => issuedSetupLink(),
+  });
+  const userAgents = [
+    "ChatGPT/1.2026 iOS",
+    "ChatGPT/1.2026 Android",
+    "Codex Desktop",
+    "Mozilla/5.0 Chrome Desktop",
+  ];
+  await serve(portal, async (base) => {
+    const pages = [];
+    for (const userAgent of userAgents) {
+      const response = await fetch(`${base}/agents`, { headers: { "user-agent": userAgent } });
+      assert.equal(response.status, 200);
+      pages.push(await response.text());
+    }
+    assert(pages.every((html) => html === pages[0]));
+    assert.match(pages[0], /Portale multi-agente/);
+    assert.match(pages[0], /ChatGPT, Codex/);
+    assert.match(pages[0], /href="\/agents\/login"/);
+
+    const legacy = await fetch(`${base}/mobile/agents`);
+    assert.equal(legacy.status, 200);
+    const legacyHtml = await legacy.text();
+    assert.match(legacyHtml, /Portale multi-agente/);
+    assert.match(legacyHtml, /href="\/agents\/login"/);
   });
 });
