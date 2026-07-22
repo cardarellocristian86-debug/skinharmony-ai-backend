@@ -23,6 +23,9 @@ function button(label, href, { newTab = false } = {}) {
 function logoutForm(csrf) {
   return `<form method="post" action="${AGENT_PORTAL_PATH}/logout" style="margin-top:24px"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button style="width:100%;border:0;background:transparent;color:#666;padding:10px">Esci dal portale</button></form>`;
 }
+function connectForm(csrf, label) {
+  return `<form method="post" action="${AGENT_PORTAL_PATH}/connect"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button style="width:100%;border:0;background:#111;color:#fff;padding:14px 18px;border-radius:12px;font-weight:700">${escapeHtml(label)}</button></form>`;
+}
 function portalHtml(res, status, html) {
   return res
     .status(status)
@@ -60,9 +63,12 @@ function setupLinkFailure(error) {
   }
 }
 
-function secureSetupRedirect(link, config) {
+function secureSetupRedirect(link, config, expectedTenantId) {
   const setupUrl = String(link?.setup_url || "");
   const proof = String(link?.setup_proof || "");
+  const tenantId = String(link?.tenant_id || "").trim();
+  const expectedTenant = String(expectedTenantId || "").trim();
+  if (!expectedTenant || tenantId !== expectedTenant) throw new Error("provider_setup_link_tenant_mismatch");
   if (!/^[A-Za-z0-9_-]{32,120}$/.test(proof)) throw new Error("provider_setup_link_invalid_response");
   let target;
   let core;
@@ -120,6 +126,13 @@ function resultPayload(result) {
   return result?.structuredContent && typeof result.structuredContent === "object"
     ? result.structuredContent
     : result;
+}
+function providerStatusForTenant(result, expectedTenantId) {
+  const payload = resultPayload(result);
+  const tenantId = String(payload?.tenant_id || "").trim();
+  const expectedTenant = String(expectedTenantId || "").trim();
+  if (!expectedTenant || tenantId !== expectedTenant) throw new Error("provider_status_tenant_mismatch");
+  return payload;
 }
 function safeIdentity(identity) {
   return {
@@ -231,6 +244,17 @@ export function createOpenAiConnectPortal({
     const expected = Buffer.from(expectedValue);
     return validOrigin(req) && received.length === expected.length && received.length > 0 && crypto.timingSafeEqual(received, expected);
   };
+  const setAgentSession = (res, identity) => {
+    const identityForPortal = safeIdentity(identity);
+    const sessionEnvelope = seal(agentSessionKey, {
+      kind: "openai_agents_session_v1",
+      identity: identityForPortal,
+      csrf: crypto.randomBytes(32).toString("base64url"),
+      expires_at: now() + AGENT_PORTAL_SESSION_AGE_MS,
+    });
+    res.setHeader("set-cookie", `${AGENT_PORTAL_SESSION_COOKIE}=${sessionEnvelope}; Max-Age=${Math.floor(AGENT_PORTAL_SESSION_AGE_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax`);
+    return identityForPortal;
+  };
   return {
     async start(req, res) {
       // The complete short-lived PKCE attempt lives in the authenticated state
@@ -255,26 +279,21 @@ export function createOpenAiConnectPortal({
         const response = await fetchImpl(`${config.auth0Issuer}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
         const tokens = await response.json(); if (!response.ok || !tokens.access_token) throw new Error("oauth_exchange_failed");
         const identity = await authenticate(`Bearer ${tokens.access_token}`); if (!owner(identity)) throw new Error("owner_required");
+        // Refresh the same short-lived tenant-bound portal session for both
+        // entry paths. Returning from a direct OpenAI connection must not fall
+        // back to a stale session belonging to another tenant identity.
+        const identityForPortal = setAgentSession(res, identity);
         if (session.kind === "openai_agents_pkce_v1") {
-          const identityForPortal = safeIdentity(identity);
-          const sessionEnvelope = seal(
-            agentSessionKey,
-            {
-              kind: "openai_agents_session_v1",
-              identity: identityForPortal,
-              csrf: crypto.randomBytes(32).toString("base64url"),
-              expires_at: now() + AGENT_PORTAL_SESSION_AGE_MS,
-            },
-            "skinharmony-openai-agents-session-v1",
-          );
-          res.setHeader("set-cookie", `${AGENT_PORTAL_SESSION_COOKIE}=${sessionEnvelope}; Max-Age=${Math.floor(AGENT_PORTAL_SESSION_AGE_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax`);
           // First-run onboarding is automatic. If this tenant is not ready, mint
           // the one-time capability during the verified OAuth callback and open
           // the protected Core form immediately. This removes the fragile
           // callback -> portal -> POST Continue hop from every client.
           let status;
           try {
-            status = resultPayload(await providerStatus({}, identityForPortal));
+            status = providerStatusForTenant(
+              await providerStatus({}, identityForPortal),
+              identityForPortal.tenantId,
+            );
           } catch {
             return portalHtml(res, 503, agentPortalPage("Verifica non disponibile", `<p>La sessione owner è valida, ma non è stato possibile controllare il vault. Nessun collegamento è stato creato.</p>${button("Riprova", AGENT_PORTAL_PATH)}`));
           }
@@ -285,7 +304,7 @@ export function createOpenAiConnectPortal({
           if (provider.configured !== true || provider.execution_available !== true) {
             try {
               const link = await issueSetupLink(identityForPortal);
-              return res.redirect(303, secureSetupRedirect(link, config));
+              return res.redirect(303, secureSetupRedirect(link, config, identityForPortal.tenantId));
             } catch (error) {
               const [title, body] = setupLinkFailure(error);
               return portalHtml(res, 503, agentPortalPage(title, `${body}${button("Riprova il collegamento", "/connect/openai")}`));
@@ -298,8 +317,8 @@ export function createOpenAiConnectPortal({
         // callback -> cookie -> Continue POST hop, which fails in in-app and
         // privacy browsers even after a successful login.
         try {
-          const link = await issueSetupLink(identity);
-          return res.redirect(303, secureSetupRedirect(link, config));
+          const link = await issueSetupLink(identityForPortal);
+          return res.redirect(303, secureSetupRedirect(link, config, identityForPortal.tenantId));
         } catch (error) {
           const [title, body] = setupLinkFailure(error);
           return portalHtml(res, 503, page(title, body));
@@ -323,7 +342,7 @@ export function createOpenAiConnectPortal({
         // subject and role identical between the status page and the one-time
         // credential link, and avoids a second OAuth round trip/new browser tab.
         const link = await issueSetupLink(session.identity);
-        return res.redirect(303, secureSetupRedirect(link, config));
+        return res.redirect(303, secureSetupRedirect(link, config, session.identity.tenantId));
       } catch (error) {
         const [title, body] = setupLinkFailure(error);
         return portalHtml(res, 503, agentPortalPage(title, body));
@@ -333,7 +352,10 @@ export function createOpenAiConnectPortal({
       const session = agentSession(req);
       if (!session) return portalHtml(res, 200, agentPortalPage("Portale multi-agente", `<p>Accedi con il tuo account da ChatGPT, Codex o qualsiasi browser su Android, iOS e computer. La chiave OpenAI resta nel vault cifrato e non passa mai nella chat.</p>${button("Accedi e continua", `${AGENT_PORTAL_PATH}/login`)}`));
       try {
-        const payload = resultPayload(await providerStatus({}, session.identity));
+        const payload = providerStatusForTenant(
+          await providerStatus({}, session.identity),
+          session.identity.tenantId,
+        );
         const provider = payload?.provider || {};
         const ready = provider.configured === true && provider.execution_available === true;
         const verificationRequested = String(req.query?.verify || "") === "1";
@@ -341,7 +363,7 @@ export function createOpenAiConnectPortal({
           const verification = verificationRequested
             ? `<div role="status" style="border:1px solid #d7a900;background:#fff8d8;border-radius:12px;padding:14px;margin:16px 0"><strong>Controllo eseguito adesso.</strong><br>${provider.configured === true ? "La chiave risulta salvata, ma il runtime multi-agente non è ancora disponibile." : "La chiave non risulta ancora collegata a questo account."}</div>`
             : "";
-          return portalHtml(res, 200, agentPortalPage("Collega OpenAI", `<p>Per avviare gli agenti inserisci la tua chiave nella pagina protetta. Non verrà mostrata in chat, URL o log.</p>${verification}${button(provider.configured ? "Verifica o sostituisci chiave" : "Collega la chiave OpenAI", "/connect/openai")}<p style="color:#666">Il collegamento esegue un nuovo controllo owner e apre direttamente il modulo sicuro. Dopo il salvataggio tornerai qui.</p>${button("Verifica configurazione", `${AGENT_PORTAL_PATH}?verify=1`)}${logoutForm(session.csrf)}`));
+          return portalHtml(res, 200, agentPortalPage("Collega OpenAI", `<p>Per avviare gli agenti inserisci la tua chiave nella pagina protetta. Non verrà mostrata in chat, URL o log.</p>${verification}${connectForm(session.csrf, provider.configured ? "Verifica o sostituisci chiave" : "Collega la chiave OpenAI")}<p style="color:#666">Il collegamento riusa questa sessione owner e apre direttamente il modulo sicuro per lo stesso account. Dopo il salvataggio tornerai qui.</p>${button("Verifica configurazione", `${AGENT_PORTAL_PATH}?verify=1`)}${logoutForm(session.csrf)}`));
         }
         const verification = verificationRequested
           ? '<div role="status" style="border:1px solid #2e7d32;background:#edf8ee;border-radius:12px;padding:14px;margin:16px 0"><strong>Configurazione verificata:</strong> OpenAI e il test multi-agente sono pronti.</div>'
