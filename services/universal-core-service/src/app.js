@@ -305,8 +305,29 @@ function providerSetupHtml(res, status, html, { scriptNonce = "" } = {}) {
     .send(html);
 }
 
-function providerSetupFormHtml(scriptNonce) {
-  return `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post" id="provider-setup-form"><input type="hidden" name="setup_proof" id="setup-proof"><label>API key<input name="api_key" type="password" autocomplete="new-password" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit" id="submit">Collega in modo sicuro</button></form><p id="link-error" role="alert"></p><script nonce="${scriptNonce}">(function(){const proof=new URLSearchParams(location.hash.slice(1)).get("proof")||"";const input=document.getElementById("setup-proof");const button=document.getElementById("submit");const error=document.getElementById("link-error");if(!/^[A-Za-z0-9_-]{32,120}$/.test(proof)){input.disabled=true;button.disabled=true;error.textContent="Link incompleto. Torna a ChatGPT e apri di nuovo il collegamento sicuro.";return;}input.value=proof;history.replaceState(null,document.title,location.pathname);})();</script></body></html>`;
+function validProviderSetupToken(value) {
+  const token = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{30,120}$/.test(token) ? token : "";
+}
+
+function validProviderSetupProof(value) {
+  const proof = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{32,120}$/.test(proof) ? proof : "";
+}
+
+function escapeProviderSetupHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function providerSetupFormHtml(scriptNonce, { setupProof = "", errorMessage = "" } = {}) {
+  const safeProof = escapeProviderSetupHtml(validProviderSetupProof(setupProof));
+  const safeError = escapeProviderSetupHtml(errorMessage);
+  return `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post" id="provider-setup-form"><input type="hidden" name="setup_proof" id="setup-proof" value="${safeProof}"><label>API key<input name="api_key" type="password" autocomplete="new-password" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit" id="submit">Collega in modo sicuro</button></form><p id="link-error" role="alert">${safeError}</p><script nonce="${scriptNonce}">(function(){const input=document.getElementById("setup-proof");const fragmentProof=new URLSearchParams(location.hash.slice(1)).get("proof")||"";const proof=input.value||fragmentProof;const button=document.getElementById("submit");const error=document.getElementById("link-error");if(!/^[A-Za-z0-9_-]{32,120}$/.test(proof)){input.disabled=true;button.disabled=true;error.textContent="Link incompleto. Torna a ChatGPT e apri di nuovo il collegamento sicuro.";return;}input.value=proof;history.replaceState(null,document.title,location.pathname);})();</script></body></html>`;
 }
 
 function providerSetupLinkBootstrapErrorCode(error) {
@@ -3665,8 +3686,8 @@ export function createUniversalCoreService(options = {}) {
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
   app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => {
-    const token = String(req.params.token || "").trim();
-    if (!/^[A-Za-z0-9_-]{30,120}$/.test(token)) return providerSetupHtml(res, 404, "Link non valido.");
+    const token = validProviderSetupToken(req.params.token);
+    if (!token) return providerSetupHtml(res, 404, "Link non valido.");
     const scriptNonce = crypto.randomBytes(18).toString("base64");
     return providerSetupHtml(res, 200, providerSetupFormHtml(scriptNonce), { scriptNonce });
   });
@@ -3697,11 +3718,25 @@ export function createUniversalCoreService(options = {}) {
       });
     } catch (error) {
       const code = error instanceof Error ? error.message : "";
-      if (code === "openai_api_key_format_invalid") {
+      if (code === "openai_api_key_invalid" || code === "openai_api_key_format_invalid") {
         // Validation happens inside the transaction, so the rollback leaves
-        // this short-lived proof active. Let the owner correct a typo without
-        // forcing another OAuth/link-issuance round trip.
-        return providerSetupHtml(res, 400, "Chiave non valida. Correggila e riprova.");
+        // this short-lived proof active. Re-render only a validated capability,
+        // never the submitted key, so the owner can safely correct a typo.
+        const token = validProviderSetupToken(req.params.token);
+        const setupProof = validProviderSetupProof(req.body?.setup_proof);
+        if (!token || !setupProof) {
+          return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
+        }
+        const scriptNonce = crypto.randomBytes(18).toString("base64");
+        return providerSetupHtml(
+          res,
+          400,
+          providerSetupFormHtml(scriptNonce, {
+            setupProof,
+            errorMessage: "Chiave non valida. Correggila e riprova.",
+          }),
+          { scriptNonce },
+        );
       }
       if (code === "setup_token_invalid" || code === "setup_proof_invalid") {
         return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
