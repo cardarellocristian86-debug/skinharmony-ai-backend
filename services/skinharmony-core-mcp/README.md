@@ -19,7 +19,7 @@ An API key for an external model provider must **never** be pasted into a ChatGP
 3. **Build agents safely.** An agent is a role in a governed plan, not an autonomous account. Typical roles are supervisor, researcher and critic. The plan has explicit dependencies, limits and a deadline; keep specialist fan-out to three or fewer.
 4. **What is automatic.** Core performs tenant isolation, memory recall, preflight, routing, plan persistence, cancellation controls, audit and dry-run simulation.
 5. **What is not automatic.** Browser or tool side effects, messages to customers, payments, publishing, deployment and data deletion remain disabled or require a separate Core verdict plus explicit owner confirmation.
-6. **First live multi-agent mode.** After an OAuth tenant owner explicitly confirms a test, `tenant_provider_openai_multi_agent_smoke_run` can make up to three sequential billable calls with that tenant's already-encrypted OpenAI key: **Researcher → Reviewer → Nyra Synthesizer**. A completed run makes all three; cancellation or a safety failure prevents every remaining stage. The task is capped at 300 characters; each stage is capped at 200 output tokens; learning is frozen; browser, tools, external actions and retries are disabled. The start returns a run ID immediately; the owner can poll the result or cancel it, which aborts the active request and prevents every remaining stage. All other generic-agent and queue workflows remain `manual_dry_run`.
+6. **First live multi-agent mode.** After an OAuth tenant owner explicitly confirms a test, `tenant_provider_openai_multi_agent_smoke_run` can make up to three sequential billable calls with that tenant's already-encrypted OpenAI key: **Researcher → Architecture/Code Specialist → Nyra Supervisor**. The same confirmation also creates or reuses the tenant's persistent logical project folder. A completed run makes all three calls; cancellation or a safety failure prevents every remaining stage. The task is capped at 300 characters; each stage is capped at 200 output tokens; learning is frozen; browser, tools, external actions and retries are disabled. The start returns a run ID immediately; the owner can poll the result or cancel it, which aborts the active request and prevents every remaining stage. Unreviewed output stays outside canonical decisions/evidence. The owner can use `project_context_review_commit` to accept only selected decisions and sourced evidence through a fresh, revision-bound Core authorization; raw model output is never promoted automatically. All other generic-agent and queue workflows remain `manual_dry_run`.
 7. **Provider setup.** ChatGPT Pro/Codex and API billing are separate. Never paste an API key into ChatGPT. Choose **Collega OpenAI** (or ask to create agents): the fixed page asks the administrator of the current tenant to sign in, then creates a short-lived, one-time protected page where the existing key is pasted. The chat never receives the key or the one-time credential. The tenant sees only a masked status and its administrators can rotate or remove it.
 8. **Research and privacy.** Research is planned first, then evidence is sourced and reviewed. Do not send secrets, raw customer records or full pages to the connector.
 
@@ -103,6 +103,38 @@ The portal then exposes tenant-bound status, result and cancellation controls.
 It never accepts a tenant id, API key, model, agent list or budget from the
 task form. Its short session is sealed, `Secure`, `HttpOnly` and
 `SameSite=Lax`; every write additionally requires a same-origin CSRF token.
+
+### Persistent tenant project context
+
+Every live multi-agent run belongs to one logical project rooted at
+`PROJECTS/<project_id>/` in the tenant-scoped PostgreSQL memory store. This is
+not a Render folder and users do not need infrastructure access. The first
+confirmed run creates the following canonical documents idempotently without
+overwriting an existing project:
+
+- `MANIFEST.json` — project identity, objective, schema and canonical files;
+- `PROJECT.md` — stable project scope and objective;
+- `STATE.md` — current phase, open work and next step;
+- `DECISIONS.md` — only owner- or Core-accepted decisions;
+- `EVIDENCE.md` — only reviewed and attributed evidence;
+- `HANDOFF.md` — current owner, receiving agent, blockers and next action.
+
+Terminal run metadata is stored separately below
+`PROJECTS/<project_id>/RUNS/` with trust state `unreviewed_model_output`.
+Owner-only model output is **never** copied into `RUNS`, `STATE.md`,
+`HANDOFF.md`, search results or the bounded context sent to a later run. Shared
+memory retains only stage/status metadata, a SHA-256 digest when output exists,
+and an explicit `UNREVIEWED` placeholder. A later run can recover the workflow
+position without receiving a previous model answer. Promotion of reviewed
+material into `DECISIONS.md` or `EVIDENCE.md` requires a separate governed
+write after explicit owner review.
+
+The tenant always comes from the verified OAuth or bearer identity, never from
+tool input. Every create, read and run-artifact query includes that tenant;
+identical project ids in different tenants remain isolated. Invalid paths,
+partial project state and an unavailable database fail closed. Project context
+is bounded before being sent to a provider, and credentials are redacted before
+persistence.
 
 ## WordPress Suite Cockpit adapter
 

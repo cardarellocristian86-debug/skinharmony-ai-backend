@@ -281,6 +281,7 @@ export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
+  const projectContextService = options.projectContextService;
   const analysisCache = new Map();
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
 
@@ -674,14 +675,16 @@ export function createCoreHandlers(config, options = {}) {
         throw new Error("provider_status_tenant_mismatch");
       }
       const provider = payload?.provider || {};
-      const boundedExecutionReady = provider.configured === true && provider.execution_available === true;
+      const boundedExecutionReady = Boolean(projectContextService)
+        && provider.configured === true
+        && provider.execution_available === true;
       return textResult({
         ...payload,
         provider: {
           ...provider,
           onboarding_required: provider.configured !== true,
           bounded_execution_ready: boundedExecutionReady,
-          readiness_rule: "configured_and_execution_available",
+          readiness_rule: "configured_execution_available_and_project_context",
         },
       });
     },
@@ -699,10 +702,23 @@ export function createCoreHandlers(config, options = {}) {
     },
     tenant_provider_openai_multi_agent_smoke_run: async (args, identity) => {
       requireProviderExecutionOwner(identity);
+      if (!projectContextService) throw new Error("project_context_store_unavailable");
       const confirmationReference = String(identity.providerExecutionConfirmationReference || "").trim().slice(0, 240);
+      const task = String(args.task || "").trim();
+      const projectTitle = String(args.project_title || task).trim().slice(0, 160);
+      const projectObjective = String(args.project_objective || task).trim().slice(0, 4_000);
+      const specialist = String(args.specialist || "architecture").trim();
+      const ensuredProject = await projectContextService.ensure(identity, {
+        project_id: args.project_id,
+        title: projectTitle,
+        objective: projectObjective,
+      });
       const requestBody = {
         tenant_id: identity.tenantId,
-        task: String(args.task || "").trim(),
+        task,
+        project_id: ensuredProject.project_id,
+        project_context: ensuredProject.context,
+        specialist,
         owner_confirmed: true,
         ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
       };
@@ -723,7 +739,7 @@ export function createCoreHandlers(config, options = {}) {
       // required and the Core request is signed and bound to this run id.
       requireProviderSetupOwner(identity);
       const requestBody = { tenant_id: identity.tenantId, run_id: String(args.run_id || "").trim() };
-      return textResult(await coreRequest(
+      const payload = await coreRequest(
         `/v1/generic-agents/providers/openai/multi-agent-runs/${encodeURIComponent(requestBody.run_id)}/result`,
         identity.tenantId,
         {
@@ -736,12 +752,20 @@ export function createCoreHandlers(config, options = {}) {
             }),
           },
         },
-      ));
+      );
+      if (projectContextService && ["completed", "failed", "cancelled", "interrupted"].includes(payload?.run?.status)) {
+        try {
+          payload.project_memory = await projectContextService.recordRun(identity, payload);
+        } catch {
+          payload.project_memory = { recorded: false, reason: "project_result_persistence_unavailable" };
+        }
+      }
+      return textResult(payload);
     },
     tenant_provider_openai_multi_agent_run_cancel: async (args, identity) => {
       requireProviderSetupOwner(identity);
       const requestBody = { tenant_id: identity.tenantId, run_id: String(args.run_id || "").trim() };
-      return textResult(await coreRequest(
+      const payload = await coreRequest(
         `/v1/generic-agents/providers/openai/multi-agent-runs/${encodeURIComponent(requestBody.run_id)}/cancel`,
         identity.tenantId,
         {
@@ -754,7 +778,100 @@ export function createCoreHandlers(config, options = {}) {
             }),
           },
         },
-      ));
+      );
+      if (projectContextService && payload?.run?.project_id) {
+        try {
+          payload.project_memory = await projectContextService.recordRun(identity, payload);
+        } catch {
+          payload.project_memory = { recorded: false, reason: "project_result_persistence_unavailable" };
+        }
+      }
+      return textResult(payload);
+    },
+    project_context_review_commit: async (args, identity) => {
+      requireProviderExecutionOwner(identity);
+      if (
+        !projectContextService ||
+        typeof projectContextService.prepareReview !== "function" ||
+        typeof projectContextService.commitReview !== "function"
+      ) {
+        throw new Error("project_context_store_unavailable");
+      }
+
+      // Validation, normalization, secret rejection and the content digest are
+      // owned by the project-context service. Universal Core receives only the
+      // exact digest and bounded counts: accepted text never crosses this
+      // authorization boundary and unreviewed model output is never forwarded.
+      const prepared = projectContextService.prepareReview(args);
+      const requestBody = {
+        tenant_id: identity.tenantId,
+        project_id: prepared.project_id,
+        run_id: prepared.run_id,
+        expected_revision: prepared.expected_revision,
+        disposition: prepared.disposition,
+        review_digest_sha256: prepared.review_digest_sha256,
+        decision_count: prepared.decision_items.length,
+        evidence_count: prepared.evidence_items.length,
+        idempotency_key: prepared.idempotency_key,
+        owner_confirmed: true,
+      };
+      const signedOwnerContext = ownerContext(identity, {
+        providerSetup: true,
+        requestBinding: ownerRequestBinding("tenant_openai_project_review", requestBody),
+      });
+      const authorization = await coreRequest(
+        "/v1/generic-agents/providers/openai/project-reviews/authorize",
+        identity.tenantId,
+        {
+          method: "POST",
+          body: {
+            ...requestBody,
+            owner_context: signedOwnerContext,
+          },
+        },
+      );
+      const expectedAuthorizationBinding = {
+        binding_version: "owner_request_binding_v1",
+        binding_hash: signedOwnerContext.binding_hash,
+        tenant_id: identity.tenantId,
+        project_id: requestBody.project_id,
+        run_id: requestBody.run_id,
+        expected_revision: requestBody.expected_revision,
+        disposition: requestBody.disposition,
+        review_digest_sha256: requestBody.review_digest_sha256,
+        decision_count: requestBody.decision_count,
+        evidence_count: requestBody.evidence_count,
+        idempotency_key: requestBody.idempotency_key,
+      };
+      const returnedAuthorization = authorization?.authorization;
+      const returnedBinding = returnedAuthorization?.binding;
+      const authorizationMatches = authorization?.ok === true
+        && authorization?.tenant_id === identity.tenantId
+        && authorization?.allowed === true
+        && returnedAuthorization?.allowed === true
+        && returnedAuthorization?.purpose === "tenant_openai_project_review"
+        && returnedAuthorization?.owner_confirmation_satisfied === true
+        && /^[a-f0-9]{64}$/.test(String(returnedBinding?.binding_hash || ""))
+        && JSON.stringify(stableCanonical(returnedBinding)) === JSON.stringify(stableCanonical(expectedAuthorizationBinding));
+      if (!authorizationMatches) throw new Error("project_review_not_authorized");
+
+      const committed = await projectContextService.commitReview(identity, prepared);
+      if (committed?.committed !== true) throw new Error("project_review_commit_failed");
+      return textResult({
+        ok: true,
+        tenant_id: identity.tenantId,
+        project_id: prepared.project_id,
+        run_id: prepared.run_id,
+        disposition: prepared.disposition,
+        committed: true,
+        idempotent: committed.idempotent === true,
+        ...(String(committed.review_id || "").trim()
+          ? { review_id: String(committed.review_id).trim().slice(0, 160) }
+          : {}),
+        ...(/^[a-f0-9]{64}$/.test(String(committed.revision || ""))
+          ? { revision: String(committed.revision) }
+          : {}),
+      });
     },
     generic_agent_orchestration_create: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/runs/${encodeURIComponent(args.run_id)}/orchestration`, identity.tenantId, {
       method: "POST",

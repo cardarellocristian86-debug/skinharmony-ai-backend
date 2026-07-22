@@ -39,7 +39,7 @@ test("publishes only a verifiable build identity", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.7-native-provider-preflight");
+  assert.equal(health.version, "0.12.0-project-context");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -96,6 +96,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
     "tenant_provider_openai_multi_agent_smoke_run",
     "tenant_provider_openai_multi_agent_run_read",
     "tenant_provider_openai_multi_agent_run_cancel",
+    "project_context_review_commit",
   ];
   for (const name of nativeProviderTools) {
     const nativeTool = body.result.tools.find((tool) => tool.name === name);
@@ -172,7 +173,8 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /AUTOMATIC/);
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
   assert.match(body.result.instructions, /manual_dry_run/);
-  assert.match(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
+  assert.match(body.result.instructions, /Researcher → Architecture\/Code Specialist → Nyra Supervisor/);
+  assert.match(body.result.instructions, /tenant-scoped persistent project folder/);
   assert.match(body.result.instructions, /Never call work_preflight before provider status/i);
   assert.match(body.result.instructions, /bounded_execution_ready=true/);
 }));
@@ -186,6 +188,7 @@ test("keeps only the bounded provider control plane outside generic shared-memor
     "tenant_provider_openai_multi_agent_smoke_run",
     "tenant_provider_openai_multi_agent_run_read",
     "tenant_provider_openai_multi_agent_run_cancel",
+    "project_context_review_commit",
   ]) assert.equal(requiresGenericWorkPreflight(name), false, `${name} must use its native gate`);
 
   for (const name of ["memory_document_upsert", "generic_agent_start", "nyra_research_ingest"]) {

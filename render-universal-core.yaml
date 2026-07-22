@@ -43,6 +43,10 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: CORE_OWNER_CONTEXT_SIGNING_SECRET
+      # Dedicated stable AEAD key for restart-safe terminal model output.
+      # It is generated and retained by Render, never shared with MCP/clients.
+      - key: CORE_TENANT_OPENAI_OUTPUT_ENCRYPTION_SECRET
+        generateValue: true
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
       - key: NYRA_DEEP_RUNTIME_ENABLED
