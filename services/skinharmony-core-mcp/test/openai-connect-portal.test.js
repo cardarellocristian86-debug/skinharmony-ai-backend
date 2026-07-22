@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 import express from "express";
 import { createOpenAiConnectPortal } from "../src/openai-connect-portal.js";
@@ -61,6 +62,37 @@ async function serve(portal, run) {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+async function rawPost(url, { headers = {}, body = "" } = {}) {
+  const payload = body instanceof URLSearchParams ? body.toString() : String(body);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(url, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-length": Buffer.byteLength(payload),
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const responseHeaders = response.headers;
+        resolve({
+          status: response.statusCode,
+          headers: {
+            get(name) {
+              const value = responseHeaders[String(name).toLowerCase()];
+              return Array.isArray(value) ? value.join(", ") : value ?? null;
+            },
+          },
+          text: async () => Buffer.concat(chunks).toString("utf8"),
+        });
+      });
+    });
+    request.on("error", reject);
+    request.end(payload);
+  });
 }
 
 test("uses Authorization Code PKCE and sends the verified owner directly to a one-time setup link", async () => {
@@ -276,9 +308,29 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     assert.equal(denied.status, 403);
     assert.equal(calls.filter((call) => call.operation === "start").length, 0);
 
-    const started = await fetch(`${base}/agents/run`, {
-      method: "POST",
-      headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
+    const deniedOpaqueCrossSite = await rawPost(`${base}/agents/run`, {
+      headers: {
+        cookie: sessionCookie,
+        origin: "null",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf, confirmed: "yes", task: "Test tenant isolato" }),
+    });
+    assert.equal(deniedOpaqueCrossSite.status, 403);
+    assert.equal(calls.filter((call) => call.operation === "start").length, 0);
+
+    const started = await rawPost(`${base}/agents/run`, {
+      headers: {
+        cookie: sessionCookie,
+        origin: "null",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
       body: new URLSearchParams({
         csrf,
         confirmed: "yes",
@@ -304,9 +356,15 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     assert.match(readHtml, /&lt;script&gt;alert\(&#39;no&#39;\)&lt;\/script&gt;/);
     assert.match(readHtml, /&lt;b&gt;test&lt;\/b&gt;/);
 
-    const cancelled = await fetch(`${base}/agents/runs/${runId}/cancel`, {
-      method: "POST",
-      headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
+    const cancelled = await rawPost(`${base}/agents/runs/${runId}/cancel`, {
+      headers: {
+        cookie: sessionCookie,
+        origin: "null",
+        "sec-fetch-site": "none",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
       body: new URLSearchParams({ csrf }),
     });
     assert.equal(cancelled.status, 200);
@@ -317,9 +375,7 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     // In-app and privacy browsers can omit Origin. SameSite + the secret CSRF token
     // still authorize a same-origin form, while explicit cross-site metadata
     // remains rejected.
-    const logout = await fetch(`${base}/agents/logout`, {
-      method: "POST",
-      redirect: "manual",
+    const logout = await rawPost(`${base}/agents/logout`, {
       headers: { cookie: sessionCookie, "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ csrf }),
     });
@@ -329,7 +385,7 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
   });
 });
 
-test("cross-client portal sends an unconfigured tenant only to the existing secure setup flow", async () => {
+test("first agent login sends an unconfigured tenant directly to the secure setup form", async () => {
   const issuedFor = [];
   const portal = createOpenAiConnectPortal({
     config,
@@ -347,41 +403,151 @@ test("cross-client portal sends an unconfigured tenant only to the existing secu
   await serve(portal, async (base) => {
     const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
     const authorization = new URL(login.headers.get("location"));
-    const callback = await fetch(`${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`, { redirect: "manual" });
-    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
-    const home = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
-    const html = await home.text();
-    assert.match(html, /action="\/agents\/connect"/);
-    assert.match(html, /La chiave OpenAI resta nel vault|non verrà mostrata in chat/i);
-    assert.doesNotMatch(html, /codexai|google-oauth2|sk-proj/);
-    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
-    assert(csrf);
-
-    const denied = await fetch(`${base}/agents/connect`, {
-      method: "POST",
-      redirect: "manual",
-      headers: { cookie: sessionCookie, origin: "https://attacker.test", "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf }),
-    });
-    assert.equal(denied.status, 403);
-    assert.equal(issuedFor.length, 0);
-
-    const connect = await fetch(`${base}/agents/connect`, {
-      method: "POST",
-      redirect: "manual",
-      headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf }),
-    });
-    assert.equal(connect.status, 303);
-    assert.equal(connect.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    assert.equal(callback.status, 303);
+    assert.equal(callback.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
+    assert.match(callback.headers.get("set-cookie"), /__Host-skinharmony_agents=/);
     assert.equal(issuedFor.length, 1);
     assert.equal(issuedFor[0].tenantId, "codexai");
     assert.equal(issuedFor[0].subject, ownerIdentity().subject);
+    assert.doesNotMatch(callback.headers.get("location"), /codexai|google-oauth2|sk-proj/);
+  });
+});
+
+test("an unready portal page uses the cookie-independent setup link instead of a POST Continue button", async () => {
+  let statusChecks = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity({ role: "tenant_owner", godMode: false }),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async () => {
+      statusChecks += 1;
+      return { structuredContent: { ok: true, provider: statusChecks === 1
+        ? { configured: true, execution_available: true }
+        : { configured: false, execution_available: false } } };
+    },
+    startMultiAgentRun: async () => { throw new Error("must_not_start"); },
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    assert.equal(callback.headers.get("location"), "/agents");
+    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
+    const home = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
+    const html = await home.text();
+    assert.match(html, /href="\/connect\/openai"/);
+    assert.doesNotMatch(html, /action="\/agents\/connect"/);
+    assert.match(html, /pagina protetta|modulo sicuro/i);
+    assert.doesNotMatch(html, /codexai|google-oauth2|sk-proj/);
 
     const verified = await fetch(`${base}/agents?verify=1`, { headers: { cookie: sessionCookie } });
     const verifiedHtml = await verified.text();
     assert.match(verifiedHtml, /Controllo eseguito adesso/);
     assert.match(verifiedHtml, /non risulta ancora collegata a questo account/);
+  });
+});
+
+test("agent login fails closed when provider status cannot be checked", async () => {
+  let linksIssued = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => {
+      linksIssued += 1;
+      return issuedSetupLink();
+    },
+    providerStatus: async () => { throw new Error("upstream_unavailable"); },
+    startMultiAgentRun: async () => ({}),
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    assert.equal(callback.status, 503);
+    assert.equal(callback.headers.get("location"), null);
+    assert.equal(linksIssued, 0);
+    const html = await callback.text();
+    assert.match(html, /Verifica non disponibile/);
+    assert.doesNotMatch(html, /codexai|google-oauth2|setup_proof|sk-proj/);
+  });
+});
+
+test("a stale CSRF token cannot be replayed with a newer owner session", async () => {
+  let started = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: true, execution_available: true } } }),
+    startMultiAgentRun: async () => {
+      started += 1;
+      return { structuredContent: { ok: true, run: { run_id: "run_replay_guard", status: "running" } } };
+    },
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+  await serve(portal, async (base) => {
+    const login = async () => {
+      const startedLogin = await fetch(`${base}/agents/login`, { redirect: "manual" });
+      const authorization = new URL(startedLogin.headers.get("location"));
+      const callback = await fetch(
+        `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+        { redirect: "manual" },
+      );
+      return callback.headers.get("set-cookie").split(";")[0];
+    };
+    const cookieA = await login();
+    const cookieB = await login();
+    const pageA = await (await fetch(`${base}/agents`, { headers: { cookie: cookieA } })).text();
+    const pageB = await (await fetch(`${base}/agents`, { headers: { cookie: cookieB } })).text();
+    const csrfA = pageA.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
+    const csrfB = pageB.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
+    assert(csrfA && csrfB && csrfA !== csrfB);
+
+    const replay = await rawPost(`${base}/agents/run`, {
+      headers: {
+        cookie: cookieB,
+        origin: "null",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf: csrfA, confirmed: "yes", task: "Rifiuta il token vecchio" }),
+    });
+    assert.equal(replay.status, 403);
+    assert.equal(started, 0);
+
+    const malformed = await rawPost(`${base}/agents/run`, {
+      headers: {
+        cookie: cookieB,
+        origin: "null",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf: "not-a-valid-token", confirmed: "yes", task: "Rifiuta CSRF malformato" }),
+    });
+    assert.equal(malformed.status, 403);
+    assert.equal(started, 0);
   });
 });
 
@@ -393,7 +559,7 @@ test("cross-client portal rejects tampered and expired session cookies", async (
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
     issueSetupLink: async () => issuedSetupLink(),
-    providerStatus: async () => { throw new Error("must_not_call"); },
+    providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: true, execution_available: true } } }),
   });
   await serve(portal, async (base) => {
     const response = await fetch(`${base}/agents`, {
