@@ -3,6 +3,7 @@ name: Nyra Core Intelligence
 on:
   pull_request:
     paths:
+      - "render-core-mcp.yaml"
       - "services/skinharmony-core-mcp/**"
       - "services/universal-core-service/**"
       - ".github/workflows/nyra-core-intelligence.yml"
@@ -19,6 +20,31 @@ jobs:
         working-directory: services/universal-core-service
     steps:
       - uses: actions/checkout@v4
+      - name: Validate MCP default tenant blueprint invariant
+        shell: ruby {0}
+        run: |
+          require "yaml"
+
+          path = File.join(ENV.fetch("GITHUB_WORKSPACE"), "render-core-mcp.yaml")
+          blueprint = YAML.safe_load(File.read(path))
+          services = blueprint.fetch("services")
+          abort("services must be an array") unless services.is_a?(Array)
+
+          mcp_services = services.select do |service|
+            service.is_a?(Hash) && service["name"] == "skinharmony-core-mcp"
+          end
+          bindings = services.flat_map do |service|
+            next [] unless service.is_a?(Hash)
+
+            Array(service["envVars"])
+              .select { |entry| entry.is_a?(Hash) && entry["key"] == "MCP_DEFAULT_TENANT_ID" }
+              .map { |entry| [service["name"], entry] }
+          end
+          expected = [["skinharmony-core-mcp", {
+            "key" => "MCP_DEFAULT_TENANT_ID",
+            "value" => "codexai"
+          }]]
+          abort("invalid MCP_DEFAULT_TENANT_ID binding") unless mcp_services.length == 1 && bindings == expected
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
