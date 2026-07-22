@@ -186,7 +186,7 @@ test("keeps browser OAuth audience separate from the MCP resource audience", () 
     AUTH0_ISSUER: "https://tenant.auth0.com",
     AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
     AUTH0_BROWSER_CLIENT_ID: "browser-client",
-    AUTH0_BROWSER_STATE_SECRET: "state-secret",
+    AUTH0_BROWSER_STATE_SECRET: "state-secret-at-least-32-bytes-long",
     AUTH0_BROWSER_AUDIENCE: "https://mcp.example.test/browser",
     CODEX_BEARER_KEYS: "local-test-key",
   });
@@ -201,6 +201,19 @@ test("requires a dedicated browser audience when the owner portal is configured"
     AUTH0_BROWSER_CLIENT_ID: "browser-client",
     AUTH0_BROWSER_STATE_SECRET: "state-secret",
   }), /AUTH0_BROWSER_AUDIENCE/);
+});
+
+test("requires a strong browser portal state and session secret in production", () => {
+  assert.throws(() => loadConfig({
+    NODE_ENV: "production",
+    MCP_PUBLIC_URL: "https://mcp.example.test",
+    AUTH0_ISSUER: "https://tenant.auth0.com",
+    AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
+    AUTH0_BROWSER_CLIENT_ID: "browser-client",
+    AUTH0_BROWSER_AUDIENCE: "https://mcp.example.test/browser",
+    AUTH0_BROWSER_STATE_SECRET: "too-short",
+    CODEX_BEARER_KEYS: "local-test-key",
+  }), /at least 32 bytes/);
 });
 
 test("maps Suite Control Plane keys only to their configured tenants", () => {

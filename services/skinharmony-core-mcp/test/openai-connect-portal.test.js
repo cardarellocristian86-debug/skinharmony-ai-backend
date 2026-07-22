@@ -45,6 +45,12 @@ async function serve(portal, run) {
   app.get("/connect/openai", portal.start);
   app.get("/connect/openai/callback", portal.callback);
   app.post("/connect/openai/continue", express.urlencoded({ extended: false }), portal.continue);
+  app.get("/mobile/agents", portal.agentsHome);
+  app.get("/mobile/agents/login", portal.agentsLogin);
+  app.post("/mobile/agents/run", express.urlencoded({ extended: false }), portal.agentsRunStart);
+  app.get("/mobile/agents/runs/:runId", portal.agentsRunRead);
+  app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false }), portal.agentsRunCancel);
+  app.post("/mobile/agents/logout", express.urlencoded({ extended: false }), portal.agentsLogout);
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try {
@@ -194,5 +200,179 @@ test("rejects unsafe Core redirects and makes stale Continue pages harmless", as
     assert.equal(unsafeCallback.headers.get("location"), null);
     assert.doesNotMatch(await unsafeCallback.text(), new RegExp(setupProof));
     assert.equal(issued, 1);
+  });
+});
+
+test("runs the bounded tenant multi-agent flow from a secure iPhone portal session", async () => {
+  const calls = [];
+  const runId = "run_iphone_owner_1";
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity({ role: "tenant_owner", godMode: false }),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async (_args, identity) => {
+      calls.push({ operation: "status", identity });
+      return { structuredContent: { ok: true, provider: { configured: true, execution_available: true } } };
+    },
+    startMultiAgentRun: async (args, identity) => {
+      calls.push({ operation: "start", args, identity });
+      return { structuredContent: { ok: true, run: { run_id: runId, status: "running", stages: [] } } };
+    },
+    readMultiAgentRun: async (args, identity) => {
+      calls.push({ operation: "read", args, identity });
+      return { structuredContent: {
+        ok: true,
+        run: {
+          run_id: runId,
+          status: "completed",
+          final_output: "<script>alert('no')</script> risultato sicuro",
+          stages: [{ role: "Nyra", status: "completed", output: "<b>test</b>" }],
+        },
+      } };
+    },
+    cancelMultiAgentRun: async (args, identity) => {
+      calls.push({ operation: "cancel", args, identity });
+      return { structuredContent: { ok: true, run: { run_id: runId, status: "cancelled" } } };
+    },
+  });
+
+  await serve(portal, async (base) => {
+    const anonymous = await fetch(`${base}/mobile/agents`);
+    assert.equal(anonymous.status, 200);
+    assert.match(await anonymous.text(), /Accedi e continua/);
+
+    const login = await fetch(`${base}/mobile/agents/login`, { redirect: "manual" });
+    assert.equal(login.status, 302);
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    assert.equal(callback.status, 303);
+    assert.equal(callback.headers.get("location"), "/mobile/agents");
+    const setCookie = callback.headers.get("set-cookie");
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /Secure/);
+    assert.match(setCookie, /SameSite=Lax/);
+    const sessionCookie = setCookie.split(";")[0];
+
+    const home = await fetch(`${base}/mobile/agents`, { headers: { cookie: sessionCookie } });
+    assert.equal(home.status, 200);
+    const homeHtml = await home.text();
+    assert.match(homeHtml, /Researcher → Reviewer → Nyra/);
+    assert.match(homeHtml, /name="task" maxlength="300"/);
+    const csrf = homeHtml.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
+    assert(csrf);
+
+    const denied = await fetch(`${base}/mobile/agents/run`, {
+      method: "POST",
+      headers: { cookie: sessionCookie, origin: "https://attacker.test", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, confirmed: "yes", task: "Test tenant isolato" }),
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(calls.filter((call) => call.operation === "start").length, 0);
+
+    const started = await fetch(`${base}/mobile/agents/run`, {
+      method: "POST",
+      headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        csrf,
+        confirmed: "yes",
+        task: "Test tenant isolato",
+        tenant_id: "tenant-victim",
+        api_key: "must-not-be-forwarded",
+        model: "caller-model",
+      }),
+    });
+    assert.equal(started.status, 202);
+    const startCall = calls.find((call) => call.operation === "start");
+    assert.deepEqual(startCall.args, { task: "Test tenant isolato" });
+    assert.equal(startCall.identity.tenantId, "codexai");
+    assert.equal(startCall.identity.providerExecutionConfirmed, true);
+    assert.match(startCall.identity.providerExecutionConfirmationReference, /^iphone_portal_[a-f0-9]{32}$/);
+    assert.equal(JSON.stringify(startCall).includes("tenant-victim"), false);
+    assert.equal(JSON.stringify(startCall).includes("must-not-be-forwarded"), false);
+
+    const read = await fetch(`${base}/mobile/agents/runs/${runId}`, { headers: { cookie: sessionCookie } });
+    assert.equal(read.status, 200);
+    const readHtml = await read.text();
+    assert.doesNotMatch(readHtml, /<script>|<b>test<\/b>/);
+    assert.match(readHtml, /&lt;script&gt;alert\(&#39;no&#39;\)&lt;\/script&gt;/);
+    assert.match(readHtml, /&lt;b&gt;test&lt;\/b&gt;/);
+
+    const cancelled = await fetch(`${base}/mobile/agents/runs/${runId}/cancel`, {
+      method: "POST",
+      headers: { cookie: sessionCookie, origin: "https://mcp.example.test", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf }),
+    });
+    assert.equal(cancelled.status, 200);
+    const cancelCall = calls.find((call) => call.operation === "cancel");
+    assert.deepEqual(cancelCall.args, { run_id: runId });
+    assert.equal(cancelCall.identity.tenantId, "codexai");
+
+    // Safari privacy modes can omit Origin. SameSite + the secret CSRF token
+    // still authorize a same-origin form, while explicit cross-site metadata
+    // remains rejected.
+    const logout = await fetch(`${base}/mobile/agents/logout`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { cookie: sessionCookie, "sec-fetch-site": "same-origin", "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf }),
+    });
+    assert.equal(logout.status, 303);
+    assert.equal(logout.headers.get("location"), "/mobile/agents");
+    assert.match(logout.headers.get("set-cookie"), /Max-Age=0/);
+  });
+});
+
+test("iPhone portal sends an unconfigured tenant only to the existing secure setup flow", async () => {
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity({ role: "tenant_owner", godMode: false }),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async () => ({ structuredContent: { ok: true, provider: { configured: false, execution_available: false } } }),
+    startMultiAgentRun: async () => { throw new Error("must_not_start"); },
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/mobile/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(`${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`, { redirect: "manual" });
+    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
+    const home = await fetch(`${base}/mobile/agents`, { headers: { cookie: sessionCookie } });
+    const html = await home.text();
+    assert.match(html, /href="\/connect\/openai"/);
+    assert.match(html, /La chiave OpenAI resta nel vault|non verrà mostrata in chat/i);
+    assert.doesNotMatch(html, /codexai|google-oauth2|sk-proj/);
+  });
+});
+
+test("iPhone portal rejects tampered and expired session cookies", async () => {
+  let clock = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    now: () => clock,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async () => { throw new Error("must_not_call"); },
+  });
+  await serve(portal, async (base) => {
+    const response = await fetch(`${base}/mobile/agents`, {
+      headers: { cookie: "__Host-skinharmony_agents=tampered.value" },
+    });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Accedi e continua/);
+
+    const login = await fetch(`${base}/mobile/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(`${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`, { redirect: "manual" });
+    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
+    clock = 20 * 60 * 1000 + 1;
+    const expired = await fetch(`${base}/mobile/agents`, { headers: { cookie: sessionCookie } });
+    assert.match(await expired.text(), /Accedi e continua/);
   });
 });

@@ -105,6 +105,7 @@ const BUILD_COMMIT_SHA = String(process.env.RENDER_GIT_COMMIT || process.env.GIT
 const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
 const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
 const TRUSTED_PROVIDER_SETUP_ORIGIN = "https://skinharmony-universal-core.onrender.com";
+const TRUSTED_MOBILE_AGENTS_URL = "https://skinharmony-core-mcp.onrender.com/mobile/agents";
 
 function nowIso() {
   return new Date().toISOString();
@@ -3714,7 +3715,7 @@ export function createUniversalCoreService(options = {}) {
       link_id: completed.link_id,
       owner_subject_fingerprint: completed.owner_subject_fingerprint,
     });
-    return providerSetupHtml(res, 200, "<h1>OpenAI collegato</h1><p>Puoi chiudere questa pagina e tornare in ChatGPT.</p>");
+    return providerSetupHtml(res, 200, `<h1>OpenAI collegato</h1><p>La chiave è stata salvata nel vault cifrato del tuo account.</p><p><a href="${TRUSTED_MOBILE_AGENTS_URL}" style="display:inline-block;background:#111;color:#fff;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700">Torna a Nyra e avvia il test</a></p>`);
   });
 
   app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
