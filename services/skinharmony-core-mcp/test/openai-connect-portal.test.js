@@ -488,6 +488,34 @@ test("agent login fails closed when provider status cannot be checked", async ()
   });
 });
 
+test("agent login does not mint a setup link from a malformed provider status", async () => {
+  let linksIssued = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => {
+      linksIssued += 1;
+      return issuedSetupLink();
+    },
+    providerStatus: async () => ({ structuredContent: { ok: true } }),
+    startMultiAgentRun: async () => ({}),
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    assert.equal(callback.status, 503);
+    assert.equal(linksIssued, 0);
+    assert.match(await callback.text(), /stato incompleto/);
+  });
+});
+
 test("a stale CSRF token cannot be replayed with a newer owner session", async () => {
   let started = 0;
   const portal = createOpenAiConnectPortal({
@@ -548,6 +576,18 @@ test("a stale CSRF token cannot be replayed with a newer owner session", async (
     });
     assert.equal(malformed.status, 403);
     assert.equal(started, 0);
+
+    const validExplicitOrigin = await fetch(`${base}/agents/run`, {
+      method: "POST",
+      headers: {
+        cookie: cookieB,
+        origin: "https://mcp.example.test",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf: csrfB, confirmed: "yes", task: "Accetta origine esplicita corretta" }),
+    });
+    assert.equal(validExplicitOrigin.status, 202);
+    assert.equal(started, 1);
   });
 });
 
