@@ -159,6 +159,37 @@ test("provider setup persists the encrypted credential and consumes the proof in
   assert.equal(await complete({ links, credentials, token: issued.token, proof: issued.proof }), null);
 });
 
+test("provider setup proof remains usable after an invalid key and is consumed by the valid retry", async () => {
+  const pool = createTransactionalPool();
+  const { links, credentials } = createStores(pool);
+  const issued = await links.issue({
+    tenant_id: "tenant-a",
+    owner_subject_fingerprint: `osf_${"d".repeat(64)}`,
+  });
+
+  await assert.rejects(
+    links.consumeAndPersist({
+      token: issued.token,
+      proof: issued.proof,
+      prepare: () => credentials.ensureInitialized(),
+      persist: ({ tenant_id, client }) => credentials.saveOpenAiInTransaction({
+        tenant_id,
+        api_key: "not-an-openai-key",
+        client,
+      }),
+    }),
+    /openai_api_key_format_invalid/,
+  );
+  assert.equal(pool.state.credential, null);
+  assert.equal(pool.state.link.consumed_at, null);
+
+  const completed = await complete({ links, credentials, token: issued.token, proof: issued.proof });
+  assert.equal(completed.tenant_id, "tenant-a");
+  assert.equal(completed.credential.configured, true);
+  assert.ok(pool.state.link.consumed_at);
+  assert.equal(await complete({ links, credentials, token: issued.token, proof: issued.proof }), null);
+});
+
 test("provider setup rolls back failed persistence or consumption and never writes for a revoked link", async () => {
   const pool = createTransactionalPool();
   const { links, credentials } = createStores(pool);
