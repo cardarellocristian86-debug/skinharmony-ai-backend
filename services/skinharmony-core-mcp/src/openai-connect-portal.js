@@ -208,19 +208,27 @@ export function createOpenAiConnectPortal({
   };
   const validOrigin = (req) => {
     const origin = String(req.headers.origin || "");
-    if (!origin) {
+    const site = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+    if (site === "cross-site") return false;
+    if (!origin || origin === "null") {
       // SameSite=Lax prevents the session cookie on a cross-site POST and the
       // random CSRF token remains mandatory. In-app and privacy browsers may omit
-      // Origin; reject explicit cross-site fetch metadata but allow its absence.
-      const site = String(req.headers["sec-fetch-site"] || "").toLowerCase();
-      return !site || site === "same-origin" || site === "none";
+      // Origin or send the opaque value `null`; accept only document navigations
+      // that are not explicitly cross-site.
+      const mode = String(req.headers["sec-fetch-mode"] || "").toLowerCase();
+      const destination = String(req.headers["sec-fetch-dest"] || "").toLowerCase();
+      return (!site || site === "same-origin" || site === "none") &&
+        (!mode || mode === "navigate") &&
+        (!destination || destination === "document");
     }
-    if (origin === "null") return false;
     try { return origin === new URL(config.auth0BrowserCallbackUrl).origin; } catch { return false; }
   };
   const csrfValid = (req, session) => {
-    const received = Buffer.from(String(req.body?.csrf || ""));
-    const expected = Buffer.from(String(session?.csrf || ""));
+    const receivedValue = String(req.body?.csrf || "");
+    const expectedValue = String(session?.csrf || "");
+    if (!/^[A-Za-z0-9_-]{43}$/.test(receivedValue) || !/^[A-Za-z0-9_-]{43}$/.test(expectedValue)) return false;
+    const received = Buffer.from(receivedValue);
+    const expected = Buffer.from(expectedValue);
     return validOrigin(req) && received.length === expected.length && received.length > 0 && crypto.timingSafeEqual(received, expected);
   };
   return {
@@ -248,17 +256,41 @@ export function createOpenAiConnectPortal({
         const tokens = await response.json(); if (!response.ok || !tokens.access_token) throw new Error("oauth_exchange_failed");
         const identity = await authenticate(`Bearer ${tokens.access_token}`); if (!owner(identity)) throw new Error("owner_required");
         if (session.kind === "openai_agents_pkce_v1") {
+          const identityForPortal = safeIdentity(identity);
           const sessionEnvelope = seal(
             agentSessionKey,
             {
               kind: "openai_agents_session_v1",
-              identity: safeIdentity(identity),
+              identity: identityForPortal,
               csrf: crypto.randomBytes(32).toString("base64url"),
               expires_at: now() + AGENT_PORTAL_SESSION_AGE_MS,
             },
             "skinharmony-openai-agents-session-v1",
           );
           res.setHeader("set-cookie", `${AGENT_PORTAL_SESSION_COOKIE}=${sessionEnvelope}; Max-Age=${Math.floor(AGENT_PORTAL_SESSION_AGE_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax`);
+          // First-run onboarding is automatic. If this tenant is not ready, mint
+          // the one-time capability during the verified OAuth callback and open
+          // the protected Core form immediately. This removes the fragile
+          // callback -> portal -> POST Continue hop from every client.
+          let status;
+          try {
+            status = resultPayload(await providerStatus({}, identityForPortal));
+          } catch {
+            return portalHtml(res, 503, agentPortalPage("Verifica non disponibile", `<p>La sessione owner è valida, ma non è stato possibile controllare il vault. Nessun collegamento è stato creato.</p>${button("Riprova", AGENT_PORTAL_PATH)}`));
+          }
+          const provider = status?.provider;
+          if (!provider || typeof provider.configured !== "boolean" || typeof provider.execution_available !== "boolean") {
+            return portalHtml(res, 503, agentPortalPage("Verifica non disponibile", `<p>Il vault ha restituito uno stato incompleto. Nessun collegamento è stato creato.</p>${button("Riprova", AGENT_PORTAL_PATH)}`));
+          }
+          if (provider.configured !== true || provider.execution_available !== true) {
+            try {
+              const link = await issueSetupLink(identityForPortal);
+              return res.redirect(303, secureSetupRedirect(link, config));
+            } catch (error) {
+              const [title, body] = setupLinkFailure(error);
+              return portalHtml(res, 503, agentPortalPage(title, `${body}${button("Riprova il collegamento", "/connect/openai")}`));
+            }
+          }
           return res.redirect(303, AGENT_PORTAL_PATH);
         }
         // Mint and consume the browser-independent one-time capability in the
@@ -285,7 +317,7 @@ export function createOpenAiConnectPortal({
     async agentsConnect(req, res) {
       const session = agentSession(req);
       if (!session) return portalHtml(res, 401, agentPortalPage("Sessione scaduta", button("Accedi di nuovo", `${AGENT_PORTAL_PATH}/login`)));
-      if (!csrfValid(req, session)) return portalHtml(res, 403, agentPortalPage("Richiesta non valida", "<p>Riapri la pagina iniziale e riprova.</p>"));
+      if (!csrfValid(req, session)) return portalHtml(res, 403, agentPortalPage("Richiesta non valida", `<p>Il browser non ha conservato correttamente la sessione del pulsante.</p>${button("Apri il collegamento sicuro", "/connect/openai")}`));
       try {
         // Reuse the already verified cross-client owner session. This keeps tenant,
         // subject and role identical between the status page and the one-time
@@ -309,7 +341,7 @@ export function createOpenAiConnectPortal({
           const verification = verificationRequested
             ? `<div role="status" style="border:1px solid #d7a900;background:#fff8d8;border-radius:12px;padding:14px;margin:16px 0"><strong>Controllo eseguito adesso.</strong><br>${provider.configured === true ? "La chiave risulta salvata, ma il runtime multi-agente non è ancora disponibile." : "La chiave non risulta ancora collegata a questo account."}</div>`
             : "";
-          return portalHtml(res, 200, agentPortalPage("Collega OpenAI", `<p>Per avviare gli agenti inserisci la tua chiave nella pagina protetta. Non verrà mostrata in chat, URL o log.</p>${verification}<form method="post" action="${AGENT_PORTAL_PATH}/connect"><input type="hidden" name="csrf" value="${escapeHtml(session.csrf)}"><button style="width:100%;border:0;background:#111;color:#fff;padding:14px 18px;border-radius:12px;font-weight:700">${escapeHtml(provider.configured ? "Verifica o sostituisci chiave" : "Collega la chiave OpenAI")}</button></form><p style="color:#666">Il collegamento usa questa stessa sessione owner e si apre nella stessa scheda. Dopo il salvataggio tornerai direttamente qui.</p>${button("Verifica configurazione", `${AGENT_PORTAL_PATH}?verify=1`)}${logoutForm(session.csrf)}`));
+          return portalHtml(res, 200, agentPortalPage("Collega OpenAI", `<p>Per avviare gli agenti inserisci la tua chiave nella pagina protetta. Non verrà mostrata in chat, URL o log.</p>${verification}${button(provider.configured ? "Verifica o sostituisci chiave" : "Collega la chiave OpenAI", "/connect/openai")}<p style="color:#666">Il collegamento esegue un nuovo controllo owner e apre direttamente il modulo sicuro. Dopo il salvataggio tornerai qui.</p>${button("Verifica configurazione", `${AGENT_PORTAL_PATH}?verify=1`)}${logoutForm(session.csrf)}`));
         }
         const verification = verificationRequested
           ? '<div role="status" style="border:1px solid #2e7d32;background:#edf8ee;border-radius:12px;padding:14px;margin:16px 0"><strong>Configurazione verificata:</strong> OpenAI e il test multi-agente sono pronti.</div>'
