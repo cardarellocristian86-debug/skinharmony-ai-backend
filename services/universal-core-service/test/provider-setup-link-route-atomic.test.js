@@ -59,16 +59,16 @@ test("provider setup failure never reports completion or exposes the submitted k
   }
 });
 
-test("provider setup success returns only the fixed mobile Nyra portal", async () => {
-  const storageRoot = path.join(os.tmpdir(), `provider-setup-route-mobile-${Date.now()}-${Math.random()}`);
-  const submittedKey = "sk-proj-mobile-route-12345678901234567890";
+test("provider setup success returns only the fixed cross-client Nyra portal", async () => {
+  const storageRoot = path.join(os.tmpdir(), `provider-setup-route-cross-client-${Date.now()}-${Math.random()}`);
+  const submittedKey = "sk-proj-cross-client-route-12345678901234567890";
   const tenantProviderSetupLinks = {
     async consumeAndPersist({ prepare, persist }) {
       await prepare();
       await persist({ tenant_id: "codexai", client: { query() {} } });
       return {
         tenant_id: "codexai",
-        link_id: "psl_mobile_test",
+        link_id: "psl_cross_client_test",
         owner_subject_fingerprint: `osf_${"a".repeat(64)}`,
       };
     },
@@ -88,7 +88,7 @@ test("provider setup success returns only the fixed mobile Nyra portal", async (
     const html = await response.text();
     assert.equal(response.status, 200);
     assert.match(html, /OpenAI collegato/);
-    assert.match(html, /href="https:\/\/skinharmony-core-mcp\.onrender\.com\/mobile\/agents"/);
+    assert.match(html, /href="https:\/\/skinharmony-core-mcp\.onrender\.com\/agents"/);
     assert.equal(html.includes(submittedKey), false);
     assert.equal(html.includes("codexai"), false);
   } finally {
