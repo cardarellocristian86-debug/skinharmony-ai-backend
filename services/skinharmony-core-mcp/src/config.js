@@ -116,6 +116,7 @@ export function loadConfig(env = process.env) {
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
   const auth0Audience = String(env.AUTH0_AUDIENCE || "").trim();
   const auth0BrowserAudience = String(env.AUTH0_BROWSER_AUDIENCE || "").trim();
+  const auth0BrowserStateSecret = String(env.AUTH0_BROWSER_STATE_SECRET || "").trim();
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
@@ -184,8 +185,11 @@ export function loadConfig(env = process.env) {
     throw new Error("At least one authentication method is required in production");
   }
   if (auth0Issuer && !auth0Audience) throw new Error("AUTH0_AUDIENCE is required with AUTH0_ISSUER");
-  const browserPortalConfigured = Boolean(env.AUTH0_BROWSER_CLIENT_ID || env.AUTH0_BROWSER_STATE_SECRET);
+  const browserPortalConfigured = Boolean(env.AUTH0_BROWSER_CLIENT_ID || auth0BrowserStateSecret);
   if (browserPortalConfigured && !auth0BrowserAudience) throw new Error("AUTH0_BROWSER_AUDIENCE is required when the owner browser portal is configured");
+  if (env.NODE_ENV === "production" && browserPortalConfigured && Buffer.byteLength(auth0BrowserStateSecret, "utf8") < 32) {
+    throw new Error("AUTH0_BROWSER_STATE_SECRET must contain at least 32 bytes in production");
+  }
   return {
     port: Number(env.PORT || 8790),
     publicUrl,
@@ -241,7 +245,7 @@ export function loadConfig(env = process.env) {
     auth0BrowserClientId: String(env.AUTH0_BROWSER_CLIENT_ID || "").trim(),
     auth0BrowserClientSecret: String(env.AUTH0_BROWSER_CLIENT_SECRET || "").trim(),
     auth0BrowserCallbackUrl: url(env.AUTH0_BROWSER_CALLBACK_URL || `${publicUrl}/connect/openai/callback`, "AUTH0_BROWSER_CALLBACK_URL"),
-    auth0BrowserStateSecret: String(env.AUTH0_BROWSER_STATE_SECRET || "").trim(),
+    auth0BrowserStateSecret,
     openaiResearchEnabled: flag(env.NYRA_OPENAI_RESEARCH_ENABLED, false),
     openaiResearchModel: String(env.NYRA_OPENAI_RESEARCH_MODEL || "gpt-5.6").trim(),
     openaiResearchTimeoutMs: integer(env.NYRA_OPENAI_RESEARCH_TIMEOUT_MS, 90_000, 5_000, 300_000),

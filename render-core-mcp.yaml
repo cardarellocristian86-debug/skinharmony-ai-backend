@@ -24,7 +24,7 @@ services:
       - key: AUTH0_BROWSER_CALLBACK_URL
         value: https://skinharmony-core-mcp.onrender.com/connect/openai/callback
       - key: AUTH0_BROWSER_STATE_SECRET
-        sync: false
+        generateValue: true
       - key: MCP_TENANT_CLAIM
         value: https://skinharmony.it/tenant_id
       - key: MCP_DEFAULT_TENANT_ID

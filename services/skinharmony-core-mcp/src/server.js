@@ -120,8 +120,18 @@ const openAiPortal = createOpenAiConnectPortal({
   config,
   authenticate: browserAuthenticate,
   issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
+  providerStatus: coreHandlers.tenant_provider_openai_status,
+  startMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_smoke_run,
+  readMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_read,
+  cancelMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_cancel,
 });
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);
 app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
+app.get("/mobile/agents", openAiPortal.agentsHome);
+app.get("/mobile/agents/login", openAiPortal.agentsLogin);
+app.post("/mobile/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
+app.get("/mobile/agents/runs/:runId", openAiPortal.agentsRunRead);
+app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
+app.post("/mobile/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));
