@@ -1,0 +1,505 @@
+{
+  "schema_version": "nyra_deep_branch_v2_validation_report_v1",
+  "generated_at": "2026-07-23T21:00:48.911Z",
+  "ok": true,
+  "tenant_id": "codexai",
+  "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
+  "source_catalog": {
+    "schema_version": "nyra_neural_branch_network_v1",
+    "captured_at": "2026-07-23T18:19:34.000Z",
+    "source": "https://skinharmony-universal-core.onrender.com/v1/nira/branches",
+    "tenant_id": "codexai",
+    "domain_pack_id": "skinharmony",
+    "source_snapshot_sha256": "d34c1b05952f0a98218b3841eb83e0c50e366c27b92246702c7b162f37326183",
+    "branches": [
+      {
+        "id": "context_intelligence",
+        "label": "Context Intelligence",
+        "work_phase": "intake",
+        "core_branch_bindings": [
+          "work_intake_intelligence"
+        ],
+        "subbranches": [
+          "request_normalization",
+          "actor_context",
+          "tenant_context",
+          "system_context",
+          "temporal_context",
+          "data_quality",
+          "missing_information",
+          "source_reliability",
+          "constraint_mapping",
+          "language_context"
+        ]
+      },
+      {
+        "id": "work_intake",
+        "label": "Work Intake",
+        "work_phase": "intake",
+        "core_branch_bindings": [
+          "work_intake_intelligence"
+        ],
+        "subbranches": [
+          "goal_clarification",
+          "deliverable_definition",
+          "success_criteria",
+          "scope_boundary",
+          "constraint_inventory",
+          "stakeholder_context",
+          "urgency_assessment",
+          "resource_context",
+          "dependency_discovery",
+          "ambiguity_detection",
+          "assumption_register",
+          "missing_input_request",
+          "decomposition_boundary",
+          "intake_summary"
+        ]
+      },
+      {
+        "id": "research_evidence",
+        "label": "Research & Evidence",
+        "work_phase": "research",
+        "core_branch_bindings": [
+          "research_evidence_intelligence"
+        ],
+        "subbranches": [
+          "research_question",
+          "source_discovery",
+          "source_authority",
+          "source_freshness",
+          "triangulation",
+          "fact_extraction",
+          "contradiction_detection",
+          "uncertainty_register",
+          "provenance_capture",
+          "missing_evidence",
+          "dataset_relevance",
+          "citation_constraints",
+          "evidence_synthesis",
+          "research_handoff",
+          "claim_evidence_graph",
+          "temporal_truth",
+          "adversarial_source_review",
+          "uncertainty_calibration",
+          "knowledge_release_gate",
+          "source_injection_defense"
+        ]
+      },
+      {
+        "id": "decision_reasoning",
+        "label": "Decision Reasoning",
+        "work_phase": "planning",
+        "core_branch_bindings": [
+          "planning_priority_intelligence"
+        ],
+        "subbranches": [
+          "intent_inference",
+          "hypothesis_generation",
+          "option_generation",
+          "tradeoff_analysis",
+          "priority_ranking",
+          "causal_reasoning",
+          "counterfactual_reasoning",
+          "confidence_calibration",
+          "decision_summary",
+          "next_best_action"
+        ]
+      },
+      {
+        "id": "planning_prioritization",
+        "label": "Planning & Prioritization",
+        "work_phase": "planning",
+        "core_branch_bindings": [
+          "planning_priority_intelligence"
+        ],
+        "subbranches": [
+          "work_breakdown",
+          "priority_matrix",
+          "dependency_graph",
+          "critical_path",
+          "effort_estimation",
+          "value_estimation",
+          "risk_adjusted_order",
+          "milestone_design",
+          "capacity_fit",
+          "timebox_design",
+          "decision_points",
+          "fallback_sequence",
+          "definition_of_ready",
+          "next_action_selection",
+          "plan_summary"
+        ]
+      },
+      {
+        "id": "risk_governance",
+        "label": "Risk & Governance",
+        "work_phase": "governance",
+        "core_branch_bindings": [
+          "quality_verification_intelligence"
+        ],
+        "subbranches": [
+          "risk_detection",
+          "policy_alignment",
+          "tenant_isolation",
+          "scope_validation",
+          "privacy_review",
+          "security_review",
+          "compliance_review",
+          "claim_review",
+          "pricing_review",
+          "audit_evidence",
+          "confirmation_gate",
+          "rollback_readiness"
+        ]
+      },
+      {
+        "id": "delegated_authority",
+        "label": "Delegated Authority",
+        "work_phase": "governance",
+        "core_branch_bindings": [
+          "workload_identity_delegation_guard"
+        ],
+        "subbranches": [
+          "principal_identity",
+          "workload_attestation",
+          "trust_domain_boundary",
+          "delegation_chain",
+          "act_as_scope",
+          "resource_audience_binding",
+          "credential_lifetime",
+          "credential_rotation",
+          "token_separation",
+          "revocation_check",
+          "redirect_uri_validation",
+          "delegation_expiry",
+          "incident_containment",
+          "authority_summary"
+        ]
+      },
+      {
+        "id": "decision_provenance",
+        "label": "Decision Provenance",
+        "work_phase": "governance",
+        "core_branch_bindings": [
+          "decision_provenance_intelligence"
+        ],
+        "subbranches": [
+          "request_fingerprint",
+          "actor_authority",
+          "policy_snapshot",
+          "evidence_lineage",
+          "risk_rationale",
+          "decision_contract",
+          "confirmation_scope",
+          "decision_expiry",
+          "revalidation_trigger",
+          "reversal_path",
+          "audit_safe_summary",
+          "cross_tenant_replay_check",
+          "accountability_handoff",
+          "provenance_summary"
+        ]
+      },
+      {
+        "id": "execution_planning",
+        "label": "Execution Planning",
+        "work_phase": "execution",
+        "core_branch_bindings": [
+          "execution_coordination_intelligence"
+        ],
+        "subbranches": [
+          "goal_decomposition",
+          "dependency_mapping",
+          "runbook_design",
+          "resource_estimation",
+          "failure_mode_analysis",
+          "test_strategy",
+          "release_strategy",
+          "rollback_plan",
+          "human_confirmation",
+          "evidence_plan"
+        ]
+      },
+      {
+        "id": "parallel_coordination",
+        "label": "Parallel Coordination",
+        "work_phase": "coordination",
+        "core_branch_bindings": [
+          "execution_coordination_intelligence"
+        ],
+        "subbranches": [
+          "lane_partitioning",
+          "agent_capability_match",
+          "task_ownership",
+          "shared_context_contract",
+          "dependency_barrier",
+          "concurrency_limit",
+          "handoff_protocol",
+          "progress_checkpoint",
+          "conflict_detection",
+          "merge_strategy",
+          "duplicate_work_prevention",
+          "blocked_lane_recovery",
+          "cross_lane_evidence",
+          "join_readiness",
+          "coordination_summary"
+        ]
+      },
+      {
+        "id": "quality_verification",
+        "label": "Quality & Verification",
+        "work_phase": "verification",
+        "core_branch_bindings": [
+          "quality_verification_intelligence"
+        ],
+        "subbranches": [
+          "acceptance_criteria",
+          "test_scope",
+          "happy_path",
+          "negative_path",
+          "boundary_cases",
+          "security_checks",
+          "tenant_isolation_checks",
+          "regression_matrix",
+          "performance_checks",
+          "observability_checks",
+          "evidence_capture",
+          "defect_triage",
+          "root_cause_check",
+          "fix_verification",
+          "release_readiness",
+          "quality_summary"
+        ]
+      },
+      {
+        "id": "learning_memory",
+        "label": "Learning & Memory",
+        "work_phase": "learning",
+        "core_branch_bindings": [
+          "adaptive_learning_intelligence"
+        ],
+        "subbranches": [
+          "episodic_recall",
+          "semantic_recall",
+          "feedback_interpretation",
+          "pattern_detection",
+          "knowledge_gap",
+          "correction_proposal",
+          "benchmark_comparison",
+          "retention_policy",
+          "memory_safety",
+          "learning_summary"
+        ]
+      },
+      {
+        "id": "adaptive_learning",
+        "label": "Adaptive Learning",
+        "work_phase": "learning",
+        "core_branch_bindings": [
+          "adaptive_learning_intelligence"
+        ],
+        "subbranches": [
+          "outcome_capture",
+          "expected_actual_delta",
+          "success_pattern",
+          "failure_pattern",
+          "feedback_weighting",
+          "noise_filtering",
+          "lesson_distillation",
+          "procedural_memory_candidate",
+          "semantic_memory_candidate",
+          "knowledge_gap_update",
+          "benchmark_update_candidate",
+          "policy_change_candidate",
+          "regression_requirement",
+          "human_review_gate",
+          "verified_consolidation",
+          "learning_handoff"
+        ]
+      },
+      {
+        "id": "communication_explanation",
+        "label": "Communication & Explanation",
+        "work_phase": "communication",
+        "core_branch_bindings": [
+          "execution_coordination_intelligence"
+        ],
+        "subbranches": [
+          "audience_model",
+          "language_selection",
+          "tone_selection",
+          "fact_hypothesis_split",
+          "evidence_citation",
+          "plain_language",
+          "structured_summary",
+          "action_explanation",
+          "uncertainty_disclosure",
+          "localization"
+        ]
+      },
+      {
+        "id": "software_intelligence",
+        "label": "Software Intelligence",
+        "work_phase": "research",
+        "core_branch_bindings": [
+          "research_evidence_intelligence",
+          "quality_verification_intelligence"
+        ],
+        "subbranches": [
+          "authorization_scope",
+          "artifact_intake",
+          "provenance_hashing",
+          "format_architecture",
+          "static_evidence",
+          "symbol_dependency_mapping",
+          "string_evidence",
+          "control_flow_evidence",
+          "runtime_trace_plan",
+          "behavior_specification",
+          "compatibility_mapping",
+          "clean_room_variant",
+          "patch_candidate",
+          "sandbox_plan",
+          "security_review",
+          "license_review",
+          "regression_matrix",
+          "evidence_confidence",
+          "core_verdict",
+          "learning_handoff"
+        ]
+      },
+      {
+        "id": "suite_domain",
+        "label": "Suite Product Pack",
+        "work_phase": "domain",
+        "core_branch_bindings": [
+          "suite_governance"
+        ],
+        "subbranches": [
+          "site_governance",
+          "content_publishing",
+          "template_management",
+          "landing_management",
+          "lead_capture",
+          "deployment_readiness",
+          "site_isolation",
+          "rollback_readiness"
+        ]
+      },
+      {
+        "id": "smartdesk_domain",
+        "label": "SmartDesk Product Pack",
+        "work_phase": "domain",
+        "core_branch_bindings": [
+          "smartdesk_operations_guard"
+        ],
+        "subbranches": [
+          "desk_operations",
+          "appointment_workflow",
+          "customer_operations",
+          "billing_operations",
+          "inventory_operations",
+          "operational_api_guard",
+          "node_isolation",
+          "handoff_readiness"
+        ]
+      },
+      {
+        "id": "analyzer_domain",
+        "label": "Analyzer Product Pack",
+        "work_phase": "domain",
+        "core_branch_bindings": [
+          "skinharmony_analyzer",
+          "scalp_analyzer",
+          "beauty_protocol_guard"
+        ],
+        "subbranches": [
+          "analyzer_interpretation",
+          "protocol_advisory",
+          "cosmetic_claims",
+          "evidence_quality",
+          "result_explanation",
+          "value_chain_review",
+          "pricing_guard",
+          "subject_isolation",
+          "acquisition_quality",
+          "capture_provenance",
+          "uncertainty_abstention",
+          "longitudinal_comparability",
+          "scalp_zone_analysis",
+          "reported_warning_stop",
+          "fairness_audit",
+          "verified_outcome_learning",
+          "human_review_release"
+        ]
+      }
+    ]
+  },
+  "validation": {
+    "ok": true,
+    "errors": [],
+    "warnings": [],
+    "metrics": {
+      "branch_count": 18,
+      "subbranch_count": 239,
+      "node_count": 1434,
+      "level_counts": {
+        "1": 239,
+        "2": 239,
+        "3": 239,
+        "4": 956
+      },
+      "level4_type_counts": {
+        "method": 239,
+        "strategy": 239,
+        "verifier": 239,
+        "metric": 239
+      },
+      "duplicate_contract_count": 0,
+      "rejected_node_count": 0
+    }
+  },
+  "supervisor": {
+    "approved_node_count": 1434,
+    "rejected_node_count": 0,
+    "decision_count": 1434
+  },
+  "executable_contract_tests": {
+    "positive": {
+      "executed": 1434,
+      "passed": 1434,
+      "failed": []
+    },
+    "negative": {
+      "executed": 1434,
+      "passed": 1434,
+      "failed": []
+    },
+    "adversarial": {
+      "executed": 1434,
+      "passed": 1434,
+      "failed": []
+    },
+    "regression": {
+      "executed": 1434,
+      "passed": 1434,
+      "failed": []
+    }
+  },
+  "deep_routing": {
+    "selected_branch_count": 1,
+    "evaluated_node_count": 6,
+    "all_verified": true,
+    "core_final_authority": true,
+    "execution_authorized": false
+  },
+  "rollback_verified": true,
+  "errors": [],
+  "release_gate": {
+    "deploy_authorized": false,
+    "merge_authorized": false,
+    "required_core_verdict": "ALLOW",
+    "explicit_owner_confirmation_required": true
+  }
+}

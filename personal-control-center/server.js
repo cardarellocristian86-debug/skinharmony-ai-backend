@@ -3,6 +3,11 @@ const path = require("path");
 const crypto = require("crypto");
 const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
 const { createNyraHorizontalRuntime } = require("./lib/nyra-horizontal-runtime");
+const {
+  featureFlags: nyraDeepBranchV2FeatureFlags,
+  loadCatalog: loadNyraDeepBranchV2Catalog,
+  route: routeNyraDeepBranchV2,
+} = require("./lib/nyra-deep-branch-v2");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -4468,6 +4473,39 @@ app.get("/api/nyra/runtime/contract", (_req, res) => {
   res.json({ ok: true, contract: nyraHorizontalRuntime.contract() });
 });
 
+app.get("/api/nyra/runtime/v2/catalog", (_req, res) => {
+  const config = nyraCoreConfig();
+  const featureFlags = nyraDeepBranchV2FeatureFlags(process.env, config.tenantId);
+  const loaded = loadNyraDeepBranchV2Catalog();
+  res.status(loaded.ok ? 200 : 503).json({
+    ok: loaded.ok,
+    service: NYRA_SERVICE_NAME,
+    tenant_id: config.tenantId || null,
+    feature_flags: featureFlags,
+    state: loaded.state,
+    validation: loaded.validation,
+    catalog: loaded.catalog,
+    execution_allowed: false,
+    core_final_authority: true,
+  });
+});
+
+app.get("/api/nyra/runtime/v2/validation", (_req, res) => {
+  const config = nyraCoreConfig();
+  const loaded = loadNyraDeepBranchV2Catalog();
+  res.status(loaded.ok ? 200 : 503).json({
+    ok: loaded.ok,
+    service: NYRA_SERVICE_NAME,
+    tenant_id: config.tenantId || null,
+    state: loaded.state,
+    feature_flags: nyraDeepBranchV2FeatureFlags(process.env, config.tenantId),
+    validation: loaded.validation,
+    catalog_fingerprint: loaded.catalog?.catalog_fingerprint || null,
+    execution_allowed: false,
+    core_final_authority: true,
+  });
+});
+
 app.post("/api/nyra/runtime/interpret", async (req, res) => {
   const prepared = nyraHorizontalRuntime.prepareInterpretation(req.body || {});
   if (!prepared.ok) {
@@ -4489,12 +4527,41 @@ app.post("/api/nyra/runtime/interpret", async (req, res) => {
     });
     return;
   }
+  const config = nyraCoreConfig();
+  const requestedDeepContext = req.body?.deep_branch_context;
+  const coreEvidence = core.data?.result?.nyra_evidence?.items || core.data?.nyra_evidence?.items || [];
+  const requestedNodeInputs = requestedDeepContext?.node_inputs;
+  const deepBranchEvaluationContext = requestedDeepContext && typeof requestedDeepContext === "object"
+    ? {
+        subbranch_id: String(requestedDeepContext.subbranch_id || "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 64),
+        evidence: Array.isArray(coreEvidence) ? coreEvidence.slice(0, 100) : [],
+        evidence_source: Array.isArray(coreEvidence) && coreEvidence.length ? "authenticated_core" : "",
+        node_inputs: requestedNodeInputs && typeof requestedNodeInputs === "object" && !Array.isArray(requestedNodeInputs)
+          ? Object.fromEntries(Object.entries(requestedNodeInputs).slice(0, 20))
+          : {},
+        request_id: req.nyraRequestId,
+        observed_at: Date.now(),
+      }
+    : null;
+  const deepBranchV2 = routeNyraDeepBranchV2({
+    tenantId: config.tenantId,
+    domainPackId: String(
+      core.data?.domain_pack?.id
+      || core.data?.result?.domain_pack?.id
+      || "generic"
+    ),
+    corePayload: core.data,
+    requestedBranches: prepared.local_interpretation.proposed_branches,
+    evaluationContext: deepBranchEvaluationContext,
+    env: process.env,
+  });
   res.json({
     ok: true,
     service: NYRA_SERVICE_NAME,
     runtime: nyraHorizontalRuntime.contract(),
     local_interpretation: prepared.local_interpretation,
     core_router: core.data,
+    ...(deepBranchV2.mode === "disabled" ? {} : { deep_branch_v2: deepBranchV2 }),
     execution_allowed: false,
   });
 });

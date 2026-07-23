@@ -112,7 +112,7 @@ const coreServer = http.createServer((req, res) => {
       jsonResponse(res, 200, {
         ok: true,
         tenant_id: "tenant-test",
-        domain_pack: { id: "generic", runtime_kind: "horizontal" },
+        domain_pack: { id: "skinharmony", runtime_kind: "horizontal" },
         work_preflight: {
           schema_version: "skinharmony_work_preflight_v1",
           preflight_id: "preflight-smoke",
@@ -256,6 +256,10 @@ async function main() {
       NYRA_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_CORE_KEY: "core-test-key",
       NYRA_CORE_TENANT_ID: "tenant-test",
+      NYRA_DEEP_BRANCH_V2_ENABLED: "true",
+      NYRA_DEEP_BRANCH_V2_MODE: "shadow",
+      NYRA_DEEP_BRANCH_V2_BRANCHES: "context_intelligence,work_intake,risk_governance,execution_planning",
+      NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST: "tenant-test",
       NYRA_RESEARCH_MCP_URL: `http://127.0.0.1:${researchMcpPort}`,
       NYRA_SUITE_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_SUITE_CORE_KEY: "suite-core-key",
@@ -310,6 +314,13 @@ async function main() {
     assert.equal(runtimeContract.json.contract.authority.may_begin_work_without_preflight, false);
     assert.equal(runtimeContract.json.contract.mandatory_preflight.connected_tool_first, true);
 
+    const deepValidation = await request("/api/nyra/runtime/v2/validation", { auth: true });
+    assert.equal(deepValidation.status, 200);
+    assert.equal(deepValidation.json.ok, true);
+    assert.equal(deepValidation.json.validation.metrics.branch_count, 18);
+    assert.equal(deepValidation.json.validation.metrics.node_count, 1434);
+    assert.equal(deepValidation.json.execution_allowed, false);
+
     const runtimeInterpretation = await request("/api/nyra/runtime/interpret", {
       method: "POST",
       auth: true,
@@ -319,6 +330,9 @@ async function main() {
     assert.equal(runtimeInterpretation.json.local_interpretation.branch_state, "proposed_waiting_for_core");
     assert.equal(runtimeInterpretation.json.core_router.result.nyra_neural_network.opened_by, "universal_core");
     assert.equal(runtimeInterpretation.json.core_router.work_preflight.mandatory, true);
+    assert.equal(runtimeInterpretation.json.deep_branch_v2.state, "shadow_v1_authoritative");
+    assert(runtimeInterpretation.json.deep_branch_v2.selected_branches.some((branch) => branch.id === "execution_planning"));
+    assert.equal(runtimeInterpretation.json.deep_branch_v2.execution_authorized, false);
     assert.equal(runtimeInterpretation.json.execution_allowed, false);
 
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });
@@ -480,6 +494,8 @@ async function main() {
         "auth_fail_closed",
         "authenticated_control",
         "runtime_readiness",
+        "deep_branch_v2_catalog_validation",
+        "deep_branch_v2_shadow_core_route",
         "persistent_learning_path",
         "feedback_endpoint",
         "core_status_bridge",

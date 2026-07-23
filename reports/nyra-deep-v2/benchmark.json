@@ -1,0 +1,51 @@
+{
+  "schema_version": "nyra_deep_branch_v2_benchmark_v1",
+  "generated_at": "2026-07-23T21:00:48.910Z",
+  "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
+  "host": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.0.0",
+    "cpu_count": 10
+  },
+  "topology": {
+    "branch_count": 18,
+    "subbranch_count": 239,
+    "node_count": 1434,
+    "level_counts": {
+      "1": 239,
+      "2": 239,
+      "3": 239,
+      "4": 956
+    },
+    "level4_type_counts": {
+      "method": 239,
+      "strategy": 239,
+      "verifier": 239,
+      "metric": 239
+    },
+    "duplicate_contract_count": 0,
+    "rejected_node_count": 0
+  },
+  "confidence_calibration": {
+    "formula": "0.50 evidence coverage + 0.20 authority compliance + 0.15 freshness compliance + 0.15 input validity",
+    "positive_fixture_expected_confidence": 1,
+    "abstain_below_contract_threshold": true,
+    "verified_node_count": 1434
+  },
+  "catalog_validation_ms": 945.578,
+  "route_100_iterations": {
+    "p50_ms": 26.897,
+    "p95_ms": 28.336,
+    "max_ms": 1071.432,
+    "budget_p95_ms": 100,
+    "passed": true
+  },
+  "deep_lineage": {
+    "branch_id": "context_intelligence",
+    "subbranch_id": "request_normalization",
+    "evaluated_nodes": 6,
+    "verified_nodes": 6,
+    "execution_authorized": false
+  }
+}

@@ -13,6 +13,14 @@ services:
         value: nyra-horizontal-runtime
       - key: NYRA_DOMAIN_PACK_ID
         value: skinharmony
+      - key: NYRA_DEEP_BRANCH_V2_ENABLED
+        value: "false"
+      - key: NYRA_DEEP_BRANCH_V2_MODE
+        value: shadow
+      - key: NYRA_DEEP_BRANCH_V2_BRANCHES
+        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
+      - key: NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
+        value: codexai
       - key: NYRA_STORAGE_ROOT
         value: /var/data
       - key: NYRA_FINANCE_SHARED_CAPITAL_EUR
