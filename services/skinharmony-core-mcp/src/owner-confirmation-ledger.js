@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS core_owner_confirmation_challenges (
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_lookup_idx
   ON core_owner_confirmation_challenges (tenant_id, subject_digest, session_digest, tool_name, request_digest);
 `;
+export const OWNER_CONFIRMATION_LEDGER_DOWN_SQL = `DROP TABLE IF EXISTS core_owner_confirmation_challenges; DROP TABLE IF EXISTS core_owner_confirmation_grants; DROP TABLE IF EXISTS core_owner_confirmation_ledger;`;
 
 export function createOwnerConfirmationLedger(config, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
@@ -68,7 +69,7 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       } finally { client.release?.(); }
     },
     async issueGrant({ tenantId, subject, sessionId, toolName, requestDigest, nonce, now = new Date(), ttlSeconds = 300 }) {
-      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url"); now = now instanceof Date ? now : new Date(now);
+      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url"); now = now instanceof Date ? now : new Date(now); ttlSeconds = Math.min(Number(ttlSeconds) || 300, 300);
       const client = typeof pool.connect === "function" ? await pool.connect() : pool;
       try { if (client.query !== pool.query) await client.query("BEGIN");
         await client.query("DELETE FROM core_owner_confirmation_grants WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);
@@ -81,7 +82,7 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       if (!result.rows?.length) throw new Error("owner_grant_invalid"); return true;
     },
     async issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, now = new Date(), ttlSeconds = 300 }) {
-      await initialize(); now = now instanceof Date ? now : new Date(now);
+      await initialize(); now = now instanceof Date ? now : new Date(now); ttlSeconds = Math.min(Number(ttlSeconds) || 300, 300);
       const challenge = crypto.randomBytes(32).toString("base64url");
       await pool.query(`INSERT INTO core_owner_confirmation_challenges
         (challenge_digest,tenant_id,subject_digest,session_digest,tool_name,request_digest,issued_at,expires_at)
@@ -102,9 +103,15 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       const client = typeof pool.connect === "function" ? await pool.connect() : pool;
       try {
         if (client.query !== pool.query) await client.query("BEGIN");
-        const result = await client.query(`UPDATE core_owner_confirmation_challenges SET consumed_at=$1
-          WHERE tenant_id=$2 AND subject_digest=$3 AND session_digest=$4 AND tool_name=$5 AND request_digest=$6
-          AND approved_at IS NOT NULL AND expires_at>$1 AND consumed_at IS NULL RETURNING challenge_digest`,
+        const result = await client.query(`WITH candidate AS (
+            SELECT challenge_digest FROM core_owner_confirmation_challenges
+            WHERE tenant_id=$2 AND subject_digest=$3 AND session_digest=$4 AND tool_name=$5 AND request_digest=$6
+              AND approved_at IS NOT NULL AND expires_at>$1 AND consumed_at IS NULL
+            ORDER BY issued_at ASC FOR UPDATE SKIP LOCKED LIMIT 1
+          )
+          UPDATE core_owner_confirmation_challenges c SET consumed_at=$1
+          FROM candidate WHERE c.challenge_digest=candidate.challenge_digest
+          RETURNING c.challenge_digest`,
         [now, tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest)]);
         if (client.query !== pool.query) await client.query("COMMIT");
         if (!result.rows?.length) throw new Error("owner_challenge_missing");

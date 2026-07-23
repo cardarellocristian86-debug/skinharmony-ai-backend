@@ -369,52 +369,6 @@ export function createApp(config, options = {}) {
         }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
-        const requestSessionId = transportSessionId || declaredSessionId || identity.agentPresence?.session_id || "";
-        const privilegedOAuthTools = new Set([
-          "tenant_provider_openai_setup_link",
-          "tenant_provider_openai_multi_agent_smoke_run",
-          "tenant_provider_openai_multi_agent_run_read",
-          "tenant_provider_openai_multi_agent_run_cancel",
-        ]);
-        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && !ownerGrantLedger) {
-          return res.json({ jsonrpc: "2.0", id, error: { code: -32002, message: "confirmation_unavailable" } });
-        }
-        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && ownerGrantLedger) {
-          const requestDigest = ownerRequestBinding(tool.name, rawArgs);
-          try {
-            await ownerGrantLedger.consumeApprovedChallenge({
-              tenantId: identity.tenantId,
-              subject: identity.subject,
-              sessionId: requestSessionId,
-              toolName: tool.name,
-              requestDigest,
-            });
-            identity = {
-              ...identity,
-              role: "tenant_owner",
-              providerSetupOwner: true,
-              ...(tool.name === "tenant_provider_openai_multi_agent_smoke_run" ? { providerExecutionConfirmed: true } : {}),
-            };
-          } catch (error) {
-            if (error?.message === "owner_challenge_missing") {
-              let portalUrl = "/connect/openai";
-              try { portalUrl = `${new URL(config.auth0BrowserCallbackUrl).origin}/connect/openai`; } catch {}
-              const challenge = await ownerGrantLedger.issueChallenge({
-                tenantId: identity.tenantId,
-                subject: identity.subject,
-                sessionId: requestSessionId,
-                toolName: tool.name,
-                requestDigest,
-              });
-              return res.json({ jsonrpc: "2.0", id, error: {
-                code: -32001,
-                message: "confirmation_required",
-                data: { confirmation_required: true, challenge_id: challenge.challengeId, confirmation_url: `${portalUrl}?challenge_id=${encodeURIComponent(challenge.challengeId)}` },
-              } });
-            }
-            throw error;
-          }
-        }
         const transportPresence = transportSessionId
           ? transportPresenceBindings.get(transportSessionId)
           : null;
@@ -467,6 +421,28 @@ export function createApp(config, options = {}) {
         setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
         if (transportSessionId || serverIssuedSessionId) {
           setBounded(transportPresenceBindings, sessionId, presenceBinding);
+        }
+        const privilegedOAuthTools = new Set([
+          "tenant_provider_openai_setup_link",
+          "tenant_provider_openai_multi_agent_smoke_run",
+          "tenant_provider_openai_multi_agent_run_read",
+          "tenant_provider_openai_multi_agent_run_cancel",
+        ]);
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && !ownerGrantLedger) {
+          return res.json({ jsonrpc: "2.0", id, error: { code: -32002, message: "confirmation_unavailable" } });
+        }
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && ownerGrantLedger) {
+          const requestDigest = ownerRequestBinding(tool.name, rawArgs);
+          try {
+            await ownerGrantLedger.consumeApprovedChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest });
+            identity = { ...identity, role: "tenant_owner", providerSetupOwner: true, ...(tool.name === "tenant_provider_openai_multi_agent_smoke_run" ? { providerExecutionConfirmed: true } : {}) };
+          } catch (error) {
+            if (error?.message !== "owner_challenge_missing") throw error;
+            let portalUrl = "/connect/openai";
+            try { portalUrl = `${new URL(config.auth0BrowserCallbackUrl).origin}/connect/openai`; } catch {}
+            const challenge = await ownerGrantLedger.issueChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest });
+            return res.json({ jsonrpc: "2.0", id, error: { code: -32001, message: "confirmation_required", data: { confirmation_required: true, challenge_id: challenge.challengeId, confirmation_url: `${portalUrl}?challenge_id=${encodeURIComponent(challenge.challengeId)}` } } });
+          }
         }
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };

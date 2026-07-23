@@ -208,8 +208,12 @@ export function createOpenAiConnectPortal({
   const owner = (identity) => identity?.kind === "oauth" && identity?.ownerConfirmationGrant === true && identity?.oauthOwnerBound === true;
   const oauthStart = (req, res, kind) => {
     if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
+    const requestedChallenge = String(req?.query?.challenge_id || "").trim();
+    if (requestedChallenge && String(req?.query?.confirm || "") !== "1") {
+      return portalHtml(res, 200, page("Conferma modalità multi-agente", `<p><strong>Modalità multi-agente</strong></p><p>Il lavoro verrà eseguito solo dopo la tua conferma: massimo 3 agenti e 3 chiamate sequenziali, budget ridotto, nessun browser, nessun tool esterno e nessuna azione pubblica.</p><p>Il pulsante avvia una nuova autenticazione OAuth owner con verifica fresca.</p><p><a href="/connect/openai?challenge_id=${encodeURIComponent(requestedChallenge)}&confirm=1">Conferma modalità multi-agente</a></p>`));
+    }
     const verifier = crypto.randomBytes(48).toString("base64url");
-    const challengeId = String(req?.query?.challenge_id || "").trim();
+    const challengeId = requestedChallenge;
     const state = b64(seal(stateKey, {
       kind,
       ...(challengeId ? { challenge_id: challengeId } : {}),
@@ -218,7 +222,7 @@ export function createOpenAiConnectPortal({
       expires_at: now() + MAX_AGE_MS,
     }));
     const authorize = new URL(`${config.auth0Issuer}/authorize`);
-    authorize.search = new URLSearchParams({ response_type: "code", client_id: config.auth0BrowserClientId, redirect_uri: config.auth0BrowserCallbackUrl, scope: "openid profile", audience: config.auth0BrowserAudience, state, code_challenge: challenge(verifier), code_challenge_method: "S256" }).toString();
+    authorize.search = new URLSearchParams({ response_type: "code", client_id: config.auth0BrowserClientId, redirect_uri: config.auth0BrowserCallbackUrl, scope: "openid profile", audience: config.auth0BrowserAudience, max_age: "300", prompt: "login", state, code_challenge: challenge(verifier), code_challenge_method: "S256" }).toString();
     return res.redirect(302, authorize.toString());
   };
   const agentSession = (req) => {
