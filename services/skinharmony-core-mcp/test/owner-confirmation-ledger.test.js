@@ -58,3 +58,25 @@ test("one reference wins under concurrent consumers and survives authenticator r
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(results.filter((result) => result.status === "rejected" && /replayed/.test(result.reason.message)).length, 1);
 });
+
+test("real PostgreSQL challenge ledger is replica-safe, idempotent and one-use", { skip: !process.env.CORE_MCP_TEST_DATABASE_URL }, async () => {
+  const first = createOwnerConfirmationLedger({ databaseUrl: process.env.CORE_MCP_TEST_DATABASE_URL });
+  const second = createOwnerConfirmationLedger({ databaseUrl: process.env.CORE_MCP_TEST_DATABASE_URL });
+  try {
+    const binding = { tenantId: "codexai", subject: "owner-subject", sessionId: "stable-session", toolName: "tenant_provider_openai_multi_agent_smoke_run", requestDigest: "request-digest", challengeSummary: JSON.stringify({ operation: "smoke", task: "bounded" }) };
+    const [a, b] = await Promise.all([first.issueChallenge(binding), second.issueChallenge(binding)]);
+    assert.equal(a.challengeId, b.challengeId);
+    await first.approveChallenge({ challengeId: a.challengeId, tenantId: binding.tenantId, subject: binding.subject });
+    const results = await Promise.allSettled([
+      first.consumeApprovedChallenge(binding),
+      second.consumeApprovedChallenge(binding),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(results.filter((result) => result.status === "rejected" && /owner_challenge_missing/.test(result.reason.message)).length, 1);
+    const restarted = createOwnerConfirmationLedger({ databaseUrl: process.env.CORE_MCP_TEST_DATABASE_URL });
+    try { await assert.rejects(() => restarted.consumeApprovedChallenge(binding), /owner_challenge_missing/); } finally { await restarted.close(); }
+  } finally {
+    await first.close();
+    await second.close();
+  }
+});

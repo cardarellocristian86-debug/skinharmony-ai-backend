@@ -52,6 +52,30 @@ function serverIssuedBootstrapSession() {
   return `mcp_bootstrap_${crypto.randomBytes(16).toString("hex")}`;
 }
 
+function ownerChallengeSummary(toolName, args = {}) {
+  const task = typeof args.task === "string" ? args.task.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) : "";
+  const summary = {
+    operation: toolName,
+    ...(task ? { task } : {}),
+    limits: toolName === "tenant_provider_openai_multi_agent_smoke_run"
+      ? { agents_max: 3, calls_max: 3, external_actions: false }
+      : { run_scoped: true },
+  };
+  return JSON.stringify(summary);
+}
+
+export function buildCallIdentity(identity, agentPresence, args = {}) {
+  const explicitOwnerConfirmation = identity.godMode === true && args.owner_confirmed === true;
+  return {
+    ...identity,
+    agentPresence,
+    ownerConfirmed: explicitOwnerConfirmation,
+    confirmationReference: explicitOwnerConfirmation ? String(args.confirmation_reference || "").slice(0, 240) : "",
+    // This flag is an output of server-side challenge consumption only.
+    providerExecutionConfirmed: identity.providerExecutionConfirmed === true,
+  };
+}
+
 function buildIdentity(env = process.env) {
   const commitSha = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim();
   if (!/^[a-f0-9]{40}$/i.test(commitSha)) return null;
@@ -443,7 +467,7 @@ export function createApp(config, options = {}) {
             if (error?.message !== "owner_challenge_missing") throw error;
             let portalUrl = "/connect/openai";
             try { portalUrl = `${new URL(config.auth0BrowserCallbackUrl).origin}/connect/openai`; } catch {}
-            const challenge = await ownerGrantLedger.issueChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest });
+            const challenge = await ownerGrantLedger.issueChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest, challengeSummary: ownerChallengeSummary(tool.name, rawArgs) });
             return res.json({ jsonrpc: "2.0", id, error: { code: -32001, message: "confirmation_required", data: { confirmation_required: true, challenge_id: challenge.challengeId, confirmation_url: `${portalUrl}?challenge_id=${encodeURIComponent(challenge.challengeId)}` } } });
           }
         }
@@ -452,23 +476,10 @@ export function createApp(config, options = {}) {
         // A request flag is never an identity assertion. Generic Core writes
         // still require verified owner-root confirmation. The bounded provider
         // test has a deliberately narrower, separate tenant-OAuth-owner proof.
-        const explicitOwnerConfirmation = identity.godMode === true && args.owner_confirmed === true;
-        const explicitProviderExecutionConfirmation = identity.kind === "oauth" &&
-          identity.providerSetupOwner === true &&
-          Boolean(String(identity.subject || "").trim()) &&
-          args.owner_confirmed === true;
-        const callIdentity = {
-          ...identity,
-          agentPresence,
-          ownerConfirmed: explicitOwnerConfirmation,
-          confirmationReference: explicitOwnerConfirmation
-            ? String(args.confirmation_reference || "").slice(0, 240)
-            : "",
-          providerExecutionConfirmed: explicitProviderExecutionConfirmation,
-          providerExecutionConfirmationReference: explicitProviderExecutionConfirmation
-            ? String(args.confirmation_reference || "").slice(0, 240)
-            : "",
-        };
+        // OAuth owner elevation is granted only by the server-side challenge
+        // ledger above. Never recompute or overwrite that proof from tool
+        // arguments supplied by the model/client.
+        const callIdentity = buildCallIdentity(identity, agentPresence, args);
         activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
         let hookContext = null;
         if (typeof beforeToolCall === "function") {

@@ -8,14 +8,16 @@ export function createOwnerConfirmationGrantLedger({ store = new Map(), ttlSecon
     issue: (args) => persistentLedger.issueGrant(args),
     consume: (args) => persistentLedger.consumeGrant(args),
     issueChallenge: (args) => persistentLedger.issueChallenge(args),
+    getChallenge: (args) => persistentLedger.getChallenge(args),
     approveChallenge: (args) => persistentLedger.approveChallenge(args),
     consumeApprovedChallenge: (args) => persistentLedger.consumeApprovedChallenge(args),
   };
   const challenges = new Map();
+  const boundedTtl = Math.min(300, Math.max(1, Number.isFinite(Number(ttlSeconds)) ? Number(ttlSeconds) : 300));
   return {
     issue({ tenantId, subject, sessionId, toolName, requestDigest, now = Date.now() }) {
       const nonce = crypto.randomBytes(32).toString("base64url");
-      const grant = { nonceDigest: hash(nonce), tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + ttlSeconds * 1000, consumed: false };
+      const grant = { nonceDigest: hash(nonce), tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + boundedTtl * 1000, consumed: false };
       store.set(grant.nonceDigest, grant);
       return { nonce, expiresAt: grant.expiresAt };
     },
@@ -26,10 +28,17 @@ export function createOwnerConfirmationGrantLedger({ store = new Map(), ttlSecon
       grant.consumed = true;
       return true;
     },
-    issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, now = Date.now() }) {
-      const challengeId = crypto.randomBytes(32).toString("base64url");
-      challenges.set(hash(challengeId), { tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + ttlSeconds * 1000, approved: false, consumed: false });
-      return { challengeId, expiresAt: new Date(now + ttlSeconds * 1000).toISOString() };
+    issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, challengeSummary = "", now = Date.now() }) {
+      const challengeId = hash(`${tenantId}\u0000${subject}\u0000${sessionId}\u0000${toolName}\u0000${requestDigest}`);
+      for (const [key, value] of challenges) if (value.expiresAt <= now || value.consumed) challenges.delete(key);
+      challenges.set(hash(challengeId), { tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + boundedTtl * 1000, approved: false, consumed: false });
+      challenges.get(hash(challengeId)).summary = String(challengeSummary).slice(0, 500);
+      return { challengeId, toolName, summary: String(challengeSummary).slice(0, 500), expiresAt: new Date(now + boundedTtl * 1000).toISOString() };
+    },
+    getChallenge({ challengeId, now = Date.now() }) {
+      const value = challenges.get(hash(challengeId));
+      if (!value || value.consumed || value.expiresAt <= now) throw new Error("owner_challenge_missing");
+      return { toolName: value.toolName, summary: value.summary || "", expiresAt: new Date(value.expiresAt).toISOString() };
     },
     approveChallenge({ challengeId, tenantId, subject, now = Date.now() }) {
       const challenge = challenges.get(hash(challengeId));

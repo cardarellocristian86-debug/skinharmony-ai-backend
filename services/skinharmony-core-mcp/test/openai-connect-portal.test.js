@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import test from "node:test";
 import express from "express";
 import { createOpenAiConnectPortal } from "../src/openai-connect-portal.js";
+import { createOwnerConfirmationGrantLedger } from "../src/owner-confirmation-grant.js";
 
 const setupToken = "a".repeat(32);
 const setupProof = "p".repeat(40);
@@ -27,6 +28,7 @@ function ownerIdentity(overrides = {}) {
     godMode: true,
     role: "owner_root",
     providerSetupOwner: true,
+    authenticatedAt: Math.floor(Date.now() / 1000),
     ...overrides,
   };
 }
@@ -141,20 +143,20 @@ test("uses Authorization Code PKCE, refreshes the portal session, and sends the 
 });
 
 test("renders an explicit multi-agent confirmation page before OAuth", async () => {
+  const ownerGrantLedger = createOwnerConfirmationGrantLedger();
+  const issued = ownerGrantLedger.issueChallenge({ tenantId: "codexai", subject: ownerIdentity().subject, sessionId: "mcp-session", toolName: "tenant_provider_openai_multi_agent_smoke_run", requestDigest: "request-digest", challengeSummary: JSON.stringify({ operation: "tenant_provider_openai_multi_agent_smoke_run", task: "Verifica bounded" }) });
   const portal = createOpenAiConnectPortal({
     config,
-    ownerGrantLedger: {
-      approveChallenge: async () => ({ approved: true }),
-    },
+    ownerGrantLedger,
     authenticate: async () => ownerIdentity(),
   });
   await serve(portal, async (base) => {
-    const response = await fetch(`${base}/connect/openai?challenge_id=opaque-challenge`, { redirect: "manual" });
+    const response = await fetch(`${base}/connect/openai?challenge_id=${issued.challengeId}`, { redirect: "manual" });
     assert.equal(response.status, 200);
     const html = await response.text();
     assert.match(html, /Conferma modalità multi-agente/);
     assert.match(html, /3 agenti/);
-    assert.match(html, /challenge_id=opaque-challenge.*confirm=1/);
+    assert.match(html, new RegExp(`challenge_id=${issued.challengeId}.*confirm=1`));
     assert.doesNotMatch(html, /owner_confirmed|confirmation_reference/);
   });
 });

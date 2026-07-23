@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachWorkPreflight, TOOLS } from "../src/app.js";
+import { attachWorkPreflight, buildCallIdentity, TOOLS } from "../src/app.js";
+
+test("preserves providerExecutionConfirmed only after server-side challenge consumption", () => {
+  const identity = buildCallIdentity({ kind: "oauth", providerExecutionConfirmed: true, godMode: false }, { session_id: "mcp-session" }, { owner_confirmed: false, confirmation_reference: "forged" });
+  assert.equal(identity.providerExecutionConfirmed, true);
+  assert.equal(identity.ownerConfirmed, false);
+  const forged = buildCallIdentity({ kind: "oauth", providerExecutionConfirmed: false, godMode: false }, { session_id: "mcp-session" }, { owner_confirmed: true, confirmation_reference: "forged" });
+  assert.equal(forged.providerExecutionConfirmed, false);
+});
 
 test("advertises explicit confirmation fields only on write tools", () => {
   const readTools = TOOLS.filter((tool) => tool.annotations.readOnlyHint === true);

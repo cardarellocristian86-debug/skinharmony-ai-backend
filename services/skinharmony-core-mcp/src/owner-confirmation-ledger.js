@@ -2,9 +2,14 @@ import crypto from "node:crypto";
 import { Pool } from "pg";
 
 export const OWNER_CONFIRMATION_LEDGER_SCHEMA_VERSION = "owner_confirmation_ledger_v1";
+export const OWNER_CONFIRMATION_LEDGER_MIGRATION_VERSION = "owner_confirmation_ledger_v2_job_scoped";
 
 function digest(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+function boundedTtl(value) {
+  const parsed = Number(value);
+  return Math.min(300, Math.max(1, Number.isFinite(parsed) ? parsed : 300));
 }
 
 const SCHEMA_SQL = `
@@ -28,15 +33,22 @@ CREATE TABLE IF NOT EXISTS core_owner_confirmation_challenges (
   challenge_digest char(64) PRIMARY KEY, tenant_id varchar(64) NOT NULL,
   subject_digest char(64) NOT NULL, session_digest char(64) NOT NULL,
   tool_name varchar(120) NOT NULL, request_digest char(64) NOT NULL,
+  challenge_summary varchar(500) NOT NULL DEFAULT '',
   issued_at timestamptz NOT NULL, expires_at timestamptz NOT NULL,
   approved_at timestamptz, consumed_at timestamptz
 );
+ALTER TABLE core_owner_confirmation_challenges
+  ADD COLUMN IF NOT EXISTS challenge_summary varchar(500) NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_lookup_idx
   ON core_owner_confirmation_challenges (tenant_id, subject_digest, session_digest, tool_name, request_digest);
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_expiry_idx
   ON core_owner_confirmation_challenges (expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS core_owner_confirmation_challenge_binding_idx
+  ON core_owner_confirmation_challenges (tenant_id, subject_digest, session_digest, tool_name, request_digest)
+  WHERE consumed_at IS NULL;
 `;
 export const OWNER_CONFIRMATION_LEDGER_DOWN_SQL = `DROP TABLE IF EXISTS core_owner_confirmation_challenges; DROP TABLE IF EXISTS core_owner_confirmation_grants; DROP TABLE IF EXISTS core_owner_confirmation_ledger;`;
+export const OWNER_CONFIRMATION_LEDGER_MIGRATION_DOWN_SQL = `DROP INDEX IF EXISTS core_owner_confirmation_challenge_binding_idx; DROP INDEX IF EXISTS core_owner_confirmation_challenge_expiry_idx; ALTER TABLE core_owner_confirmation_challenges DROP COLUMN IF EXISTS challenge_summary;`;
 
 export function createOwnerConfirmationLedger(config, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
@@ -49,6 +61,7 @@ export function createOwnerConfirmationLedger(config, options = {}) {
   const initialize = () => ready ||= pool.query(SCHEMA_SQL);
   return {
     schemaSql: SCHEMA_SQL,
+    close: () => pool.end?.(),
     async consume({ tenantId, subject, reference, requestBinding, now = new Date(), ttlSeconds = 300 }) {
       await initialize();
       const expiry = new Date(now.getTime() + Number(ttlSeconds) * 1000);
@@ -71,7 +84,7 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       } finally { client.release?.(); }
     },
     async issueGrant({ tenantId, subject, sessionId, toolName, requestDigest, nonce, now = new Date(), ttlSeconds = 300 }) {
-      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url"); now = now instanceof Date ? now : new Date(now); ttlSeconds = Math.min(Number(ttlSeconds) || 300, 300);
+      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url"); now = now instanceof Date ? now : new Date(now); ttlSeconds = boundedTtl(ttlSeconds);
       const client = typeof pool.connect === "function" ? await pool.connect() : pool;
       try { if (client.query !== pool.query) await client.query("BEGIN");
         await client.query("DELETE FROM core_owner_confirmation_grants WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);
@@ -83,13 +96,23 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       await initialize(); const result = await pool.query(`UPDATE core_owner_confirmation_grants SET consumed_at=$1 WHERE nonce_digest=$2 AND tenant_id=$3 AND subject_digest=$4 AND session_digest=$5 AND tool_name=$6 AND request_digest=$7 AND expires_at>$1 AND consumed_at IS NULL RETURNING nonce_digest`, [now,digest(nonce),tenantId,digest(subject),digest(sessionId),toolName,digest(requestDigest)]);
       if (!result.rows?.length) throw new Error("owner_grant_invalid"); return true;
     },
-    async issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, now = new Date(), ttlSeconds = 300 }) {
-      await initialize(); now = now instanceof Date ? now : new Date(now); ttlSeconds = Math.min(Number(ttlSeconds) || 300, 300);
-      const challenge = crypto.randomBytes(32).toString("base64url");
+    async issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, challengeSummary = "", now = new Date(), ttlSeconds = 300 }) {
+      await initialize(); now = now instanceof Date ? now : new Date(now); ttlSeconds = boundedTtl(ttlSeconds);
+      const challenge = digest(`${tenantId}\u0000${subject}\u0000${sessionId}\u0000${toolName}\u0000${requestDigest}`);
+      await pool.query("DELETE FROM core_owner_confirmation_challenges WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);
       await pool.query(`INSERT INTO core_owner_confirmation_challenges
-        (challenge_digest,tenant_id,subject_digest,session_digest,tool_name,request_digest,issued_at,expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [digest(challenge), tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), now, new Date(now.getTime() + ttlSeconds * 1000)]);
-      return { challengeId: challenge, expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString() };
+        (challenge_digest,tenant_id,subject_digest,session_digest,tool_name,request_digest,challenge_summary,issued_at,expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (tenant_id, subject_digest, session_digest, tool_name, request_digest) WHERE consumed_at IS NULL
+        DO UPDATE SET expires_at=GREATEST(core_owner_confirmation_challenges.expires_at, EXCLUDED.expires_at)
+        RETURNING expires_at`, [challenge, tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), String(challengeSummary).slice(0, 500), now, new Date(now.getTime() + ttlSeconds * 1000)]);
+      return { challengeId: challenge, toolName, summary: String(challengeSummary).slice(0, 500), expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString() };
+    },
+    async getChallenge({ challengeId, now = new Date() }) {
+      await initialize(); now = now instanceof Date ? now : new Date(now);
+      const result = await pool.query(`SELECT tool_name, challenge_summary, expires_at FROM core_owner_confirmation_challenges WHERE challenge_digest=$1 AND consumed_at IS NULL AND expires_at>$2`, [String(challengeId), now]);
+      if (!result.rows?.length) throw new Error("owner_challenge_missing");
+      return { toolName: result.rows[0].tool_name, summary: result.rows[0].challenge_summary, expiresAt: new Date(result.rows[0].expires_at).toISOString() };
     },
     async approveChallenge({ challengeId, tenantId, subject, now = new Date() }) {
       await initialize(); now = now instanceof Date ? now : new Date(now);
