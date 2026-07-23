@@ -22,6 +22,8 @@ function ownerIdentity(overrides = {}) {
     kind: "oauth",
     subject: "google-oauth2|owner-test",
     tenantId: "codexai",
+    oauthOwnerBound: true,
+    ownerConfirmationGrant: true,
     godMode: true,
     role: "owner_root",
     providerSetupOwner: true,
@@ -120,13 +122,13 @@ test("uses Authorization Code PKCE, refreshes the portal session, and sends the 
     );
     assert.equal(callback.status, 303);
     assert.equal(callback.headers.get("location"), `${issuedSetupLink().setup_url}#proof=${setupProof}`);
-    assert.deepEqual(issuedFor, {
-      kind: "oauth",
-      subject: ownerIdentity().subject,
-      tenantId: "codexai",
-      role: "owner_root",
-      providerSetupOwner: true,
-    });
+    assert.equal(issuedFor.kind, "oauth");
+    assert.equal(issuedFor.subject, ownerIdentity().subject);
+    assert.equal(issuedFor.tenantId, "codexai");
+    assert.equal(issuedFor.role, "tenant_owner");
+    assert.equal(issuedFor.providerSetupOwner, true);
+    assert.equal(issuedFor.ownerConfirmationGrant, true);
+    assert.match(issuedFor.ownerGrantNonce, /^[A-Za-z0-9_-]+$/);
     assert.doesNotMatch(callback.headers.get("location"), /tenant_id|google-oauth2/);
     const sessionCookie = callback.headers.get("set-cookie");
     assert.match(sessionCookie, /__Host-skinharmony_agents=/);
@@ -159,7 +161,7 @@ test("rejects CSRF state mismatch, expired state, and non-owner callback without
     config,
     now: () => clock,
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
-    authenticate: async () => ownerIdentity({ godMode: false, providerSetupOwner: false, role: "standard" }),
+    authenticate: async () => ownerIdentity({ godMode: false, providerSetupOwner: false, oauthOwnerBound: false, role: "standard" }),
     issueSetupLink: async () => ({}),
   });
   await serve(portal, async (base) => {

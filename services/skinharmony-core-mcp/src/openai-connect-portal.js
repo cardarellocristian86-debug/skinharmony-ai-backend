@@ -142,6 +142,10 @@ function safeIdentity(identity) {
     tenantId: String(identity.tenantId || ""),
     role: String(identity.role || "tenant_owner"),
     providerSetupOwner: true,
+    oauthOwnerBound: identity.oauthOwnerBound === true,
+    ownerConfirmationGrant: identity.ownerConfirmationGrant === true,
+    ...(identity.ownerGrantNonce ? { ownerGrantNonce: String(identity.ownerGrantNonce) } : {}),
+    ...(identity.ownerGrantSessionId ? { ownerGrantSessionId: String(identity.ownerGrantSessionId) } : {}),
   };
 }
 function runIdFrom(payload) {

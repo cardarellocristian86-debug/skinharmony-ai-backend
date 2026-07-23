@@ -31,13 +31,6 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "tenant_provider_openai_status",
   "tenant_provider_openai_setup_panel",
 ]);
-const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
-]);
-
 function inferClientType(identity) {
   const kind = String(identity?.kind || "").toLowerCase();
   // This gateway reserves verified OAuth identities for the ChatGPT connector;
@@ -363,6 +356,15 @@ export function createApp(config, options = {}) {
               message: "Invalid tool arguments",
               data: { tool: tool.name, violations: validationErrors.slice(0, 20) },
             },
+          });
+        }
+        if (identity.kind === "oauth" &&
+          (Object.prototype.hasOwnProperty.call(rawArgs, "owner_confirmed") ||
+           Object.prototype.hasOwnProperty.call(rawArgs, "confirmation_reference"))) {
+          return res.json({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32602, message: "Owner confirmation is server-side only" },
           });
         }
         // OAuth owner grants are issued and consumed server-side by the
