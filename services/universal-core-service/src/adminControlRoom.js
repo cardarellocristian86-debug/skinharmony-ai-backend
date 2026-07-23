@@ -20,6 +20,15 @@ function safeText(value, max = 160) {
   return String(value || "").trim().slice(0, max);
 }
 
+function redactedText(value, max = 160) {
+  return String(value || "")
+    .replace(/\b(?:bearer\s+)?(?:sk|gho|ghp|ghs|github_pat|akia)[-_a-z0-9]{12,}\b/gi, "[REDACTED_SECRET]")
+    .replace(/\b(bearer)\s+[a-z0-9._~+/=-]{12,}\b/gi, "$1 [REDACTED_SECRET]")
+    .replace(/\b(password|passwd|secret|token|api[_ -]?key|authorization)\s*[:=]\s*[^\s,;&]+/gi, "$1=[REDACTED_SECRET]")
+    .trim()
+    .slice(0, max);
+}
+
 function passwordHash(password, salt = crypto.randomBytes(16).toString("base64url")) {
   const derived = crypto.scryptSync(password, salt, 64).toString("base64url");
   return `scrypt$${salt}$${derived}`;
@@ -56,8 +65,22 @@ function parseCookies(header = "") {
 }
 
 function publicKey(record = {}) {
-  const { key_hash, ...safe } = record;
-  return safe;
+  return {
+    key_id: safeText(record.key_id, 120),
+    tenant_id: safeText(record.tenant_id, 120),
+    brand_scope: safeText(record.brand_scope, 120) || null,
+    key_type: safeText(record.key_type, 80) || null,
+    preset: safeText(record.preset, 80) || null,
+    label: redactedText(record.label, 160) || null,
+    status: safeText(record.status, 40) || null,
+    allowed_scopes: Array.isArray(record.allowed_scopes)
+      ? record.allowed_scopes.map((scope) => safeText(scope, 120)).filter(Boolean)
+      : [],
+    created_at: safeText(record.created_at, 40) || null,
+    updated_at: safeText(record.updated_at, 40) || null,
+    expires_at: safeText(record.expires_at, 40) || null,
+    last_used_at: safeText(record.last_used_at, 40) || null,
+  };
 }
 
 function sanitizeAudit(event = {}) {
@@ -67,9 +90,9 @@ function sanitizeAudit(event = {}) {
     created_at: safeText(event.created_at, 40),
     tenant_id: safeText(event.tenant_id, 120) || null,
     key_id: safeText(event.key_id, 120) || null,
-    actor: safeText(event.actor, 120) || null,
-    path: safeText(event.path, 160) || null,
-    error: safeText(event.error, 120) || null,
+    actor: redactedText(event.actor, 120) || null,
+    path: redactedText(event.path, 160) || null,
+    error: redactedText(event.error, 120) || null,
   };
 }
 
@@ -98,22 +121,43 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
   function sessions() { return readJson(sessionsFile, []); }
   function saveSessions(rows) { writeJson(sessionsFile, rows.filter((item) => Date.parse(item.expires_at || "") > Date.now())); }
 
+  function persistedBootstrapUser(rows = users()) {
+    return rows.find((user) => user.username === bootstrapUsername) || null;
+  }
+
+  function usablePersistedUser(user) {
+    return Boolean(
+      user &&
+      user.status !== "disabled" &&
+      /^scrypt\$[^$]+\$[^$]+$/.test(String(user.password_hash || "")),
+    );
+  }
+
+  function adminConfigured() {
+    if (!enabled() || !bootstrapUsername) return false;
+    const existing = persistedBootstrapUser();
+    if (existing) return usablePersistedUser(existing);
+    return bootstrapPassword.length >= 16;
+  }
+
   function ensureBootstrapOwner() {
-    if (!enabled() || !bootstrapUsername || bootstrapPassword.length < 16) return false;
+    if (!enabled() || !bootstrapUsername) return false;
     const current = users();
-    if (current.some((user) => user.username === bootstrapUsername)) return true;
+    const existing = persistedBootstrapUser(current);
+    if (existing) return usablePersistedUser(existing);
+    if (bootstrapPassword.length < 16) return false;
     current.push({
       user_id: `adm_${crypto.randomUUID()}`,
       username: bootstrapUsername,
       password_hash: passwordHash(bootstrapPassword),
-      role: "owner",
+      role: "owner_root",
       tenant_ids: ["*"],
       mfa_state: "not_configured",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
     writeJson(usersFile, current);
-    audit.append("core_admin_owner_bootstrapped", { actor: bootstrapUsername, role: "owner" });
+    audit.append("core_admin_owner_bootstrapped", { actor: bootstrapUsername, role: "owner_root" });
     return true;
   }
 
@@ -141,6 +185,12 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
     };
   }
 
+  function requireKeyAdministrationRole(req, res, next) {
+    const user = req.adminContext.user;
+    if (isRootOwner(user) || ["tenant_owner", "security_admin"].includes(user.role)) return next();
+    return res.status(403).json({ ok: false, error: "admin_role_denied" });
+  }
+
   function requireCsrf(req, res, next) {
     const received = String(req.get("x-csrf-token") || "");
     const expected = String(req.adminContext.session.csrf_token || "");
@@ -164,19 +214,100 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
     loginAttempts.set(key, attempts);
   }
 
+  function explicitTenantIds(user) {
+    if (!Array.isArray(user?.tenant_ids)) return [];
+    return [...new Set(user.tenant_ids.map((tenantId) => safeText(tenantId, 120)).filter((tenantId) => tenantId && tenantId !== "*"))];
+  }
+
+  function isRootOwner(user) {
+    const rootCompatibleRole = user?.role === "owner_root" || user?.role === "owner";
+    return rootCompatibleRole && Array.isArray(user.tenant_ids) && user.tenant_ids.includes("*");
+  }
+
   function tenantAllowed(user, tenantId) {
-    return user.role === "owner" || user.tenant_ids?.includes("*") || user.tenant_ids?.includes(String(tenantId || ""));
+    const normalizedTenantId = safeText(tenantId, 120);
+    if (!normalizedTenantId) return false;
+    return isRootOwner(user) || explicitTenantIds(user).includes(normalizedTenantId);
+  }
+
+  function metricTenantIds(user, requestedTenantId = "") {
+    const requested = safeText(requestedTenantId, 120);
+    if (requested) return tenantAllowed(user, requested) ? { ok: true, tenantIds: [requested] } : { ok: false, error: "tenant_scope_denied", tenantIds: [] };
+    if (isRootOwner(user)) return { ok: true, tenantIds: null };
+    return { ok: true, tenantIds: explicitTenantIds(user) };
+  }
+
+  function tenantScope(user, requestedTenantId = "") {
+    const requested = safeText(requestedTenantId, 120);
+    if (requested && !tenantAllowed(user, requested)) {
+      return { ok: false, error: "tenant_scope_denied", tenantRows: [] };
+    }
+    const tenantRows = tenants.list().filter((tenant) => {
+      if (requested && tenant.tenant_id !== requested) return false;
+      return tenantAllowed(user, tenant.tenant_id);
+    });
+    return { ok: true, tenantRows };
+  }
+
+  function scopedBranchCatalog(user, requestedTenantId = "") {
+    const scope = tenantScope(user, requestedTenantId);
+    if (!scope.ok) return scope;
+    const allowedBranches = new Set(scope.tenantRows.flatMap((tenant) => (
+      Array.isArray(tenant.active_branches) ? tenant.active_branches.map((branch) => safeText(branch, 80)).filter(Boolean) : []
+    )));
+    const catalog = nyraCatalog("generic");
+    const visibleBranches = Array.isArray(catalog.branches) ? catalog.branches : [];
+    return {
+      ok: true,
+      tenantRows: scope.tenantRows,
+      catalog: {
+        ...catalog,
+        tenant_scope: {
+          mode: isRootOwner(user) ? "root_all_registered_tenants" : "assigned_tenants",
+          tenant_ids: scope.tenantRows.map((tenant) => tenant.tenant_id),
+        },
+        branches: isRootOwner(user) ? visibleBranches : visibleBranches.filter((branch) => allowedBranches.has(branch.id)),
+      },
+    };
+  }
+
+  function scopedAudit(user, tenantIds, requestedTenantId = "", limit = 30) {
+    const allowedTenantIds = tenantIds === null ? null : new Set(tenantIds);
+    const includeGlobalEvents = isRootOwner(user) && !safeText(requestedTenantId, 120);
+    const rows = audit.recent(200).filter((event) => {
+      const eventTenantId = safeText(event.tenant_id, 120);
+      return eventTenantId ? allowedTenantIds === null || allowedTenantIds.has(eventTenantId) : includeGlobalEvents;
+    });
+    return rows.slice(-Math.max(1, Math.min(100, Number(limit) || 30))).map(sanitizeAudit).reverse();
+  }
+
+  function blockKeyMutation(operation) {
+    return (req, res) => {
+      audit.append("core_admin_key_mutation_blocked", {
+        actor: req.adminContext.user.username,
+        operation,
+        reason: "request_bound_core_proof_required",
+      });
+      return res.status(403).json({
+        ok: false,
+        error: "request_bound_core_proof_required",
+        operation,
+        mutation_allowed: false,
+      });
+    };
   }
 
   app.use("/admin", (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
     res.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'");
     next();
   });
 
-  app.get("/admin/healthz", (_req, res) => res.json({ ok: true, service: "core-nyra-admin", configured: enabled() && Boolean(bootstrapUsername) }));
+  app.get("/admin/healthz", (_req, res) => res.json({ ok: true, service: "core-nyra-admin", configured: adminConfigured() }));
   app.get("/admin", (_req, res) => res.sendFile(path.join(uiRoot, "index.html")));
   app.get("/admin/assets/:asset", (req, res) => {
     const asset = String(req.params.asset || "");
@@ -188,7 +319,7 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
     const context = currentSession(req);
     return res.json({
       ok: true,
-      configured: enabled() && Boolean(bootstrapUsername),
+      configured: adminConfigured(),
       authenticated: Boolean(context),
       user: context ? { username: context.user.username, role: context.user.role, mfa_state: context.user.mfa_state } : null,
       csrf_token: context?.session.csrf_token || null,
@@ -227,55 +358,54 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
   });
 
   app.get("/admin/api/overview", requireSession, (req, res) => {
-    const keys = keyStore.listKeys({});
-    const tenantRows = tenants.list().filter((tenant) => tenantAllowed(req.adminContext.user, tenant.tenant_id));
-    const branches = nyraCatalog("generic");
+    const requestedTenantId = safeText(req.query?.tenant_id, 120);
+    const branchScope = scopedBranchCatalog(req.adminContext.user, requestedTenantId);
+    if (!branchScope.ok) return res.status(403).json({ ok: false, error: branchScope.error });
+    const metricScope = metricTenantIds(req.adminContext.user, requestedTenantId);
+    if (!metricScope.ok) return res.status(403).json({ ok: false, error: metricScope.error });
+    const tenantRows = branchScope.tenantRows;
+    const visibleTenantIds = metricScope.tenantIds === null ? null : new Set(metricScope.tenantIds);
+    const keys = keyStore.listKeys({}).filter((key) => visibleTenantIds === null || visibleTenantIds.has(key.tenant_id));
+    const branches = branchScope.catalog;
     return res.json({
       ok: true,
       overview: {
         service: "universal-core-service",
-        admin_security: { session: "http_only", csrf: "required_for_writes", mfa: req.adminContext.user.mfa_state, role: req.adminContext.user.role },
+        admin_security: {
+          session: "http_only",
+          csrf: "required_for_writes",
+          mfa: req.adminContext.user.mfa_state,
+          role: req.adminContext.user.role,
+          console_mode: "read_only",
+          mutations: "request_bound_core_proof_required",
+        },
         tenants: { total: tenantRows.length, active: tenantRows.filter((tenant) => tenant.lifecycle_state === "active").length },
         keys: { total: keys.length, active: keys.filter((key) => key.status === "active").length, revoked: keys.filter((key) => key.status === "revoked").length },
-        nyra: { branches: branches.branches?.length || 0, max_subbranches: branches.constraints?.max_subbranches || 20 },
-        agents: agentRegistry("generic"),
+        nyra: { branches: branches.branches?.length || 0, max_subbranches: branches.maximum_subbranches_per_branch || 20 },
+        agents: isRootOwner(req.adminContext.user)
+          ? { ...agentRegistry({ domainPackId: "generic" }), visibility: "root_universal_registry" }
+          : { schema_version: "universal_multi_agent_architecture_v1", agents: [], visibility: "not_exposed_to_tenant_admin" },
       },
       tenants: tenantRows,
-      audit: audit.recent(30).map(sanitizeAudit).reverse(),
+      audit: scopedAudit(req.adminContext.user, metricScope.tenantIds, requestedTenantId, 30),
     });
   });
 
-  app.get("/admin/api/branches", requireSession, (_req, res) => res.json({ ok: true, catalog: nyraCatalog("generic") }));
-  app.get("/admin/api/keys", requireSession, requireRole("owner", "security_admin"), (req, res) => {
-    const keys = keyStore.listKeys({ tenant_id: req.query.tenant_id }).filter((key) => tenantAllowed(req.adminContext.user, key.tenant_id));
+  app.get("/admin/api/branches", requireSession, (req, res) => {
+    const scoped = scopedBranchCatalog(req.adminContext.user, req.query?.tenant_id);
+    if (!scoped.ok) return res.status(403).json({ ok: false, error: scoped.error });
+    return res.json({ ok: true, catalog: scoped.catalog });
+  });
+
+  app.get("/admin/api/keys", requireSession, requireKeyAdministrationRole, (req, res) => {
+    const requestedTenantId = safeText(req.query?.tenant_id, 120);
+    const scope = metricTenantIds(req.adminContext.user, requestedTenantId);
+    if (!scope.ok) return res.status(403).json({ ok: false, error: scope.error });
+    const visibleTenantIds = scope.tenantIds === null ? null : new Set(scope.tenantIds);
+    const keys = keyStore.listKeys({}).filter((key) => visibleTenantIds === null || visibleTenantIds.has(key.tenant_id));
     return res.json({ ok: true, keys: keys.map(publicKey) });
   });
 
-  app.post("/admin/api/keys", requireSession, requireRole("owner", "security_admin"), requireCsrf, (req, res) => {
-    if (String(req.body?.confirmation || "") !== "CREATE_KEY") return res.status(400).json({ ok: false, error: "admin_confirmation_required" });
-    const tenantId = safeText(req.body?.tenant_id, 120);
-    if (!tenantAllowed(req.adminContext.user, tenantId)) return res.status(403).json({ ok: false, error: "tenant_scope_denied" });
-    try {
-      const result = keyStore.createKey({
-        tenant_id: tenantId,
-        brand_scope: safeText(req.body?.brand_scope, 120),
-        preset: safeText(req.body?.preset, 80),
-        label: safeText(req.body?.label, 160),
-        expires_at: safeText(req.body?.expires_at, 40) || null,
-      });
-      audit.append("core_admin_key_issued", { actor: req.adminContext.user.username, tenant_id: tenantId, key_id: result.record.key_id, preset: result.record.preset });
-      return res.status(201).json({ ok: true, key: result.key, record: result.record, warning: "Mostrata una sola volta: salvarla nel connector o nel Portachiavi." });
-    } catch (error) {
-      return res.status(400).json({ ok: false, error: safeText(error.message, 120) || "key_generation_failed" });
-    }
-  });
-
-  app.post("/admin/api/keys/:keyId/revoke", requireSession, requireRole("owner", "security_admin"), requireCsrf, (req, res) => {
-    if (String(req.body?.confirmation || "") !== "REVOKE_KEY") return res.status(400).json({ ok: false, error: "admin_confirmation_required" });
-    const current = keyStore.listKeys({}).find((key) => key.key_id === req.params.keyId);
-    if (!current || !tenantAllowed(req.adminContext.user, current.tenant_id)) return res.status(404).json({ ok: false, error: "key_not_found" });
-    const record = keyStore.revokeKey(current.key_id, "revoked");
-    audit.append("core_admin_key_revoked", { actor: req.adminContext.user.username, tenant_id: current.tenant_id, key_id: current.key_id });
-    return res.json({ ok: true, key: record });
-  });
+  app.post("/admin/api/keys", requireSession, requireKeyAdministrationRole, requireCsrf, blockKeyMutation("create_key"));
+  app.post("/admin/api/keys/:keyId/revoke", requireSession, requireKeyAdministrationRole, requireCsrf, blockKeyMutation("revoke_key"));
 }
