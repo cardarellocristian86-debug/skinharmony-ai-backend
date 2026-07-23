@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createOwnerConfirmationGrantLedger, ownerRequestDigest } from "./owner-confirmation-grant.js";
 
 const MAX_AGE_MS = 10 * 60 * 1000;
 const AGENT_PORTAL_SESSION_AGE_MS = 20 * 60 * 1000;
@@ -189,6 +190,7 @@ export function createOpenAiConnectPortal({
   cancelMultiAgentRun,
   fetchImpl = fetch,
   now = () => Date.now(),
+  ownerGrantLedger = createOwnerConfirmationGrantLedger({ requirePersistent: config.decisionLedgerRequired === true }),
 }) {
   const enabled = Boolean(config.auth0BrowserClientId && config.auth0BrowserCallbackUrl && config.auth0BrowserStateSecret && config.auth0BrowserAudience && config.auth0Issuer);
   // Derive both AEAD keys once at process startup. Public requests never run a
@@ -199,8 +201,7 @@ export function createOpenAiConnectPortal({
   // `providerSetupOwner` comes only from a verified OAuth tenant-role claim.
   // A client ID, a URL parameter, or an arbitrary tenant string can never
   // authorize credential entry.
-  const owner = (identity) => identity?.kind === "oauth" && identity?.providerSetupOwner === true &&
-    ["tenant_owner", "tenant_admin", "owner_root"].includes(identity?.role);
+  const owner = (identity) => identity?.kind === "oauth" && identity?.ownerConfirmationGrant === true && identity?.oauthOwnerBound === true;
   const oauthStart = (res, kind) => {
     if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
     const verifier = crypto.randomBytes(48).toString("base64url");
@@ -283,12 +284,9 @@ export function createOpenAiConnectPortal({
         // PKCE callback is the explicit one-time owner confirmation and is
         // bound to the sealed state nonce; no tenant or role comes from URL
         // input.
-        if (identity.oauthOwnerBound === true && typeof authenticate.elevateOAuthOwner === "function") {
-          identity = await authenticate.elevateOAuthOwner(identity, {
-            confirmed: true,
-            confirmationReference: session.nonce,
-            requestBinding: `oauth_connect_callback\u0000${session.kind}\u0000${session.nonce}`,
-          });
+        if (identity.oauthOwnerBound === true) {
+          ownerGrantLedger.issue({ tenantId: identity.tenantId, subject: identity.subject, sessionId: session.nonce, toolName: "openai_connect", requestDigest: ownerRequestDigest(`${session.kind}\u0000${session.nonce}`), now: now() });
+          identity = { ...identity, ownerConfirmationGrant: true, role: "tenant_owner" };
         }
         if (!owner(identity)) throw new Error("owner_required");
         // Refresh the same short-lived tenant-bound portal session for both

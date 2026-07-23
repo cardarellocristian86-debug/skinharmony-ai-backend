@@ -364,14 +364,9 @@ export function createApp(config, options = {}) {
             },
           });
         }
-        if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
-          OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) && rawArgs.owner_confirmed === true) {
-          identity = await authenticate.elevateOAuthOwner(identity, {
-            confirmed: true,
-            confirmationReference: rawArgs.confirmation_reference,
-            requestBinding: ownerRequestBinding(tool.name, rawArgs),
-          });
-        }
+        // OAuth owner grants are issued and consumed server-side by the
+        // trusted portal. Client-supplied owner_confirmed/reference fields are
+        // intentionally ignored and never elevate a member identity.
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
         const transportPresence = transportSessionId
