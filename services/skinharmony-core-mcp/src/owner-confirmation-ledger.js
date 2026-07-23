@@ -110,14 +110,13 @@ export function createOwnerConfirmationLedger(config, options = {}) {
     },
     async issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, challengeSummary = "", now = new Date(), ttlSeconds = 300 }) {
       await initialize(); now = now instanceof Date ? now : new Date(now); ttlSeconds = boundedTtl(ttlSeconds);
-      const bindingDigest = digest(`${tenantId}\u0000${subject}\u0000${sessionId}\u0000${toolName}\u0000${requestDigest}`);
       const challenge = crypto.randomBytes(32).toString("hex");
       await pool.query("DELETE FROM core_owner_confirmation_challenges WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);
       const result = await pool.query(`INSERT INTO core_owner_confirmation_challenges
         (challenge_id,challenge_digest,tenant_id,subject_digest,session_digest,tool_name,request_digest,challenge_summary,issued_at,expires_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         ON CONFLICT (tenant_id, subject_digest, session_digest, tool_name, request_digest) WHERE consumed_at IS NULL
-        DO NOTHING RETURNING challenge_id, expires_at`, [challenge, bindingDigest, tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), String(challengeSummary).slice(0, 500), now, new Date(now.getTime() + ttlSeconds * 1000)]);
+        DO NOTHING RETURNING challenge_id, expires_at`, [challenge, digest(challenge), tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), String(challengeSummary).slice(0, 500), now, new Date(now.getTime() + ttlSeconds * 1000)]);
       const row = result.rows?.[0];
       if (!row) {
         const existing = await pool.query(`SELECT challenge_id, expires_at FROM core_owner_confirmation_challenges WHERE tenant_id=$1 AND subject_digest=$2 AND session_digest=$3 AND tool_name=$4 AND request_digest=$5 AND consumed_at IS NULL AND expires_at>$6`, [tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), now]);
