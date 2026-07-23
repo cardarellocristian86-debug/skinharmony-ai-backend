@@ -142,6 +142,115 @@ test("authorizes only the owner-confirmed Nyra governance database configuration
   ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...nyraGovernancePostgres, owner_confirmed: true, ...unsafe }).allowed, false);
 });
 
+const adminControlRoomSecretConfiguration = {
+  action_label: "Configure Core Admin Control Room bootstrap references",
+  action_type: "environment_configuration",
+  operation_class: "reversible_owner_confirmed_core_admin_bootstrap_configuration",
+  authenticated_tenant_id: "codexai",
+  tenant_id: "codexai",
+  authenticated_key_type: "connector",
+  request_bound_owner_confirmation: true,
+  owner_context_verified: true,
+  owner_context_approval_bound: false,
+  external_side_effect: true,
+  contains_customer_data: false,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  values_present_in_envelope: false,
+  cross_tenant: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  rollback_ready: true,
+  audit_ready: true,
+  readback_required: true,
+  configuration_changes: true,
+  environment: "production",
+  target: "skinharmony-core-nyra-admin-login",
+  target_service: "skinharmony-universal-core",
+  target_service_id: "srv-d82c9j3tqb8s73cgriag",
+  resource_type: "render_environment_variable_bundle",
+  render_environment_update: true,
+  other_environment_changes: false,
+  create_missing_only: true,
+  overwrite_existing: false,
+  current_values_present: false,
+  rollback_remove_new_variables: true,
+  auth0_changes: false,
+  database_changes: false,
+  storage_changes: false,
+  domain_changes: false,
+  scaling_changes: false,
+  merge: false,
+  deploy: false,
+  production_deploy: false,
+  delete: false,
+  provider_execution: false,
+  execution_enabled: false,
+  force: false,
+  admin_bypass: false,
+  allowed_environment_variables: [
+    "CORE_ADMIN_SESSION_SECRET",
+    "CORE_ADMIN_BOOTSTRAP_USERNAME",
+    "CORE_ADMIN_BOOTSTRAP_PASSWORD",
+  ],
+  target_commit: "1496d96600592bea4d945333083d1a3c2f1d4f4c",
+  confirmation_target_service: "skinharmony-universal-core",
+  confirmation_target_service_id: "srv-d82c9j3tqb8s73cgriag",
+  confirmation_target_commit: "1496d96600592bea4d945333083d1a3c2f1d4f4c",
+  confirmation_environment_variables: [
+    "CORE_ADMIN_SESSION_SECRET",
+    "CORE_ADMIN_BOOTSTRAP_USERNAME",
+    "CORE_ADMIN_BOOTSTRAP_PASSWORD",
+  ],
+  confirmation_reference: "owner-confirmed-core-nyra-admin-login",
+};
+
+test("authorizes only the exact owner-confirmed Core and Nyra admin login secret references", () => {
+  const pending = buildActionAuthorization(contract({ risk_band: "high" }), adminControlRoomSecretConfiguration);
+  assert.equal(pending.allowed, false);
+  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), {
+    ...adminControlRoomSecretConfiguration,
+    owner_confirmed: true,
+  });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.state, "authorized_after_confirmation");
+  assert.equal(allowed.scope, "reversible_owner_confirmed_core_admin_bootstrap_configuration");
+  assert.equal(allowed.target_commit, adminControlRoomSecretConfiguration.target_commit);
+
+  for (const unsafe of [
+    { contains_secret: true },
+    { secret_value_transmitted: true },
+    { values_present_in_envelope: true },
+    { target_service: "another-service" },
+    { target_service_id: "srv-other" },
+    { environment: "staging" },
+    { allowed_environment_variables: ["CORE_ADMIN_BOOTSTRAP_PASSWORD"] },
+    { allowed_environment_variables: [...adminControlRoomSecretConfiguration.allowed_environment_variables, "DATABASE_URL"] },
+    { confirmation_environment_variables: ["CORE_ADMIN_SESSION_SECRET"] },
+    { confirmation_target_commit: "7".repeat(40) },
+    { current_values_present: true },
+    { rollback_remove_new_variables: false },
+    { production_deploy: true },
+    { deploy: true },
+    { readback_required: false },
+    { provider_execution: true },
+    { auth0_changes: true },
+    { delete: true },
+    { cross_tenant: true },
+    { unexpected_field: true },
+    { request_bound_owner_confirmation: false },
+    { authenticated_key_type: "automation" },
+    { owner_context_verified: false },
+  ]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), {
+      ...adminControlRoomSecretConfiguration,
+      owner_confirmed: true,
+      ...unsafe,
+    });
+    assert.equal(result.allowed, false);
+  }
+});
+
 const providerSetupLinkBlueprintBinding = {
   action_label: "Bind Core provider setup-link validation",
   action_type: "render_blueprint_environment_binding",
