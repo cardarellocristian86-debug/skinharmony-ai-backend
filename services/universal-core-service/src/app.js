@@ -5283,6 +5283,7 @@ export function createUniversalCoreService(options = {}) {
     // the authorization decision or the evidence emitted for it.
     const evaluatedActionBody = {
       ...governedReq.body,
+      ...(memoryContext.value ? { memory_context: memoryContext.value } : {}),
       operation_class: governedReq.body.operation_class || riskClassification.operation_class,
       // The body is untrusted. The authorization gate must bind a scoped
       // operation to the tenant authenticated by the Core key, not to a tenant
