@@ -1,6 +1,6 @@
 {
   "schema_version": "nyra_deep_branch_v2_benchmark_v1",
-  "generated_at": "2026-07-23T21:00:48.910Z",
+  "generated_at": "2026-07-23T22:12:00.554Z",
   "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
   "host": {
     "platform": "darwin",
@@ -33,11 +33,11 @@
     "abstain_below_contract_threshold": true,
     "verified_node_count": 1434
   },
-  "catalog_validation_ms": 945.578,
+  "catalog_validation_ms": 870.995,
   "route_100_iterations": {
-    "p50_ms": 26.897,
-    "p95_ms": 28.336,
-    "max_ms": 1071.432,
+    "p50_ms": 22.577,
+    "p95_ms": 23.086,
+    "max_ms": 1074.135,
     "budget_p95_ms": 100,
     "passed": true
   },
@@ -47,5 +47,312 @@
     "evaluated_nodes": 6,
     "verified_nodes": 6,
     "execution_authorized": false
-  }
+  },
+  "runtime_evidence": {
+    "schema_version": "nyra_deep_branch_v2_runtime_evidence_v1",
+    "generated_at": "2026-07-23T22:12:08.394Z",
+    "provenance": {
+      "producer": "scripts/verify-nyra-deep-branch-v2.mjs",
+      "memory_harness": "personal-control-center/test/nyra-deep-branch-v2-memory.test.js",
+      "http_harness": "personal-control-center/test/nyra-runtime-smoke.js",
+      "measurement_phase": "provisional_runtime_artifact",
+      "final_integrity_gate_required": true
+    },
+    "identity": {
+      "canonical_catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
+      "catalog_artifact_sha256": "08042e2fbeba1f6c48fa2d287fa23018c40cb64358160f8b75935a9f4118f892",
+      "runtime_loader_sha256": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
+      "runtime_loader_hash_match": true
+    },
+    "memory": {
+      "schema_version": "nyra_deep_branch_v2_runtime_memory_benchmark_v1",
+      "generated_at": "2026-07-23T22:12:03.709Z",
+      "harness": {
+        "command": "/opt/homebrew/Cellar/node/26.0.0/bin/node",
+        "exec_argv": [
+          "--max-old-space-size=256",
+          "-e",
+          "\n    const assert = require(\"node:assert/strict\");\n    const crypto = require(\"node:crypto\");\n    const fs = require(\"node:fs\");\n    const path = require(\"node:path\");\n    const v8 = require(\"node:v8\");\n    const reads = [];\n    const opens = [];\n    const originalReadFileSync = fs.readFileSync;\n    const originalOpenSync = fs.openSync;\n    fs.readFileSync = function trackedReadFileSync(filePath, ...args) {\n      reads.push(path.resolve(String(filePath)));\n      return originalReadFileSync.call(this, filePath, ...args);\n    };\n    fs.openSync = function trackedOpenSync(filePath, ...args) {\n      opens.push(path.resolve(String(filePath)));\n      return originalOpenSync.call(this, filePath, ...args);\n    };\n    const {\n      loadCatalog,\n      loadRuntimeShard,\n      route,\n    } = require(\"./personal-control-center/lib/nyra-deep-branch-v2\");\n\n    const branchIds = [\"context_intelligence\",\"work_intake\",\"research_evidence\",\"decision_reasoning\",\"planning_prioritization\",\"risk_governance\",\"delegated_authority\",\"decision_provenance\",\"execution_planning\",\"parallel_coordination\",\"quality_verification\",\"learning_memory\",\"adaptive_learning\",\"communication_explanation\",\"software_intelligence\",\"suite_domain\",\"smartdesk_domain\",\"analyzer_domain\"];\n    const env = {\n      NYRA_DEEP_BRANCH_V2_ENABLED: \"true\",\n      NYRA_DEEP_BRANCH_V2_MODE: \"shadow\",\n      NYRA_DEEP_BRANCH_V2_BRANCHES: branchIds.join(\",\"),\n      NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST: \"codexai\",\n    };\n    const corePayload = {\n      tenant_id: \"codexai\",\n      domain_pack: { id: \"skinharmony\" },\n      result: {\n        nyra_neural_network: {\n          opened_by: \"universal_core\",\n          opened_branches: branchIds.map((id) => ({ id, status: \"opened\" })),\n          execution_authorized: false,\n        },\n      },\n    };\n\n    const loaded = loadCatalog({ forceReload: true, runtimeMode: \"lazy\" });\n    assert.equal(loaded.ok, true, loaded.validation.errors.join(\"\\\\n\"));\n    const validationPayload = {\n      ok: loaded.ok,\n      state: loaded.state,\n      validation: loaded.validation,\n      catalog_fingerprint: loaded.catalog.catalog_fingerprint,\n      execution_allowed: false,\n      core_final_authority: true,\n    };\n    const validationBody = JSON.stringify(validationPayload);\n    assert(!validationBody.includes('\"function_registry\"'));\n    assert(!validationBody.includes('\"nodes\"'));\n    assert(Buffer.byteLength(validationBody) < 32 * 1024);\n\n    const routed = route({\n      tenantId: \"codexai\",\n      domainPackId: \"skinharmony\",\n      corePayload,\n      requestedBranches: branchIds,\n      evaluationContext: {\n        subbranch_id: \"request_normalization\",\n        evidence: [],\n        evidence_source: \"bounded_memory_negative_probe\",\n        node_inputs: {},\n        request_id: \"bounded_memory_deep_route\",\n        observed_at: Date.parse(\"2026-07-23T00:00:00.000Z\"),\n      },\n      env,\n    });\n    assert.equal(routed.state, \"shadow_v1_authoritative\");\n    assert.equal(routed.selected_branches.length, 18);\n    assert.equal(routed.evaluations.length, 6);\n    assert(routed.evaluations.every((evaluation) => evaluation.state !== \"advisory_verified\"));\n    assert(routed.evaluations.every((evaluation) => evaluation.execution_authorized === false));\n    assert(routed.evaluations.every((evaluation) => evaluation.core_final_authority === true));\n    assert.equal(routed.execution_authorized, false);\n    assert.equal(routed.core_final_authority, true);\n\n    let routedNodeCount = 0;\n    for (const branch of routed.selected_branches) {\n      for (const subbranch of branch.subbranches) {\n        for (const specialized of subbranch.specialized_capabilities) {\n          routedNodeCount += 1;\n          for (const micro of specialized.micro_capabilities) {\n            routedNodeCount += 1 + micro.level4.length;\n          }\n        }\n      }\n    }\n    assert.equal(routedNodeCount, 1434);\n    const routeBody = JSON.stringify(routed);\n    assert(!routeBody.includes('\"input_schema\"'));\n    assert(!routeBody.includes('\"function_registry\"'));\n    assert(!routeBody.includes('\"semantic_assertions\"'));\n    assert(Buffer.byteLength(routeBody) < 1024 * 1024);\n\n    const noCore = route({\n      tenantId: \"codexai\",\n      domainPackId: \"skinharmony\",\n      corePayload: {},\n      requestedBranches: branchIds,\n      env,\n    });\n    assert.equal(noCore.state, \"core_route_absent_v1_authoritative\");\n    assert.deepEqual(noCore.selected_branches, []);\n    assert.equal(noCore.execution_authorized, false);\n    assert.equal(noCore.core_final_authority, true);\n\n    const tenantShard = loadRuntimeShard({\n      loaded,\n      tenantId: \"codexai\",\n      branchId: \"context_intelligence\",\n      subbranchId: \"request_normalization\",\n      env,\n    });\n    const foreignTenantShard = loadRuntimeShard({\n      loaded,\n      tenantId: \"tenant-other\",\n      branchId: \"context_intelligence\",\n      subbranchId: \"request_normalization\",\n      env,\n    });\n    assert.equal(tenantShard.ok, true);\n    assert.equal(foreignTenantShard.ok, true);\n    assert.notStrictEqual(tenantShard.nodes, foreignTenantShard.nodes);\n\n    const memory = process.memoryUsage();\n    const peakRssMib = process.resourceUsage().maxRSS / 1024;\n    const maxOldSpaceArgument = process.execArgv.find(\n      (argument) => argument.startsWith(\"--max-old-space-size=\")\n    );\n    const requestedMaxOldSpaceMib = Number(maxOldSpaceArgument?.split(\"=\")[1] || 0);\n    const monolithPath = path.resolve(\n      \"personal-control-center/data/nyra-deep-branch-v2.catalog.json\"\n    );\n    assert(!reads.includes(monolithPath), \"legacy catalog monolith was read\");\n    assert(!opens.includes(monolithPath), \"legacy catalog monolith was opened\");\n    assert(memory.heapUsed < 256 * 1024 * 1024);\n    assert(memory.rss < 256 * 1024 * 1024);\n    assert(peakRssMib < 256);\n    const runtimePath = path.resolve(\n      \"personal-control-center/lib/nyra-deep-branch-v2.js\"\n    );\n    const runtimeLoaderSha256 = crypto\n      .createHash(\"sha256\")\n      .update(fs.readFileSync(runtimePath))\n      .digest(\"hex\");\n    const firstShardPath = path.resolve(\n      path.dirname(loaded.manifest_path),\n      loaded.manifest.shards[0].relative_path\n    );\n    const generationRoot = path.dirname(firstShardPath);\n    const catalogShardRoot = path.dirname(generationRoot);\n    const generationCount = fs.readdirSync(catalogShardRoot, { withFileTypes: true })\n      .filter((entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name))\n      .length;\n    const shardFileCount = fs.readdirSync(generationRoot, { withFileTypes: true })\n      .filter((entry) => entry.isFile() && entry.name.endsWith(\".json.gz\"))\n      .length;\n    const validationBytes = Buffer.byteLength(validationBody);\n    const routeBytes = Buffer.byteLength(routeBody);\n    const heapLimitMib = v8.getHeapStatistics().heap_size_limit / 1024 / 1024;\n    const heapUsedMib = memory.heapUsed / 1024 / 1024;\n    const rssMib = memory.rss / 1024 / 1024;\n    const monolithReads = reads.filter((filePath) => filePath === monolithPath).length;\n    const monolithOpens = opens.filter((filePath) => filePath === monolithPath).length;\n    const budgets = {\n      requested_max_old_space_mib: 256,\n      heap_size_limit_max_mib: 384,\n      heap_used_max_mib: 256,\n      rss_max_mib: 256,\n      peak_rss_max_mib: 256,\n      validation_response_max_bytes: 100 * 1024,\n      route_response_max_bytes: 1024 * 1024,\n      monolith_reads_max: 0,\n      monolith_opens_max: 0,\n      required_shard_count: 239,\n      required_generation_count: 1,\n    };\n    const checks = {\n      requested_max_old_space: requestedMaxOldSpaceMib === budgets.requested_max_old_space_mib,\n      heap_size_limit: heapLimitMib < budgets.heap_size_limit_max_mib,\n      heap_used: heapUsedMib < budgets.heap_used_max_mib,\n      rss: rssMib < budgets.rss_max_mib,\n      peak_rss: peakRssMib < budgets.peak_rss_max_mib,\n      validation_response: validationBytes < budgets.validation_response_max_bytes,\n      route_response: routeBytes < budgets.route_response_max_bytes,\n      monolith_reads: monolithReads <= budgets.monolith_reads_max,\n      monolith_opens: monolithOpens <= budgets.monolith_opens_max,\n      catalog_binding: runtimeLoaderSha256 === loaded.manifest.root_binding.runtime_loader_sha256,\n      shard_count: loaded.manifest.shards.length === budgets.required_shard_count\n        && loaded.validation.integrity.checked_shards === budgets.required_shard_count\n        && loaded.validation.integrity.unchecked_shards === 0\n        && shardFileCount === budgets.required_shard_count,\n      generation_count: generationCount === budgets.required_generation_count,\n      topology: routedNodeCount === 1434 && routed.evaluations.length === 6,\n      authority: routed.execution_authorized === false && routed.core_final_authority === true,\n    };\n    const report = {\n      schema_version: \"nyra_deep_branch_v2_runtime_memory_benchmark_v1\",\n      generated_at: new Date().toISOString(),\n      harness: {\n        command: process.execPath,\n        exec_argv: process.execArgv,\n        platform: process.platform,\n        arch: process.arch,\n        node: process.version,\n      },\n      identity: {\n        canonical_catalog_fingerprint: loaded.catalog.catalog_fingerprint,\n        manifest_catalog_fingerprint: loaded.manifest.root_binding.catalog_fingerprint,\n        runtime_loader_sha256_declared: loaded.manifest.root_binding.runtime_loader_sha256,\n        runtime_loader_sha256_actual: runtimeLoaderSha256,\n        runtime_loader_hash_match: runtimeLoaderSha256\n          === loaded.manifest.root_binding.runtime_loader_sha256,\n        manifest_hash: loaded.manifest.manifest_hash,\n        root_binding_hash: loaded.manifest.root_binding_hash,\n        catalog_binding_hash: loaded.manifest.catalog_binding_hash,\n      },\n      process_memory: {\n        requested_max_old_space_mib: requestedMaxOldSpaceMib,\n        heap_limit_mib: heapLimitMib,\n        heap_used_mib: heapUsedMib,\n        rss_mib: rssMib,\n        peak_rss_mib: peakRssMib,\n      },\n      runtime_io: {\n        tracked_reads: reads.length,\n        tracked_opens: opens.length,\n        monolith_path: monolithPath,\n        monolith_reads: monolithReads,\n        monolith_opens: monolithOpens,\n      },\n      shard_integrity: {\n        manifest_shard_count: loaded.manifest.shards.length,\n        checked_shards: loaded.validation.integrity.checked_shards,\n        unchecked_shards: loaded.validation.integrity.unchecked_shards,\n        on_disk_shard_count: shardFileCount,\n        on_disk_generation_count: generationCount,\n      },\n      responses: {\n        validation_bytes: validationBytes,\n        route_bytes: routeBytes,\n      },\n      deep_route: {\n        selected_branches: routed.selected_branches.length,\n        routed_nodes: routedNodeCount,\n        evaluated_nodes: routed.evaluations.length,\n        execution_authorized: routed.execution_authorized,\n        core_final_authority: routed.core_final_authority,\n      },\n      tenant_isolation: {\n        foreign_tenant_cache_object_shared: tenantShard.nodes === foreignTenantShard.nodes,\n        passed: tenantShard.nodes !== foreignTenantShard.nodes,\n      },\n      budgets,\n      checks,\n      passed: Object.values(checks).every(Boolean)\n        && tenantShard.nodes !== foreignTenantShard.nodes,\n    };\n    process.stdout.write(JSON.stringify(report));\n  "
+        ],
+        "platform": "darwin",
+        "arch": "arm64",
+        "node": "v26.0.0"
+      },
+      "identity": {
+        "canonical_catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
+        "manifest_catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
+        "runtime_loader_sha256_declared": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
+        "runtime_loader_sha256_actual": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
+        "runtime_loader_hash_match": true,
+        "manifest_hash": "8d17051956ed4a23275eaf336ead7bab4f74def19e12914348e385d503b68f8a",
+        "root_binding_hash": "d799c79afc0a094b24182ae5db0d083dca8eed605746c089c8a2d1af03488b77",
+        "catalog_binding_hash": "f84f12bf9d907fbe3c50f4bc95c98bfe102b37765f921168b384c65f08071332"
+      },
+      "process_memory": {
+        "requested_max_old_space_mib": 256,
+        "heap_limit_mib": 352,
+        "heap_used_mib": 9.852012634277344,
+        "rss_mib": 148.125,
+        "peak_rss_mib": 148.125
+      },
+      "runtime_io": {
+        "tracked_reads": 245,
+        "tracked_opens": 243,
+        "monolith_path": "/Users/cristiancardarello/skinharmony-ai-backend-nyra-v2-full/personal-control-center/data/nyra-deep-branch-v2.catalog.json",
+        "monolith_reads": 0,
+        "monolith_opens": 0
+      },
+      "shard_integrity": {
+        "manifest_shard_count": 239,
+        "checked_shards": 239,
+        "unchecked_shards": 0,
+        "on_disk_shard_count": 239,
+        "on_disk_generation_count": 1
+      },
+      "responses": {
+        "validation_bytes": 1136,
+        "route_bytes": 322651
+      },
+      "deep_route": {
+        "selected_branches": 18,
+        "routed_nodes": 1434,
+        "evaluated_nodes": 6,
+        "execution_authorized": false,
+        "core_final_authority": true
+      },
+      "tenant_isolation": {
+        "foreign_tenant_cache_object_shared": false,
+        "passed": true
+      },
+      "budgets": {
+        "requested_max_old_space_mib": 256,
+        "heap_size_limit_max_mib": 384,
+        "heap_used_max_mib": 256,
+        "rss_max_mib": 256,
+        "peak_rss_max_mib": 256,
+        "validation_response_max_bytes": 102400,
+        "route_response_max_bytes": 1048576,
+        "monolith_reads_max": 0,
+        "monolith_opens_max": 0,
+        "required_shard_count": 239,
+        "required_generation_count": 1
+      },
+      "checks": {
+        "requested_max_old_space": true,
+        "heap_size_limit": true,
+        "heap_used": true,
+        "rss": true,
+        "peak_rss": true,
+        "validation_response": true,
+        "route_response": true,
+        "monolith_reads": true,
+        "monolith_opens": true,
+        "catalog_binding": true,
+        "shard_count": true,
+        "generation_count": true,
+        "topology": true,
+        "authority": true
+      },
+      "passed": true
+    },
+    "http": {
+      "schema_version": "nyra_deep_branch_v2_http_concurrency_benchmark_v1",
+      "generated_at": "2026-07-23T22:12:05.328Z",
+      "ok": true,
+      "harness": {
+        "server_exec_argv": [
+          "--max-old-space-size=256",
+          "personal-control-center/server.js"
+        ],
+        "platform": "darwin",
+        "arch": "arm64",
+        "node": "v26.0.0"
+      },
+      "checks": [
+        "health",
+        "auth_fail_closed",
+        "authenticated_control",
+        "runtime_readiness",
+        "deep_branch_v2_catalog_validation",
+        "deep_branch_v2_authenticated_validation_burst",
+        "deep_branch_v2_authenticated_catalog_burst",
+        "deep_branch_v2_shadow_core_route",
+        "persistent_learning_path",
+        "feedback_endpoint",
+        "core_status_bridge",
+        "suite_tenant_scoped_core_bridge",
+        "smartdesk_bridge_sync",
+        "decision_journey_preview_commit_idempotency",
+        "decision_journey_report",
+        "decision_to_value_preview"
+      ],
+      "learning_rules": 2,
+      "missing_preview_stages": [
+        "consent",
+        "treatment",
+        "commerce",
+        "retention"
+      ],
+      "bounded_payload_bytes": {
+        "deep_validation": 1574,
+        "deep_catalog_summary": 2856,
+        "deep_interpretation": 64764
+      },
+      "authenticated_bursts": {
+        "validation": {
+          "path": "/api/nyra/runtime/v2/validation",
+          "authenticated": true,
+          "requests": 40,
+          "concurrency": 16,
+          "elapsed_ms": 5.308,
+          "statuses": {
+            "200": 40
+          },
+          "latency": {
+            "p50_ms": 1.36,
+            "p95_ms": 2.979,
+            "max_ms": 3.661
+          },
+          "response_bytes": {
+            "p50": 1574,
+            "p95": 1574,
+            "max": 1574
+          },
+          "budgets": {
+            "response_max_bytes": 102400,
+            "latency_p95_max_ms": 1000,
+            "latency_max_ms": 2000,
+            "required_status": 200,
+            "required_requests": 40,
+            "minimum_concurrency": 16
+          },
+          "checks": {
+            "request_count": true,
+            "concurrency": true,
+            "statuses": true,
+            "response_size": true,
+            "latency_p95": true,
+            "latency_max": true
+          },
+          "passed": true
+        },
+        "catalog": {
+          "path": "/api/nyra/runtime/v2/catalog",
+          "authenticated": true,
+          "requests": 40,
+          "concurrency": 16,
+          "elapsed_ms": 3.4,
+          "statuses": {
+            "200": 40
+          },
+          "latency": {
+            "p50_ms": 1.077,
+            "p95_ms": 1.809,
+            "max_ms": 1.847
+          },
+          "response_bytes": {
+            "p50": 2856,
+            "p95": 2856,
+            "max": 2856
+          },
+          "budgets": {
+            "response_max_bytes": 102400,
+            "latency_p95_max_ms": 1000,
+            "latency_max_ms": 2000,
+            "required_status": 200,
+            "required_requests": 40,
+            "minimum_concurrency": 16
+          },
+          "checks": {
+            "request_count": true,
+            "concurrency": true,
+            "statuses": true,
+            "response_size": true,
+            "latency_p95": true,
+            "latency_max": true
+          },
+          "passed": true
+        }
+      },
+      "budgets": {
+        "validation_response_max_bytes": 102400,
+        "catalog_response_max_bytes": 102400,
+        "interpretation_response_max_bytes": 1048576,
+        "minimum_concurrency": 16,
+        "requests_per_endpoint": 40
+      },
+      "passed": true
+    },
+    "summary": {
+      "requested_max_old_space_mib": 256,
+      "heap_limit_mib": 352,
+      "heap_used_mib": 9.852012634277344,
+      "rss_mib": 148.125,
+      "peak_rss_mib": 148.125,
+      "monolith_reads": 0,
+      "monolith_opens": 0,
+      "manifest_shard_count": 239,
+      "checked_shards": 239,
+      "unchecked_shards": 0,
+      "on_disk_shard_count": 239,
+      "on_disk_generation_count": 1,
+      "validation_response_bytes": 1574,
+      "catalog_response_bytes": 2856,
+      "route_response_bytes": 64764,
+      "validation_burst_p50_ms": 1.36,
+      "validation_burst_p95_ms": 2.979,
+      "validation_burst_max_ms": 3.661,
+      "validation_burst_statuses": {
+        "200": 40
+      },
+      "catalog_burst_p50_ms": 1.077,
+      "catalog_burst_p95_ms": 1.809,
+      "catalog_burst_max_ms": 1.847,
+      "catalog_burst_statuses": {
+        "200": 40
+      }
+    },
+    "budgets": {
+      "requested_max_old_space_mib": 256,
+      "heap_size_limit_max_mib": 384,
+      "heap_used_max_mib": 256,
+      "rss_max_mib": 256,
+      "peak_rss_max_mib": 256,
+      "monolith_reads_max": 0,
+      "monolith_opens_max": 0,
+      "required_shard_count": 239,
+      "required_generation_count": 1,
+      "validation_response_max_bytes": 102400,
+      "catalog_response_max_bytes": 102400,
+      "route_response_max_bytes": 1048576,
+      "burst_requests_per_endpoint": 40,
+      "burst_minimum_concurrency": 16,
+      "burst_latency_p95_max_ms": 1000,
+      "burst_latency_max_ms": 2000
+    },
+    "checks": {
+      "memory_harness_passed": true,
+      "http_harness_passed": true,
+      "catalog_fingerprint": true,
+      "runtime_loader_hash": true,
+      "max_old_space": true,
+      "heap_size_limit": true,
+      "heap_used": true,
+      "rss": true,
+      "peak_rss": true,
+      "monolith_reads": true,
+      "monolith_opens": true,
+      "shard_counts": true,
+      "generation_count": true,
+      "validation_response": true,
+      "catalog_response": true,
+      "route_response": true,
+      "validation_burst": true,
+      "catalog_burst": true,
+      "core_authority": true,
+      "tenant_isolation": true
+    },
+    "passed": true
+  },
+  "passed": true
 }

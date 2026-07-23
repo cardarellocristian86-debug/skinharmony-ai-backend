@@ -3,10 +3,24 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const zlib = require("node:zlib");
 
 const SCHEMA_VERSION = "nyra_deep_branch_architecture_v2";
 const ROUTE_SCHEMA_VERSION = "nyra_deep_branch_route_v2";
 const DEFAULT_CATALOG_PATH = path.resolve(__dirname, "../data/nyra-deep-branch-v2.catalog.json");
+const DEFAULT_RUNTIME_MANIFEST_PATH = path.resolve(
+  __dirname,
+  "../data/nyra-deep-branch-v2.runtime-manifest.json"
+);
+const RUNTIME_MANIFEST_SCHEMA_VERSION = "nyra_deep_branch_runtime_manifest_v1";
+const RUNTIME_SHARD_SCHEMA_VERSION = "nyra_deep_branch_runtime_shard_v1";
+const DEFAULT_SHARD_CACHE_MAX_ENTRIES = 8;
+const DEFAULT_SHARD_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const MAX_RUNTIME_SHARD_COMPRESSED_BYTES = 256 * 1024;
+const MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES = 1024 * 1024;
+const MAX_RUNTIME_SHARD_COMPRESSION_RATIO = 16;
+const MAX_RUNTIME_SHARDS_COMPRESSED_BYTES = 32 * 1024 * 1024;
+const MAX_RUNTIME_SHARDS_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 const VALID_MODES = new Set(["disabled", "shadow", "active"]);
 const VALID_RISKS = new Set(["low", "medium", "high", "critical"]);
 const LEVEL_NODE_TYPES = Object.freeze({
@@ -121,6 +135,10 @@ const METRIC_FORMULA_SOURCES = Object.freeze({
 
 let catalogCache = null;
 let catalogCacheKey = "";
+let runtimeManifestCache = null;
+let runtimeManifestCacheKey = "";
+const runtimeShardCache = new Map();
+let runtimeShardCacheBytes = 0;
 
 function uniqueStrings(value) {
   return [...new Set(String(value || "")
@@ -352,6 +370,10 @@ function evidenceAuthorityMatches(requirement, evidence) {
 
 function canonicalHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex");
+}
+
+function byteHash(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
 }
 
 function textHash(value) {
@@ -1805,7 +1827,7 @@ function validateCatalog(catalog) {
   };
 }
 
-function loadCatalog({ catalogPath = DEFAULT_CATALOG_PATH, forceReload = false } = {}) {
+function loadLegacyCatalog({ catalogPath = DEFAULT_CATALOG_PATH, forceReload = false } = {}) {
   const absolutePath = path.resolve(catalogPath);
   if (!fs.existsSync(absolutePath)) {
     return {
@@ -1844,6 +1866,483 @@ function loadCatalog({ catalogPath = DEFAULT_CATALOG_PATH, forceReload = false }
   return result;
 }
 
+function manifestHash(manifest) {
+  const payload = { ...manifest };
+  delete payload.manifest_hash;
+  return canonicalHash(payload);
+}
+
+function runtimeLoaderHash() {
+  return crypto.createHash("sha256").update(fs.readFileSync(__filename)).digest("hex");
+}
+
+function safeArtifactPath(manifestPath, relativePath) {
+  if (path.isAbsolute(String(relativePath || ""))) return null;
+  const base = path.resolve(path.dirname(manifestPath));
+  const resolved = path.resolve(base, String(relativePath || ""));
+  return resolved.startsWith(`${base}${path.sep}`) ? resolved : null;
+}
+
+function runtimeShardDescriptorWithinLimits(descriptor) {
+  return Number.isInteger(descriptor?.compressed_bytes)
+    && descriptor.compressed_bytes > 0
+    && descriptor.compressed_bytes <= MAX_RUNTIME_SHARD_COMPRESSED_BYTES
+    && Number.isInteger(descriptor?.uncompressed_bytes)
+    && descriptor.uncompressed_bytes > 0
+    && descriptor.uncompressed_bytes <= MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES
+    && descriptor.uncompressed_bytes / descriptor.compressed_bytes
+      <= MAX_RUNTIME_SHARD_COMPRESSION_RATIO;
+}
+
+function runtimeTopologyMetrics(manifest) {
+  const summaries = manifest?.topology?.node_summaries || [];
+  const levelCounts = { 1: Number(manifest?.topology?.subbranch_count || 0), 2: 0, 3: 0, 4: 0 };
+  const level4TypeCounts = { method: 0, strategy: 0, verifier: 0, metric: 0 };
+  for (const node of summaries) {
+    if (Object.hasOwn(levelCounts, node.level)) levelCounts[node.level] += 1;
+    if (node.level === 4 && Object.hasOwn(level4TypeCounts, node.node_type)) {
+      level4TypeCounts[node.node_type] += 1;
+    }
+  }
+  return {
+    branch_count: Number(manifest?.topology?.branch_count || 0),
+    subbranch_count: Number(manifest?.topology?.subbranch_count || 0),
+    node_count: Number(manifest?.topology?.node_count || 0),
+    level_counts: levelCounts,
+    level4_type_counts: level4TypeCounts,
+    duplicate_contract_count: Number(
+      manifest?.validation_attestation?.duplicate_contract_count ?? -1
+    ),
+    rejected_node_count: Number(
+      manifest?.validation_attestation?.rejected_node_count ?? -1
+    ),
+  };
+}
+
+function verifyRuntimeManifestArtifacts(manifest, manifestPath) {
+  const errors = [];
+  const descriptors = Array.isArray(manifest?.shards) ? manifest.shards : [];
+  let checkedShards = 0;
+  let compressedBytes = 0;
+  let uncompressedBytes = 0;
+  let peakUncompressedShardBytes = 0;
+  for (const descriptor of descriptors) {
+    checkedShards += 1;
+    if (!runtimeShardDescriptorWithinLimits(descriptor)) {
+      errors.push(`shard_size_limit_exceeded:${descriptor?.branch_id || "unknown"}.${descriptor?.subbranch_id || "unknown"}`);
+      continue;
+    }
+    const artifactPath = safeArtifactPath(manifestPath, descriptor?.relative_path);
+    if (!artifactPath) {
+      errors.push(`unsafe_shard_path:${descriptor?.branch_id || "unknown"}.${descriptor?.subbranch_id || "unknown"}`);
+      continue;
+    }
+    try {
+      const stat = fs.statSync(artifactPath);
+      if (
+        stat.size !== descriptor.compressed_bytes
+        || stat.size > MAX_RUNTIME_SHARD_COMPRESSED_BYTES
+      ) {
+        errors.push(`compressed_shard_size_mismatch:${descriptor.branch_id}.${descriptor.subbranch_id}`);
+        continue;
+      }
+      const compressed = fs.readFileSync(artifactPath);
+      compressedBytes += compressed.length;
+      if (
+        compressed.length !== descriptor.compressed_bytes
+        || byteHash(compressed) !== descriptor.compressed_sha256
+      ) {
+        errors.push(`compressed_shard_hash_mismatch:${descriptor.branch_id}.${descriptor.subbranch_id}`);
+        continue;
+      }
+      const uncompressed = zlib.gunzipSync(compressed, {
+        maxOutputLength: Math.min(
+          descriptor.uncompressed_bytes,
+          MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES
+        ),
+      });
+      uncompressedBytes += uncompressed.length;
+      peakUncompressedShardBytes = Math.max(peakUncompressedShardBytes, uncompressed.length);
+      if (
+        uncompressed.length !== descriptor.uncompressed_bytes
+        || byteHash(uncompressed) !== descriptor.uncompressed_sha256
+      ) {
+        errors.push(`uncompressed_shard_hash_mismatch:${descriptor.branch_id}.${descriptor.subbranch_id}`);
+      }
+    } catch (error) {
+      errors.push(`shard_integrity_failed:${descriptor?.branch_id || "unknown"}.${descriptor?.subbranch_id || "unknown"}:${error.code || error.message}`);
+    }
+  }
+  return {
+    ok: errors.length === 0 && checkedShards === descriptors.length,
+    errors,
+    checked_shards: checkedShards,
+    unchecked_shards: Math.max(0, descriptors.length - checkedShards),
+    compressed_bytes: compressedBytes,
+    uncompressed_bytes: uncompressedBytes,
+    peak_uncompressed_shard_bytes: peakUncompressedShardBytes,
+    parse_mode: "sequential_hash_and_gunzip_without_json_parse",
+  };
+}
+
+function validateRuntimeManifest(manifest, manifestPath) {
+  const errors = [];
+  if (!isPlainObject(manifest)) {
+    return {
+      ok: false,
+      errors: ["runtime_manifest_object_required"],
+      warnings: [],
+      metrics: {},
+      integrity: {
+        ok: false,
+        checked_shards: 0,
+        unchecked_shards: 0,
+      },
+    };
+  }
+  const root = manifest.root_binding || {};
+  const catalog = manifest.catalog || {};
+  const registry = manifest.function_registry || {};
+  const validation = manifest.validation_attestation || {};
+  const supervisor = manifest.supervisor_attestation || {};
+  const summaries = manifest?.topology?.node_summaries || [];
+  const descriptors = manifest.shards || [];
+  const catalogBinding = { ...root };
+  delete catalogBinding.shard_set_hash;
+  const shardSetProjection = (Array.isArray(descriptors) ? descriptors : []).map((descriptor) => ({
+    branch_id: descriptor.branch_id,
+    subbranch_id: descriptor.subbranch_id,
+    relative_path: descriptor.relative_path,
+    compressed_sha256: descriptor.compressed_sha256,
+    uncompressed_sha256: descriptor.uncompressed_sha256,
+    compressed_bytes: descriptor.compressed_bytes,
+    uncompressed_bytes: descriptor.uncompressed_bytes,
+    node_count: descriptor.node_count,
+    function_count: descriptor.function_count,
+    node_ids: descriptor.node_ids,
+  }));
+  if (manifest.schema_version !== RUNTIME_MANIFEST_SCHEMA_VERSION) errors.push("invalid_runtime_manifest_schema");
+  if (manifest.manifest_hash !== manifestHash(manifest)) errors.push("runtime_manifest_hash_mismatch");
+  if (manifest.root_binding_hash !== canonicalHash(root)) errors.push("runtime_root_binding_hash_mismatch");
+  if (manifest.catalog_binding_hash !== canonicalHash(catalogBinding)) errors.push("runtime_catalog_binding_hash_mismatch");
+  if (root.shard_set_hash !== canonicalHash(shardSetProjection)) errors.push("runtime_shard_set_hash_mismatch");
+  if (root.catalog_fingerprint !== catalog.catalog_fingerprint) errors.push("runtime_catalog_fingerprint_mismatch");
+  if (root.function_registry_hash !== registry.registry_hash) errors.push("runtime_registry_hash_mismatch");
+  if (root.function_registry_hash !== catalog.function_registry?.registry_hash) errors.push("runtime_catalog_registry_mismatch");
+  if (root.source_snapshot_sha256 !== catalog.source_catalog?.source_snapshot_sha256) errors.push("runtime_source_snapshot_mismatch");
+  if (root.supervisor_report_sha256 !== supervisor.sha256) errors.push("runtime_supervisor_hash_mismatch");
+  if (root.validation_attestation_sha256 !== validation.sha256) errors.push("runtime_validation_attestation_hash_mismatch");
+  if (root.rollback_checkpoint !== catalog.rollback_checkpoint) errors.push("runtime_rollback_checkpoint_mismatch");
+  if (root.catalog_runtime_sha256 !== catalog.runtime_sha256) errors.push("runtime_catalog_runtime_hash_mismatch");
+  if (root.generator_sha256 !== catalog.generator_sha256) errors.push("runtime_generator_hash_mismatch");
+  if (root.catalog_schema_version !== catalog.schema_version || catalog.schema_version !== SCHEMA_VERSION) {
+    errors.push("runtime_catalog_schema_mismatch");
+  }
+  if (root.catalog_version !== catalog.version) errors.push("runtime_catalog_version_mismatch");
+  if (root.runtime_loader_sha256 !== runtimeLoaderHash()) errors.push("runtime_loader_hash_mismatch");
+  if (
+    manifest?.offline_audit_artifact?.runtime_read_allowed !== false
+    || manifest?.offline_audit_artifact?.canonical_catalog_fingerprint !== root.catalog_fingerprint
+  ) errors.push("runtime_offline_audit_binding_invalid");
+  if (
+    validation.full_offline_validated !== true
+    || validation.catalog_fingerprint !== root.catalog_fingerprint
+    || validation.validated_branch_count !== 18
+    || validation.validated_subbranch_count !== 239
+    || validation.validated_node_count !== 1434
+    || validation.rejected_node_count !== 0
+    || validation.duplicate_contract_count !== 0
+    || validation.rollback_verified !== true
+  ) errors.push("runtime_full_validation_attestation_invalid");
+  if (
+    supervisor.runtime_inclusion_allowed !== true
+    || supervisor.approved_node_count !== 1434
+    || supervisor.rejected_node_count !== 0
+  ) errors.push("runtime_supervisor_attestation_invalid");
+  if (
+    manifest?.topology?.branch_count !== 18
+    || manifest?.topology?.subbranch_count !== 239
+    || manifest?.topology?.node_count !== 1434
+    || !Array.isArray(summaries)
+    || summaries.length !== 1434
+    || new Set(summaries.map((node) => node.id)).size !== 1434
+    || summaries.some((node) => node.supervisor_status !== "APPROVED")
+  ) errors.push("runtime_topology_invalid");
+  const expectedSubbranches = new Set(
+    (catalog.branches || []).flatMap((branch) => (
+      (branch.subbranches || []).map((subbranch) => `${branch.id}.${subbranch.id}`)
+    ))
+  );
+  const actualSubbranches = new Set(
+    (Array.isArray(descriptors) ? descriptors : []).map(
+      (descriptor) => `${descriptor.branch_id}.${descriptor.subbranch_id}`
+    )
+  );
+  if (
+    !Array.isArray(descriptors)
+    || descriptors.length !== 239
+    || actualSubbranches.size !== 239
+    || [...expectedSubbranches].some((key) => !actualSubbranches.has(key))
+    || descriptors.some((descriptor) => (
+      descriptor.node_count !== 6
+      || descriptor.function_count !== 6
+      || !Array.isArray(descriptor.node_ids)
+      || descriptor.node_ids.length !== 6
+    ))
+  ) errors.push("runtime_shard_index_invalid");
+  const declaredCompressedBytes = (Array.isArray(descriptors) ? descriptors : [])
+    .reduce((sum, descriptor) => sum + Number(descriptor.compressed_bytes || 0), 0);
+  const declaredUncompressedBytes = (Array.isArray(descriptors) ? descriptors : [])
+    .reduce((sum, descriptor) => sum + Number(descriptor.uncompressed_bytes || 0), 0);
+  if (
+    descriptors.some((descriptor) => !runtimeShardDescriptorWithinLimits(descriptor))
+    || declaredCompressedBytes > MAX_RUNTIME_SHARDS_COMPRESSED_BYTES
+    || declaredUncompressedBytes > MAX_RUNTIME_SHARDS_UNCOMPRESSED_BYTES
+  ) errors.push("runtime_shard_size_budget_exceeded");
+  if (registry.function_count !== 1434) errors.push("runtime_function_count_invalid");
+  const integrity = verifyRuntimeManifestArtifacts(manifest, manifestPath);
+  errors.push(...integrity.errors);
+  if (integrity.unchecked_shards !== 0) errors.push("runtime_shards_unchecked");
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings: [],
+    metrics: runtimeTopologyMetrics(manifest),
+    integrity,
+    attestation: {
+      full_offline_validated: validation.full_offline_validated === true,
+      validation_attestation_sha256: validation.sha256 || null,
+      supervisor_report_sha256: supervisor.sha256 || null,
+      root_binding_hash: manifest.root_binding_hash || null,
+      catalog_fingerprint: root.catalog_fingerprint || null,
+    },
+  };
+}
+
+function loadRuntimeManifest({
+  manifestPath = DEFAULT_RUNTIME_MANIFEST_PATH,
+  forceReload = false,
+} = {}) {
+  const absolutePath = path.resolve(manifestPath);
+  if (!fs.existsSync(absolutePath)) {
+    return {
+      ok: false,
+      state: "runtime_manifest_missing",
+      catalog: null,
+      validation: { ok: false, errors: ["runtime_manifest_missing"], warnings: [], metrics: {} },
+      manifest_path: absolutePath,
+      runtime_lazy: true,
+    };
+  }
+  const stat = fs.statSync(absolutePath);
+  const cacheKey = `${absolutePath}:${stat.mtimeMs}:${stat.size}`;
+  if (!forceReload && runtimeManifestCache && runtimeManifestCacheKey === cacheKey) {
+    return runtimeManifestCache;
+  }
+  if (forceReload) {
+    runtimeShardCache.clear();
+    runtimeShardCacheBytes = 0;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      state: "runtime_manifest_parse_failed",
+      catalog: null,
+      validation: {
+        ok: false,
+        errors: [`runtime_manifest_parse_failed:${error.message}`],
+        warnings: [],
+        metrics: {},
+      },
+      manifest_path: absolutePath,
+      runtime_lazy: true,
+    };
+  }
+  const validation = validateRuntimeManifest(manifest, absolutePath);
+  const catalog = validation.ok
+    ? deepFreeze({
+        ...manifest.catalog,
+        nodes: manifest.topology.node_summaries,
+        function_registry: {
+          ...manifest.catalog.function_registry,
+          functions: [],
+          function_count: manifest.function_registry.function_count,
+        },
+      })
+    : null;
+  const result = {
+    ok: validation.ok,
+    state: validation.ok ? "ready_lazy_sharded" : "runtime_manifest_rejected",
+    catalog,
+    validation,
+    manifest: validation.ok ? deepFreeze(manifest) : null,
+    manifest_path: absolutePath,
+    catalog_path: null,
+    audit_catalog: validation.ok ? deepFreeze(manifest.offline_audit_artifact) : null,
+    runtime_lazy: true,
+  };
+  runtimeManifestCache = result;
+  runtimeManifestCacheKey = cacheKey;
+  return result;
+}
+
+function shardCacheLimits(env = process.env) {
+  const entries = Number(env.NYRA_DEEP_BRANCH_V2_SHARD_CACHE_MAX_ENTRIES);
+  const bytes = Number(env.NYRA_DEEP_BRANCH_V2_SHARD_CACHE_MAX_BYTES);
+  return {
+    entries: Number.isInteger(entries)
+      ? Math.max(1, Math.min(16, entries))
+      : DEFAULT_SHARD_CACHE_MAX_ENTRIES,
+    bytes: Number.isFinite(bytes)
+      ? Math.max(1024 * 1024, Math.min(32 * 1024 * 1024, bytes))
+      : DEFAULT_SHARD_CACHE_MAX_BYTES,
+  };
+}
+
+function evictRuntimeShardCache(limits) {
+  while (
+    runtimeShardCache.size > limits.entries
+    || runtimeShardCacheBytes > limits.bytes
+  ) {
+    const oldestKey = runtimeShardCache.keys().next().value;
+    const oldest = runtimeShardCache.get(oldestKey);
+    runtimeShardCache.delete(oldestKey);
+    runtimeShardCacheBytes -= oldest?.bytes || 0;
+  }
+}
+
+function validateRuntimeShard(shard, descriptor, loaded) {
+  const errors = [];
+  const payload = { ...shard };
+  delete payload.shard_hash;
+  if (shard.schema_version !== RUNTIME_SHARD_SCHEMA_VERSION) errors.push("invalid_shard_schema");
+  if (shard.shard_hash !== canonicalHash(payload)) errors.push("shard_payload_hash_mismatch");
+  if (shard.catalog_binding_hash !== loaded.manifest.catalog_binding_hash) errors.push("shard_catalog_binding_mismatch");
+  if (shard.catalog_fingerprint !== loaded.manifest.root_binding.catalog_fingerprint) errors.push("shard_catalog_fingerprint_mismatch");
+  if (shard.function_registry_hash !== loaded.manifest.root_binding.function_registry_hash) errors.push("shard_registry_hash_mismatch");
+  if (shard.branch_id !== descriptor.branch_id || shard.subbranch_id !== descriptor.subbranch_id) {
+    errors.push("shard_lineage_mismatch");
+  }
+  if (
+    !Array.isArray(shard.nodes)
+    || !Array.isArray(shard.functions)
+    || shard.nodes.length !== 6
+    || shard.functions.length !== 6
+    || JSON.stringify(shard.nodes.map((node) => node.id)) !== JSON.stringify(descriptor.node_ids)
+  ) errors.push("shard_contract_coverage_mismatch");
+  const functionIndex = new Map((shard.functions || []).map((spec) => [spec.function_id, spec]));
+  const l2 = (shard.nodes || []).filter((node) => node.level === 2);
+  const l3 = (shard.nodes || []).filter((node) => node.level === 3);
+  const l4 = (shard.nodes || []).filter((node) => node.level === 4);
+  if (
+    l2.length !== 1
+    || l3.length !== 1
+    || l4.length !== 4
+    || new Set(l4.map((node) => node.node_type)).size !== 4
+    || REQUIRED_LEVEL4_TYPES.some((type) => !l4.some((node) => node.node_type === type))
+    || l2[0]?.parent_id !== `${descriptor.branch_id}.${descriptor.subbranch_id}`
+    || l3[0]?.parent_id !== l2[0]?.id
+    || l4.some((node) => node.parent_id !== l3[0]?.id)
+  ) errors.push("shard_topology_mismatch");
+  for (const node of shard.nodes || []) {
+    if (
+      node.branch_id !== descriptor.branch_id
+      || node.id.split(".")[1] !== descriptor.subbranch_id
+      || node.supervisor_status !== "APPROVED"
+      || !semanticFunctionValid(
+        node,
+        functionIndex.get(node.id),
+        loaded.manifest.root_binding.function_registry_hash
+      )
+    ) errors.push(`shard_node_binding_invalid:${node.id || "unknown"}`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function loadRuntimeShard({
+  loaded,
+  tenantId,
+  branchId,
+  subbranchId,
+  env = process.env,
+} = {}) {
+  const descriptor = loaded?.manifest?.shards?.find(
+    (candidate) => candidate.branch_id === branchId && candidate.subbranch_id === subbranchId
+  );
+  if (!descriptor) {
+    return { ok: false, errors: [`runtime_shard_not_indexed:${branchId}.${subbranchId}`] };
+  }
+  if (!runtimeShardDescriptorWithinLimits(descriptor)) {
+    return { ok: false, errors: [`runtime_shard_size_limit_exceeded:${branchId}.${subbranchId}`] };
+  }
+  const cacheKey = `${tenantId}:${loaded.manifest.root_binding_hash}:${descriptor.compressed_sha256}`;
+  if (runtimeShardCache.has(cacheKey)) {
+    const cached = runtimeShardCache.get(cacheKey);
+    runtimeShardCache.delete(cacheKey);
+    runtimeShardCache.set(cacheKey, cached);
+    return cached.result;
+  }
+  const artifactPath = safeArtifactPath(loaded.manifest_path, descriptor.relative_path);
+  if (!artifactPath) return { ok: false, errors: ["runtime_shard_path_invalid"] };
+  let compressed;
+  let uncompressed;
+  let shard;
+  try {
+    const stat = fs.statSync(artifactPath);
+    if (
+      stat.size !== descriptor.compressed_bytes
+      || stat.size > MAX_RUNTIME_SHARD_COMPRESSED_BYTES
+    ) return { ok: false, errors: [`runtime_shard_compressed_size_mismatch:${branchId}.${subbranchId}`] };
+    compressed = fs.readFileSync(artifactPath);
+    if (
+      compressed.length !== descriptor.compressed_bytes
+      || byteHash(compressed) !== descriptor.compressed_sha256
+    ) return { ok: false, errors: [`runtime_shard_compressed_hash_mismatch:${branchId}.${subbranchId}`] };
+    uncompressed = zlib.gunzipSync(compressed, {
+      maxOutputLength: Math.min(
+        descriptor.uncompressed_bytes,
+        MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES
+      ),
+    });
+    if (
+      uncompressed.length !== descriptor.uncompressed_bytes
+      || byteHash(uncompressed) !== descriptor.uncompressed_sha256
+    ) return { ok: false, errors: [`runtime_shard_uncompressed_hash_mismatch:${branchId}.${subbranchId}`] };
+    shard = JSON.parse(uncompressed.toString("utf8"));
+  } catch (error) {
+    return { ok: false, errors: [`runtime_shard_load_failed:${branchId}.${subbranchId}:${error.code || error.message}`] };
+  }
+  const localValidation = validateRuntimeShard(shard, descriptor, loaded);
+  if (!localValidation.ok) return { ok: false, errors: localValidation.errors };
+  const result = {
+    ok: true,
+    nodes: deepFreeze(shard.nodes),
+    functions: deepFreeze(shard.functions),
+    descriptor,
+  };
+  const limits = shardCacheLimits(env);
+  runtimeShardCache.set(cacheKey, { result, bytes: uncompressed.length });
+  runtimeShardCacheBytes += uncompressed.length;
+  evictRuntimeShardCache(limits);
+  return result;
+}
+
+function loadCatalog({
+  catalogPath = DEFAULT_CATALOG_PATH,
+  manifestPath = DEFAULT_RUNTIME_MANIFEST_PATH,
+  forceReload = false,
+  runtimeMode = "legacy",
+} = {}) {
+  const useRuntimeManifest = runtimeMode === "lazy"
+    || (runtimeMode === "auto" && path.resolve(catalogPath) === DEFAULT_CATALOG_PATH);
+  return useRuntimeManifest
+    ? loadRuntimeManifest({ manifestPath, forceReload })
+    : loadLegacyCatalog({ catalogPath, forceReload });
+}
+
 function route({
   tenantId = "",
   domainPackId = "generic",
@@ -1852,6 +2351,8 @@ function route({
   evaluationContext = null,
   env = process.env,
   catalogPath = DEFAULT_CATALOG_PATH,
+  manifestPath = DEFAULT_RUNTIME_MANIFEST_PATH,
+  runtimeMode = "auto",
 } = {}) {
   const flags = featureFlags(env, tenantId);
   if (!flags.enabled) {
@@ -1866,7 +2367,7 @@ function route({
       fallback: "nyra_neural_branch_network_v1",
     };
   }
-  const loaded = loadCatalog({ catalogPath });
+  const loaded = loadCatalog({ catalogPath, manifestPath, runtimeMode });
   if (!loaded.ok) {
     return {
       schema_version: ROUTE_SCHEMA_VERSION,
@@ -1901,9 +2402,9 @@ function route({
   ]);
   const allowlist = new Set(flags.branch_allowlist);
   const nodeIndex = new Map(loaded.catalog.nodes.map((node) => [node.id, node]));
-  const functionIndex = new Map(
-    loaded.catalog.function_registry.functions.map((spec) => [spec.function_id, spec])
-  );
+  const functionIndex = loaded.runtime_lazy
+    ? new Map()
+    : new Map(loaded.catalog.function_registry.functions.map((spec) => [spec.function_id, spec]));
   const selectedBranches = loaded.catalog.branches
     .filter((branch) => requested.size === 0 || requested.has(branch.id))
     .filter((branch) => coreOpened.length === 0 || coreOpened.includes(branch.id))
@@ -1913,24 +2414,63 @@ function route({
   const selectedBranchIds = new Set(selectedBranches.map((branch) => branch.id));
   const evaluations = [];
   if (isPlainObject(evaluationContext) && String(evaluationContext.subbranch_id || "").trim()) {
+    const evaluationSubbranchId = String(evaluationContext.subbranch_id);
+    let evaluationNodes;
+    let evaluationFunctionIndex = functionIndex;
+    let evaluationRegistryHash = loaded.catalog.function_registry.registry_hash;
+    if (loaded.runtime_lazy) {
+      const shards = [...selectedBranchIds].map((branchId) => loadRuntimeShard({
+        loaded,
+        tenantId,
+        branchId,
+        subbranchId: evaluationSubbranchId,
+        env,
+      })).filter((shard) => shard.ok || !shard.errors?.some((error) => error.startsWith("runtime_shard_not_indexed:")));
+      const rejectedShard = shards.find((shard) => !shard.ok);
+      if (rejectedShard) {
+        return {
+          schema_version: ROUTE_SCHEMA_VERSION,
+          state: "catalog_rejected_v1_authoritative",
+          mode: flags.mode,
+          feature_flags: flags,
+          validation: {
+            ...loaded.validation,
+            ok: false,
+            errors: [...loaded.validation.errors, ...rejectedShard.errors],
+          },
+          selected_branches: [],
+          evaluations: [],
+          execution_authorized: false,
+          core_final_authority: true,
+          fallback: "nyra_neural_branch_network_v1",
+        };
+      }
+      evaluationNodes = shards.flatMap((shard) => shard.nodes || []);
+      evaluationFunctionIndex = new Map(
+        shards.flatMap((shard) => shard.functions || []).map((spec) => [spec.function_id, spec])
+      );
+      evaluationRegistryHash = loaded.manifest.root_binding.function_registry_hash;
+    } else {
+      evaluationNodes = loaded.catalog.nodes
+        .filter((node) => selectedBranchIds.has(node.branch_id))
+        .filter((node) => node.id.split(".")[1] === evaluationSubbranchId);
+    }
     const parentEvaluations = new Map();
-    const evaluationNodes = loaded.catalog.nodes
-      .filter((node) => selectedBranchIds.has(node.branch_id))
-      .filter((node) => node.id.split(".")[1] === String(evaluationContext.subbranch_id))
-      .sort((left, right) => left.level - right.level || left.id.localeCompare(right.id));
-    for (const node of evaluationNodes) {
+    for (const node of evaluationNodes.sort(
+      (left, right) => left.level - right.level || left.id.localeCompare(right.id)
+    )) {
       const evaluation = evaluateNode({
         node,
         tenantId,
-        subbranchId: String(evaluationContext.subbranch_id),
+        subbranchId: evaluationSubbranchId,
         corePayload,
         evidence: Array.isArray(evaluationContext.evidence) ? evaluationContext.evidence : [],
         evidenceSource: String(evaluationContext.evidence_source || ""),
         capabilityInput: isPlainObject(evaluationContext.node_inputs)
           ? evaluationContext.node_inputs[node.id]
           : null,
-        functionSpec: functionIndex.get(node.id),
-        functionRegistryHash: loaded.catalog.function_registry.registry_hash,
+        functionSpec: evaluationFunctionIndex.get(node.id),
+        functionRegistryHash: evaluationRegistryHash,
         parentEvaluations,
         requestId: String(evaluationContext.request_id || ""),
         observedAt: Number(evaluationContext.observed_at || Date.now()),
@@ -1966,17 +2506,25 @@ function serializeCatalog(catalog) {
 
 module.exports = {
   DEFAULT_CATALOG_PATH,
+  DEFAULT_RUNTIME_MANIFEST_PATH,
+  MAX_RUNTIME_SHARD_COMPRESSED_BYTES,
+  MAX_RUNTIME_SHARD_COMPRESSION_RATIO,
+  MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES,
   REQUIRED_CONTRACT_FIELDS,
   REQUIRED_LEVEL4_TYPES,
   ROUTE_SCHEMA_VERSION,
+  RUNTIME_MANIFEST_SCHEMA_VERSION,
+  RUNTIME_SHARD_SCHEMA_VERSION,
   SCHEMA_VERSION,
   catalogFingerprint,
   featureFlags,
   evaluateNode,
   loadCatalog,
+  loadRuntimeShard,
   route,
   runtimeOpenedBranches,
   serializeCatalog,
   topologyMetrics,
+  validateRuntimeManifest,
   validateCatalog,
 };

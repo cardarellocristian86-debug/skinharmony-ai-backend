@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { buildRuntimeArtifacts } from "./lib/nyra-deep-branch-v2-shards.mjs";
 
 function parseArgs(argv) {
   const args = {};
@@ -217,6 +218,27 @@ function main() {
   writeFile(registryOutput, `${JSON.stringify(promoted.function_registry, null, 2)}\n`);
   writeFile(snapshotOutput, `${JSON.stringify(snapshot, null, 2)}\n`);
   writeFile(mapOutput, buildMap(promoted));
+  let runtimeArtifacts = null;
+  if (args["validation-attestation"]) {
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    runtimeArtifacts = buildRuntimeArtifacts({
+      catalogPath: catalogOutput,
+      validationAttestationPath: args["validation-attestation"],
+      supervisorPath,
+      runtimePath: args["runtime"] || path.join(
+        repoRoot,
+        "personal-control-center/lib/nyra-deep-branch-v2.js"
+      ),
+      manifestPath: args["runtime-manifest-output"] || path.join(
+        path.dirname(catalogOutput),
+        "nyra-deep-branch-v2.runtime-manifest.json"
+      ),
+      shardRoot: args["runtime-shard-root"] || path.join(
+        path.dirname(catalogOutput),
+        "nyra-deep-branch-v2.shards"
+      ),
+    });
+  }
   process.stdout.write(`${JSON.stringify({
     ok: true,
     candidate_catalog_fingerprint: candidate.catalog_fingerprint,
@@ -225,6 +247,9 @@ function main() {
     fixture_count: promotedFixtures.fixture_count,
     yaml_output: yamlOutput,
     registry_output: registryOutput,
+    runtime_manifest_hash: runtimeArtifacts?.manifest?.manifest_hash || null,
+    runtime_shard_count: runtimeArtifacts?.shard_count || 0,
+    runtime_shard_cleanup: runtimeArtifacts?.cleanup || null,
   }, null, 2)}\n`);
 }
 

@@ -4476,7 +4476,8 @@ app.get("/api/nyra/runtime/contract", (_req, res) => {
 app.get("/api/nyra/runtime/v2/catalog", (_req, res) => {
   const config = nyraCoreConfig();
   const featureFlags = nyraDeepBranchV2FeatureFlags(process.env, config.tenantId);
-  const loaded = loadNyraDeepBranchV2Catalog();
+  const loaded = loadNyraDeepBranchV2Catalog({ runtimeMode: "lazy" });
+  const catalog = loaded.catalog;
   res.status(loaded.ok ? 200 : 503).json({
     ok: loaded.ok,
     service: NYRA_SERVICE_NAME,
@@ -4484,7 +4485,34 @@ app.get("/api/nyra/runtime/v2/catalog", (_req, res) => {
     feature_flags: featureFlags,
     state: loaded.state,
     validation: loaded.validation,
-    catalog: loaded.catalog,
+    catalog: catalog ? {
+      schema_version: catalog.schema_version,
+      version: catalog.version,
+      authority: catalog.authority,
+      catalog_fingerprint: catalog.catalog_fingerprint,
+      rollback_checkpoint: catalog.rollback_checkpoint,
+      source_catalog: {
+        schema_version: catalog.source_catalog.schema_version,
+        captured_at: catalog.source_catalog.captured_at,
+        source: catalog.source_catalog.source,
+        tenant_id: catalog.source_catalog.tenant_id,
+        domain_pack_id: catalog.source_catalog.domain_pack_id,
+        source_snapshot_sha256: catalog.source_catalog.source_snapshot_sha256,
+      },
+      function_registry: {
+        schema_version: catalog.function_registry.schema_version,
+        registry_hash: catalog.function_registry.registry_hash,
+        function_count: catalog.function_registry.function_count,
+      },
+      topology: loaded.validation.metrics,
+      runtime_manifest: loaded.runtime_lazy ? {
+        schema_version: loaded.manifest?.schema_version || null,
+        manifest_hash: loaded.manifest?.manifest_hash || null,
+        root_binding_hash: loaded.manifest?.root_binding_hash || null,
+        shard_count: loaded.manifest?.shards?.length || 0,
+        audit_artifact_runtime_read_allowed: loaded.audit_catalog?.runtime_read_allowed === true,
+      } : null,
+    } : null,
     execution_allowed: false,
     core_final_authority: true,
   });
@@ -4492,7 +4520,7 @@ app.get("/api/nyra/runtime/v2/catalog", (_req, res) => {
 
 app.get("/api/nyra/runtime/v2/validation", (_req, res) => {
   const config = nyraCoreConfig();
-  const loaded = loadNyraDeepBranchV2Catalog();
+  const loaded = loadNyraDeepBranchV2Catalog({ runtimeMode: "lazy" });
   res.status(loaded.ok ? 200 : 503).json({
     ok: loaded.ok,
     service: NYRA_SERVICE_NAME,

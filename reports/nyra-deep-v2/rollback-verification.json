@@ -1,6 +1,6 @@
 {
   "schema_version": "nyra_deep_branch_v2_rollback_verification_v1",
-  "generated_at": "2026-07-23T21:00:48.911Z",
+  "generated_at": "2026-07-23T22:12:00.554Z",
   "ok": true,
   "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
   "rollback_checkpoint": "sha256:e5899ed88353d413317b0683f19db7280e7d8d049cf150a927d33cc8265c16bc",
