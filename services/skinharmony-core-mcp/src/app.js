@@ -53,10 +53,9 @@ function serverIssuedBootstrapSession() {
 }
 
 function ownerChallengeSummary(toolName, args = {}) {
-  const task = typeof args.task === "string" ? args.task.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) : "";
   const summary = {
     operation: toolName,
-    ...(task ? { task } : {}),
+    task: "Disponibile solo dopo autenticazione owner fresca",
     limits: toolName === "tenant_provider_openai_multi_agent_smoke_run"
       ? { agents_max: 3, calls_max: 3, external_actions: false }
       : { run_scoped: true },

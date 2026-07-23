@@ -4,6 +4,7 @@ import { createOwnerConfirmationGrantLedger } from "./owner-confirmation-grant.j
 const MAX_AGE_MS = 10 * 60 * 1000;
 const AGENT_PORTAL_SESSION_AGE_MS = 5 * 60 * 1000;
 const AGENT_PORTAL_SESSION_COOKIE = "__Host-skinharmony_agents";
+const OWNER_CONFIRMATION_COOKIE = "__Host-skinharmony_owner_confirm";
 const AGENT_PORTAL_PATH = "/agents";
 
 function b64(value) { return Buffer.from(value).toString("base64url"); }
@@ -192,7 +193,7 @@ export function createOpenAiConnectPortal({
   startMultiAgentRun,
   readMultiAgentRun,
   cancelMultiAgentRun,
-  disableLegacyOwnerPortal = config.disableLegacyOwnerPortal === true,
+  legacyOwnerPortalEnabled = config.legacyOwnerPortalEnabled !== false,
   fetchImpl = fetch,
   now = () => Date.now(),
   ownerGrantLedger = createOwnerConfirmationGrantLedger({ requirePersistent: config.decisionLedgerRequired === true }),
@@ -202,6 +203,7 @@ export function createOpenAiConnectPortal({
   // password KDF on attacker-controlled input, and the session/key purposes
   // remain cryptographically separate even though Render stores one secret.
   const stateKey = enabled ? deriveKey(config.auth0BrowserStateSecret, "skinharmony-openai-connect-v1") : null;
+  const confirmationKey = enabled ? deriveKey(config.auth0BrowserStateSecret, "skinharmony-owner-confirm-v1") : null;
   const agentSessionKey = enabled ? deriveKey(config.auth0BrowserStateSecret, "skinharmony-openai-agents-session-v1") : null;
   // `providerSetupOwner` comes only from a verified OAuth tenant-role claim.
   // A client ID, a URL parameter, or an arbitrary tenant string can never
@@ -210,17 +212,7 @@ export function createOpenAiConnectPortal({
   const oauthStart = async (req, res, kind) => {
     if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
     const requestedChallenge = String(req?.query?.challenge_id || "").trim();
-    if (requestedChallenge && String(req?.query?.confirm || "") !== "1") {
-      try {
-        const details = await ownerGrantLedger.getChallenge({ challengeId: requestedChallenge, now: new Date(now()) });
-        let summary = details.summary;
-        try { summary = JSON.stringify(JSON.parse(details.summary), null, 2); } catch { summary = String(details.summary || details.toolName); }
-        const limits = details.toolName === "tenant_provider_openai_multi_agent_smoke_run" ? "Massimo 3 agenti e 3 chiamate sequenziali; nessun browser, tool esterno o azione pubblica." : "Operazione limitata al run autorizzato; lettura e annullamento restano sullo stesso run_id.";
-        return portalHtml(res, 200, page("Conferma lavoro protetto", `<p><strong>Operazione:</strong> ${escapeHtml(details.toolName)}</p><p><strong>Riepilogo sanitizzato:</strong></p><pre style="white-space:pre-wrap;background:#f3f3f4;padding:12px;border-radius:10px">${escapeHtml(summary)}</pre><p><strong>Limiti:</strong> ${escapeHtml(limits)}</p><p>La conferma vale solo per questa richiesta, sessione e tenant. Il lavoro non parte durante il callback OAuth.</p><p>Il pulsante richiede autenticazione owner fresca (massimo 5 minuti).</p><p><a href="/connect/openai?challenge_id=${encodeURIComponent(requestedChallenge)}&confirm=1">Conferma modalità multi-agente</a></p>`));
-      } catch {
-        return portalHtml(res, 410, page("Conferma scaduta", "<p>La richiesta non è più disponibile. Ripeti l’operazione dal connettore MCP.</p>"));
-      }
-    }
+    if (!requestedChallenge && !legacyOwnerPortalEnabled) return portalHtml(res, 400, page("Conferma richiesta", "<p>Apri il collegamento dalla richiesta MCP.</p>"));
     const verifier = crypto.randomBytes(48).toString("base64url");
     const challengeId = requestedChallenge;
     const state = b64(seal(stateKey, {
@@ -233,6 +225,19 @@ export function createOpenAiConnectPortal({
     const authorize = new URL(`${config.auth0Issuer}/authorize`);
     authorize.search = new URLSearchParams({ response_type: "code", client_id: config.auth0BrowserClientId, redirect_uri: config.auth0BrowserCallbackUrl, scope: "openid profile", audience: config.auth0BrowserAudience, max_age: "300", prompt: "login", state, code_challenge: challenge(verifier), code_challenge_method: "S256" }).toString();
     return res.redirect(302, authorize.toString());
+  };
+  const confirmationSession = (req) => {
+    const value = cookie(req, OWNER_CONFIRMATION_COOKIE);
+    if (!value || !confirmationKey) return null;
+    try {
+      const session = open(confirmationKey, value);
+      if (session.expires_at <= now() || !session.challenge_id || !session.csrf || session.identity?.kind !== "oauth" || session.identity?.oauthOwnerBound !== true) return null;
+      return session;
+    } catch { return null; }
+  };
+  const setConfirmationSession = (res, session) => {
+    const sealed = seal(confirmationKey, session);
+    res.setHeader("set-cookie", `${OWNER_CONFIRMATION_COOKIE}=${sealed}; Max-Age=300; Path=/; HttpOnly; Secure; SameSite=Lax`);
   };
   const agentSession = (req) => {
     const session = agentSessionKey ? open(agentSessionKey, cookie(req, AGENT_PORTAL_SESSION_COOKIE)) : null;
@@ -309,15 +314,19 @@ export function createOpenAiConnectPortal({
         // bound to the sealed state nonce; no tenant or role comes from URL
         // input.
         if (session.challenge_id && identity.oauthOwnerBound === true) {
-          await ownerGrantLedger.approveChallenge({ challengeId: session.challenge_id, tenantId: identity.tenantId, subject: identity.subject, now: new Date(now()) });
-          return portalHtml(res, 200, page("Conferma registrata", "<p>Torna alla richiesta MCP originale per completare l’operazione.</p>"));
+          const details = await ownerGrantLedger.getChallenge({ challengeId: session.challenge_id, now: new Date(now()) });
+          const csrf = crypto.randomBytes(32).toString("base64url");
+          setConfirmationSession(res, { challenge_id: session.challenge_id, identity: safeIdentity(identity), csrf, expires_at: now() + 300_000 });
+          let summary = details.summary;
+          try { summary = JSON.stringify(JSON.parse(details.summary), null, 2); } catch { summary = String(details.summary || details.toolName); }
+          const limits = details.toolName === "tenant_provider_openai_multi_agent_smoke_run" ? "Massimo 3 agenti e 3 chiamate sequenziali; nessun browser, tool esterno o azione pubblica." : "Solo sul run autorizzato; read/report/cancel restano vincolati al run_id.";
+          return portalHtml(res, 200, page("Conferma lavoro protetto", `<p><strong>Operazione:</strong> ${escapeHtml(details.toolName)}</p><p><strong>Riepilogo sanitizzato:</strong></p><pre style="white-space:pre-wrap;background:#f3f3f4;padding:12px;border-radius:10px">${escapeHtml(summary)}</pre><p><strong>Limiti:</strong> ${escapeHtml(limits)}</p><form method="post" action="/connect/openai/confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Conferma modalità multi-agente</button></form>`));
         }
-        if (!session.challenge_id && disableLegacyOwnerPortal) throw new Error("owner_confirmation_required");
-        if (!session.challenge_id && identity.oauthOwnerBound === true) {
-          const grant = await ownerGrantLedger.issue({ tenantId: identity.tenantId, subject: identity.subject, sessionId: session.nonce, toolName: "openai_connect", requestDigest: `${session.kind}\u0000${session.nonce}`, now: now() });
+        if (!session.challenge_id) {
+          if (!legacyOwnerPortalEnabled) throw new Error("owner_confirmation_required");
+          const grant = await ownerGrantLedger.issue({ tenantId: identity.tenantId, subject: identity.subject, sessionId: session.nonce, toolName: "tenant_provider_openai_setup_link", requestDigest: `${session.kind}\u0000${session.nonce}`, now: now() });
           identity = { ...identity, ownerConfirmationGrant: true, ownerGrantNonce: grant.nonce, ownerGrantSessionId: session.nonce, role: "tenant_owner" };
         }
-        if (!owner(identity)) throw new Error("owner_required");
         // Refresh the same short-lived tenant-bound portal session for both
         // entry paths. Returning from a direct OpenAI connection must not fall
         // back to a stale session belonging to another tenant identity.
@@ -363,6 +372,15 @@ export function createOpenAiConnectPortal({
           return portalHtml(res, 503, page(title, body));
         }
       } catch (error) { return portalHtml(res, 403, page("Accesso non autorizzato", `<p>${accessFailure(error)}</p><p>Riprova dal link iniziale.</p>`)); }
+    },
+    async confirm(req, res) {
+      const session = confirmationSession(req);
+      if (!session || !csrfValid(req, session)) return portalHtml(res, 403, page("Conferma non valida", "<p>La sessione owner è scaduta o il token CSRF non è valido.</p>"));
+      try {
+        await ownerGrantLedger.approveChallenge({ challengeId: session.challenge_id, tenantId: session.identity.tenantId, subject: session.identity.subject, now: new Date(now()) });
+        res.setHeader("set-cookie", `${OWNER_CONFIRMATION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`);
+        return portalHtml(res, 200, page("Conferma registrata", "<p>Torna alla richiesta MCP originale per completare l’operazione.</p>"));
+      } catch { return portalHtml(res, 409, page("Conferma non disponibile", "<p>La challenge è scaduta o già utilizzata.</p>")); }
     },
     async continue(_req, res) {
       // Kept only as a safe response for stale pages cached before the direct

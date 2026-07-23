@@ -49,6 +49,7 @@ async function serve(portal, run) {
   const app = express();
   app.get("/connect/openai", portal.start);
   app.get("/connect/openai/callback", portal.callback);
+  app.post("/connect/openai/confirm", express.urlencoded({ extended: false }), portal.confirm);
   app.post("/connect/openai/continue", express.urlencoded({ extended: false }), portal.continue);
   for (const root of ["/agents", "/mobile/agents"]) {
     app.get(root, portal.agentsHome);
@@ -148,16 +149,25 @@ test("renders an explicit multi-agent confirmation page before OAuth", async () 
   const portal = createOpenAiConnectPortal({
     config,
     ownerGrantLedger,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
   });
   await serve(portal, async (base) => {
     const response = await fetch(`${base}/connect/openai?challenge_id=${issued.challengeId}`, { redirect: "manual" });
-    assert.equal(response.status, 200);
-    const html = await response.text();
+    assert.equal(response.status, 302);
+    assert.doesNotMatch(response.headers.get("location"), /confirm=1/);
+    const authorization = new URL(response.headers.get("location"));
+    const callback = await fetch(`${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`, { redirect: "manual" });
+    assert.equal(callback.status, 200);
+    const html = await callback.text();
     assert.match(html, /Conferma modalità multi-agente/);
     assert.match(html, /3 agenti/);
-    assert.match(html, new RegExp(`challenge_id=${issued.challengeId}.*confirm=1`));
     assert.doesNotMatch(html, /owner_confirmed|confirmation_reference/);
+    const csrf = html.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
+    const cookie = callback.headers.get("set-cookie");
+    const confirmed = await fetch(`${base}/connect/openai/confirm`, { method: "POST", headers: { cookie: cookie.split(";")[0], origin: "https://mcp.example.test", "sec-fetch-site": "same-origin", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf }), redirect: "manual" });
+    assert.equal(confirmed.status, 200);
+    assert.match(await confirmed.text(), /Conferma registrata/);
   });
 });
 
@@ -201,7 +211,7 @@ test("rejects CSRF state mismatch, expired state, and non-owner callback without
     const nonOwner = await fetch(
       `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
     );
-    assert.equal(nonOwner.status, 403);
+    assert.equal(nonOwner.status, 503);
     assert.doesNotMatch(await nonOwner.text(), /opaque-code|access_token/);
   });
 });

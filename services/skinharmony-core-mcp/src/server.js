@@ -125,7 +125,7 @@ const app = createApp(config, {
 });
 const openAiPortal = createOpenAiConnectPortal({
   config,
-  disableLegacyOwnerPortal: true,
+  legacyOwnerPortalEnabled: false,
   authenticate: browserAuthenticate,
   ownerGrantLedger: createOwnerConfirmationGrantLedger({ persistentLedger: ownerConfirmationLedger, requirePersistent: config.decisionLedgerRequired === true }),
   issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
@@ -136,5 +136,6 @@ const openAiPortal = createOpenAiConnectPortal({
 });
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);
+app.post("/connect/openai/confirm", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.confirm);
 app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));

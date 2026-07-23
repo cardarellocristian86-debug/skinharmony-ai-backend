@@ -29,10 +29,11 @@ export function createOwnerConfirmationGrantLedger({ store = new Map(), ttlSecon
       return true;
     },
     issueChallenge({ tenantId, subject, sessionId, toolName, requestDigest, challengeSummary = "", now = Date.now() }) {
-      const challengeId = hash(`${tenantId}\u0000${subject}\u0000${sessionId}\u0000${toolName}\u0000${requestDigest}`);
       for (const [key, value] of challenges) if (value.expiresAt <= now || value.consumed) challenges.delete(key);
-      challenges.set(hash(challengeId), { tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + boundedTtl * 1000, approved: false, consumed: false });
-      challenges.get(hash(challengeId)).summary = String(challengeSummary).slice(0, 500);
+      const binding = `${tenantId}\u0000${hash(subject)}\u0000${hash(sessionId)}\u0000${toolName}\u0000${requestDigest}`;
+      for (const value of challenges.values()) if (!value.consumed && value.binding === binding) return { challengeId: value.challengeId, toolName, summary: value.summary || "", expiresAt: new Date(value.expiresAt).toISOString() };
+      const challengeId = crypto.randomBytes(32).toString("hex");
+      challenges.set(hash(challengeId), { challengeId, binding, tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + boundedTtl * 1000, approved: false, consumed: false, summary: String(challengeSummary).slice(0, 500) });
       return { challengeId, toolName, summary: String(challengeSummary).slice(0, 500), expiresAt: new Date(now + boundedTtl * 1000).toISOString() };
     },
     getChallenge({ challengeId, now = Date.now() }) {
