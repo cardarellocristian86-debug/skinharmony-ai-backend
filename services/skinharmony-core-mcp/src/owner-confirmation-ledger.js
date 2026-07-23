@@ -58,7 +58,13 @@ export function createOwnerConfirmationLedger(config, options = {}) {
     max: config.databasePoolMax || 5,
   });
   let ready;
-  const initialize = () => ready ||= pool.query(SCHEMA_SQL);
+  const initialize = () => ready ||= (async () => {
+    // Serialize first-use migrations across replicas/pools. PostgreSQL DDL is
+    // idempotent, but concurrent CREATE TABLE/ALTER sequences can still race
+    // in the system catalogs.
+    await pool.query("SELECT pg_advisory_lock(731942106)");
+    try { await pool.query(SCHEMA_SQL); } finally { await pool.query("SELECT pg_advisory_unlock(731942106)"); }
+  })();
   return {
     schemaSql: SCHEMA_SQL,
     close: () => pool.end?.(),
