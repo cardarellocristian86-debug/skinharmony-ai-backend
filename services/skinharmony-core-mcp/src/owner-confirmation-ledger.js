@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS core_owner_confirmation_challenges (
 );
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_lookup_idx
   ON core_owner_confirmation_challenges (tenant_id, subject_digest, session_digest, tool_name, request_digest);
+CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_expiry_idx
+  ON core_owner_confirmation_challenges (expires_at);
 `;
 export const OWNER_CONFIRMATION_LEDGER_DOWN_SQL = `DROP TABLE IF EXISTS core_owner_confirmation_challenges; DROP TABLE IF EXISTS core_owner_confirmation_grants; DROP TABLE IF EXISTS core_owner_confirmation_ledger;`;
 

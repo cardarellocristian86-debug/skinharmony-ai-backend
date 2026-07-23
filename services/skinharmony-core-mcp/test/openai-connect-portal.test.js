@@ -116,6 +116,8 @@ test("uses Authorization Code PKCE, refreshes the portal session, and sends the 
     assert.notEqual(authorization.searchParams.get("audience"), config.auth0Audience);
     assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
     assert(authorization.searchParams.get("code_challenge"));
+    assert.equal(authorization.searchParams.get("max_age"), "300");
+    assert.equal(authorization.searchParams.get("prompt"), "login");
     const callback = await fetch(
       `${base}/connect/openai/callback?code=opaque-code&state=${authorization.searchParams.get("state")}`,
       { redirect: "manual" },
@@ -135,6 +137,25 @@ test("uses Authorization Code PKCE, refreshes the portal session, and sends the 
     assert.match(sessionCookie, /HttpOnly/);
     assert.match(sessionCookie, /Secure/);
     assert.match(sessionCookie, /SameSite=Lax/);
+  });
+});
+
+test("renders an explicit multi-agent confirmation page before OAuth", async () => {
+  const portal = createOpenAiConnectPortal({
+    config,
+    ownerGrantLedger: {
+      approveChallenge: async () => ({ approved: true }),
+    },
+    authenticate: async () => ownerIdentity(),
+  });
+  await serve(portal, async (base) => {
+    const response = await fetch(`${base}/connect/openai?challenge_id=opaque-challenge`, { redirect: "manual" });
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Conferma modalità multi-agente/);
+    assert.match(html, /3 agenti/);
+    assert.match(html, /challenge_id=opaque-challenge.*confirm=1/);
+    assert.doesNotMatch(html, /owner_confirmed|confirmation_reference/);
   });
 });
 
