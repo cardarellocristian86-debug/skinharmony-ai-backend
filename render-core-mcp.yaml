@@ -25,6 +25,10 @@ services:
         value: https://skinharmony-core-mcp.onrender.com/connect/openai/callback
       - key: AUTH0_BROWSER_STATE_SECRET
         generateValue: true
+      - key: AUTH0_OWNER_TENANT_BINDINGS_JSON
+        sync: false
+      - key: AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS
+        value: "300"
       - key: MCP_TENANT_CLAIM
         value: https://skinharmony.it/tenant_id
       - key: MCP_DEFAULT_TENANT_ID

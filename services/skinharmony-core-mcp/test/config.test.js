@@ -216,6 +216,16 @@ test("requires a strong browser portal state and session secret in production", 
   }), /at least 32 bytes/);
 });
 
+test("loads OAuth owner tenant bindings only from server-side configuration", () => {
+  const config = loadConfig({
+    AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "codexai" }),
+    AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "600",
+  });
+  assert.deepEqual(config.oauthOwnerTenantBindings, { "oauth-owner-fixture": "codexai" });
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 600);
+  assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
+});
+
 test("maps Suite Control Plane keys only to their configured tenants", () => {
   const config = loadConfig({
     SUITE_CONTROL_PLANE_URL: "https://suite.example.test/",

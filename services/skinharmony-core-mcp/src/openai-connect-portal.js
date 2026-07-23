@@ -278,7 +278,19 @@ export function createOpenAiConnectPortal({
         if (config.auth0BrowserClientSecret) body.set("client_secret", config.auth0BrowserClientSecret);
         const response = await fetchImpl(`${config.auth0Issuer}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
         const tokens = await response.json(); if (!response.ok || !tokens.access_token) throw new Error("oauth_exchange_failed");
-        const identity = await authenticate(`Bearer ${tokens.access_token}`); if (!owner(identity)) throw new Error("owner_required");
+        let identity = await authenticate(`Bearer ${tokens.access_token}`);
+        // A configured owner subject is still a member by default. The fresh
+        // PKCE callback is the explicit one-time owner confirmation and is
+        // bound to the sealed state nonce; no tenant or role comes from URL
+        // input.
+        if (identity.oauthOwnerBound === true && typeof authenticate.elevateOAuthOwner === "function") {
+          identity = authenticate.elevateOAuthOwner(identity, {
+            confirmed: true,
+            confirmationReference: session.nonce,
+            requestBinding: `oauth_connect_callback\u0000${session.kind}\u0000${session.nonce}`,
+          });
+        }
+        if (!owner(identity)) throw new Error("owner_required");
         // Refresh the same short-lived tenant-bound portal session for both
         // entry paths. Returning from a direct OpenAI connection must not fall
         // back to a stale session belonging to another tenant identity.
