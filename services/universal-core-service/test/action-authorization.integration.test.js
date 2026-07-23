@@ -147,6 +147,91 @@ test("allows only a reference-only tenant provider vault secret configuration", 
   ]) assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
 });
 
+test("allows only exact Core and Nyra admin login secret references", () => {
+  const environmentVariables = [
+    "CORE_ADMIN_SESSION_SECRET",
+    "CORE_ADMIN_BOOTSTRAP_USERNAME",
+    "CORE_ADMIN_BOOTSTRAP_PASSWORD",
+  ];
+  const base = {
+    action_label: "Configure Core Admin Control Room bootstrap references",
+    action_type: "environment_configuration",
+    operation_class: "reversible_owner_confirmed_core_admin_bootstrap_configuration",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    authenticated_key_type: "connector",
+    request_bound_owner_confirmation: true,
+    owner_context_verified: true,
+    owner_context_approval_bound: false,
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    values_present_in_envelope: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    readback_required: true,
+    configuration_changes: true,
+    environment: "production",
+    target: "skinharmony-core-nyra-admin-login",
+    target_service: "skinharmony-universal-core",
+    target_service_id: "srv-d82c9j3tqb8s73cgriag",
+    resource_type: "render_environment_variable_bundle",
+    render_environment_update: true,
+    other_environment_changes: false,
+    create_missing_only: true,
+    overwrite_existing: false,
+    current_values_present: false,
+    rollback_remove_new_variables: true,
+    auth0_changes: false,
+    database_changes: false,
+    storage_changes: false,
+    domain_changes: false,
+    scaling_changes: false,
+    merge: false,
+    deploy: false,
+    production_deploy: false,
+    delete: false,
+    provider_execution: false,
+    execution_enabled: false,
+    force: false,
+    admin_bypass: false,
+    allowed_environment_variables: environmentVariables,
+    target_commit: "1496d96600592bea4d945333083d1a3c2f1d4f4c",
+    confirmation_target_service: "skinharmony-universal-core",
+    confirmation_target_service_id: "srv-d82c9j3tqb8s73cgriag",
+    confirmation_target_commit: "1496d96600592bea4d945333083d1a3c2f1d4f4c",
+    confirmation_environment_variables: environmentVariables,
+    confirmation_reference: "owner-confirmed-core-nyra-admin-login",
+  };
+  const allowed = evaluate({ ...base, owner_confirmed: true }).authorization;
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "reversible_owner_confirmed_core_admin_bootstrap_configuration");
+
+  for (const unsafe of [
+    { owner_confirmed: false },
+    { secret_value_transmitted: true },
+    { contains_secret: true },
+    { values_present_in_envelope: true },
+    { target_service_id: "srv-other" },
+    { allowed_environment_variables: [...environmentVariables, "DATABASE_URL"] },
+    { confirmation_environment_variables: ["CORE_ADMIN_BOOTSTRAP_PASSWORD"] },
+    { production_deploy: true },
+    { deploy: true },
+    { provider_execution: true },
+    { current_values_present: true },
+    { readback_required: false },
+    { request_bound_owner_confirmation: false },
+    { authenticated_key_type: "automation" },
+    { unexpected_field: true },
+  ]) {
+    assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
+  }
+});
+
 test("allows only the exact authenticated codexai provider setup-link Blueprint binding", () => {
   const base = {
     action_label: "Bind Core provider setup-link validation",

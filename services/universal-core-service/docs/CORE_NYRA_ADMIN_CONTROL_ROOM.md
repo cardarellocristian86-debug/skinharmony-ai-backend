@@ -32,6 +32,26 @@ CORE_ADMIN_BOOTSTRAP_PASSWORD=<password owner di almeno 16 caratteri>
 
 Il bootstrap crea l'owner soltanto se non esiste già. Le variabili non vengono inviate alla UI, registrate nell'audit o restituite dalle API.
 
+### Gate di configurazione
+
+La configurazione è autorizzabile soltanto con la capability
+`reversible_owner_confirmed_core_admin_bootstrap_configuration`.
+
+Il relativo envelope:
+
+- accetta esclusivamente il servizio Render `skinharmony-universal-core` e il suo ID registrato;
+- richiede un contesto owner OAuth firmato e vincolato all'intera richiesta;
+- permette solo le tre variabili elencate sopra, nello stesso ordine;
+- dichiara che valori e segreti non sono presenti nell'envelope Core;
+- crea esclusivamente variabili mancanti e vieta sovrascritture;
+- non consente deploy, merge, provider execution, database, storage, domini, scaling o modifiche Auth0;
+- vincola conferma, servizio, variabili e commit allo stesso payload;
+- registra nell'audit solo riferimenti canonici non segreti.
+
+L'API Render salva prima le variabili senza distribuirle. L'attivazione avviene
+con un secondo deploy governato e reversibile, in modo che configurazione e
+rilascio abbiano autorizzazioni e rollback separati.
+
 ## Mappa delle superfici
 
 ```text
