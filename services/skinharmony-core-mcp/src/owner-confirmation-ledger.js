@@ -111,12 +111,12 @@ export function createOwnerConfirmationLedger(config, options = {}) {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
         ON CONFLICT (tenant_id, subject_digest, session_digest, tool_name, request_digest) WHERE consumed_at IS NULL
         DO UPDATE SET expires_at=GREATEST(core_owner_confirmation_challenges.expires_at, EXCLUDED.expires_at)
-        RETURNING expires_at`, [challenge, tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), String(challengeSummary).slice(0, 500), now, new Date(now.getTime() + ttlSeconds * 1000)]);
+        RETURNING expires_at`, [digest(challenge), tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), String(challengeSummary).slice(0, 500), now, new Date(now.getTime() + ttlSeconds * 1000)]);
       return { challengeId: challenge, toolName, summary: String(challengeSummary).slice(0, 500), expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString() };
     },
     async getChallenge({ challengeId, now = new Date() }) {
       await initialize(); now = now instanceof Date ? now : new Date(now);
-      const result = await pool.query(`SELECT tool_name, challenge_summary, expires_at FROM core_owner_confirmation_challenges WHERE challenge_digest=$1 AND consumed_at IS NULL AND expires_at>$2`, [String(challengeId), now]);
+      const result = await pool.query(`SELECT tool_name, challenge_summary, expires_at FROM core_owner_confirmation_challenges WHERE challenge_digest=$1 AND consumed_at IS NULL AND expires_at>$2`, [digest(challengeId), now]);
       if (!result.rows?.length) throw new Error("owner_challenge_missing");
       return { toolName: result.rows[0].tool_name, summary: result.rows[0].challenge_summary, expiresAt: new Date(result.rows[0].expires_at).toISOString() };
     },
