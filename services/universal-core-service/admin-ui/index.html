@@ -1,78 +1,37 @@
 <!doctype html>
 <html lang="it">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
-    <title>Core + Nyra · Admin Control Room</title>
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <main id="login-screen" class="login-screen">
-      <section class="login-card" aria-labelledby="login-title">
-        <div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div>
-        <p class="eyebrow">SKINHARMONY · UNIVERSAL CORE</p>
-        <h1 id="login-title">Control Room</h1>
-        <p class="muted">Accesso riservato alla governance di Core e Nyra.</p>
-        <form id="login-form" class="login-form">
-          <label>Username<input name="username" autocomplete="username" placeholder="admin" required /></label>
-          <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="••••••••" required /></label>
-          <button class="button primary" type="submit">Accedi alla Control Room <span>→</span></button>
-          <p id="login-message" class="form-note">Accesso protetto con sessione server-side.</p>
-        </form>
-      </section>
-      <p class="login-foot">Core intelligence · Nyra orchestration · Audit-first operations</p>
-    </main>
-
-    <div id="app" class="app hidden">
-      <aside class="sidebar" aria-label="Navigazione principale">
-        <div class="side-brand"><div class="brand-mark small"><i></i><i></i><i></i></div><span>CORE <em>×</em> NYRA</span></div>
-        <nav id="nav">
-          <button class="nav-item active" data-view="overview"><span>◈</span> Panoramica</button>
-          <button class="nav-item" data-view="map"><span>⌘</span> Mappa sistema</button>
-          <button class="nav-item" data-view="agents"><span>◌</span> Agenti &amp; provider</button>
-          <button class="nav-item" data-view="branches"><span>⌇</span> Rami &amp; flussi</button>
-          <button class="nav-item" data-view="keys"><span>⌑</span> Chiavi &amp; accessi</button>
-          <button class="nav-item" data-view="decisions"><span>◇</span> Decisioni</button>
-          <button class="nav-item" data-view="audit"><span>▤</span> Audit trail</button>
-        </nav>
-        <div class="sidebar-bottom"><div class="health-dot"></div><span>Core online</span><button id="sign-out" title="Esci">↗</button></div>
-      </aside>
-      <section class="workspace">
-        <header class="topbar"><button id="menu" class="icon-button" aria-label="Apri menu">☰</button><div><p class="eyebrow">AMBIENTE · PRODUCTION</p><h2 id="view-title">Panoramica operativa</h2></div><div class="top-actions"><button class="icon-button" aria-label="Notifiche">◌<b>3</b></button><button class="profile"><span>CC</span> Cristian <small>⌄</small></button></div></header>
-
-        <div class="content">
-          <section class="view active" id="overview">
-            <div class="status-strip"><span class="pulse"></span><strong>Tutti i sistemi sono operativi</strong><span>Ultima sincronizzazione: ora</span><button class="text-button">Vedi stato</button></div>
-            <div class="metric-grid">
-              <article class="metric"><p>Agenti disponibili</p><strong id="metric-agents">—</strong><span>registry Core</span></article>
-              <article class="metric"><p>Rami Nyra</p><strong id="metric-branches">—</strong><span>catalogo autorizzato</span></article>
-              <article class="metric"><p>Chiavi attive</p><strong id="metric-keys">—</strong><span class="warning">inventario protetto</span></article>
-              <article class="metric"><p>Tenant attivi</p><strong id="metric-tenants">—</strong><span>isolamento applicato</span></article>
-            </div>
-            <div class="grid-2">
-              <article class="panel"><div class="panel-heading"><div><p class="eyebrow">RETE OPERATIVA</p><h3>Nodi principali</h3></div><button class="text-button" data-go="map">Apri mappa →</button></div><div class="node-list">
-                <div><span class="node core"></span><b>Universal Core</b><small>authority · Render</small><em>healthy</em></div><div><span class="node nyra"></span><b>Nyra Intelligence</b><small>orchestrator · shared memory</small><em>healthy</em></div><div><span class="node mcp"></span><b>Core MCP</b><small>agent gateway · tools</small><em>healthy</em></div><div><span class="node wp"></span><b>SkinHarmony</b><small>WordPress connector</small><em>healthy</em></div>
-              </div></article>
-              <article class="panel"><div class="panel-heading"><div><p class="eyebrow">ATTIVITÀ RECENTE</p><h3>Registro live</h3></div><button class="text-button" data-go="audit">Audit →</button></div><ol class="timeline"><li><i class="dot blue"></i><div><b>Decisione approvata</b><p>routing: nyra-fast → core-mcp</p></div><time>09:42</time></li><li><i class="dot green"></i><div><b>Agente connesso</b><p>Codex / software intelligence</p></div><time>09:18</time></li><li><i class="dot gold"></i><div><b>Chiave in scadenza</b><p>wordpress-production · 4 giorni</p></div><time>Ieri</time></li></ol></article>
-            </div>
-            <article class="panel quick"><div><p class="eyebrow">AZIONI GUIDATE</p><h3>Governance senza ambiguità</h3><p class="muted">Ogni modifica richiede contesto, scope, conferma e audit trail.</p></div><div><button class="button secondary" data-go="agents">Vedi agenti</button><button class="button primary" data-go="keys">Gestisci chiavi</button></div></article>
-          </section>
-
-          <section class="view" id="map"><div class="section-head"><div><p class="eyebrow">ARCHITETTURA</p><h3>Mappa completa del sistema</h3><p class="muted">Relazioni, confini di autorità e percorsi di esecuzione.</p></div><button class="button secondary">Esporta schema</button></div><article class="panel architecture"><div class="map-node core-node"><b>UNIVERSAL CORE</b><span>Authority · policy · keys</span></div><div class="map-line l1"></div><div class="map-line l2"></div><div class="map-node nyra-node"><b>NYRA</b><span>Orchestrazione · memoria</span></div><div class="map-node mcp-node"><b>CORE MCP</b><span>Tool gateway · agenti</span></div><div class="map-node connector-node"><b>CONNECTORS</b><span>WP · ChatGPT · Codex</span></div><div class="map-label label1">governance</div><div class="map-label label2">tasks + context</div><div class="map-label label3">scoped access</div></article><div class="grid-3"><article class="panel compact"><h4>Authority boundary</h4><p>Core è l’unico emittente di credenziali e policy.</p></article><article class="panel compact"><h4>Execution boundary</h4><p>Nyra coordina; gli agenti operano solo nello scope ricevuto.</p></article><article class="panel compact"><h4>Connector boundary</h4><p>Le integrazioni non conservano segreti in chiaro.</p></article></div></section>
-
-          <section class="view" id="agents"><div class="section-head"><div><p class="eyebrow">INTELLIGENCE LAYER</p><h3>Agenti &amp; provider</h3><p class="muted">Provider connessi, responsabilità, autorizzazioni e stato.</p></div><button class="button primary">+ Registra agente</button></div><div class="table-panel"><table><thead><tr><th>Agente</th><th>Ruolo</th><th>Provider</th><th>Scope</th><th>Stato</th><th></th></tr></thead><tbody><tr><td><b>Nyra Prime</b><small>nyra-orchestrator</small></td><td>Orchestrazione</td><td>Core native</td><td><code>suite:manage</code></td><td><span class="badge good">Online</span></td><td>•••</td></tr><tr><td><b>Codex</b><small>codexai</small></td><td>Software intelligence</td><td>OpenAI</td><td><code>code:write</code></td><td><span class="badge good">Online</span></td><td>•••</td></tr><tr><td><b>ChatGPT</b><small>chatgpt-connector</small></td><td>Conversazione</td><td>OpenAI</td><td><code>memory:read</code></td><td><span class="badge good">Online</span></td><td>•••</td></tr><tr><td><b>Research Cortex</b><small>research-cortex</small></td><td>Ricerca verificata</td><td>Multi-provider</td><td><code>research:run</code></td><td><span class="badge paused">In pausa</span></td><td>•••</td></tr></tbody></table></div></section>
-
-          <section class="view" id="branches"><div class="section-head"><div><p class="eyebrow">WORKFLOW GRAPH</p><h3>Rami &amp; flussi</h3><p class="muted">Traccia come una richiesta attraversa Core, Nyra, agenti e connettori.</p></div><button class="button primary">+ Nuovo ramo</button></div><div class="branch-list"><article class="branch"><div class="branch-icon">⌘</div><div><h4>software-intelligence</h4><p>Core → Nyra → Codex → decision ledger</p></div><span class="badge good">Attivo</span><button class="text-button">Dettagli →</button></article><article class="branch"><div class="branch-icon">◈</div><div><h4>skin-analysis</h4><p>WordPress → Core MCP → Nyra analysis → CRM</p></div><span class="badge good">Attivo</span><button class="text-button">Dettagli →</button></article><article class="branch"><div class="branch-icon">◇</div><div><h4>provider-onboarding</h4><p>Admin → setup portal → credential store → agent</p></div><span class="badge review">In revisione</span><button class="text-button">Dettagli →</button></article></div></section>
-
-          <section class="view" id="keys"><div class="section-head"><div><p class="eyebrow">ACCESS CONTROL</p><h3>Chiavi &amp; accessi</h3><p class="muted">Inventario delle credenziali gestite da Core. I valori completi non sono mostrati.</p></div><button class="button primary">+ Genera chiave</button></div><div class="warning-box"><b>Principio del minimo privilegio</b><span>Ogni chiave deve avere un owner, uno scope specifico e una data di revisione.</span></div><div class="table-panel"><table><thead><tr><th>Nome</th><th>Owner</th><th>Scope</th><th>Rotazione</th><th>Stato</th><th></th></tr></thead><tbody><tr><td><b>codexai</b><small>ck_••••9d2a</small></td><td>Codex</td><td><code>code:write</code></td><td>90 giorni</td><td><span class="badge good">Attiva</span></td><td>•••</td></tr><tr><td><b>wordpress-production</b><small>ck_••••a71c</small></td><td>WP connector</td><td><code>connector:sync</code></td><td><span class="warning">4 giorni</span></td><td><span class="badge review">Rivedere</span></td><td>•••</td></tr><tr><td><b>chatgpt-connector</b><small>ck_••••f084</small></td><td>ChatGPT</td><td><code>memory:read</code></td><td>72 giorni</td><td><span class="badge good">Attiva</span></td><td>•••</td></tr></tbody></table></div></section>
-
-          <section class="view" id="decisions"><div class="section-head"><div><p class="eyebrow">DECISION LEDGER</p><h3>Decisioni e modifiche</h3><p class="muted">Un record verificabile per ogni scelta che modifica il sistema.</p></div><button class="button secondary">Filtra ledger</button></div><div class="decision-grid"><article class="panel decision"><span class="badge good">Approvata</span><h4>Routing preferenziale Nyra Fast</h4><p>Riduce il tempo di risposta per task a basso rischio. Fallback automatico su Core MCP.</p><footer><span>Owner: Nyra Prime</span><time>Oggi, 09:42</time></footer></article><article class="panel decision"><span class="badge review">In revisione</span><h4>Scope Codex: repository write</h4><p>Estensione proposta per i repository esplicitamente autorizzati.</p><footer><span>Owner: Cristian</span><time>Oggi, 08:15</time></footer></article></div></section>
-
-          <section class="view" id="audit"><div class="section-head"><div><p class="eyebrow">IMMUTABLE LOG</p><h3>Audit trail</h3><p class="muted">Eventi amministrativi e operativi con correlazione end-to-end.</p></div></div><article id="audit-list" class="panel audit-log"></article></section>
-        </div>
-      </section>
-    </div>
-    <script src="./app.js"></script>
-  </body>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+  <title>Core + Nyra · Admin Control Room</title><link rel="stylesheet" href="/admin/assets/styles.css">
+</head>
+<body>
+  <main id="login-screen" class="login-screen">
+    <section class="login-card" aria-labelledby="login-title"><div class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></div><p class="eyebrow">SKINHARMONY · UNIVERSAL CORE</p><h1 id="login-title">Control Room</h1><p class="muted">Accesso riservato alla governance di Core e Nyra.</p>
+      <form id="login-form" class="login-form"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="button primary" type="submit">Accedi <span>→</span></button><p id="login-message" class="form-note" role="status" aria-live="polite">Accesso protetto con sessione server-side.</p></form>
+    </section><p class="login-foot">Core intelligence · Nyra orchestration · Audit-first operations</p>
+  </main>
+  <div id="app" class="app hidden">
+    <div id="nav-backdrop" class="nav-backdrop" hidden></div>
+    <aside id="sidebar" class="sidebar" aria-label="Navigazione principale"><div class="side-brand"><div class="brand-mark small" aria-hidden="true"><i></i><i></i><i></i></div><span>CORE <em>×</em> NYRA</span></div>
+      <nav id="nav"><button class="nav-item active" data-view="overview" aria-current="page"><span>◈</span> Panoramica</button><button class="nav-item" data-view="map"><span>⌘</span> Mappa sistema</button><button class="nav-item" data-view="agents"><span>◌</span> Agenti</button><button class="nav-item" data-view="branches"><span>⌇</span> Rami &amp; flussi</button><button class="nav-item" data-view="keys"><span>⌑</span> Chiavi</button><button class="nav-item" data-view="audit"><span>▤</span> Audit trail</button></nav>
+      <div class="sidebar-bottom"><i class="health-dot" aria-hidden="true"></i><span id="core-health">Sessione attiva</span><button id="sign-out" class="plain-icon" title="Esci" aria-label="Esci">↗</button></div>
+    </aside>
+    <section class="workspace"><header class="topbar"><button id="menu" class="icon-button" aria-label="Apri menu" aria-expanded="false">☰</button><div><p class="eyebrow">CORE · CONTROL ROOM READ-ONLY</p><h2 id="view-title">Panoramica operativa</h2></div><div class="top-actions"><button id="status-button" class="icon-button" aria-label="Stato sessione" aria-expanded="false">◉</button><button id="notification-button" class="icon-button" aria-label="Eventi recenti" aria-expanded="false">◌<b id="notification-count">0</b></button><button id="profile-button" class="profile" aria-expanded="false"><span id="profile-initials">--</span><strong id="profile-name">Profilo</strong><small>⌄</small></button></div></header>
+      <div id="top-popover" class="top-popover hidden" role="status" aria-live="polite"></div>
+      <div class="content">
+        <section class="view active" id="overview"><div class="status-strip"><i class="pulse" aria-hidden="true"></i><strong id="system-status">Caricamento stato…</strong><span id="sync-status">—</span><button class="text-button" data-go="audit">Apri audit</button></div>
+          <div class="metric-grid"><article class="metric"><p>Agenti disponibili</p><strong id="metric-agents">—</strong><span>registry Core</span></article><article class="metric"><p>Rami Nyra</p><strong id="metric-branches">—</strong><span>catalogo autorizzato</span></article><article class="metric"><p>Chiavi attive</p><strong id="metric-keys">—</strong><span>inventario protetto</span></article><article class="metric"><p>Tenant attivi</p><strong id="metric-tenants">—</strong><span>isolamento applicato</span></article></div>
+          <div class="grid-2"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">RETE OPERATIVA</p><h3>Confini del sistema</h3></div><button class="text-button" data-go="map">Apri mappa →</button></div><div class="node-list"><div><i class="node core"></i><b>Universal Core</b><small>authority · policy · keys</small><em>source of truth</em></div><div><i class="node nyra"></i><b>Nyra</b><small>orchestrazione · catalogo</small><em>read-only view</em></div><div><i class="node mcp"></i><b>Core MCP</b><small>gateway agenti</small><em>bounded access</em></div><div><i class="node wp"></i><b>Connectors</b><small>WP · ChatGPT · Codex</small><em>scoped</em></div></div></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">ATTIVITÀ RECENTE</p><h3>Registro live</h3></div><button class="text-button" data-go="audit">Audit →</button></div><ol id="recent-audit" class="timeline" aria-live="polite"></ol></article></div>
+          <article class="panel quick"><div><p class="eyebrow">GOVERNANCE</p><h3>Ogni modifica richiede un flusso approvato</h3><p class="muted">Questa console espone soltanto letture e export locale.</p></div><div><button class="button secondary" data-go="agents">Vedi agenti</button><button class="button primary" data-go="keys">Inventario chiavi</button></div></article>
+        </section>
+        <section class="view" id="map"><div class="section-head"><div><p class="eyebrow">ARCHITETTURA</p><h3>Schema di riferimento</h3><p class="muted">Confini concettuali di autorità e accesso; non è una topologia runtime.</p></div><button id="export-map" class="button secondary">Esporta schema locale</button></div><article class="panel architecture" aria-label="Schema concettuale: Universal Core governa Nyra, Core MCP e i connettori"><div class="map-node core-node"><b>UNIVERSAL CORE</b><span>Authority · policy · keys</span></div><div class="map-line l1"></div><div class="map-line l2"></div><div class="map-node nyra-node"><b>NYRA</b><span>Orchestrazione · memoria</span></div><div class="map-node mcp-node"><b>CORE MCP</b><span>Tool gateway · agenti</span></div><div class="map-node connector-node"><b>CONNECTORS</b><span>WP · ChatGPT · Codex</span></div><i class="map-label label1">governance</i><i class="map-label label2">context</i><i class="map-label label3">scoped access</i></article></section>
+        <section class="view" id="agents"><div class="section-head"><div><p class="eyebrow">INTELLIGENCE LAYER</p><h3>Agenti registrati</h3><p class="muted">Dati dal registry Core; nessuna configurazione è eseguibile da questa vista.</p></div><button class="button primary" disabled title="Registrazione agenti non abilitata in questa console">+ Registra agente</button></div><p class="disabled-note">Azione disabilitata: richiede un workflow amministrativo approvato.</p><div class="table-panel" role="region" aria-label="Tabella agenti" tabindex="0"><table><thead><tr><th scope="col">Agente</th><th scope="col">Ruolo</th><th scope="col">Provider</th><th scope="col">Stato</th></tr></thead><tbody id="agents-body"><tr><td colspan="4">Caricamento…</td></tr></tbody></table></div></section>
+        <section class="view" id="branches"><div class="section-head"><div><p class="eyebrow">WORKFLOW GRAPH</p><h3>Rami &amp; flussi</h3><p class="muted">Catalogo Nyra disponibile nel perimetro corrente.</p></div><button class="button primary" disabled title="Creazione rami non abilitata in questa console">+ Nuovo ramo</button></div><p class="disabled-note">Azione disabilitata: la creazione di rami richiede approvazione e policy.</p><div id="branch-list" class="branch-list" aria-live="polite"></div></section>
+        <section class="view" id="keys"><div class="section-head"><div><p class="eyebrow">ACCESS CONTROL</p><h3>Inventario chiavi</h3><p class="muted">Nessun valore di chiave viene esposto da questa pagina.</p></div><button class="button primary" disabled title="Generazione chiavi non abilitata in questa console">+ Genera chiave</button></div><p class="disabled-note">Azioni mutative disabilitate: generazione e revoca richiedono un workflow separato.</p><div class="filters"><label>Tenant <select id="key-tenant-filter"><option value="">Tutti i tenant autorizzati</option></select></label><button id="keys-refresh" class="button secondary">Aggiorna lettura</button></div><div class="table-panel" role="region" aria-label="Tabella chiavi" tabindex="0"><table><thead><tr><th scope="col">ID / etichetta</th><th scope="col">Tenant</th><th scope="col">Preset</th><th scope="col">Stato</th><th scope="col">Scadenza</th><th scope="col">Azione</th></tr></thead><tbody id="keys-body"><tr><td colspan="6">Apri la sezione per caricare l’inventario.</td></tr></tbody></table></div></section>
+        <section class="view" id="audit"><div class="section-head"><div><p class="eyebrow">IMMUTABLE LOG</p><h3>Audit trail</h3><p class="muted">Eventi recenti sanitizzati dall’API Core.</p></div><button id="export-audit" class="button secondary">Esporta eventi filtrati</button></div><div class="filters"><label>Tipo evento <select id="audit-filter"><option value="">Tutti gli eventi</option></select></label><button id="audit-refresh" class="button secondary">Aggiorna</button></div><article id="audit-list" class="panel audit-log" aria-live="polite"></article></section>
+      </div></section>
+  </div>
+  <dialog id="branch-dialog" class="branch-dialog" aria-labelledby="branch-dialog-title"><form method="dialog"><button class="dialog-close" aria-label="Chiudi">×</button><p class="eyebrow">BRANCH DETAIL</p><h3 id="branch-dialog-title">Ramo</h3><pre id="branch-dialog-data"></pre></form></dialog>
+  <script src="/admin/assets/app.js"></script>
+</body>
 </html>

@@ -1,56 +1,32 @@
 (function () {
-  const login = document.getElementById('login-screen');
-  const app = document.getElementById('app');
-  const title = document.getElementById('view-title');
-  const loginMessage = document.getElementById('login-message');
-  let csrfToken = null;
-  const labels = { overview: 'Panoramica operativa', map: 'Mappa del sistema', agents: 'Agenti & provider', branches: 'Rami & flussi', keys: 'Chiavi & accessi', decisions: 'Decision ledger', audit: 'Audit trail' };
-  async function request(url, options) {
-    const response = await fetch(url, { credentials: 'same-origin', ...options, headers: { ...(options && options.headers ? options.headers : {}), ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}) } });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || 'request_failed');
-    return body;
-  }
-  function reveal() { login.classList.add('hidden'); app.classList.remove('hidden'); }
-  function hide() { app.classList.add('hidden'); login.classList.remove('hidden'); }
-  function number(id, value) { const node = document.getElementById(id); if (node) node.textContent = String(value == null ? '—' : value); }
-  function escapeHtml(value) { return String(value == null ? '' : value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]); }
-  function renderAudit(events) {
-    const root = document.getElementById('audit-list');
-    if (!root) return;
-    root.innerHTML = events.length ? events.map((event) => `<div><time>${escapeHtml(event.created_at || '—')}</time><span class="badge neutral">${escapeHtml(event.event_type || 'event')}</span><b>${escapeHtml(event.actor || event.tenant_id || 'system')}</b><p>${escapeHtml(event.key_id || event.path || event.error || 'evento registrato')}</p></div>`).join('') : '<div><p>Nessun evento disponibile per il perimetro selezionato.</p></div>';
-  }
-  async function loadOverview() {
-    const data = await request('/admin/api/overview');
-    const overview = data.overview || {};
-    number('metric-agents', Array.isArray(overview.agents && overview.agents.agents) ? overview.agents.agents.length : '—');
-    number('metric-branches', overview.nyra && overview.nyra.branches);
-    number('metric-keys', overview.keys && overview.keys.active);
-    number('metric-tenants', overview.tenants && overview.tenants.active);
-    renderAudit(data.audit || []);
-  }
-  function showView(id) {
-    document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === id));
-    document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === id));
-    title.textContent = labels[id];
-    document.querySelector('.sidebar').classList.remove('open');
-  }
-  document.getElementById('login-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    loginMessage.textContent = 'Verifica accesso…';
-    try {
-      const data = await request('/admin/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: form.get('username'), password: form.get('password') }) });
-      csrfToken = data.csrf_token;
-      reveal();
-      await loadOverview();
-    } catch (error) {
-      loginMessage.textContent = error.message === 'admin_bootstrap_required' ? 'Configurazione owner iniziale non disponibile.' : 'Accesso non riuscito. Riprova.';
-    }
-  });
-  document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', () => showView(item.dataset.view)));
-  document.querySelectorAll('[data-go]').forEach((item) => item.addEventListener('click', () => showView(item.dataset.go)));
-  document.getElementById('menu').addEventListener('click', () => document.querySelector('.sidebar').classList.toggle('open'));
-  document.getElementById('sign-out').addEventListener('click', async () => { try { await request('/admin/api/logout', { method: 'POST' }); } catch (_) {} csrfToken = null; hide(); });
-  (async () => { try { const data = await request('/admin/api/bootstrap'); if (data.authenticated) { csrfToken = data.csrf_token; reveal(); await loadOverview(); } else if (!data.configured) loginMessage.textContent = 'Owner iniziale da configurare sul server.'; } catch (_) { loginMessage.textContent = 'Control Room non disponibile.'; } }());
+  const state = { csrf: null, user: null, overview: null, audit: [], branches: [], keys: [] };
+  const $ = (selector) => document.querySelector(selector);
+  const labels = { overview: 'Panoramica operativa', map: 'Mappa del sistema', agents: 'Agenti registrati', branches: 'Rami & flussi', keys: 'Inventario chiavi', audit: 'Audit trail' };
+  const text = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  function redact(value, name = '') { if (/(?:secret|token|password|hash|private_key|^key$)/i.test(name)) return '[redacted]'; if (Array.isArray(value)) return value.map((item) => redact(item)); if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redact(item, key)])); return value; }
+  const safeJson = (value) => JSON.stringify(redact(value), null, 2);
+  async function request(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { ...(options.headers || {}), ...(state.csrf ? { 'x-csrf-token': state.csrf } : {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || 'request_failed'); return body; }
+  function setText(id, value) { const node = document.getElementById(id); if (node) node.textContent = value == null ? '—' : String(value); }
+  function formatDate(value) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString('it-IT', { dateStyle: 'medium', timeStyle: 'short' }); }
+  function initials(name) { return String(name || 'Profilo').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase(); }
+  function reveal() { $('#login-screen').classList.add('hidden'); $('#app').classList.remove('hidden'); }
+  function hide() { $('#app').classList.add('hidden'); $('#login-screen').classList.remove('hidden'); }
+  function renderUser(user) { state.user = user || null; setText('profile-name', user ? user.username : 'Profilo'); setText('profile-initials', initials(user && user.username)); }
+  function renderAudit() { const filter = $('#audit-filter').value; const events = state.audit.filter((event) => !filter || event.event_type === filter); const types = [...new Set(state.audit.map((event) => event.event_type).filter(Boolean))]; $('#audit-filter').innerHTML = '<option value="">Tutti gli eventi</option>' + types.map((type) => `<option value="${text(type)}"${filter === type ? ' selected' : ''}>${text(type)}</option>`).join(''); $('#notification-count').textContent = String(events.length); $('#recent-audit').innerHTML = events.slice(0, 4).map((event) => `<li><i class="dot blue"></i><div><b>${text(event.event_type || 'evento')}</b><p>${text(event.actor || event.tenant_id || event.path || 'Sistema Core')}</p></div><time>${text(formatDate(event.created_at))}</time></li>`).join('') || '<li><div><b>Nessun evento recente</b></div></li>'; $('#audit-list').innerHTML = events.map((event) => `<div><time>${text(formatDate(event.created_at))}</time><span class="badge neutral">${text(event.event_type || 'evento')}</span><b>${text(event.actor || event.tenant_id || 'system')}</b><p>${text(event.key_id || event.path || event.error || 'evento registrato')}</p></div>`).join('') || '<div><p>Nessun evento disponibile nel filtro selezionato.</p></div>'; }
+  function agentsFrom(overview) { const value = overview && overview.agents; return Array.isArray(value) ? value : Array.isArray(value && value.agents) ? value.agents : []; }
+  function renderAgents() { const rows = agentsFrom(state.overview); $('#agents-body').innerHTML = rows.length ? rows.map((agent) => `<tr><td><b>${text(agent.label || agent.name || agent.id || agent.agent_id || 'Agente')}</b><small>${text(agent.id || agent.agent_id || '')}</small></td><td>${text(agent.lane || agent.role || agent.capability || '—')}</td><td>${text(agent.owner || agent.provider || 'Core')}</td><td><span class="badge good">Registrato</span></td></tr>`).join('') : '<tr><td colspan="4">Nessun agente esposto dal registry per questo perimetro.</td></tr>'; }
+  function renderBranches() { $('#branch-list').innerHTML = state.branches.length ? state.branches.map((branch, index) => `<article class="branch"><div class="branch-icon">⌘</div><div><h4>${text(branch.label || branch.name || branch.id || `ramo-${index + 1}`)}</h4><p>${text(branch.description || branch.purpose || branch.work_phase || (Array.isArray(branch.subbranches) ? `${branch.subbranches.length} sotto-rami disponibili` : 'Dettaglio disponibile nel catalogo'))}</p></div><span class="badge good">Catalogato</span><button class="text-button branch-detail" data-index="${index}">Dettagli →</button></article>`).join('') : '<p class="empty-state">Nessun ramo disponibile per il perimetro corrente.</p>'; document.querySelectorAll('.branch-detail').forEach((button) => button.addEventListener('click', () => { const branch = state.branches[Number(button.dataset.index)]; $('#branch-dialog-title').textContent = branch.label || branch.name || branch.id || 'Dettaglio ramo'; $('#branch-dialog-data').textContent = safeJson(branch); $('#branch-dialog').showModal(); })); }
+  function renderKeys() { const tenant = $('#key-tenant-filter').value; const keys = state.keys.filter((key) => !tenant || key.tenant_id === tenant); $('#keys-body').innerHTML = keys.length ? keys.map((key) => `<tr><td><b>${text(key.label || key.key_id || '—')}</b><small>${text(key.key_id || '')}</small></td><td>${text(key.tenant_id || '—')}</td><td><code>${text(key.preset || '—')}</code></td><td><span class="badge ${key.status === 'active' ? 'good' : 'review'}">${text(key.status || '—')}</span></td><td>${text(formatDate(key.expires_at))}</td><td><button class="text-button" disabled title="Revoca non abilitata in questa console">Revoca</button></td></tr>`).join('') : '<tr><td colspan="6">Nessuna chiave disponibile nel filtro selezionato.</td></tr>'; }
+  function syncTenantFilter() { const current = $('#key-tenant-filter').value; const tenants = [...new Set(state.keys.map((key) => key.tenant_id).filter(Boolean))]; $('#key-tenant-filter').innerHTML = '<option value="">Tutti i tenant autorizzati</option>' + tenants.map((tenant) => `<option value="${text(tenant)}"${tenant === current ? ' selected' : ''}>${text(tenant)}</option>`).join(''); }
+  async function loadOverview() { const data = await request('/admin/api/overview'); state.overview = data.overview || {}; state.audit = Array.isArray(data.audit) ? data.audit : []; setText('metric-agents', agentsFrom(state.overview).length); setText('metric-branches', state.overview.nyra && state.overview.nyra.branches); setText('metric-keys', state.overview.keys && state.overview.keys.active); setText('metric-tenants', state.overview.tenants && state.overview.tenants.active); setText('system-status', 'Lettura Core completata · console senza mutazioni'); setText('sync-status', `Dati letti ${formatDate(new Date())}`); renderAgents(); renderAudit(); }
+  async function loadBranches() { const data = await request('/admin/api/branches'); state.branches = Array.isArray(data.catalog && data.catalog.branches) ? data.catalog.branches : []; renderBranches(); }
+  async function loadKeys() { try { const data = await request('/admin/api/keys'); state.keys = Array.isArray(data.keys) ? data.keys : []; syncTenantFilter(); renderKeys(); } catch (error) { $('#keys-body').innerHTML = `<tr><td colspan="6">Inventario non disponibile: ${text(error.message)}</td></tr>`; } }
+  function showView(id) { document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === id)); document.querySelectorAll('.nav-item').forEach((item) => { const active = item.dataset.view === id; item.classList.toggle('active', active); if (active) item.setAttribute('aria-current', 'page'); else item.removeAttribute('aria-current'); }); $('#view-title').textContent = labels[id]; closeMenu(); if (id === 'branches' && !state.branches.length) loadBranches().catch(() => { $('#branch-list').textContent = 'Catalogo non disponibile.'; }); if (id === 'keys') loadKeys(); }
+  function openMenu() { $('#sidebar').classList.add('open'); $('#nav-backdrop').hidden = false; $('#menu').setAttribute('aria-expanded', 'true'); }
+  function closeMenu() { $('#sidebar').classList.remove('open'); $('#nav-backdrop').hidden = true; $('#menu').setAttribute('aria-expanded', 'false'); }
+  function exportLocal(filename, payload) { const blob = new Blob([safeJson(payload)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url); }
+  function togglePopover(button, message) { const popover = $('#top-popover'); const open = popover.classList.contains('hidden'); document.querySelectorAll('[aria-expanded="true"]').forEach((node) => { if (node !== button) node.setAttribute('aria-expanded', 'false'); }); popover.classList.toggle('hidden', !open); button.setAttribute('aria-expanded', String(open)); popover.textContent = open ? message : ''; }
+  $('#login-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); $('#login-message').textContent = 'Verifica accesso…'; try { const data = await request('/admin/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: form.get('username'), password: form.get('password') }) }); state.csrf = data.csrf_token; renderUser(data.user); reveal(); try { await loadOverview(); } catch (error) { setText('system-status', `Lettura Core non disponibile: ${error.message}`); setText('sync-status', 'Nessun dato aggiornato'); } } catch (error) { $('#login-message').textContent = error.message === 'login_rate_limited' ? 'Troppi tentativi: riprova più tardi.' : 'Accesso non riuscito. Riprova.'; } });
+  document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', () => showView(item.dataset.view))); document.querySelectorAll('[data-go]').forEach((item) => item.addEventListener('click', () => showView(item.dataset.go))); $('#menu').addEventListener('click', () => $('#sidebar').classList.contains('open') ? closeMenu() : openMenu()); $('#nav-backdrop').addEventListener('click', closeMenu); $('#key-tenant-filter').addEventListener('change', renderKeys); $('#keys-refresh').addEventListener('click', loadKeys); $('#audit-filter').addEventListener('change', renderAudit); $('#audit-refresh').addEventListener('click', () => loadOverview().catch(() => {})); $('#export-map').addEventListener('click', () => exportLocal('core-nyra-schema.json', { system: 'Core + Nyra', exported_at: new Date().toISOString(), mode: 'read-only', map: ['Universal Core', 'Nyra', 'Core MCP', 'Connectors'] })); $('#export-audit').addEventListener('click', () => exportLocal('core-nyra-audit.json', { exported_at: new Date().toISOString(), events: state.audit })); $('#sign-out').addEventListener('click', async () => { try { await request('/admin/api/logout', { method: 'POST' }); } catch (_) {} state.csrf = null; state.user = null; hide(); }); $('#status-button').addEventListener('click', function () { togglePopover(this, `Core: sessione protetta · MFA: ${(state.overview && state.overview.admin_security && state.overview.admin_security.mfa) || '—'}`); }); $('#notification-button').addEventListener('click', function () { togglePopover(this, `${state.audit.length} eventi disponibili nel registro corrente.`); }); $('#profile-button').addEventListener('click', function () { togglePopover(this, state.user ? `${state.user.username} · ruolo ${state.user.role || '—'} · sola lettura` : 'Profilo non disponibile'); }); document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closeMenu(); $('#top-popover').classList.add('hidden'); document.querySelectorAll('[aria-expanded="true"]').forEach((node) => node.setAttribute('aria-expanded', 'false')); } });
+  (async () => { try { const data = await request('/admin/api/bootstrap'); if (data.authenticated) { state.csrf = data.csrf_token; renderUser(data.user); reveal(); await loadOverview(); } else if (!data.configured) $('#login-message').textContent = 'Owner iniziale da configurare sul server.'; } catch (_) { $('#login-message').textContent = 'Control Room non disponibile.'; } })();
 }());
