@@ -59,7 +59,7 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       } finally { client.release?.(); }
     },
     async issueGrant({ tenantId, subject, sessionId, toolName, requestDigest, nonce, now = new Date(), ttlSeconds = 300 }) {
-      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url");
+      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url"); now = now instanceof Date ? now : new Date(now);
       const client = typeof pool.connect === "function" ? await pool.connect() : pool;
       try { if (client.query !== pool.query) await client.query("BEGIN");
         await client.query("DELETE FROM core_owner_confirmation_grants WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);

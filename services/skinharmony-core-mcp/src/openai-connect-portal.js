@@ -285,8 +285,8 @@ export function createOpenAiConnectPortal({
         // bound to the sealed state nonce; no tenant or role comes from URL
         // input.
         if (identity.oauthOwnerBound === true) {
-          ownerGrantLedger.issue({ tenantId: identity.tenantId, subject: identity.subject, sessionId: session.nonce, toolName: "openai_connect", requestDigest: ownerRequestDigest(`${session.kind}\u0000${session.nonce}`), now: now() });
-          identity = { ...identity, ownerConfirmationGrant: true, role: "tenant_owner" };
+          const grant = await ownerGrantLedger.issue({ tenantId: identity.tenantId, subject: identity.subject, sessionId: session.nonce, toolName: "openai_connect", requestDigest: ownerRequestDigest(`${session.kind}\u0000${session.nonce}`), now: now() });
+          identity = { ...identity, ownerConfirmationGrant: true, ownerGrantNonce: grant.nonce, ownerGrantSessionId: session.nonce, role: "tenant_owner" };
         }
         if (!owner(identity)) throw new Error("owner_required");
         // Refresh the same short-lived tenant-bound portal session for both
