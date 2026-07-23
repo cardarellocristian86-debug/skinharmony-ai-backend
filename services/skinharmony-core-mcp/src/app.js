@@ -302,7 +302,7 @@ export function createApp(config, options = {}) {
       if (method === "initialize") {
         const sessionId = normalizeTransportSession(req.headers["mcp-session-id"]) || `mcp_${crypto.randomBytes(16).toString("hex")}`;
         res.set("Mcp-Session-Id", sessionId);
-        return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
+        return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS.replaceAll("owner_confirmed=true", "the secure confirmation page") } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
       if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [{
@@ -367,15 +367,54 @@ export function createApp(config, options = {}) {
             error: { code: -32602, message: "Owner confirmation is server-side only" },
           });
         }
-        // OAuth owner grants are issued and consumed server-side by the
-        // trusted portal. Client-supplied owner_confirmed/reference fields are
-        // intentionally ignored and never elevate a member identity.
-        if (identity.ownerGrantNonce && ownerGrantLedger?.consume) {
-          await ownerGrantLedger.consume({ nonce: identity.ownerGrantNonce, tenantId: identity.tenantId, subject: identity.subject, sessionId: identity.ownerGrantSessionId, toolName: tool.name, requestDigest: ownerRequestBinding(tool.name, rawArgs) });
-          identity = { ...identity, role: "tenant_owner", ownerGrantNonce: undefined };
-        }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
+        const requestSessionId = transportSessionId || declaredSessionId || identity.agentPresence?.session_id || "";
+        const privilegedOAuthTools = new Set([
+          "tenant_provider_openai_setup_link",
+          "tenant_provider_openai_multi_agent_smoke_run",
+          "tenant_provider_openai_multi_agent_run_read",
+          "tenant_provider_openai_multi_agent_run_cancel",
+        ]);
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && !ownerGrantLedger) {
+          return res.json({ jsonrpc: "2.0", id, error: { code: -32002, message: "confirmation_unavailable" } });
+        }
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && ownerGrantLedger) {
+          const requestDigest = ownerRequestBinding(tool.name, rawArgs);
+          try {
+            await ownerGrantLedger.consumeApprovedChallenge({
+              tenantId: identity.tenantId,
+              subject: identity.subject,
+              sessionId: requestSessionId,
+              toolName: tool.name,
+              requestDigest,
+            });
+            identity = {
+              ...identity,
+              role: "tenant_owner",
+              providerSetupOwner: true,
+              ...(tool.name === "tenant_provider_openai_multi_agent_smoke_run" ? { providerExecutionConfirmed: true } : {}),
+            };
+          } catch (error) {
+            if (error?.message === "owner_challenge_missing") {
+              let portalUrl = "/connect/openai";
+              try { portalUrl = `${new URL(config.auth0BrowserCallbackUrl).origin}/connect/openai`; } catch {}
+              const challenge = await ownerGrantLedger.issueChallenge({
+                tenantId: identity.tenantId,
+                subject: identity.subject,
+                sessionId: requestSessionId,
+                toolName: tool.name,
+                requestDigest,
+              });
+              return res.json({ jsonrpc: "2.0", id, error: {
+                code: -32001,
+                message: "confirmation_required",
+                data: { confirmation_required: true, challenge_id: challenge.challengeId, confirmation_url: `${portalUrl}?challenge_id=${encodeURIComponent(challenge.challengeId)}` },
+              } });
+            }
+            throw error;
+          }
+        }
         const transportPresence = transportSessionId
           ? transportPresenceBindings.get(transportSessionId)
           : null;

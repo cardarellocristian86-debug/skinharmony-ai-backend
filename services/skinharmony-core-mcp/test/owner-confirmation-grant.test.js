@@ -17,3 +17,14 @@ test("grant rejects tenant, request and expiry mismatch", () => {
   assert.throws(() => ledger.consume({ nonce: issued.nonce, tenantId: "codexai", subject: "owner", sessionId: "session", toolName: "other", requestDigest: "digest", now: 1000 }), /owner_grant_binding_mismatch/);
   assert.throws(() => ledger.consume({ nonce: issued.nonce, tenantId: "codexai", subject: "owner", sessionId: "session", toolName: "tool", requestDigest: "digest", now: 2001 }), /owner_grant_invalid/);
 });
+
+test("challenge approval enables exactly one matching retry", () => {
+  const ledger = createOwnerConfirmationGrantLedger({ ttlSeconds: 300 });
+  const requestDigest = ownerRequestDigest("tenant_provider_openai_multi_agent_smoke_run\u0000{task:fixed}");
+  const challenge = ledger.issueChallenge({ tenantId: "codexai", subject: "owner", sessionId: "mcp-session", toolName: "tenant_provider_openai_multi_agent_smoke_run", requestDigest, now: 1000 });
+  assert.throws(() => ledger.consumeApprovedChallenge({ tenantId: "codexai", subject: "owner", sessionId: "mcp-session", toolName: "tenant_provider_openai_multi_agent_smoke_run", requestDigest, now: 1001 }), /owner_challenge_missing/);
+  ledger.approveChallenge({ challengeId: challenge.challengeId, tenantId: "codexai", subject: "owner", now: 1002 });
+  assert.equal(ledger.consumeApprovedChallenge({ tenantId: "codexai", subject: "owner", sessionId: "mcp-session", toolName: "tenant_provider_openai_multi_agent_smoke_run", requestDigest, now: 1003 }), true);
+  assert.throws(() => ledger.consumeApprovedChallenge({ tenantId: "codexai", subject: "owner", sessionId: "mcp-session", toolName: "tenant_provider_openai_multi_agent_smoke_run", requestDigest, now: 1004 }), /owner_challenge_missing/);
+  assert.throws(() => ledger.approveChallenge({ challengeId: challenge.challengeId, tenantId: "other", subject: "owner", now: 1005 }), /owner_challenge_invalid/);
+});

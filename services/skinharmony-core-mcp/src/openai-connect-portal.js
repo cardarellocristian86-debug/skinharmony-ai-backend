@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { createOwnerConfirmationGrantLedger, ownerRequestDigest } from "./owner-confirmation-grant.js";
 
 const MAX_AGE_MS = 10 * 60 * 1000;
-const AGENT_PORTAL_SESSION_AGE_MS = 20 * 60 * 1000;
+const AGENT_PORTAL_SESSION_AGE_MS = 5 * 60 * 1000;
 const AGENT_PORTAL_SESSION_COOKIE = "__Host-skinharmony_agents";
 const AGENT_PORTAL_PATH = "/agents";
 
@@ -206,11 +206,13 @@ export function createOpenAiConnectPortal({
   // A client ID, a URL parameter, or an arbitrary tenant string can never
   // authorize credential entry.
   const owner = (identity) => identity?.kind === "oauth" && identity?.ownerConfirmationGrant === true && identity?.oauthOwnerBound === true;
-  const oauthStart = (res, kind) => {
+  const oauthStart = (req, res, kind) => {
     if (!enabled) return portalHtml(res, 503, page("Configurazione non disponibile", "<p>Il collegamento sicuro non è ancora configurato.</p>"));
     const verifier = crypto.randomBytes(48).toString("base64url");
+    const challengeId = String(req?.query?.challenge_id || "").trim();
     const state = b64(seal(stateKey, {
       kind,
+      ...(challengeId ? { challenge_id: challengeId } : {}),
       verifier,
       nonce: crypto.randomBytes(32).toString("base64url"),
       expires_at: now() + MAX_AGE_MS,
@@ -269,7 +271,7 @@ export function createOpenAiConnectPortal({
       // Wrap the sealed envelope once more as base64url. Some embedded OAuth
       // navigators normalize punctuation in query values; a single URL-safe
       // token avoids separator rewriting while retaining authenticated PKCE.
-      return oauthStart(res, "openai_connect_pkce_v2");
+      return oauthStart(req, res, "openai_connect_pkce_v2");
     },
     async callback(req, res) {
       const state = String(req.query.state || ""), code = String(req.query.code || "");
@@ -288,7 +290,10 @@ export function createOpenAiConnectPortal({
         // PKCE callback is the explicit one-time owner confirmation and is
         // bound to the sealed state nonce; no tenant or role comes from URL
         // input.
-        if (identity.oauthOwnerBound === true) {
+        if (session.challenge_id && identity.oauthOwnerBound === true) {
+          await ownerGrantLedger.approveChallenge({ challengeId: session.challenge_id, tenantId: identity.tenantId, subject: identity.subject, now: new Date(now()) });
+          return portalHtml(res, 200, page("Conferma registrata", "<p>Torna alla richiesta MCP originale per completare l’operazione.</p>"));
+        } else if (identity.oauthOwnerBound === true) {
           const grant = await ownerGrantLedger.issue({ tenantId: identity.tenantId, subject: identity.subject, sessionId: session.nonce, toolName: "openai_connect", requestDigest: ownerRequestDigest(`${session.kind}\u0000${session.nonce}`), now: now() });
           identity = { ...identity, ownerConfirmationGrant: true, ownerGrantNonce: grant.nonce, ownerGrantSessionId: session.nonce, role: "tenant_owner" };
         }
@@ -345,7 +350,7 @@ export function createOpenAiConnectPortal({
       return portalHtml(res, 410, page("Link scaduto", "<p>Apri di nuovo il collegamento iniziale.</p>"));
     },
     async agentsLogin(_req, res) {
-      return oauthStart(res, "openai_agents_pkce_v1");
+      return oauthStart(_req, res, "openai_agents_pkce_v1");
     },
     async agentsConnect(req, res) {
       const session = agentSession(req);
