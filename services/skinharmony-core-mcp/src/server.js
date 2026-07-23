@@ -12,11 +12,14 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
+import { createOwnerConfirmationLedger } from "./owner-confirmation-ledger.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
 const decisionLedger = createDecisionLedger(config);
 if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
+const ownerConfirmationLedger = createOwnerConfirmationLedger(config);
+if (config.decisionLedgerRequired && !ownerConfirmationLedger) throw new Error("owner_confirmation_ledger_database_required");
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
@@ -27,7 +30,7 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
 });
-const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
+const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience, ownerConfirmationLedger });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -56,6 +59,7 @@ function summarizeToolRequest(toolName, args = {}) {
 }
 
 const app = createApp(config, {
+  ownerConfirmationLedger,
   handlers: {
     tenant_provider_openai_setup_panel: async (_args, identity) => ({
       structuredContent: {

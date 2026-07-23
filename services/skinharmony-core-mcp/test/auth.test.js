@@ -260,21 +260,23 @@ test("binds only the configured verified OAuth subject to codexai and keeps it a
 test("elevates the bound owner only once, only when fresh and request-bound", async () => {
   const now = Math.floor(Date.now() / 1000);
   const fixture = auth0Fixture({ sub: "oauth-owner-fixture", iat: now, auth_time: now });
+  const consumed = new Set();
+  const ledger = { consume: async ({ reference }) => { if (consumed.has(reference)) throw new Error("owner_confirmation_replayed"); consumed.add(reference); } };
   const auth = createAuthenticator({
     ...fixture.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 300,
-  }, { jwksCache: fixture.cache });
+  }, { jwksCache: fixture.cache, ownerConfirmationLedger: ledger });
   const identity = await auth(`Bearer ${fixture.token}`);
-  assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: false, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_required/);
-  const elevated = auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" });
+  await assert.rejects(() => auth.elevateOAuthOwner(identity, { confirmed: false, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_required/);
+  const elevated = await auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" });
   assert.equal(elevated.role, "tenant_owner");
   assert.equal(elevated.providerSetupOwner, true);
-  assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_replayed/);
-  assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }), /owner_confirmation_replayed/);
+  await assert.rejects(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_replayed/);
+  await assert.rejects(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }), /owner_confirmation_replayed/);
   const secondAuth = createAuthenticator({
     ...fixture.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 300,
-  }, { jwksCache: fixture.cache });
+  }, { jwksCache: fixture.cache, ownerConfirmationLedger: ledger });
   const secondIdentity = await secondAuth(`Bearer ${fixture.token}`);
-  assert.throws(() => secondAuth.elevateOAuthOwner(secondIdentity, { confirmed: true, confirmationReference: "r1", requestBinding: "another-tool" }), /owner_confirmation_replayed/);
+  await assert.rejects(() => secondAuth.elevateOAuthOwner(secondIdentity, { confirmed: true, confirmationReference: "r1", requestBinding: "another-tool" }), /owner_confirmation_replayed/);
 });
 
 test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {
@@ -282,13 +284,13 @@ test("rejects impersonation, stale authentication and cross-tenant owner elevati
   const config = { ...stale.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 60 };
   const staleAuth = createAuthenticator(config, { jwksCache: stale.cache });
   const staleIdentity = await staleAuth(`Bearer ${stale.token}`);
-  assert.throws(() => staleAuth.elevateOAuthOwner(staleIdentity, { confirmed: true, confirmationReference: "stale", requestBinding: "x" }), /owner_authentication_stale/);
+  await assert.rejects(() => staleAuth.elevateOAuthOwner(staleIdentity, { confirmed: true, confirmationReference: "stale", requestBinding: "x" }), /owner_authentication_stale/);
 
   const other = auth0Fixture({ sub: "other-subject", azp: "shared-owner-client", "https://skinharmony.it/tenant_id": "codexai" });
   const otherAuth = createAuthenticator({ ...config, selfServiceTenantsEnabled: true }, { jwksCache: other.cache });
   const otherIdentity = await otherAuth(`Bearer ${other.token}`);
   assert.equal(otherIdentity.tenantId.startsWith("chatgpt_"), true);
-  assert.throws(() => otherAuth.elevateOAuthOwner(otherIdentity, { confirmed: true, confirmationReference: "r", requestBinding: "x" }), /owner_binding_required/);
+  await assert.rejects(() => otherAuth.elevateOAuthOwner(otherIdentity, { confirmed: true, confirmationReference: "r", requestBinding: "x" }), /owner_binding_required/);
 });
 
 test("enforces tool scopes", () => {

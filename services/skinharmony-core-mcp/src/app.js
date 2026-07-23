@@ -366,7 +366,7 @@ export function createApp(config, options = {}) {
         }
         if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
           OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) && rawArgs.owner_confirmed === true) {
-          identity = authenticate.elevateOAuthOwner(identity, {
+          identity = await authenticate.elevateOAuthOwner(identity, {
             confirmed: true,
             confirmationReference: rawArgs.confirmation_reference,
             requestBinding: ownerRequestBinding(tool.name, rawArgs),

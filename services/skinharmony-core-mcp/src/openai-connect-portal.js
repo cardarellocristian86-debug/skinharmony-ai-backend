@@ -284,7 +284,7 @@ export function createOpenAiConnectPortal({
         // bound to the sealed state nonce; no tenant or role comes from URL
         // input.
         if (identity.oauthOwnerBound === true && typeof authenticate.elevateOAuthOwner === "function") {
-          identity = authenticate.elevateOAuthOwner(identity, {
+          identity = await authenticate.elevateOAuthOwner(identity, {
             confirmed: true,
             confirmationReference: session.nonce,
             requestBinding: `oauth_connect_callback\u0000${session.kind}\u0000${session.nonce}`,
