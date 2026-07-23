@@ -216,6 +216,7 @@ function toolFailure(error) {
 export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
+  const ownerGrantLedger = options.ownerGrantLedger;
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
@@ -367,6 +368,10 @@ export function createApp(config, options = {}) {
         // OAuth owner grants are issued and consumed server-side by the
         // trusted portal. Client-supplied owner_confirmed/reference fields are
         // intentionally ignored and never elevate a member identity.
+        if (identity.ownerGrantNonce && ownerGrantLedger?.consume) {
+          await ownerGrantLedger.consume({ nonce: identity.ownerGrantNonce, tenantId: identity.tenantId, subject: identity.subject, sessionId: identity.ownerGrantSessionId, toolName: tool.name, requestDigest: ownerRequestBinding(tool.name, rawArgs) });
+          identity = { ...identity, role: "tenant_owner", ownerGrantNonce: undefined };
+        }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
         const transportPresence = transportSessionId
