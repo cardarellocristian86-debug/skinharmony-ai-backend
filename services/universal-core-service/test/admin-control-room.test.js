@@ -4,6 +4,7 @@ import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { createUniversalCoreService } from "../src/app.js";
 
 const serviceRoot = path.resolve(import.meta.dirname, "..");
@@ -320,6 +321,7 @@ test("admin key mutations fail closed for invalid tenant, role, csrf and confirm
 test("admin frontend has no fake operational data and disables unimplemented mutations accessibly", () => {
   const html = fs.readFileSync(path.join(uiRoot, "index.html"), "utf8");
   const script = fs.readFileSync(path.join(uiRoot, "app.js"), "utf8");
+  const styles = fs.readFileSync(path.join(uiRoot, "styles.css"), "utf8");
   for (const fake of ["Nyra Prime", "wordpress-production", "chatgpt-connector", "Routing preferenziale Nyra Fast", "Cristian", "Tutti i sistemi sono operativi"]) {
     assert.equal(html.includes(fake), false, `fake operational value must not be rendered: ${fake}`);
   }
@@ -333,4 +335,22 @@ test("admin frontend has no fake operational data and disables unimplemented mut
   assert.match(html, /<button[^>]*disabled[^>]*>\+ Registra agente<\/button>/);
   assert.match(html, /<button[^>]*disabled[^>]*>\+ Nuovo ramo<\/button>/);
   assert.match(script, /setAttribute\('aria-expanded'/);
+  assert.match(styles, /\.audit-log>div\{[^}]*grid-template-columns:minmax\(0,170px\) minmax\(0,140px\) minmax\(0,130px\) minmax\(0,1fr\)/);
+  assert.match(styles, /\.audit-log>div>\*\{min-width:0;overflow-wrap:anywhere\}/);
+  assert.match(styles, /\.audit-log \.badge\{max-width:100%;white-space:normal;text-align:center\}/);
+
+  const formatterSource = script.split("\n")
+    .filter((line) => line.includes("function formatDate(") || line.includes("function formatExpiry("))
+    .join("\n");
+  const formatters = vm.runInNewContext(`(() => { ${formatterSource}; return { formatDate, formatExpiry }; })()`);
+  assert.equal(formatters.formatDate(null), "—");
+  assert.equal(formatters.formatDate(""), "—");
+  for (const missing of [null, undefined, ""]) {
+    assert.equal(formatters.formatExpiry(missing), "Nessuna");
+  }
+  for (const expired of [0, "0", "1970-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z"]) {
+    assert.match(formatters.formatExpiry(expired), /^Scaduta · /);
+  }
+  assert.equal(formatters.formatExpiry("invalid"), "Non valida");
+  assert.match(formatters.formatExpiry("2030-06-15T12:30:00.000Z"), /2030/);
 });
