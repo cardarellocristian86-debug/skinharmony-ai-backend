@@ -103,8 +103,6 @@ const app = createApp(config, {
         agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
         client_type: identity.agentPresence?.client_type || args.client_type,
         available_capabilities: ["skinharmony_core_mcp", toolName],
-        owner_confirmed: identity.ownerConfirmed === true,
-        confirmation_reference: identity.confirmationReference,
       }, identity);
       const preflight = result.structuredContent;
       if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
@@ -125,14 +123,8 @@ const app = createApp(config, {
 });
 const openAiPortal = createOpenAiConnectPortal({
   config,
-  legacyOwnerPortalEnabled: false,
   authenticate: browserAuthenticate,
   ownerGrantLedger: createOwnerConfirmationGrantLedger({ persistentLedger: ownerConfirmationLedger, requirePersistent: config.decisionLedgerRequired === true }),
-  issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
-  providerStatus: coreHandlers.tenant_provider_openai_status,
-  startMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_smoke_run,
-  readMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_read,
-  cancelMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_cancel,
 });
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);

@@ -5,9 +5,9 @@ import { attachWorkPreflight, buildCallIdentity, TOOLS } from "../src/app.js";
 test("preserves providerExecutionConfirmed only after server-side challenge consumption", () => {
   const identity = buildCallIdentity({ kind: "oauth", providerExecutionConfirmed: true, godMode: false }, { session_id: "mcp-session" }, { owner_confirmed: false, confirmation_reference: "forged" });
   assert.equal(identity.providerExecutionConfirmed, true);
-  assert.equal(identity.ownerConfirmed, false);
   const forged = buildCallIdentity({ kind: "oauth", providerExecutionConfirmed: false, godMode: false }, { session_id: "mcp-session" }, { owner_confirmed: true, confirmation_reference: "forged" });
   assert.equal(forged.providerExecutionConfirmed, false);
+  assert.equal(Object.hasOwn(identity, "ownerConfirmed"), false);
 });
 
 test("advertises explicit confirmation fields only on write tools", () => {

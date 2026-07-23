@@ -219,7 +219,7 @@ test("never attaches an unrelated blocked generic preflight to the bounded provi
       headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "native-provider-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 44, method: "tools/call", params: {
         name: "tenant_provider_openai_multi_agent_smoke_run",
-        arguments: { task: "Run the fixed bounded test", owner_confirmed: true },
+        arguments: { task: "Run the fixed bounded test" },
       } }),
     }).then((response) => response.json());
     assert.equal(body.result.structuredContent.ok, true);
@@ -631,7 +631,7 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
   }
 });
 
-test("records explicit owner confirmation and completes a write after the Core gate", async () => {
+test("rejects model-supplied owner confirmation even for an otherwise privileged identity", async () => {
   let seenIdentity;
   const app = createApp({
     ...config,
@@ -690,12 +690,8 @@ test("records explicit owner confirmation and completes a write after the Core g
     });
     const body = await response.json();
     assert.equal(response.status, 200);
-    assert.equal(seenIdentity.ownerConfirmed, true);
-    assert.equal(seenIdentity.confirmationReference, "user confirmed report write");
-    assert.equal(body.result.structuredContent.work_preflight.state, "completed_after_core_gate");
-    assert.equal(body.result.structuredContent.work_preflight.gate.allowed, true);
-    assert.equal(body.result.structuredContent.work_preflight.governance.execution_authorized_by_core_gate, true);
-    assert.equal(JSON.parse(body.result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
+    assert.equal(seenIdentity, undefined);
+    assert.equal(body.error.message, "Owner confirmation is server-side only");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -732,9 +728,10 @@ test("does not accept a raw confirmation flag from a non-owner MCP caller", asyn
         },
       }),
     });
+    const body = await response.json();
     assert.equal(response.status, 200);
-    assert.equal(seenIdentity.ownerConfirmed, false);
-    assert.equal(seenIdentity.confirmationReference, "");
+    assert.equal(seenIdentity, undefined);
+    assert.equal(body.error?.message, "Owner confirmation is server-side only");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

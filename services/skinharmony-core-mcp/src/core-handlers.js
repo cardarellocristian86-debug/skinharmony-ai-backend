@@ -710,6 +710,7 @@ export function createCoreHandlers(config, options = {}) {
         method: "POST",
         body: {
           ...requestBody,
+          ...(identity.jobContractId ? { idempotency_key: identity.jobContractId } : {}),
           owner_context: ownerContext(identity, {
             providerSetup: true,
             requestBinding: ownerRequestBinding("tenant_openai_multiagent_run", requestBody),

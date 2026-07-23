@@ -65,12 +65,9 @@ function ownerChallengeSummary(toolName, args = {}) {
 }
 
 export function buildCallIdentity(identity, agentPresence, args = {}) {
-  const explicitOwnerConfirmation = identity.godMode === true && args.owner_confirmed === true;
   return {
     ...identity,
     agentPresence,
-    ownerConfirmed: explicitOwnerConfirmation,
-    confirmationReference: explicitOwnerConfirmation ? String(args.confirmation_reference || "").slice(0, 240) : "",
     // This flag is an output of server-side challenge consumption only.
     providerExecutionConfirmed: identity.providerExecutionConfirmed === true,
   };
@@ -385,9 +382,8 @@ export function createApp(config, options = {}) {
             },
           });
         }
-        if (identity.kind === "oauth" &&
-          (Object.prototype.hasOwnProperty.call(rawArgs, "owner_confirmed") ||
-           Object.prototype.hasOwnProperty.call(rawArgs, "confirmation_reference"))) {
+        if (Object.prototype.hasOwnProperty.call(rawArgs, "owner_confirmed") ||
+            Object.prototype.hasOwnProperty.call(rawArgs, "confirmation_reference")) {
           return res.json({
             jsonrpc: "2.0",
             id,
@@ -462,7 +458,22 @@ export function createApp(config, options = {}) {
           const requestDigest = ownerRequestBinding(tool.name, rawArgs);
           try {
             await ownerGrantLedger.consumeApprovedChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest });
-            identity = { ...identity, role: "tenant_owner", providerSetupOwner: true, ...(tool.name === "tenant_provider_openai_multi_agent_smoke_run" ? { providerExecutionConfirmed: true } : {}) };
+            if (tool.name === "tenant_provider_openai_multi_agent_smoke_run") {
+              const contract = await ownerGrantLedger.createJobContract({
+                tenantId: identity.tenantId,
+                subject: identity.subject,
+                sessionId,
+                taskDigest: requestDigest,
+                requestDigest,
+                agentsMax: 3,
+                callsMax: 3,
+                budgetMax: 600,
+              });
+              await ownerGrantLedger.reserveJobStart({ contractId: contract.contractId, tenantId: identity.tenantId, subject: identity.subject, sessionId });
+              identity = { ...identity, role: "tenant_owner", providerSetupOwner: true, providerExecutionConfirmed: true, jobContractId: contract.contractId };
+            } else {
+              identity = { ...identity, role: "tenant_owner", providerSetupOwner: true };
+            }
           } catch (error) {
             if (error?.message !== "owner_challenge_missing") throw error;
             let portalUrl = "/connect/openai";

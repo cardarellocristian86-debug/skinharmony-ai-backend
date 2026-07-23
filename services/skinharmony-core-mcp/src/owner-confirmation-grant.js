@@ -11,6 +11,12 @@ export function createOwnerConfirmationGrantLedger({ store = new Map(), ttlSecon
     getChallenge: (args) => persistentLedger.getChallenge(args),
     approveChallenge: (args) => persistentLedger.approveChallenge(args),
     consumeApprovedChallenge: (args) => persistentLedger.consumeApprovedChallenge(args),
+    createJobContract: (args) => persistentLedger.createJobContract(args),
+    reserveJobStart: (args) => persistentLedger.reserveJobStart(args),
+    attachJobRun: (args) => persistentLedger.attachJobRun(args),
+    authorizeJob: (args) => persistentLedger.authorizeJob(args),
+    saveJobReport: (args) => persistentLedger.saveJobReport(args),
+    cancelJob: (args) => persistentLedger.cancelJob(args),
   };
   const challenges = new Map();
   const boundedTtl = Math.min(300, Math.max(1, Number.isFinite(Number(ttlSeconds)) ? Number(ttlSeconds) : 300));

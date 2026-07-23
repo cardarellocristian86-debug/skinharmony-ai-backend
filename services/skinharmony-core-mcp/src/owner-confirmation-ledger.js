@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS core_owner_confirmation_grants (
   issued_at timestamptz NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz
 );
 CREATE TABLE IF NOT EXISTS core_owner_confirmation_challenges (
-  challenge_id char(64) UNIQUE NOT NULL, challenge_digest char(64) PRIMARY KEY, tenant_id varchar(64) NOT NULL,
+  challenge_digest char(64) PRIMARY KEY, challenge_id_ciphertext text NOT NULL, tenant_id varchar(64) NOT NULL,
   subject_digest char(64) NOT NULL, session_digest char(64) NOT NULL,
   tool_name varchar(120) NOT NULL, request_digest char(64) NOT NULL,
   challenge_summary varchar(500) NOT NULL DEFAULT '',
@@ -43,21 +43,33 @@ CREATE TABLE IF NOT EXISTS core_owner_confirmation_challenges (
 ALTER TABLE core_owner_confirmation_challenges
   ADD COLUMN IF NOT EXISTS challenge_summary varchar(500) NOT NULL DEFAULT '';
 ALTER TABLE core_owner_confirmation_challenges
-  ADD COLUMN IF NOT EXISTS challenge_id char(64);
+  ADD COLUMN IF NOT EXISTS challenge_id_ciphertext text;
 ALTER TABLE core_owner_confirmation_challenges
   ADD COLUMN IF NOT EXISTS challenge_summary_ciphertext text;
-CREATE UNIQUE INDEX IF NOT EXISTS core_owner_confirmation_challenge_id_idx
-  ON core_owner_confirmation_challenges (challenge_id);
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_lookup_idx
   ON core_owner_confirmation_challenges (tenant_id, subject_digest, session_digest, tool_name, request_digest);
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_challenge_expiry_idx
   ON core_owner_confirmation_challenges (expires_at);
+CREATE TABLE IF NOT EXISTS core_owner_job_contracts (
+  contract_id char(64) PRIMARY KEY, tenant_id varchar(64) NOT NULL,
+  subject_digest char(64) NOT NULL, session_digest char(64) NOT NULL,
+  task_digest char(64) NOT NULL, request_digest char(64) NOT NULL,
+  agents_max integer NOT NULL, calls_max integer NOT NULL, budget_max integer NOT NULL,
+  scopes text[] NOT NULL, status varchar(16) NOT NULL,
+  run_id varchar(160), report_id varchar(160),
+  issued_at timestamptz NOT NULL, confirmed_at timestamptz,
+  started_at timestamptz, completed_at timestamptz, expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS core_owner_job_contract_lookup_idx ON core_owner_job_contracts (tenant_id, subject_digest, session_digest, run_id);
+CREATE INDEX IF NOT EXISTS core_owner_job_contract_expiry_idx ON core_owner_job_contracts (expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS core_owner_job_contract_active_binding_idx ON core_owner_job_contracts (tenant_id, subject_digest, session_digest, request_digest) WHERE status IN ('confirmed','starting','running');
 CREATE UNIQUE INDEX IF NOT EXISTS core_owner_confirmation_challenge_binding_idx
   ON core_owner_confirmation_challenges (tenant_id, subject_digest, session_digest, tool_name, request_digest)
   WHERE consumed_at IS NULL;
 `;
 export const OWNER_CONFIRMATION_LEDGER_DOWN_SQL = `DROP TABLE IF EXISTS core_owner_confirmation_challenges; DROP TABLE IF EXISTS core_owner_confirmation_grants; DROP TABLE IF EXISTS core_owner_confirmation_ledger;`;
-export const OWNER_CONFIRMATION_LEDGER_MIGRATION_DOWN_SQL = `DROP INDEX IF EXISTS core_owner_confirmation_challenge_binding_idx; DROP INDEX IF EXISTS core_owner_confirmation_challenge_expiry_idx; DROP INDEX IF EXISTS core_owner_confirmation_challenge_id_idx; ALTER TABLE core_owner_confirmation_challenges DROP COLUMN IF EXISTS challenge_id; ALTER TABLE core_owner_confirmation_challenges DROP COLUMN IF EXISTS challenge_summary;`;
+export const OWNER_CONFIRMATION_LEDGER_MIGRATION_DOWN_SQL = `DROP TABLE IF EXISTS core_owner_job_contracts; DROP INDEX IF EXISTS core_owner_confirmation_challenge_binding_idx; DROP INDEX IF EXISTS core_owner_confirmation_challenge_expiry_idx; ALTER TABLE core_owner_confirmation_challenges DROP COLUMN IF EXISTS challenge_id_ciphertext; ALTER TABLE core_owner_confirmation_challenges DROP COLUMN IF EXISTS challenge_summary;`;
 
 export function createOwnerConfirmationLedger(config, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
@@ -74,8 +86,8 @@ export function createOwnerConfirmationLedger(config, options = {}) {
     // in the system catalogs.
     if (typeof pool.connect !== "function") return pool.query(SCHEMA_SQL);
     const client = await pool.connect();
-    try { await client.query("SELECT pg_advisory_lock(731942106)"); await client.query(SCHEMA_SQL); await client.query("SELECT pg_advisory_unlock(731942106)"); }
-    finally { client.release(); }
+    try { await client.query("SELECT pg_advisory_lock(731942106)"); await client.query(SCHEMA_SQL); }
+    finally { try { await client.query("SELECT pg_advisory_unlock(731942106)"); } finally { client.release(); } }
   })();
   return {
     schemaSql: SCHEMA_SQL,
@@ -119,22 +131,22 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       const challenge = crypto.randomBytes(32).toString("hex");
       await pool.query("DELETE FROM core_owner_confirmation_challenges WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);
       const result = await pool.query(`INSERT INTO core_owner_confirmation_challenges
-        (challenge_id,challenge_digest,tenant_id,subject_digest,session_digest,tool_name,request_digest,challenge_summary,challenge_summary_ciphertext,issued_at,expires_at)
+        (challenge_digest,challenge_id_ciphertext,tenant_id,subject_digest,session_digest,tool_name,request_digest,challenge_summary,challenge_summary_ciphertext,issued_at,expires_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
         ON CONFLICT (tenant_id, subject_digest, session_digest, tool_name, request_digest) WHERE consumed_at IS NULL
-        DO NOTHING RETURNING challenge_id, expires_at`, [challenge, digest(challenge), tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), "", encryptSummary(String(challengeSummary).slice(0, 500), encryptionKey), now, new Date(now.getTime() + ttlSeconds * 1000)]);
+        DO NOTHING RETURNING challenge_digest, expires_at`, [digest(challenge), encryptSummary(challenge, encryptionKey), tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), "", encryptSummary(String(challengeSummary).slice(0, 500), encryptionKey), now, new Date(now.getTime() + ttlSeconds * 1000)]);
       const row = result.rows?.[0];
       if (!row) {
-        const existing = await pool.query(`SELECT challenge_id, challenge_summary_ciphertext, expires_at FROM core_owner_confirmation_challenges WHERE tenant_id=$1 AND subject_digest=$2 AND session_digest=$3 AND tool_name=$4 AND request_digest=$5 AND consumed_at IS NULL AND expires_at>$6`, [tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), now]);
+        const existing = await pool.query(`SELECT challenge_id_ciphertext, challenge_summary_ciphertext, expires_at FROM core_owner_confirmation_challenges WHERE tenant_id=$1 AND subject_digest=$2 AND session_digest=$3 AND tool_name=$4 AND request_digest=$5 AND consumed_at IS NULL AND expires_at>$6`, [tenantId, digest(subject), digest(sessionId), toolName, digest(requestDigest), now]);
         if (!existing.rows?.length) throw new Error("owner_challenge_duplicate");
-        return { challengeId: existing.rows[0].challenge_id, toolName, summary: decryptSummary(existing.rows[0].challenge_summary_ciphertext, encryptionKey), expiresAt: new Date(existing.rows[0].expires_at).toISOString() };
+        return { challengeId: decryptSummary(existing.rows[0].challenge_id_ciphertext, encryptionKey), toolName, summary: decryptSummary(existing.rows[0].challenge_summary_ciphertext, encryptionKey), expiresAt: new Date(existing.rows[0].expires_at).toISOString() };
       }
       return { challengeId: challenge, toolName, summary: String(challengeSummary).slice(0, 500), expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString() };
     },
     async getChallenge({ challengeId, tenantId, subject, now = new Date() }) {
       if (!tenantId || !subject) throw new Error("owner_challenge_binding_required");
       await initialize(); now = now instanceof Date ? now : new Date(now);
-      const result = await pool.query(`SELECT tool_name, challenge_summary_ciphertext, expires_at FROM core_owner_confirmation_challenges WHERE challenge_id=$1 AND tenant_id=$2 AND subject_digest=$3 AND consumed_at IS NULL AND expires_at>$4`, [String(challengeId), String(tenantId), digest(subject), now]);
+      const result = await pool.query(`SELECT tool_name, challenge_summary_ciphertext, expires_at FROM core_owner_confirmation_challenges WHERE challenge_digest=$1 AND tenant_id=$2 AND subject_digest=$3 AND consumed_at IS NULL AND expires_at>$4`, [digest(challengeId), String(tenantId), digest(subject), now]);
       if (!result.rows?.length) throw new Error("owner_challenge_missing");
       return { toolName: result.rows[0].tool_name, summary: decryptSummary(result.rows[0].challenge_summary_ciphertext, encryptionKey), expiresAt: new Date(result.rows[0].expires_at).toISOString() };
     },
@@ -168,6 +180,30 @@ export function createOwnerConfirmationLedger(config, options = {}) {
       } catch (error) { if (client.query !== pool.query) await client.query("ROLLBACK").catch(() => {}); throw error; }
       finally { client.release?.(); }
     },
+    async createJobContract({ tenantId, subject, sessionId, taskDigest, requestDigest, agentsMax = 3, callsMax = 3, budgetMax = 600, scopes = ["start", "read", "report", "cancel"], now = new Date(), ttlSeconds = 300 }) {
+      await initialize(); const subjectDigest = digest(subject), sessionDigest = digest(sessionId), requestDigestValue = digest(requestDigest);
+      const existing = await pool.query(`SELECT contract_id, expires_at FROM core_owner_job_contracts WHERE tenant_id=$1 AND subject_digest=$2 AND session_digest=$3 AND request_digest=$4 AND status IN ('confirmed','starting','running') AND expires_at>$5 LIMIT 1`, [tenantId, subjectDigest, sessionDigest, requestDigestValue, now]);
+      if (existing.rows?.length) return { contractId: existing.rows[0].contract_id, expiresAt: new Date(existing.rows[0].expires_at).toISOString() };
+      const contractId = crypto.randomBytes(32).toString("hex"); const expiresAt = new Date(new Date(now).getTime() + boundedTtl(ttlSeconds) * 1000);
+      await pool.query(`INSERT INTO core_owner_job_contracts (contract_id,tenant_id,subject_digest,session_digest,task_digest,request_digest,agents_max,calls_max,budget_max,scopes,status,issued_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',$11,$12) ON CONFLICT DO NOTHING`, [contractId, tenantId, subjectDigest, sessionDigest, digest(taskDigest), requestDigestValue, agentsMax, callsMax, budgetMax, scopes, now, expiresAt]);
+      return { contractId, expiresAt: expiresAt.toISOString() };
+    },
+    async reserveJobStart({ contractId, tenantId, subject, sessionId, now = new Date() }) {
+      await initialize(); const client = await pool.connect();
+      try { await client.query("BEGIN");
+        const result = await client.query(`UPDATE core_owner_job_contracts
+          SET status=CASE WHEN run_id IS NULL THEN 'starting' ELSE status END,
+              started_at=COALESCE(started_at,$1), updated_at=$1
+          WHERE contract_id=$2 AND tenant_id=$3 AND subject_digest=$4 AND session_digest=$5
+            AND expires_at>$1 AND status IN ('confirmed','starting','running')
+          RETURNING contract_id,status,run_id,request_digest`, [now, contractId, tenantId, digest(subject), digest(sessionId)]);
+        await client.query("COMMIT"); if (!result.rows?.length) throw new Error("job_contract_invalid"); return result.rows[0];
+      } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; } finally { client.release(); }
+    },
+    async attachJobRun({ contractId, tenantId, subject, sessionId, runId, now = new Date() }) { await initialize(); const result = await pool.query(`UPDATE core_owner_job_contracts SET run_id=COALESCE(run_id,$1), status='running', updated_at=$2 WHERE contract_id=$3 AND tenant_id=$4 AND subject_digest=$5 AND session_digest=$6 AND expires_at>$2 AND status IN ('starting','running') RETURNING run_id`, [runId, now, contractId, tenantId, digest(subject), digest(sessionId)]); if (!result.rows?.length) throw new Error("job_contract_invalid"); return result.rows[0].run_id; },
+    async authorizeJob({ contractId, tenantId, subject, sessionId, runId, scope, now = new Date() }) { await initialize(); const result = await pool.query(`SELECT contract_id,run_id,status,scopes FROM core_owner_job_contracts WHERE contract_id=$1 AND tenant_id=$2 AND subject_digest=$3 AND session_digest=$4 AND run_id=$5 AND expires_at>$6 AND $7=ANY(scopes) AND status IN ('starting','running','completed','cancelled')`, [contractId, tenantId, digest(subject), digest(sessionId), runId, now, scope]); if (!result.rows?.length) throw new Error("job_contract_invalid"); return result.rows[0]; },
+    async saveJobReport({ contractId, tenantId, subject, sessionId, runId, reportId, now = new Date() }) { await initialize(); const result = await pool.query(`UPDATE core_owner_job_contracts SET report_id=$1, status='completed', completed_at=$2, updated_at=$2 WHERE contract_id=$3 AND tenant_id=$4 AND subject_digest=$5 AND session_digest=$6 AND run_id=$7 RETURNING report_id`, [reportId, now, contractId, tenantId, digest(subject), digest(sessionId), runId]); if (!result.rows?.length) throw new Error("job_contract_invalid"); return result.rows[0].report_id; },
+    async cancelJob({ contractId, tenantId, subject, sessionId, runId, now = new Date() }) { await initialize(); const result = await pool.query(`UPDATE core_owner_job_contracts SET status='cancelled', updated_at=$1 WHERE contract_id=$2 AND tenant_id=$3 AND subject_digest=$4 AND session_digest=$5 AND run_id=$6 AND expires_at>$1 AND status IN ('starting','running','cancelled') RETURNING run_id,status`, [now, contractId, tenantId, digest(subject), digest(sessionId), runId]); if (!result.rows?.length) throw new Error("job_contract_invalid"); return result.rows[0]; },
   };
 }
 
