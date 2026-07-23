@@ -136,7 +136,7 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     ...(selfServiceTenant ? { selfServiceTenant: true } : {}),
     ...(ownerTenantId ? { oauthOwnerBound: true } : {}),
     ...(tenantRole ? { tenantRole } : {}),
-    ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
+    ...(Number.isFinite(Number(payload.auth_time)) ? { authenticatedAt: Number(payload.auth_time) } : {}),
     scopes: tokenScopes(payload)
   };
 }

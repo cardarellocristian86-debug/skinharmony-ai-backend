@@ -291,6 +291,15 @@ test("rejects impersonation, stale authentication and cross-tenant owner elevati
   const otherIdentity = await otherAuth(`Bearer ${other.token}`);
   assert.equal(otherIdentity.tenantId.startsWith("chatgpt_"), true);
   await assert.rejects(() => otherAuth.elevateOAuthOwner(otherIdentity, { confirmed: true, confirmationReference: "r", requestBinding: "x" }), /owner_binding_required/);
+
+  const missing = auth0Fixture({ sub: "oauth-owner-fixture", iat: Math.floor(Date.now() / 1000) });
+  const missingAuth = createAuthenticator({ ...config }, { jwksCache: missing.cache });
+  const missingIdentity = await missingAuth(`Bearer ${missing.token}`);
+  await assert.rejects(() => missingAuth.elevateOAuthOwner(missingIdentity, { confirmed: true, confirmationReference: "missing", requestBinding: "x" }), /owner_authentication_stale/);
+  const future = auth0Fixture({ sub: "oauth-owner-fixture", auth_time: Math.floor(Date.now() / 1000) + 600 });
+  const futureAuth = createAuthenticator({ ...config }, { jwksCache: future.cache });
+  const futureIdentity = await futureAuth(`Bearer ${future.token}`);
+  await assert.rejects(() => futureAuth.elevateOAuthOwner(futureIdentity, { confirmed: true, confirmationReference: "future", requestBinding: "x" }), /owner_authentication_stale/);
 });
 
 test("enforces tool scopes", () => {

@@ -36,9 +36,9 @@ export function createOwnerConfirmationGrantLedger({ store = new Map(), ttlSecon
       challenges.set(hash(challengeId), { challengeId, binding, tenantId, subjectDigest: hash(subject), sessionDigest: hash(sessionId), toolName, requestDigest, expiresAt: now + boundedTtl * 1000, approved: false, consumed: false, summary: String(challengeSummary).slice(0, 500) });
       return { challengeId, toolName, summary: String(challengeSummary).slice(0, 500), expiresAt: new Date(now + boundedTtl * 1000).toISOString() };
     },
-    getChallenge({ challengeId, now = Date.now() }) {
+    getChallenge({ challengeId, tenantId, subject, now = Date.now() }) {
       const value = challenges.get(hash(challengeId));
-      if (!value || value.consumed || value.expiresAt <= now) throw new Error("owner_challenge_missing");
+      if (!tenantId || !subject || !value || value.consumed || value.expiresAt <= now || value.tenantId !== tenantId || value.subjectDigest !== hash(subject)) throw new Error("owner_challenge_missing");
       return { toolName: value.toolName, summary: value.summary || "", expiresAt: new Date(value.expiresAt).toISOString() };
     },
     approveChallenge({ challengeId, tenantId, subject, now = Date.now() }) {

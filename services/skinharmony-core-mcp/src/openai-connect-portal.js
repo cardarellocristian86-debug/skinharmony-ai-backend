@@ -314,7 +314,7 @@ export function createOpenAiConnectPortal({
         // bound to the sealed state nonce; no tenant or role comes from URL
         // input.
         if (session.challenge_id && identity.oauthOwnerBound === true) {
-          const details = await ownerGrantLedger.getChallenge({ challengeId: session.challenge_id, now: new Date(now()) });
+          const details = await ownerGrantLedger.getChallenge({ challengeId: session.challenge_id, tenantId: identity.tenantId, subject: identity.subject, now: new Date(now()) });
           const csrf = crypto.randomBytes(32).toString("base64url");
           setConfirmationSession(res, { challenge_id: session.challenge_id, identity: safeIdentity(identity), csrf, expires_at: now() + 300_000 });
           let summary = details.summary;
