@@ -69,7 +69,7 @@ test("the emergency stop disables owner_root immediately", async () => {
   });
 });
 
-test("activates owner_root only for an allowlisted OAuth subject in an owner tenant", async () => {
+test("never auto-elevates an OAuth subject to owner_root or god mode", async () => {
   const ownerSubject = "google-oauth2|owner";
   const ownerFixture = auth0Fixture({
     sub: ownerSubject,
@@ -89,9 +89,9 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
     godModeCodexEnabled: true,
   };
   const ownerIdentity = await createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache })(`Bearer ${ownerFixture.token}`);
-  assert.equal(ownerIdentity.role, "owner_root");
-  assert.equal(ownerIdentity.godMode, true);
-  assert.equal(ownerIdentity.providerSetupOwner, true);
+  assert.equal(ownerIdentity.role, "member");
+  assert.equal(ownerIdentity.godMode, undefined);
+  assert.equal(ownerIdentity.providerSetupOwner, undefined);
   assert.equal(ownerIdentity.clientId, "dynamic-chatgpt-client");
 
   const otherFixture = auth0Fixture({
@@ -269,7 +269,12 @@ test("elevates the bound owner only once, only when fresh and request-bound", as
   assert.equal(elevated.role, "tenant_owner");
   assert.equal(elevated.providerSetupOwner, true);
   assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_replayed/);
-  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }));
+  assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }), /owner_confirmation_replayed/);
+  const secondAuth = createAuthenticator({
+    ...fixture.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 300,
+  }, { jwksCache: fixture.cache });
+  const secondIdentity = await secondAuth(`Bearer ${fixture.token}`);
+  assert.throws(() => secondAuth.elevateOAuthOwner(secondIdentity, { confirmed: true, confirmationReference: "r1", requestBinding: "another-tool" }), /owner_confirmation_replayed/);
 });
 
 test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {

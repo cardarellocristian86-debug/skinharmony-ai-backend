@@ -22,6 +22,11 @@ function tokenScopes(payload) {
   ])];
 }
 
+// Confirmation references are process-wide capabilities, not per-tool
+// capabilities. A reference can never be replayed through another
+// authenticator, tool name or argument set.
+const consumedOwnerConfirmations = new Map();
+
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
   if (!value || typeof value !== "object") return value;
@@ -34,20 +39,14 @@ function stableCanonical(value) {
 function applyOwnerRoot(identity, config) {
   const enabled = config.godModeEnabled === true && config.godModeEmergencyStop !== true;
   const tenantMatch = (config.godModeTenantIds || [config.godModeTenantId].filter(Boolean)).includes(identity.tenantId);
-  const subjectAllowed = identity.kind === "codex"
-    ? config.godModeCodexEnabled === true
-    // A client/application ID identifies an OAuth application, not a human
-    // owner. It must never elevate every user of that application. OAuth
-    // owner-root therefore requires the authenticated subject to be allowlisted
-    // explicitly; an empty subject allowlist fails closed.
-    : (config.godModeSubjects || []).includes(identity.subject);
+  const subjectAllowed = identity.kind === "codex" && config.godModeCodexEnabled === true;
   if (!enabled || !tenantMatch || !subjectAllowed) return identity;
   return {
     ...identity,
     role: "owner_root",
     godMode: true,
     scopes: [...new Set([...identity.scopes, ...config.supportedScopes, "owner:root"])],
-    ...(identity.kind === "oauth" ? { providerSetupOwner: true } : {}),
+    ...(identity.kind === "codex" ? { providerSetupOwner: true } : {}),
   };
 }
 
@@ -68,9 +67,9 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const now = Math.floor(Date.now() / 1000);
   const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
   if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
-  const key = `${identity.subject}\u0000${reference}\u0000${crypto.createHash("sha256").update(requestBinding).digest("hex")}`;
-  if (consumed.has(key)) throw new Error("owner_confirmation_replayed");
-  consumed.set(key, now);
+  const bindingHash = crypto.createHash("sha256").update(requestBinding).digest("hex");
+  if (consumed.has(reference)) throw new Error("owner_confirmation_replayed");
+  consumed.set(reference, { consumed_at: now, binding_hash: bindingHash });
   while (consumed.size > 2_048) consumed.delete(consumed.keys().next().value);
   return { ...identity, role: "tenant_owner", providerSetupOwner: true, oauthOwnerElevated: true, ownerConfirmationReference: reference };
 }
@@ -143,7 +142,6 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
 
 export function createAuthenticator(config, options = {}) {
   const cache = options.jwksCache || new JwksCache(options.fetchImpl);
-  const consumedOwnerConfirmations = new Map();
   const jwtConfig = options.audience ? { ...config, auth0Audience: options.audience } : config;
   const authenticate = async function authenticate(header) {
     const match = String(header || "").match(/^Bearer\s+(.+)$/i);
