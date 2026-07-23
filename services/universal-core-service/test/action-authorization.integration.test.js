@@ -160,6 +160,10 @@ test("allows only exact Core and Nyra admin login secret references", () => {
     authenticated_tenant_id: "codexai",
     tenant_id: "codexai",
     authenticated_key_type: "connector",
+    agent_id: "connected_ai",
+    client_type: "chatgpt",
+    session_id: "admin-policy-test",
+    memory_context: { schema_version: "tenant_memory_context_v1", tenant_id: "codexai", revision: 1 },
     request_bound_owner_confirmation: true,
     owner_context_verified: true,
     owner_context_approval_bound: false,
@@ -211,6 +215,35 @@ test("allows only exact Core and Nyra admin login secret references", () => {
   assert.equal(allowed.allowed, true);
   assert.equal(allowed.scope, "reversible_owner_confirmed_core_admin_bootstrap_configuration");
 
+  const genericDeploy = {
+    action_type: "deploy",
+    operation_class: "reversible_owner_confirmed_deploy",
+    external_side_effect: true,
+    contains_customer_data: false,
+    cross_tenant: false,
+    rollback_ready: true,
+    audit_ready: true,
+    configuration_changes: false,
+    target_commit: base.target_commit,
+    confirmation_reference: "owner-confirmed-generic-deploy",
+    owner_confirmed: true,
+  };
+  assert.equal(evaluate(genericDeploy).authorization.allowed, true);
+  assert.equal(evaluate({
+    ...genericDeploy,
+    target_service: base.target_service,
+    target_service_id: base.target_service_id,
+  }).authorization.allowed, true);
+  for (const collision of [
+    { allowed_environment_variables: environmentVariables },
+    { confirmation_environment_variables: environmentVariables },
+    { action_label: base.action_label },
+    { target: base.target },
+    { CORE_ADMIN_BOOTSTRAP_PASSWORD: "must-not-be-accepted" },
+  ]) {
+    assert.equal(evaluate({ ...genericDeploy, ...collision }).authorization.allowed, false);
+  }
+
   for (const unsafe of [
     { owner_confirmed: false },
     { secret_value_transmitted: true },
@@ -226,6 +259,9 @@ test("allows only exact Core and Nyra admin login secret references", () => {
     { readback_required: false },
     { request_bound_owner_confirmation: false },
     { authenticated_key_type: "automation" },
+    { memory_context: { tenant_id: "tenant-b" } },
+    { memory_context: { schema_version: "caller_memory_v1", tenant_id: "codexai", revision: 1 } },
+    { memory_context: { schema_version: "tenant_memory_context_v1", tenant_id: "codexai", revision: -1 } },
     { unexpected_field: true },
   ]) {
     assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);

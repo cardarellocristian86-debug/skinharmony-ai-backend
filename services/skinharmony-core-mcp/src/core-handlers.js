@@ -831,6 +831,7 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: _untrustedTenantId,
         authenticated_tenant_id: _untrustedAuthenticatedTenantId,
         owner_context: _untrustedOwnerContext,
+        memory_context: _untrustedMemoryContext,
         ...safeArgs
       } = args;
       const requestBody = sanitizeCoreBody({

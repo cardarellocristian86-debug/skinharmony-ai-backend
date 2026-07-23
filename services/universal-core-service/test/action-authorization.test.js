@@ -81,6 +81,21 @@ test("keeps incomplete, configuration-changing and cross-tenant deploys closed",
     { ...reversibleDeploy, owner_confirmed: true, configuration_changes: true },
     { ...reversibleDeploy, owner_confirmed: true, cross_tenant: true },
     { ...reversibleDeploy, owner_confirmed: true, confirmation_reference: "" },
+    {
+      ...reversibleDeploy,
+      owner_confirmed: true,
+      allowed_environment_variables: ["CORE_ADMIN_SESSION_SECRET"],
+    },
+    {
+      ...reversibleDeploy,
+      owner_confirmed: true,
+      target: "skinharmony-core-nyra-admin-login",
+    },
+    {
+      ...reversibleDeploy,
+      owner_confirmed: true,
+      CORE_ADMIN_BOOTSTRAP_PASSWORD: "must-not-be-accepted",
+    },
   ]) {
     assert.equal(buildActionAuthorization(contract(), unsafe).allowed, false);
   }
@@ -149,6 +164,10 @@ const adminControlRoomSecretConfiguration = {
   authenticated_tenant_id: "codexai",
   tenant_id: "codexai",
   authenticated_key_type: "connector",
+  agent_id: "connected_ai",
+  client_type: "chatgpt",
+  session_id: "admin-policy-test",
+  memory_context: { schema_version: "tenant_memory_context_v1", tenant_id: "codexai", revision: 1 },
   request_bound_owner_confirmation: true,
   owner_context_verified: true,
   owner_context_approval_bound: false,
@@ -241,6 +260,10 @@ test("authorizes only the exact owner-confirmed Core and Nyra admin login secret
     { request_bound_owner_confirmation: false },
     { authenticated_key_type: "automation" },
     { owner_context_verified: false },
+    { agent_id: "invalid agent" },
+    { client_type: "browser" },
+    { session_id: "" },
+    { memory_context: { tenant_id: "another-tenant" } },
   ]) {
     const result = buildActionAuthorization(contract({ risk_band: "high" }), {
       ...adminControlRoomSecretConfiguration,

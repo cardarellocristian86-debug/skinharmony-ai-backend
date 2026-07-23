@@ -181,6 +181,148 @@ test("Core gate overwrites caller confirmation and tenant fields with verified i
   assert.match(calls[2].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
 });
 
+test("Core gate preserves governed memory and agent presence for the exact admin bootstrap envelope", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    contextProvider: async (_input, identity) => ({
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: identity.tenantId,
+      revision: 2,
+      relevant_memories: [],
+    }),
+  });
+  const environmentVariables = [
+    "CORE_ADMIN_SESSION_SECRET",
+    "CORE_ADMIN_BOOTSTRAP_USERNAME",
+    "CORE_ADMIN_BOOTSTRAP_PASSWORD",
+  ];
+  await handlers.core_gate_action({
+    action_label: "Configure Core Admin Control Room bootstrap references",
+    action_type: "environment_configuration",
+    operation_class: "reversible_owner_confirmed_core_admin_bootstrap_configuration",
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    values_present_in_envelope: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    readback_required: true,
+    configuration_changes: true,
+    environment: "production",
+    target: "skinharmony-core-nyra-admin-login",
+    target_service: "skinharmony-universal-core",
+    target_service_id: "srv-d82c9j3tqb8s73cgriag",
+    resource_type: "render_environment_variable_bundle",
+    render_environment_update: true,
+    other_environment_changes: false,
+    create_missing_only: true,
+    overwrite_existing: false,
+    current_values_present: false,
+    rollback_remove_new_variables: true,
+    allowed_environment_variables: environmentVariables,
+    auth0_changes: false,
+    database_changes: false,
+    storage_changes: false,
+    domain_changes: false,
+    scaling_changes: false,
+    merge: false,
+    deploy: false,
+    production_deploy: false,
+    delete: false,
+    provider_execution: false,
+    execution_enabled: false,
+    force: false,
+    admin_bypass: false,
+    target_commit: "1".repeat(40),
+    confirmation_target_commit: "1".repeat(40),
+    confirmation_target_service: "skinharmony-universal-core",
+    confirmation_target_service_id: "srv-d82c9j3tqb8s73cgriag",
+    confirmation_environment_variables: environmentVariables,
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-admin-bootstrap",
+    agent_id: "connected_ai",
+    client_type: "chatgpt",
+    session_id: "session-admin-bootstrap",
+    memory_context: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "caller-controlled",
+      revision: 999,
+    },
+  }, {
+    tenantId: "codexai",
+    kind: "oauth",
+    subject: "oauth|owner",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+    confirmationReference: "owner-confirmed-admin-bootstrap",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].tenant_id, "codexai");
+  assert.equal(calls[0].memory_context.tenant_id, "codexai");
+  assert.equal(calls[0].memory_context.revision, 2);
+  assert.equal(calls[0].agent_id, "connected_ai");
+  assert.equal(calls[0].client_type, "chatgpt");
+  assert.equal(calls[0].session_id, "session-admin-bootstrap");
+  assert.equal(calls[0].owner_confirmed, true);
+  assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.deepEqual(calls[0].allowed_environment_variables, environmentVariables);
+});
+
+test("Core gate discards caller memory when governed context is unavailable", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await handlers.core_gate_action({
+    action_label: "Configure Core Admin Control Room bootstrap references",
+    action_type: "environment_configuration",
+    operation_class: "reversible_owner_confirmed_core_admin_bootstrap_configuration",
+    memory_context: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "codexai",
+      revision: 999,
+    },
+  }, {
+    tenantId: "codexai",
+    kind: "oauth",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+    confirmationReference: "owner-confirmed-admin-bootstrap",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal("memory_context" in calls[0], false);
+});
+
 test("Core gate builds the provider binding envelope itself and rejects caller-supplied scope", async () => {
   const calls = [];
   const handlers = createCoreHandlers({
