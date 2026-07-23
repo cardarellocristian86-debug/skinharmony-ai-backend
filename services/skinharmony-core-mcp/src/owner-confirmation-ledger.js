@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS core_owner_confirmation_ledger (
 );
 CREATE INDEX IF NOT EXISTS core_owner_confirmation_ledger_expiry_idx
   ON core_owner_confirmation_ledger (expires_at);
+CREATE TABLE IF NOT EXISTS core_owner_confirmation_grants (
+  nonce_digest char(64) PRIMARY KEY, tenant_id varchar(64) NOT NULL,
+  subject_digest char(64) NOT NULL, session_digest char(64) NOT NULL,
+  tool_name varchar(120) NOT NULL, request_digest char(64) NOT NULL,
+  issued_at timestamptz NOT NULL, expires_at timestamptz NOT NULL, consumed_at timestamptz
+);
 `;
 
 export function createOwnerConfirmationLedger(config, options = {}) {
@@ -51,6 +57,19 @@ export function createOwnerConfirmationLedger(config, options = {}) {
         if (client.query !== pool.query) await client.query("ROLLBACK").catch(() => {});
         throw error;
       } finally { client.release?.(); }
+    },
+    async issueGrant({ tenantId, subject, sessionId, toolName, requestDigest, nonce, now = new Date(), ttlSeconds = 300 }) {
+      await initialize(); const issued = nonce || crypto.randomBytes(32).toString("base64url");
+      const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+      try { if (client.query !== pool.query) await client.query("BEGIN");
+        await client.query("DELETE FROM core_owner_confirmation_grants WHERE expires_at <= $1 OR consumed_at IS NOT NULL", [now]);
+        await client.query(`INSERT INTO core_owner_confirmation_grants (nonce_digest,tenant_id,subject_digest,session_digest,tool_name,request_digest,issued_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [digest(issued),tenantId,digest(subject),digest(sessionId),toolName,digest(requestDigest),now,new Date(now.getTime()+ttlSeconds*1000)]);
+        if (client.query !== pool.query) await client.query("COMMIT"); return { nonce: issued };
+      } catch (e) { if (client.query !== pool.query) await client.query("ROLLBACK").catch(()=>{}); throw e; } finally { client.release?.(); }
+    },
+    async consumeGrant({ nonce, tenantId, subject, sessionId, toolName, requestDigest, now = new Date() }) {
+      await initialize(); const result = await pool.query(`UPDATE core_owner_confirmation_grants SET consumed_at=$1 WHERE nonce_digest=$2 AND tenant_id=$3 AND subject_digest=$4 AND session_digest=$5 AND tool_name=$6 AND request_digest=$7 AND expires_at>$1 AND consumed_at IS NULL RETURNING nonce_digest`, [now,digest(nonce),tenantId,digest(subject),digest(sessionId),toolName,digest(requestDigest)]);
+      if (!result.rows?.length) throw new Error("owner_grant_invalid"); return true;
     },
   };
 }

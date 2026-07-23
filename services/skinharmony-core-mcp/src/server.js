@@ -123,6 +123,7 @@ const app = createApp(config, {
 const openAiPortal = createOpenAiConnectPortal({
   config,
   authenticate: browserAuthenticate,
+  ownerGrantLedger: createOwnerConfirmationGrantLedger({ persistentLedger: ownerConfirmationLedger, requirePersistent: config.decisionLedgerRequired === true }),
   issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
   providerStatus: coreHandlers.tenant_provider_openai_status,
   startMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_smoke_run,

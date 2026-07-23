@@ -4,7 +4,7 @@ const hash = (value) => crypto.createHash("sha256").update(String(value)).digest
 
 export function createOwnerConfirmationGrantLedger({ store = new Map(), ttlSeconds = 300, persistentLedger = null, requirePersistent = false } = {}) {
   if (requirePersistent && !persistentLedger) throw new Error("owner_grant_ledger_unavailable");
-  if (persistentLedger) return persistentLedger;
+  if (persistentLedger) return { issue: (args) => persistentLedger.issueGrant(args), consume: (args) => persistentLedger.consumeGrant(args) };
   return {
     issue({ tenantId, subject, sessionId, toolName, requestDigest, now = Date.now() }) {
       const nonce = crypto.randomBytes(32).toString("base64url");
