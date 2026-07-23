@@ -294,6 +294,108 @@ test("action evaluator rejects a caller boolean and accepts only a scoped reques
   assert.equal(replay.json.authorization.allowed, false);
 }));
 
+test("Core admin bootstrap configuration requires an exact signed owner envelope and emits safe audit fields", async () => fixture(async (request, { storageRoot }) => {
+  const environmentVariables = [
+    "CORE_ADMIN_SESSION_SECRET",
+    "CORE_ADMIN_BOOTSTRAP_USERNAME",
+    "CORE_ADMIN_BOOTSTRAP_PASSWORD",
+  ];
+  const base = {
+    action_label: "Configure Core Admin Control Room bootstrap references",
+    action_type: "environment_configuration",
+    operation_class: "reversible_owner_confirmed_core_admin_bootstrap_configuration",
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    values_present_in_envelope: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    readback_required: true,
+    configuration_changes: true,
+    environment: "production",
+    target: "skinharmony-core-nyra-admin-login",
+    target_service: "skinharmony-universal-core",
+    target_service_id: "srv-d82c9j3tqb8s73cgriag",
+    resource_type: "render_environment_variable_bundle",
+    render_environment_update: true,
+    other_environment_changes: false,
+    create_missing_only: true,
+    overwrite_existing: false,
+    current_values_present: false,
+    rollback_remove_new_variables: true,
+    allowed_environment_variables: environmentVariables,
+    auth0_changes: false,
+    database_changes: false,
+    storage_changes: false,
+    domain_changes: false,
+    scaling_changes: false,
+    merge: false,
+    deploy: false,
+    production_deploy: false,
+    delete: false,
+    provider_execution: false,
+    execution_enabled: false,
+    force: false,
+    admin_bypass: false,
+    target_commit: "4".repeat(40),
+    confirmation_target_commit: "4".repeat(40),
+    confirmation_target_service: "skinharmony-universal-core",
+    confirmation_target_service_id: "srv-d82c9j3tqb8s73cgriag",
+    confirmation_environment_variables: environmentVariables,
+    confirmation_reference: "owner-confirmed-core-admin-bootstrap-test",
+  };
+  const automation = await request("POST", "/v1/keys/generate", {
+    tenant_id: "codexai",
+    key_type: "automation",
+    allowed_scopes: ["read:decision", "automation:codex"],
+  });
+  const forged = await request("POST", "/v1/action-evaluator", {
+    ...base,
+    owner_confirmed: true,
+  }, automation.json.key);
+  assert.equal(forged.status, 200);
+  assert.equal(forged.json.authorization.allowed, false);
+  assert.equal(forged.json.authorization.state, "blocked");
+
+  const owner = await request("POST", "/v1/keys/generate", {
+    tenant_id: "codexai",
+    key_type: "connector",
+    allowed_scopes: ["read:decision", "owner:assertion"],
+  });
+  const signedBody = { ...base, owner_confirmed: true };
+  const authorized = await request("POST", "/v1/action-evaluator", {
+    ...signedBody,
+    owner_context: signedOwnerContext(owner.json.key, "codexai", signedBody, "core_action_evaluator"),
+  }, owner.json.key);
+  assert.equal(authorized.status, 200);
+  assert.equal(authorized.json.authorization.allowed, true);
+  assert.equal(
+    authorized.json.authorization.scope,
+    "reversible_owner_confirmed_core_admin_bootstrap_configuration",
+  );
+
+  const changed = {
+    ...signedBody,
+    allowed_environment_variables: [...environmentVariables, "DATABASE_URL"],
+  };
+  const rebound = await request("POST", "/v1/action-evaluator", {
+    ...changed,
+    owner_context: signedOwnerContext(owner.json.key, "codexai", signedBody, "core_action_evaluator"),
+  }, owner.json.key);
+  assert.equal(rebound.json.authorization.allowed, false);
+  assert.equal(rebound.json.authorization.state, "blocked");
+
+  const auditLog = fs.readFileSync(path.join(storageRoot, "audit", "events.jsonl"), "utf8");
+  assert.equal(auditLog.includes("core_admin_bootstrap_authorized"), true);
+  assert.equal(auditLog.includes("CORE_ADMIN_BOOTSTRAP_PASSWORD"), true);
+  assert.equal(auditLog.includes("owner_context_assertion_v1"), false);
+  assert.equal(auditLog.includes("ocs_"), false);
+}));
+
 test("MCP default tenant correction rejects automation and requires an exact explicit owner proof", async () => fixture(async (request, { storageRoot }) => {
   const base = {
     action_label: "Correct the Codex default tenant binding",

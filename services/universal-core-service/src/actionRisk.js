@@ -164,6 +164,24 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
+  if (operationClass === "reversible_owner_confirmed_core_admin_bootstrap_configuration") {
+    return profile({
+      classification: "core_admin_bootstrap_configuration",
+      operationClass,
+      state: "attention",
+      riskBand: "high",
+      riskScore: 85,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: [
+        "owner_confirmation_required",
+        "request_bound_owner_proof_required",
+        "exact_render_environment_bundle_required",
+        "secret_values_outside_core_envelope",
+      ],
+    });
+  }
+
   if (operationClass === "reversible_owner_confirmed_mcp_default_tenant_correction") {
     return profile({
       classification: "mcp_default_tenant_correction",

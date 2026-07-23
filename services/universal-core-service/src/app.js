@@ -5251,6 +5251,8 @@ export function createUniversalCoreService(options = {}) {
       req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
     const tenantBindingAttempt = req.body?.operation_class ===
       "reversible_owner_confirmed_mcp_default_tenant_correction";
+    const coreAdminBootstrapAttempt = req.body?.operation_class ===
+      "reversible_owner_confirmed_core_admin_bootstrap_configuration";
     const requestBoundOwnerConfirmation = trustedOwnerContext && req.body?.owner_confirmed === true;
     const governedReq = Object.create(req);
     governedReq.body = {
@@ -5260,7 +5262,7 @@ export function createUniversalCoreService(options = {}) {
       // production tenant correction below must never accept a caller boolean
       // or the broader automation compatibility path in place of an exact,
       // request-bound owner proof.
-      ...(tenantBindingAttempt ? {
+      ...(tenantBindingAttempt || coreAdminBootstrapAttempt ? {
         request_bound_owner_confirmation: requestBoundOwnerConfirmation,
         authenticated_key_type: req.coreKey?.key_type || null,
       } : {}),
@@ -5300,6 +5302,8 @@ export function createUniversalCoreService(options = {}) {
       "reversible_owner_confirmed_mcp_default_tenant_correction",
       "reversible_owner_confirmed_mcp_default_tenant_blueprint_alignment",
     ].includes(authorization.scope);
+    const coreAdminBootstrapAuthorization = authorization.allowed === true &&
+      authorization.scope === "reversible_owner_confirmed_core_admin_bootstrap_configuration";
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -5330,6 +5334,18 @@ export function createUniversalCoreService(options = {}) {
       authorization_target_environment_variable: tenantBindingAuthorization ? "MCP_DEFAULT_TENANT_ID" : null,
       authorization_current_tenant_id: tenantBindingAuthorization ? "owner-private" : null,
       authorization_target_tenant_id: tenantBindingAuthorization ? "codexai" : null,
+      core_admin_bootstrap_authorized: coreAdminBootstrapAuthorization,
+      core_admin_bootstrap_target_service:
+        coreAdminBootstrapAuthorization ? "skinharmony-universal-core" : null,
+      core_admin_bootstrap_target_service_id:
+        coreAdminBootstrapAuthorization ? "srv-d82c9j3tqb8s73cgriag" : null,
+      core_admin_bootstrap_environment_variables: coreAdminBootstrapAuthorization
+        ? [
+            "CORE_ADMIN_SESSION_SECRET",
+            "CORE_ADMIN_BOOTSTRAP_USERNAME",
+            "CORE_ADMIN_BOOTSTRAP_PASSWORD",
+          ]
+        : [],
     });
     res.json({
       ok: true,
