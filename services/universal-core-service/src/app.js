@@ -94,6 +94,7 @@ import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js"
 import { createTenantProviderCredentialStore } from "./tenantProviderCredentialStore.js";
 import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkStore.js";
 import { createTenantOpenAiMultiAgentRunner } from "./tenantOpenAiMultiAgentRunner.js";
+import { mountAdminControlRoom } from "./adminControlRoom.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -3685,6 +3686,16 @@ export function createUniversalCoreService(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
+  mountAdminControlRoom({
+    app,
+    storageRoot,
+    audit,
+    keyStore,
+    tenants,
+    nyraCatalog: nyraBranchCatalog,
+    agentRegistry: multiAgentRegistry,
+    uiRoot: path.join(__dirname, "../admin-ui"),
+  });
   app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => {
     const token = validProviderSetupToken(req.params.token);
     if (!token) return providerSetupHtml(res, 404, "Link non valido.");
