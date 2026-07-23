@@ -22,6 +22,15 @@ function tokenScopes(payload) {
   ])];
 }
 
+function stableCanonical(value) {
+  if (Array.isArray(value)) return value.map(stableCanonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    if (value[key] !== undefined) result[key] = stableCanonical(value[key]);
+    return result;
+  }, {});
+}
+
 function applyOwnerRoot(identity, config) {
   const enabled = config.godModeEnabled === true && config.godModeEmergencyStop !== true;
   const tenantMatch = (config.godModeTenantIds || [config.godModeTenantId].filter(Boolean)).includes(identity.tenantId);
@@ -43,14 +52,27 @@ function applyOwnerRoot(identity, config) {
 }
 
 function applyTenantProviderOwner(identity, config) {
-  // A tenant administrator may manage only the provider credentials of the
-  // tenant carried by their verified token. This is deliberately separate
-  // from SkinHarmony's global owner_root emergency/governance role.
-  if (identity.kind !== "oauth" || identity.providerSetupOwner === true) return identity;
-  if (identity.selfServiceTenant === true) return { ...identity, role: "tenant_owner", providerSetupOwner: true };
-  const role = String(identity.tenantRole || "").trim();
-  if (!role || !(config.tenantOwnerRoles || []).includes(role)) return identity;
-  return { ...identity, role: role === "owner_root" ? "tenant_owner" : role, providerSetupOwner: true };
+  // OAuth identities are members by default. Owner capabilities are granted
+  // only by the fresh, request-bound elevation below.
+  if (identity.kind !== "oauth" || identity.oauthOwnerElevated === true) return identity;
+  return { ...identity, role: identity.role || "member" };
+}
+
+function elevateOAuthOwner(identity, proof, config, consumed) {
+  if (identity?.kind !== "oauth" || identity?.oauthOwnerBound !== true) throw new Error("owner_binding_required");
+  if (proof?.confirmed !== true) throw new Error("owner_confirmation_required");
+  const reference = String(proof?.confirmationReference || "").trim();
+  const requestBinding = String(proof?.requestBinding || "").trim();
+  if (!reference || reference.length > 240 || !requestBinding || requestBinding.length > 20_000) throw new Error("owner_confirmation_invalid");
+  const authTime = Number(identity.authenticatedAt);
+  const now = Math.floor(Date.now() / 1000);
+  const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
+  if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
+  const key = `${identity.subject}\u0000${reference}\u0000${crypto.createHash("sha256").update(requestBinding).digest("hex")}`;
+  if (consumed.has(key)) throw new Error("owner_confirmation_replayed");
+  consumed.set(key, now);
+  while (consumed.size > 2_048) consumed.delete(consumed.keys().next().value);
+  return { ...identity, role: "tenant_owner", providerSetupOwner: true, oauthOwnerElevated: true, ownerConfirmationReference: reference };
 }
 
 export class JwksCache {
@@ -95,30 +117,35 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (!subject) throw new Error("jwt_subject_missing");
   const claimedTenantId = String(payload[config.tenantClaim] || "").trim();
   const tenantRole = String(payload[config.tenantOwnerRoleClaim] || "").trim();
+  const ownerTenantId = config.oauthOwnerTenantBindings?.[subject] || "";
   // Consumer users do not need an Auth0 administrator to pre-provision a
   // tenant or role. When the feature is enabled, an unprivileged login is
   // assigned a stable personal tenant derived only from its verified subject.
-  // Explicit tenant administrators retain their configured shared tenant.
-  const selfServiceTenant = config.selfServiceTenantsEnabled === true && !tenantRole;
-  const tenantId = selfServiceTenant
+  // Only the server-side owner binding may select the shared codexai tenant.
+  const selfServiceTenant = !ownerTenantId && config.selfServiceTenantsEnabled === true;
+  const tenantId = ownerTenantId || (selfServiceTenant
     ? `chatgpt_${crypto.createHash("sha256").update(`self-service-tenant\u0000${subject}`).digest("hex").slice(0, 32)}`
-    : claimedTenantId;
+    : claimedTenantId);
   if (!tenantId) throw new Error("jwt_tenant_missing");
   return {
     kind: "oauth",
     subject,
     ...(payload.azp || payload.client_id ? { clientId: String(payload.azp || payload.client_id) } : {}),
     tenantId,
+    role: "member",
     ...(selfServiceTenant ? { selfServiceTenant: true } : {}),
+    ...(ownerTenantId ? { oauthOwnerBound: true } : {}),
     ...(tenantRole ? { tenantRole } : {}),
+    ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
     scopes: tokenScopes(payload)
   };
 }
 
 export function createAuthenticator(config, options = {}) {
   const cache = options.jwksCache || new JwksCache(options.fetchImpl);
+  const consumedOwnerConfirmations = new Map();
   const jwtConfig = options.audience ? { ...config, auth0Audience: options.audience } : config;
-  return async function authenticate(header) {
+  const authenticate = async function authenticate(header) {
     const match = String(header || "").match(/^Bearer\s+(.+)$/i);
     if (!match) throw new Error("bearer_required");
     const token = match[1].trim();
@@ -128,6 +155,15 @@ export function createAuthenticator(config, options = {}) {
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
     return applyTenantProviderOwner(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);
   };
+  authenticate.elevateOAuthOwner = (identity, proof) => elevateOAuthOwner(identity, proof, config, consumedOwnerConfirmations);
+  return authenticate;
+}
+
+export function ownerRequestBinding(toolName, args = {}) {
+  const payload = { ...args };
+  delete payload.owner_confirmed;
+  delete payload.confirmation_reference;
+  return `${String(toolName || "")}\u0000${JSON.stringify(stableCanonical(payload))}`;
 }
 
 export function requireScopes(identity, required) {

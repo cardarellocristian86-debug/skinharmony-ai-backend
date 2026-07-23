@@ -37,6 +37,24 @@ function tenantKeyMap(value, name) {
   return result;
 }
 
+function parseOauthOwnerTenantBindings(value, name) {
+  if (!value) return {};
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { throw new Error(`${name} must be a JSON object`); }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error(`${name} must be a JSON object`);
+  const result = {};
+  for (const [subjectValue, tenantValue] of Object.entries(parsed)) {
+    const subject = String(subjectValue || "").trim();
+    const tenantId = typeof tenantValue === "string"
+      ? tenantValue.trim()
+      : String(tenantValue?.tenant_id || "").trim();
+    if (!subject || subject.length > 240) throw new Error(`${name} contains an invalid subject`);
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(tenantId)) throw new Error(`${name} contains an invalid tenant id`);
+    result[subject] = tenantId;
+  }
+  return result;
+}
+
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object || {}, key);
 }
@@ -163,6 +181,9 @@ export function loadConfig(env = process.env) {
   );
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
+  // Subject-to-tenant ownership is server-side only. Never accept this
+  // binding from a token claim, URL, body or tool argument.
+  const oauthOwnerTenantBindings = parseOauthOwnerTenantBindings(env.AUTH0_OWNER_TENANT_BINDINGS_JSON, "AUTH0_OWNER_TENANT_BINDINGS_JSON");
   // Enabled by the production Blueprint. Keep the code default fail-closed so
   // an existing installation does not silently change tenant routing on update.
   const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
@@ -181,6 +202,7 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
+  const oauthOwnerConfirmationMaxAgeSeconds = integer(env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS, 300, 30, 900);
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
@@ -218,6 +240,8 @@ export function loadConfig(env = process.env) {
     runtimeBuildCommit,
     defaultTenantId,
     tenantClaim,
+    oauthOwnerTenantBindings,
+    oauthOwnerConfirmationMaxAgeSeconds,
     selfServiceTenantsEnabled,
     tenantOwnerRoleClaim: String(env.MCP_TENANT_OWNER_ROLE_CLAIM || "https://skinharmony.it/role").trim(),
     tenantOwnerRoles: csv(env.MCP_TENANT_OWNER_ROLES || "tenant_owner,tenant_admin,owner_root"),

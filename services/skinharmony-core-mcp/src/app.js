@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import express from "express";
 import { OPENAI_PROVIDER_SETUP_WIDGET, OPENAI_PROVIDER_SETUP_WIDGET_URI } from "./openai-provider-setup-widget.js";
-import { createAuthenticator, requireScopes } from "./auth.js";
+import { createAuthenticator, ownerRequestBinding, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
@@ -30,6 +30,12 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "nyra_branch_catalog",
   "tenant_provider_openai_status",
   "tenant_provider_openai_setup_panel",
+]);
+const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
+  "tenant_provider_openai_setup_link",
+  "tenant_provider_openai_multi_agent_smoke_run",
+  "tenant_provider_openai_multi_agent_run_read",
+  "tenant_provider_openai_multi_agent_run_cancel",
 ]);
 
 function inferClientType(identity) {
@@ -356,6 +362,14 @@ export function createApp(config, options = {}) {
               message: "Invalid tool arguments",
               data: { tool: tool.name, violations: validationErrors.slice(0, 20) },
             },
+          });
+        }
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
+          OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) && rawArgs.owner_confirmed === true) {
+          identity = authenticate.elevateOAuthOwner(identity, {
+            confirmed: true,
+            confirmationReference: rawArgs.confirmation_reference,
+            requestBinding: ownerRequestBinding(tool.name, rawArgs),
           });
         }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);

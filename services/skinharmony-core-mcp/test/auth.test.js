@@ -104,7 +104,7 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
     ...ownerConfig,
     ...otherFixture.config,
   }, { jwksCache: otherFixture.cache })(`Bearer ${otherFixture.token}`);
-  assert.equal(otherIdentity.role, undefined);
+  assert.equal(otherIdentity.role, "member");
   assert.equal(otherIdentity.godMode, undefined);
   assert.equal(otherIdentity.providerSetupOwner, undefined);
 });
@@ -130,7 +130,7 @@ test("never elevates an OAuth identity from a client ID alone", async () => {
     godModeCodexEnabled: false,
   }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
 
-  assert.equal(identity.role, undefined);
+  assert.equal(identity.role, "member");
   assert.equal(identity.godMode, undefined);
   assert.equal(identity.providerSetupOwner, undefined);
 });
@@ -148,8 +148,8 @@ test("grants provider setup only to a tenant-owner role in the verified token", 
     codexKeys: [], godModeEnabled: false, godModeEmergencyStop: false,
   }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
   assert.equal(identity.tenantId, "tenant-a");
-  assert.equal(identity.role, "tenant_owner");
-  assert.equal(identity.providerSetupOwner, true);
+  assert.equal(identity.role, "member");
+  assert.equal(identity.providerSetupOwner, undefined);
 
   const memberFixture = auth0Fixture({ "https://skinharmony.it/role": "member" });
   const member = await createAuthenticator({
@@ -162,7 +162,7 @@ test("grants provider setup only to a tenant-owner role in the verified token", 
 
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
   const { token, config, cache } = auth0Fixture({ scope: "core:read" });
-  assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", scopes: ["core:read"] });
+  assert.deepEqual(await verifyAuth0Jwt(token, config, cache), { kind: "oauth", subject: "chatgpt", tenantId: "tenant-a", role: "member", scopes: ["core:read"] });
 });
 
 test("gives an ordinary ChatGPT login a stable personal tenant when self-service is enabled", async () => {
@@ -185,10 +185,11 @@ test("gives an ordinary ChatGPT login a stable personal tenant when self-service
   assert.equal(first.tenantId, second.tenantId);
   assert.equal(first.tenantId === "shared-tenant-that-must-not-be-used", false);
   assert.equal(first.selfServiceTenant, true);
-  assert.equal(first.providerSetupOwner, true);
+  assert.equal(first.role, "member");
+  assert.equal(first.providerSetupOwner, undefined);
 });
 
-test("keeps a configured tenant administrator on their shared tenant", async () => {
+test("keeps an unbound tenant claim inside the self-service tenant", async () => {
   const fixture = auth0Fixture({
     scope: "core:read",
     "https://skinharmony.it/role": "tenant_admin",
@@ -200,9 +201,10 @@ test("keeps a configured tenant administrator on their shared tenant", async () 
     tenantOwnerRoles: ["tenant_admin"],
     codexKeys: [], godModeEnabled: false,
   }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
-  assert.equal(identity.tenantId, "tenant-a");
-  assert.equal(identity.selfServiceTenant, undefined);
-  assert.equal(identity.providerSetupOwner, true);
+  assert.match(identity.tenantId, /^chatgpt_[a-f0-9]{32}$/);
+  assert.equal(identity.selfServiceTenant, true);
+  assert.equal(identity.role, "member");
+  assert.equal(identity.providerSetupOwner, undefined);
 });
 
 test("accepts the browser audience only when the browser authenticator explicitly selects it", async () => {
@@ -231,6 +233,57 @@ test("keeps workspace writes closed when neither Auth0 claim grants workspace:wr
   });
   const identity = await verifyAuth0Jwt(token, config, cache);
   assert.throws(() => requireScopes(identity, ["workspace:write", "core:govern"]), /insufficient_scope/);
+});
+
+test("binds only the configured verified OAuth subject to codexai and keeps it a member", async () => {
+  const fixture = auth0Fixture({
+    sub: "oauth-owner-fixture",
+    iat: Math.floor(Date.now() / 1000),
+    auth_time: Math.floor(Date.now() / 1000),
+    "https://skinharmony.it/tenant_id": "attacker-tenant",
+  });
+  const config = {
+    ...fixture.config,
+    codexKeys: [],
+    selfServiceTenantsEnabled: true,
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+  };
+  const auth = createAuthenticator(config, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+  assert.equal(identity.tenantId, "codexai");
+  assert.equal(identity.role, "member");
+  assert.equal(identity.oauthOwnerBound, true);
+  assert.equal(identity.providerSetupOwner, undefined);
+});
+
+test("elevates the bound owner only once, only when fresh and request-bound", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({ sub: "oauth-owner-fixture", iat: now, auth_time: now });
+  const auth = createAuthenticator({
+    ...fixture.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 300,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+  assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: false, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_required/);
+  const elevated = auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" });
+  assert.equal(elevated.role, "tenant_owner");
+  assert.equal(elevated.providerSetupOwner, true);
+  assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_replayed/);
+  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }));
+});
+
+test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {
+  const stale = auth0Fixture({ sub: "oauth-owner-fixture", iat: 1, auth_time: 1 });
+  const config = { ...stale.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 60 };
+  const staleAuth = createAuthenticator(config, { jwksCache: stale.cache });
+  const staleIdentity = await staleAuth(`Bearer ${stale.token}`);
+  assert.throws(() => staleAuth.elevateOAuthOwner(staleIdentity, { confirmed: true, confirmationReference: "stale", requestBinding: "x" }), /owner_authentication_stale/);
+
+  const other = auth0Fixture({ sub: "other-subject", azp: "shared-owner-client", "https://skinharmony.it/tenant_id": "codexai" });
+  const otherAuth = createAuthenticator({ ...config, selfServiceTenantsEnabled: true }, { jwksCache: other.cache });
+  const otherIdentity = await otherAuth(`Bearer ${other.token}`);
+  assert.equal(otherIdentity.tenantId.startsWith("chatgpt_"), true);
+  assert.throws(() => otherAuth.elevateOAuthOwner(otherIdentity, { confirmed: true, confirmationReference: "r", requestBinding: "x" }), /owner_binding_required/);
 });
 
 test("enforces tool scopes", () => {
