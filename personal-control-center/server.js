@@ -8,6 +8,12 @@ const {
   loadCatalog: loadNyraDeepBranchV2Catalog,
   route: routeNyraDeepBranchV2,
 } = require("./lib/nyra-deep-branch-v2");
+const {
+  aggregateShadowTelemetry,
+  appendShadowTelemetry,
+  buildShadowTelemetryEvent,
+  readShadowTelemetry,
+} = require("./lib/nyra-deep-shadow-telemetry");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -61,6 +67,7 @@ const nyraSiteSuitePriceGuardSnapshotPath = "personal-control-center/data/nyra-s
 const nyraDecisionClarityPackPath = "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json";
 const nyraAnalyzerLearningPackPath = "personal-control-center/data/nyra-analyzer-learning-pack.json";
 const nyraSecurityAuditPath = "runtime/nyra-learning/nyra_security_audit.jsonl";
+const nyraDeepShadowTelemetryPath = "runtime/nyra-learning/nyra_deep_branch_v2_shadow_telemetry.jsonl";
 const nyraVectorMemoryManifestPath = "universal-core/runtime/nyra-vector-memory/nyra_vector_memory_manifest.json";
 const nyraDecisionJourneyPath = "universal-core/runtime/nyra/nyra_decision_to_value_journey.json";
 const nyraSiteSuitePriceGuardUrl = String(
@@ -4534,16 +4541,71 @@ app.get("/api/nyra/runtime/v2/validation", (_req, res) => {
   });
 });
 
+app.get("/api/nyra/runtime/v2/telemetry", (_req, res) => {
+  const loaded = loadNyraDeepBranchV2Catalog({ runtimeMode: "lazy" });
+  if (!loaded.ok) {
+    res.status(503).json({
+      ok: false,
+      service: NYRA_SERVICE_NAME,
+      error: "deep_branch_v2_catalog_unavailable",
+      execution_allowed: false,
+      core_final_authority: true,
+    });
+    return;
+  }
+  const knownBranchIds = (loaded.catalog?.branches || []).map((branch) => branch.id);
+  const knownSubbranchIds = (loaded.catalog?.branches || [])
+    .flatMap((branch) => (branch.subbranches || [])
+      .map((subbranch) => `${branch.id}.${subbranch.id}`));
+  const telemetry = readShadowTelemetry(resolveStoragePath(nyraDeepShadowTelemetryPath));
+  const now = Date.now();
+  res.json({
+    ok: true,
+    service: NYRA_SERVICE_NAME,
+    generated_at: new Date(now).toISOString(),
+    privacy: {
+      raw_prompt_stored: false,
+      prompt_hash_stored: false,
+      request_id_stored: false,
+      evidence_payload_stored: false,
+      node_input_stored: false,
+      pii_fields_stored: false,
+    },
+    source: {
+      malformed_line_count: telemetry.malformed_line_count,
+      truncated_to_recent_bytes: telemetry.truncated,
+    },
+    windows: {
+      "7d": aggregateShadowTelemetry(telemetry.events, {
+        days: 7,
+        now,
+        knownBranchIds,
+        knownSubbranchIds,
+      }),
+      "30d": aggregateShadowTelemetry(telemetry.events, {
+        days: 30,
+        now,
+        knownBranchIds,
+        knownSubbranchIds,
+      }),
+    },
+    execution_allowed: false,
+    core_final_authority: true,
+  });
+});
+
 app.post("/api/nyra/runtime/interpret", async (req, res) => {
   const prepared = nyraHorizontalRuntime.prepareInterpretation(req.body || {});
   if (!prepared.ok) {
     res.status(prepared.status || 400).json({ ok: false, error: prepared.error, execution_allowed: false });
     return;
   }
+  const coreStartedAt = performance.now();
   const core = await requestNyraCore("/v1/nira/core-bridge", {
     method: "POST",
     body: prepared.core_request,
   });
+  const coreLatencyMs = performance.now() - coreStartedAt;
   if (!core.ok) {
     res.status(core.status || 503).json({
       ok: false,
@@ -4571,6 +4633,7 @@ app.post("/api/nyra/runtime/interpret", async (req, res) => {
         observed_at: Date.now(),
       }
     : null;
+  const deepStartedAt = performance.now();
   const deepBranchV2 = routeNyraDeepBranchV2({
     tenantId: config.tenantId,
     domainPackId: String(
@@ -4583,6 +4646,31 @@ app.post("/api/nyra/runtime/interpret", async (req, res) => {
     evaluationContext: deepBranchEvaluationContext,
     env: process.env,
   });
+  const deepLatencyMs = performance.now() - deepStartedAt;
+  if (deepBranchV2.mode === "shadow") {
+    try {
+      appendShadowTelemetry(
+        resolveStoragePath(nyraDeepShadowTelemetryPath),
+        buildShadowTelemetryEvent({
+          service: NYRA_SERVICE_NAME,
+          tenantId: config.tenantId,
+          domainPackId: String(
+            core.data?.domain_pack?.id
+            || core.data?.result?.domain_pack?.id
+            || "generic"
+          ),
+          localInterpretation: prepared.local_interpretation,
+          corePayload: core.data,
+          deepBranchV2,
+          requestedSubbranchId: deepBranchEvaluationContext?.subbranch_id || "",
+          coreLatencyMs,
+          deepLatencyMs,
+        })
+      );
+    } catch {
+      // Advisory telemetry must never change the authoritative V1 response.
+    }
+  }
   res.json({
     ok: true,
     service: NYRA_SERVICE_NAME,

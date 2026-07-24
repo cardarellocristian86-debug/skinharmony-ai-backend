@@ -21,7 +21,7 @@
     "report:outreach": "node mail/track_outreach.js report",
     "postinstall": "bash scripts/build-rust-extractor-render.sh",
     "nyra:render": "node personal-control-center/server.js",
-    "nyra:runtime:test": "node --test personal-control-center/test/nyra-horizontal-runtime.test.js personal-control-center/test/nyra-deep-branch-v2.test.js personal-control-center/test/nyra-deep-branch-v2-memory.test.js && node personal-control-center/test/tenant-isolation.js && node personal-control-center/test/nyra-runtime-smoke.js",
+    "nyra:runtime:test": "node --test personal-control-center/test/nyra-horizontal-runtime.test.js personal-control-center/test/nyra-deep-branch-v2.test.js personal-control-center/test/nyra-deep-branch-v2-memory.test.js personal-control-center/test/nyra-deep-shadow-telemetry.test.js && node personal-control-center/test/tenant-isolation.js && node personal-control-center/test/nyra-runtime-smoke.js",
     "nyra:deep-v2:verify": "node scripts/verify-nyra-deep-branch-v2.mjs",
     "core:service": "node --experimental-strip-types services/universal-core-service/server.js",
     "core:service:test": "npm test --prefix services/universal-core-service",

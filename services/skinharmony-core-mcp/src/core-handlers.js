@@ -7,6 +7,12 @@ import {
   buildProviderSetupLinkBindingEnvelope,
   providerSetupLinkBindingApprovalDigest,
 } from "../../universal-core-service/src/providerSetupLinkBinding.js";
+import {
+  compareCatalogs,
+  compareInterpretations,
+  createNyraV2Bridge,
+  unavailableShadow,
+} from "./nyra-v2-bridge.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 
@@ -197,6 +203,7 @@ function compactNyraPayload(payload, { analysisId, detail = "fast" } = {}) {
     analysis_id: analysisId,
     response_mode: detail,
     result: compactResult,
+    deep_branch_v2: payload?.deep_branch_v2,
     branch_context: payload?.branch_context,
     guardrail: payload?.guardrail,
     details_available: true,
@@ -279,6 +286,7 @@ function applyVerifiedOwnerConfirmation(payload, identity) {
 
 export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
+  const nyraV2Bridge = options.nyraV2Bridge || createNyraV2Bridge(config, { fetchImpl });
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const analysisCache = new Map();
@@ -580,7 +588,27 @@ export function createCoreHandlers(config, options = {}) {
         }
       }));
     },
-    nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    nyra_branch_catalog: async (_args, identity) => {
+      const authoritative = await coreRequest("/v1/nira/branches", identity.tenantId);
+      if (!nyraV2Bridge.configured()) {
+        return textResult({
+          ...authoritative,
+          deep_branch_v2: unavailableShadow("nyra_v2_bridge_not_configured"),
+        });
+      }
+      try {
+        const deepCatalog = await nyraV2Bridge.catalog();
+        return textResult({
+          ...authoritative,
+          deep_branch_v2: compareCatalogs(authoritative, deepCatalog, identity.tenantId),
+        });
+      } catch (error) {
+        return textResult({
+          ...authoritative,
+          deep_branch_v2: unavailableShadow(error?.message || "nyra_v2_catalog_unavailable"),
+        });
+      }
+    },
     research_plan: async (args, identity) => textResult(await coreRequest("/v1/research/plan", identity.tenantId, {
       method: "POST",
       body: {
@@ -620,6 +648,23 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId
         }
       });
+      if (nyraV2Bridge.configured()) {
+        try {
+          const shadowPayload = await nyraV2Bridge.interpret({
+            message: args.message,
+            session_id: args.session_id,
+            project_id: args.project_id,
+            agent_id: args.agent_id,
+            ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+            ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+          });
+          payload.deep_branch_v2 = compareInterpretations(payload, shadowPayload, identity.tenantId);
+        } catch (error) {
+          payload.deep_branch_v2 = unavailableShadow(error?.message || "nyra_v2_interpretation_unavailable");
+        }
+      } else {
+        payload.deep_branch_v2 = unavailableShadow("nyra_v2_bridge_not_configured");
+      }
       const analysisId = cacheAnalysis(identity.tenantId, payload);
       if (args.response_mode === "full") {
         return compactTextResult({ ...payload, analysis_id: analysisId, response_mode: "full" }, {

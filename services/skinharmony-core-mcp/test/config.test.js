@@ -10,6 +10,21 @@ test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => 
   assert.equal(config.universalCoreUrl, "https://core.example.test");
 });
 
+test("uses the existing NYRA_BASE_URL for the shadow bridge unless a runtime URL is explicit", () => {
+  const fallback = loadConfig({
+    NYRA_BASE_URL: "https://nyra.example.test/",
+    NYRA_MCP_API_KEY: "dedicated-nyra-key",
+  });
+  assert.equal(fallback.nyraRuntimeUrl, "https://nyra.example.test");
+  assert.equal(fallback.nyraRuntimeApiKey, "dedicated-nyra-key");
+
+  const explicit = loadConfig({
+    NYRA_BASE_URL: "https://legacy-nyra.example.test",
+    NYRA_RUNTIME_URL: "https://runtime-nyra.example.test/",
+  });
+  assert.equal(explicit.nyraRuntimeUrl, "https://runtime-nyra.example.test");
+});
+
 test("keeps agent collaboration disabled until a persistent root is configured", () => {
   const disabled = loadConfig({});
   assert.equal(disabled.agentWorkspaceRoot, "");

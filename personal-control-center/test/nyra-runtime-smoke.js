@@ -438,6 +438,18 @@ async function main() {
     assert.equal(runtimeInterpretation.json.deep_branch_v2.core_final_authority, true);
     assert.equal(runtimeInterpretation.json.execution_allowed, false);
 
+    const shadowTelemetry = await request("/api/nyra/runtime/v2/telemetry", { auth: true });
+    assert.equal(shadowTelemetry.status, 200);
+    assert.equal(shadowTelemetry.json.ok, true);
+    assert.equal(shadowTelemetry.json.privacy.raw_prompt_stored, false);
+    assert.equal(shadowTelemetry.json.privacy.pii_fields_stored, false);
+    assert.equal(shadowTelemetry.json.windows["7d"].event_count, 1);
+    assert.equal(shadowTelemetry.json.windows["30d"].event_count, 1);
+    assert.equal(shadowTelemetry.json.windows["30d"].subbranch_usage.known_count, 239);
+    assert.equal(shadowTelemetry.json.windows["30d"].parity.authority_violation_count, 0);
+    assert.equal(shadowTelemetry.json.windows["30d"].collision_measurement.available, false);
+    assert.equal(JSON.stringify(shadowTelemetry.json).includes("Valuta privacy"), false);
+
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });
     assert.equal(learningBefore.status, 200);
     assert.equal(learningBefore.json.learning_rules, 0);
@@ -609,6 +621,7 @@ async function main() {
         "deep_branch_v2_authenticated_validation_burst",
         "deep_branch_v2_authenticated_catalog_burst",
         "deep_branch_v2_shadow_core_route",
+        "deep_branch_v2_privacy_safe_shadow_telemetry",
         "persistent_learning_path",
         "feedback_endpoint",
         "core_status_bridge",

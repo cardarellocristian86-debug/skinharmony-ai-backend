@@ -139,6 +139,8 @@ export function loadConfig(env = process.env) {
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
+  const nyraRuntimeUrl = url(env.NYRA_RUNTIME_URL || env.NYRA_BASE_URL, "NYRA_RUNTIME_URL");
+  const nyraRuntimeApiKey = String(env.NYRA_RUNTIME_API_KEY || env.NYRA_MCP_API_KEY || "").trim();
   const universalCoreProviderSetupLinkKeys = tenantKeyMap(
     env.UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON,
     "UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON",
@@ -226,6 +228,9 @@ export function loadConfig(env = process.env) {
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
+    nyraRuntimeUrl,
+    nyraRuntimeApiKey,
+    nyraRuntimeTimeoutMs: integer(env.NYRA_RUNTIME_TIMEOUT_MS, 5_000, 250, 30_000),
     universalCoreProviderSetupLinkKeys,
     providerSetupLinkServiceKey,
     tenantGatewayKey,
