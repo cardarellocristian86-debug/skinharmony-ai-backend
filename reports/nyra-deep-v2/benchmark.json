@@ -1,6 +1,6 @@
 {
   "schema_version": "nyra_deep_branch_v2_benchmark_v1",
-  "generated_at": "2026-07-23T22:12:00.554Z",
+  "generated_at": "2026-07-24T19:58:11.917Z",
   "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
   "host": {
     "platform": "darwin",
@@ -33,11 +33,11 @@
     "abstain_below_contract_threshold": true,
     "verified_node_count": 1434
   },
-  "catalog_validation_ms": 870.995,
+  "catalog_validation_ms": 928.173,
   "route_100_iterations": {
-    "p50_ms": 22.577,
-    "p95_ms": 23.086,
-    "max_ms": 1074.135,
+    "p50_ms": 22.803,
+    "p95_ms": 32.703,
+    "max_ms": 954.792,
     "budget_p95_ms": 100,
     "passed": true
   },
@@ -50,12 +50,12 @@
   },
   "runtime_evidence": {
     "schema_version": "nyra_deep_branch_v2_runtime_evidence_v1",
-    "generated_at": "2026-07-23T22:12:08.394Z",
+    "generated_at": "2026-07-24T19:58:19.717Z",
     "provenance": {
       "producer": "scripts/verify-nyra-deep-branch-v2.mjs",
       "memory_harness": "personal-control-center/test/nyra-deep-branch-v2-memory.test.js",
       "http_harness": "personal-control-center/test/nyra-runtime-smoke.js",
-      "measurement_phase": "provisional_runtime_artifact",
+      "measurement_phase": "candidate_runtime_artifact",
       "final_integrity_gate_required": true
     },
     "identity": {
@@ -66,7 +66,7 @@
     },
     "memory": {
       "schema_version": "nyra_deep_branch_v2_runtime_memory_benchmark_v1",
-      "generated_at": "2026-07-23T22:12:03.709Z",
+      "generated_at": "2026-07-24T19:58:15.129Z",
       "harness": {
         "command": "/opt/homebrew/Cellar/node/26.0.0/bin/node",
         "exec_argv": [
@@ -84,16 +84,16 @@
         "runtime_loader_sha256_declared": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
         "runtime_loader_sha256_actual": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
         "runtime_loader_hash_match": true,
-        "manifest_hash": "8d17051956ed4a23275eaf336ead7bab4f74def19e12914348e385d503b68f8a",
-        "root_binding_hash": "d799c79afc0a094b24182ae5db0d083dca8eed605746c089c8a2d1af03488b77",
-        "catalog_binding_hash": "f84f12bf9d907fbe3c50f4bc95c98bfe102b37765f921168b384c65f08071332"
+        "manifest_hash": "defad17280dcf4f65d27bdf68f66ea54ff1d8830bca3af94188c346b5d5869f7",
+        "root_binding_hash": "9b9665ce04264f914de9f969ca89aa0368f822270d85d2e845b2bbfb0dab036c",
+        "catalog_binding_hash": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32"
       },
       "process_memory": {
         "requested_max_old_space_mib": 256,
         "heap_limit_mib": 352,
-        "heap_used_mib": 9.852012634277344,
-        "rss_mib": 148.125,
-        "peak_rss_mib": 148.125
+        "heap_used_mib": 15.637351989746094,
+        "rss_mib": 145.765625,
+        "peak_rss_mib": 145.78125
       },
       "runtime_io": {
         "tracked_reads": 245,
@@ -157,7 +157,7 @@
     },
     "http": {
       "schema_version": "nyra_deep_branch_v2_http_concurrency_benchmark_v1",
-      "generated_at": "2026-07-23T22:12:05.328Z",
+      "generated_at": "2026-07-24T19:58:16.649Z",
       "ok": true,
       "harness": {
         "server_exec_argv": [
@@ -204,14 +204,14 @@
           "authenticated": true,
           "requests": 40,
           "concurrency": 16,
-          "elapsed_ms": 5.308,
+          "elapsed_ms": 5.521,
           "statuses": {
             "200": 40
           },
           "latency": {
-            "p50_ms": 1.36,
-            "p95_ms": 2.979,
-            "max_ms": 3.661
+            "p50_ms": 1.099,
+            "p95_ms": 4.795,
+            "max_ms": 4.825
           },
           "response_bytes": {
             "p50": 1574,
@@ -241,14 +241,14 @@
           "authenticated": true,
           "requests": 40,
           "concurrency": 16,
-          "elapsed_ms": 3.4,
+          "elapsed_ms": 3.436,
           "statuses": {
             "200": 40
           },
           "latency": {
-            "p50_ms": 1.077,
-            "p95_ms": 1.809,
-            "max_ms": 1.847
+            "p50_ms": 1.162,
+            "p95_ms": 1.61,
+            "max_ms": 1.779
           },
           "response_bytes": {
             "p50": 2856,
@@ -286,9 +286,9 @@
     "summary": {
       "requested_max_old_space_mib": 256,
       "heap_limit_mib": 352,
-      "heap_used_mib": 9.852012634277344,
-      "rss_mib": 148.125,
-      "peak_rss_mib": 148.125,
+      "heap_used_mib": 15.637351989746094,
+      "rss_mib": 145.765625,
+      "peak_rss_mib": 145.78125,
       "monolith_reads": 0,
       "monolith_opens": 0,
       "manifest_shard_count": 239,
@@ -299,15 +299,15 @@
       "validation_response_bytes": 1574,
       "catalog_response_bytes": 2856,
       "route_response_bytes": 64764,
-      "validation_burst_p50_ms": 1.36,
-      "validation_burst_p95_ms": 2.979,
-      "validation_burst_max_ms": 3.661,
+      "validation_burst_p50_ms": 1.099,
+      "validation_burst_p95_ms": 4.795,
+      "validation_burst_max_ms": 4.825,
       "validation_burst_statuses": {
         "200": 40
       },
-      "catalog_burst_p50_ms": 1.077,
-      "catalog_burst_p95_ms": 1.809,
-      "catalog_burst_max_ms": 1.847,
+      "catalog_burst_p50_ms": 1.162,
+      "catalog_burst_p95_ms": 1.61,
+      "catalog_burst_max_ms": 1.779,
       "catalog_burst_statuses": {
         "200": 40
       }
@@ -354,5 +354,16 @@
     },
     "passed": true
   },
-  "passed": true
+  "passed": true,
+  "runtime_artifact": {
+    "schema_version": "nyra_deep_branch_v2_runtime_artifact_reference_v1",
+    "relative_path": "runtime_artifact_report.json",
+    "manifest_hash": "defad17280dcf4f65d27bdf68f66ea54ff1d8830bca3af94188c346b5d5869f7",
+    "root_binding_hash": "9b9665ce04264f914de9f969ca89aa0368f822270d85d2e845b2bbfb0dab036c",
+    "catalog_binding_hash": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32",
+    "validation_attestation_sha256": "304c95f08fb4f8fa27c49226696a7e4b773398a86329c312f7d8daff7b9c5bb4",
+    "shard_count": 239,
+    "retained_generation": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32",
+    "final_runtime_gate_passed": true
+  }
 }

@@ -12,6 +12,7 @@ import { nyraBranchCatalog, routeNyraBranches } from "../services/universal-core
 import {
   buildRuntimeArtifacts,
   reconstructCatalogFromRuntimeArtifacts,
+  validationAttestationHash,
 } from "./lib/nyra-deep-branch-v2-shards.mjs";
 
 const require = createRequire(import.meta.url);
@@ -187,7 +188,7 @@ function buildRuntimeEvidence({ catalog, memoryReport, smokeReport }) {
       producer: "scripts/verify-nyra-deep-branch-v2.mjs",
       memory_harness: path.relative(repoRoot, memoryHarnessPath),
       http_harness: path.relative(repoRoot, smokeHarnessPath),
-      measurement_phase: "provisional_runtime_artifact",
+      measurement_phase: "candidate_runtime_artifact",
       final_integrity_gate_required: true,
     },
     identity: {
@@ -604,6 +605,7 @@ function main() {
   const validationReportPath = path.join(reportRoot, "validation_report.json");
   const benchmarkReportPath = path.join(reportRoot, "benchmark.json");
   const rollbackReportPath = path.join(reportRoot, "rollback-verification.json");
+  const runtimeArtifactReportPath = path.join(reportRoot, "runtime_artifact_report.json");
   writeJson(validationReportPath, report);
   writeJson(benchmarkReportPath, benchmark);
   writeJson(rollbackReportPath, rollbackReport);
@@ -611,6 +613,7 @@ function main() {
   let runtimeArtifacts = null;
   let runtimeEvidence = null;
   let finalRuntimeGate = null;
+  let runtimeArtifactReport = null;
   if (report.ok) {
     try {
       const provisionalArtifacts = buildRuntimeArtifacts({
@@ -695,22 +698,65 @@ function main() {
         evidence: runtimeEvidence,
         finalMemoryReport: finalMemoryExecution.report,
       });
-      const finalValidationReportSha256 = rawSha256(fs.readFileSync(validationReportPath));
+      const finalValidationBindingHash = validationAttestationHash(report, catalog);
       if (
         runtimeArtifacts.shard_count !== 239
         || runtimeArtifacts.cleanup?.retained_generation_count !== 1
         || runtimeArtifacts.cleanup?.shard_file_count !== 239
         || runtimeArtifacts.manifest?.validation_attestation?.sha256
-          !== finalValidationReportSha256
+          !== finalValidationBindingHash
       ) {
         throw new Error(`final_runtime_artifact_count_invalid:${JSON.stringify({
           shard_count: runtimeArtifacts.shard_count,
           cleanup: runtimeArtifacts.cleanup,
           manifest_validation_attestation_sha256:
             runtimeArtifacts.manifest?.validation_attestation?.sha256,
-          final_validation_report_sha256: finalValidationReportSha256,
+          final_validation_binding_sha256: finalValidationBindingHash,
         })}`);
       }
+      const runtimeArtifact = {
+        schema_version: "nyra_deep_branch_v2_runtime_artifact_reference_v1",
+        relative_path: path.relative(reportRoot, runtimeArtifactReportPath),
+        manifest_hash: runtimeArtifacts.manifest.manifest_hash,
+        root_binding_hash: runtimeArtifacts.manifest.root_binding_hash,
+        catalog_binding_hash: runtimeArtifacts.manifest.catalog_binding_hash,
+        validation_attestation_sha256: finalValidationBindingHash,
+        shard_count: runtimeArtifacts.shard_count,
+        retained_generation: runtimeArtifacts.cleanup?.retained_generation || null,
+        final_runtime_gate_passed: finalRuntimeGate.passed === true,
+      };
+      report.runtime_artifact = runtimeArtifact;
+      report.final_runtime_gate = finalRuntimeGate;
+      benchmark.runtime_artifact = runtimeArtifact;
+      writeJson(validationReportPath, report);
+      writeJson(benchmarkReportPath, benchmark);
+      const persistedReport = JSON.parse(fs.readFileSync(validationReportPath, "utf8"));
+      if (validationAttestationHash(persistedReport, catalog) !== finalValidationBindingHash) {
+        throw new Error("final_runtime_validation_binding_drift");
+      }
+      runtimeArtifactReport = {
+        schema_version: "nyra_deep_branch_v2_runtime_artifact_report_v1",
+        generated_at: new Date().toISOString(),
+        catalog_fingerprint: catalog.catalog_fingerprint,
+        validation_report: {
+          relative_path: path.relative(reportRoot, validationReportPath),
+          byte_sha256: rawSha256(fs.readFileSync(validationReportPath)),
+          binding_sha256: finalValidationBindingHash,
+        },
+        benchmark_report: {
+          relative_path: path.relative(reportRoot, benchmarkReportPath),
+          byte_sha256: rawSha256(fs.readFileSync(benchmarkReportPath)),
+        },
+        runtime_artifact: runtimeArtifact,
+        runtime_evidence: {
+          passed: runtimeEvidence.passed === true,
+          identity: runtimeEvidence.identity,
+          summary: runtimeEvidence.summary,
+          checks: runtimeEvidence.checks,
+        },
+        final_runtime_gate: finalRuntimeGate,
+      };
+      writeJson(runtimeArtifactReportPath, runtimeArtifactReport);
       void provisionalArtifacts;
     } catch (error) {
       errors.push(`runtime_artifact_verification_failed:${error.message}`);
@@ -743,6 +789,11 @@ function main() {
       checks: runtimeEvidence.checks,
     } : null,
     final_runtime_gate: finalRuntimeGate,
+    runtime_artifact_report: runtimeArtifactReport ? {
+      relative_path: path.relative(repoRoot, runtimeArtifactReportPath),
+      manifest_hash: runtimeArtifactReport.runtime_artifact.manifest_hash,
+      root_binding_hash: runtimeArtifactReport.runtime_artifact.root_binding_hash,
+    } : null,
   }, null, 2)}\n`);
   if (!report.ok) process.exitCode = 1;
 }

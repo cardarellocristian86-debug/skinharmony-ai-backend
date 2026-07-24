@@ -189,6 +189,27 @@ test("loads the separate owner-context signing secret without exposing it throug
   assert.equal(loadConfig({ CORE_OWNER_CONTEXT_SIGNING_SECRET: "too-short" }).ownerContextSigningSecret, "");
 });
 
+test("keeps Deep Branch V2 evidence/evaluation independently disabled and drops weak request signing keys", () => {
+  const disabled = loadConfig({});
+  assert.equal(disabled.nyraDeepBranchV2EvaluateEnabled, false);
+  assert.deepEqual(disabled.nyraDeepBranchV2EvaluateTenantIds, []);
+  assert.equal(disabled.nyraDeepBranchV2EvaluateOauthOnly, true);
+  assert.equal(disabled.nyraDeepBranchV2RequestSigningSecret, "");
+
+  const signingSecret = "mcp-nyra-v2-request-signing-secret-0123456789";
+  const enabled = loadConfig({
+    MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_ENABLED: "true",
+    MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_TENANT_ALLOWLIST: "codexai, tenant-a",
+    MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_OAUTH_ONLY: "false",
+    MCP_NYRA_DEEP_BRANCH_V2_REQUEST_SIGNING_SECRET: signingSecret,
+  });
+  assert.equal(enabled.nyraDeepBranchV2EvaluateEnabled, true);
+  assert.deepEqual(enabled.nyraDeepBranchV2EvaluateTenantIds, ["codexai", "tenant-a"]);
+  assert.equal(enabled.nyraDeepBranchV2EvaluateOauthOnly, false);
+  assert.equal(enabled.nyraDeepBranchV2RequestSigningSecret, signingSecret);
+  assert.equal(loadConfig({ MCP_NYRA_DEEP_BRANCH_V2_REQUEST_SIGNING_SECRET: "too-short" }).nyraDeepBranchV2RequestSigningSecret, "");
+});
+
 test("requires a full immutable build identity for the strict provider binding", () => {
   assert.equal(loadConfig({ RENDER_GIT_COMMIT: "a".repeat(40) }).runtimeBuildCommit, "a".repeat(40));
   assert.throws(() => loadConfig({ RENDER_GIT_COMMIT: "a".repeat(7) }), /full 40-character commit SHA/);

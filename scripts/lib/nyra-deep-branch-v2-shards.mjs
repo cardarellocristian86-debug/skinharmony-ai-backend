@@ -101,7 +101,74 @@ function safeSegment(value) {
   return segment;
 }
 
-function validationAttestation(validationReport, validationBytes, catalog) {
+/**
+ * Immutable projection of a validation report used to bind runtime artifacts.
+ *
+ * Operational measurements, timestamps and report paths are deliberately not
+ * part of this projection. They are useful release evidence, but including
+ * them would regenerate a byte-identical runtime catalog on every benchmark
+ * run and make the shard identity non-reproducible.
+ */
+export function validationAttestationBinding(validationReport, catalog) {
+  const report = validationReport && typeof validationReport === "object" ? validationReport : {};
+  const metrics = report?.validation?.metrics || {};
+  const contractTests = report?.executable_contract_tests || {};
+  const contractSummary = Object.fromEntries(Object.keys(contractTests).sort().map((name) => {
+    const result = contractTests[name] && typeof contractTests[name] === "object" ? contractTests[name] : {};
+    return [name, {
+      executed: Number(result.executed || 0),
+      passed: Number(result.passed || 0),
+      failed: Number(result.failed || 0),
+    }];
+  }));
+  return {
+    schema_version: "nyra_deep_branch_v2_validation_binding_v1",
+    validation_report_schema_version: String(report.schema_version || ""),
+    catalog_fingerprint: String(report.catalog_fingerprint || ""),
+    validation: {
+      ok: report?.validation?.ok === true,
+      errors: Array.isArray(report?.validation?.errors) ? [...report.validation.errors] : [],
+      branch_count: Number(metrics.branch_count || 0),
+      subbranch_count: Number(metrics.subbranch_count || 0),
+      node_count: Number(metrics.node_count || 0),
+      rejected_node_count: Number(metrics.rejected_node_count || 0),
+      duplicate_contract_count: Number(metrics.duplicate_contract_count || 0),
+    },
+    report_errors: Array.isArray(report.errors) ? [...report.errors] : [],
+    supervisor: {
+      approved_node_count: Number(report?.supervisor?.approved_node_count || 0),
+      rejected_node_count: Number(report?.supervisor?.rejected_node_count || 0),
+    },
+    executable_contract_tests: contractSummary,
+    deep_routing: {
+      selected_branch_count: Number(report?.deep_routing?.selected_branch_count || 0),
+      evaluated_node_count: Number(report?.deep_routing?.evaluated_node_count || 0),
+      all_verified: report?.deep_routing?.all_verified === true,
+      core_final_authority: report?.deep_routing?.core_final_authority === true,
+      execution_authorized: report?.deep_routing?.execution_authorized === true,
+    },
+    rollback_verified: report?.rollback_verified === true,
+    release_gate: {
+      deploy_authorized: report?.release_gate?.deploy_authorized === true,
+      merge_authorized: report?.release_gate?.merge_authorized === true,
+      required_core_verdict: String(report?.release_gate?.required_core_verdict || ""),
+      explicit_owner_confirmation_required: report?.release_gate?.explicit_owner_confirmation_required === true,
+    },
+    expected_catalog: {
+      branch_count: Array.isArray(catalog?.branches) ? catalog.branches.length : 0,
+      subbranch_count: Array.isArray(catalog?.branches)
+        ? catalog.branches.reduce((sum, branch) => sum + (Array.isArray(branch?.subbranches) ? branch.subbranches.length : 0), 0)
+        : 0,
+      node_count: Array.isArray(catalog?.nodes) ? catalog.nodes.length : 0,
+    },
+  };
+}
+
+export function validationAttestationHash(validationReport, catalog) {
+  return sha256(validationAttestationBinding(validationReport, catalog));
+}
+
+function validationAttestation(validationReport, catalog) {
   const metrics = validationReport?.validation?.metrics || {};
   const valid = validationReport?.ok === true
     && validationReport?.validation?.ok === true
@@ -124,7 +191,8 @@ function validationAttestation(validationReport, validationBytes, catalog) {
   if (!valid) throw new Error("Validation attestation is not a full approved offline validation");
   return {
     schema_version: validationReport.schema_version,
-    sha256: sha256(validationBytes),
+    binding_schema_version: "nyra_deep_branch_v2_validation_binding_v1",
+    sha256: validationAttestationHash(validationReport, catalog),
     catalog_fingerprint: validationReport.catalog_fingerprint,
     full_offline_validated: true,
     validated_branch_count: metrics.branch_count,
@@ -245,11 +313,10 @@ export function buildRuntimeArtifacts({
   const catalogBytes = fs.readFileSync(catalogPath);
   const catalog = JSON.parse(catalogBytes.toString("utf8"));
   exactNodeCoverage(catalog);
-  const validationBytes = fs.readFileSync(validationAttestationPath);
-  const validationReport = JSON.parse(validationBytes.toString("utf8"));
+  const validationReport = JSON.parse(fs.readFileSync(validationAttestationPath, "utf8"));
   const supervisorBytes = fs.readFileSync(supervisorPath);
   const supervisor = JSON.parse(supervisorBytes.toString("utf8"));
-  const validation = validationAttestation(validationReport, validationBytes, catalog);
+  const validation = validationAttestation(validationReport, catalog);
   const supervisorBinding = supervisorAttestation(supervisor, supervisorBytes, catalog);
   const runtimeLoaderSha256 = sha256(fs.readFileSync(runtimePath));
   const catalogBinding = {

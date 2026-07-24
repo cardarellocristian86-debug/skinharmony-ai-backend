@@ -21,6 +21,31 @@ services:
         value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
       - key: NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
         value: codexai
+      - key: NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED
+        value: "false"
+      - key: NYRA_DEEP_BRANCH_V2_FEDERATION_TENANT_ALLOWLIST
+        value: codexai
+      # The signed L2–L4 evaluator is a distinct stage. It remains disabled
+      # until Core ALLOWs the exact release/configuration action and the owner
+      # explicitly confirms it; it cannot authorize execution in any mode.
+      - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
+        value: "false"
+      - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST
+        value: codexai
+      - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_ATTESTATION_MAX_AGE_MS
+        value: "60000"
+      # Populate these manually with the Core signer key id and the matching
+      # JSON public-key map after that keypair exists; never generate them in
+      # the Nyra service.
+      - key: NYRA_DEEP_BRANCH_V2_CORE_ATTESTATION_KEY_ID_ALLOWLIST
+        sync: false
+      - key: NYRA_DEEP_BRANCH_V2_CORE_ATTESTATION_PUBLIC_KEYS
+        sync: false
+      - key: NYRA_DEEP_BRANCH_V2_CORE_SHARED_SECRET
+        fromService:
+          type: web
+          name: skinharmony-universal-core
+          envVarKey: CORE_NYRA_DEEP_BRANCH_V2_SERVICE_KEY
       - key: NYRA_STORAGE_ROOT
         value: /var/data
       - key: NYRA_FINANCE_SHARED_CAPITAL_EUR

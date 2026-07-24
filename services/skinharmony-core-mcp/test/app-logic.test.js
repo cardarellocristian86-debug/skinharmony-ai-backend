@@ -19,6 +19,22 @@ test("does not expose client-selectable product packs on horizontal Core tools",
   }
 });
 
+test("keeps V2 evaluation refs-only and bounds raw evidence to the preparation tool", () => {
+  const prepare = TOOLS.find((tool) => tool.name === "nyra_v2_evidence_prepare");
+  const evaluate = TOOLS.find((tool) => tool.name === "nyra_v2_evaluate");
+  assert(prepare, "missing V2 evidence preparation tool");
+  assert(evaluate, "missing V2 evaluation tool");
+  assert.equal(prepare.annotations.readOnlyHint, true);
+  assert.equal(evaluate.annotations.readOnlyHint, true);
+  assert.equal(prepare.inputSchema.properties.evidence_pack.type, "object");
+  assert.equal(prepare.inputSchema.properties.requirement_bindings.items.properties.requirement_ref.pattern, "^req_[a-f0-9]{64}$");
+  assert.equal(evaluate.inputSchema.properties.evidence_refs.type, "array");
+  assert.equal(evaluate.inputSchema.properties.evidence_pack, undefined);
+  assert.equal(evaluate.inputSchema.properties.message, undefined);
+  assert.equal(evaluate.inputSchema.properties.memory_context, undefined);
+  assert.equal(evaluate.inputSchema.properties.contract, undefined);
+});
+
 test("reports a completed read-only preflight as executable", () => {
   const result = attachWorkPreflight(
     { structuredContent: { documents: [] }, content: [] },
