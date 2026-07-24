@@ -1,0 +1,25 @@
+flowchart TD
+  A[Request received] --> B[Normalize request]
+  B --> C[Fingerprint request]
+  C --> D[Select permanent branches]
+  D --> E[Create Dynamic Thought Tree]
+  E --> F[Generate up to 3 hypotheses]
+  F --> G[Score with evidence, reliability, utility, probability, risk, cost, reversibility, uncertainty, policy]
+  G --> H{Core gate}
+  H -->|expand| I[Expand best paths]
+  H -->|prune| J[Prune weak paths]
+  H -->|backtrack| K[Backtrack to last valid node]
+  H -->|select| L[Select best verified path]
+  H -->|block| M[Fail closed]
+  H -->|abstain| N[Return safe abstention]
+  I --> G
+  J --> G
+  K --> G
+  L --> O[Core join]
+  M --> O
+  N --> O
+  O --> P[Universal Core verdict]
+  P --> Q[Redacted Nyra explanation]
+  Q --> R[Optional learning candidate]
+  R --> S[Retention cleanup]
+

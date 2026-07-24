@@ -1,0 +1,58 @@
+{
+  "schema_version": "nyra_dtt_architecture_v1",
+  "name": "Governed Dynamic Thought Tree",
+  "scope": {
+    "repository": "cardarellocristian86-debug/skinharmony-ai-backend",
+    "service": "skinharmony-nyra-core",
+    "tenant_boundary": "codexai",
+    "rollout_boundary": "independent_from_v2"
+  },
+  "runtime_modes": ["off", "shadow", "canary", "active"],
+  "limits": {
+    "max_children_per_node": 3,
+    "beam_width": 3,
+    "max_nodes_per_tree": 64,
+    "max_permanent_branches_per_run": 24,
+    "max_parallel_workers_per_tenant": 8,
+    "max_retry_per_task": 2,
+    "default_depth": 4,
+    "initial_depth_cap": 6
+  },
+  "feature_flags": {
+    "enabled": "CORE_DTT_ENABLED",
+    "mode": "CORE_DTT_MODE",
+    "default_depth": "CORE_DTT_DEFAULT_DEPTH",
+    "max_depth_cap": "CORE_DTT_MAX_DEPTH_CAP",
+    "l6_allowlist": "CORE_DTT_L6_ALLOWLIST",
+    "max_children": "CORE_DTT_MAX_CHILDREN",
+    "beam_width": "CORE_DTT_BEAM_WIDTH",
+    "max_nodes": "CORE_DTT_MAX_NODES",
+    "tenant_allowlist": "CORE_DTT_TENANT_ALLOWLIST",
+    "rollback": "CORE_DTT_MODE=off"
+  },
+  "stable_branches": [
+    "context_intelligence",
+    "work_intake",
+    "risk_governance",
+    "research_evidence",
+    "decision_reasoning",
+    "planning_prioritization",
+    "execution_planning",
+    "parallel_coordination",
+    "quality_verification",
+    "learning_memory",
+    "adaptive_learning",
+    "delegated_authority",
+    "decision_provenance",
+    "communication_explanation",
+    "software_intelligence"
+  ],
+  "l6_allowlist": [
+    "research_evidence",
+    "decision_reasoning",
+    "planning_prioritization",
+    "software_intelligence",
+    "quality_verification"
+  ]
+}
+

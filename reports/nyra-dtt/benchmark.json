@@ -1,0 +1,114 @@
+{
+  "schema_version": "nyra_dtt_benchmark_v1",
+  "iterations": 200,
+  "fixtures": {
+    "allowlisted-l6": {
+      "timing_ms": {
+        "count": 200,
+        "min": 0.2192500000000024,
+        "p50": 0.29433300000000884,
+        "p95": 1.0197499999999948,
+        "p99": 1.8820839999999919,
+        "max": 8.587167,
+        "avg": 0.4102
+      },
+      "final_state": "selected",
+      "allowed_depth": 6,
+      "tree_nodes": 32,
+      "max_depth_reached": 5,
+      "telemetry": {
+        "tree_created": true,
+        "nodes_generated": 32,
+        "nodes_expanded": 13,
+        "nodes_pruned": 0,
+        "backtracks": 0,
+        "early_stop": false,
+        "max_depth_reached": 5,
+        "branching_factor": 2.38,
+        "tree_depth_limit": 6,
+        "beam_width": 3,
+        "max_children": 3,
+        "max_nodes": 32,
+        "permanent_branches_used": ["research_evidence"],
+        "permanent_branches_unused": [],
+        "requests_without_coverage": 0,
+        "collisions": 0,
+        "core_denial": false,
+        "divergence": { "v1_v2_dtt": "advisory_aligned" },
+        "branch_histogram": { "research_evidence": 31 },
+        "depth_histogram": { "1": 3, "2": 9, "3": 9, "4": 9, "5": 1 },
+        "l6_used": true,
+        "l6_allowed": true,
+        "tenant_allowed": true
+      }
+    },
+    "non-allowlisted-l4": {
+      "timing_ms": {
+        "count": 200,
+        "min": 0.027291999999988548,
+        "p50": 0.037750000000002615,
+        "p95": 0.055999999999997385,
+        "p99": 0.0748750000000058,
+        "max": 3.1004999999999967,
+        "avg": 0.0556
+      },
+      "final_state": "failed",
+      "allowed_depth": 4,
+      "tree_nodes": 4,
+      "max_depth_reached": 1,
+      "telemetry": {
+        "tree_created": true,
+        "nodes_generated": 4,
+        "nodes_expanded": 1,
+        "nodes_pruned": 4,
+        "backtracks": 1,
+        "early_stop": false,
+        "max_depth_reached": 1,
+        "branching_factor": 3,
+        "tree_depth_limit": 4,
+        "beam_width": 3,
+        "max_children": 3,
+        "max_nodes": 64,
+        "permanent_branches_used": ["risk_governance"],
+        "permanent_branches_unused": [],
+        "requests_without_coverage": 1,
+        "collisions": 0,
+        "core_denial": false,
+        "divergence": { "v1_v2_dtt": "shadow_diverged" },
+        "branch_histogram": { "risk_governance": 3 },
+        "depth_histogram": { "1": 3 },
+        "l6_used": false,
+        "l6_allowed": false,
+        "tenant_allowed": true
+      }
+    },
+    "tenant-blocked": {
+      "timing_ms": {
+        "count": 200,
+        "min": 0.0015829999999965594,
+        "p50": 0.0019170000000059417,
+        "p95": 0.004332999999988374,
+        "p99": 0.009583000000006336,
+        "max": 0.03700000000000614,
+        "avg": 0.0026
+      },
+      "final_state": "blocked",
+      "allowed_depth": 0,
+      "tree_nodes": 0,
+      "max_depth_reached": 0,
+      "telemetry": {
+        "tree_created": false,
+        "nodes_generated": 0,
+        "nodes_expanded": 0,
+        "nodes_pruned": 0,
+        "backtracks": 0,
+        "early_stop": false,
+        "max_depth_reached": 0,
+        "depth_histogram": {},
+        "branch_histogram": {},
+        "permanent_branches_used": []
+      }
+    }
+  }
+}
+

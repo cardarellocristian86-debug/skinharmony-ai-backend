@@ -1,0 +1,32 @@
+{
+  "schema_version": "nyra_dtt_validation_report_v1",
+  "status": "green",
+  "tests_executed": [
+    {
+      "command": "node --test services/universal-core-service/test/governed-dynamic-thought-tree.test.js services/universal-core-service/test/governed-dynamic-thought-tree.contract.test.js",
+      "result": "passed",
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "command": "node --test services/universal-core-service/test/core-operational-runtime.test.js services/universal-core-service/test/core-runtime-hierarchy.test.js services/universal-core-service/test/core-service-smoke.js services/universal-core-service/test/governed-dynamic-thought-tree.test.js services/universal-core-service/test/governed-dynamic-thought-tree.contract.test.js",
+      "result": "passed_with_one_sandbox_false_negative_then_rerun_smoke_passed",
+      "passed": 15,
+      "failed": 1
+    },
+    {
+      "command": "node --test services/universal-core-service/test/core-service-smoke.js",
+      "result": "passed_with_escalated_local_bind_permission",
+      "passed": 1,
+      "failed": 0
+    }
+  ],
+  "benchmark_executed": true,
+  "benchmark_fixture_count": 3,
+  "notes": [
+    "DTT remains independent from Nyra V2 rollout state.",
+    "No Render change, push, PR, or deploy was performed.",
+    "Telemetry is redacted and does not contain prompt text or secrets.",
+    "The only sandbox failure was a local listener bind in the smoke test; it passed when rerun with elevated local permissions."
+  ]
+}

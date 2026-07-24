@@ -1,5 +1,6 @@
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
 import { runAssistantDigestRuntimeV2 } from "../../../universal-core/packages/branches/assistant/src/index.ts";
+import { createGovernedDynamicThoughtTreeRuntime } from "./dtt/governedDynamicThoughtTree.js";
 
 const VERSION = "core_runtime_hierarchy_v1";
 
@@ -108,7 +109,7 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
   const mustEscalate =
     v7.route === "V0" || ["protection", "critical", "blocked"].includes(v1.state) ||
     v1.risk_score >= 65 || v1.confidence < 45 || v1.blocked_action_count > 0;
-  const v0 = mustEscalate ? runUniversalCore(input) : null;
+  const v0 = mustEscalate ? (options.v0Result || runUniversalCore(input)) : null;
   let v2 = null;
   let parity = { attempted: false, matched: null, fallback: null };
   if (mode !== "disabled" && v7.route === "V2" && options.worker) {
@@ -119,6 +120,34 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
       parity = { attempted: true, matched: comparison.matched, deltas: comparison.deltas, fallback: comparison.matched ? null : "V1" };
     } catch {
       parity = { attempted: true, matched: false, fallback: "V1", error: "core_runtime_v2_unavailable" };
+    }
+  }
+  const dttRuntime = options.dttRuntime || null;
+  const dttInput = options.dttInput || input.dtt_input || input.dtt_request || null;
+  let dtt = null;
+  if (dttRuntime && dttInput) {
+    try {
+      dtt = await dttRuntime.evaluate({
+        tenantId: String(input.context?.tenant_id || dttInput.tenant_id || ""),
+        request: dttInput,
+        domainPackId: String(dttInput.domain_pack_id || options.domainPackId || "generic"),
+        requestedBranches: Array.isArray(dttInput.requested_branches) ? dttInput.requested_branches : [],
+        evidenceRefs: Array.isArray(dttInput.evidence_refs) ? dttInput.evidence_refs : [],
+        contradictingEvidenceRefs: Array.isArray(dttInput.contradicting_evidence_refs) ? dttInput.contradicting_evidence_refs : [],
+        coreDecision: options.coreDecision || null,
+      });
+    } catch (error) {
+      dtt = { schema_version: "nyra_governed_dynamic_thought_tree_v1", status: "failed", error: "dtt_evaluation_failed" };
+    }
+  } else if (!dttRuntime && options.dttRuntimeFactory === true) {
+    const runtime = createGovernedDynamicThoughtTreeRuntime();
+    try {
+      dtt = await runtime.evaluate({
+        tenantId: String(input.context?.tenant_id || ""),
+        request: dttInput || {},
+      });
+    } catch {
+      dtt = { schema_version: "nyra_governed_dynamic_thought_tree_v1", status: "failed", error: "dtt_evaluation_failed" };
     }
   }
   const v2CanLead = mode === "active" && parity.matched === true && !mustEscalate;
@@ -132,11 +161,12 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
     governance: { V7: "routing_only", V0: "final_judge", V1: "canonical_digest", V2: mode === "shadow" ? "shadow_accelerator" : "accelerator" },
     parity,
     supervision_prefilter: supervisionPrefilter,
+    dtt,
     results: { V0: v0 ? { state: v0.state, control_level: v0.control_level, risk_score: v0.risk?.score } : null, V1: compactDigest(v1), V2: compactDigest(v2) },
   };
 }
 
-export function coreRuntimeHierarchyStatus(worker, mode = "shadow") {
+export function coreRuntimeHierarchyStatus(worker, mode = "shadow", options = {}) {
   return {
     hierarchy_version: VERSION,
     mode,
@@ -144,5 +174,6 @@ export function coreRuntimeHierarchyStatus(worker, mode = "shadow") {
     execution_authority: false,
     roles: { V7: "scenario_overlap_router", V0: "final_judge", V1: "canonical_digest", V2: "rust_digest_accelerator" },
     worker: worker?.status?.() || { configured: false, running: false },
+    dtt: options.dttStatus || null,
   };
 }

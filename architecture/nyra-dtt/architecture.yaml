@@ -1,0 +1,139 @@
+schema_version: nyra_dtt_architecture_v1
+name: Governed Dynamic Thought Tree
+status: local_implementation
+scope:
+  repository: cardarellocristian86-debug/skinharmony-ai-backend
+  service: skinharmony-nyra-core
+  tenant_boundary: codexai
+  rollout_boundary: independent_from_v2
+
+principles:
+  - fixed_cognitive_branch_network_remains_stable
+  - dynamic_thought_tree_is_request_scoped_and_tenant_scoped
+  - nyra_proposes_and_explores
+  - universal_core_applies_policy_budget_risk_and_authority
+  - fail_closed_on_tenant_policy_budget_and_provenance_mismatch
+  - no_private_chain_of_thought_persistence
+  - no_auto_promotion_to_permanent_branch_or_policy
+
+runtime_modes:
+  - off
+  - shadow
+  - canary
+  - active
+
+feature_flags:
+  enabled: CORE_DTT_ENABLED
+  mode: CORE_DTT_MODE
+  default_depth: CORE_DTT_DEFAULT_DEPTH
+  max_depth_cap: CORE_DTT_MAX_DEPTH_CAP
+  l6_allowlist: CORE_DTT_L6_ALLOWLIST
+  max_children: CORE_DTT_MAX_CHILDREN
+  beam_width: CORE_DTT_BEAM_WIDTH
+  max_nodes: CORE_DTT_MAX_NODES
+  tenant_allowlist: CORE_DTT_TENANT_ALLOWLIST
+  rollback: CORE_DTT_MODE=off
+
+limits:
+  max_children_per_node: 3
+  beam_width: 3
+  max_nodes_per_tree: 64
+  max_permanent_branches_per_run: 24
+  max_parallel_workers_per_tenant: 8
+  max_retry_per_task: 2
+  default_depth: 4
+  initial_depth_cap: 6
+
+fixed_branch_network:
+  stable_branches:
+    - context_intelligence
+    - work_intake
+    - risk_governance
+    - research_evidence
+    - decision_reasoning
+    - planning_prioritization
+    - execution_planning
+    - parallel_coordination
+    - quality_verification
+    - learning_memory
+    - adaptive_learning
+    - delegated_authority
+    - decision_provenance
+    - communication_explanation
+    - software_intelligence
+
+dynamic_tree:
+  request_lifecycle:
+    - normalize_request
+    - fingerprint_request
+    - select_permanent_branches
+    - create_tree
+    - generate_hypotheses
+    - score_candidates
+    - expand_best_paths
+    - prune_weak_paths
+    - backtrack_on_critical_contradiction
+    - early_stop_on_sufficient_evidence
+    - core_join
+    - core_verdict
+    - redacted_explanation
+    - learning_candidate_optional
+    - retention_cleanup
+  node_states:
+    - candidate
+    - expanded
+    - pruned
+    - blocked
+    - backtracked
+    - selected
+    - abstained
+    - failed
+    - completed
+  node_contract_fields:
+    - run_id
+    - tree_id
+    - node_id
+    - parent_id
+    - depth
+    - tenant_id
+    - request_fingerprint
+    - fixed_branch_id
+    - subbranch_id
+    - hypothesis_summary
+    - supporting_evidence_refs
+    - contradicting_evidence_refs
+    - assumptions
+    - confidence
+    - uncertainty
+    - utility
+    - risk
+    - estimated_cost
+    - score
+    - status
+    - prune_reason
+    - backtrack_reason
+    - catalog_version
+    - policy_version
+    - core_decision_reference
+    - timestamp
+    - provenance
+
+governance:
+  core_authority: universal_core
+  shadow_mode_no_side_effects: true
+  tenant_isolation: true
+  provenance_required: true
+  rollback_reference: NYRA_DTT_MODE=off
+  allowed_l6_branches:
+    - research_evidence
+    - decision_reasoning
+    - planning_prioritization
+    - software_intelligence
+    - quality_verification
+
+integration_points:
+  runtime: services/universal-core-service/src/coreOperationalRuntime.js
+  dtt_runtime: services/universal-core-service/src/dtt/governedDynamicThoughtTree.js
+  route_catalog: services/universal-core-service/src/nyraBranchNetwork.js
+  tests: services/universal-core-service/test/governed-dynamic-thought-tree.test.js
+

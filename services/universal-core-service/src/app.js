@@ -49,6 +49,7 @@ import {
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
+import { createGovernedDynamicThoughtTreeRuntime } from "./dtt/governedDynamicThoughtTree.js";
 import {
   analyzeScenarios,
   evaluateCounterfactuals,
@@ -63,6 +64,7 @@ import { buildActionAuthorization } from "./actionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
+import { createCoreOperationalRuntime } from "./coreOperationalRuntime.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
   embeddedComponentManifest,
@@ -2612,6 +2614,19 @@ function buildBranchPayload(branch, payload = {}) {
     })).filter((item) => item.key) : [];
     if (!scores.length) missing.push("scores");
     const byKey = Object.fromEntries(scores.map((item) => [item.key, item]));
+    const expectedKeys = ["skin_tone_brightness", "water_oil_balance", "texture_fine_lines", "redness_sensitivity_signals", "spots_pigmentation_signals", "pores_texture"];
+    const missingScores = expectedKeys.filter((key) => !byKey[key]);
+    const acquisition = data.acquisition && typeof data.acquisition === "object" ? data.acquisition : {};
+    const explicitQuality = Number.isFinite(Number(data.data_quality_score));
+    const dataQualityScore = clampScore(explicitQuality ? data.data_quality_score : 70);
+    const qualityReasons = [
+      ...(dataQualityScore < 65 ? ["aggregate_quality_low"] : []),
+      ...(Number(acquisition.focus_score) < 65 ? ["focus_low"] : []),
+      ...(Number(acquisition.illumination_score) < 65 ? ["illumination_low"] : []),
+      ...(!acquisition.capture_protocol_id ? ["capture_protocol_missing"] : []),
+      ...(!acquisition.device_model ? ["device_provenance_missing"] : []),
+    ];
+    const abstain = explicitQuality && dataQualityScore < 65;
     const getScore = (key) => Number.isFinite(Number(byKey[key]?.score)) ? Number(byKey[key].score) : null;
     const attention = (key, fallback = 52) => {
       const score = getScore(key);
@@ -2675,10 +2690,16 @@ function buildBranchPayload(branch, payload = {}) {
     domains.forEach((domain) => addSignal(domain.id, `Skin analyzer ${domain.label}`, domain.score, "skin_analysis", ["ensemble", domain.id]));
     addSignal("claim_risk", "Rischio claim testo analyzer", claimResult.risk_score, "claim", ["claim_guard"]);
     addSignal("catalog_readiness", "Catalogo prodotti/protocolli disponibile", products.length || protocols.length ? 20 : 65, "catalog", ["products", "protocols"]);
+    addSignal("acquisition_quality", "Qualita e provenienza acquisizione", 100 - dataQualityScore, "skin_analysis", ["quality", "provenance"]);
+    const previousScores = Array.isArray(data.previous_scores) ? Object.fromEntries(data.previous_scores.map((item) => [textValue(item?.key), Number(item?.score)])) : {};
+    const comparable = Boolean(data.previous_scores?.length && acquisition.capture_protocol_id && acquisition.device_model && acquisition.capture_protocol_id === data.previous_acquisition?.capture_protocol_id && acquisition.device_model === data.previous_acquisition?.device_model);
+    const longitudinalDeltas = comparable ? Object.fromEntries(scores.filter((item) => Number.isFinite(previousScores[item.key])).map((item) => [item.key, Math.round((item.score - previousScores[item.key]) * 10) / 10])) : {};
+    const learningContext = data.learning_context && typeof data.learning_context === "object" ? data.learning_context : {};
+    const learningEligible = comparable && learningContext.outcome_verified === true && learningContext.human_reviewed === true && Number(learningContext.comparable_capture_count) >= 2;
     branchOutput = {
-      branch: "skinharmony_skin_ensemble_v1",
-      dominant_pattern: dominant,
-      secondary_patterns: secondary,
+      branch: "skinharmony_skin_ensemble_v2",
+      dominant_pattern: abstain ? null : dominant,
+      secondary_patterns: abstain ? [] : secondary,
       all_patterns: domains,
       score_relationships: relationshipRules,
       protective_signals: [
@@ -2688,7 +2709,11 @@ function buildBranchPayload(branch, payload = {}) {
       ],
       products_loaded: products.length,
       protocols_loaded: protocols.length,
-      suggested_direction: dominant?.id === "pores_texture_matrix"
+      data_quality: { score: dataQualityScore, abstained: abstain, repeat_acquisition_recommended: abstain, reasons: qualityReasons, missing_scores: missingScores },
+      longitudinal: { available: Boolean(data.previous_scores?.length), comparable, deltas: longitudinalDeltas, interpretation_allowed: comparable && !abstain },
+      fairness: { audit_required: true, individual_group_adjustment_allowed: false, minimum_rule: "report quality and abstention rates by represented skin-tone groups" },
+      learning: { eligible_candidate: learningEligible, activation_allowed: false, requires: ["verified_outcome", "human_review", "comparable_capture_series", "core_regression_gate"] },
+      suggested_direction: abstain ? "Ripetere l'acquisizione con qualita e protocollo controllati prima di interpretare." : dominant?.id === "pores_texture_matrix"
         ? "Percorso riequilibrante su grana, pori e texture, con progressione rispettosa della reattivita."
         : dominant?.id === "sensitivity_reactivity_matrix"
           ? "Percorso comfort e tolleranza prima di stimoli estetici piu intensivi."
@@ -3188,6 +3213,15 @@ export function createUniversalCoreService(options = {}) {
   const coreRuntime = options.coreRuntime || createCoreRuntimeWorker(options.coreRuntimeOptions);
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
+  const coreOperationalRuntime = options.coreOperationalRuntime || createCoreOperationalRuntime({
+    worker: coreRuntime,
+    mode: coreRuntimeMode,
+    canaryPercent: Number(options.coreRuntimeCanaryPercent ?? process.env.CORE_RUNTIME_V2_CANARY_PERCENT ?? 0),
+    signatureSecret: options.coreCapabilitySigningSecret || process.env.CORE_CAPABILITY_SIGNING_SECRET || process.env.CORE_EVIDENCE_SIGNING_SECRET || "",
+  });
+  const dttRuntime = options.dttRuntime || createGovernedDynamicThoughtTreeRuntime({
+    env: options.dttEnv || process.env,
+  });
   const app = express();
 
   app.disable("x-powered-by");
@@ -3210,7 +3244,38 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/runtime/hierarchy/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
-    res.json({ ok: true, tenant_id: req.tenantId, runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode) });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode, { dttStatus: dttRuntime.status(req.tenantId) }),
+    });
+  });
+
+  app.get("/v1/runtime/utilization", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, ...coreOperationalRuntime.status(req.tenantId) });
+  });
+
+  app.get("/v1/runtime/dtt/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      dtt: {
+        ...dttRuntime.status(req.tenantId),
+        core_runtime_mode: coreRuntimeMode,
+      },
+    });
+  });
+
+  app.post("/v1/runtime/capabilities/consume", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+    const result = coreOperationalRuntime.consumeCapability(req.tenantId, req.body || {});
+    audit.append("core_runtime_capability_consumed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      capability_id: result.capability_id || null,
+      valid: result.valid,
+      reason: result.reason || null,
+    });
+    return res.status(result.valid ? 200 : 403).json({ ok: result.valid, tenant_id: req.tenantId, result });
   });
 
   app.post("/v1/runtime/hierarchy/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
@@ -3228,6 +3293,8 @@ export function createUniversalCoreService(options = {}) {
         mode: coreRuntimeMode,
         routing: req.body?.routing,
         ownerMode: options.coreRuntimeOwnerMode || "normal",
+        dttRuntime,
+        dttInput: req.body?.dtt_input || req.body?.dtt_request || null,
       });
       audit.append("core_runtime_hierarchy_evaluated", {
         tenant_id: req.tenantId,
@@ -3241,6 +3308,69 @@ export function createUniversalCoreService(options = {}) {
     } catch {
       return publicError(res, 400, "core_runtime_evaluation_failed");
     }
+  });
+
+  app.post("/v1/runtime/dtt/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
+    if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
+    const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
+    if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const requestText = String(req.body?.request || req.body?.message || req.body?.text || req.body?.task || "").trim();
+    if (!requestText) return publicError(res, 400, "dtt_request_required");
+    const result = dttRuntime.evaluate({
+      tenant_id: req.tenantId,
+      request_id: req.body?.request_id || `dtt_${crypto.randomUUID()}`,
+      text: requestText,
+      intent: requestText,
+      fixed_branch_ids: req.body?.requested_branches || req.body?.nyra_branches || [],
+      branch_catalog: nyraBranchCatalog(domainPackAccess.pack.id).branches,
+      supporting_evidence_refs: normalizeList(req.body?.supporting_evidence_refs, 12),
+      contradicting_evidence_refs: normalizeList(req.body?.contradicting_evidence_refs, 12),
+      provenance_refs: normalizeList(req.body?.provenance_refs, 12),
+      confidence: Number(req.body?.confidence ?? 0.6),
+      signal_strength: Number(req.body?.signal_strength ?? 0.5),
+      risk: Number(req.body?.risk ?? 0.4),
+      ambiguity: Number(req.body?.ambiguity ?? 0.4),
+      reversibility: Number(req.body?.reversibility ?? 0.6),
+      uncertainty: Number(req.body?.uncertainty ?? 0.4),
+      source_reliability: Number(req.body?.source_reliability ?? 0.7),
+      reuse_score: Number(req.body?.reuse_score ?? 0.5),
+      tenant_safe: true,
+      policy_match: true,
+      budget: {
+        max_nodes: req.body?.max_nodes,
+        beam_width: req.body?.beam_width,
+        max_children: req.body?.max_children,
+        deadline_ms: req.body?.deadline_ms,
+      },
+      core_decision_reference: {
+        state: "shadow",
+        authority: coreRuntimeMode === "active" ? "V2" : "V1",
+        route_trace: [`core_runtime_mode:${coreRuntimeMode}`],
+      },
+      catalog_version: nyraBranchCatalog(domainPackAccess.pack.id).schema_version,
+      allowed_depth_override: req.body?.depth_override,
+    });
+    audit.append("core_dtt_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      tree_id: result.tree.tree_id,
+      mode: result.mode,
+      selected_branches: result.result?.selected_path?.map((node) => node.branch_id) || [],
+      node_count: result.nodes_evaluated,
+    });
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      domain_pack: publicDomainPack(domainPackAccess.pack),
+      dynamic_thought_tree: result,
+      guardrail: {
+        execution_allowed: false,
+        shadow_only: result.mode === "shadow",
+        no_side_effects: true,
+        rollback_independent_of_v2: true,
+      },
+    });
   });
 
   app.get("/v1/keys/presets", (req, res) => {
@@ -3539,6 +3669,40 @@ export function createUniversalCoreService(options = {}) {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
     });
+    const dynamicThoughtTree = dttRuntime.evaluate({
+      tenant_id: req.tenantId,
+      request_id: preflight.preflight_id,
+      text: requestText,
+      intent: requestText,
+      fixed_branch_ids: req.body?.nyra_branches || req.body?.requested_branches || [],
+      branch_catalog: nyraBranchCatalog(domainPackAccess.pack.id).branches,
+      supporting_evidence_refs: normalizeList(req.body?.supporting_evidence_refs, 12),
+      contradicting_evidence_refs: normalizeList(req.body?.contradicting_evidence_refs, 12),
+      provenance_refs: normalizeList(req.body?.provenance_refs, 12),
+      confidence: 0.6,
+      signal_strength: 0.5,
+      risk: 0.4,
+      ambiguity: 0.4,
+      reversibility: 0.6,
+      uncertainty: 0.4,
+      source_reliability: 0.7,
+      reuse_score: 0.5,
+      tenant_safe: true,
+      policy_match: true,
+      budget: {
+        max_nodes: req.body?.max_nodes,
+        beam_width: req.body?.beam_width,
+        max_children: req.body?.max_children,
+        deadline_ms: req.body?.deadline_ms,
+      },
+      core_decision_reference: {
+        state: "shadow",
+        authority: coreRuntimeMode === "active" ? "V2" : "V1",
+        route_trace: [`preflight:${preflight.preflight_id}`],
+      },
+      catalog_version: nyraBranchCatalog(domainPackAccess.pack.id).schema_version,
+      allowed_depth_override: req.body?.depth_override,
+    });
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -3553,6 +3717,12 @@ export function createUniversalCoreService(options = {}) {
       ok: true,
       tenant_id: req.tenantId,
       work_preflight: preflight,
+      dynamic_thought_tree: {
+        run: dynamicThoughtTree.run,
+        tree: dynamicThoughtTree.tree,
+        result: dynamicThoughtTree.result,
+        telemetry: dynamicThoughtTree.telemetry,
+      },
       guardrail: {
         mandatory_before_work: true,
         execution_allowed: false,
@@ -4012,6 +4182,9 @@ export function createUniversalCoreService(options = {}) {
       outcome_id: stored.record.outcome_id,
       duplicate: stored.duplicate,
     });
+    const operationalOutcome = stored.duplicate
+      ? { linked: false, duplicate: true, utilization: coreOperationalRuntime.status(req.tenantId).utilization }
+      : coreOperationalRuntime.recordOutcome(req.tenantId, req.body?.decision_id || req.body?.prediction_id);
     res.status(stored.duplicate ? 200 : 201).json({
       ok: true,
       tenant_id: req.tenantId,
@@ -4019,6 +4192,7 @@ export function createUniversalCoreService(options = {}) {
       duplicate: stored.duplicate,
       calibration,
       evidence: evidenceRecord,
+      core_operational_outcome: operationalOutcome,
       live_weight_mutation_enabled: false,
     });
   });
@@ -4255,7 +4429,7 @@ export function createUniversalCoreService(options = {}) {
     res.redirect(307, "/v1/ai-gateway/schema");
   });
 
-  function handleAiGateway(req, res, adapterOverride = "") {
+  async function handleAiGateway(req, res, adapterOverride = "") {
     const validation = validateAiGatewayPayload(req.body || {});
     if (!validation.ok) {
       audit.append("core_ai_gateway_validation_failed", {
@@ -4290,6 +4464,15 @@ export function createUniversalCoreService(options = {}) {
       coreOutput: output,
       adapterOverride,
     });
+    const operational = await coreOperationalRuntime.evaluate({
+      tenantId: req.tenantId,
+      input,
+      payload: req.body || {},
+      verdict,
+      routing: req.body?.runtime_routing,
+      ownerMode: options.coreRuntimeOwnerMode || "normal",
+      v0Result: output,
+    });
     const benchmark = req.body?.include_benchmark === true ? gatewayBenchmark(req.body || {}, verdict) : undefined;
     audit.append("core_ai_gateway_evaluated", {
       tenant_id: req.tenantId,
@@ -4304,6 +4487,9 @@ export function createUniversalCoreService(options = {}) {
       owner_confirmation_required: verdict.requiresOwnerConfirmation,
       next_step: verdict.action_mediation?.next_step,
       preflight_id: workPreflight.preflight_id,
+      runtime_route: operational.hierarchy.router.route,
+      runtime_authority: operational.hierarchy.selected_authority,
+      decision_id: operational.envelope.decision_id,
     });
     return res.json({
       ok: true,
@@ -4318,6 +4504,7 @@ export function createUniversalCoreService(options = {}) {
       },
       work_preflight: workPreflight,
       verdict,
+      core_operational: operational,
       benchmark,
     });
   }
@@ -5098,5 +5285,5 @@ export function createUniversalCoreService(options = {}) {
 
   app.use((req, res) => publicError(res, 404, "route_not_found"));
 
-  return { app, storageRoot, coreRuntime };
+  return { app, storageRoot, coreRuntime, close: () => coreRuntime.close() };
 }

@@ -1,0 +1,46 @@
+schema_version: nyra_dtt_policy_v1
+policy_name: Nyra DTT depth policy
+core_authority: universal_core
+default_depth: 4
+max_depth_cap: 6
+allowed_l6_branches:
+  - research_evidence
+  - decision_reasoning
+  - planning_prioritization
+  - software_intelligence
+  - quality_verification
+restricted_to_l4_or_lower:
+  - risk_governance
+  - delegated_authority
+  - execution_planning
+  - identity
+  - security
+  - pricing
+  - publishing
+  - deployment
+  - customer_data
+policy_rules:
+  - fail_closed_when_allowlist_missing_or_invalid
+  - fail_closed_when_tenant_mismatch
+  - fail_closed_when_budget_exhausted
+  - fail_closed_when_provenance_insufficient
+  - no_self_promoted_branch_depth
+  - no_side_effects_in_shadow
+  - no_cycles_no_orphans
+  - no_more_than_three_children_per_node
+  - l6_requires_allowlist_and_core_gate
+  - depth_above_l6_requires_new_policy_version
+scoring_controls:
+  weights:
+    evidence: 0.22
+    reliability: 0.14
+    utility: 0.18
+    probability: 0.15
+    risk: 0.10
+    cost: 0.08
+    reversibility: 0.07
+    uncertainty: 0.03
+    policy: 0.03
+  owner_change_required: true
+  core_change_required: true
+
