@@ -470,20 +470,60 @@ export const TOOLS = [
     setup_url: { type: "string", format: "uri" },
     execution_enabled: { const: false },
   }, ["ok", "tenant_id", "setup_url", "execution_enabled"]) }),
-  tool("tenant_provider_openai_multi_agent_smoke_run", "Run bounded OpenAI multi-agent test", "Start the bounded OpenAI multi-agent test directly, without work_preflight or shared-memory bootstrap, using the authenticated tenant's already-encrypted OpenAI key: Researcher → Reviewer → Nyra Synthesizer. Its native gate verifies configured provider, execution availability, authenticated tenant OAuth owner and a fresh request-bound confirmation. A completed run makes three sequential real calls; cancellation or a safety failure stops before every remaining call. Use only after the tenant owner explicitly confirms this exact test. The response immediately returns a run id; then read or cancel it. Fixed first-live budget: at most three sequential calls, 200 output tokens per stage, no browser, tools, external actions, writes, learning, or automatic retries. Never pass an API key, tenant id, model, agents, or budget in arguments.", object({
+  tool("tenant_provider_openai_multi_agent_smoke_run", "Run bounded OpenAI multi-agent test", "Start the bounded OpenAI multi-agent workflow using the authenticated tenant's encrypted OpenAI key and persistent project context: Researcher → Architecture/Code Specialist → Nyra Supervisor. The project folder is tenant-scoped and created idempotently before any provider call. Its native gate verifies provider readiness, OAuth owner and a fresh request-bound confirmation. A completed run makes three sequential real calls; cancellation or a safety failure stops every remaining call. Use only after the tenant owner explicitly confirms this exact test and project write. Fixed live budget: at most three sequential calls, 200 output tokens per stage, no browser, tools, external actions, learning or automatic retries. Never pass an API key, tenant id, model, agents or budget in arguments.", object({
     task: text(300),
+    project_id: identifier,
+    project_title: { type: "string", minLength: 2, maxLength: 160 },
+    project_objective: { type: "string", minLength: 3, maxLength: 4_000 },
+    specialist: { type: "string", enum: ["architecture", "code"] },
   }, ["task"]), ["core:govern"], false, false, { outputSchema: object({
     ok: { type: "boolean" },
     tenant_id: { type: "string" },
     run: { type: "object", additionalProperties: true },
     governance: { type: "object", additionalProperties: true },
   }, ["ok", "tenant_id", "run", "governance"]), meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" } }),
-  tool("tenant_provider_openai_multi_agent_run_read", "Read bounded multi-agent test", "Read status and tenant-scoped output of a bounded OpenAI multi-agent test. Requires the authenticated provider owner, never invokes the provider, and spends no API credits.", object({
+  tool("tenant_provider_openai_multi_agent_run_read", "Read bounded multi-agent test", "Read status and tenant-scoped output of a bounded OpenAI multi-agent test. Requires the authenticated provider owner, never invokes the provider, and spends no API credits. A terminal result is retained under the same tenant project as an unreviewed run artifact; it is never promoted automatically to accepted decisions or reviewed evidence.", object({
     run_id: { type: "string", maxLength: 160 },
   }, ["run_id"]), ["core:read"], true, true),
-  tool("tenant_provider_openai_multi_agent_run_cancel", "Cancel bounded multi-agent test", "Immediately cancel a tenant-scoped bounded OpenAI multi-agent test. The kill signal aborts the in-flight provider request and all remaining stages; it never starts a replacement call.", object({
+  tool("tenant_provider_openai_multi_agent_run_cancel", "Cancel bounded multi-agent test", "Immediately cancel a tenant-scoped bounded OpenAI multi-agent test. The kill signal aborts the in-flight provider request and all remaining stages; it never starts a replacement call. The terminal cancellation record stays in that project's unreviewed run history and cannot become evidence or a decision automatically.", object({
     run_id: { type: "string", maxLength: 160 },
   }, ["run_id"]), ["core:govern"], false, true, { meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" } }),
+  tool("project_context_review_commit", "Accept reviewed project context", "Promote only the tenant owner's explicitly selected decisions and reviewed evidence from one terminal multi-agent run into that project's canonical context. This native, tenant-scoped write requires a fresh OAuth owner confirmation, an exact expected revision, a one-use idempotency key and an allow verdict from Universal Core. Unreviewed model output is never copied or exposed automatically; submit only the concise material the owner has actually reviewed and accepted.", object({
+    project_id: identifier,
+    run_id: { type: "string", pattern: "^run_[A-Za-z0-9_-]{1,150}$", maxLength: 160 },
+    expected_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    disposition: { type: "string", enum: ["accept_selected", "reject"] },
+    decision_items: {
+      type: "array",
+      maxItems: 10,
+      items: object({
+        decision: { type: "string", minLength: 1, maxLength: 1_000 },
+        rationale: { type: "string", minLength: 1, maxLength: 2_000 },
+      }, ["decision"]),
+    },
+    evidence_items: {
+      type: "array",
+      maxItems: 10,
+      items: object({
+        claim: { type: "string", minLength: 1, maxLength: 1_000 },
+        source: { type: "string", minLength: 1, maxLength: 1_000 },
+      }, ["claim", "source"]),
+    },
+    idempotency_key: { type: "string", minLength: 8, maxLength: 120, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{7,119}$" },
+  }, ["project_id", "run_id", "expected_revision", "disposition", "decision_items", "evidence_items", "idempotency_key", "owner_confirmed"]), ["core:govern"], false, true, {
+    outputSchema: object({
+      ok: { const: true },
+      tenant_id: { type: "string" },
+      project_id: identifier,
+      run_id: { type: "string" },
+      disposition: { type: "string", enum: ["accept_selected", "reject"] },
+      committed: { const: true },
+      idempotent: { type: "boolean" },
+      review_id: { type: "string" },
+      revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    }, ["ok", "tenant_id", "project_id", "run_id", "disposition", "committed", "idempotent"]),
+    meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" },
+  }),
   tool("generic_agent_orchestration_create", "Create generic agent orchestration", "Create a bounded tenant-scoped worker plan for an existing generic agent run. This plans internal work only and never authorizes external execution.", object({
     run_id: { type: "string", maxLength: 160 },
     workers: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: {

@@ -258,11 +258,11 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     issueSetupLink: async () => issuedSetupLink(),
     providerStatus: async (_args, identity) => {
       calls.push({ operation: "status", identity });
-      return { structuredContent: { ok: true, tenant_id: identity.tenantId, provider: { configured: true, execution_available: true } } };
+      return { structuredContent: { ok: true, tenant_id: identity.tenantId, provider: { configured: true, execution_available: true, bounded_execution_ready: true } } };
     },
     startMultiAgentRun: async (args, identity) => {
       calls.push({ operation: "start", args, identity });
-      return { structuredContent: { ok: true, run: { run_id: runId, status: "running", stages: [] } } };
+      return { structuredContent: { ok: true, run: { run_id: runId, project_id: "project-test-1", status: "running", stages: [] } } };
     },
     readMultiAgentRun: async (args, identity) => {
       calls.push({ operation: "read", args, identity });
@@ -270,6 +270,7 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
         ok: true,
         run: {
           run_id: runId,
+          project_id: "project-test-1",
           status: "completed",
           final_output: "<script>alert('no')</script> risultato sicuro",
           stages: [{ role: "Nyra", status: "completed", output: "<b>test</b>" }],
@@ -305,7 +306,13 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     const home = await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } });
     assert.equal(home.status, 200);
     const homeHtml = await home.text();
-    assert.match(homeHtml, /Researcher → Reviewer → Nyra/);
+    assert.match(homeHtml, /Ricercatore → Architettura\/Codice → Nyra supervisore/);
+    assert.match(homeHtml, /cartella progetto persistente e isolata nel tuo tenant/);
+    assert.match(homeHtml, /al massimo 3 chiamate OpenAI/);
+    assert.match(homeHtml, /name="project_title" minlength="2" maxlength="160" required/);
+    assert.match(homeHtml, /name="specialist" required/);
+    assert.match(homeHtml, /value="architecture"/);
+    assert.match(homeHtml, /value="code"/);
     assert.match(homeHtml, /name="task" maxlength="300"/);
     const csrf = homeHtml.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
     assert(csrf);
@@ -332,6 +339,20 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
     assert.equal(deniedOpaqueCrossSite.status, 403);
     assert.equal(calls.filter((call) => call.operation === "start").length, 0);
 
+    const missingProject = await rawPost(`${base}/agents/run`, {
+      headers: {
+        cookie: sessionCookie,
+        origin: "null",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf, confirmed: "yes", task: "Test tenant isolato" }),
+    });
+    assert.equal(missingProject.status, 400);
+    assert.equal(calls.filter((call) => call.operation === "start").length, 0);
+
     const started = await rawPost(`${base}/agents/run`, {
       headers: {
         cookie: sessionCookie,
@@ -344,27 +365,45 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
       body: new URLSearchParams({
         csrf,
         confirmed: "yes",
+        project_title: "Progetto portale sicuro",
+        specialist: "architecture",
         task: "Test tenant isolato",
         tenant_id: "tenant-victim",
         api_key: "must-not-be-forwarded",
         model: "caller-model",
       }),
     });
-    assert.equal(started.status, 202);
+    assert.equal(started.status, 303);
+    assert.equal(started.headers.get("location"), `/agents/runs/${runId}`);
+    const resumedSessionCookie = started.headers.get("set-cookie").split(";")[0];
+    assert.match(resumedSessionCookie, /^__Host-skinharmony_agents=/);
     const startCall = calls.find((call) => call.operation === "start");
-    assert.deepEqual(startCall.args, { task: "Test tenant isolato" });
+    assert.deepEqual(startCall.args, {
+      task: "Test tenant isolato",
+      project_title: "Progetto portale sicuro",
+      project_objective: "Test tenant isolato",
+      specialist: "architecture",
+    });
     assert.equal(startCall.identity.tenantId, "codexai");
     assert.equal(startCall.identity.providerExecutionConfirmed, true);
     assert.match(startCall.identity.providerExecutionConfirmationReference, /^agent_portal_[a-f0-9]{32}$/);
     assert.equal(JSON.stringify(startCall).includes("tenant-victim"), false);
     assert.equal(JSON.stringify(startCall).includes("must-not-be-forwarded"), false);
 
-    const read = await fetch(`${base}/agents/runs/${runId}`, { headers: { cookie: sessionCookie } });
+    const resumedHome = await fetch(`${base}/agents`, { headers: { cookie: resumedSessionCookie } });
+    const resumedHomeHtml = await resumedHome.text();
+    assert.match(resumedHomeHtml, /Riprendi ultima esecuzione/);
+    assert.match(resumedHomeHtml, new RegExp(`/agents/runs/${runId}`));
+
+    const read = await fetch(`${base}/agents/runs/${runId}`, { headers: { cookie: resumedSessionCookie } });
     assert.equal(read.status, 200);
     const readHtml = await read.text();
     assert.doesNotMatch(readHtml, /<script>|<b>test<\/b>/);
     assert.match(readHtml, /&lt;script&gt;alert\(&#39;no&#39;\)&lt;\/script&gt;/);
     assert.match(readHtml, /&lt;b&gt;test&lt;\/b&gt;/);
+    assert.match(readHtml, /<code>project-test-1<\/code>/);
+    assert.doesNotMatch(readHtml, /http-equiv="refresh"/);
+    assert.doesNotMatch(readHtml, /Annulla esecuzione/);
 
     const cancelled = await rawPost(`${base}/agents/runs/${runId}/cancel`, {
       headers: {
@@ -378,6 +417,9 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
       body: new URLSearchParams({ csrf }),
     });
     assert.equal(cancelled.status, 200);
+    const cancelledHtml = await cancelled.text();
+    assert.doesNotMatch(cancelledHtml, /http-equiv="refresh"/);
+    assert.doesNotMatch(cancelledHtml, /Annulla esecuzione/);
     const cancelCall = calls.find((call) => call.operation === "cancel");
     assert.deepEqual(cancelCall.args, { run_id: runId });
     assert.equal(cancelCall.identity.tenantId, "codexai");
@@ -395,6 +437,133 @@ test("runs the bounded tenant multi-agent flow from a secure cross-client portal
   });
 });
 
+test("recovers the sealed last run and refreshes only while it is active", async () => {
+  const runId = "run_recover_after_exit";
+  let reads = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async () => ({ structuredContent: {
+      ok: true,
+      tenant_id: "codexai",
+      provider: { configured: true, execution_available: true, bounded_execution_ready: true },
+    } }),
+    startMultiAgentRun: async () => ({ structuredContent: { ok: true, run: { run_id: runId, project_id: "project-recovery", status: "pending" } } }),
+    readMultiAgentRun: async () => {
+      reads += 1;
+      return { structuredContent: { ok: true, run: reads === 1
+        ? { run_id: runId, project_id: "project-recovery", status: "running", stages: [{ role: "researcher", status: "completed" }] }
+        : { run_id: runId, project_id: "project-recovery", status: "completed", final_output: "Risultato verificato" } } };
+    },
+    cancelMultiAgentRun: async () => ({}),
+  });
+
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
+    const homeHtml = await (await fetch(`${base}/agents`, { headers: { cookie: sessionCookie } })).text();
+    const csrf = homeHtml.match(/name="csrf" value="([A-Za-z0-9_-]+)"/)?.[1];
+    assert(csrf);
+
+    const started = await rawPost(`${base}/agents/run`, {
+      headers: {
+        cookie: sessionCookie,
+        origin: "null",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        csrf,
+        confirmed: "yes",
+        project_title: "Progetto recupero",
+        specialist: "code",
+        task: "Verifica recupero dopo uscita",
+      }),
+    });
+    assert.equal(started.status, 303);
+    assert.equal(started.headers.get("location"), `/agents/runs/${runId}`);
+    const rememberedCookie = started.headers.get("set-cookie").split(";")[0];
+
+    const recovered = await fetch(`${base}/agents`, { headers: { cookie: rememberedCookie } });
+    const recoveredHtml = await recovered.text();
+    assert.match(recoveredHtml, /Riprendi ultima esecuzione/);
+    assert.match(recoveredHtml, new RegExp(`/agents/runs/${runId}`));
+
+    const active = await fetch(`${base}/agents/runs/${runId}`, {
+      headers: { cookie: rememberedCookie },
+      redirect: "manual",
+    });
+    assert.equal(active.status, 202);
+    assert.equal(active.headers.get("retry-after"), "3");
+    const activeHtml = await active.text();
+    assert.match(activeHtml, /<code>project-recovery<\/code>/);
+    assert.match(activeHtml, new RegExp(`http-equiv="refresh" content="3;url=/agents/runs/${runId}"`));
+    assert.match(activeHtml, /Annulla esecuzione/);
+
+    const terminal = await fetch(`${base}/agents/runs/${runId}`, { headers: { cookie: rememberedCookie } });
+    assert.equal(terminal.status, 200);
+    assert.equal(terminal.headers.get("retry-after"), null);
+    const terminalHtml = await terminal.text();
+    assert.match(terminalHtml, /Risultato verificato/);
+    assert.doesNotMatch(terminalHtml, /http-equiv="refresh"/);
+    assert.doesNotMatch(terminalHtml, /Annulla esecuzione/);
+  });
+});
+
+test("shows only allowlisted terminal run errors", async () => {
+  const runId = "run_safe_failure_message";
+  let unsafe = false;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => issuedSetupLink(),
+    providerStatus: async () => ({ structuredContent: {
+      ok: true,
+      tenant_id: "codexai",
+      provider: { configured: true, execution_available: true, bounded_execution_ready: true },
+    } }),
+    startMultiAgentRun: async () => ({}),
+    readMultiAgentRun: async () => ({ structuredContent: { ok: true, run: {
+      run_id: runId,
+      status: "failed",
+      error_code: unsafe ? "sk-proj-secret-must-never-render" : "openai_provider_rate_limited",
+    } } }),
+    cancelMultiAgentRun: async () => ({}),
+  });
+
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
+
+    const allowed = await fetch(`${base}/agents/runs/${runId}`, { headers: { cookie: sessionCookie } });
+    const allowedHtml = await allowed.text();
+    assert.match(allowedHtml, /OpenAI ha applicato un limite temporaneo/);
+    assert.doesNotMatch(allowedHtml, /openai_provider_rate_limited/);
+
+    unsafe = true;
+    const unknown = await fetch(`${base}/agents/runs/${runId}`, { headers: { cookie: sessionCookie } });
+    const unknownHtml = await unknown.text();
+    assert.match(unknownHtml, /dettagli tecnici non sicuri non vengono mostrati/);
+    assert.doesNotMatch(unknownHtml, /sk-proj-secret-must-never-render/);
+    assert.doesNotMatch(unknownHtml, /Annulla esecuzione/);
+  });
+});
+
 test("first agent login sends an unconfigured tenant directly to the secure setup form", async () => {
   const issuedFor = [];
   const portal = createOpenAiConnectPortal({
@@ -405,7 +574,7 @@ test("first agent login sends an unconfigured tenant directly to the secure setu
       issuedFor.push(identity);
       return issuedSetupLink();
     },
-    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: false, execution_available: false } } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: false, execution_available: false, bounded_execution_ready: false } } }),
     startMultiAgentRun: async () => { throw new Error("must_not_start"); },
     readMultiAgentRun: async () => ({}),
     cancelMultiAgentRun: async () => ({}),
@@ -437,8 +606,8 @@ test("an unready portal page reuses the tenant-bound owner session through a CSR
     providerStatus: async () => {
       statusChecks += 1;
       return { structuredContent: { ok: true, tenant_id: "codexai", provider: statusChecks === 1
-        ? { configured: true, execution_available: true }
-        : { configured: false, execution_available: false } } };
+        ? { configured: true, execution_available: true, bounded_execution_ready: true }
+        : { configured: false, execution_available: false, bounded_execution_ready: false } } };
     },
     startMultiAgentRun: async () => { throw new Error("must_not_start"); },
     readMultiAgentRun: async () => ({}),
@@ -509,7 +678,11 @@ test("agent login does not mint a setup link from a malformed provider status", 
       linksIssued += 1;
       return issuedSetupLink();
     },
-    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai" } }),
+    providerStatus: async () => ({ structuredContent: {
+      ok: true,
+      tenant_id: "codexai",
+      provider: { configured: true, execution_available: true },
+    } }),
     startMultiAgentRun: async () => ({}),
     readMultiAgentRun: async () => ({}),
     cancelMultiAgentRun: async () => ({}),
@@ -527,9 +700,50 @@ test("agent login does not mint a setup link from a malformed provider status", 
   });
 });
 
+test("configured provider cannot expose the run form without persistent project context", async () => {
+  let linksIssued = 0;
+  const portal = createOpenAiConnectPortal({
+    config,
+    fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
+    authenticate: async () => ownerIdentity(),
+    issueSetupLink: async () => {
+      linksIssued += 1;
+      return issuedSetupLink();
+    },
+    providerStatus: async () => ({ structuredContent: {
+      ok: true,
+      tenant_id: "codexai",
+      provider: { configured: true, execution_available: true, bounded_execution_ready: false },
+    } }),
+    startMultiAgentRun: async () => { throw new Error("must_not_start"); },
+    readMultiAgentRun: async () => ({}),
+    cancelMultiAgentRun: async () => ({}),
+  });
+
+  await serve(portal, async (base) => {
+    const login = await fetch(`${base}/agents/login`, { redirect: "manual" });
+    const authorization = new URL(login.headers.get("location"));
+    const callback = await fetch(
+      `${base}/connect/openai/callback?code=x&state=${authorization.searchParams.get("state")}`,
+      { redirect: "manual" },
+    );
+    assert.equal(callback.status, 503);
+    assert.equal(callback.headers.get("location"), null);
+    assert.equal(linksIssued, 0);
+    assert.match(await callback.text(), /Contesto progetto non disponibile/);
+
+    const sessionCookie = callback.headers.get("set-cookie").split(";")[0];
+    const home = await fetch(`${base}/agents?verify=1`, { headers: { cookie: sessionCookie } });
+    const html = await home.text();
+    assert.match(html, /runtime multi-agente non è ancora disponibile/);
+    assert.doesNotMatch(html, /action="\/agents\/run"/);
+    assert.doesNotMatch(html, /Avvia i 3 agenti/);
+  });
+});
+
 for (const [label, statusPayload] of [
-  ["different tenant", { tenant_id: "tenant-b", provider: { configured: true, execution_available: true } }],
-  ["missing tenant", { provider: { configured: true, execution_available: true } }],
+  ["different tenant", { tenant_id: "tenant-b", provider: { configured: true, execution_available: true, bounded_execution_ready: true } }],
+  ["missing tenant", { provider: { configured: true, execution_available: true, bounded_execution_ready: true } }],
 ]) {
   test(`agent login fails closed when provider status has ${label}`, async () => {
     const statusIdentities = [];
@@ -584,7 +798,7 @@ test("agent callback never redirects when Core returns a setup link for another 
         structuredContent: {
           ok: true,
           tenant_id: "codexai",
-          provider: { configured: false, execution_available: false },
+          provider: { configured: false, execution_available: false, bounded_execution_ready: false },
         },
       };
     },
@@ -623,7 +837,7 @@ test("a stale CSRF token cannot be replayed with a newer owner session", async (
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
     issueSetupLink: async () => issuedSetupLink(),
-    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: true, execution_available: true } } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: true, execution_available: true, bounded_execution_ready: true } } }),
     startMultiAgentRun: async () => {
       started += 1;
       return { structuredContent: { ok: true, run: { run_id: "run_replay_guard", status: "running" } } };
@@ -679,14 +893,22 @@ test("a stale CSRF token cannot be replayed with a newer owner session", async (
 
     const validExplicitOrigin = await fetch(`${base}/agents/run`, {
       method: "POST",
+      redirect: "manual",
       headers: {
         cookie: cookieB,
         origin: "https://mcp.example.test",
         "content-type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({ csrf: csrfB, confirmed: "yes", task: "Accetta origine esplicita corretta" }),
+      body: new URLSearchParams({
+        csrf: csrfB,
+        confirmed: "yes",
+        project_title: "Progetto CSRF",
+        specialist: "code",
+        task: "Accetta origine esplicita corretta",
+      }),
     });
-    assert.equal(validExplicitOrigin.status, 202);
+    assert.equal(validExplicitOrigin.status, 303);
+    assert.equal(validExplicitOrigin.headers.get("location"), "/agents/runs/run_replay_guard");
     assert.equal(started, 1);
   });
 });
@@ -699,7 +921,7 @@ test("cross-client portal rejects tampered and expired session cookies", async (
     fetchImpl: async () => new Response(JSON.stringify({ access_token: "token" }), { status: 200 }),
     authenticate: async () => ownerIdentity(),
     issueSetupLink: async () => issuedSetupLink(),
-    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: true, execution_available: true } } }),
+    providerStatus: async () => ({ structuredContent: { ok: true, tenant_id: "codexai", provider: { configured: true, execution_available: true, bounded_execution_ready: true } } }),
   });
   await serve(portal, async (base) => {
     const response = await fetch(`${base}/agents`, {
