@@ -1,6 +1,6 @@
 {
   "schema_version": "nyra_deep_branch_v2_validation_report_v1",
-  "generated_at": "2026-07-24T19:58:11.917Z",
+  "generated_at": "2026-07-24T20:38:56.925Z",
   "ok": true,
   "tenant_id": "codexai",
   "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
@@ -504,7 +504,7 @@
   },
   "runtime_evidence": {
     "schema_version": "nyra_deep_branch_v2_runtime_evidence_v1",
-    "generated_at": "2026-07-24T19:58:19.717Z",
+    "generated_at": "2026-07-24T20:39:05.227Z",
     "provenance": {
       "producer": "scripts/verify-nyra-deep-branch-v2.mjs",
       "memory_harness": "personal-control-center/test/nyra-deep-branch-v2-memory.test.js",
@@ -515,12 +515,12 @@
     "identity": {
       "canonical_catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
       "catalog_artifact_sha256": "08042e2fbeba1f6c48fa2d287fa23018c40cb64358160f8b75935a9f4118f892",
-      "runtime_loader_sha256": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
+      "runtime_loader_sha256": "43be9b80e2ad75b8f2d1ba8fe68d042d80727120d2250530332295777998236c",
       "runtime_loader_hash_match": true
     },
     "memory": {
       "schema_version": "nyra_deep_branch_v2_runtime_memory_benchmark_v1",
-      "generated_at": "2026-07-24T19:58:15.129Z",
+      "generated_at": "2026-07-24T20:39:00.568Z",
       "harness": {
         "command": "/opt/homebrew/Cellar/node/26.0.0/bin/node",
         "exec_argv": [
@@ -535,19 +535,19 @@
       "identity": {
         "canonical_catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
         "manifest_catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
-        "runtime_loader_sha256_declared": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
-        "runtime_loader_sha256_actual": "124275296b42a8ba1059221bcecebea46b2bd87d67629d36dcc3cb6fb77740b5",
+        "runtime_loader_sha256_declared": "43be9b80e2ad75b8f2d1ba8fe68d042d80727120d2250530332295777998236c",
+        "runtime_loader_sha256_actual": "43be9b80e2ad75b8f2d1ba8fe68d042d80727120d2250530332295777998236c",
         "runtime_loader_hash_match": true,
-        "manifest_hash": "defad17280dcf4f65d27bdf68f66ea54ff1d8830bca3af94188c346b5d5869f7",
-        "root_binding_hash": "9b9665ce04264f914de9f969ca89aa0368f822270d85d2e845b2bbfb0dab036c",
-        "catalog_binding_hash": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32"
+        "manifest_hash": "2ec8d4bb81d141b9ffbf778dd68b8b47c937cd401361655b1184567ff4409133",
+        "root_binding_hash": "111af9ac28a9a2a93060c6cec63239bc20baafe16b01b17f0ba38d167279c45c",
+        "catalog_binding_hash": "8f319999f09b3875a147e07e4917829e7390b7891b1343d5dc005f8da179baaf"
       },
       "process_memory": {
         "requested_max_old_space_mib": 256,
         "heap_limit_mib": 352,
-        "heap_used_mib": 15.637351989746094,
-        "rss_mib": 145.765625,
-        "peak_rss_mib": 145.78125
+        "heap_used_mib": 9.686431884765625,
+        "rss_mib": 147.71875,
+        "peak_rss_mib": 147.71875
       },
       "runtime_io": {
         "tracked_reads": 245,
@@ -564,8 +564,8 @@
         "on_disk_generation_count": 1
       },
       "responses": {
-        "validation_bytes": 1136,
-        "route_bytes": 322651
+        "validation_bytes": 1108,
+        "route_bytes": 322623
       },
       "deep_route": {
         "selected_branches": 18,
@@ -611,7 +611,7 @@
     },
     "http": {
       "schema_version": "nyra_deep_branch_v2_http_concurrency_benchmark_v1",
-      "generated_at": "2026-07-24T19:58:16.649Z",
+      "generated_at": "2026-07-24T20:39:02.154Z",
       "ok": true,
       "harness": {
         "server_exec_argv": [
@@ -631,6 +631,7 @@
         "deep_branch_v2_authenticated_validation_burst",
         "deep_branch_v2_authenticated_catalog_burst",
         "deep_branch_v2_shadow_core_route",
+        "deep_branch_v2_privacy_safe_shadow_telemetry",
         "persistent_learning_path",
         "feedback_endpoint",
         "core_status_bridge",
@@ -648,9 +649,9 @@
         "retention"
       ],
       "bounded_payload_bytes": {
-        "deep_validation": 1574,
-        "deep_catalog_summary": 2856,
-        "deep_interpretation": 64764
+        "deep_validation": 1546,
+        "deep_catalog_summary": 2828,
+        "deep_interpretation": 64736
       },
       "authenticated_bursts": {
         "validation": {
@@ -658,19 +659,19 @@
           "authenticated": true,
           "requests": 40,
           "concurrency": 16,
-          "elapsed_ms": 5.521,
+          "elapsed_ms": 5.429,
           "statuses": {
             "200": 40
           },
           "latency": {
-            "p50_ms": 1.099,
-            "p95_ms": 4.795,
-            "max_ms": 4.825
+            "p50_ms": 1.118,
+            "p95_ms": 4.24,
+            "max_ms": 4.835
           },
           "response_bytes": {
-            "p50": 1574,
-            "p95": 1574,
-            "max": 1574
+            "p50": 1546,
+            "p95": 1546,
+            "max": 1546
           },
           "budgets": {
             "response_max_bytes": 102400,
@@ -695,19 +696,19 @@
           "authenticated": true,
           "requests": 40,
           "concurrency": 16,
-          "elapsed_ms": 3.436,
+          "elapsed_ms": 3.286,
           "statuses": {
             "200": 40
           },
           "latency": {
-            "p50_ms": 1.162,
-            "p95_ms": 1.61,
-            "max_ms": 1.779
+            "p50_ms": 1.134,
+            "p95_ms": 1.844,
+            "max_ms": 1.879
           },
           "response_bytes": {
-            "p50": 2856,
-            "p95": 2856,
-            "max": 2856
+            "p50": 2828,
+            "p95": 2828,
+            "max": 2828
           },
           "budgets": {
             "response_max_bytes": 102400,
@@ -740,9 +741,9 @@
     "summary": {
       "requested_max_old_space_mib": 256,
       "heap_limit_mib": 352,
-      "heap_used_mib": 15.637351989746094,
-      "rss_mib": 145.765625,
-      "peak_rss_mib": 145.78125,
+      "heap_used_mib": 9.686431884765625,
+      "rss_mib": 147.71875,
+      "peak_rss_mib": 147.71875,
       "monolith_reads": 0,
       "monolith_opens": 0,
       "manifest_shard_count": 239,
@@ -750,18 +751,18 @@
       "unchecked_shards": 0,
       "on_disk_shard_count": 239,
       "on_disk_generation_count": 1,
-      "validation_response_bytes": 1574,
-      "catalog_response_bytes": 2856,
-      "route_response_bytes": 64764,
-      "validation_burst_p50_ms": 1.099,
-      "validation_burst_p95_ms": 4.795,
-      "validation_burst_max_ms": 4.825,
+      "validation_response_bytes": 1546,
+      "catalog_response_bytes": 2828,
+      "route_response_bytes": 64736,
+      "validation_burst_p50_ms": 1.118,
+      "validation_burst_p95_ms": 4.24,
+      "validation_burst_max_ms": 4.835,
       "validation_burst_statuses": {
         "200": 40
       },
-      "catalog_burst_p50_ms": 1.162,
-      "catalog_burst_p95_ms": 1.61,
-      "catalog_burst_max_ms": 1.779,
+      "catalog_burst_p50_ms": 1.134,
+      "catalog_burst_p95_ms": 1.844,
+      "catalog_burst_max_ms": 1.879,
       "catalog_burst_statuses": {
         "200": 40
       }
@@ -811,12 +812,12 @@
   "runtime_artifact": {
     "schema_version": "nyra_deep_branch_v2_runtime_artifact_reference_v1",
     "relative_path": "runtime_artifact_report.json",
-    "manifest_hash": "defad17280dcf4f65d27bdf68f66ea54ff1d8830bca3af94188c346b5d5869f7",
-    "root_binding_hash": "9b9665ce04264f914de9f969ca89aa0368f822270d85d2e845b2bbfb0dab036c",
-    "catalog_binding_hash": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32",
+    "manifest_hash": "2ec8d4bb81d141b9ffbf778dd68b8b47c937cd401361655b1184567ff4409133",
+    "root_binding_hash": "111af9ac28a9a2a93060c6cec63239bc20baafe16b01b17f0ba38d167279c45c",
+    "catalog_binding_hash": "8f319999f09b3875a147e07e4917829e7390b7891b1343d5dc005f8da179baaf",
     "validation_attestation_sha256": "304c95f08fb4f8fa27c49226696a7e4b773398a86329c312f7d8daff7b9c5bb4",
     "shard_count": 239,
-    "retained_generation": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32",
+    "retained_generation": "8f319999f09b3875a147e07e4917829e7390b7891b1343d5dc005f8da179baaf",
     "final_runtime_gate_passed": true
   },
   "final_runtime_gate": {
@@ -835,22 +836,22 @@
       "heap_budget": true
     },
     "provisional": {
-      "heap_used_mib": 15.637351989746094,
-      "rss_mib": 145.765625,
-      "peak_rss_mib": 145.78125,
-      "validation_bytes": 1136,
-      "route_bytes": 322651
+      "heap_used_mib": 9.686431884765625,
+      "rss_mib": 147.71875,
+      "peak_rss_mib": 147.71875,
+      "validation_bytes": 1108,
+      "route_bytes": 322623
     },
     "final": {
-      "heap_used_mib": 15.637420654296875,
-      "rss_mib": 146.09375,
-      "peak_rss_mib": 146.09375,
-      "validation_bytes": 1136,
-      "route_bytes": 322651,
-      "manifest_hash": "defad17280dcf4f65d27bdf68f66ea54ff1d8830bca3af94188c346b5d5869f7",
-      "root_binding_hash": "9b9665ce04264f914de9f969ca89aa0368f822270d85d2e845b2bbfb0dab036c",
-      "catalog_binding_hash": "6ab2fd96d5d52dd22cd13ef2e4e3ad14f1ad4e33a5c71934fc65752852f20f32"
+      "heap_used_mib": 9.738983154296875,
+      "rss_mib": 147.8125,
+      "peak_rss_mib": 147.8125,
+      "validation_bytes": 1108,
+      "route_bytes": 322623,
+      "manifest_hash": "2ec8d4bb81d141b9ffbf778dd68b8b47c937cd401361655b1184567ff4409133",
+      "root_binding_hash": "111af9ac28a9a2a93060c6cec63239bc20baafe16b01b17f0ba38d167279c45c",
+      "catalog_binding_hash": "8f319999f09b3875a147e07e4917829e7390b7891b1343d5dc005f8da179baaf"
     },
-    "peak_rss_no_regression_budget_mib": 182.2265625
+    "peak_rss_no_regression_budget_mib": 184.6484375
   }
 }

@@ -69,9 +69,7 @@ function rebindRuntimeManifest(manifest) {
     branch_id: descriptor.branch_id,
     subbranch_id: descriptor.subbranch_id,
     relative_path: descriptor.relative_path,
-    compressed_sha256: descriptor.compressed_sha256,
     uncompressed_sha256: descriptor.uncompressed_sha256,
-    compressed_bytes: descriptor.compressed_bytes,
     uncompressed_bytes: descriptor.uncompressed_bytes,
     node_count: descriptor.node_count,
     function_count: descriptor.function_count,
@@ -469,21 +467,18 @@ test("missing, tampered, swapped, oversized and stale shards all fail closed", (
     tampered[Math.floor(tampered.length / 2)] ^= 0xff;
     fs.writeFileSync(firstShardPath, tampered);
     assert(
-      rejectedManifest("tampered shard").includes(
-        `compressed_shard_hash_mismatch:${firstDescriptor.branch_id}.${firstDescriptor.subbranch_id}`
-      )
+      rejectedManifest("tampered shard").some((error) => error.startsWith(
+        `shard_integrity_failed:${firstDescriptor.branch_id}.${firstDescriptor.subbranch_id}:`
+      ))
     );
 
     reset();
     fs.writeFileSync(firstShardPath, secondShardBytes);
     const swappedErrors = rejectedManifest("swapped shard");
     assert(
-      swappedErrors.includes(
-        `compressed_shard_hash_mismatch:${firstDescriptor.branch_id}.${firstDescriptor.subbranch_id}`
-      )
-      || swappedErrors.includes(
-        `compressed_shard_size_mismatch:${firstDescriptor.branch_id}.${firstDescriptor.subbranch_id}`
-      )
+      swappedErrors.some((error) => error.startsWith(
+        `shard_integrity_failed:${firstDescriptor.branch_id}.${firstDescriptor.subbranch_id}:`
+      ))
     );
 
     reset();

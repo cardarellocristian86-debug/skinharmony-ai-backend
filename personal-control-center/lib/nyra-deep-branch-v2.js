@@ -1884,14 +1884,9 @@ function safeArtifactPath(manifestPath, relativePath) {
 }
 
 function runtimeShardDescriptorWithinLimits(descriptor) {
-  return Number.isInteger(descriptor?.compressed_bytes)
-    && descriptor.compressed_bytes > 0
-    && descriptor.compressed_bytes <= MAX_RUNTIME_SHARD_COMPRESSED_BYTES
-    && Number.isInteger(descriptor?.uncompressed_bytes)
+  return Number.isInteger(descriptor?.uncompressed_bytes)
     && descriptor.uncompressed_bytes > 0
-    && descriptor.uncompressed_bytes <= MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES
-    && descriptor.uncompressed_bytes / descriptor.compressed_bytes
-      <= MAX_RUNTIME_SHARD_COMPRESSION_RATIO;
+    && descriptor.uncompressed_bytes <= MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES;
 }
 
 function runtimeTopologyMetrics(manifest) {
@@ -1923,7 +1918,6 @@ function verifyRuntimeManifestArtifacts(manifest, manifestPath) {
   const errors = [];
   const descriptors = Array.isArray(manifest?.shards) ? manifest.shards : [];
   let checkedShards = 0;
-  let compressedBytes = 0;
   let uncompressedBytes = 0;
   let peakUncompressedShardBytes = 0;
   for (const descriptor of descriptors) {
@@ -1938,23 +1932,7 @@ function verifyRuntimeManifestArtifacts(manifest, manifestPath) {
       continue;
     }
     try {
-      const stat = fs.statSync(artifactPath);
-      if (
-        stat.size !== descriptor.compressed_bytes
-        || stat.size > MAX_RUNTIME_SHARD_COMPRESSED_BYTES
-      ) {
-        errors.push(`compressed_shard_size_mismatch:${descriptor.branch_id}.${descriptor.subbranch_id}`);
-        continue;
-      }
       const compressed = fs.readFileSync(artifactPath);
-      compressedBytes += compressed.length;
-      if (
-        compressed.length !== descriptor.compressed_bytes
-        || byteHash(compressed) !== descriptor.compressed_sha256
-      ) {
-        errors.push(`compressed_shard_hash_mismatch:${descriptor.branch_id}.${descriptor.subbranch_id}`);
-        continue;
-      }
       const uncompressed = zlib.gunzipSync(compressed, {
         maxOutputLength: Math.min(
           descriptor.uncompressed_bytes,
@@ -1978,7 +1956,6 @@ function verifyRuntimeManifestArtifacts(manifest, manifestPath) {
     errors,
     checked_shards: checkedShards,
     unchecked_shards: Math.max(0, descriptors.length - checkedShards),
-    compressed_bytes: compressedBytes,
     uncompressed_bytes: uncompressedBytes,
     peak_uncompressed_shard_bytes: peakUncompressedShardBytes,
     parse_mode: "sequential_hash_and_gunzip_without_json_parse",
@@ -2013,9 +1990,7 @@ function validateRuntimeManifest(manifest, manifestPath) {
     branch_id: descriptor.branch_id,
     subbranch_id: descriptor.subbranch_id,
     relative_path: descriptor.relative_path,
-    compressed_sha256: descriptor.compressed_sha256,
     uncompressed_sha256: descriptor.uncompressed_sha256,
-    compressed_bytes: descriptor.compressed_bytes,
     uncompressed_bytes: descriptor.uncompressed_bytes,
     node_count: descriptor.node_count,
     function_count: descriptor.function_count,
@@ -2090,13 +2065,10 @@ function validateRuntimeManifest(manifest, manifestPath) {
       || descriptor.node_ids.length !== 6
     ))
   ) errors.push("runtime_shard_index_invalid");
-  const declaredCompressedBytes = (Array.isArray(descriptors) ? descriptors : [])
-    .reduce((sum, descriptor) => sum + Number(descriptor.compressed_bytes || 0), 0);
   const declaredUncompressedBytes = (Array.isArray(descriptors) ? descriptors : [])
     .reduce((sum, descriptor) => sum + Number(descriptor.uncompressed_bytes || 0), 0);
   if (
     descriptors.some((descriptor) => !runtimeShardDescriptorWithinLimits(descriptor))
-    || declaredCompressedBytes > MAX_RUNTIME_SHARDS_COMPRESSED_BYTES
     || declaredUncompressedBytes > MAX_RUNTIME_SHARDS_UNCOMPRESSED_BYTES
   ) errors.push("runtime_shard_size_budget_exceeded");
   if (registry.function_count !== 1434) errors.push("runtime_function_count_invalid");

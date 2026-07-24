@@ -408,10 +408,15 @@ export function buildRuntimeArtifacts({
       const expectedNames = fs.readdirSync(temporaryRoot).sort();
       const actualNames = fs.readdirSync(finalShardRoot).sort();
       const identical = JSON.stringify(expectedNames) === JSON.stringify(actualNames)
-        && expectedNames.every((name) => (
-          sha256(fs.readFileSync(path.join(temporaryRoot, name)))
-          === sha256(fs.readFileSync(path.join(finalShardRoot, name)))
-        ));
+        && expectedNames.every((name) => {
+          const expected = zlib.gunzipSync(fs.readFileSync(path.join(temporaryRoot, name)), {
+            maxOutputLength: MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES,
+          });
+          const actual = zlib.gunzipSync(fs.readFileSync(path.join(finalShardRoot, name)), {
+            maxOutputLength: MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES,
+          });
+          return sha256(expected) === sha256(actual);
+        });
       if (!identical) {
         throw new Error(`Existing shard set differs for immutable fingerprint ${catalog.catalog_fingerprint}`);
       }
@@ -427,9 +432,7 @@ export function buildRuntimeArtifacts({
     branch_id: descriptor.branch_id,
     subbranch_id: descriptor.subbranch_id,
     relative_path: descriptor.relative_path,
-    compressed_sha256: descriptor.compressed_sha256,
     uncompressed_sha256: descriptor.uncompressed_sha256,
-    compressed_bytes: descriptor.compressed_bytes,
     uncompressed_bytes: descriptor.uncompressed_bytes,
     node_count: descriptor.node_count,
     function_count: descriptor.function_count,
@@ -507,20 +510,11 @@ export function reconstructCatalogFromRuntimeArtifacts({ manifestPath } = {}) {
   const nodes = [];
   const functions = [];
   for (const descriptor of manifest.shards) {
-    if (
-      descriptor.compressed_bytes > MAX_RUNTIME_SHARD_COMPRESSED_BYTES
-      || descriptor.uncompressed_bytes > MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES
-      || descriptor.uncompressed_bytes / descriptor.compressed_bytes > MAX_RUNTIME_SHARD_COMPRESSION_RATIO
-    ) throw new Error(`Shard size budget exceeded: ${descriptor.branch_id}.${descriptor.subbranch_id}`);
+    if (descriptor.uncompressed_bytes > MAX_RUNTIME_SHARD_UNCOMPRESSED_BYTES) {
+      throw new Error(`Shard size budget exceeded: ${descriptor.branch_id}.${descriptor.subbranch_id}`);
+    }
     const artifactPath = path.resolve(path.dirname(manifestPath), descriptor.relative_path);
-    const stat = fs.statSync(artifactPath);
-    if (stat.size !== descriptor.compressed_bytes) {
-      throw new Error(`Compressed shard size mismatch: ${descriptor.branch_id}.${descriptor.subbranch_id}`);
-    }
     const compressed = fs.readFileSync(artifactPath);
-    if (sha256(compressed) !== descriptor.compressed_sha256) {
-      throw new Error(`Compressed shard hash mismatch: ${descriptor.branch_id}.${descriptor.subbranch_id}`);
-    }
     const uncompressed = zlib.gunzipSync(compressed, {
       maxOutputLength: descriptor.uncompressed_bytes,
     });
