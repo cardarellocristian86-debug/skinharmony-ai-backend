@@ -3,9 +3,10 @@ services:
     name: skinharmony-universal-core
     env: node
     plan: starter
-    # The first bounded provider runner keeps active cancellation state only
-    # in this Core process. Pin it explicitly until a shared worker lease is
-    # introduced; the attached persistent disk is likewise single-instance.
+    # The bounded provider runner and the V2 evidence ledger keep short-lived
+    # state in this Core process. Pin exactly one instance until a tenant-safe
+    # durable ledger plus worker lease/affinity design is introduced; the
+    # attached persistent disk is likewise single-instance.
     numInstances: 1
     buildCommand: npm ci && bash scripts/build-rust-extractor-render.sh
     startCommand: npm run core:service
@@ -49,6 +50,64 @@ services:
         value: "true"
       - key: NYRA_DEEP_RUNTIME_MODE
         value: active
+      # Deep Branch V2 is a separately authenticated Core→Nyra read-only
+      # federation. Keep every V2 gate off until the exact release gate
+      # allows a tenant-scoped rollout; V1 remains the authoritative bridge.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ENABLED
+        value: "false"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MODE
+        value: preview
+      - key: CORE_NYRA_DEEP_BRANCH_V2_URL
+        value: https://skinharmony-nyra-core.onrender.com
+      # Pin the Core client to the only accepted Core→Nyra origin.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ALLOWED_ORIGIN
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SERVICE_KEY
+        generateValue: true
+      - key: CORE_NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
+        value: codexai
+      # Keep the entire live V2 catalog configured, even while fail-closed.
+      # Core still opens only branches selected by its V1 route.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_BRANCHES
+        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
+      - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_CATALOG_FINGERPRINT
+        value: fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19
+      - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_ROOT_BINDING_HASH
+        value: 9b9665ce04264f914de9f969ca89aa0368f822270d85d2e845b2bbfb0dab036c
+      # MCP owns this generated request-signing secret. Core verifies its
+      # short-lived, tenant-bound request attestations internally.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: MCP_NYRA_DEEP_BRANCH_V2_REQUEST_SIGNING_SECRET
+      # Provision these Core-only values manually after code deploys with V2
+      # disabled. The ledger key blinds evidence references; the Ed25519 key
+      # signs the operational envelope.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
+        value: "false"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_MODE
+        value: shadow
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST
+        value: codexai
+      # Core-owned source proof remains bounded even after a future approved
+      # rollout. These are non-secret limits, not activation controls.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SOURCE_FETCH_TIMEOUT_MS
+        value: "5000"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SOURCE_MAX_BYTES
+        value: "250000"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_TIMEOUT_MS
+        value: "2500"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_FAILURE_THRESHOLD
+        value: "3"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_COOLDOWN_MS
+        value: "30000"
     disk:
       name: universal-core-service-data
       mountPath: /var/data

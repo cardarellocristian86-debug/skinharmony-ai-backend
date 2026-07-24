@@ -47,6 +47,9 @@ function createNyraHorizontalRuntime(env = process.env) {
   const serviceName = String(env.NYRA_SERVICE_NAME || "nyra-horizontal-runtime").trim();
   const configuredDomainPack = normalizeIdentifier(env.NYRA_DOMAIN_PACK_ID);
   const version = String(env.NYRA_SERVICE_VERSION || "0.9.0-research-cortex").trim();
+  const deepBranchV2Enabled = ["true", "1", "yes"].includes(
+    String(env.NYRA_DEEP_BRANCH_V2_ENABLED || "false").toLowerCase()
+  );
 
   function contract() {
     return {
@@ -67,6 +70,30 @@ function createNyraHorizontalRuntime(env = process.env) {
         parallel_mode: "bounded_parallel_advisory",
         join_authority: "universal_core",
         rule: "Nyra propone i rami; Universal Core li valida e li apre.",
+        ...(deepBranchV2Enabled ? {
+          deep_branch_v2: {
+            schema_version: "nyra_deep_branch_architecture_v2",
+            hierarchy: [
+              "branch",
+              "subbranch",
+              "specialized_capability",
+              "micro_capability",
+              "method_strategy_verifier_metric",
+            ],
+            rollout_mode: String(env.NYRA_DEEP_BRANCH_V2_MODE || "shadow").toLowerCase(),
+            enabled: true,
+            feature_flags: [
+              "NYRA_DEEP_BRANCH_V2_ENABLED",
+              "NYRA_DEEP_BRANCH_V2_MODE",
+              "NYRA_DEEP_BRANCH_V2_BRANCHES",
+              "NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST",
+            ],
+            contract_policy: "independent_contract_per_level_2_to_4_node",
+            v1_fallback: "nyra_neural_branch_network_v1",
+            core_final_authority: true,
+            execution_authorized: false,
+          },
+        } : {}),
       },
       governed_learning: {
         memory_source: "tenant_memory_fabric",
@@ -155,6 +182,15 @@ function createNyraHorizontalRuntime(env = process.env) {
           automatic_promotion: false,
         },
         preflight_state: "mandatory_waiting_for_core",
+        ...(deepBranchV2Enabled ? {
+          deep_branch_v2: {
+            requested: true,
+            activation_source: "server_side_feature_flags_and_authenticated_tenant",
+            v1_fallback: "nyra_neural_branch_network_v1",
+            core_final_authority: true,
+            execution_allowed: false,
+          },
+        } : {}),
         execution_allowed: false,
       },
     };

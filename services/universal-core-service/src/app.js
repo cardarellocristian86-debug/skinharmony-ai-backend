@@ -9,6 +9,19 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
+import { createNyraDeepBranchV2Client } from "./nyraDeepBranchV2Client.js";
+import {
+  createNyraDeepBranchV2Attester,
+  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_BUNDLE_SCHEMA_VERSION,
+  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
+  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
+} from "./nyraDeepBranchV2Attestation.js";
+import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
+import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
+import {
+  createNyraDeepV2McpRequestVerifier,
+  nyraDeepV2EvidencePackHash,
+} from "./nyraDeepV2McpRequest.js";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore, isMcpTenantGatewayRecord, isProviderSetupLinkServiceRecord } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
@@ -224,6 +237,169 @@ function verifyMcpTenantContextAssertion(value, secret, tenantId, now = Date.now
   const canonical = JSON.stringify({ version: context.version, tenant_id: context.tenant_id, issued_at: context.issued_at });
   const expected = `mtc_${crypto.createHmac("sha256", secret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
   return typeof context.assertion === "string" && context.assertion.length === expected.length && crypto.timingSafeEqual(Buffer.from(context.assertion), Buffer.from(expected));
+}
+
+// Evidence and binding identifiers follow the existing Research Cortex / MCP
+// contract. Branch and subbranch IDs remain lower_snake only in the signed
+// MCP verifier; this broader form applies only to local evidence references.
+const NYRA_DEEP_V2_ID_PATTERN = /^[a-z][a-z0-9_-]{1,63}$/i;
+const NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN = /^req_[a-f0-9]{64}$/;
+const NYRA_DEEP_V2_RECORD_REF_PATTERN = /^[a-f0-9]{64}$/;
+const NYRA_DEEP_V2_OPERATIONS = new Set(["preview", "requirements", "prepare_evidence", "evaluate"]);
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nyraDeepV2Fallback({ requestId = null, state = "disabled_v1_authoritative", reason = "nyra_deep_branch_v2_unavailable" } = {}) {
+  return {
+    schema_version: "nyra_deep_branch_v2_core_operation_v1",
+    state,
+    ...(requestId ? { request_id: requestId } : {}),
+    reason: String(reason || "nyra_deep_branch_v2_unavailable").slice(0, 160),
+    requirements: [],
+    evidence: {
+      state: "not_prepared_v1_authoritative",
+      evidence_refs: [],
+      validation: { state: "not_requested", accepted_source_count: 0, accepted_claim_count: 0, rejected_count: 0 },
+    },
+    evaluation: { state: "not_requested_v1_authoritative", evaluated_node_count: 0 },
+    execution_authorized: false,
+    core_final_authority: true,
+    fallback: "nyra_neural_branch_network_v1",
+  };
+}
+
+function nyraDeepV2Operation(value) {
+  const operation = String(value || "").trim();
+  return NYRA_DEEP_V2_OPERATIONS.has(operation) ? operation : null;
+}
+
+function validNyraDeepV2Identifier(value) {
+  const id = String(value || "").trim();
+  return NYRA_DEEP_V2_ID_PATTERN.test(id) ? id : null;
+}
+
+function boundedNyraDeepV2EvidenceRefs(values, maximum = 100) {
+  if (!Array.isArray(values) || values.length > maximum) return null;
+  const refs = values.map((value) => String(value || "").trim());
+  if (refs.some((value) => !NYRA_DEEP_V2_RECORD_REF_PATTERN.test(value)) || new Set(refs).size !== refs.length) return null;
+  return refs;
+}
+
+function normalizeNyraDeepV2RequirementBindings(values, discovered = []) {
+  if (!Array.isArray(values) || values.length < 1 || values.length > 64) {
+    return { ok: false, reason: "nyra_deep_branch_v2_requirement_bindings_required", bindings: [] };
+  }
+  const available = new Map((Array.isArray(discovered) ? discovered : []).map((binding) => [binding.requirement_ref, binding]));
+  const seenIds = new Set();
+  const seenRefs = new Set();
+  const bindings = [];
+  for (const item of values) {
+    if (!isPlainRecord(item)) return { ok: false, reason: "nyra_deep_branch_v2_requirement_binding_invalid", bindings: [] };
+    const id = String(item.id || "").trim();
+    const requirementRef = String(item.requirement_ref || "").trim();
+    const sourceIds = Array.isArray(item.source_ids) ? item.source_ids.map((value) => String(value || "").trim()) : null;
+    const claimIds = Array.isArray(item.claim_ids) ? item.claim_ids.map((value) => String(value || "").trim()) : null;
+    if (!NYRA_DEEP_V2_ID_PATTERN.test(id) || !NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN.test(requirementRef)
+      || !sourceIds || !claimIds || sourceIds.length < 1 || claimIds.length < 1 || sourceIds.length > 20 || claimIds.length > 30
+      || sourceIds.some((value) => !NYRA_DEEP_V2_ID_PATTERN.test(value))
+      || claimIds.some((value) => !NYRA_DEEP_V2_ID_PATTERN.test(value))
+      || new Set(sourceIds).size !== sourceIds.length || new Set(claimIds).size !== claimIds.length
+      || seenIds.has(id) || seenRefs.has(requirementRef) || !available.has(requirementRef)) {
+      return { ok: false, reason: "nyra_deep_branch_v2_requirement_binding_rejected", bindings: [] };
+    }
+    seenIds.add(id);
+    seenRefs.add(requirementRef);
+    bindings.push({ id, requirement_ref: requirementRef, source_ids: sourceIds, claim_ids: claimIds });
+  }
+  return { ok: true, bindings };
+}
+
+function boundedNyraDeepV2EvidencePack(value) {
+  if (!isPlainRecord(value) || !Array.isArray(value.sources) || !Array.isArray(value.claims)
+    || value.sources.length < 1 || value.sources.length > 20 || value.claims.length < 1 || value.claims.length > 30) {
+    return { ok: false, reason: "nyra_deep_branch_v2_evidence_pack_invalid" };
+  }
+  return { ok: true, evidence_pack: value };
+}
+
+function validNyraDeepV2SourceReceipt(receipt, now = Date.now()) {
+  const expiresAt = Date.parse(String(receipt?.expires_at || ""));
+  return receipt?.issuer === "skinharmony-universal-core"
+    && NYRA_DEEP_V2_ID_PATTERN.test(String(receipt?.source_id || ""))
+    && /^[a-f0-9]{64}$/i.test(String(receipt?.source_url_sha256 || ""))
+    && /^[a-f0-9]{64}$/i.test(String(receipt?.content_sha256 || ""))
+    && /^[a-f0-9]{64}$/i.test(String(receipt?.excerpt_sha256 || ""))
+    && /^ev_[a-f0-9-]{36}$/i.test(String(receipt?.receipt_id || ""))
+    && Number.isFinite(expiresAt)
+    && expiresAt > now;
+}
+
+function coreValidatedNyraDeepV2Claims(evidencePack, validation, sourceReceipts = [], now = Date.now()) {
+  const sourceAssessment = new Map((validation?.source_assessments || []).map((item) => [item.source_id, item]));
+  const claimInput = new Map((evidencePack?.claims || []).map((item) => [item.id, item]));
+  const receiptsBySource = new Map((Array.isArray(sourceReceipts) ? sourceReceipts : [])
+    .filter((receipt) => validNyraDeepV2SourceReceipt(receipt, now))
+    .map((receipt) => [receipt.source_id, receipt]));
+  const releaseEligible = validation?.release_readiness?.eligible_for_tenant_review === true;
+  const validatedClaims = [];
+  for (const assessment of validation?.claim_assessments || []) {
+    const claim = claimInput.get(assessment.claim_id);
+    const sourceIds = Array.isArray(claim?.source_ids) ? claim.source_ids : [];
+    const sources = sourceIds.map((id) => sourceAssessment.get(id)).filter(Boolean);
+    const receipts = sourceIds.map((id) => receiptsBySource.get(id)).filter(Boolean);
+    const authoritative = sources.some((source) => Number(source.authority_score) >= 80);
+    const supported = assessment.state === "supported" && Array.isArray(assessment.contradictions) && assessment.contradictions.length === 0;
+    const coreVerified = sourceIds.length > 0 && receipts.length === sourceIds.length;
+    validatedClaims.push({
+      claim_id: assessment.claim_id,
+      valid: releaseEligible && supported && authoritative && coreVerified,
+      authority: authoritative ? "authoritative" : "unverified",
+      independent: Number(assessment.independent_host_count || 0) >= 2,
+      valid_until: coreVerified ? Math.min(...receipts.map((receipt) => Date.parse(receipt.expires_at))) : null,
+      ...(coreVerified ? {
+        core_receipt: {
+          schema_version: "nyra_deep_v2_core_source_receipt_bundle_v1",
+          issuer: "skinharmony-universal-core",
+          receipt_ids: receipts.map((receipt) => receipt.receipt_id),
+          sources: receipts.map((receipt) => ({
+            source_id: receipt.source_id,
+            source_url_sha256: receipt.source_url_sha256,
+            content_sha256: receipt.content_sha256,
+            excerpt_sha256: receipt.excerpt_sha256,
+          })),
+        },
+      } : {}),
+    });
+  }
+  const acceptedClaimCount = validatedClaims.filter((claim) => claim.valid).length;
+  const acceptedSourceCount = (validation?.source_assessments || []).filter((source) => (
+    Number(source.authority_score) >= 80
+    && source.prompt_injection_detected !== true
+    && source.sensitive_content_detected !== true
+    && receiptsBySource.has(source.source_id)
+  )).length;
+  return {
+    validated_claims: validatedClaims,
+    compact_validation: {
+      state: releaseEligible && acceptedClaimCount > 0 ? "core_verified_candidate_validated" : "core_verified_candidate_not_ready",
+      accepted_source_count: acceptedSourceCount,
+      accepted_claim_count: acceptedClaimCount,
+      rejected_count: Math.max(0, Number(validation?.claim_assessments?.length || 0) - acceptedClaimCount),
+    },
+  };
+}
+
+function compactNyraDeepV2Requirements(bindings) {
+  return (Array.isArray(bindings) ? bindings : []).slice(0, 64).map((binding) => ({
+    requirement_ref: String(binding.requirement_ref || ""),
+    level: Number(binding.level),
+    node_type: String(binding.node_type || ""),
+    minimum_count: Math.max(1, Number(binding.minimum_count) || 1),
+    authority_requirement: String(binding.authority_requirement || "unverified"),
+  })).filter((binding) => NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN.test(binding.requirement_ref)
+    && Number.isInteger(binding.level) && binding.level >= 2 && binding.level <= 4);
 }
 
 function hasProviderSetupOwnerContext(context) {
@@ -3546,6 +3722,58 @@ export function createUniversalCoreService(options = {}) {
   const snapshots = snapshotStore(storageRoot);
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
+  // Deep Branch V2 has its own Core-only trust material.  Missing or invalid
+  // material must leave V1 healthy and make only the new path unavailable.
+  const nyraDeepV2Env = options.nyraDeepV2Env || process.env;
+  const nyraDeepV2LedgerSecret = String(
+    options.nyraDeepV2LedgerSecret ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET ?? "",
+  ).trim();
+  const nyraDeepV2McpSigningSecret = String(
+    options.nyraDeepV2McpSigningSecret ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET ?? "",
+  ).trim();
+  const nyraDeepV2AttestationPrivateKey = String(
+    options.nyraDeepV2AttestationPrivateKey ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY ?? "",
+  ).trim();
+  const nyraDeepV2AttestationKeyId = String(
+    options.nyraDeepV2AttestationKeyId ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID ?? "universal-core-nyra-v2",
+  ).trim();
+  let nyraDeepV2Ledger = options.nyraDeepV2EvidenceLedger || null;
+  let nyraDeepV2Attester = options.nyraDeepV2Attester || null;
+  let nyraDeepV2SourceVerifier = options.nyraDeepV2SourceVerifier || null;
+  let nyraDeepV2IntegrationReason = null;
+  if (!nyraDeepV2Ledger && nyraDeepV2LedgerSecret.length >= 32) {
+    try { nyraDeepV2Ledger = createNyraDeepV2EvidenceLedger({ secret: nyraDeepV2LedgerSecret }); }
+    catch { nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_ledger_unavailable"; }
+  }
+  if (!nyraDeepV2Attester && nyraDeepV2Ledger && nyraDeepV2AttestationPrivateKey) {
+    try {
+      nyraDeepV2Attester = createNyraDeepBranchV2Attester({
+        ledger: nyraDeepV2Ledger,
+        signingPrivateKey: nyraDeepV2AttestationPrivateKey,
+        keyId: nyraDeepV2AttestationKeyId,
+      });
+    } catch {
+      nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_attester_unavailable";
+    }
+  }
+  if (!nyraDeepV2SourceVerifier) {
+    try {
+      nyraDeepV2SourceVerifier = createNyraDeepV2SourceVerifier({
+        fetchImpl: options.nyraDeepV2SourceFetchImpl,
+        dnsLookup: options.nyraDeepV2SourceDnsLookup,
+        timeoutMs: Number(nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_SOURCE_FETCH_TIMEOUT_MS || 5_000),
+        maxBytes: Number(nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_SOURCE_MAX_BYTES || 250_000),
+      });
+    } catch {
+      nyraDeepV2IntegrationReason = nyraDeepV2IntegrationReason || "nyra_deep_branch_v2_source_verifier_unavailable";
+    }
+  }
+  if (!nyraDeepV2IntegrationReason && (!nyraDeepV2Ledger || !nyraDeepV2Attester || !nyraDeepV2SourceVerifier)) {
+    nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_core_material_unavailable";
+  }
+  const nyraDeepV2McpRequestVerifier = options.nyraDeepV2McpRequestVerifier || createNyraDeepV2McpRequestVerifier({
+    secret: nyraDeepV2McpSigningSecret,
+  });
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
@@ -3681,6 +3909,147 @@ export function createUniversalCoreService(options = {}) {
   }
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
+  // Deep Branch V2 is a separately authenticated, read-only federation. It
+  // is intentionally not coupled to the legacy NYRA_DEEP_RUNTIME_* runtime.
+  // A failure here never prevents the V1 Core bridge from returning.
+  const nyraDeepBranchV2Client = options.nyraDeepBranchV2Client || createNyraDeepBranchV2Client({
+    env: nyraDeepV2Env,
+    fetchImpl: options.nyraDeepBranchV2FetchImpl || fetch,
+  });
+
+  function issueNyraDeepV2PolicySnapshotBundle({
+    keyRecord,
+    tenantId,
+    requestId,
+    branchId,
+    subbranchId,
+    workPreflight,
+    nyraNetwork,
+    bridgeResult,
+    operationalContext,
+  } = {}) {
+    if (!nyraDeepV2Attester || typeof nyraDeepV2Attester.operationalPolicySnapshotRequirements !== "function") {
+      return { ok: false, reason: "nyra_deep_branch_v2_policy_receipt_issuer_unavailable" };
+    }
+    if (!nyraDeepV2Ledger || typeof nyraDeepV2Ledger.issueCorePolicyDecisionReceipt !== "function") {
+      return { ok: false, reason: "nyra_deep_branch_v2_policy_receipt_ledger_unavailable" };
+    }
+    const discovery = nyraDeepV2Attester.operationalPolicySnapshotRequirements({ branchId, subbranchId });
+    if (!discovery?.ok || !Array.isArray(discovery.requirements) || discovery.requirements.length < 1) {
+      return { ok: false, reason: discovery?.reason || "nyra_deep_branch_v2_policy_requirements_unavailable" };
+    }
+    const issuedMs = Math.max(Date.now(), Date.parse(String(operationalContext?.issued_at || "")) || 0);
+    const expiresMs = Date.parse(String(operationalContext?.expires_at || ""));
+    if (!Number.isFinite(expiresMs) || !Number.isFinite(issuedMs) || expiresMs <= issuedMs) {
+      return { ok: false, reason: "nyra_deep_branch_v2_policy_receipt_window_invalid" };
+    }
+    const branchRoute = (nyraNetwork?.opened_branches || []).find((item) => item?.id === branchId) || null;
+    const coreBranchBindings = Array.isArray(branchRoute?.core_branch_bindings)
+      ? branchRoute.core_branch_bindings.filter((value) => /^[a-z][a-z0-9_]{1,63}$/.test(String(value || "")))
+      : [];
+    const branchResolution = resolveBranchesForKey(keyRecord);
+    const entitlement = buildEntitlement(keyRecord, branchResolution);
+    const tenantPolicy = getTenantPolicy(tenantId, keyRecord?.metadata?.tier, {
+      brandScope: keyRecord?.brand_scope,
+      metadata: keyRecord?.metadata,
+    });
+    const preflightReady = workPreflight?.mandatory === true
+      && workPreflight?.tenant_id === tenantId
+      && workPreflight?.state === "ready_read_only"
+      && workPreflight?.governance?.execution_allowed_by_preflight === true
+      && workPreflight?.memory_first?.status === "recalled";
+    const tenantIsolated = keyRecord?.tenant_id === tenantId;
+    const bridgeBlocked = Array.isArray(bridgeResult?.selected_by_core?.blocked_reasons)
+      && bridgeResult.selected_by_core.blocked_reasons.length > 0;
+    const controlLevel = String(bridgeResult?.selected_by_core?.control_level || "");
+    const riskHint = bridgeResult?.selected_by_core?.risk_band === "high"
+      ? 80
+      : bridgeResult?.selected_by_core?.risk_band === "medium"
+        ? 45
+        : 20;
+    const issuedAt = new Date(issuedMs).toISOString();
+    const expiresAt = new Date(expiresMs).toISOString();
+    const policySnapshots = [];
+    for (const requirement of discovery.requirements) {
+      const mediation = evaluatePolicyEngine({
+        tenantPolicy,
+        entitlement,
+        action: {
+          action_type: `nyra_deep_v2_${requirement.policy_id}_advisory`,
+          risk_hint: riskHint,
+          required_branches: coreBranchBindings,
+          audit_ready: true,
+          cross_tenant: false,
+          contains_pii: false,
+        },
+        policy: {
+          mode: "hard-gating",
+          required_branches: coreBranchBindings,
+        },
+        context: {
+          audit_ready: true,
+          cross_tenant: false,
+          contains_pii: false,
+          rollback_ready: true,
+        },
+      });
+      const allow = preflightReady
+        && tenantIsolated
+        && branchRoute !== null
+        && bridgeResult?.ok === true
+        && !bridgeBlocked
+        && ["observe", "suggest"].includes(controlLevel)
+        && mediation?.action_mediation?.state === "allow";
+      const receipt = nyraDeepV2Ledger.issueCorePolicyDecisionReceipt({
+        tenantId,
+        requestId,
+        branchId,
+        subbranchId,
+        nodeId: requirement.node_id,
+        policyId: requirement.policy_id,
+        effect: requirement.effect,
+        decision: allow ? "ALLOW" : "DENY",
+        preflightId: workPreflight?.preflight_id || "",
+        corePolicyHash: operationalContext?.policy_hash || operationalContext?.policyHash || "",
+        issuedAt,
+        expiresAt,
+        observedAt: issuedMs,
+      });
+      if (!receipt?.ok) {
+        return { ok: false, reason: "nyra_deep_branch_v2_policy_receipt_persistence_failed" };
+      }
+      policySnapshots.push({
+        schema_version: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
+        issuer: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
+        decision_id: receipt.decision_id,
+        decision_receipt: receipt.decision_receipt,
+        decision: allow ? "ALLOW" : "DENY",
+        tenant_id: tenantId,
+        request_id: requestId,
+        branch_id: branchId,
+        subbranch_id: subbranchId,
+        node_id: requirement.node_id,
+        policy_id: requirement.policy_id,
+        effect: requirement.effect,
+        preflight_id: workPreflight?.preflight_id || "",
+        core_policy_hash: operationalContext?.policy_hash || operationalContext?.policyHash || "",
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+      });
+    }
+    return {
+      ok: true,
+      corePolicyContext: {
+        schema_version: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_BUNDLE_SCHEMA_VERSION,
+        policy_snapshots: policySnapshots,
+      },
+      summary: {
+        required_policy_receipt_count: discovery.requirements.length,
+        allow_count: policySnapshots.filter((item) => item.decision === "ALLOW").length,
+        deny_count: policySnapshots.filter((item) => item.decision === "DENY").length,
+      },
+    };
+  }
   const app = express();
 
   app.disable("x-powered-by");
@@ -5849,7 +6218,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -5867,6 +6236,31 @@ export function createUniversalCoreService(options = {}) {
     if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(String(id || "")))) {
       return publicError(res, 400, "invalid_nyra_branch_id");
     }
+    const rawDeepBranchV2 = isPlainRecord(req.body?.deep_branch_v2) ? req.body.deep_branch_v2 : null;
+    const deepBranchV2Requested = req.body?.deep_branch_v2_preview === true || rawDeepBranchV2 !== null;
+    const coreRequestId = String(req.body?.request_id || `nira_service_${crypto.randomUUID()}`).slice(0, 160);
+    const deepBranchV2Operation = rawDeepBranchV2 ? nyraDeepV2Operation(rawDeepBranchV2.operation) : null;
+    let deepBranchV2McpRequest = { ok: false, reason: "nyra_deep_branch_v2_mcp_attestation_required" };
+    if (deepBranchV2Requested && deepBranchV2Operation) {
+      deepBranchV2McpRequest = nyraDeepV2McpRequestVerifier.verify({
+        attestation: rawDeepBranchV2?.request_attestation,
+        tenantId: req.tenantId,
+        requestId: coreRequestId,
+        operation: deepBranchV2Operation,
+      });
+      if (deepBranchV2McpRequest.ok && deepBranchV2Operation !== "preview" && (
+        rawDeepBranchV2.branch_id !== deepBranchV2McpRequest.branch_id
+        || rawDeepBranchV2.subbranch_id !== deepBranchV2McpRequest.subbranch_id
+      )) {
+        deepBranchV2McpRequest = { ok: false, reason: "nyra_deep_branch_v2_mcp_branch_binding_mismatch" };
+      }
+      if (deepBranchV2McpRequest.ok && JSON.stringify(rawDeepBranchV2.evidence_refs || []) !== JSON.stringify(deepBranchV2McpRequest.evidence_refs || [])) {
+        deepBranchV2McpRequest = { ok: false, reason: "nyra_deep_branch_v2_mcp_evidence_binding_mismatch" };
+      }
+    } else if (deepBranchV2Requested) {
+      deepBranchV2McpRequest = { ok: false, reason: "nyra_deep_branch_v2_mcp_operation_invalid" };
+    }
+    const signedDeepBranchId = deepBranchV2McpRequest.ok ? deepBranchV2McpRequest.branch_id : null;
     const ownerContext = req.body?.owner_context && typeof req.body.owner_context === "object"
       ? req.body.owner_context
       : {};
@@ -5890,6 +6284,7 @@ export function createUniversalCoreService(options = {}) {
       requestedBranches: [
         ...MANDATORY_NYRA_WORK_BRANCHES,
         ...(Array.isArray(requestedNyraBranches) ? requestedNyraBranches : []),
+        ...(signedDeepBranchId ? [signedDeepBranchId] : []),
       ],
       domainPackId: domainPackAccess.pack.id,
     });
@@ -5900,7 +6295,7 @@ export function createUniversalCoreService(options = {}) {
       nyraNetwork,
     });
     const result = runNiraUniversalCoreBridge({
-      request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
+      request_id: coreRequestId,
       text: niraText,
       tenant_id: req.tenantId,
       domain: domainPackAccess.pack.domain,
@@ -5933,6 +6328,204 @@ export function createUniversalCoreService(options = {}) {
       nyraNetwork,
       memoryContext: memoryContext.value,
     });
+    const deepBranchV2 = !deepBranchV2Requested ? null : await (async () => {
+      if (!deepBranchV2McpRequest.ok) {
+        return nyraDeepV2Fallback({ requestId: coreRequestId, state: "request_rejected_v1_authoritative", reason: deepBranchV2McpRequest.reason });
+      }
+      const common = {
+        tenantId: req.tenantId,
+        requestId: coreRequestId,
+        selectedByCore: result.selected_by_core,
+        nyraNetwork,
+        workPreflight,
+      };
+      if (deepBranchV2Operation === "preview") {
+        try {
+          return await nyraDeepBranchV2Client.evaluate({ requested: true, ...common });
+        } catch {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "unavailable_v1_authoritative", reason: "nyra_deep_branch_v2_preview_unavailable" });
+        }
+      }
+      if (nyraDeepV2IntegrationReason || !nyraDeepV2Ledger || !nyraDeepV2Attester || !nyraDeepV2SourceVerifier) {
+        return nyraDeepV2Fallback({ requestId: coreRequestId, reason: nyraDeepV2IntegrationReason || "nyra_deep_branch_v2_core_material_unavailable" });
+      }
+      const branchId = deepBranchV2McpRequest.branch_id;
+      const subbranchId = deepBranchV2McpRequest.subbranch_id;
+      const operationalContext = typeof nyraDeepBranchV2Client.beginOperational === "function"
+        ? nyraDeepBranchV2Client.beginOperational({ ...common, branchId, subbranchId })
+        : { ok: false, response: nyraDeepV2Fallback({ requestId: coreRequestId, reason: "nyra_deep_branch_v2_client_operational_unavailable" }) };
+      if (!operationalContext?.ok) return operationalContext?.response || nyraDeepV2Fallback({ requestId: coreRequestId, reason: "nyra_deep_branch_v2_operational_configuration_disabled" });
+      const discovery = nyraDeepV2Attester.requirementBindings({ branchId, subbranchId });
+      if (!discovery?.ok) return nyraDeepV2Fallback({ requestId: coreRequestId, state: "catalog_rejected_v1_authoritative", reason: discovery?.reason || "nyra_deep_branch_v2_requirement_discovery_failed" });
+      if (deepBranchV2Operation === "requirements") {
+        return {
+          schema_version: "nyra_deep_branch_v2_core_operation_v1",
+          state: "requirements_ready_v1_authoritative",
+          request_id: coreRequestId,
+          branch_id: branchId,
+          subbranch_id: subbranchId,
+          requirements: compactNyraDeepV2Requirements(discovery.requirement_bindings),
+          evidence: { state: "not_prepared_v1_authoritative", evidence_refs: [], validation: { state: "not_requested", accepted_source_count: 0, accepted_claim_count: 0, rejected_count: 0 } },
+          evaluation: { state: "not_requested_v1_authoritative", evaluated_node_count: 0 },
+          execution_authorized: false,
+          core_final_authority: true,
+          fallback: "nyra_neural_branch_network_v1",
+        };
+      }
+      if (deepBranchV2Operation === "prepare_evidence") {
+        const boundedEvidence = boundedNyraDeepV2EvidencePack(rawDeepBranchV2.evidence_pack);
+        if (!boundedEvidence.ok) return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: boundedEvidence.reason });
+        const suppliedBindings = Array.isArray(rawDeepBranchV2.requirement_bindings) ? rawDeepBranchV2.requirement_bindings : [];
+        if (rawDeepBranchV2.evidence_pack_hash !== deepBranchV2McpRequest.evidence_pack_hash
+          || rawDeepBranchV2.evidence_pack_hash !== nyraDeepV2EvidencePackHash(boundedEvidence.evidence_pack, suppliedBindings)) {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_evidence_hash_mismatch" });
+        }
+        const normalizedBindings = normalizeNyraDeepV2RequirementBindings(suppliedBindings, discovery.requirement_bindings);
+        if (!normalizedBindings.ok) return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: normalizedBindings.reason });
+        const sourceIds = new Set(boundedEvidence.evidence_pack.sources.map((source) => String(source?.id || "")));
+        const claimsById = new Map(boundedEvidence.evidence_pack.claims.map((claim) => [String(claim?.id || ""), claim]));
+        const bindingsMatchEvidence = normalizedBindings.bindings.every((binding) => (
+          binding.source_ids.every((id) => sourceIds.has(id))
+          && binding.claim_ids.every((id) => {
+            const claimSources = Array.isArray(claimsById.get(id)?.source_ids) ? claimsById.get(id).source_ids : [];
+            return claimsById.has(id) && binding.source_ids.some((sourceId) => claimSources.includes(sourceId));
+          })
+        ));
+        if (!bindingsMatchEvidence) return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_evidence_binding_invalid" });
+        let sourceVerification;
+        try {
+          sourceVerification = await nyraDeepV2SourceVerifier.verifySources(boundedEvidence.evidence_pack.sources);
+        } catch {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_source_verifier_unavailable" });
+        }
+        if (!sourceVerification?.ok) {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_source_verification_failed" });
+        }
+        let sourceReceipts;
+        try {
+          sourceReceipts = sourceVerification.receipts.map((receipt) => {
+            const auditReceipt = evidence.append(req.tenantId, "nyra_deep_v2_source_verified", {
+              issuer: receipt.issuer,
+              source_id: receipt.source_id,
+              source_url_sha256: receipt.source_url_sha256,
+              content_sha256: receipt.content_sha256,
+              excerpt_sha256: receipt.excerpt_sha256,
+              content_type: receipt.content_type,
+              fetched_at: receipt.fetched_at,
+              expires_at: receipt.expires_at,
+              request_id: coreRequestId,
+              branch_id: branchId,
+              subbranch_id: subbranchId,
+            });
+            return { ...receipt, receipt_id: auditReceipt.evidence_id };
+          });
+        } catch {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_source_receipt_unavailable" });
+        }
+        let researchValidation;
+        try {
+          researchValidation = validateResearchEvidence({
+            question: String(boundedEvidence.evidence_pack.research_question || `Nyra Deep V2 evidence for ${branchId}.${subbranchId}`).slice(0, 2_000),
+            sources: boundedEvidence.evidence_pack.sources,
+            claims: boundedEvidence.evidence_pack.claims,
+          });
+        } catch {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_research_validation_rejected" });
+        }
+        const validated = coreValidatedNyraDeepV2Claims(boundedEvidence.evidence_pack, researchValidation, sourceReceipts);
+        const ingested = nyraDeepV2Ledger.ingestResearchEvidence({
+          tenantId: req.tenantId,
+          requestId: coreRequestId,
+          branchId,
+          subbranchId,
+          evidenceSessionId: `evs_${crypto.randomBytes(18).toString("hex")}`,
+          evidencePack: { ...boundedEvidence.evidence_pack, validated_claims: validated.validated_claims },
+          bindings: normalizedBindings.bindings,
+        });
+        const evidenceRefs = Array.isArray(ingested?.evidence_refs)
+          ? ingested.evidence_refs.map((item) => String(item?.record_ref || "")).filter((ref) => NYRA_DEEP_V2_RECORD_REF_PATTERN.test(ref)).slice(0, 100)
+          : [];
+        const fullyPrepared = ingested?.ok === true
+          && Array.isArray(ingested?.missing_bindings) && ingested.missing_bindings.length === 0
+          && evidenceRefs.length >= normalizedBindings.bindings.length;
+        if (!fullyPrepared) {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_core_evidence_not_qualified" });
+        }
+        return {
+          schema_version: "nyra_deep_branch_v2_core_operation_v1",
+          state: "evidence_prepared_v1_authoritative",
+          request_id: coreRequestId,
+          branch_id: branchId,
+          subbranch_id: subbranchId,
+          evidence: {
+            state: ingested?.state || "evidence_rejected",
+            evidence_refs: [...new Set(evidenceRefs)],
+            validation: validated.compact_validation,
+          },
+          evaluation: { state: "not_requested_v1_authoritative", evaluated_node_count: 0 },
+          execution_authorized: false,
+          core_final_authority: true,
+          fallback: "nyra_neural_branch_network_v1",
+        };
+      }
+      if (deepBranchV2Operation === "evaluate") {
+        const evidenceRefs = boundedNyraDeepV2EvidenceRefs(deepBranchV2McpRequest.evidence_refs);
+        if (!evidenceRefs || evidenceRefs.length === 0 || typeof nyraDeepV2Ledger.resolveEvidenceSession !== "function") {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_evidence_handoff_required" });
+        }
+        const evidenceSession = nyraDeepV2Ledger.resolveEvidenceSession({
+          tenantId: req.tenantId,
+          branchId,
+          subbranchId,
+          recordRefs: evidenceRefs,
+        });
+        if (!evidenceSession?.ok) return nyraDeepV2Fallback({ requestId: coreRequestId, state: "evidence_rejected_v1_authoritative", reason: evidenceSession?.reason || "nyra_deep_branch_v2_evidence_handoff_invalid" });
+        const policyBundle = issueNyraDeepV2PolicySnapshotBundle({
+          keyRecord: req.coreKey,
+          tenantId: req.tenantId,
+          requestId: coreRequestId,
+          branchId,
+          subbranchId,
+          workPreflight,
+          nyraNetwork,
+          bridgeResult: result,
+          operationalContext,
+        });
+        if (!policyBundle.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "unavailable_v1_authoritative",
+            reason: policyBundle.reason || "nyra_deep_branch_v2_policy_receipt_unavailable",
+          });
+        }
+        const prepared = nyraDeepV2Attester.prepareOperational({
+          tenantId: req.tenantId,
+          requestId: coreRequestId,
+          domainPackId: "skinharmony",
+          branchId,
+          subbranchId,
+          preflightId: workPreflight.preflight_id,
+          corePolicyHash: operationalContext.policy_hash || operationalContext.policyHash,
+          envelopeBindingHash: operationalContext.envelope_binding_hash,
+          issuedAt: operationalContext.issued_at,
+          expiresAt: operationalContext.expires_at,
+          observedAt: Date.now(),
+          evidenceRefs,
+          evidenceSessionRef: evidenceSession.evidence_session_ref,
+          corePolicyContext: policyBundle.corePolicyContext,
+        });
+        if (!prepared?.ok) return nyraDeepV2Fallback({ requestId: coreRequestId, state: "unavailable_v1_authoritative", reason: prepared?.reason || "nyra_deep_branch_v2_attestation_unavailable" });
+        try {
+          return await nyraDeepBranchV2Client.evaluateOperational({
+            context: operationalContext,
+            operationalAttestation: prepared.attestation,
+          });
+        } catch {
+          return nyraDeepV2Fallback({ requestId: coreRequestId, state: "unavailable_v1_authoritative", reason: "nyra_deep_branch_v2_operational_unavailable" });
+        }
+      }
+      return nyraDeepV2Fallback({ requestId: coreRequestId, state: "request_rejected_v1_authoritative", reason: "nyra_deep_branch_v2_operation_unsupported" });
+    })();
     const guardedResult = {
       ...result,
       selected_by_core: {
@@ -5959,6 +6552,7 @@ export function createUniversalCoreService(options = {}) {
       memory_context: memoryContext.value,
       work_preflight: workPreflight,
       deep_nyra_runtime: deepNyraRuntime,
+      ...(deepBranchV2Requested ? { deep_branch_v2: deepBranchV2 } : {}),
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -5975,6 +6569,19 @@ export function createUniversalCoreService(options = {}) {
       preflight_id: workPreflight.preflight_id,
       deep_runtime_mode: deepNyraRuntime.mode,
       deep_runtime_hard_block: deepNyraRuntime.owner_protection?.hard_block === true,
+      deep_branch_v2_requested: deepBranchV2Requested,
+      deep_branch_v2_operation: deepBranchV2Operation,
+      deep_branch_v2_branch_id: deepBranchV2McpRequest.ok ? deepBranchV2McpRequest.branch_id : null,
+      deep_branch_v2_subbranch_id: deepBranchV2McpRequest.ok ? deepBranchV2McpRequest.subbranch_id : null,
+      deep_branch_v2_state: deepBranchV2?.state || null,
+      deep_branch_v2_rollout_mode: deepBranchV2?.rollout_mode || null,
+      deep_branch_v2_selected_branch_count: Array.isArray(deepBranchV2?.selected_branches)
+        ? deepBranchV2.selected_branches.length
+        : 0,
+      deep_branch_v2_evaluated_node_count: Number.isInteger(Number(deepBranchV2?.evaluation?.evaluated_node_count))
+        ? Number(deepBranchV2.evaluation.evaluated_node_count)
+        : 0,
+      deep_branch_v2_execution_allowed: false,
     });
     res.json({
       ok: true,

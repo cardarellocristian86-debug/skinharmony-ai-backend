@@ -139,6 +139,8 @@ export function loadConfig(env = process.env) {
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
+  const nyraRuntimeUrl = url(env.NYRA_RUNTIME_URL || env.NYRA_BASE_URL, "NYRA_RUNTIME_URL");
+  const nyraRuntimeApiKey = String(env.NYRA_RUNTIME_API_KEY || env.NYRA_MCP_API_KEY || "").trim();
   const universalCoreProviderSetupLinkKeys = tenantKeyMap(
     env.UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON,
     "UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON",
@@ -202,6 +204,23 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
+  // This is intentionally distinct from both the legacy deep runtime and the
+  // Core→Nyra federation gate. It controls only whether the read-only V2
+  // preview tool is discoverable/useful to an authenticated ChatGPT session.
+  const nyraDeepBranchV2PreviewEnabled = flag(env.MCP_NYRA_DEEP_BRANCH_V2_PREVIEW_ENABLED, false);
+  const nyraDeepBranchV2PreviewTenantIds = csv(env.MCP_NYRA_DEEP_BRANCH_V2_PREVIEW_TENANT_ALLOWLIST);
+  const nyraDeepBranchV2PreviewOauthOnly = flag(env.MCP_NYRA_DEEP_BRANCH_V2_PREVIEW_OAUTH_ONLY, true);
+  // V2 node evidence preparation/evaluation is a separate, fail-closed
+  // surface from the topology preview. It is read-only, OAuth- and
+  // tenant-gated, and signs a bounded request for Core to verify before it
+  // ever considers a V2 node.
+  const nyraDeepBranchV2EvaluateEnabled = flag(env.MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_ENABLED, false);
+  const nyraDeepBranchV2EvaluateTenantIds = csv(env.MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_TENANT_ALLOWLIST);
+  const nyraDeepBranchV2EvaluateOauthOnly = flag(env.MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_OAUTH_ONLY, true);
+  const nyraDeepBranchV2RequestSigningSecretCandidate = String(env.MCP_NYRA_DEEP_BRANCH_V2_REQUEST_SIGNING_SECRET || "").trim();
+  const nyraDeepBranchV2RequestSigningSecret = nyraDeepBranchV2RequestSigningSecretCandidate.length >= 32
+    ? nyraDeepBranchV2RequestSigningSecretCandidate
+    : "";
   const oauthOwnerConfirmationMaxAgeSeconds = integer(env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS, 300, 30, 900);
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
@@ -226,6 +245,9 @@ export function loadConfig(env = process.env) {
     universalCoreUrl,
     universalCoreKey,
     universalCoreKeys,
+    nyraRuntimeUrl,
+    nyraRuntimeApiKey,
+    nyraRuntimeTimeoutMs: integer(env.NYRA_RUNTIME_TIMEOUT_MS, 5_000, 250, 30_000),
     universalCoreProviderSetupLinkKeys,
     providerSetupLinkServiceKey,
     tenantGatewayKey,
@@ -262,6 +284,13 @@ export function loadConfig(env = process.env) {
     godModeClientIds,
     godModeCodexEnabled,
     godModeEmergencyStop,
+    nyraDeepBranchV2PreviewEnabled,
+    nyraDeepBranchV2PreviewTenantIds,
+    nyraDeepBranchV2PreviewOauthOnly,
+    nyraDeepBranchV2EvaluateEnabled,
+    nyraDeepBranchV2EvaluateTenantIds,
+    nyraDeepBranchV2EvaluateOauthOnly,
+    nyraDeepBranchV2RequestSigningSecret,
     memoryRetentionDays: integer(env.MEMORY_RETENTION_DAYS, 365, 1, 3_650),
     personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365),
     researchRetentionDays: integer(env.RESEARCH_RETENTION_DAYS, 365, 1, 3_650),

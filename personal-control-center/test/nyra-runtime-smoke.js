@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const { performance } = require("node:perf_hooks");
 
 const repoRoot = path.resolve(__dirname, "../..");
 const nyraPort = 33000 + Math.floor(Math.random() * 1000);
@@ -112,7 +113,7 @@ const coreServer = http.createServer((req, res) => {
       jsonResponse(res, 200, {
         ok: true,
         tenant_id: "tenant-test",
-        domain_pack: { id: "generic", runtime_kind: "horizontal" },
+        domain_pack: { id: "skinharmony", runtime_kind: "horizontal" },
         work_preflight: {
           schema_version: "skinharmony_work_preflight_v1",
           preflight_id: "preflight-smoke",
@@ -202,13 +203,89 @@ function request(pathname, options = {}) {
       res.on("end", () => {
         let json = {};
         try { json = body ? JSON.parse(body) : {}; } catch { json = { raw: body }; }
-        resolve({ status: res.statusCode, json });
+        resolve({ status: res.statusCode, json, bodyBytes: Buffer.byteLength(body) });
       });
     });
     request.on("error", reject);
     if (options.body) request.write(JSON.stringify(options.body));
     request.end();
   });
+}
+
+function percentile(values, quantile) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(sorted.length * quantile) - 1)
+  );
+  return sorted[index] || 0;
+}
+
+async function authenticatedBurst(pathname, {
+  requests = 40,
+  concurrency = 16,
+  responseBudgetBytes = 100 * 1024,
+  p95BudgetMs = 1000,
+  maxBudgetMs = 2000,
+} = {}) {
+  const latencies = [];
+  const responseBytes = [];
+  const statuses = {};
+  let cursor = 0;
+  const started = performance.now();
+  const worker = async () => {
+    while (cursor < requests) {
+      const index = cursor;
+      cursor += 1;
+      const requestStarted = performance.now();
+      const result = await request(pathname, { auth: true });
+      latencies[index] = performance.now() - requestStarted;
+      responseBytes[index] = result.bodyBytes;
+      statuses[result.status] = (statuses[result.status] || 0) + 1;
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, requests) }, () => worker())
+  );
+  const latency = {
+    p50_ms: Number(percentile(latencies, 0.5).toFixed(3)),
+    p95_ms: Number(percentile(latencies, 0.95).toFixed(3)),
+    max_ms: Number(Math.max(...latencies).toFixed(3)),
+  };
+  const bytes = {
+    p50: percentile(responseBytes, 0.5),
+    p95: percentile(responseBytes, 0.95),
+    max: Math.max(...responseBytes),
+  };
+  const budgets = {
+    response_max_bytes: responseBudgetBytes,
+    latency_p95_max_ms: p95BudgetMs,
+    latency_max_ms: maxBudgetMs,
+    required_status: 200,
+    required_requests: requests,
+    minimum_concurrency: 16,
+  };
+  const checks = {
+    request_count: latencies.length === requests,
+    concurrency: concurrency >= budgets.minimum_concurrency,
+    statuses: Object.keys(statuses).length === 1 && statuses[200] === requests,
+    response_size: bytes.max < responseBudgetBytes,
+    latency_p95: latency.p95_ms < p95BudgetMs,
+    latency_max: latency.max_ms < maxBudgetMs,
+  };
+  return {
+    path: pathname,
+    authenticated: true,
+    requests,
+    concurrency,
+    elapsed_ms: Number((performance.now() - started).toFixed(3)),
+    statuses,
+    latency,
+    response_bytes: bytes,
+    budgets,
+    checks,
+    passed: Object.values(checks).every(Boolean),
+  };
 }
 
 function waitForHealth(child) {
@@ -240,7 +317,7 @@ async function main() {
   await new Promise((resolve) => coreServer.listen(corePort, "127.0.0.1", resolve));
   await new Promise((resolve) => smartDeskServer.listen(smartDeskPort, "127.0.0.1", resolve));
   await new Promise((resolve) => researchMcpServer.listen(researchMcpPort, "127.0.0.1", resolve));
-  const child = spawn(process.execPath, ["personal-control-center/server.js"], {
+  const child = spawn(process.execPath, ["--max-old-space-size=256", "personal-control-center/server.js"], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -256,6 +333,10 @@ async function main() {
       NYRA_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_CORE_KEY: "core-test-key",
       NYRA_CORE_TENANT_ID: "tenant-test",
+      NYRA_DEEP_BRANCH_V2_ENABLED: "true",
+      NYRA_DEEP_BRANCH_V2_MODE: "shadow",
+      NYRA_DEEP_BRANCH_V2_BRANCHES: "context_intelligence,work_intake,risk_governance,execution_planning",
+      NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST: "tenant-test",
       NYRA_RESEARCH_MCP_URL: `http://127.0.0.1:${researchMcpPort}`,
       NYRA_SUITE_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_SUITE_CORE_KEY: "suite-core-key",
@@ -310,6 +391,38 @@ async function main() {
     assert.equal(runtimeContract.json.contract.authority.may_begin_work_without_preflight, false);
     assert.equal(runtimeContract.json.contract.mandatory_preflight.connected_tool_first, true);
 
+    const deepValidation = await request("/api/nyra/runtime/v2/validation", { auth: true });
+    assert.equal(deepValidation.status, 200);
+    assert(deepValidation.bodyBytes < 100 * 1024);
+    assert.equal(deepValidation.json.ok, true);
+    assert.equal(deepValidation.json.validation.metrics.branch_count, 18);
+    assert.equal(deepValidation.json.validation.metrics.node_count, 1434);
+    assert.equal(deepValidation.json.execution_allowed, false);
+    assert.equal(deepValidation.json.core_final_authority, true);
+    assert.equal(Object.hasOwn(deepValidation.json, "catalog"), false);
+
+    const deepCatalogSummary = await request("/api/nyra/runtime/v2/catalog", { auth: true });
+    assert.equal(deepCatalogSummary.status, 200);
+    assert(deepCatalogSummary.bodyBytes < 100 * 1024);
+    assert.equal(deepCatalogSummary.json.ok, true);
+    assert.equal(deepCatalogSummary.json.execution_allowed, false);
+    assert.equal(deepCatalogSummary.json.core_final_authority, true);
+    assert.equal(Object.hasOwn(deepCatalogSummary.json.catalog, "nodes"), false);
+    assert.equal(Object.hasOwn(deepCatalogSummary.json.catalog.function_registry, "functions"), false);
+    assert.equal(deepCatalogSummary.json.catalog.function_registry.function_count, 1434);
+    assert.equal(deepCatalogSummary.json.catalog.runtime_manifest.shard_count, 239);
+    assert.equal(
+      deepCatalogSummary.json.catalog.runtime_manifest.audit_artifact_runtime_read_allowed,
+      false
+    );
+    assert.equal(deepCatalogSummary.json.validation.metrics.branch_count, 18);
+    assert.equal(deepCatalogSummary.json.validation.metrics.node_count, 1434);
+
+    const validationBurst = await authenticatedBurst("/api/nyra/runtime/v2/validation");
+    const catalogBurst = await authenticatedBurst("/api/nyra/runtime/v2/catalog");
+    assert.equal(validationBurst.passed, true, JSON.stringify(validationBurst));
+    assert.equal(catalogBurst.passed, true, JSON.stringify(catalogBurst));
+
     const runtimeInterpretation = await request("/api/nyra/runtime/interpret", {
       method: "POST",
       auth: true,
@@ -319,7 +432,23 @@ async function main() {
     assert.equal(runtimeInterpretation.json.local_interpretation.branch_state, "proposed_waiting_for_core");
     assert.equal(runtimeInterpretation.json.core_router.result.nyra_neural_network.opened_by, "universal_core");
     assert.equal(runtimeInterpretation.json.core_router.work_preflight.mandatory, true);
+    assert.equal(runtimeInterpretation.json.deep_branch_v2.state, "shadow_v1_authoritative");
+    assert(runtimeInterpretation.json.deep_branch_v2.selected_branches.some((branch) => branch.id === "execution_planning"));
+    assert.equal(runtimeInterpretation.json.deep_branch_v2.execution_authorized, false);
+    assert.equal(runtimeInterpretation.json.deep_branch_v2.core_final_authority, true);
     assert.equal(runtimeInterpretation.json.execution_allowed, false);
+
+    const shadowTelemetry = await request("/api/nyra/runtime/v2/telemetry", { auth: true });
+    assert.equal(shadowTelemetry.status, 200);
+    assert.equal(shadowTelemetry.json.ok, true);
+    assert.equal(shadowTelemetry.json.privacy.raw_prompt_stored, false);
+    assert.equal(shadowTelemetry.json.privacy.pii_fields_stored, false);
+    assert.equal(shadowTelemetry.json.windows["7d"].event_count, 1);
+    assert.equal(shadowTelemetry.json.windows["30d"].event_count, 1);
+    assert.equal(shadowTelemetry.json.windows["30d"].subbranch_usage.known_count, 239);
+    assert.equal(shadowTelemetry.json.windows["30d"].parity.authority_violation_count, 0);
+    assert.equal(shadowTelemetry.json.windows["30d"].collision_measurement.available, false);
+    assert.equal(JSON.stringify(shadowTelemetry.json).includes("Valuta privacy"), false);
 
     const learningBefore = await request("/api/nyra/text-learning/status", { auth: true });
     assert.equal(learningBefore.status, 200);
@@ -473,13 +602,26 @@ async function main() {
     assert(preview.json.readiness.missing.includes("consent"));
     assert.equal(preview.json.nyra.value_loop.length, 7);
 
-    console.log(JSON.stringify({
+    const smokeReport = {
+      schema_version: "nyra_deep_branch_v2_http_concurrency_benchmark_v1",
+      generated_at: new Date().toISOString(),
       ok: true,
+      harness: {
+        server_exec_argv: ["--max-old-space-size=256", "personal-control-center/server.js"],
+        platform: process.platform,
+        arch: process.arch,
+        node: process.version,
+      },
       checks: [
         "health",
         "auth_fail_closed",
         "authenticated_control",
         "runtime_readiness",
+        "deep_branch_v2_catalog_validation",
+        "deep_branch_v2_authenticated_validation_burst",
+        "deep_branch_v2_authenticated_catalog_burst",
+        "deep_branch_v2_shadow_core_route",
+        "deep_branch_v2_privacy_safe_shadow_telemetry",
         "persistent_learning_path",
         "feedback_endpoint",
         "core_status_bridge",
@@ -491,7 +633,38 @@ async function main() {
       ],
       learning_rules: learningAfter.json.learning_rules,
       missing_preview_stages: preview.json.readiness.missing,
-    }, null, 2));
+      bounded_payload_bytes: {
+        deep_validation: deepValidation.bodyBytes,
+        deep_catalog_summary: deepCatalogSummary.bodyBytes,
+        deep_interpretation: runtimeInterpretation.bodyBytes,
+      },
+      authenticated_bursts: {
+        validation: validationBurst,
+        catalog: catalogBurst,
+      },
+      budgets: {
+        validation_response_max_bytes: 100 * 1024,
+        catalog_response_max_bytes: 100 * 1024,
+        interpretation_response_max_bytes: 1024 * 1024,
+        minimum_concurrency: 16,
+        requests_per_endpoint: 40,
+      },
+      passed: validationBurst.passed
+        && catalogBurst.passed
+        && deepValidation.bodyBytes < 100 * 1024
+        && deepCatalogSummary.bodyBytes < 100 * 1024
+        && runtimeInterpretation.bodyBytes < 1024 * 1024,
+    };
+    const reportPath = String(process.env.NYRA_DEEP_V2_SMOKE_REPORT_PATH || "").trim();
+    if (reportPath) {
+      fs.mkdirSync(path.dirname(path.resolve(reportPath)), { recursive: true });
+      fs.writeFileSync(
+        path.resolve(reportPath),
+        `${JSON.stringify(smokeReport, null, 2)}\n`,
+        "utf8"
+      );
+    }
+    console.log(JSON.stringify(smokeReport, null, 2));
   } finally {
     if (child.exitCode === null) {
       child.kill("SIGTERM");

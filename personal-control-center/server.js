@@ -3,6 +3,18 @@ const path = require("path");
 const crypto = require("crypto");
 const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
 const { createNyraHorizontalRuntime } = require("./lib/nyra-horizontal-runtime");
+const {
+  featureFlags: nyraDeepBranchV2FeatureFlags,
+  loadCatalog: loadNyraDeepBranchV2Catalog,
+  route: routeNyraDeepBranchV2,
+} = require("./lib/nyra-deep-branch-v2");
+const {
+  aggregateShadowTelemetry,
+  appendShadowTelemetry,
+  buildShadowTelemetryEvent,
+  readShadowTelemetry,
+} = require("./lib/nyra-deep-shadow-telemetry");
+const { createNyraDeepBranchV2Federation } = require("./lib/nyra-deep-branch-v2-federation");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -56,6 +68,7 @@ const nyraSiteSuitePriceGuardSnapshotPath = "personal-control-center/data/nyra-s
 const nyraDecisionClarityPackPath = "universal-core/runtime/nyra-learning/nyra_decision_clarity_learning_pack_latest.json";
 const nyraAnalyzerLearningPackPath = "personal-control-center/data/nyra-analyzer-learning-pack.json";
 const nyraSecurityAuditPath = "runtime/nyra-learning/nyra_security_audit.jsonl";
+const nyraDeepShadowTelemetryPath = "runtime/nyra-learning/nyra_deep_branch_v2_shadow_telemetry.jsonl";
 const nyraVectorMemoryManifestPath = "universal-core/runtime/nyra-vector-memory/nyra_vector_memory_manifest.json";
 const nyraDecisionJourneyPath = "universal-core/runtime/nyra/nyra_decision_to_value_journey.json";
 const nyraSiteSuitePriceGuardUrl = String(
@@ -68,6 +81,7 @@ const NYRA_WORLD_PAPER_MIN_EXPECTED_MOVE_PCT = 0.15;
 const leadStatuses = ["nuovo", "contattato", "risposto", "interessato", "trattativa", "cliente", "perso"];
 const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_CAPITAL_EUR || 100000);
 const nyraHorizontalRuntime = createNyraHorizontalRuntime(process.env);
+const nyraDeepBranchV2Federation = createNyraDeepBranchV2Federation({ env: process.env });
 const NYRA_SERVICE_NAME = nyraHorizontalRuntime.serviceName;
 const NYRA_SERVICE_VERSION = nyraHorizontalRuntime.version;
 const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
@@ -207,6 +221,15 @@ function rateLimitAllowed(req) {
 function authenticateNyraRequest(req) {
   const authorization = String(req.headers.authorization || "");
   const bearer = bearerTokenFromHeader(authorization);
+  if (req.path === "/api/nyra/runtime/v2/evaluate" && req.method === "POST") {
+    const internal = nyraDeepBranchV2Federation.authenticate(
+      String(req.get("x-nyra-deep-v2-service-key") || "").trim()
+    );
+    if (internal.ok) return { ok: true, method: "deep_branch_v2_core_federation" };
+    if (nyraDeepBranchV2Federation.config().enabled) {
+      return { ok: false, code: internal.error || "nyra_deep_branch_v2_service_auth_invalid" };
+    }
+  }
   if (req.path.startsWith("/api/nyra/suite/")) {
     const suiteBridgeKey = String(process.env.NYRA_SUITE_BRIDGE_KEY || "").trim();
     const providedSuiteKey = String(req.get("x-nyra-suite-key") || "").trim();
@@ -4468,16 +4491,246 @@ app.get("/api/nyra/runtime/contract", (_req, res) => {
   res.json({ ok: true, contract: nyraHorizontalRuntime.contract() });
 });
 
+app.get("/api/nyra/runtime/v2/catalog", (_req, res) => {
+  const config = nyraCoreConfig();
+  const featureFlags = nyraDeepBranchV2FeatureFlags(process.env, config.tenantId);
+  const loaded = loadNyraDeepBranchV2Catalog({ runtimeMode: "lazy" });
+  const catalog = loaded.catalog;
+  res.status(loaded.ok ? 200 : 503).json({
+    ok: loaded.ok,
+    service: NYRA_SERVICE_NAME,
+    tenant_id: config.tenantId || null,
+    feature_flags: featureFlags,
+    state: loaded.state,
+    validation: loaded.validation,
+    catalog: catalog ? {
+      schema_version: catalog.schema_version,
+      version: catalog.version,
+      authority: catalog.authority,
+      catalog_fingerprint: catalog.catalog_fingerprint,
+      rollback_checkpoint: catalog.rollback_checkpoint,
+      source_catalog: {
+        schema_version: catalog.source_catalog.schema_version,
+        captured_at: catalog.source_catalog.captured_at,
+        source: catalog.source_catalog.source,
+        tenant_id: catalog.source_catalog.tenant_id,
+        domain_pack_id: catalog.source_catalog.domain_pack_id,
+        source_snapshot_sha256: catalog.source_catalog.source_snapshot_sha256,
+      },
+      function_registry: {
+        schema_version: catalog.function_registry.schema_version,
+        registry_hash: catalog.function_registry.registry_hash,
+        function_count: catalog.function_registry.function_count,
+      },
+      topology: loaded.validation.metrics,
+      runtime_manifest: loaded.runtime_lazy ? {
+        schema_version: loaded.manifest?.schema_version || null,
+        manifest_hash: loaded.manifest?.manifest_hash || null,
+        root_binding_hash: loaded.manifest?.root_binding_hash || null,
+        shard_count: loaded.manifest?.shards?.length || 0,
+        audit_artifact_runtime_read_allowed: loaded.audit_catalog?.runtime_read_allowed === true,
+      } : null,
+    } : null,
+    execution_allowed: false,
+    core_final_authority: true,
+  });
+});
+
+app.get("/api/nyra/runtime/v2/validation", (_req, res) => {
+  const config = nyraCoreConfig();
+  const loaded = loadNyraDeepBranchV2Catalog({ runtimeMode: "lazy" });
+  res.status(loaded.ok ? 200 : 503).json({
+    ok: loaded.ok,
+    service: NYRA_SERVICE_NAME,
+    tenant_id: config.tenantId || null,
+    state: loaded.state,
+    feature_flags: nyraDeepBranchV2FeatureFlags(process.env, config.tenantId),
+    validation: loaded.validation,
+    catalog_fingerprint: loaded.catalog?.catalog_fingerprint || null,
+    execution_allowed: false,
+    core_final_authority: true,
+  });
+});
+
+app.get("/api/nyra/runtime/v2/telemetry", (_req, res) => {
+  const loaded = loadNyraDeepBranchV2Catalog({ runtimeMode: "lazy" });
+  if (!loaded.ok) {
+    res.status(503).json({
+      ok: false,
+      service: NYRA_SERVICE_NAME,
+      error: "deep_branch_v2_catalog_unavailable",
+      execution_allowed: false,
+      core_final_authority: true,
+    });
+    return;
+  }
+  const knownBranchIds = (loaded.catalog?.branches || []).map((branch) => branch.id);
+  const knownSubbranchIds = (loaded.catalog?.branches || [])
+    .flatMap((branch) => (branch.subbranches || [])
+      .map((subbranch) => `${branch.id}.${subbranch.id}`));
+  const telemetry = readShadowTelemetry(resolveStoragePath(nyraDeepShadowTelemetryPath));
+  const now = Date.now();
+  res.json({
+    ok: true,
+    service: NYRA_SERVICE_NAME,
+    generated_at: new Date(now).toISOString(),
+    privacy: {
+      raw_prompt_stored: false,
+      prompt_hash_stored: false,
+      request_id_stored: false,
+      evidence_payload_stored: false,
+      node_input_stored: false,
+      pii_fields_stored: false,
+    },
+    source: {
+      malformed_line_count: telemetry.malformed_line_count,
+      truncated_to_recent_bytes: telemetry.truncated,
+    },
+    windows: {
+      "7d": aggregateShadowTelemetry(telemetry.events, {
+        days: 7,
+        now,
+        knownBranchIds,
+        knownSubbranchIds,
+      }),
+      "30d": aggregateShadowTelemetry(telemetry.events, {
+        days: 30,
+        now,
+        knownBranchIds,
+        knownSubbranchIds,
+      }),
+    },
+    execution_allowed: false,
+    core_final_authority: true,
+  });
+});
+
+// This endpoint is deliberately non-recursive: Universal Core has already
+// authenticated the tenant and opened the V1 branches. Nyra receives only a
+// short-lived, signed envelope and returns a bounded V2 advisory projection.
+// It never calls Core, never receives raw tenant memory, and can never enable
+// execution. The existing /interpret endpoint remains the V1-compatible
+// public path.
+function projectNyraDeepBranchV2FederationResponse(result = {}) {
+  const identifier = (value, fallback = null) => {
+    const text = String(value || "").trim();
+    return /^[a-zA-Z0-9_.:-]{1,384}$/.test(text) ? text : fallback;
+  };
+  const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const selected = Array.isArray(result.selected_branches) ? result.selected_branches.slice(0, 20).map((branch) => ({
+    id: identifier(branch?.id, "redacted"),
+    ...(identifier(branch?.label, null) ? { label: String(branch.label).slice(0, 160) } : {}),
+    ...(identifier(branch?.work_phase, null) ? { work_phase: String(branch.work_phase).slice(0, 80) } : {}),
+    subbranch_count: Math.max(0, Math.floor(number(branch?.subbranch_count))),
+    subbranches: Array.isArray(branch?.subbranches) ? branch.subbranches.slice(0, 20).map((subbranch) => ({
+      id: identifier(subbranch?.id, "redacted"),
+      specialized_capability_count: Math.max(0, Math.floor(number(subbranch?.specialized_capability_count))),
+    })) : [],
+  })) : [];
+  const evaluation = result.evaluation && typeof result.evaluation === "object" ? result.evaluation : {};
+  const lineageNodes = Array.isArray(evaluation?.lineage?.nodes) ? evaluation.lineage.nodes.slice(0, 6).map((node) => ({
+    node_id: identifier(node?.node_id, "redacted"),
+    parent_id: identifier(node?.parent_id, "redacted"),
+    level: Math.floor(number(node?.level, 0)),
+    node_type: identifier(node?.node_type, "unknown"),
+    state: identifier(node?.state, "unknown"),
+    ...(Number.isFinite(Number(node?.confidence)) ? { confidence: Number(node.confidence) } : {}),
+    ...(Number.isFinite(Number(node?.confidence_threshold)) ? { confidence_threshold: Number(node.confidence_threshold) } : {}),
+    ...(identifier(node?.fallback_node, null) ? { fallback_node: identifier(node.fallback_node) } : {}),
+    reason_codes: Array.isArray(node?.reason_codes) ? node.reason_codes.slice(0, 6).map((value) => identifier(value, "invalid_reason")) : [],
+  })) : [];
+  return {
+    ok: true,
+    schema_version: result.schema_version,
+    state: identifier(result.state, "unavailable_v1_authoritative"),
+    mode: identifier(result.mode, "disabled"),
+    tenant_id: identifier(result.tenant_id, null),
+    request_id: identifier(result.request_id, null),
+    ...(identifier(result.reason, null) ? { reason: identifier(result.reason) } : {}),
+    catalog: result.catalog ? {
+      ...(identifier(result.catalog.version, null) ? { version: String(result.catalog.version).slice(0, 128) } : {}),
+      fingerprint: identifier(result.catalog.fingerprint, null),
+      root_binding_hash: identifier(result.catalog.root_binding_hash, null),
+    } : null,
+    validation: result.validation ? {
+      ok: result.validation.ok === true,
+      branch_count: Math.max(0, Math.floor(number(result.validation.branch_count))),
+      subbranch_count: Math.max(0, Math.floor(number(result.validation.subbranch_count))),
+      node_count: Math.max(0, Math.floor(number(result.validation.node_count))),
+      shard_count: Math.max(0, Math.floor(number(result.validation.shard_count))),
+      checked_shards: Math.max(0, Math.floor(number(result.validation.checked_shards))),
+      unchecked_shards: Math.max(0, Math.floor(number(result.validation.unchecked_shards))),
+    } : null,
+    selected_branches: selected,
+    evaluation: {
+      ...(identifier(evaluation.schema_version, null) ? { schema_version: identifier(evaluation.schema_version) } : {}),
+      state: identifier(evaluation.state, "not_requested_v1_authoritative"),
+      evaluated_node_count: Math.max(0, Math.floor(number(evaluation.evaluated_node_count))),
+      ...(typeof evaluation.all_nodes_verified === "boolean" ? { all_nodes_verified: evaluation.all_nodes_verified } : {}),
+      ...(lineageNodes.length ? { lineage: {
+        branch_id: identifier(evaluation.lineage.branch_id, "redacted"),
+        subbranch_id: identifier(evaluation.lineage.subbranch_id, "redacted"),
+        package_hash: identifier(evaluation.lineage.package_hash, "redacted"),
+        nodes: lineageNodes,
+      } } : {}),
+    },
+    provenance: result.provenance ? {
+      ...(identifier(result.provenance.envelope_hash, null) ? { envelope_hash: identifier(result.provenance.envelope_hash) } : {}),
+      ...(identifier(result.provenance.attestation_hash, null) ? { attestation_hash: identifier(result.provenance.attestation_hash) } : {}),
+      ...(identifier(result.provenance.key_id, null) ? { key_id: identifier(result.provenance.key_id) } : {}),
+      ...(identifier(result.provenance.core_policy_hash, null) ? { core_policy_hash: identifier(result.provenance.core_policy_hash) } : {}),
+      ...(identifier(result.provenance.preflight_id, null) ? { preflight_id: identifier(result.provenance.preflight_id) } : {}),
+    } : undefined,
+    execution_authorized: false,
+    core_final_authority: true,
+    fallback: "nyra_neural_branch_network_v1",
+    service: NYRA_SERVICE_NAME,
+  };
+}
+
+app.post("/api/nyra/runtime/v2/evaluate", (req, res) => {
+  const result = nyraDeepBranchV2Federation.evaluate(req.body?.envelope);
+  if (!result.ok) {
+    appendNyraSecurityAudit("deep_branch_v2_federation_rejected", {
+      request_id: req.nyraRequestId,
+      reason: result.error || "deep_branch_v2_federation_rejected",
+      auth_method: req.nyraAuth?.method || "unknown",
+    });
+    res.status(result.status || 403).json({
+      ok: false,
+      service: NYRA_SERVICE_NAME,
+      error: result.error || "deep_branch_v2_federation_rejected",
+      execution_allowed: false,
+      core_final_authority: true,
+    });
+    return;
+  }
+  appendNyraSecurityAudit("deep_branch_v2_federation_evaluated", {
+    request_id: req.nyraRequestId,
+    core_request_id: result.request_id || null,
+    tenant_id: result.tenant_id || null,
+    state: result.state,
+    mode: result.mode,
+    selected_branch_count: Array.isArray(result.selected_branches) ? result.selected_branches.length : 0,
+    validation_ok: result.validation?.ok === true,
+    unchecked_shards: Number(result.validation?.unchecked_shards || 0),
+    execution_allowed: false,
+  });
+  res.json(projectNyraDeepBranchV2FederationResponse(result));
+});
+
 app.post("/api/nyra/runtime/interpret", async (req, res) => {
   const prepared = nyraHorizontalRuntime.prepareInterpretation(req.body || {});
   if (!prepared.ok) {
     res.status(prepared.status || 400).json({ ok: false, error: prepared.error, execution_allowed: false });
     return;
   }
+  const coreStartedAt = performance.now();
   const core = await requestNyraCore("/v1/nira/core-bridge", {
     method: "POST",
     body: prepared.core_request,
   });
+  const coreLatencyMs = performance.now() - coreStartedAt;
   if (!core.ok) {
     res.status(core.status || 503).json({
       ok: false,
@@ -4489,12 +4742,67 @@ app.post("/api/nyra/runtime/interpret", async (req, res) => {
     });
     return;
   }
+  const config = nyraCoreConfig();
+  const requestedDeepContext = req.body?.deep_branch_context;
+  const coreEvidence = core.data?.result?.nyra_evidence?.items || core.data?.nyra_evidence?.items || [];
+  const requestedNodeInputs = requestedDeepContext?.node_inputs;
+  const deepBranchEvaluationContext = requestedDeepContext && typeof requestedDeepContext === "object"
+    ? {
+        subbranch_id: String(requestedDeepContext.subbranch_id || "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 64),
+        evidence: Array.isArray(coreEvidence) ? coreEvidence.slice(0, 100) : [],
+        evidence_source: Array.isArray(coreEvidence) && coreEvidence.length ? "authenticated_core" : "",
+        node_inputs: requestedNodeInputs && typeof requestedNodeInputs === "object" && !Array.isArray(requestedNodeInputs)
+          ? Object.fromEntries(Object.entries(requestedNodeInputs).slice(0, 20))
+          : {},
+        request_id: req.nyraRequestId,
+        observed_at: Date.now(),
+      }
+    : null;
+  const deepStartedAt = performance.now();
+  const deepBranchV2 = routeNyraDeepBranchV2({
+    tenantId: config.tenantId,
+    domainPackId: String(
+      core.data?.domain_pack?.id
+      || core.data?.result?.domain_pack?.id
+      || "generic"
+    ),
+    corePayload: core.data,
+    requestedBranches: prepared.local_interpretation.proposed_branches,
+    evaluationContext: deepBranchEvaluationContext,
+    env: process.env,
+  });
+  const deepLatencyMs = performance.now() - deepStartedAt;
+  if (deepBranchV2.mode === "shadow") {
+    try {
+      appendShadowTelemetry(
+        resolveStoragePath(nyraDeepShadowTelemetryPath),
+        buildShadowTelemetryEvent({
+          service: NYRA_SERVICE_NAME,
+          tenantId: config.tenantId,
+          domainPackId: String(
+            core.data?.domain_pack?.id
+            || core.data?.result?.domain_pack?.id
+            || "generic"
+          ),
+          localInterpretation: prepared.local_interpretation,
+          corePayload: core.data,
+          deepBranchV2,
+          requestedSubbranchId: deepBranchEvaluationContext?.subbranch_id || "",
+          coreLatencyMs,
+          deepLatencyMs,
+        })
+      );
+    } catch {
+      // Advisory telemetry must never change the authoritative V1 response.
+    }
+  }
   res.json({
     ok: true,
     service: NYRA_SERVICE_NAME,
     runtime: nyraHorizontalRuntime.contract(),
     local_interpretation: prepared.local_interpretation,
     core_router: core.data,
+    ...(deepBranchV2.mode === "disabled" ? {} : { deep_branch_v2: deepBranchV2 }),
     execution_allowed: false,
   });
 });

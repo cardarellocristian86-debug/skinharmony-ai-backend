@@ -1,0 +1,43 @@
+name: Nyra Deep Branch V2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/nyra-deep-branch-v2.yml"
+      - "architecture/nyra-deep-branch-v2-*"
+      - "docs/NYRA_DEEP_BRANCH_*"
+      - "package.json"
+      - "package-lock.json"
+      - "personal-control-center/data/nyra-deep-branch-v2.*"
+      - "personal-control-center/data/nyra-live-branch-v1.snapshot.json"
+      - "personal-control-center/lib/nyra-deep-branch-v2.js"
+      - "personal-control-center/lib/nyra-horizontal-runtime.js"
+      - "personal-control-center/server.js"
+      - "personal-control-center/test/nyra-*"
+      - "render-nyra.yaml"
+      - "reports/nyra-deep-v2/**"
+      - "research/NYRA_DEEP_BRANCH_V2_RESEARCH.md"
+      - "scripts/*nyra-deep-branch-v2.mjs"
+      - "verification/nyra-deep-branch-v2-verification-spec.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nyra-deep-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies without deployment build hooks
+        run: npm ci --ignore-scripts
+      - name: Run Nyra unit, integration, regression and isolation suite
+        run: npm run nyra:runtime:test
+      - name: Verify contracts, deep routing, benchmark and rollback
+        run: npm run nyra:deep-v2:verify
