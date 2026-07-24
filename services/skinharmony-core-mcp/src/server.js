@@ -12,11 +12,16 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
+import { createOwnerConfirmationLedger } from "./owner-confirmation-ledger.js";
+import { createOwnerConfirmationGrantLedger } from "./owner-confirmation-grant.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
 const decisionLedger = createDecisionLedger(config);
 if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
+const ownerConfirmationLedger = createOwnerConfirmationLedger(config);
+const ownerGrantLedger = ownerConfirmationLedger ? createOwnerConfirmationGrantLedger({ persistentLedger: ownerConfirmationLedger, requirePersistent: true }) : null;
+if (!ownerConfirmationLedger) throw new Error("owner_confirmation_ledger_database_required");
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
@@ -27,7 +32,7 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
 });
-const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
+const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience, ownerConfirmationLedger });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -56,6 +61,8 @@ function summarizeToolRequest(toolName, args = {}) {
 }
 
 const app = createApp(config, {
+  ownerConfirmationLedger,
+  ownerGrantLedger,
   handlers: {
     tenant_provider_openai_setup_panel: async (_args, identity) => ({
       structuredContent: {
@@ -96,8 +103,6 @@ const app = createApp(config, {
         agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
         client_type: identity.agentPresence?.client_type || args.client_type,
         available_capabilities: ["skinharmony_core_mcp", toolName],
-        owner_confirmed: identity.ownerConfirmed === true,
-        confirmation_reference: identity.confirmationReference,
       }, identity);
       const preflight = result.structuredContent;
       if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
@@ -119,30 +124,10 @@ const app = createApp(config, {
 const openAiPortal = createOpenAiConnectPortal({
   config,
   authenticate: browserAuthenticate,
-  issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
-  providerStatus: coreHandlers.tenant_provider_openai_status,
-  startMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_smoke_run,
-  readMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_read,
-  cancelMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_cancel,
+  ownerGrantLedger: createOwnerConfirmationGrantLedger({ persistentLedger: ownerConfirmationLedger, requirePersistent: config.decisionLedgerRequired === true }),
 });
 app.get("/connect/openai", openAiPortal.start);
 app.get("/connect/openai/callback", openAiPortal.callback);
+app.post("/connect/openai/confirm", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.confirm);
 app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
-app.get("/agents", openAiPortal.agentsHome);
-app.get("/agents/login", openAiPortal.agentsLogin);
-app.post("/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
-app.post("/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
-app.get("/agents/runs/:runId", openAiPortal.agentsRunRead);
-app.post("/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
-app.post("/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
-
-// Preserve previously issued mobile-first links while keeping `/agents` as
-// the device- and client-neutral entrypoint for ChatGPT, Codex and browsers.
-app.get("/mobile/agents", openAiPortal.agentsHome);
-app.get("/mobile/agents/login", openAiPortal.agentsLogin);
-app.post("/mobile/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
-app.post("/mobile/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
-app.get("/mobile/agents/runs/:runId", openAiPortal.agentsRunRead);
-app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
-app.post("/mobile/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));

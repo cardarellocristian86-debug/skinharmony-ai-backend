@@ -7,7 +7,7 @@ import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 
 const SERVER_VERSION = "0.11.7-native-provider-preflight";
-const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from OpenAI API credits. At the start of every connected conversation call tenant_provider_openai_status. If OpenAI is not configured, open tenant_provider_openai_setup_panel and offer only Collega API key or Non ora. Never ask for or accept an API key in chat or a tool argument: it is entered only on the protected one-time Core page and stored encrypted per tenant. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run directly with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from OpenAI API credits. At the start of every connected conversation call tenant_provider_openai_status. If OpenAI is not configured, open tenant_provider_openai_setup_panel and offer only Collega API key or Non ora. Never ask for or accept an API key in chat or a tool argument: it is entered only on the protected one-time Core page and stored encrypted per tenant. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, first use the secure confirmation page; only after the server approves the exact request may you call tenant_provider_openai_multi_agent_smoke_run. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-approved action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound server-side approval, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
@@ -31,13 +31,6 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "tenant_provider_openai_status",
   "tenant_provider_openai_setup_panel",
 ]);
-const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
-]);
-
 function inferClientType(identity) {
   const kind = String(identity?.kind || "").toLowerCase();
   // This gateway reserves verified OAuth identities for the ChatGPT connector;
@@ -57,6 +50,27 @@ function normalizeTransportSession(value) {
 
 function serverIssuedBootstrapSession() {
   return `mcp_bootstrap_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function ownerChallengeSummary(toolName, args = {}) {
+  const task = typeof args.task === "string" ? args.task.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) : "";
+  const summary = {
+    operation: toolName,
+    task: task || "Lavoro bounded multi-agente",
+    limits: toolName === "tenant_provider_openai_multi_agent_smoke_run"
+      ? { agents_max: 3, calls_max: 3, external_actions: false }
+      : { run_scoped: true },
+  };
+  return JSON.stringify(summary);
+}
+
+export function buildCallIdentity(identity, agentPresence, args = {}) {
+  return {
+    ...identity,
+    agentPresence,
+    // This flag is an output of server-side challenge consumption only.
+    providerExecutionConfirmed: identity.providerExecutionConfirmed === true,
+  };
 }
 
 function buildIdentity(env = process.env) {
@@ -216,6 +230,7 @@ function toolFailure(error) {
 export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
+  const ownerGrantLedger = options.ownerGrantLedger;
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
@@ -308,7 +323,7 @@ export function createApp(config, options = {}) {
       if (method === "initialize") {
         const sessionId = normalizeTransportSession(req.headers["mcp-session-id"]) || `mcp_${crypto.randomBytes(16).toString("hex")}`;
         res.set("Mcp-Session-Id", sessionId);
-        return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
+        return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS.replaceAll("owner_confirmed=true", "the secure confirmation page") } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
       if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [{
@@ -328,10 +343,13 @@ export function createApp(config, options = {}) {
         }] } });
       }
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
+        const exposedTool = identity.kind === "oauth"
+          ? { ...tool, inputSchema: { ...tool.inputSchema, properties: Object.fromEntries(Object.entries(tool.inputSchema?.properties || {}).filter(([key]) => key !== "owner_confirmed" && key !== "confirmation_reference")) } }
+          : tool;
         const schemes = securitySchemes(scopes);
-        const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
+        const genericPreflightRequired = requiresGenericWorkPreflight(exposedTool.name);
         return {
-          ...tool,
+          ...exposedTool,
           securitySchemes: schemes,
           _meta: {
             ...(tool._meta || {}),
@@ -364,12 +382,12 @@ export function createApp(config, options = {}) {
             },
           });
         }
-        if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
-          OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) && rawArgs.owner_confirmed === true) {
-          identity = authenticate.elevateOAuthOwner(identity, {
-            confirmed: true,
-            confirmationReference: rawArgs.confirmation_reference,
-            requestBinding: ownerRequestBinding(tool.name, rawArgs),
+        if (Object.prototype.hasOwnProperty.call(rawArgs, "owner_confirmed") ||
+            Object.prototype.hasOwnProperty.call(rawArgs, "confirmation_reference")) {
+          return res.json({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32602, message: "Owner confirmation is server-side only" },
           });
         }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
@@ -427,28 +445,52 @@ export function createApp(config, options = {}) {
         if (transportSessionId || serverIssuedSessionId) {
           setBounded(transportPresenceBindings, sessionId, presenceBinding);
         }
+        const privilegedOAuthTools = new Set([
+          "tenant_provider_openai_setup_link",
+          "tenant_provider_openai_multi_agent_smoke_run",
+          "tenant_provider_openai_multi_agent_run_read",
+          "tenant_provider_openai_multi_agent_run_cancel",
+        ]);
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && !ownerGrantLedger) {
+          return res.json({ jsonrpc: "2.0", id, error: { code: -32002, message: "confirmation_unavailable" } });
+        }
+        if (identity.kind === "oauth" && identity.oauthOwnerBound === true && privilegedOAuthTools.has(tool.name) && ownerGrantLedger) {
+          const requestDigest = ownerRequestBinding(tool.name, rawArgs);
+          try {
+            await ownerGrantLedger.consumeApprovedChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest });
+            if (tool.name === "tenant_provider_openai_multi_agent_smoke_run") {
+              const contract = await ownerGrantLedger.createJobContract({
+                tenantId: identity.tenantId,
+                subject: identity.subject,
+                sessionId,
+                taskDigest: requestDigest,
+                requestDigest,
+                agentsMax: 3,
+                callsMax: 3,
+                budgetMax: 600,
+              });
+              await ownerGrantLedger.reserveJobStart({ contractId: contract.contractId, tenantId: identity.tenantId, subject: identity.subject, sessionId });
+              identity = { ...identity, role: "tenant_owner", providerSetupOwner: true, providerExecutionConfirmed: true, jobContractId: contract.contractId };
+            } else {
+              identity = { ...identity, role: "tenant_owner", providerSetupOwner: true };
+            }
+          } catch (error) {
+            if (error?.message !== "owner_challenge_missing") throw error;
+            let portalUrl = "/connect/openai";
+            try { portalUrl = `${new URL(config.auth0BrowserCallbackUrl).origin}/connect/openai`; } catch {}
+            const challenge = await ownerGrantLedger.issueChallenge({ tenantId: identity.tenantId, subject: identity.subject, sessionId, toolName: tool.name, requestDigest, challengeSummary: ownerChallengeSummary(tool.name, rawArgs) });
+            return res.json({ jsonrpc: "2.0", id, error: { code: -32001, message: "confirmation_required", data: { confirmation_required: true, challenge_id: challenge.challengeId, confirmation_url: `${portalUrl}?challenge_id=${encodeURIComponent(challenge.challengeId)}` } } });
+          }
+        }
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
         // A request flag is never an identity assertion. Generic Core writes
         // still require verified owner-root confirmation. The bounded provider
         // test has a deliberately narrower, separate tenant-OAuth-owner proof.
-        const explicitOwnerConfirmation = identity.godMode === true && args.owner_confirmed === true;
-        const explicitProviderExecutionConfirmation = identity.kind === "oauth" &&
-          identity.providerSetupOwner === true &&
-          Boolean(String(identity.subject || "").trim()) &&
-          args.owner_confirmed === true;
-        const callIdentity = {
-          ...identity,
-          agentPresence,
-          ownerConfirmed: explicitOwnerConfirmation,
-          confirmationReference: explicitOwnerConfirmation
-            ? String(args.confirmation_reference || "").slice(0, 240)
-            : "",
-          providerExecutionConfirmed: explicitProviderExecutionConfirmation,
-          providerExecutionConfirmationReference: explicitProviderExecutionConfirmation
-            ? String(args.confirmation_reference || "").slice(0, 240)
-            : "",
-        };
+        // OAuth owner elevation is granted only by the server-side challenge
+        // ledger above. Never recompute or overwrite that proof from tool
+        // arguments supplied by the model/client.
+        const callIdentity = buildCallIdentity(identity, agentPresence, args);
         activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
         let hookContext = null;
         if (typeof beforeToolCall === "function") {
