@@ -957,6 +957,7 @@ export function createResearchDistillationRuntime(options = {}) {
     branchPack,
     openWorkspace,
     attachEvidence,
+    closeWorkspace,
     distillCandidate,
     authorizeEnvelope,
     cleanupExpired,
