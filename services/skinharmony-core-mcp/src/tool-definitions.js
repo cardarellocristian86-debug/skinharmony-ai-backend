@@ -221,6 +221,15 @@ const scalpMetrics = object({
   ostia_count: { type: "integer", minimum: 0 },
   confidence: probability,
 });
+const scalpAcquisition = object({
+  device_model: { type: "string", maxLength: 120 },
+  magnification: { type: "string", maxLength: 40 },
+  capture_protocol_id: identifier,
+  polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] },
+  focus_score: score,
+  illumination_score: score,
+  zone_coverage_score: score,
+});
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
@@ -285,6 +294,46 @@ export const TOOLS = [
     limit: { type: "integer", minimum: 1, maximum: 50 },
   }), ["core:read"]),
   tool("nyra_research_status", "Read research cortex status", "Use this to inspect tenant evidence counts, learning policy and provider availability without exposing provider credentials.", object(), ["core:read"]),
+  tool("nyra_research_source_registry", "Read the trusted source registry", "Use this when Nyra needs the versioned trusted source registry and branch bindings that govern research evidence.", object(), ["core:read"]),
+  tool("nyra_research_learning_packs", "Read branch learning packs", "Use this when Nyra needs the versioned learning pack catalog for one branch or the full tenant-scoped set.", object({
+    branch_id: { type: "string", maxLength: 64 },
+  }), ["core:read"]),
+  tool("nyra_research_authorize", "Authorize a governed research envelope", "Use this when Nyra needs a Core-issued research authorization envelope that bounds branches, sources, depth, time and retention.", object({
+    envelope: { type: "object", additionalProperties: true },
+    branch_ids: { type: "array", maxItems: 24, items: identifier },
+    core_decision_reference: { type: "string", maxLength: 240 },
+  }), ["core:govern"], false, true),
+  tool("nyra_research_workspace_open", "Open an ephemeral research workspace", "Use this when Nyra needs a tenant-scoped temporary evidence workspace for a governed research run.", object({
+    request_id: { type: "string", maxLength: 120 },
+    question: text(2_000),
+    branch_ids: { type: "array", maxItems: 24, items: identifier },
+    allowed_source_ids: { type: "array", maxItems: 20, items: identifier },
+    max_documents: { type: "integer", minimum: 1, maximum: 20 },
+    max_bytes: { type: "integer", minimum: 1_000, maximum: 5_000_000 },
+    max_duration_ms: { type: "integer", minimum: 1_000, maximum: 300_000 },
+    retention_mode: { type: "string", enum: ["ephemeral", "ttl", "session"] },
+    core_decision_reference: { type: "string", maxLength: 240 },
+  }, ["question"]), ["core:govern"], false, true),
+  tool("nyra_research_workspace_attach", "Attach evidence to a workspace", "Use this when Nyra needs to add normalized evidence to an existing temporary workspace without promoting memory.", object({
+    workspace_id: identifier,
+    evidence: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", additionalProperties: true } },
+  }, ["workspace_id", "evidence"]), ["core:govern"], false, true),
+  tool("nyra_research_workspace_close", "Close a research workspace", "Use this when the temporary evidence session must end and any remaining workspace state should be closed safely.", object({
+    workspace_id: identifier,
+  }, ["workspace_id"]), ["core:govern"], false, true),
+  tool("nyra_research_distill", "Distill a research candidate", "Use this when Nyra has a verified outcome and wants to create a governed learning candidate or verified learning memory.", object({
+    workspace_id: identifier,
+    evidence: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", additionalProperties: true } },
+    lesson: { type: "string", maxLength: 1_000 },
+    learning: { type: "string", maxLength: 1_000 },
+    scope: { type: "string", maxLength: 200 },
+    confidence: probability,
+    limitations: { type: "array", maxItems: 10, items: text(240) },
+    outcome_refs: { type: "array", maxItems: 10, items: identifier },
+    persist_verified: { type: "boolean" },
+    audit_reference: { type: "string", maxLength: 240 },
+  }, ["workspace_id"]), ["core:govern"], false, true),
+  tool("nyra_research_cleanup", "Cleanup expired research workspaces", "Use this when temporary research state must be cleared after timeout, closure or cancellation.", object(), ["core:govern"], false, true),
   tool("nyra_research_feedback", "Review research evidence", "Use this when an authorized reviewer confirms, challenges or deprecates a research record. Only eligible confirmed evidence is promoted to tenant memory.", object({
     record_id: { type: "string", pattern: "^research_[a-f0-9-]{36}$" },
     verdict: { type: "string", enum: ["confirm", "challenge", "deprecate"] },
@@ -301,11 +350,24 @@ export const TOOLS = [
     protocols: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
     report_text: { type: "string", maxLength: 10_000 },
     data_quality_score: score,
+    acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier, focus_score: score, illumination_score: score, color_calibrated: { type: "boolean" }, polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] } }),
+    previous_scores: { type: "array", maxItems: 12, items: skinScore },
+    previous_acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier }),
+    learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }),
     session_id: identifier,
   }, ["scores"]), ["core:read"], true, true, { examples: [{ scores: [{ key: "pores_texture", label: "Pori e grana", score: 42 }], data_quality_score: 86 }] }),
   tool("scalp_analyzer", "Interpret Scalp Analyzer metrics", "Use this when an authenticated tenant needs a read-only, non-diagnostic interpretation of structured scalp metrics produced by the local analyzer. It returns quality flags and cosmetic observation priorities, never medical findings, prescriptions, raw images, or cross-tenant data.", object({
     overall: scalpMetrics,
     zones: { type: "array", maxItems: 12, items: object({ zone: identifier, metrics: scalpMetrics }, ["zone", "metrics"]) },
+    acquisition: scalpAcquisition,
+    previous: object({ overall: scalpMetrics, acquisition: scalpAcquisition }),
+    reported_warning_signals: { type: "array", maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["sudden_change", "pain", "bleeding", "open_lesion", "infection_suspected"] } },
+    professional_profile: { type: "string", enum: ["medical_study", "salon_trichology", "pharmacy_dermocosmetic"] },
+    learning_context: object({
+      outcome_verified: { type: "boolean" },
+      human_reviewed: { type: "boolean" },
+      comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 },
+    }),
     locale: { type: "string", enum: ["it", "en"] },
     session_id: identifier,
   }, ["overall"]), ["core:read"], true, true, { examples: [{ overall: { density_index: 62, miniaturization_index: 28, redness_percent: 14, confidence: 0.88 }, locale: "it" }] }),

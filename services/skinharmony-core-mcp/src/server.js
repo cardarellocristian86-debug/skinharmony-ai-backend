@@ -6,6 +6,7 @@ import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.
 import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
+import { createGovernedResearchLayer } from "./research-governed-layer.js";
 import { createAnalyzerHandlers } from "./analyzer-handlers.js";
 import { createDecisionLedger } from "./decision-ledger.js";
 
@@ -29,6 +30,14 @@ const researchCortex = config.researchCortexRoot
       memoryFabric,
     })
   : null;
+const governedResearch = config.researchGovernedRoot
+  ? createGovernedResearchLayer(config, {
+      govern,
+      planProvider: coreHandlers.research_plan,
+      validateProvider: coreHandlers.research_validate,
+      memoryFabric,
+    })
+  : researchCortex;
 
 const CORE_PREFLIGHT_NATIVE_TOOLS = new Set([
   "core_health",
@@ -51,9 +60,9 @@ function summarizeToolRequest(toolName, args = {}) {
 const app = createApp(config, {
   handlers: {
     ...coreHandlers,
-    ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
+    ...createMemoryHandlers(config, { researchCortex: governedResearch || researchCortex, cloudMemoryStore }),
     ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
-    ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
+    ...(governedResearch ? createResearchHandlers(governedResearch) : researchCortex ? createResearchHandlers(researchCortex) : {}),
     ...createAnalyzerHandlers(),
     ...collaborationHandlers,
     ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {

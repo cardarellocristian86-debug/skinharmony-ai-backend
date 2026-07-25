@@ -54,6 +54,7 @@ export function loadConfig(env = process.env) {
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
+  const researchGovernedRoot = String(env.RESEARCH_GOVERNED_ROOT || researchCortexRoot || memoryFabricRoot || agentWorkspaceRoot || "").trim();
   const godModeEnabled = flag(env.NYRA_GOD_MODE_ENABLED, false);
   const godModeTenantIds = csv(env.NYRA_GOD_MODE_TENANT_IDS || env.NYRA_GOD_MODE_TENANT_ID || "owner-private");
   const godModeSubjects = csv(env.NYRA_GOD_MODE_SUBJECTS);
@@ -88,6 +89,7 @@ export function loadConfig(env = process.env) {
     agentWorkspaceRoot,
     memoryFabricRoot,
     researchCortexRoot,
+    researchGovernedRoot,
     godModeEnabled,
     godModeTenantIds,
     godModeSubjects,
@@ -101,6 +103,15 @@ export function loadConfig(env = process.env) {
     openaiResearchEnabled: flag(env.NYRA_OPENAI_RESEARCH_ENABLED, false),
     openaiResearchModel: String(env.NYRA_OPENAI_RESEARCH_MODEL || "gpt-5.6").trim(),
     openaiResearchTimeoutMs: integer(env.NYRA_OPENAI_RESEARCH_TIMEOUT_MS, 90_000, 5_000, 300_000),
-    openaiResearchMaxCallsPerHour: integer(env.NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR, 10, 1, 100)
+    openaiResearchMaxCallsPerHour: integer(env.NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR, 10, 1, 100),
+    researchGovernedEnabled: flag(env.NYRA_RESEARCH_DISTILLATION_ENABLED, false),
+    researchGovernedMode: String(env.NYRA_RESEARCH_DISTILLATION_MODE || (env.NODE_ENV === "production" ? "off" : "shadow")).trim().toLowerCase(),
+    researchSourceRegistryVersion: String(env.NYRA_TRUSTED_SOURCE_REGISTRY_VERSION || "nyra_governed_research_source_registry_v1").trim(),
+    researchMaxDocuments: integer(env.NYRA_RESEARCH_MAX_DOCUMENTS, 10, 1, 20),
+    researchMaxBytes: integer(env.NYRA_RESEARCH_MAX_BYTES, 2_000_000, 100_000, 10_000_000),
+    researchTimeoutMs: integer(env.NYRA_RESEARCH_TIMEOUT_MS, 30_000, 1_000, 300_000),
+    researchCacheTtlSeconds: integer(env.NYRA_RESEARCH_CACHE_TTL_SECONDS, 900, 60, 86_400),
+    researchTenantAllowlist: csv(env.NYRA_RESEARCH_TENANT_ALLOWLIST),
+    distillationRequiresReview: flag(env.NYRA_DISTILLATION_REQUIRES_REVIEW, true),
   };
 }

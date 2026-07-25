@@ -24,7 +24,16 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.research_validate({ evidence_pack: { question: "ricerca", sources: [], claims: [] }, domain_pack: "analyzer" }, identity);
   await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
-  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
+  await handlers.nyra_research_status({}, identity);
+  await handlers.nyra_research_source_registry({}, identity);
+  await handlers.nyra_research_learning_packs({}, identity);
+  await handlers.nyra_research_authorize({ envelope: { tenant_id: "tenant-a" }, branch_ids: ["research_evidence"] }, identity);
+  await handlers.nyra_research_workspace_open({ question: "ricerca", branch_ids: ["research_evidence"], allowed_source_ids: ["pubmed"] }, identity);
+  await handlers.nyra_research_workspace_attach({ workspace_id: "rw_12345678-1234-1234-1234-123456789012", evidence: [] }, identity);
+  await handlers.nyra_research_workspace_close({ workspace_id: "rw_12345678-1234-1234-1234-123456789012" }, identity);
+  await handlers.nyra_research_distill({ workspace_id: "rw_12345678-1234-1234-1234-123456789012", evidence: [], persist_verified: false }, identity);
+  await handlers.nyra_research_cleanup({}, identity);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname).slice(0, 8), ["/healthz", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert(calls.filter((call) => call.init.body).every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert.deepEqual(JSON.parse(calls[1].init.body).available_capabilities, ["github_connected_app"]);
@@ -42,6 +51,17 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.equal(contextCalls.length, 4);
   assert.equal(contextCalls[2].input.query, "analizza");
   assert.equal(contextCalls[2].input.agent_id, "nyra");
+  assert.deepEqual(calls.slice(8).map((call) => new URL(call.url).pathname), [
+    "/v1/research/status",
+    "/v1/research/source-registry",
+    "/v1/research/learning-packs",
+    "/v1/research/envelope/authorize",
+    "/v1/research/workspaces/open",
+    "/v1/research/workspaces/attach",
+    "/v1/research/workspaces/close",
+    "/v1/research/distill",
+    "/v1/research/cleanup",
+  ]);
 });
 
 test("rejects a tenant without its own Core key", async () => {

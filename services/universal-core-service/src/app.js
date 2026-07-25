@@ -50,6 +50,7 @@ import {
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
 import { createGovernedDynamicThoughtTreeRuntime } from "./dtt/governedDynamicThoughtTree.js";
+import { createResearchDistillationRuntime } from "./researchDistillationLayer.js";
 import {
   analyzeScenarios,
   evaluateCounterfactuals,
@@ -3222,6 +3223,10 @@ export function createUniversalCoreService(options = {}) {
   const dttRuntime = options.dttRuntime || createGovernedDynamicThoughtTreeRuntime({
     env: options.dttEnv || process.env,
   });
+  const researchRuntime = options.researchRuntime || createResearchDistillationRuntime({
+    env: options.researchEnv || process.env,
+    storageRoot,
+  });
   const app = express();
 
   app.disable("x-powered-by");
@@ -3648,6 +3653,111 @@ export function createUniversalCoreService(options = {}) {
       });
     } catch (error) {
       return publicError(res, error.status || 400, error.code || error.message || "research_evidence_invalid");
+    }
+  });
+
+  app.get("/v1/research/status", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const status = researchRuntime.status(req.tenantId);
+    return res.json({ ok: true, tenant_id: req.tenantId, status });
+  });
+
+  app.get("/v1/research/source-registry", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const payload = researchRuntime.registryForTenant(req.tenantId);
+      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_registry_failed");
+    }
+  });
+
+  app.get("/v1/research/learning-packs", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const branchId = String(req.query.branch_id || "").trim() || null;
+      const payload = researchRuntime.branchPack(req.tenantId, branchId);
+      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_learning_pack_failed");
+    }
+  });
+
+  app.post("/v1/research/envelope/authorize", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const payload = researchRuntime.authorizeEnvelope(req.body || {}, { tenantId: req.tenantId, coreDecision: req.body?.core_decision_reference || null });
+      return res.json({ ok: true, tenant_id: req.tenantId, envelope: payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_envelope_invalid");
+    }
+  });
+
+  app.post("/v1/research/workspaces/open", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const workspace = researchRuntime.openWorkspace({
+        ...req.body,
+        tenant_id: req.tenantId,
+      });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, workspace });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_open_failed");
+    }
+  });
+
+  app.post("/v1/research/workspaces/attach", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const workspaceId = String(req.body?.workspace_id || "").trim();
+      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
+      const payload = researchRuntime.attachEvidence(workspaceId, {
+        tenant_id: req.tenantId,
+        evidence: Array.isArray(req.body?.evidence) ? req.body.evidence : [],
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_attach_failed");
+    }
+  });
+
+  app.post("/v1/research/workspaces/close", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const workspaceId = String(req.body?.workspace_id || "").trim();
+      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
+      const workspace = researchRuntime.closeWorkspace(workspaceId);
+      return res.json({ ok: true, tenant_id: req.tenantId, workspace });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_close_failed");
+    }
+  });
+
+  app.post("/v1/research/distill", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const workspaceId = String(req.body?.workspace_id || "").trim();
+      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
+      const result = researchRuntime.distillCandidate(workspaceId, {
+        evidence: Array.isArray(req.body?.evidence) ? req.body.evidence : [],
+        lesson: req.body?.lesson,
+        learning: req.body?.learning,
+        scope: req.body?.scope,
+        confidence: req.body?.confidence,
+        limitations: Array.isArray(req.body?.limitations) ? req.body.limitations : [],
+        outcome_refs: Array.isArray(req.body?.outcome_refs) ? req.body.outcome_refs : [],
+        persist_verified: req.body?.persist_verified === true,
+        audit_reference: req.body?.audit_reference || null,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, ...result });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_distillation_failed");
+    }
+  });
+
+  app.post("/v1/research/cleanup", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const cleaned = researchRuntime.cleanupExpired();
+      audit.append("core_research_cleanup_executed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        cleaned,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, cleanup: { cleaned } });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_cleanup_failed");
     }
   });
 

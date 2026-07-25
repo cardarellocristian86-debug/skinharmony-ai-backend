@@ -67,12 +67,34 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   const plan = body.result.tools.find((tool) => tool.name === "nyra_research_plan");
   const ingest = body.result.tools.find((tool) => tool.name === "nyra_research_ingest");
   const execute = body.result.tools.find((tool) => tool.name === "nyra_research_execute");
+  const governedResearchTools = [
+    "nyra_research_status",
+    "nyra_research_source_registry",
+    "nyra_research_learning_packs",
+    "nyra_research_authorize",
+    "nyra_research_workspace_open",
+    "nyra_research_workspace_attach",
+    "nyra_research_workspace_close",
+    "nyra_research_distill",
+    "nyra_research_cleanup",
+  ];
   assert.equal(plan.annotations.readOnlyHint, true);
   assert.deepEqual(plan.securitySchemes[0].scopes, ["core:read"]);
   assert.equal(ingest.annotations.readOnlyHint, false);
   assert.deepEqual(ingest.securitySchemes[0].scopes, ["core:govern"]);
   assert.equal(execute.annotations.openWorldHint, true);
   assert.deepEqual(execute.securitySchemes[0].scopes, ["core:govern"]);
+  for (const name of governedResearchTools) {
+    const tool = body.result.tools.find((candidate) => candidate.name === name);
+    assert(tool, `missing governed research tool ${name}`);
+    if (name === "nyra_research_status" || name === "nyra_research_source_registry" || name === "nyra_research_learning_packs") {
+      assert.deepEqual(tool.securitySchemes[0].scopes, ["core:read"]);
+      assert.equal(tool.annotations.readOnlyHint, true);
+    } else {
+      assert.deepEqual(tool.securitySchemes[0].scopes, ["core:govern"]);
+      assert.equal(tool.annotations.readOnlyHint, false);
+    }
+  }
   for (const name of ["search", "fetch"]) {
     assert(body.result.tools.find((tool) => tool.name === name).outputSchema);
   }

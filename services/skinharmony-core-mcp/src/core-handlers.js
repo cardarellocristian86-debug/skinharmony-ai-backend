@@ -202,6 +202,33 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
     })),
+    nyra_research_status: async (_args, identity) => textResult(await coreRequest("/v1/research/status", identity.tenantId)),
+    nyra_research_source_registry: async (_args, identity) => textResult(await coreRequest("/v1/research/source-registry", identity.tenantId)),
+    nyra_research_learning_packs: async (args, identity) => textResult(await coreRequest(`/v1/research/learning-packs${args.branch_id ? `?branch_id=${encodeURIComponent(args.branch_id)}` : ""}`, identity.tenantId)),
+    nyra_research_authorize: async (args, identity) => textResult(await coreRequest("/v1/research/envelope/authorize", identity.tenantId, {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    nyra_research_workspace_open: async (args, identity) => textResult(await coreRequest("/v1/research/workspaces/open", identity.tenantId, {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    nyra_research_workspace_attach: async (args, identity) => textResult(await coreRequest("/v1/research/workspaces/attach", identity.tenantId, {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    nyra_research_workspace_close: async (args, identity) => textResult(await coreRequest("/v1/research/workspaces/close", identity.tenantId, {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    nyra_research_distill: async (args, identity) => textResult(await coreRequest("/v1/research/distill", identity.tenantId, {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    nyra_research_cleanup: async (_args, identity) => textResult(await coreRequest("/v1/research/cleanup", identity.tenantId, {
+      method: "POST",
+      body: { tenant_id: identity.tenantId },
+    })),
     nyra_interpret_request: async (args, identity) => {
       const sharedContext = await memoryContext({
         query: args.message,

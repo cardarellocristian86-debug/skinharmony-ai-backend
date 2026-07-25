@@ -1,0 +1,27 @@
+{
+  "schema_version": "nyra_governed_research_validation_report_v1",
+  "generated_at": "2026-07-25T00:00:00.000Z",
+  "scope": "services/skinharmony-core-mcp",
+  "feature_flag": {
+    "enabled_env": "NYRA_RESEARCH_DISTILLATION_ENABLED",
+    "mode_env": "NYRA_RESEARCH_DISTILLATION_MODE",
+    "default_mode": "shadow_in_non_production_off_in_production"
+  },
+  "tests": {
+    "research_governed_layer": { "passed": 3, "failed": 0 },
+    "mcp_package": { "passed": 79, "failed": 0 }
+  },
+  "runtime_observations": {
+    "workspace_scoped": true,
+    "source_registry_version": "nyra_governed_research_source_registry_v1",
+    "learning_pack_version": "nyra_governed_research_branch_learning_pack_v1",
+    "tenant_allowlist_enforced": true,
+    "verified_learning_candidate_created": true,
+    "memory_promotion_requires_confirmation": true
+  },
+  "notes": [
+    "Core MCP research layer extended without duplicating the existing research cortex.",
+    "No Render variables were modified.",
+    "No deploy was performed in this step."
+  ]
+}
