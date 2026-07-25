@@ -104,6 +104,12 @@ const state = {
 };
 
 const byId = (id) => document.getElementById(id);
+const coreBootstrapDefaults = {
+  adminFile: "~/.config/skinharmony/nyra-core-admin.env",
+  envFile: "~/.config/skinharmony/nyra-core.env",
+  tenantId: "codexai",
+  brandScope: "codexai"
+};
 
 function esc(value) {
   return String(value ?? "")
@@ -111,6 +117,100 @@ function esc(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function prettyJson(value) {
+  if (value == null) return "-";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function setCoreBootstrapResult(message) {
+  const target = byId("coreBootstrapResult");
+  if (target) target.textContent = message;
+}
+
+function setCoreBootstrapStatus(data = {}) {
+  const configured = byId("coreBootstrapConfigured");
+  const adminConfigured = byId("coreBootstrapAdminConfigured");
+  const tenant = byId("coreBootstrapTenant");
+  const keyFile = byId("coreBootstrapKeyFile");
+  if (configured) configured.textContent = data.configured ? "attivo" : "manca";
+  if (adminConfigured) adminConfigured.textContent = data.admin_configured ? "presente" : "manca";
+  if (tenant) tenant.textContent = data.tenant_id || "-";
+  if (keyFile) keyFile.textContent = data.persisted_core_key_file || "-";
+}
+
+async function loadCoreKeyPresets() {
+  const select = byId("corePresetSelect");
+  if (!select) return;
+  try {
+    const response = await fetchJson("/api/nyra/core/key-presets");
+    const presets = response.presets || {};
+    const entries = Array.isArray(presets)
+      ? presets.map((preset) => [preset, preset])
+      : Object.entries(presets);
+    const desired = select.value || "codex_automation";
+    select.innerHTML = entries.length
+      ? entries.map(([key, value]) => `<option value="${esc(key)}">${esc(value?.label || value?.name || key)}</option>`).join("")
+      : `<option value="codex_automation">codex_automation</option>`;
+    const values = [...select.options].map((option) => option.value);
+    if (values.includes(desired)) select.value = desired;
+  } catch {
+    select.innerHTML = `<option value="codex_automation">codex_automation</option>`;
+  }
+}
+
+async function refreshCoreBootstrapStatus() {
+  try {
+    const status = await fetchJson("/api/nyra/core/key-bootstrap/status");
+    setCoreBootstrapStatus(status);
+  } catch (error) {
+    setCoreBootstrapResult(`Stato bootstrap non disponibile: ${error.message}`);
+  }
+}
+
+async function saveCoreAdminKey() {
+  const adminKey = byId("coreAdminKeyInput")?.value.trim() || "";
+  const filePath = byId("coreAdminFileInput")?.value.trim() || coreBootstrapDefaults.adminFile;
+  if (!adminKey) {
+    setCoreBootstrapResult("Inserisci l'admin key prima di salvarla.");
+    return;
+  }
+  const response = await fetchJson("/api/nyra/core/key-bootstrap/admin", {
+    method: "POST",
+    body: JSON.stringify({ admin_key: adminKey, file_path: filePath })
+  });
+  setCoreBootstrapResult(prettyJson(response));
+  await refreshCoreBootstrapStatus();
+}
+
+async function generateReusableCoreKey() {
+  const tenantId = byId("coreTenantInput")?.value.trim() || coreBootstrapDefaults.tenantId;
+  const brandScope = byId("coreBrandInput")?.value.trim() || coreBootstrapDefaults.brandScope;
+  const preset = byId("corePresetSelect")?.value || "codex_automation";
+  const saveEnvFile = byId("coreEnvFileInput")?.value.trim() || coreBootstrapDefaults.envFile;
+  const response = await fetchJson("/api/nyra/core/key-generate", {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      brand_scope: brandScope,
+      preset,
+      label: `Nyra Core ${tenantId}`,
+      key_type: "connector",
+      save_env_file: saveEnvFile
+    })
+  });
+  setCoreBootstrapResult(prettyJson({
+    ok: response.ok,
+    saved_env_file: response.saved_env_file,
+    key_id: response.generated?.record?.key_id,
+    tenant_id: response.generated?.record?.tenant_id,
+    preset: response.generated?.record?.preset,
+    reusable: response.reusable,
+    note: response.note
+  }));
+  await refreshCoreBootstrapStatus();
 }
 
 async function fetchJson(url, options = {}) {
@@ -1913,6 +2013,12 @@ function bindEvents() {
         : state.financeProfile?.manualProfile || "hard_growth";
     saveFinanceProfile(currentMode, manualProfile);
   });
+  const saveAdminBtn = byId("coreBootstrapSaveAdminBtn");
+  if (saveAdminBtn) saveAdminBtn.addEventListener("click", () => saveCoreAdminKey().catch((error) => setCoreBootstrapResult(`Errore salvataggio admin key: ${error.message}`)));
+  const generateKeyBtn = byId("coreBootstrapGenerateBtn");
+  if (generateKeyBtn) generateKeyBtn.addEventListener("click", () => generateReusableCoreKey().catch((error) => setCoreBootstrapResult(`Errore generazione key: ${error.message}`)));
+  const refreshBootstrapBtn = byId("coreBootstrapRefreshBtn");
+  if (refreshBootstrapBtn) refreshBootstrapBtn.addEventListener("click", () => refreshCoreBootstrapStatus().catch((error) => setCoreBootstrapResult(`Errore stato bootstrap: ${error.message}`)));
   byId("applyRecommendationBtn").addEventListener("click", async () => {
     try {
       const response = await fetchJson("/api/nyra/finance/profile/apply-recommendation", {
@@ -1941,6 +2047,7 @@ function bindEvents() {
 renderDashboard();
 bindEvents();
 addMessage("nyra", "Sono pronta. Punto, azione, limite.", "ready");
+loadCoreKeyPresets().then(refreshCoreBootstrapStatus);
 loadFinanceMode();
 refreshFinanceProfile();
 refreshFinanceLiveStatus();

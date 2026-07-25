@@ -162,6 +162,10 @@ test("research API exposes registry, packs, workspace and distillation endpoints
     const status = await request("GET", "/v1/research/status", undefined, coreKey);
     assert.equal(status.status, 200);
     assert.equal(status.json.status.registry_version, TRUSTED_SOURCE_REGISTRY_VERSION);
+
+    const legacyStatus = await request("GET", "/api/universal-core/research/status", undefined, coreKey);
+    assert.equal(legacyStatus.status, 200);
+    assert.equal(legacyStatus.json.status.registry_version, TRUSTED_SOURCE_REGISTRY_VERSION);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;

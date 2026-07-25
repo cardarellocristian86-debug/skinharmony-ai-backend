@@ -55,6 +55,12 @@ export function createCoreHandlers(config, options = {}) {
     return selected;
   }
 
+  function adminKey() {
+    const selected = String(config.universalCoreAdminKey || "").trim();
+    if (!selected) throw new Error("core_admin_key_missing");
+    return selected;
+  }
+
   async function coreRequest(path, tenantId, { method = "GET", body } = {}) {
     const sanitizedBody = body && typeof body === "object" && !Array.isArray(body)
       ? (({ domain_pack: _domainPack, domain_pack_id: _domainPackId, ...rest }) => rest)(body)
@@ -69,6 +75,23 @@ export function createCoreHandlers(config, options = {}) {
     });
     const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
     if (!response.ok) throw new Error(`core_request_failed:${response.status}:${payload.error || "unknown"}`);
+    return payload;
+  }
+
+  async function adminCoreRequest(path, { method = "GET", body } = {}) {
+    const sanitizedBody = body && typeof body === "object" && !Array.isArray(body)
+      ? body
+      : body;
+    const headers = { accept: "application/json" };
+    if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
+    headers.authorization = `Bearer ${adminKey()}`;
+    const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
+      method,
+      headers,
+      body: sanitizedBody === undefined ? undefined : JSON.stringify(sanitizedBody),
+    });
+    const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
+    if (!response.ok) throw new Error(`core_admin_request_failed:${response.status}:${payload.error || "unknown"}`);
     return payload;
   }
 
@@ -228,6 +251,19 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_cleanup: async (_args, identity) => textResult(await coreRequest("/v1/research/cleanup", identity.tenantId, {
       method: "POST",
       body: { tenant_id: identity.tenantId },
+    })),
+    core_key_presets: async (_args, _identity) => textResult(await adminCoreRequest("/v1/keys/presets")),
+    core_key_generate: async (args, identity) => textResult(await adminCoreRequest("/v1/keys/generate", {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    core_setup_token_create: async (args, identity) => textResult(await adminCoreRequest("/v1/setup-token/create", {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
+    })),
+    core_setup_token_consume: async (args, identity) => textResult(await adminCoreRequest("/v1/setup-token/consume", {
+      method: "POST",
+      body: { ...args, tenant_id: identity.tenantId },
     })),
     nyra_interpret_request: async (args, identity) => {
       const sharedContext = await memoryContext({

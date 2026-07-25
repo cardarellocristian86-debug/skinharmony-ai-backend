@@ -54,6 +54,7 @@ a {
 }
 
 .hero,
+.key-bootstrap-card,
 .live-strip,
 .profile-strip,
 .primary-strip,
@@ -68,6 +69,23 @@ a {
 .hero-nav {
   display: grid;
   gap: 16px;
+}
+
+.key-bootstrap-card,
+.profile-mode-card,
+.profile-status-card,
+.profile-warning,
+.live-chip,
+.primary-chip,
+.mode-chip,
+.metric-box,
+.signal-card,
+.readout-box,
+.mobile-action {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
 }
 
 .hero {
@@ -102,6 +120,79 @@ a {
   max-width: 760px;
   font-size: 16px;
   line-height: 1.7;
+}
+
+.key-bootstrap-card {
+  padding: 18px 18px 20px;
+  margin-bottom: 20px;
+}
+
+.key-bootstrap-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.key-bootstrap-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.key-bootstrap-grid small,
+.key-bootstrap-result {
+  color: var(--muted);
+}
+
+.key-bootstrap-grid input,
+.key-bootstrap-grid select {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+  color: var(--text);
+}
+
+.key-bootstrap-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.key-bootstrap-actions button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-alt);
+  color: var(--text);
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.key-bootstrap-actions .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.key-bootstrap-status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.key-bootstrap-result {
+  margin: 14px 0 0;
+  padding: 14px;
+  min-height: 100px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .hero-nav {

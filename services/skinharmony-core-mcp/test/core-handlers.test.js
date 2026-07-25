@@ -231,6 +231,44 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   assert.equal(JSON.parse(calls.at(-1).init.body).data.tenant_id, undefined);
 });
 
+test("admin key tools use the admin channel and support one-time bootstrap flows", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreAdminKey: "core-admin-key",
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      const pathname = new URL(url).pathname;
+      const payload =
+        pathname === "/v1/keys/presets" ? { ok: true, presets: ["connector"] } :
+        pathname === "/v1/keys/generate" ? { ok: true, api_key: "sk-test-1", key: { key_id: "key-1" } } :
+        pathname === "/v1/setup-token/create" ? { ok: true, setup_token: "setup-token-1", token: { token_id: "tok-1" } } :
+        pathname === "/v1/setup-token/consume" ? { ok: true, api_key: "sk-test-2", key: { key_id: "key-2" }, profile: { tenant_id: "tenant-a" } } :
+        { ok: true };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = { tenantId: "tenant-a" };
+
+  await handlers.core_key_presets({}, identity);
+  await handlers.core_key_generate({ label: "Nyra UI key" }, identity);
+  await handlers.core_setup_token_create({ tenant: { tenant_id: "tenant-a" }, label: "bootstrap" }, identity);
+  await handlers.core_setup_token_consume({ setup_token: "setup-token-1", actor_id: "owner" }, identity);
+
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
+    "/v1/keys/presets",
+    "/v1/keys/generate",
+    "/v1/setup-token/create",
+    "/v1/setup-token/consume",
+  ]);
+  assert(calls.every((call) => call.init.headers.authorization === "Bearer core-admin-key"));
+  assert.equal(JSON.parse(calls[1].init.body).tenant_id, "tenant-a");
+  assert.equal(JSON.parse(calls[2].init.body).tenant_id, "tenant-a");
+  assert.equal(JSON.parse(calls[3].init.body).setup_token, "setup-token-1");
+});
+
 test("write guard fails closed on hard blocks and allows controlled writes", async () => {
   const calls = [];
   const replies = [

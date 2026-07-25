@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
@@ -1705,26 +1706,110 @@ async function fetchJson(url, options = {}) {
   return text ? JSON.parse(text) : {};
 }
 
+function readEnvKeyValue(filePath, key) {
+  if (!filePath) return "";
+  try {
+    if (!fs.existsSync(filePath)) return "";
+    const content = fs.readFileSync(filePath, "utf8");
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const normalized = trimmed.startsWith("export ") ? trimmed.slice(7) : trimmed;
+      const index = normalized.indexOf("=");
+      if (index === -1) continue;
+      const name = normalized.slice(0, index).trim();
+      if (name === key) return normalized.slice(index + 1).trim();
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function expandHome(filePath) {
+  const value = String(filePath || "").trim();
+  if (!value) return "";
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+function readPersistedNyraCoreFile() {
+  const candidates = [
+    process.env.NYRA_CORE_KEY_FILE,
+    process.env.UNIVERSAL_CORE_KEY_FILE,
+    path.join(os.homedir(), ".config", "skinharmony", "nyra-core.env"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const apiKey = readEnvKeyValue(candidate, "UNIVERSAL_CORE_KEY") || readEnvKeyValue(candidate, "NYRA_CORE_KEY");
+    const tenantId = readEnvKeyValue(candidate, "UNIVERSAL_CORE_TENANT_ID") || readEnvKeyValue(candidate, "NYRA_CORE_TENANT_ID");
+    const url = readEnvKeyValue(candidate, "UNIVERSAL_CORE_URL") || readEnvKeyValue(candidate, "NYRA_CORE_URL");
+    if (apiKey || tenantId || url) {
+      return { apiKey, tenantId, baseUrl: url };
+    }
+  }
+  return { apiKey: "", tenantId: "", baseUrl: "" };
+}
+
+function readPersistedNyraCoreAdminFile() {
+  const candidates = [
+    process.env.NYRA_CORE_ADMIN_KEY_FILE,
+    process.env.UNIVERSAL_CORE_ADMIN_KEY_FILE,
+    path.join(os.homedir(), ".config", "skinharmony", "nyra-core-admin.env"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const apiKey = readEnvKeyValue(candidate, "CORE_SERVICE_ADMIN_KEY") || readEnvKeyValue(candidate, "UNIVERSAL_CORE_ADMIN_KEY");
+    const baseUrl = readEnvKeyValue(candidate, "UNIVERSAL_CORE_URL") || readEnvKeyValue(candidate, "NYRA_CORE_URL");
+    if (apiKey || baseUrl) {
+      return { apiKey, baseUrl, filePath: candidate };
+    }
+  }
+  return { apiKey: "", baseUrl: "", filePath: candidates[0] || "" };
+}
+
 function nyraCoreConfig() {
-  const baseUrl = String(process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || "")
+  const persisted = readPersistedNyraCoreFile();
+  const baseUrl = String(process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || persisted.baseUrl || "")
     .trim()
     .replace(/\/+$/, "");
   return {
     baseUrl,
-    apiKey: String(process.env.NYRA_CORE_KEY || process.env.UNIVERSAL_CORE_KEY || "").trim(),
-    tenantId: String(process.env.NYRA_CORE_TENANT_ID || process.env.UNIVERSAL_CORE_TENANT_ID || "").trim(),
+    apiKey: String(process.env.NYRA_CORE_KEY || process.env.UNIVERSAL_CORE_KEY || persisted.apiKey || "").trim(),
+    tenantId: String(process.env.NYRA_CORE_TENANT_ID || process.env.UNIVERSAL_CORE_TENANT_ID || persisted.tenantId || "").trim(),
+  };
+}
+
+function nyraCoreAdminConfig() {
+  const persisted = readPersistedNyraCoreAdminFile();
+  return {
+    apiKey: String(process.env.NYRA_CORE_ADMIN_KEY || process.env.UNIVERSAL_CORE_ADMIN_KEY || process.env.CORE_SERVICE_ADMIN_KEY || persisted.apiKey || "").trim(),
+    baseUrl: String(process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || persisted.baseUrl || "").trim().replace(/\/+$/, ""),
+    filePath: persisted.filePath || "",
   };
 }
 
 function nyraSuiteCoreConfig() {
-  const baseUrl = String(process.env.NYRA_SUITE_CORE_URL || process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || "")
+  const persisted = readPersistedNyraCoreFile();
+  const baseUrl = String(process.env.NYRA_SUITE_CORE_URL || process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || persisted.baseUrl || "")
     .trim()
     .replace(/\/+$/, "");
   return {
     baseUrl,
-    apiKey: String(process.env.NYRA_SUITE_CORE_KEY || "").trim(),
-    tenantId: String(process.env.NYRA_SUITE_CORE_TENANT_ID || "skinharmony-suite").trim(),
+    apiKey: String(process.env.NYRA_SUITE_CORE_KEY || persisted.apiKey || "").trim(),
+    tenantId: String(process.env.NYRA_SUITE_CORE_TENANT_ID || persisted.tenantId || "skinharmony-suite").trim(),
   };
+}
+
+function writeEnvFile(filePath, entries = {}) {
+  const target = path.resolve(expandHome(filePath));
+  if (!target) throw new Error("file_path_required");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const content = Object.entries(entries)
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim())
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join("\n");
+  fs.writeFileSync(target, `${content}${content ? "\n" : ""}`, "utf8");
+  return target;
 }
 
 async function requestNyraCore(pathname, options = {}) {
@@ -4420,6 +4505,123 @@ app.get("/api/nyra/core/status", async (_req, res) => {
     },
     checked_at: new Date().toISOString(),
   });
+});
+
+app.get("/api/nyra/core/key-bootstrap/status", (_req, res) => {
+  const config = nyraCoreConfig();
+  const admin = nyraCoreAdminConfig();
+  res.json({
+    ok: true,
+    configured: Boolean(config.baseUrl && config.apiKey && config.tenantId),
+    admin_configured: Boolean(admin.apiKey),
+    tenant_id: config.tenantId || null,
+    core_url: config.baseUrl || admin.baseUrl || null,
+    persisted_core_key_file: process.env.NYRA_CORE_KEY_FILE || process.env.UNIVERSAL_CORE_KEY_FILE || path.join(os.homedir(), ".config", "skinharmony", "nyra-core.env"),
+    persisted_admin_key_file: process.env.NYRA_CORE_ADMIN_KEY_FILE || process.env.UNIVERSAL_CORE_ADMIN_KEY_FILE || path.join(os.homedir(), ".config", "skinharmony", "nyra-core-admin.env"),
+    reusable_key_loaded: Boolean(config.apiKey),
+  });
+});
+
+app.post("/api/nyra/core/key-bootstrap/admin", (req, res) => {
+  try {
+    const adminKey = String(req.body?.admin_key || req.body?.adminKey || "").trim();
+    const filePath = String(req.body?.file_path || req.body?.filePath || process.env.NYRA_CORE_ADMIN_KEY_FILE || process.env.UNIVERSAL_CORE_ADMIN_KEY_FILE || path.join(os.homedir(), ".config", "skinharmony", "nyra-core-admin.env")).trim();
+    if (!adminKey) return res.status(400).json({ ok: false, error: "admin_key_required" });
+    const savedPath = writeEnvFile(filePath, {
+      CORE_SERVICE_ADMIN_KEY: adminKey,
+      UNIVERSAL_CORE_ADMIN_KEY: adminKey,
+      UNIVERSAL_CORE_URL: process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || "",
+    });
+    process.env.CORE_SERVICE_ADMIN_KEY = adminKey;
+    process.env.UNIVERSAL_CORE_ADMIN_KEY = adminKey;
+    return res.status(201).json({
+      ok: true,
+      saved_path: savedPath,
+      persisted: true,
+      next_step: "Use the saved admin key to mint a reusable tenant key, then store that key in the core env file.",
+    });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message || "admin_key_save_failed" });
+  }
+});
+
+app.get("/api/nyra/core/key-presets", async (_req, res) => {
+  const config = nyraCoreConfig();
+  const admin = nyraCoreAdminConfig();
+  const baseUrl = String(config.baseUrl || admin.baseUrl || process.env.NYRA_CORE_URL || process.env.UNIVERSAL_CORE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) return res.status(503).json({ ok: false, error: "core_not_configured" });
+  try {
+    const response = await fetch(`${baseUrl}/v1/keys/presets`, {
+      headers: { Accept: "application/json" },
+    });
+    const text = await response.text();
+    let json = {};
+    try { json = text ? JSON.parse(text) : {}; } catch { json = { ok: false, raw: text.slice(0, 500) }; }
+    return res.status(response.ok ? 200 : response.status).json(json);
+  } catch (error) {
+    return res.status(503).json({ ok: false, error: error.message || "key_presets_unavailable" });
+  }
+});
+
+app.post("/api/nyra/core/key-generate", async (req, res) => {
+  try {
+    const admin = nyraCoreAdminConfig();
+    const config = nyraCoreConfig();
+    if (!config.baseUrl) return res.status(503).json({ ok: false, error: "core_not_configured" });
+    if (!admin.apiKey) return res.status(503).json({ ok: false, error: "admin_key_not_configured" });
+
+    const body = req.body || {};
+    const payload = {
+      tenant_id: String(body.tenant_id || body.tenantId || config.tenantId || "").trim(),
+      brand_scope: String(body.brand_scope || body.brandScope || body.tenant_id || body.tenantId || config.tenantId || "").trim(),
+      key_type: String(body.key_type || body.keyType || "connector").trim(),
+      preset: String(body.preset || "").trim() || null,
+      label: String(body.label || "Nyra Core connector").trim(),
+      tier: String(body.tier || body.suite_tier || "enterprise").trim(),
+      suite_tier: String(body.suite_tier || body.tier || "enterprise").trim(),
+      allowed_scopes: Array.isArray(body.allowed_scopes) ? body.allowed_scopes : undefined,
+      active_branches: Array.isArray(body.active_branches) ? body.active_branches : undefined,
+      suite_modules: Array.isArray(body.suite_modules) ? body.suite_modules : undefined,
+      suite_limits: body.suite_limits && typeof body.suite_limits === "object" ? body.suite_limits : undefined,
+      metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : undefined,
+      expires_at: body.expires_at || null,
+    };
+    const response = await fetch(`${config.baseUrl}/v1/keys/generate`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${admin.apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await response.text();
+    let json = {};
+    try { json = text ? JSON.parse(text) : {}; } catch { json = { ok: false, raw: text.slice(0, 500) }; }
+    if (!response.ok) return res.status(response.status).json(json);
+
+    const saveEnvFilePath = String(body.save_env_file || body.saveEnvFile || "").trim();
+    let savedEnvFile = "";
+    if (saveEnvFilePath && json.key) {
+      savedEnvFile = writeEnvFile(saveEnvFilePath, {
+        UNIVERSAL_CORE_URL: config.baseUrl,
+        UNIVERSAL_CORE_KEY: json.key,
+        UNIVERSAL_CORE_TENANT_ID: json.record?.tenant_id || payload.tenant_id,
+        UNIVERSAL_CORE_BRAND_SCOPE: json.record?.brand_scope || payload.brand_scope,
+        UNIVERSAL_CORE_KEY_ID: json.record?.key_id || "",
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      generated: json,
+      saved_env_file: savedEnvFile || null,
+      reusable: true,
+      note: "Key salvata solo nel percorso scelto e riusabile dal control center al prossimo avvio.",
+    });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message || "core_key_generation_failed" });
+  }
 });
 
 app.get("/api/nyra/suite/core/status", async (_req, res) => {

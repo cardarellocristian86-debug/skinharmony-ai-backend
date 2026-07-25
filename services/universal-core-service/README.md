@@ -59,6 +59,32 @@ Ruoli:
 - `POST /v1/intelligence/outcomes/verify`
 - `POST /v1/intelligence/outcomes/record`
 - `GET /v1/intelligence/calibration`
+- `GET /v1/runtime/hierarchy/status`
+- `POST /v1/runtime/hierarchy/evaluate`
+- `GET /v1/runtime/utilization`
+- `POST /v1/runtime/capabilities/consume`
+
+## Core operativo Nyra: V0/V1/V2/V7
+
+Ogni richiesta all'AI Gateway attraversa la gerarchia governata: V7 sceglie il
+percorso, V1 produce il digest canonico, V2 calcola tramite worker Rust
+persistente e V0 resta l'autorita di fallback. In modalita `active`, V2 puo
+diventare autorita soltanto nel canary deterministico configurato e soltanto con
+parita esatta; ogni divergenza torna fail-closed a V0.
+
+La risposta include `core_operational` con:
+
+- Decision Envelope firmabile e legata a tenant, richiesta e decisione;
+- capability di esecuzione firmata, a scadenza, action-bound e single-use;
+- telemetria tenant-scoped e Core Utilization Score;
+- collegamento degli esiti verificati alla decisione originaria.
+
+Configurazione Render:
+
+- `CORE_RUNTIME_V2_MODE=active` abilita il percorso governato;
+- `CORE_RUNTIME_V2_CANARY_PERCENT=5` limita inizialmente V2 al 5%;
+- `CORE_CAPABILITY_SIGNING_SECRET` firma envelope e capability e deve essere
+  impostato come secret Render. Senza secret le capability falliscono chiuse.
 
 ## Intelligence Contract v1
 

@@ -97,8 +97,10 @@ const NYRA_BRANCHES = Object.freeze([
   ], ["smartdesk"], { workPhase: "domain", coreBranchBindings: ["smartdesk_operations_guard"] }),
   branch("analyzer_domain", "Analyzer Product Pack", ["analyzer", "analisi", "protocollo", "cosmet", "beauty"], [
     "analyzer_interpretation", "protocol_advisory", "cosmetic_claims", "evidence_quality", "result_explanation",
-    "value_chain_review", "pricing_guard", "subject_isolation",
-  ], ["analyzer"], { workPhase: "domain", coreBranchBindings: ["skinharmony_analyzer", "beauty_protocol_guard"] }),
+    "value_chain_review", "pricing_guard", "subject_isolation", "acquisition_quality", "capture_provenance",
+    "uncertainty_abstention", "longitudinal_comparability", "scalp_zone_analysis", "reported_warning_stop",
+    "fairness_audit", "verified_outcome_learning", "human_review_release",
+  ], ["analyzer"], { workPhase: "domain", coreBranchBindings: ["skinharmony_analyzer", "scalp_analyzer", "beauty_protocol_guard"] }),
 ]);
 
 function normalizeList(value, max = 50) {

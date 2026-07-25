@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 function usage() {
   console.log(`Usage:
   node services/universal-core-service/tools/core-service-client.js presets --url http://127.0.0.1:8787
   node services/universal-core-service/tools/core-service-client.js generate-key --url http://127.0.0.1:8787 --admin-key <admin> --tenant <tenant> --brand <brand> --preset suite_connector|smartdesk_connector|wordpress_connector|codex_automation|readonly_monitor
+  node services/universal-core-service/tools/core-service-client.js generate-key --save-env-file ~/.config/skinharmony/nyra-core.env ...
   node services/universal-core-service/tools/core-service-client.js verify-key --url http://127.0.0.1:8787 --key <core-key>
   node services/universal-core-service/tools/core-service-client.js decision --url http://127.0.0.1:8787 --key <core-key> --tenant <tenant>
 `);
@@ -38,6 +40,34 @@ function writeReport(name, payload) {
   const fullPayload = { generated_at: new Date().toISOString(), ...payload };
   fs.writeFileSync(path.join(reportDir, `${name}_latest.json`), JSON.stringify(fullPayload, null, 2), "utf8");
   return fullPayload;
+}
+
+function envBlock(json, url) {
+  const record = json.record || {};
+  return [
+    `UNIVERSAL_CORE_URL=${url.replace(/\/$/, "")}`,
+    `UNIVERSAL_CORE_KEY=${json.key}`,
+    `UNIVERSAL_CORE_TENANT_ID=${record.tenant_id || ""}`,
+    `UNIVERSAL_CORE_BRAND_SCOPE=${record.brand_scope || ""}`,
+    `UNIVERSAL_CORE_KEY_ID=${record.key_id || ""}`,
+    "",
+  ].join("\n");
+}
+
+function expandHome(filePath) {
+  const value = String(filePath || "").trim();
+  if (!value) return "";
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+
+function saveEnvFile(targetPath, json, url) {
+  const filePath = path.resolve(expandHome(targetPath));
+  if (!filePath) throw new Error("save-env-file is required");
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, envBlock(json, url), "utf8");
+  return filePath;
 }
 
 function printEnvBlock(json, url) {
@@ -77,6 +107,7 @@ try {
     const preset = arg("preset", "");
     const label = arg("label", type === "automation" ? "Codex automation key" : "Core connector key");
     const expiresAt = arg("expires-at", "");
+    const saveEnvFilePath = arg("save-env-file");
     if (!adminKey || !tenant) throw new Error("admin-key and tenant are required");
 
     const payload = {
@@ -100,6 +131,10 @@ try {
       allowed_scopes: json.record?.allowed_scopes || [],
       note: "La key in chiaro non viene salvata nel report. Copiarla solo da stdout/ambiente sicuro.",
     });
+    if (saveEnvFilePath) {
+      const savedPath = saveEnvFile(saveEnvFilePath, json, url);
+      console.log(`saved_env_file=${savedPath}`);
+    }
     console.log(JSON.stringify(json, null, 2));
     console.log(printEnvBlock(json, url));
     process.exit(0);

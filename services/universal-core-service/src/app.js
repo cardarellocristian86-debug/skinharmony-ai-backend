@@ -3255,12 +3255,29 @@ export function createUniversalCoreService(options = {}) {
       runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode, { dttStatus: dttRuntime.status(req.tenantId) }),
     });
   });
+  app.get("/api/universal-core/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode, { dttStatus: dttRuntime.status(req.tenantId) }),
+    });
+  });
 
   app.get("/v1/runtime/utilization", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, ...coreOperationalRuntime.status(req.tenantId) });
   });
 
   app.get("/v1/runtime/dtt/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      dtt: {
+        ...dttRuntime.status(req.tenantId),
+        core_runtime_mode: coreRuntimeMode,
+      },
+    });
+  });
+  app.get("/api/universal-core/dtt/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -3657,6 +3674,10 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/research/status", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const status = researchRuntime.status(req.tenantId);
+    return res.json({ ok: true, tenant_id: req.tenantId, status });
+  });
+  app.get("/api/universal-core/research/status", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
     const status = researchRuntime.status(req.tenantId);
     return res.json({ ok: true, tenant_id: req.tenantId, status });
   });

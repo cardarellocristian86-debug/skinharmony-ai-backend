@@ -13,6 +13,7 @@ import { branchEmailRecallGuard } from "./branch-email-recall-guard.js";
 import { branchContentLocalizationGuard } from "./branch-content-localization-guard.js";
 import { branchCosmeticChemistry } from "./branch-cosmetic-chemistry.js";
 import { branchSkinHarmonyAnalyzer } from "./branch-skinharmony-analyzer.js";
+import { branchScalpAnalyzer } from "./branch-scalp-analyzer.js";
 import { branchTechnologyMarket } from "./branch-technology-market.js";
 import { branchBusinessStrategy } from "./branch-business-strategy.js";
 import { branchTranslationGovernance } from "./branch-translation-governance.js";
@@ -83,6 +84,7 @@ const BRANCHES = [
   branchContentLocalizationGuard,
   branchCosmeticChemistry,
   branchSkinHarmonyAnalyzer,
+  branchScalpAnalyzer,
   branchTechnologyMarket,
   branchBusinessStrategy,
   branchTranslationGovernance,
@@ -176,6 +178,7 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
   "translator_marketing_governance",
   "cosmetic_chemistry",
   "skinharmony_analyzer",
+  "scalp_analyzer",
   "technology_market",
   "beauty_market",
 ];
@@ -235,6 +238,7 @@ const LEARNING_CORTEX_BRANCHES = [
 const BEAUTY_CORTEX_BRANCHES = [
   "beauty_vertical_orchestration",
   "skinharmony_analyzer",
+  "scalp_analyzer",
   "beauty_protocol_guard",
   "beauty_market",
   "cosmetic_chemistry",

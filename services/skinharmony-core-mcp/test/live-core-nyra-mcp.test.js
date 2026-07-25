@@ -219,11 +219,11 @@ test("real local MCP covers Core V2, Nyra memory and branches, software jobs, an
       { key: "spots_pigmentation_signals", score: 94 },
       { key: "pores_texture", score: 30 },
     ], data_quality_score: 88 } });
-    assert.equal(skin.body.result.structuredContent.branch_output.branch, "skinharmony_skin_ensemble_v1");
+    assert.equal(skin.body.result.structuredContent.branch_output.branch, "skinharmony_skin_ensemble_v2");
     assert.equal(skin.body.result.structuredContent.guardrail.execution_allowed, false);
 
     const scalp = await callA("tools/call", { name: "scalp_analyzer", arguments: { overall: { density_index: 62, miniaturization_index: 28, redness_percent: 14, confidence: 0.88 }, locale: "it" } });
-    assert.equal(scalp.body.result.structuredContent.schema_version, "scalp_analyzer_interpretation_v1");
+    assert.equal(scalp.body.result.structuredContent.schema_version, "scalp_analyzer_interpretation_v2");
     assert.equal(scalp.body.result.structuredContent.governance.diagnosis_allowed, false);
     assert(scalp.body.result.structuredContent.work_preflight.preflight_id);
 

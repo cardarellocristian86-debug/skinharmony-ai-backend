@@ -25,6 +25,61 @@
         </nav>
       </header>
 
+      <section class="key-bootstrap-card">
+        <div class="section-title">Nyra Core key bootstrap</div>
+        <div class="section-note">Salva una sola volta l'admin key in locale, poi genera e riusa la key tenant-scoped dal file persistito.</div>
+        <div class="key-bootstrap-grid">
+          <label>
+            <small>Admin key</small>
+            <input id="coreAdminKeyInput" type="password" placeholder="CORE_SERVICE_ADMIN_KEY" autocomplete="off" />
+          </label>
+          <label>
+            <small>Admin key file</small>
+            <input id="coreAdminFileInput" type="text" value="~/.config/skinharmony/nyra-core-admin.env" />
+          </label>
+          <label>
+            <small>Tenant</small>
+            <input id="coreTenantInput" type="text" value="codexai" />
+          </label>
+          <label>
+            <small>Brand scope</small>
+            <input id="coreBrandInput" type="text" value="codexai" />
+          </label>
+          <label>
+            <small>Preset</small>
+            <select id="corePresetSelect"></select>
+          </label>
+          <label>
+            <small>Reusable key file</small>
+            <input id="coreEnvFileInput" type="text" value="~/.config/skinharmony/nyra-core.env" />
+          </label>
+        </div>
+        <div class="key-bootstrap-actions">
+          <button type="button" id="coreBootstrapSaveAdminBtn">Salva admin key</button>
+          <button type="button" id="coreBootstrapGenerateBtn" class="primary">Genera key riusabile</button>
+          <button type="button" id="coreBootstrapRefreshBtn">Aggiorna stato</button>
+        </div>
+        <div class="key-bootstrap-status">
+          <div class="live-chip">
+            <small>Config core</small>
+            <strong id="coreBootstrapConfigured">-</strong>
+          </div>
+          <div class="live-chip">
+            <small>Admin key</small>
+            <strong id="coreBootstrapAdminConfigured">-</strong>
+          </div>
+          <div class="live-chip">
+            <small>Tenant</small>
+            <strong id="coreBootstrapTenant">-</strong>
+          </div>
+          <div class="live-chip">
+            <small>File chiave</small>
+            <strong id="coreBootstrapKeyFile">-</strong>
+          </div>
+        </div>
+        <pre id="coreBootstrapResult" class="key-bootstrap-result">Nessuna operazione ancora eseguita.</pre>
+      </section>
+
       <section class="live-strip">
         <div class="live-chip">
           <small>Monitor live</small>

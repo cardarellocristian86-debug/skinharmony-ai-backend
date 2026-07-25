@@ -40,6 +40,7 @@ export function loadConfig(env = process.env) {
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
+  const universalCoreAdminKey = String(env.UNIVERSAL_CORE_ADMIN_KEY || env.CORE_SERVICE_ADMIN_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
@@ -77,6 +78,7 @@ export function loadConfig(env = process.env) {
     supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern"),
     universalCoreUrl,
     universalCoreKey,
+    universalCoreAdminKey,
     universalCoreKeys,
     defaultTenantId,
     tenantClaim,

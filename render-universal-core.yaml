@@ -15,6 +15,12 @@ services:
         sync: false
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
+      - key: CORE_RUNTIME_V2_MODE
+        value: active
+      - key: CORE_RUNTIME_V2_CANARY_PERCENT
+        value: 5
+      - key: CORE_CAPABILITY_SIGNING_SECRET
+        sync: false
     disk:
       name: universal-core-service-data
       mountPath: /var/data
