@@ -2802,7 +2802,7 @@ class DesktopMirrorService {
   }
 
   bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
-    if (this.getPlanLevel(session) !== "gold") return null;
+    if (!this.hasGoldIntelligence(session)) return null;
     const centerId = this.getCenterId(session);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -2989,7 +2989,7 @@ class DesktopMirrorService {
     const user = this.findUserForGoldStateRebuild(payload);
     assertValid(Boolean(user), "Tenant Gold non trovato per rebuild");
     const normalized = this.normalizeUserAccount(user);
-    assertValid(String(normalized.subscriptionPlan || "").toLowerCase() === "gold", "Il rebuild Gold State è disponibile solo per tenant Gold");
+    assertValid(["gold", "enterprise"].includes(String(normalized.subscriptionPlan || "").toLowerCase()), "Il rebuild Gold State è disponibile solo per tenant Gold/Enterprise");
     const targetSession = this.buildGoldStateRebuildSession(normalized);
     const centerId = this.getCenterId(targetSession);
     const recordId = this.getGoldStateRecordId(centerId);
@@ -3072,7 +3072,7 @@ class DesktopMirrorService {
 
   rebuildGoldStateForCurrentGoldTenant(session = null, options = {}) {
     this.assertCanOperate(session);
-    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
     const centerId = this.getCenterId(session);
     const recordId = this.getGoldStateRecordId(centerId);
     const startedAt = nowIso();
@@ -3142,19 +3142,19 @@ class DesktopMirrorService {
 
   analyzeGoldOnboardingImport(payload = {}, session = null) {
     this.assertCanOperate(session);
-    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
     return this.getGoldOnboardingEngine().analyze(payload, session);
   }
 
   async confirmGoldOnboardingImport(payload = {}, session = null) {
     this.assertCanOperate(session);
-    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
     return this.getGoldOnboardingEngine().confirm(payload, session);
   }
 
   listGoldOnboardingImports(session = null) {
     this.assertCanOperate(session);
-    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
+    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
     return this.getGoldOnboardingEngine().list(session);
   }
 
@@ -3195,7 +3195,7 @@ class DesktopMirrorService {
     const centerId = this.getCenterId(session);
     const plan = this.getPlanLevel(session);
     const rawContext = this.getProgressiveIntelligenceRawContext(session);
-    const goldState = plan === "gold" ? this.getGoldState(session) : null;
+    const goldState = this.hasGoldIntelligence(session) ? this.getGoldState(session) : null;
     const status = this.progressiveIntelligenceLayer.compute({
       centerId,
       plan,
@@ -3215,7 +3215,7 @@ class DesktopMirrorService {
       rawCounts: rawContext.rawCounts,
       goldStateEventSeq: Number(goldState?.eventSeq || 0)
     };
-    if (plan === "gold") {
+    if (this.hasGoldIntelligence(session)) {
       result.pialDataQualityComparison = this.buildPialDataQualityComparison(goldState?.dataQualityParallel || null);
     }
     return result;
@@ -3238,7 +3238,7 @@ class DesktopMirrorService {
       recomputeReason: options.reason || "manual_or_structural_trigger",
       persistedAt: nowIso()
     };
-    if (String(status.currentPlan || "").toLowerCase() === "gold") {
+    if (["gold", "enterprise"].includes(String(status.currentPlan || "").toLowerCase())) {
       this.saveSettings({ progressiveIntelligenceStatus: next }, session);
     }
     console.log("[progressive_intelligence_recompute]", JSON.stringify({
@@ -3255,7 +3255,7 @@ class DesktopMirrorService {
   getProgressiveIntelligenceStatus(session = null, options = {}) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
-    if (plan !== "gold") return this.computeProgressiveIntelligenceStatus(session);
+    if (!this.hasGoldIntelligence(session)) return this.computeProgressiveIntelligenceStatus(session);
     const goldState = this.getGoldState(session);
     const cached = this.getSettings(session).progressiveIntelligenceStatus || null;
     if (!options.force && this.shouldUseCachedProgressiveIntelligence(cached, goldState)) {
@@ -3281,7 +3281,7 @@ class DesktopMirrorService {
     const user = this.findUserForGoldStateRebuild(payload);
     assertValid(Boolean(user), "Tenant Gold non trovato per recompute PIAL");
     const normalized = this.normalizeUserAccount(user);
-    assertValid(String(normalized.subscriptionPlan || "").toLowerCase() === "gold", "PIAL è disponibile solo per tenant Gold");
+    assertValid(["gold", "enterprise"].includes(String(normalized.subscriptionPlan || "").toLowerCase()), "PIAL è disponibile solo per tenant Gold/Enterprise");
     const targetSession = this.buildGoldStateRebuildSession(normalized);
     return this.recomputeProgressiveIntelligenceStatus(targetSession, {
       reason: payload.reason || "admin_recompute"
@@ -3341,7 +3341,7 @@ class DesktopMirrorService {
   }
 
   getValidGoldStateSnapshot(snapshotKey = "", session = null) {
-    if (this.getPlanLevel(session) !== "gold") {
+    if (!this.hasGoldIntelligence(session)) {
       return { valid: false, reason: "not_gold" };
     }
     const state = this.getGoldState(session);
@@ -5700,7 +5700,7 @@ class DesktopMirrorService {
   }
 
   applyGoldStateEvent(eventType, payload = {}, session = null) {
-    if (this.getPlanLevel(session) !== "gold") return null;
+    if (!this.hasGoldIntelligence(session)) return null;
     const centerId = this.getCenterId(session);
     const recordId = this.getGoldStateRecordId(centerId);
     const existing = this.goldStateRepository.findById(recordId) || this.buildDefaultGoldState(centerId, this.getCenterName(session));
@@ -5833,13 +5833,13 @@ class DesktopMirrorService {
   hasProtocolAiAccess(session = null) {
     if (this.isSuperAdminSession(session)) return true;
     const plan = this.getPlanLevel(session);
-    return plan === "silver" || plan === "gold";
+    return plan === "silver" || plan === "gold" || plan === "enterprise";
   }
 
   getProtocolAiLimit(session = null) {
     if (this.isSuperAdminSession(session)) return 300;
     const plan = this.getPlanLevel(session);
-    if (plan === "gold") return 300;
+    if (plan === "gold" || plan === "enterprise") return 300;
     if (plan === "silver") return 7;
     return 0;
   }
@@ -7985,7 +7985,7 @@ class DesktopMirrorService {
     if (usedCount >= protocolLimit) {
       return {
         protocolAiEnabled: false,
-        goldEnabled: currentPlan === "gold",
+        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8050,7 +8050,7 @@ class DesktopMirrorService {
     if (preflightErrors.length) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: currentPlan === "gold",
+        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8120,7 +8120,7 @@ class DesktopMirrorService {
     if (protocolMode === "center" && !centerProtocol) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: currentPlan === "gold",
+        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8132,7 +8132,7 @@ class DesktopMirrorService {
     if (protocolMode === "skinharmony" && !skinHarmonyProtocol && !canUseRemoteProtocolLibrary) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: currentPlan === "gold",
+        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8144,7 +8144,7 @@ class DesktopMirrorService {
     if (protocolMode === "hybrid" && !centerProtocol && !skinHarmonyProtocol && !canUseRemoteProtocolLibrary) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: currentPlan === "gold",
+        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8404,7 +8404,7 @@ class DesktopMirrorService {
     };
     return {
       protocolAiEnabled: true,
-      goldEnabled: currentPlan === "gold",
+      goldEnabled: ["gold", "enterprise"].includes(currentPlan),
       currentPlan,
       protocolLimit,
       usedCount,
@@ -8622,7 +8622,7 @@ class DesktopMirrorService {
   getSeededGoldDemoDataQuality(session = null) {
     const centerId = this.getCenterId(session);
     if (String(centerId || "") !== "center_demo_gold_cockpit") return null;
-    if (this.getPlanLevel(session) !== "gold") return null;
+    if (!this.hasGoldIntelligence(session)) return null;
     const recordId = this.getGoldStateRecordId(centerId);
     const state = this.goldStateRepository.findById(recordId);
     const business = state?.snapshots?.business || {};
@@ -9421,7 +9421,7 @@ class DesktopMirrorService {
 
   computeDashboardStats(options = {}, session = null) {
     const plan = this.getPlanLevel(session);
-    const goldEnabled = plan === "gold";
+    const goldEnabled = plan === "gold" || plan === "enterprise";
     const mode = String(options.period || "day");
     const anchorDate = toDateOnly(options.anchorDate || nowIso());
     let startDate = anchorDate;
@@ -12057,7 +12057,7 @@ class DesktopMirrorService {
       ? (progressive?.blockedFeatures || []).find((item) => item.key === requiredFeature)
       : null;
     const reasons = [];
-    if (plan !== "gold") reasons.push("Piano non Gold");
+    if (!["gold", "enterprise"].includes(plan)) reasons.push("Piano non Gold");
     if (!["ACT_NOW", "SUGGEST"].includes(action)) reasons.push("Azione non eseguibile dal motore Gold");
     if (blocked) reasons.push("Azione bloccata dal Gold Engine");
     if (confidence < 0.5) reasons.push("Fiducia sotto soglia");
@@ -13236,7 +13236,7 @@ class DesktopMirrorService {
   getBusinessSnapshot(options = {}, session = null) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
-    if (plan !== "gold") {
+    if (!["gold", "enterprise"].includes(plan)) {
       return {
         snapshotAvailable: false,
         requiredPlan: "gold",
@@ -13968,14 +13968,14 @@ class DesktopMirrorService {
         sections: []
       };
     }
-    if (this.getPlanLevel(session) === "gold" && options.forceRefresh) {
+    if (this.hasGoldIntelligence(session) && options.forceRefresh) {
       try {
         this.rebuildGoldStateForCurrentGoldTenant(session, { reason: "api_force_refresh" });
       } catch (error) {
         console.warn("[gold_state_force_refresh_error]", error?.message || error);
       }
     }
-    if (this.getPlanLevel(session) === "gold") {
+    if (this.hasGoldIntelligence(session)) {
       try {
         const stateDecisionCenter = this.buildDecisionCenterFromGoldState(options, session);
         if (stateDecisionCenter) {

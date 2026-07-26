@@ -11,7 +11,7 @@ function moneyInput({ id, label, value, help }) {
 
 function renderGoldCostMinutePanel({ state, overview, currentPlanId, currentLanguage, euroFromCents, escapeHtml }) {
   const plan = String(currentPlanId?.() || "").toLowerCase();
-  if (plan !== "gold") return "";
+  if (plan !== "gold" && plan !== "enterprise") return "";
 
   const existingProfile = overview?.operatingCostMinuteProfile || {};
   const profile = state.center?.goldFixedCostProfile || existingProfile.fixedCostProfile || state.goldCostMinuteProfile || {};
@@ -57,7 +57,7 @@ function renderGoldCostMinutePanel({ state, overview, currentPlanId, currentLang
     <section class="card gold-cost-minute-panel">
       <div class="row between mb-16">
         <div>
-          <div class="section-title">${isEn ? "Gold center cost per minute" : "Costo minuto centro Gold"}</div>
+          <div class="section-title">${isEn ? "Gold / Enterprise center cost per minute" : "Costo minuto centro Gold / Enterprise"}</div>
           <div class="page-subtitle">${isEn ? "Uses existing staff, technology and inventory costs first. Add only missing general fixed costs here." : "Usa prima costi esistenti di operatori, tecnologie e magazzino. Qui aggiungi solo costi fissi generali mancanti."}</div>
         </div>
         <div class="module-pill active">${coverage}% ${isEn ? "complete" : "completo"}</div>
