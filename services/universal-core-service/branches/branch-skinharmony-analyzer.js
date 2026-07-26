@@ -20,6 +20,10 @@ export const branchSkinHarmonyAnalyzer = {
     "post_treatment_timing_guard",
     "acquisition_quality_gate", "capture_modality_provenance", "longitudinal_comparability", "uncertainty_abstention",
     "skin_tone_fairness_audit", "confounder_artifact_guard", "verified_outcome_learning", "human_review_release",
+    "capture_device_identity", "illumination_modality_control", "focus_distance_repeatability",
+    "region_of_interest_alignment", "score_calibration_provenance", "porphyrin_context",
+    "confounder_recent_treatment", "confounder_cosmetic_layer", "tone_group_performance_audit",
+    "human_reviewer_agreement", "device_model_drift", "cross_center_generalization_guard",
   ],
   rules: [
     "Leggere i punteggi come insieme: dominante, secondari, segnali protettivi e relazioni.",

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { buildCoreResearchDirective } from "./coreResearchDirective.js";
 
 const PREFLIGHT_VERSION = "skinharmony_work_preflight_v1";
 
@@ -161,7 +162,7 @@ function toolRoute(text, capabilities = [], toolName = "") {
   };
 }
 
-function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired, executionAllowedByPreflight }) {
+function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired, executionAllowedByPreflight, researchDirective }) {
   const memoryReady = Boolean(memoryContext);
   return {
     schema_version: "nyra_core_task_graph_v1",
@@ -190,8 +191,10 @@ function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired,
         branches: ["research_evidence", "planning_prioritization"],
         dependencies: ["interpret_request"],
         parallel_lane: 1,
-        status: "pending_core_route",
-        acceptance: "Piano, dipendenze, fonti, strumenti e criteri di successo sono verificabili.",
+        status: researchDirective ? "core_directive_issued_waiting_execution_authorization" : "not_required_by_core_evidence_gate",
+        acceptance: researchDirective
+          ? "La ricerca segue la direttiva tenant-scoped e resta non eseguibile fino a separata autorizzazione Core."
+          : "Core non ha rilevato un gap che richieda ricerca.",
       },
       {
         id: "risk_and_tool_route",
@@ -247,6 +250,8 @@ export function buildWorkPreflight({
   nyraNetwork,
   domainPack,
   ownerConfirmed = false,
+  evidenceState = {},
+  researchAllowedDomains = [],
 } = {}) {
   const normalizedRequest = cleanText(requestText, 20_000);
   if (!normalizedRequest) throw new Error("work_preflight_request_required");
@@ -258,6 +263,14 @@ export function buildWorkPreflight({
   const operationKey = cleanText(toolName || operationType, 100).toLowerCase();
   const readOnlyOperation = READ_ONLY_OPERATIONS.has(operationKey);
   const executionAllowedByPreflight = memoryReady && readOnlyOperation;
+  const coreResearch = buildCoreResearchDirective({
+    tenantId,
+    requestText: normalizedRequest,
+    operationType,
+    evidenceState,
+    selectedBranches: branchContext?.selected_branches || [],
+    allowedDomains: researchAllowedDomains,
+  });
 
   return {
     schema_version: PREFLIGHT_VERSION,
@@ -308,7 +321,14 @@ export function buildWorkPreflight({
       selected_groups: branchContext?.selected_groups || [],
       final_router: "universal_core",
     },
-    task_graph: buildTaskGraph({ memoryContext, toolRouting: routing, ownerConfirmationRequired, executionAllowedByPreflight }),
+    task_graph: buildTaskGraph({
+      memoryContext,
+      toolRouting: routing,
+      ownerConfirmationRequired,
+      executionAllowedByPreflight,
+      researchDirective: coreResearch.directive,
+    }),
+    core_research: coreResearch,
     tool_routing: routing,
     governance: {
       core_verdict_required_before_execution: !readOnlyOperation,

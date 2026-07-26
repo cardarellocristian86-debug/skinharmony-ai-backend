@@ -273,6 +273,7 @@ try {
 
   const horizontalInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Ricerca fonti, pianifica priorita, coordina il lavoro in parallelo, testa qualita, impara dal feedback e prepara un piano di deploy con privacy su Render",
+    core_runtime: { selected_authority: "NYRA", router: { route: "NYRA" }, execution_allowed: true },
     nyra_branches: ["execution_planning", "suite_domain", "smartdesk_domain", "analyzer_domain", "unknown_branch"],
     memory_context: {
       schema_version: "tenant_memory_context_v1",
@@ -302,6 +303,10 @@ try {
   assert(horizontalInterpretation.json.result.deep_nyra_runtime?.core_final_authority === true, "deep Nyra runtime bypassed Core authority");
   assert(horizontalInterpretation.json.result.deep_nyra_runtime?.memory?.backend === "tenant_memory_fabric_postgresql", "deep Nyra runtime did not use the cloud memory adapter");
   assert(horizontalInterpretation.json.result.deep_nyra_runtime?.execution_allowed === false, "deep Nyra runtime unexpectedly enabled execution");
+  assert(horizontalInterpretation.json.result.core_runtime?.router?.version === "universal_core_router_v7", "Nyra bridge did not enter through Core V7");
+  assert(["V0", "V1", "V2"].includes(horizontalInterpretation.json.result.core_runtime?.selected_authority), "Core did not select the Nyra runtime authority");
+  assert(horizontalInterpretation.json.result.core_runtime?.selected_authority !== "NYRA", "Nyra or caller overrode Core runtime authority");
+  assert(horizontalInterpretation.json.result.core_runtime?.execution_allowed === false, "Core runtime hierarchy unexpectedly authorized Nyra execution");
   assert(horizontalInterpretation.json.memory_context?.revision === 4, "Nyra did not receive tenant memory");
   assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_relevant_count === 1, "Core did not account for relevant tenant memory");
   assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_handoff_count === 1, "Core did not account for pending AI handoffs");

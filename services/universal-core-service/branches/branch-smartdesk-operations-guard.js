@@ -6,6 +6,18 @@ export const branchSmartDeskOperationsGuard = {
   domain: "smartdesk_operations",
   production_status: "advisory",
   description: "Governa agenda, clienti, cassa, turni, protocolli, marketing, differenza Silver/Gold e AI Gold dentro Smart Desk.",
+  subbranches: [
+    "appointment_capacity_model", "operator_shift_balance", "service_duration_variance",
+    "no_show_cancellation_pattern", "customer_identity_resolution", "consent_channel_matrix",
+    "cash_payment_reconciliation", "revenue_source_attribution", "inventory_consumption_link",
+    "reorder_threshold_evidence", "service_product_margin", "technology_utilization",
+    "protocol_execution_record", "operator_skill_eligibility", "customer_journey_continuity",
+    "recall_eligibility", "next_best_action_candidate", "base_silver_gold_entitlement",
+    "ai_gold_explanation", "manual_correction_queue", "data_quality_completeness",
+    "peak_load_forecast", "tenant_node_isolation", "audit_event_trace",
+    "operational_slo", "failure_recovery_queue", "outcome_verified_learning",
+    "human_operator_release",
+  ],
   rules: [
     "Il gestionale/Core e la fonte dei numeri; AI Gold legge, interpreta e propone senza correggere dati reali.",
     "Silver legge, ordina e segnala verifiche manuali; Gold decide la priorita operativa e prepara il lavoro confermabile.",
