@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createOwnerConfirmationLedger } from "./owner-confirmation-ledger.js";
 
 function b64json(value) {
   return JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
@@ -34,20 +35,14 @@ function stableCanonical(value) {
 function applyOwnerRoot(identity, config) {
   const enabled = config.godModeEnabled === true && config.godModeEmergencyStop !== true;
   const tenantMatch = (config.godModeTenantIds || [config.godModeTenantId].filter(Boolean)).includes(identity.tenantId);
-  const subjectAllowed = identity.kind === "codex"
-    ? config.godModeCodexEnabled === true
-    // A client/application ID identifies an OAuth application, not a human
-    // owner. It must never elevate every user of that application. OAuth
-    // owner-root therefore requires the authenticated subject to be allowlisted
-    // explicitly; an empty subject allowlist fails closed.
-    : (config.godModeSubjects || []).includes(identity.subject);
+  const subjectAllowed = identity.kind === "codex" && config.godModeCodexEnabled === true;
   if (!enabled || !tenantMatch || !subjectAllowed) return identity;
   return {
     ...identity,
     role: "owner_root",
     godMode: true,
     scopes: [...new Set([...identity.scopes, ...config.supportedScopes, "owner:root"])],
-    ...(identity.kind === "oauth" ? { providerSetupOwner: true } : {}),
+    ...(identity.kind === "codex" ? { providerSetupOwner: true } : {}),
   };
 }
 
@@ -58,7 +53,7 @@ function applyTenantProviderOwner(identity, config) {
   return { ...identity, role: identity.role || "member" };
 }
 
-function elevateOAuthOwner(identity, proof, config, consumed) {
+async function elevateOAuthOwner(identity, proof, config, ledger) {
   if (identity?.kind !== "oauth" || identity?.oauthOwnerBound !== true) throw new Error("owner_binding_required");
   if (proof?.confirmed !== true) throw new Error("owner_confirmation_required");
   const reference = String(proof?.confirmationReference || "").trim();
@@ -68,10 +63,15 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const now = Math.floor(Date.now() / 1000);
   const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
   if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
-  const key = `${identity.subject}\u0000${reference}\u0000${crypto.createHash("sha256").update(requestBinding).digest("hex")}`;
-  if (consumed.has(key)) throw new Error("owner_confirmation_replayed");
-  consumed.set(key, now);
-  while (consumed.size > 2_048) consumed.delete(consumed.keys().next().value);
+  if (!ledger) throw new Error("owner_confirmation_ledger_unavailable");
+  await ledger.consume({
+    tenantId: identity.tenantId,
+    subject: identity.subject,
+    reference,
+    requestBinding,
+    now: new Date(now * 1000),
+    ttlSeconds: maxAge,
+  });
   return { ...identity, role: "tenant_owner", providerSetupOwner: true, oauthOwnerElevated: true, ownerConfirmationReference: reference };
 }
 
@@ -136,14 +136,13 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     ...(selfServiceTenant ? { selfServiceTenant: true } : {}),
     ...(ownerTenantId ? { oauthOwnerBound: true } : {}),
     ...(tenantRole ? { tenantRole } : {}),
-    ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
+    ...(Number.isFinite(Number(payload.auth_time)) ? { authenticatedAt: Number(payload.auth_time) } : {}),
     scopes: tokenScopes(payload)
   };
 }
 
 export function createAuthenticator(config, options = {}) {
   const cache = options.jwksCache || new JwksCache(options.fetchImpl);
-  const consumedOwnerConfirmations = new Map();
   const jwtConfig = options.audience ? { ...config, auth0Audience: options.audience } : config;
   const authenticate = async function authenticate(header) {
     const match = String(header || "").match(/^Bearer\s+(.+)$/i);
@@ -155,7 +154,8 @@ export function createAuthenticator(config, options = {}) {
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
     return applyTenantProviderOwner(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);
   };
-  authenticate.elevateOAuthOwner = (identity, proof) => elevateOAuthOwner(identity, proof, config, consumedOwnerConfirmations);
+  const ownerConfirmationLedger = options.ownerConfirmationLedger || createOwnerConfirmationLedger(config, options);
+  authenticate.elevateOAuthOwner = (identity, proof) => elevateOAuthOwner(identity, proof, config, ownerConfirmationLedger);
   return authenticate;
 }
 

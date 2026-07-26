@@ -3,15 +3,8 @@ function annotations(readOnly, idempotent = false, openWorld = false, destructiv
 }
 
 const ownerConfirmationProperties = {
-  owner_confirmed: {
-    type: "boolean",
-    description: "Set true only after the owner explicitly confirms this exact write action.",
-  },
-  confirmation_reference: {
-    type: "string",
-    maxLength: 240,
-    description: "Short audit reference for the explicit owner confirmation; never include secrets.",
-  },
+  owner_confirmed: { type: "boolean", description: "Server-side confirmation marker; ignored for OAuth identities." },
+  confirmation_reference: { type: "string", maxLength: 240, description: "Server-side audit reference; ignored for OAuth identities." },
 };
 
 const agentPresenceProperties = {
