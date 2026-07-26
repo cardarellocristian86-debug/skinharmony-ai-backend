@@ -2,6 +2,15 @@ import crypto from "node:crypto";
 
 const AGENT_CATALOG = Object.freeze([
   {
+    agent_id: "relational-supervisor",
+    role: "relational_supervisor",
+    description: "Coordinates bounded relations, provenance and conflicts above Nyra while Universal Core retains final authority.",
+    allowed_triggers: ["manual", "event", "schedule"],
+    allowed_capabilities: ["relational_plan", "coordinate", "reconcile", "request_core_join"],
+    model_execution: "forbidden",
+    external_actions: "forbidden",
+  },
+  {
     agent_id: "nyra-supervisor",
     role: "supervisor",
     description: "Creates read-only plans, routes evidence work, and synthesizes recommendations.",
@@ -109,7 +118,9 @@ export function createGovernedAgentRegistry({ now = () => new Date().toISOString
           external_action: false,
           owner_confirmation_required_for_execution: true,
         },
-        proposed_workers: agent.agent_id === "nyra-supervisor"
+        proposed_workers: agent.agent_id === "relational-supervisor"
+          ? ["nyra-supervisor", "governance-watchdog"]
+          : agent.agent_id === "nyra-supervisor"
           ? ["research-scout", "evidence-critic", "governance-watchdog"]
           : [],
         limits: {

@@ -23,6 +23,10 @@ import {
   deterministicBranchTaxonomy,
   resolveBranchesForKey,
 } from "../branches/index.js";
+import {
+  listOrchestrationCapabilities,
+  listVirtualOrchestrationCombinations,
+} from "../branches/orchestration-capability-catalog.js";
 import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
 import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
@@ -86,6 +90,8 @@ import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
 import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
 import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./governedAgentRegistry.js";
+import { createRelationalOrchestrationSupervisor } from "./relationalOrchestrationSupervisor.js";
+import { createDynamicTaskTreeRuntime } from "./dynamicTaskTree.js";
 import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
 import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
@@ -98,7 +104,7 @@ import { mountAdminControlRoom } from "./adminControlRoom.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.6-tenant-openai-multiagent";
+const SERVICE_VERSION = "0.11.0-agent-ai-orchestration";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -3562,6 +3568,8 @@ export function createUniversalCoreService(options = {}) {
     root: path.join(storageRoot, "generic-agent-orchestrations"),
   });
   const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
+  const relationalOrchestrationSupervisor = options.relationalOrchestrationSupervisor || createRelationalOrchestrationSupervisor();
+  const dynamicTaskTreeRuntime = options.dynamicTaskTreeRuntime || createDynamicTaskTreeRuntime();
   const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
     root: path.join(storageRoot, "governed-agent-activations"),
   });
@@ -5701,6 +5709,77 @@ export function createUniversalCoreService(options = {}) {
       model_calls_budget: plan.credit_control.model_calls_budget,
     });
     res.json({ ok: true, ...plan });
+  });
+
+  app.get("/v1/orchestration/capabilities", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const branchId = String(req.query.branch || "");
+      const view = String(req.query.view || "capabilities");
+      if (!["capabilities", "virtual"].includes(view)) return publicError(res, 400, "orchestration_catalog_view_invalid");
+      const input = {
+        branchId,
+        cursor: req.query.cursor,
+        limit: req.query.limit,
+      };
+      const catalog = view === "virtual"
+        ? listVirtualOrchestrationCombinations(input)
+        : listOrchestrationCapabilities(input);
+      audit.append("orchestration_capability_catalog_read", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch_id: branchId,
+        view,
+        item_count: catalog.items.length,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        view,
+        ...catalog,
+        execution_authorized: false,
+      });
+    } catch (error) {
+      return publicError(res, 400, error.message || "orchestration_catalog_invalid");
+    }
+  });
+
+  app.post("/v1/orchestration/relational/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const supervision = relationalOrchestrationSupervisor.create({
+        ...(req.body || {}),
+        tenant_id: req.tenantId,
+      });
+      audit.append("relational_orchestration_evaluated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        supervision_id: supervision.supervision_id,
+        actor_count: supervision.actors.length,
+        conflict_count: supervision.unresolved_conflicts.length,
+      });
+      return res.json({ ok: true, ...supervision });
+    } catch (error) {
+      return publicError(res, 400, error.message || "relational_orchestration_invalid");
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const tree = dynamicTaskTreeRuntime.create({
+        ...(req.body || {}),
+        tenant_id: req.tenantId,
+      });
+      audit.append("dynamic_task_tree_planned", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: tree.tree_id,
+        node_count: tree.nodes.length,
+        max_depth: tree.limits.max_depth,
+        max_parallel: tree.limits.max_parallel,
+      });
+      return res.json({ ok: true, ...tree });
+    } catch (error) {
+      return publicError(res, 400, error.message || "dynamic_task_tree_invalid");
+    }
   });
 
   app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {

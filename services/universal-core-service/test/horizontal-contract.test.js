@@ -171,7 +171,13 @@ test("every horizontal Nyra Core binding resolves to an agnostic registered work
     for (const binding of item.core_branch_bindings) {
       assert(registry[binding], `missing Core binding ${binding}`);
       assert(["horizontal_work", "identity_delegation"].includes(registry[binding].domain));
-      assert(registry[binding].subbranches.length <= 20);
+      if (registry[binding].capability_catalog) {
+        assert.equal(registry[binding].capability_catalog.expansion_mode, "lazy_deterministic_paged");
+        assert.equal(registry[binding].capability_catalog.runtime_policy, "bounded_materialization_only_with_explicit_plan_depth");
+        assert.equal(registry[binding].capability_catalog.virtual_depth_policy, "recursive_lazy_without_static_catalog_ceiling");
+      } else {
+        assert(registry[binding].subbranches.length <= 20);
+      }
     }
   }
   assert.deepEqual(deterministicBranchGroups().work_cortex.branches, HORIZONTAL_WORK_BRANCHES);
@@ -185,6 +191,21 @@ test("Nyra opens identity delegation and decision provenance only for relevant g
   const bindings = Object.fromEntries(route.opened_branches.map((item) => [item.id, item.core_branch_bindings]));
   assert.deepEqual(bindings.delegated_authority, ["workload_identity_delegation_guard"]);
   assert.deepEqual(bindings.decision_provenance, ["decision_provenance_intelligence"]);
+});
+
+test("Core places relational supervision above Nyra orchestration branches", () => {
+  const route = routeNyraBranches({
+    text: "Crea agenti specializzati e orchestra AI con model routing e verifica",
+    domainPackId: "generic",
+  });
+  const opened = route.opened_branches.map((item) => item.id);
+  assert(opened.includes("agent_orchestration"));
+  assert(opened.includes("ai_orchestration"));
+  assert(opened.includes("relational_supervision"));
+  assert(opened.indexOf("relational_supervision") < opened.indexOf("agent_orchestration"));
+  assert(opened.indexOf("relational_supervision") < opened.indexOf("ai_orchestration"));
+  assert.equal(route.parallel_analysis.join_authority, "universal_core");
+  assert.equal(route.execution_authorized, false);
 });
 
 test("Core branch packages isolate Suite, SmartDesk and Analyzer verticals", () => {
