@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
 
 const WORKFLOW_ID = "research_review_synthesis_v1";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -496,11 +497,39 @@ export function createTenantOpenAiMultiAgentRunner({
       const output = extractOutputText(payload);
       ensureLive(state);
       const latencyMs = Math.max(0, clock() - started);
-      state.outputs[stage.id] = output;
-      state.stages[stage.id] = { status: "completed", latency_ms: latencyMs, output };
       state.provider_usage.input_tokens += usage.input_tokens;
       state.provider_usage.output_tokens += usage.output_tokens;
       state.provider_usage.total_tokens += usage.total_tokens;
+      const nextStage = STAGES[STAGES.findIndex((candidate) => candidate.id === stage.id) + 1];
+      if (nextStage) {
+        const scan = scanInterAgentHandoff({
+          tenant_id: state.tenant_id,
+          from_agent_id: stage.agent_id,
+          to_agent_id: nextStage.agent_id,
+          thread_id: state.run_id,
+          body: output,
+        });
+        if (scan.suspicious) {
+          state.stages[stage.id] = {
+            status: "quarantined",
+            latency_ms: latencyMs,
+            quarantine: publicQuarantineReceipt(scan, {
+              quarantine_id: `quarantine_${crypto.randomUUID()}`,
+              created_at: now(),
+            }),
+          };
+          persist(state);
+          safeAudit("tenant_openai_multi_agent_handoff_quarantined", state, {
+            stage: stage.id,
+            next_stage: nextStage.id,
+            content_digest: scan.content_digest,
+            matched_rules: scan.matched_rules,
+          });
+          throw new Error("inter_agent_handoff_quarantined");
+        }
+      }
+      state.outputs[stage.id] = output;
+      state.stages[stage.id] = { status: "completed", latency_ms: latencyMs, output };
       const plan = genericAgentOrchestrator.completeWorker({
         tenant_id: state.tenant_id,
         plan_id: state.plan_id,

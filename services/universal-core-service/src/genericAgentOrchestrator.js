@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { guardInterAgentEnvelope } from "../../shared/handoff-injection-guard.mjs";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -52,7 +53,7 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
   function refresh(plan) {
     const running = plan.workers.filter((worker) => worker.status === "running").length;
     const completed = plan.workers.filter((worker) => worker.status === "completed").length;
-    const failed = plan.workers.some((worker) => worker.status === "failed");
+    const failed = plan.workers.some((worker) => worker.status === "failed" || worker.status === "quarantined");
     const cancelled = plan.workers.some((worker) => worker.status === "cancelled");
     if (failed) plan.status = "failed";
     else if (cancelled) plan.status = "cancelled";
@@ -108,8 +109,26 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
       const worker = plan.workers.find((item) => item.worker_id === requireText(worker_id, "worker_id", 120));
       if (!worker) throw new Error("worker_not_found");
       if (worker.status !== "running") throw new Error("worker_not_running");
+      const guarded = guardInterAgentEnvelope({
+        tenant_id: plan.tenant_id,
+        from_agent_id: worker.agent_id,
+        to_agent_id: "universal-core",
+        thread_id: plan.plan_id,
+        body: result,
+      });
+      if (!guarded.allowed) {
+        worker.status = "quarantined";
+        worker.result = {
+          schema_version: "inter_agent_untrusted_envelope_v1",
+          state: "quarantined",
+          propagation_allowed: false,
+          quarantine: guarded.quarantine,
+        };
+        refresh(plan);
+        return clone(plan);
+      }
       worker.status = "completed";
-      worker.result = result && typeof result === "object" && !Array.isArray(result) ? clone(result) : {};
+      worker.result = guarded.value && typeof guarded.value === "object" && !Array.isArray(guarded.value) ? guarded.value : {};
       refresh(plan);
       return clone(plan);
     },
@@ -153,9 +172,31 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
       const workers = normalizeWorkers(plan_snapshot.workers, workerLimit, depthLimit);
       for (const worker of workers) {
         const snapshotWorker = plan_snapshot.workers.find((item) => item?.worker_id === worker.worker_id) || {};
-        worker.status = ["pending", "running", "completed", "failed", "cancelled"].includes(snapshotWorker.status) ? snapshotWorker.status : "pending";
-        worker.result = snapshotWorker.result && typeof snapshotWorker.result === "object" && !Array.isArray(snapshotWorker.result) ? clone(snapshotWorker.result) : null;
-        worker.error = snapshotWorker.error ? String(snapshotWorker.error).slice(0, 500) : null;
+        worker.status = ["pending", "running", "completed", "quarantined", "failed", "cancelled"].includes(snapshotWorker.status) ? snapshotWorker.status : "pending";
+        const guarded = guardInterAgentEnvelope({
+          tenant_id: tenantId,
+          from_agent_id: worker.agent_id,
+          to_agent_id: "universal-core",
+          thread_id: planId,
+          body: snapshotWorker.result,
+        });
+        worker.result = guarded.allowed
+          ? (guarded.value && typeof guarded.value === "object" && !Array.isArray(guarded.value) ? guarded.value : null)
+          : {
+              schema_version: "inter_agent_untrusted_envelope_v1",
+              state: "quarantined",
+              propagation_allowed: false,
+              quarantine: guarded.quarantine,
+            };
+        if (!guarded.allowed) worker.status = "quarantined";
+        if (snapshotWorker.error) {
+          const errorCode = String(snapshotWorker.error).trim();
+          worker.error = /^[a-z0-9_.:-]{1,120}$/i.test(errorCode)
+            ? errorCode
+            : `worker_error_digest:${crypto.createHash("sha256").update(`${tenantId}\u0000${errorCode}`).digest("hex")}`;
+        } else {
+          worker.error = null;
+        }
       }
       const restored = {
         schema_version: "generic_agent_orchestration_v1",

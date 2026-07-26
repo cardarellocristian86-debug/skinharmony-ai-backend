@@ -82,8 +82,12 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(readTools.length > 0);
   assert(writeTools.length > 0);
   assert(writeTools.every((tool) => tool.securitySchemes[0].scopes.includes("core:govern")));
-  assert(writeTools.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
-  assert(writeTools.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
+  assert(writeTools.every((tool) =>
+    tool._meta["skinharmony/ownerConfirmationRequired"] === false
+    || tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
+  assert(writeTools.every((tool) =>
+    tool._meta["skinharmony/ownerConfirmationRequired"] === false
+    || tool.inputSchema.properties.confirmation_reference?.type === "string"));
   const preflight = body.result.tools.find((tool) => tool.name === "work_preflight");
   assert(preflight);
   assert(preflight.outputSchema?.properties?.core_runtime);
@@ -177,7 +181,7 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /bounded_execution_ready=true/);
 }));
 
-test("keeps only the bounded provider control plane outside generic shared-memory preflight", () => {
+test("keeps native Core-governed controls outside generic shared-memory preflight", () => {
   for (const name of [
     "work_preflight",
     "tenant_provider_openai_status",
@@ -186,6 +190,7 @@ test("keeps only the bounded provider control plane outside generic shared-memor
     "tenant_provider_openai_multi_agent_smoke_run",
     "tenant_provider_openai_multi_agent_run_read",
     "tenant_provider_openai_multi_agent_run_cancel",
+    "orchestration_dtt_core_join",
   ]) assert.equal(requiresGenericWorkPreflight(name), false, `${name} must use its native gate`);
 
   for (const name of ["memory_document_upsert", "generic_agent_start", "nyra_research_ingest"]) {

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createAgentPresence } from "./agent-presence.js";
 import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
+import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
@@ -70,12 +71,12 @@ function tenantRoot(root, tenantId) {
 }
 
 function emptyState() {
-  return { schema_version: 2, revision: 0, folders: [], documents: [], tasks: [], messages: [], agents: [], audit: [] };
+  return { schema_version: 2, revision: 0, folders: [], documents: [], tasks: [], messages: [], message_quarantines: [], agents: [], audit: [] };
 }
 
 function normalizeState(value) {
   const state = value && typeof value === "object" && !Array.isArray(value) ? value : emptyState();
-  for (const key of ["folders", "documents", "tasks", "messages", "agents", "audit"]) {
+  for (const key of ["folders", "documents", "tasks", "messages", "message_quarantines", "agents", "audit"]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
   state.schema_version = 2;
@@ -444,13 +445,54 @@ export function createCollaborationHandlers(config, options = {}) {
       const messageBody = requiredText(body, "message_body", 20_000);
       const threadId = optionalText(thread_id, "thread_id", 80);
       const key = optionalText(idempotency_key, "idempotency_key", 120);
+      const scan = scanInterAgentHandoff({
+        tenant_id: identity.tenantId,
+        from_agent_id: fromAgentId,
+        to_agent_id: toAgentId,
+        from_agent_signature: identity.agentPresence?.signature,
+        from_client_type: identity.agentPresence?.client_type,
+        thread_id: threadId,
+        body: messageBody,
+      });
       return governed(identity, boundedCollaborationAction({ action_type: "message.post", operation_class: "owner_confirmed_governed_action", contains_customer_data: true, action_label: `Post agent message from ${fromAgentId} to ${toAgentId}`, target: toAgentId }), async (state) => {
         const sender = requireOwnedAgent(state, fromAgentId, identity);
         const recipient = toAgentId === "all" ? null : state.agents.find((agent) => agent.id === toAgentId);
         if (toAgentId !== "all" && !recipient) fail("recipient_not_registered");
         if (recipient && (!recipient.session_fingerprint || String(recipient.signature || "").startsWith("ags_legacy_"))) fail("message_recipient_reregistration_required");
-        const existing = key && state.messages.find((message) => message.idempotency_key === key && message.from_agent_id === fromAgentId);
-        if (existing) return { message: existing, created: false, idempotent_replay: true };
+        const existingMessage = key && state.messages.find((message) => message.idempotency_key === key && message.from_agent_id === fromAgentId);
+        if (existingMessage) return { message: existingMessage, created: false, idempotent_replay: true };
+        const existingQuarantine = key && state.message_quarantines.find((entry) => entry.idempotency_key === key && entry.from_agent_id === fromAgentId);
+        if (existingQuarantine) {
+          return {
+            quarantined: true,
+            created: false,
+            quarantine: publicQuarantineReceipt(existingQuarantine.scan, {
+              quarantine_id: existingQuarantine.id,
+              created_at: existingQuarantine.created_at,
+              idempotent_replay: true,
+            }),
+          };
+        }
+        if (scan.suspicious) {
+          const quarantined = {
+            id: crypto.randomUUID(),
+            from_agent_id: fromAgentId,
+            to_agent_id: toAgentId,
+            idempotency_key: key,
+            scan,
+            created_at: new Date().toISOString(),
+          };
+          state.message_quarantines.push(quarantined);
+          if (state.message_quarantines.length > 2_000) state.message_quarantines.splice(0, state.message_quarantines.length - 2_000);
+          return {
+            quarantined: true,
+            created: true,
+            quarantine: publicQuarantineReceipt(scan, {
+              quarantine_id: quarantined.id,
+              created_at: quarantined.created_at,
+            }),
+          };
+        }
         const message = {
           id: crypto.randomUUID(),
           thread_id: threadId || crypto.randomUUID(),
