@@ -43,6 +43,19 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: CORE_OWNER_CONTEXT_SIGNING_SECRET
+      - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: DTT_AGENT_IDENTITY_SIGNING_SECRET
+      # Use the same managed PostgreSQL connection as the MCP so DTT state,
+      # identity receipts, verifier assignments and artifact trust are
+      # transactional and shared across restarts.
+      - key: GOVERNED_AGENT_DATABASE_URL
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: DATABASE_URL
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
       - key: CORE_RUNTIME_V2_MODE

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { guardInterAgentEnvelope } from "../../shared/handoff-injection-guard.mjs";
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const text = (v, f, m = 160) => { const s = String(v || "").trim(); if (!s || s.length > m) throw new Error(`${f}_invalid`); return s; };
 const fileFor = (r, t) => path.join(r, crypto.createHash("sha256").update(t).digest("hex"), "queue.json");
@@ -19,7 +20,7 @@ export function createGovernedAgentQueueStore({ root, now = () => new Date() } =
       q.jobs.push(...jobs); save(t,q); return clone(jobs);
     },
     claim({ tenant_id }) { const t=text(tenant_id,"tenant_id",120),q=load(t),n=now(); for(const j of q.jobs) if(["queued","retry_wait"].includes(j.status)&&new Date(j.available_at)<=n&&new Date(j.deadline_at)>n&&j.dependencies.every((d)=>q.jobs.some((x)=>x.worker_id===d&&x.status==="completed"))){j.status="claimed";j.claimed_at=iso();j.updated_at=j.claimed_at;save(t,q);return clone(j);} return null; },
-    complete({ tenant_id, job_id, result = {} }) { const t=text(tenant_id,"tenant_id",120),q=load(t),j=q.jobs.find((x)=>x.job_id===text(job_id,"job_id",160)); if(!j||j.status!=="claimed") throw new Error("queue_job_not_claimed");j.status="completed";j.completed_at=iso();j.updated_at=j.completed_at;j.result=result&&typeof result==="object"?clone(result):{};save(t,q);return clone(j); },
+    complete({ tenant_id, job_id, result = {} }) { const t=text(tenant_id,"tenant_id",120),q=load(t),j=q.jobs.find((x)=>x.job_id===text(job_id,"job_id",160)); if(!j||j.status!=="claimed") throw new Error("queue_job_not_claimed");const guarded=guardInterAgentEnvelope({tenant_id:t,from_agent_id:j.agent_id,to_agent_id:"universal-core",thread_id:j.plan_id,body:result});j.status=guarded.allowed?"completed":"quarantined";j.completed_at=iso();j.updated_at=j.completed_at;j.result=guarded.allowed?(guarded.value&&typeof guarded.value==="object"?guarded.value:{}):{schema_version:"inter_agent_untrusted_envelope_v1",state:"quarantined",propagation_allowed:false,quarantine:guarded.quarantine};save(t,q);return clone(j); },
     fail({ tenant_id, job_id }) { const t=text(tenant_id,"tenant_id",120),q=load(t),j=q.jobs.find((x)=>x.job_id===text(job_id,"job_id",160));if(!j||j.status!=="claimed")throw new Error("queue_job_not_claimed");j.attempts+=1;j.updated_at=iso();if(j.attempts<=j.max_retries){j.status="retry_wait";j.available_at=new Date(now().getTime()+1000*(2**j.attempts)).toISOString();}else j.status="failed";save(t,q);return clone(j); },
     expire({ tenant_id }) { const t=text(tenant_id,"tenant_id",120),q=load(t);let expired=0;for(const j of q.jobs)if(["queued","retry_wait","claimed"].includes(j.status)&&new Date(j.deadline_at)<=now()){j.status="expired";j.updated_at=iso();j.expired_at=j.updated_at;expired+=1;}if(expired)save(t,q);return {expired}; },
     cancelActivation({ tenant_id, activation_id }) { const t=text(tenant_id,"tenant_id",120),q=load(t);let count=0;for(const j of q.jobs)if(j.activation_id===text(activation_id,"activation_id",160)&&["queued","retry_wait","claimed"].includes(j.status)){j.status="cancelled";j.updated_at=iso();count++;}save(t,q);return {cancelled:count}; },

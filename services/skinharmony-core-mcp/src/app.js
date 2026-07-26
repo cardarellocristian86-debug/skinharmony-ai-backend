@@ -19,6 +19,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "tenant_provider_openai_multi_agent_smoke_run",
   "tenant_provider_openai_multi_agent_run_read",
   "tenant_provider_openai_multi_agent_run_cancel",
+  "orchestration_dtt_core_join",
 ]);
 
 export function requiresGenericWorkPreflight(toolName) {

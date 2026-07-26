@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createAgentPresence } from "./agent-presence.js";
+import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const CLASSIFICATIONS = new Set(["internal", "customer_aggregate", "customer_personal", "restricted"]);
@@ -100,13 +101,14 @@ function emptyState() {
     memories: [],
     checkpoints: [],
     handoffs: [],
+    handoff_quarantines: [],
     audit: [],
   };
 }
 
 function normalizeState(value) {
   const state = value && typeof value === "object" && !Array.isArray(value) ? value : emptyState();
-  for (const key of ["events", "memories", "checkpoints", "handoffs", "audit"]) {
+  for (const key of ["events", "memories", "checkpoints", "handoffs", "handoff_quarantines", "audit"]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
   state.schema_version = "tenant_memory_fabric_v1";
@@ -160,6 +162,7 @@ function pruneState(state, now = Date.now()) {
   state.memories = state.memories.filter(active).slice(-2_000);
   state.checkpoints = state.checkpoints.filter(active).slice(-500);
   state.handoffs = state.handoffs.filter(active).slice(-1_000);
+  state.handoff_quarantines = state.handoff_quarantines.filter(active).slice(-1_000);
   state.audit = state.audit.slice(-5_000);
 }
 
@@ -396,9 +399,43 @@ export function createMemoryFabric(config, options = {}) {
   }
 
   async function handoff(input, identity) {
-    const record = normalizeMemoryInput({ ...input, kind: "handoff", title: input.title || "Agent handoff" }, identity, config, "handoff");
     const toAgentId = input.to_agent_id === "all" ? "all" : safeId(input.to_agent_id, "to_agent");
+    const rawHandoff = [
+      input.title,
+      input.summary,
+      ...(Array.isArray(input.facts) ? input.facts : []),
+      ...(Array.isArray(input.decisions) ? input.decisions : []),
+      ...(Array.isArray(input.actions) ? input.actions : []),
+      ...(Array.isArray(input.outcomes) ? input.outcomes : []),
+      ...(Array.isArray(input.next_steps) ? input.next_steps : []),
+    ].filter(Boolean).join("\n");
+    const scan = scanInterAgentHandoff({
+      tenant_id: identity.tenantId,
+      from_agent_id: input.agent_id || identity.agentPresence?.agent_id || "mcp-agent",
+      to_agent_id: toAgentId,
+      from_agent_signature: input.agent_signature || identity.agentPresence?.signature,
+      from_client_type: input.client_type || identity.agentPresence?.client_type,
+      thread_id: input.session_id || input.project_id || "",
+      body: rawHandoff,
+    });
+    const record = normalizeMemoryInput({ ...input, kind: "handoff", title: input.title || "Agent handoff" }, identity, config, "handoff");
     return governed(identity, governedMemoryAction({ action_type: "memory.handoff", action_label: `Create memory handoff to ${toAgentId}`, target: toAgentId }), async (state) => {
+      const existingQuarantine = record.idempotency_key && state.handoff_quarantines.find((item) => item.idempotency_key === record.idempotency_key && item.actor_subject === record.actor_subject);
+      if (existingQuarantine) {
+        return { quarantined: true, created: false, quarantine: publicQuarantineReceipt(existingQuarantine.scan, { quarantine_id: existingQuarantine.id, created_at: existingQuarantine.created_at, idempotent_replay: true }) };
+      }
+      if (scan.suspicious) {
+        const quarantine = {
+          id: `memq_${crypto.randomUUID()}`,
+          actor_subject: record.actor_subject,
+          idempotency_key: record.idempotency_key,
+          scan,
+          created_at: record.created_at,
+          expires_at: record.expires_at,
+        };
+        state.handoff_quarantines.push(quarantine);
+        return { quarantined: true, created: true, quarantine: publicQuarantineReceipt(scan, { quarantine_id: quarantine.id, created_at: quarantine.created_at }) };
+      }
       const handoffRecord = { ...record, to_agent_id: toAgentId, status: "pending", acknowledged_at: null, acknowledged_by: null };
       state.handoffs.push(handoffRecord);
       state.events.push({ ...record, id: `evt_${crypto.randomUUID()}`, handoff_id: record.id, to_agent_id: toAgentId });

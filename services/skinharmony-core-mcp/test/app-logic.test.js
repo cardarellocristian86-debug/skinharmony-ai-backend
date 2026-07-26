@@ -6,8 +6,13 @@ test("advertises explicit confirmation fields only on write tools", () => {
   const readTools = TOOLS.filter((tool) => tool.annotations.readOnlyHint === true);
   const writeTools = TOOLS.filter((tool) => tool.annotations.readOnlyHint === false);
   assert(writeTools.length > 0);
-  assert(writeTools.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
-  assert(writeTools.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
+  const confirmedWrites = writeTools.filter((tool) => tool._meta?.["skinharmony/ownerConfirmationRequired"] !== false);
+  const advisoryWrites = writeTools.filter((tool) => tool._meta?.["skinharmony/ownerConfirmationRequired"] === false);
+  assert(confirmedWrites.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
+  assert(confirmedWrites.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
+  assert(advisoryWrites.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
+  assert(advisoryWrites.every((tool) => tool.inputSchema.properties.confirmation_reference === undefined));
+  assert.deepEqual(advisoryWrites.map((tool) => tool.name), ["orchestration_dtt_core_join"]);
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });
 

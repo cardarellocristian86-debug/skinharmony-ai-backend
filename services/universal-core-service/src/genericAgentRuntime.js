@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { guardInterAgentEnvelope, publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
 
 const MAX_TRACE_EVENTS = 200;
 
@@ -127,14 +128,46 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         if (normalizedIdempotencyKey && existing.tenant_id === run.tenant_id && existing.run_id === run.run_id && existing.idempotency_key === normalizedIdempotencyKey) return clone(existing);
       }
       if (run.status !== "running") throw new Error("run_not_handoffable");
+      const recipient = requireText(to_agent_id, "to_agent_id", 120);
+      const normalizedSummary = requireText(summary, "summary", 4_000);
+      const scan = scanInterAgentHandoff({
+        tenant_id: run.tenant_id,
+        from_agent_id: run.agent_id,
+        to_agent_id: recipient,
+        thread_id: run.run_id,
+        body: normalizedSummary,
+      });
+      if (scan.suspicious) {
+        const quarantine = {
+          schema_version: "generic_agent_handoff_quarantine_v1",
+          handoff_id: `handoff_${idFactory()}`,
+          tenant_id: run.tenant_id,
+          from_agent_id: run.agent_id,
+          to_agent_id: recipient,
+          run_id: run.run_id,
+          idempotency_key: normalizedIdempotencyKey,
+          ...publicQuarantineReceipt(scan, {
+            quarantine_id: `quarantine_${idFactory()}`,
+            created_at: now(),
+          }),
+        };
+        handoffs.set(quarantine.handoff_id, quarantine);
+        appendTrace(run, "handoff_quarantined", {
+          handoff_id: quarantine.handoff_id,
+          quarantine_id: quarantine.quarantine_id,
+          content_digest: quarantine.content_digest,
+          matched_rules: quarantine.matched_rules,
+        });
+        return clone(quarantine);
+      }
       const handoff = {
         schema_version: "generic_agent_handoff_v1",
         handoff_id: `handoff_${idFactory()}`,
         tenant_id: run.tenant_id,
         from_agent_id: run.agent_id,
-        to_agent_id: requireText(to_agent_id, "to_agent_id", 120),
+        to_agent_id: recipient,
         run_id: run.run_id,
-        summary: requireText(summary, "summary", 4_000),
+        summary: normalizedSummary,
         idempotency_key: normalizedIdempotencyKey,
         status: "open",
         created_at: now(),
@@ -163,14 +196,31 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
       const run = getRun(run_id, tenant_id);
       if (run.status === "cancelled") throw new Error("run_cancelled");
       if (run.status === "failed") throw new Error("run_failed");
+      if (run.status === "quarantined") throw new Error("run_quarantined");
+      const guarded = guardInterAgentEnvelope({
+        tenant_id: run.tenant_id,
+        from_agent_id: run.agent_id,
+        to_agent_id: "universal-core",
+        thread_id: run.run_id,
+        body: result,
+      });
+      if (!guarded.allowed) {
+        run.status = "quarantined";
+        appendTrace(run, "run_result_quarantined", {
+          content_digest: guarded.quarantine.content_digest,
+          matched_rules: guarded.quarantine.matched_rules,
+          propagation_allowed: false,
+        });
+        return clone(run);
+      }
       run.status = "completed";
-      appendTrace(run, "run_completed", { result: result && typeof result === "object" ? clone(result) : {} });
+      appendTrace(run, "run_completed", { result: guarded.value && typeof guarded.value === "object" ? guarded.value : {} });
       return clone(run);
     },
 
     cancelRun({ run_id, tenant_id, reason = "cancelled_by_owner" }) {
       const run = getRun(run_id, tenant_id);
-      if (run.status === "completed" || run.status === "failed") throw new Error("run_not_cancellable");
+      if (run.status === "completed" || run.status === "failed" || run.status === "quarantined") throw new Error("run_not_cancellable");
       if (run.status === "cancelled") return clone(run);
       run.status = "cancelled";
       appendTrace(run, "run_cancelled", { reason: requireText(reason, "cancellation_reason", 120) });
@@ -179,10 +229,26 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
 
     failRun({ run_id, tenant_id, reason = "run_failed" }) {
       const run = getRun(run_id, tenant_id);
-      if (run.status === "completed" || run.status === "cancelled") throw new Error("run_not_failable");
+      if (run.status === "completed" || run.status === "cancelled" || run.status === "quarantined") throw new Error("run_not_failable");
       if (run.status === "failed") return clone(run);
+      const guarded = guardInterAgentEnvelope({
+        tenant_id: run.tenant_id,
+        from_agent_id: run.agent_id,
+        to_agent_id: "universal-core",
+        thread_id: run.run_id,
+        body: { error: reason },
+      });
+      if (!guarded.allowed) {
+        run.status = "quarantined";
+        appendTrace(run, "run_error_quarantined", {
+          content_digest: guarded.quarantine.content_digest,
+          matched_rules: guarded.quarantine.matched_rules,
+          propagation_allowed: false,
+        });
+        return clone(run);
+      }
       run.status = "failed";
-      appendTrace(run, "run_failed", { reason: requireText(reason, "failure_reason", 120) });
+      appendTrace(run, "run_failed", { reason: requireText(guarded.value.error, "failure_reason", 120) });
       return clone(run);
     },
 
@@ -265,7 +331,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
         if (existing.tenant_id !== normalized.tenant_id) throw new Error("cross_tenant_run_denied");
         return clone(existing);
       }
-      const status = ["running", "waiting_handoff", "completed", "cancelled", "failed"].includes(run_snapshot.status) ? run_snapshot.status : "running";
+      const status = ["running", "waiting_handoff", "completed", "quarantined", "cancelled", "failed"].includes(run_snapshot.status) ? run_snapshot.status : "running";
       const checkpoint = run_snapshot.checkpoint ? normalizeCheckpoint(run_snapshot.checkpoint) : null;
       const trace = Array.isArray(run_snapshot.trace) ? clone(run_snapshot.trace).slice(-MAX_TRACE_EVENTS) : [];
       const restored = {

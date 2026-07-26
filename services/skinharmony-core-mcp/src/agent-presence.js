@@ -55,9 +55,11 @@ export function createAgentPresence(config, identity, input = {}) {
   });
   const signature = `ags_${digest(key, "presence", canonical, 32)}`;
   const opaqueAgentId = `ai_${digest(key, "lifecycle", canonical, 24)}`;
+  const actorProvenance = `ap_${digest(key, "actor-provenance", JSON.stringify([tenantId, actor(identity)]), 32)}`;
   return {
     agent_id: agentId,
     opaque_agent_id: opaqueAgentId,
+    actor_provenance: actorProvenance,
     client_type: clientType,
     session_fingerprint: sessionFingerprint,
     signature,
