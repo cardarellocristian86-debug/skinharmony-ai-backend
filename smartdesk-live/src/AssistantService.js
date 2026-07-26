@@ -243,7 +243,7 @@ function sanitizeSupportActions(actions = [], context = {}) {
     }
     if (!path.startsWith("/")) path = "/";
     if (!SUPPORT_ALLOWED_PATHS.has(path)) path = "/";
-    if (path === "/ai-gold" && plan !== "gold") {
+    if (path === "/ai-gold" && !["gold", "enterprise"].includes(plan)) {
       safe.push({ label: "Vedi piano Gold", path: "/settings", kind: "upgrade" });
       continue;
     }
@@ -268,11 +268,17 @@ function sanitizeSupportActions(actions = [], context = {}) {
 function buildSupportFallback(message, context = {}) {
   const normalized = normalizeText(message);
   const plan = String(context.subscriptionPlan || "base").toLowerCase();
-  const planLabel = plan === "gold" ? "Gold" : plan === "silver" ? "Silver" : "Base";
+  const currentPlanLabel = planLabel(plan);
   const quality = context.dataQuality?.metrics || {};
 
   if (/(cosa include|cosa posso fare|mio piano|piano include|abbonamento|funzioni incluse|moduli inclusi)/.test(normalized)) {
-    if (plan === "gold") {
+    if (isGoldPlan(context)) {
+      if (plan === "enterprise") {
+        return {
+          message: "Il piano Enterprise include tutto il perimetro Gold più controllo multi-centro, governance più ampia e lettura operativa sopra più sedi. Nyra ti guida nell'uso; Core legge il centro e suggerisce cosa fare senza eseguire da sola.",
+          actions: [supportAction("Apri AI Gold", "/ai-gold", "ai_gold"), supportAction("Apri report", "/reports"), supportAction("Apri margini", "/profitability")]
+        };
+      }
       return {
         message: "Il piano Gold include i moduli Silver più AI operativa sopra il gestionale: priorità, lettura decisionale, marketing suggerito, redditività guidata e controlli da confermare. Nyra ti guida nell'uso; AI Gold/Core legge il centro e indica cosa fare senza eseguire da sola.",
         actions: [supportAction("Apri AI Gold", "/ai-gold", "ai_gold"), supportAction("Apri report", "/reports"), supportAction("Apri margini", "/profitability")]
@@ -346,14 +352,14 @@ function buildSupportFallback(message, context = {}) {
   }
 
   if (/(ai gold|gold|priorita|priorità|cosa devo fare|decisione|azioni|alert)/.test(normalized)) {
-    if (plan === "gold") {
+    if (isGoldPlan(context)) {
       return {
         message: "Questa è una domanda da AI Gold: il gestionale dice cosa sta succedendo, AI Gold dice cosa fare. Apri AI Gold per leggere priorità, dati mancanti, clienti da recuperare e controlli da completare.",
         actions: [supportAction("Apri AI Gold", "/ai-gold", "ai_gold")]
       };
     }
     return {
-      message: `Ora sei sul piano ${planLabel}: posso guidarti nell'uso dei moduli, ma le priorità automatiche e la lettura decisionale del centro sono funzioni Gold.`,
+      message: `Ora sei sul piano ${currentPlanLabel}: posso guidarti nell'uso dei moduli, ma le priorità automatiche e la lettura decisionale del centro sono funzioni Gold/Enterprise.`,
       actions: [supportAction("Vedi piano Gold", "/settings", "upgrade")]
     };
   }
@@ -762,7 +768,15 @@ function hasAnyPayloadValue(payload = {}) {
 }
 
 function isGoldPlan(context = {}) {
-  return String(context.subscriptionPlan || "base").toLowerCase() === "gold";
+  return ["gold", "enterprise"].includes(String(context.subscriptionPlan || "base").toLowerCase());
+}
+
+function planLabel(plan = "") {
+  const normalized = String(plan || "").toLowerCase();
+  if (normalized === "enterprise") return "Enterprise";
+  if (normalized === "gold") return "Gold";
+  if (normalized === "silver") return "Silver";
+  return "Base";
 }
 
 function actionLabel(action) {
@@ -789,10 +803,12 @@ function actionLabel(action) {
 
 function planGuidanceResponse(response = {}, context = {}) {
   const plan = String(context.subscriptionPlan || "base").toLowerCase();
-  if (plan === "gold" || !response?.action) return response;
+  if (isGoldPlan(context) || !response?.action) return response;
   const label = actionLabel(response.action);
   const prefix = plan === "silver"
     ? "Nel piano Silver Nyra ti assiste e ti indica il percorso, ma non opera direttamente sui moduli."
+    : plan === "enterprise"
+      ? "Nel piano Enterprise Nyra lavora sopra il gestionale come guida operativa, ma ogni azione sensibile resta confermata dall'operatore."
     : "Nel piano Base Nyra resta assistente tecnico: ti guida, ma non opera direttamente sui moduli.";
   return {
     mode: "answer",
@@ -928,8 +944,8 @@ class AssistantService {
     const currentPlan = this.desktopMirror?.getPlanLevel
       ? this.desktopMirror.getPlanLevel(session)
       : String(session?.subscriptionPlan || "base").toLowerCase();
-    const goldCapabilities = currentPlan === "gold" ? this.getGoldCapabilitiesSafe(session) : null;
-    const goldDecisionContext = currentPlan === "gold" ? this.getGoldDecisionContextSafe(session) : null;
+    const goldCapabilities = isGoldPlan({ subscriptionPlan: currentPlan }) ? this.getGoldCapabilitiesSafe(session) : null;
+    const goldDecisionContext = isGoldPlan({ subscriptionPlan: currentPlan }) ? this.getGoldDecisionContextSafe(session) : null;
 
     return {
       centerId: String(session?.centerId || ""),
@@ -1141,7 +1157,7 @@ class AssistantService {
 
   buildSmartPriorityAnswer(context) {
     const plan = String(context.subscriptionPlan || "base").toLowerCase();
-    if (plan !== "gold") {
+    if (!isGoldPlan(context)) {
       if (plan === "silver") {
         return [
           "Nel piano Silver posso guidarti nei moduli e nella lettura dei report, ma non genero priorità AI.",
@@ -1162,7 +1178,7 @@ class AssistantService {
         "2. Crea o cerca un cliente.",
         "3. Apri Cassa e controlla gli incassi.",
         "",
-        "Gli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold."
+        "Gli alert decisionali, recall prioritari e letture AI sono disponibili nel piano Gold/Enterprise."
       ].join("\n");
     }
     const goldContext = context.goldDecisionContext || {};
@@ -1613,12 +1629,13 @@ class AssistantService {
     }
 
     if (route.category === "gold_decision_required") {
+      const isGoldOrEnterprise = isGoldPlan(context);
       return withAssistantDebug({
         mode: "support",
-        message: context.subscriptionPlan === "gold"
+        message: isGoldOrEnterprise
           ? "Questa è una lettura Gold: apro AI Gold, dove Core/Nyra leggono priorità, blocchi e prossima azione senza inventare dati."
           : "La lettura decisionale del centro è una funzione Gold. Posso guidarti nei moduli disponibili del tuo piano.",
-        actions: sanitizeSupportActions([supportAction(context.subscriptionPlan === "gold" ? "Apri AI Gold" : "Vedi piano Gold", context.subscriptionPlan === "gold" ? "/ai-gold" : "/settings", context.subscriptionPlan === "gold" ? "ai_gold" : "upgrade")], context),
+        actions: sanitizeSupportActions([supportAction(isGoldOrEnterprise ? "Apri AI Gold" : "Vedi piano Gold", isGoldOrEnterprise ? "/ai-gold" : "/settings", isGoldOrEnterprise ? "ai_gold" : "upgrade")], context),
         plan: context.subscriptionPlan
       }, route, "gold_decision_required");
     }

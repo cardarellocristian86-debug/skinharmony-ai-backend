@@ -184,7 +184,7 @@ class FleetIntelligenceLayer {
   buildCenterAlerts(center = {}, state = null, pial = null) {
     const components = state?.components || {};
     const alerts = [];
-    if (!state && center.plan === "gold") {
+    if (!state && ["gold", "enterprise"].includes(String(center.plan || "").toLowerCase())) {
       alerts.push({ level: "critical", type: "missing_state", message: "Gold State non disponibile" });
     }
     if (state && state.metadata?.validation?.valid === false) {

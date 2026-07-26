@@ -32,10 +32,17 @@ function fail(id, detail, evidence = {}) {
   return issue(id, "fail", "high", detail, evidence);
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function routeSupported(bundleText, action) {
   const normalized = text(action);
   if (!normalized) return false;
-  return bundleText.includes(`case"${normalized}"`) || bundleText.includes(`case "${normalized}"`);
+  const quotedAction = new RegExp(String.raw`(['"])${escapeRegExp(normalized)}\1`);
+  return bundleText.includes(`case"${normalized}"`)
+    || bundleText.includes(`case "${normalized}"`)
+    || quotedAction.test(bundleText);
 }
 
 function readActiveFrontendBundle(rootDir) {
@@ -44,10 +51,21 @@ function readActiveFrontendBundle(rootDir) {
   const match = html.match(/<script[^>]+type="module"[^>]+src="\/assets\/([^"]+\.js)"/)
     || html.match(/src="\/assets\/(index-[^"]+\.js)"/);
   const bundlePath = match ? path.join(rootDir, "public", "assets", match[1]) : "";
+  const appRoots = [rootDir, path.join(rootDir, "smartdesk-live")];
+  const sourcePaths = appRoots.flatMap((baseDir) => [
+    path.join(baseDir, "src", "AssistantService.js"),
+    path.join(baseDir, "public", "preview-shell", "app.js"),
+    path.join(baseDir, "public", "preview-shell", "views", "clients.js"),
+    path.join(baseDir, "public", "preview-shell", "views", "profitability.js"),
+    path.join(baseDir, "public", "preview-shell", "views", "settings.js")
+  ]);
   return {
     indexPath,
     bundlePath,
-    bundleText: bundlePath && fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, "utf8") : ""
+    bundleText: [
+      bundlePath && fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, "utf8") : "",
+      ...sourcePaths.filter((filePath) => fs.existsSync(filePath)).map((filePath) => fs.readFileSync(filePath, "utf8"))
+    ].join("\n")
   };
 }
 
