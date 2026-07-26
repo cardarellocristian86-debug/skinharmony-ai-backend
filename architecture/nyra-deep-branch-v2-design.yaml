@@ -1,0 +1,685 @@
+schema_version: nyra_deep_branch_architecture_v2_design_v1
+architecture_version: 2.0.0
+document_type: implementation_contract
+service: skinharmony-nyra-core
+authority: universal_core
+scope:
+  repository: cardarellocristian86-debug/skinharmony-ai-backend
+  runtime_boundary: personal-control-center
+  tenant_boundary: authenticated_tenant_only
+  deployment_authorized: false
+  release_gate:
+    required_core_verdict: ALLOW
+    explicit_owner_confirmation_required: true
+
+design_goals:
+  - Preserve every V1 request field, response field, branch identifier, subbranch identifier, default route and Core binding.
+  - Add operational depth only where an independently testable problem, contract, fallback and verifier exist.
+  - Keep branch opening, policy evaluation, conflict resolution and action authorization under Universal Core.
+  - Make tenant isolation, evidence requirements and rollback deterministic before any model-assisted reasoning.
+  - Reject the complete V2 catalog at load time when any admitted node is invalid.
+
+compatibility:
+  v1_baseline:
+    catalog_schema: nyra_neural_branch_network_v1
+    route_schema: nyra_neural_branch_route_v1
+    runtime_schema: nyra_deep_cloud_runtime_v1
+    catalog_function: nyraBranchCatalog
+    route_function: routeNyraBranches
+    runtime_function: buildDeepNyraRuntime
+    existing_endpoint: /v1/nira/branches
+    bridge_endpoint: /v1/nira/core-bridge
+  invariants:
+    - V1 code paths execute first and remain the source of top-level branch authorization.
+    - When the V2 global gate is false, returned V1 payloads are structurally and semantically unchanged.
+    - A V2 node cannot open a V1 branch, subbranch or domain pack that V1 and Core did not authorize.
+    - Existing nyra_branches request semantics and the twenty-item request limit remain unchanged.
+    - Product branches remain available only through the domain pack resolved from the authenticated key.
+    - V2 output is additive and namespaced under nyra_deep_branch_v2 only for an allowlisted tenant.
+    - No V2 route can set execution_authorized or execution_allowed to true.
+    - A V1 compatibility regression is mandatory in every admitted L2, L3 and L4 contract.
+  additive_interfaces:
+    catalog_endpoint: /api/nyra/runtime/v2/catalog
+    validation_endpoint: /api/nyra/runtime/v2/validation
+    bridge_response_path: deep_branch_v2
+    catalog_response_path: catalog
+    disabled_behavior: Return the existing V1 response without a V2 namespace.
+    shadow_behavior: Emit an audit-safe V2 route comparison without changing V1 selection, reply or authorization.
+    active_behavior: Expose approved deep advisory results while V1 and Universal Core retain routing and action authority.
+
+hierarchy:
+  maximum_depth: 4
+  levels:
+    - level: 0
+      name: branch
+      source: live_v1_catalog
+      contract_required: false
+      responsibility: Defines a stable horizontal or authorized domain capability boundary.
+    - level: 1
+      name: subbranch
+      source: live_v1_catalog
+      contract_required: false
+      responsibility: Preserves the existing V1 task partition and compatibility surface.
+    - level: 2
+      name: specialized_capability
+      source: approved_v2_contract_catalog
+      contract_required: true
+      responsibility: Solves one distinct problem inside one V1 subbranch.
+    - level: 3
+      name: micro_capability
+      source: approved_v2_contract_catalog
+      contract_required: true
+      responsibility: Performs one bounded, observable unit of the parent specialized capability.
+    - level: 4
+      name: operational_primitive
+      source: approved_v2_contract_catalog
+      contract_required: true
+      permitted_node_types:
+        - method
+        - strategy
+        - verifier
+        - metric
+      responsibility: Executes or measures one deterministic primitive used by its L3 parent.
+  identifier_rules:
+    branch_id: branch
+    level_1_parent_id: branch.subbranch
+    level_2_id: branch.subbranch.specialized_capability
+    level_3_id: branch.subbranch.specialized_capability.micro_capability
+    level_4_id: branch.subbranch.specialized_capability.micro_capability.operational_primitive
+    segment_pattern: "^[a-z][a-z0-9_]{1,63}$"
+    global_uniqueness_required: true
+  graph_invariants:
+    - Every L2 parent resolves to an existing L1 entry in the live V1 catalog.
+    - Every L3 parent resolves to an admitted L2 contract.
+    - Every L4 parent resolves to an admitted L3 contract.
+    - parent_id equals the node id with its final segment removed.
+    - branch_id equals the first identifier segment and the resolved V1 ancestor.
+    - Level skipping, orphan nodes, cycles and cross-branch parentage are invalid.
+    - Sibling nodes must differ in problem_solved, activation, output and verifier semantics.
+    - A textual rename, generic wrapper or copied contract is not a distinct node.
+    - Each admitted L2 has at least one admitted L3 child.
+    - Each admitted L3 has at least one operational L4 child and at least one verifier or metric L4 child.
+
+admission:
+  catalog_policy: all_nodes_must_pass
+  schema_reference: ./nyra-deep-branch-v2-contract.schema.json
+  required_contract_fields:
+    - id
+    - parent_id
+    - branch_id
+    - level
+    - node_type
+    - purpose
+    - problem_solved
+    - failure_modes
+    - input_schema
+    - output_schema
+    - activation_conditions
+    - non_activation_conditions
+    - dependencies
+    - required_context
+    - required_evidence
+    - core_policy_bindings
+    - tenant_scope
+    - risk_class
+    - confidence_method
+    - confidence_threshold
+    - methods
+    - strategies
+    - verifiers
+    - metrics
+    - routing
+    - fallback_node
+    - human_review_trigger
+    - audit_fields
+    - provenance_fields
+    - positive_tests
+    - negative_tests
+    - adversarial_tests
+    - regression_tests
+    - function_binding
+    - semantic_contract
+    - v1_compatibility
+    - rollback_reference
+    - feature_flag
+    - enabled
+    - version
+    - supervisor_status
+  supervisor_checks:
+    - distinct_function
+    - real_problem
+    - independent_input_and_output
+    - explicit_activation_and_non_activation
+    - evidence_contract
+    - core_policy_binding
+    - risk_and_confidence
+    - executable_verifier
+    - measurable_metric
+    - resolvable_fallback
+    - audit_and_provenance
+    - executable_rollback
+    - positive_negative_adversarial_regression_tests
+    - v1_compatibility
+    - no_copied_contract
+    - no_semantic_duplicate
+    - core_evidence_manifest_binding
+    - core_policy_snapshot_binding
+    - recursive_closed_schema
+    - real_v1_input_output_golden
+  rejection_behavior:
+    node: Exclude the node and every descendant from the candidate artifact.
+    runtime_catalog: Reject the entire runtime catalog if a rejected, pending, orphaned or invalid node remains.
+    audit_event: nyra_deep_v2_catalog_rejected
+    serving_fallback: v1_only
+
+feature_flags:
+  parsing:
+    boolean_true_values:
+      - "true"
+      - "1"
+      - "yes"
+    list_separator: ","
+    unknown_mode_fallback: disabled
+    invalid_identifier_behavior: disable_v2_and_audit
+  flags:
+    NYRA_DEEP_BRANCH_V2_ENABLED:
+      type: boolean
+      safe_default: false
+      purpose: Global kill switch; false prevents loading and routing the V2 catalog.
+    NYRA_DEEP_BRANCH_V2_MODE:
+      type: enum
+      values:
+        - shadow
+        - active
+      safe_default: shadow
+      purpose: Shadow records comparisons; active may return deep advisory output.
+    NYRA_DEEP_BRANCH_V2_BRANCHES:
+      type: csv_branch_ids
+      safe_default: no_branches
+      purpose: Restricts V2 evaluation to an explicit set of V1 branch identifiers.
+    NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST:
+      type: csv_tenant_ids
+      safe_default: no_tenants
+      purpose: Restricts V2 to authenticated tenants selected by server configuration.
+  effective_gate:
+    all_required:
+      - NYRA_DEEP_BRANCH_V2_ENABLED is true.
+      - Mode is shadow or active.
+      - Authenticated tenant_id is present in NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST.
+      - V1 branch_id is present in NYRA_DEEP_BRANCH_V2_BRANCHES.
+      - Catalog validation and hash verification succeeded.
+      - Node enabled is true and supervisor_status is APPROVED.
+    client_override_allowed: false
+    request_header_override_allowed: false
+
+loader:
+  canonical_runtime_format: json
+  human_review_format: yaml
+  loading_order:
+    - Resolve the authenticated tenant and domain pack without using request-provided tenant values.
+    - Build and validate the live V1 catalog.
+    - Evaluate the global, tenant and branch feature gates.
+    - Read the immutable V2 manifest bundled with the service release.
+    - Validate the manifest against the JSON Schema.
+    - Validate graph ancestry, V1 parent existence, uniqueness, fallback reachability and absence of cycles.
+    - Validate semantic fingerprints for purpose, problem, activation, output, verifier and metric duplication.
+    - Verify Supervisor approval and the stored SHA-256 contract hash for every node.
+    - Recompute each semantic_contract over problem, purpose, evidence claims, failure signatures, method, strategy, verifier, metric and Core policy bindings.
+    - Require 1,434 unique semantic program hashes and reject any drift or duplicate.
+    - Build immutable indexes by id, parent_id, branch_id, node_type, feature flag and risk class.
+    - Publish the new in-memory catalog atomically only after all checks pass.
+  failure_policy:
+    partial_load_allowed: false
+    previous_valid_catalog_retained: true
+    first_load_failure: v1_only
+    external_catalog_fetch_allowed: false
+    model_call_during_load_allowed: false
+    error_detail_exposure: audit_only
+  hot_reload:
+    enabled: false
+    reason: Catalog changes require reviewed source, CI evidence and a service release.
+
+semantic_validation:
+  executable_programs:
+    evidence:
+      kind: evidence_claim_gate_v1
+      binds:
+        - capability_spec_hash
+        - required_claim_hash
+        - required_content_tag
+        - subject_hash
+        - record_hashes
+        - core_manifest_hash
+    method:
+      kind: capability_method_program_v2
+      binds:
+        - capability_spec_hash
+        - semantic_function_hash
+        - execution_plan_hash
+        - observation_contract_hash
+        - registry_derived_operation
+        - role_projection
+        - consumed_input_fields
+        - semantic_observation_digest
+        - evidence_digest
+        - failure_detector
+    strategy:
+      kind: strategy_gate_v1
+      exact_predicates:
+        - method.valid
+        - semantic_observation.valid
+        - evidence.coverage_eq_1
+        - policy.allows
+        - input.valid
+      capability_specific:
+        - problem_resolution_case
+        - missing_evidence_case
+        - observed_failure_case
+        - boundary_violation_case
+    verifier:
+      kind: verifier_gate_v1
+      exact_checks:
+        - output_schema_valid
+        - input_consumed
+        - semantic_observation_verified
+        - function_registry_bound
+        - evidence_content_verified
+        - evidence_hashes_verified
+        - policy_allows
+        - method_valid
+        - strategy_selected
+        - failure_flags_empty
+        - finding_not_contract_text
+    metric:
+      kind: metric_formula_v1
+      binds:
+        - semantic_function_hash
+        - assertion_population
+        - eligibility_assertion
+        - numerator_assertions
+        - denominator_assertions
+        - formula
+        - source_fields
+        - threshold_operator
+        - target
+        - unit
+    mutation_policy:
+      recomputed_hashes_are_not_sufficient: true
+      exact_recursive_envelopes_required: true
+      coherent_program_rebinding_must_fail_closed: true
+  function_registry:
+    schema_version: nyra_deep_branch_function_registry_v1
+    cardinality: 1434
+    source: 239_research_rows_compiled_across_six_operational_roles
+    immutable_binding:
+      - research_sha256
+      - source_snapshot_sha256
+      - registry_hash
+      - source_row_hash
+      - semantic_function_hash
+      - execution_plan_hash
+      - observation_contract_hash
+    semantic_observation:
+      exact_fields:
+        - function_hash
+        - problem_resolution
+        - evidence_support
+        - failure_absence
+        - boundary_preservation
+        - artifact_refs
+      evidence_join_required: true
+      free_text_record_allowed: false
+  duplicate_detection:
+    normalized_fields:
+      - problem_solved
+      - purpose
+      - activation_conditions
+      - output_schema
+      - verifiers
+      - metrics
+    exact_duplicate_action: reject
+    high_similarity_action: require_supervisor_rejection_or_documented_distinction
+    distinction_fields:
+      - different_problem
+      - different_activation_signal
+      - different_output_contract
+      - different_failure_mode
+      - different_verifier
+      - different_metric
+  contract_copy_detection:
+    ignore_fields:
+      - id
+      - parent_id
+      - branch_id
+      - version
+      - feature_flag
+    identical_structural_fingerprint_action: reject_both_pending_supervisor_review
+  fallback_validation:
+    maximum_hops: 4
+    cycles_allowed: false
+    cross_tenant_target_allowed: false
+    terminal_targets:
+      - core:abstain
+      - core:human_review
+      - v1:<branch>/<subbranch>
+
+routing:
+  deterministic_preconditions:
+    - Mandatory work_preflight completed for the authenticated tenant.
+    - V1 route completed and Universal Core opened the parent branch.
+    - Domain pack entitlement passed.
+    - Required context and evidence are tenant-scoped and schema-valid.
+    - Non-activation conditions are evaluated before activation conditions.
+    - Core policy bindings are evaluated before confidence scoring.
+  pipeline:
+    - stage: v1_route
+      owner: universal_core
+      output: authorized V1 branches and product-pack boundary
+    - stage: l1_selection
+      owner: nyra_v2_router
+      output: eligible existing V1 subbranches
+      constraint: Selection cannot add a subbranch outside an opened V1 branch.
+    - stage: l2_candidate_filter
+      owner: nyra_v2_router
+      output: specialized capabilities whose activation conditions match
+      constraint: A matching non-activation condition vetoes activation.
+    - stage: l3_context_resolution
+      owner: nyra_v2_router
+      output: micro capabilities with complete required context and evidence
+      constraint: Missing required evidence selects the node fallback.
+    - stage: l4_primitive_selection
+      owner: nyra_v2_router
+      output: bounded methods, strategies, verifiers and metrics
+      constraint: At least one verifier and metric must be selected for an operational path.
+    - stage: confidence_gate
+      owner: nyra_v2_validator
+      output: admitted, fallback or abstain
+      constraint: Confidence below the node threshold cannot produce an admitted result.
+    - stage: core_join
+      owner: universal_core
+      output: final advisory route and policy verdict
+      constraint: Conflicts, high risk and human-review triggers are resolved by Core.
+  precedence:
+    - core_deny
+    - tenant_or_domain_deny
+    - non_activation_match
+    - missing_context_or_evidence
+    - confidence_below_threshold
+    - verifier_failure
+    - node_fallback
+    - core_human_review
+    - admitted_advisory_result
+  concurrency:
+    maximum_parallel_branches: 6
+    maximum_parallel_model_calls: 2
+    parallelism_unit: independent_branch_advisory
+    shared_mutable_state_allowed: false
+    join_authority: universal_core
+  model_call_gate:
+    deterministic_routing_first: true
+    tenant_minimization_required: true
+    evidence_storage_before_call: true
+    policy_evaluation_before_call: true
+    a_model_may_open_or_authorize_nodes: false
+
+core_authority:
+  always_core_owned:
+    - authenticated_tenant_resolution
+    - domain_pack_resolution
+    - branch_opening
+    - policy_verdict
+    - risk_escalation
+    - cross_branch_conflict_resolution
+    - human_review_requirement
+    - action_authorization
+    - learning_consolidation
+    - release_and_deploy_gate
+  node_output_class: advisory_evidence
+  prohibited_node_effects:
+    - tenant_write
+    - external_message
+    - payment
+    - publication
+    - deployment
+    - credential_issue_or_rotation
+    - runtime_self_modification
+    - automatic_policy_change
+  high_impact_action_requirements:
+    - Core verdict ALLOW.
+    - Explicit owner confirmation bound to the exact action and revision.
+    - Audit event persisted.
+    - Rollback path verified.
+
+tenant_isolation:
+  authoritative_scope_source: authenticated_core_key
+  request_tenant_field_trusted: false
+  minimum_partition_keys:
+    - tenant_id
+    - domain_pack_id
+    - catalog_version
+  cache_key_components:
+    - tenant_id
+    - branch_id
+    - node_id
+    - contract_version
+    - evidence_digest
+  cross_tenant_memory_allowed: false
+  cross_tenant_evidence_allowed: false
+  cross_tenant_route_replay_allowed: false
+  catalog_contains_tenant_secrets: false
+  violation_behavior:
+    route: deny
+    result: core:abstain
+    audit_event: nyra_deep_v2_tenant_isolation_denied
+
+fallback:
+  activation_triggers:
+    - required_context_missing
+    - required_evidence_missing_or_stale
+    - confidence_below_threshold
+    - verifier_failed
+    - dependency_unavailable
+    - core_policy_denied
+    - human_review_required
+  resolution:
+    - Resolve fallback_node inside the same authenticated tenant scope.
+    - Reject cycles and stop after four hops.
+    - Re-evaluate policy, evidence and confidence for every V2 fallback.
+    - A V1 fallback returns to the exact existing branch and subbranch without deep activation.
+    - core:human_review returns no operational result.
+    - core:abstain is the fail-closed terminal.
+  forbidden_behavior:
+    - Silently lowering a confidence threshold.
+    - Dropping a policy binding.
+    - Switching tenant, domain pack or branch.
+    - Treating missing evidence as positive evidence.
+
+serialization:
+  canonicalization:
+    format: canonical_json
+    encoding: UTF-8
+    key_order: lexicographic
+    number_format: finite_json_numbers_only
+    duplicate_keys_allowed: false
+    digest: SHA-256
+  route_record:
+    required_fields:
+      - schema_version
+      - catalog_version
+      - mode
+      - tenant_scope_digest
+      - v1_route_digest
+      - selected_node_ids
+      - fallback_trace
+      - verifier_results
+      - metric_results
+      - core_policy_snapshot_hash
+      - evidence_digest
+      - route_digest
+      - execution_allowed
+    forbidden_fields:
+      - raw_credentials
+      - provider_tokens
+      - unredacted_personal_data
+      - cross_tenant_memory
+  shadow_record:
+    response_changes_allowed: false
+    audit_payload:
+      - would_select_node_ids
+      - would_fallback
+      - confidence_deltas
+      - verifier_deltas
+      - latency_ms
+      - disagreement_with_v1
+
+audit_and_provenance:
+  append_only: true
+  audit_minimum:
+    - tenant_id
+    - request_id
+    - node_id
+    - contract_version
+    - catalog_version
+    - activation_trace
+    - core_verdict
+    - timestamp
+  provenance_minimum:
+    - contract_hash
+    - source_refs
+    - evidence_hashes
+    - route_trace
+    - policy_snapshot_hash
+  data_minimization: Store hashes and bounded references unless raw evidence retention is explicitly authorized.
+  secret_redaction_required: true
+
+rollback:
+  order:
+    - Set NYRA_DEEP_BRANCH_V2_MODE to shadow for behavioral rollback with continued observation.
+    - Set NYRA_DEEP_BRANCH_V2_ENABLED to false for the global kill switch.
+    - Remove the affected tenant from NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST.
+    - Remove the affected branch from NYRA_DEEP_BRANCH_V2_BRANCHES.
+    - Restore the last validated catalog artifact and matching digest.
+    - Redeploy only after Core ALLOW and explicit owner confirmation.
+  guarantees:
+    - Disabling V2 requires no V1 data migration.
+    - V1 catalog, router and runtime remain deployable independently.
+    - In-flight V2 work cannot become externally executable during rollback.
+    - Learning candidates produced by a rolled-back catalog remain quarantined.
+  verification:
+    - V1 route golden tests pass with V2 disabled.
+    - Shadow and active modes never set execution_allowed true.
+    - Catalog version pin and digest match the restored artifact.
+    - Tenant allowlist removal takes effect without cross-tenant cache residue.
+    - Fallback reaches V1 or Core abstention within four hops.
+
+performance:
+  deterministic_router_p95_budget_ms: 25
+  catalog_load_budget_ms: 500
+  catalog_validation_frequency: startup_once
+  request_time_remote_catalog_calls: 0
+  request_time_model_calls_before_policy: 0
+  maximum_fallback_hops: 4
+  benchmark_dimensions:
+    - catalog_node_count
+    - selected_branch_count
+    - candidate_node_count
+    - fallback_depth
+    - tenant_allowlist_size
+    - shadow_vs_active
+
+responsibility_mapping:
+  research_agent:
+    owns:
+      - use_cases
+      - failure_modes
+      - overlap_analysis
+      - capability_distinction
+      - source_evidence
+    cannot:
+      - approve_nodes
+      - alter_core_policy
+      - authorize_runtime_or_deploy
+    deliverables:
+      - research/<branch_id>.md
+  architecture_agent:
+    owns:
+      - hierarchy_and_identifiers
+      - independent_node_contracts
+      - schema
+      - routing_and_loader_design
+      - fallback_and_rollback_design
+      - v1_compatibility_mapping
+    cannot:
+      - self_approve_nodes
+      - authorize_runtime_or_deploy
+    deliverables:
+      - architecture/nyra-deep-branch-v2-design.yaml
+      - architecture/nyra-deep-branch-v2-contract.schema.json
+  verification_agent:
+    owns:
+      - verifier_implementations
+      - metrics
+      - benchmarks
+      - positive_negative_adversarial_regression_tests
+      - tenant_isolation_tests
+      - core_policy_tests
+    cannot:
+      - waive_failed_checks
+      - authorize_runtime_or_deploy
+    deliverables:
+      - verification/nyra-deep-branch-v2-verification.json
+  supervisor_agent:
+    owns:
+      - semantic_distinctness_review
+      - copied_contract_detection
+      - checklist_enforcement
+      - approve_or_reject_decision
+      - final_catalog_admission
+    cannot:
+      - waive_required_contract_fields
+      - authorize_deploy_without_core_and_owner
+    deliverables:
+      - supervisor/nyra-deep-branch-v2-supervisor-report.json
+  universal_core:
+    owns:
+      - final_runtime_policy_verdict
+      - tenant_and_domain_authority
+      - branch_opening
+      - conflict_resolution
+      - action_and_release_gate
+    final_authority: true
+
+implementation_boundaries:
+  catalog:
+    responsibility: Store approved immutable L2-L4 node contracts and their hashes.
+  schema:
+    responsibility: Reject missing, empty, malformed, unapproved or structurally generic contracts.
+  loader:
+    responsibility: Validate schema and graph, then atomically expose immutable indexes.
+  router:
+    responsibility: Select only descendants of Core-opened V1 branches through deterministic gates.
+  validator:
+    responsibility: Enforce semantic uniqueness, evidence, confidence, policy, fallback and Supervisor status.
+  runtime:
+    responsibility: Execute bounded advisory capabilities and collect verifier and metric results.
+  serializer:
+    responsibility: Emit canonical, audit-safe, versioned V2 records without changing disabled V1 payloads.
+  documentation:
+    responsibility: Explain flags, contracts, route decisions, failure states and rollback operations.
+  tests:
+    responsibility: Prove unit, integration, regression, isolation, fallback, performance, adversarial, deep routing, Core policy and learning behavior.
+
+release_readiness:
+  required_evidence:
+    - Complete approved V2 map for every live main branch in scope.
+    - JSON and YAML catalogs with matching canonical digest.
+    - Contract schema and zero validation errors.
+    - Full test suite and V1 golden regressions green.
+    - Tenant isolation and cross-tenant replay tests green.
+    - Performance benchmark within stated budgets.
+    - Verified feature-flag rollback to byte-compatible V1 behavior.
+    - Supervisor report with no pending or rejected node in the runtime catalog.
+    - PR ready and CI green.
+  stop_condition: release_gate
+  deploy_permitted: false
+  next_authority: universal_core_then_explicit_owner

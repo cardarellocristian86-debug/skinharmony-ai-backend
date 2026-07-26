@@ -86,6 +86,107 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.equal(contextCalls[2].input.agent_id, "nyra");
 });
 
+test("adds Nyra V2 shadow evidence without replacing the authoritative Core response", async () => {
+  const calls = [];
+  const authoritative = {
+    ok: true,
+    tenant_id: "tenant-a",
+    result: {
+      nyra_neural_network: {
+        opened_branches: [{ id: "context_intelligence" }, { id: "risk_governance" }],
+      },
+    },
+  };
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    nyraRuntimeUrl: "https://nyra.test",
+    nyraRuntimeApiKey: "nyra-v2-key",
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (new URL(url).hostname === "core.test") {
+        return new Response(JSON.stringify(authoritative), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "tenant-a",
+        execution_allowed: false,
+        core_router: authoritative,
+        deep_branch_v2: {
+          state: "shadow_v1_authoritative",
+          mode: "shadow",
+          selected_branches: [{ id: "risk_governance" }],
+          execution_authorized: false,
+          core_final_authority: true,
+          catalog_version: "2.0.0",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const result = await handlers.nyra_interpret_request({
+    message: "valuta il rischio",
+    session_id: "shadow-test",
+    nyra_branches: ["risk_governance"],
+  }, { tenantId: "tenant-a" });
+
+  assert.equal(result.structuredContent.tenant_id, "tenant-a");
+  assert.equal(result.structuredContent.deep_branch_v2.state, "shadow_compared_v1_authoritative");
+  assert.equal(result.structuredContent.deep_branch_v2.selected_authority, "V1");
+  assert.equal(result.structuredContent.deep_branch_v2.execution_authorized, false);
+  assert.deepEqual(calls.map((call) => `${new URL(call.url).hostname}${new URL(call.url).pathname}`), [
+    "core.test/v1/nira/core-bridge",
+    "nyra.test/api/nyra/runtime/interpret",
+  ]);
+  assert.equal(calls[0].init.headers.authorization, "Bearer tenant-a-key");
+  assert.equal(calls[1].init.headers.authorization, "Bearer nyra-v2-key");
+});
+
+test("keeps the successful V1 result when the Nyra V2 shadow is unavailable", async () => {
+  const authoritative = {
+    ok: true,
+    tenant_id: "tenant-a",
+    result: { nyra_neural_network: { opened_branches: [{ id: "context_intelligence" }] } },
+  };
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    nyraRuntimeUrl: "https://nyra.test",
+    nyraRuntimeApiKey: "nyra-v2-key",
+  }, {
+    fetchImpl: async (url) => {
+      if (new URL(url).hostname === "core.test") {
+        return new Response(JSON.stringify(authoritative), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: false, error: "offline" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const result = await handlers.nyra_interpret_request(
+    { message: "analizza", session_id: "fallback-test" },
+    { tenantId: "tenant-a" },
+  );
+
+  assert.equal(result.structuredContent.ok, true);
+  assert.equal(result.structuredContent.tenant_id, "tenant-a");
+  assert.equal(result.structuredContent.deep_branch_v2.state, "shadow_unavailable_v1_authoritative");
+  assert.equal(result.structuredContent.deep_branch_v2.selected_authority, "V1");
+  assert.equal(result.structuredContent.deep_branch_v2.execution_authorized, false);
+});
+
 test("uses the dedicated provider setup-link key only for its exact Core route", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

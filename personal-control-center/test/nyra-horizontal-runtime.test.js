@@ -14,6 +14,7 @@ test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   assert.equal(contract.neural_network.maximum_subbranches_per_branch, 20);
   assert.equal(contract.neural_network.maximum_parallel_branches, 6);
   assert.equal(contract.neural_network.join_authority, "universal_core");
+  assert.equal("deep_branch_v2" in contract.neural_network, false);
   assert.equal(contract.governed_learning.memory_source, "tenant_memory_fabric");
   assert.equal(contract.governed_learning.policy_activation_requires_verify, true);
   assert.equal(contract.governed_learning.free_weight_training, false);
@@ -35,9 +36,22 @@ test("Nyra proposes relevant branches but never opens or executes them locally",
   assert(result.core_request.nyra_branches.includes("execution_planning"));
   assert.equal(result.local_interpretation.branch_state, "proposed_waiting_for_core");
   assert.equal(result.local_interpretation.preflight_state, "mandatory_waiting_for_core");
+  assert.equal("deep_branch_v2" in result.local_interpretation, false);
   assert.equal(result.core_request.preflight_required, true);
   assert(result.local_interpretation.parallel_proposal.waves.every((wave) => wave.length <= MAX_PARALLEL_BRANCHES));
   assert.equal(result.local_interpretation.execution_allowed, false);
+});
+
+test("Nyra exposes Deep Branch V2 metadata only when the server-side feature gate is enabled", () => {
+  const runtime = createNyraHorizontalRuntime({
+    NYRA_DEEP_BRANCH_V2_ENABLED: "true",
+    NYRA_DEEP_BRANCH_V2_MODE: "shadow",
+  });
+  assert.equal(runtime.contract().neural_network.deep_branch_v2.enabled, true);
+  assert.equal(runtime.contract().neural_network.deep_branch_v2.core_final_authority, true);
+  const result = runtime.prepareInterpretation({ message: "Ricerca fonti e verifica evidenze" });
+  assert.equal(result.local_interpretation.deep_branch_v2.v1_fallback, "nyra_neural_branch_network_v1");
+  assert.equal(result.local_interpretation.deep_branch_v2.execution_allowed, false);
 });
 
 test("Nyra proposes work, parallel verification and learning branches as an agnostic graph", () => {

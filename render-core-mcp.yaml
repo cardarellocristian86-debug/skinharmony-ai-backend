@@ -45,6 +45,26 @@ services:
         value: "true"
       - key: NYRA_GOD_MODE_EMERGENCY_STOP
         value: "false"
+      - key: MCP_NYRA_DEEP_BRANCH_V2_PREVIEW_ENABLED
+        value: "false"
+      - key: MCP_NYRA_DEEP_BRANCH_V2_PREVIEW_TENANT_ALLOWLIST
+        value: codexai
+      - key: MCP_NYRA_DEEP_BRANCH_V2_PREVIEW_OAUTH_ONLY
+        value: "true"
+      # This read-only gate covers `nyra_v2_requirements`,
+      # `nyra_v2_evidence_prepare`, and `nyra_v2_evaluate`. Keep it off until
+      # the exact Core release/configuration action is ALLOWed, the owner has
+      # explicitly confirmed the scope, and the separate Core/Nyra gates pass.
+      - key: MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_ENABLED
+        value: "false"
+      - key: MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_TENANT_ALLOWLIST
+        value: codexai
+      - key: MCP_NYRA_DEEP_BRANCH_V2_EVALUATE_OAUTH_ONLY
+        value: "true"
+      # Render generates this once. MCP signs bounded V2 requests and Core
+      # consumes the same value through a private fromService reference.
+      - key: MCP_NYRA_DEEP_BRANCH_V2_REQUEST_SIGNING_SECRET
+        generateValue: true
       - key: UNIVERSAL_CORE_URL
         value: https://skinharmony-universal-core.onrender.com
       - key: UNIVERSAL_CORE_KEYS_JSON

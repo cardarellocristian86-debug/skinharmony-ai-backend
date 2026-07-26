@@ -15,6 +15,10 @@ const READ_ONLY_OPERATIONS = new Set([
   "core_health",
   "nyra_runtime_context",
   "nyra_branch_catalog",
+  "nyra_v2_preview",
+  "nyra_v2_requirements",
+  "nyra_v2_evidence_prepare",
+  "nyra_v2_evaluate",
 ]);
 
 const ROLE_CATALOG = Object.freeze([

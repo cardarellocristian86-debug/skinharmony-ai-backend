@@ -1,0 +1,18 @@
+{
+  "schema_version": "nyra_deep_branch_v2_rollback_verification_v1",
+  "generated_at": "2026-07-24T20:38:56.925Z",
+  "ok": true,
+  "catalog_fingerprint": "fbb0c0982dd963c8e3bab9cd70d8d63b07c7e170b39d85844ccae8c119482b19",
+  "rollback_checkpoint": "sha256:e5899ed88353d413317b0683f19db7280e7d8d049cf150a927d33cc8265c16bc",
+  "kill_switch": "NYRA_DEEP_BRANCH_V2_ENABLED=false",
+  "disabled_route_state": "disabled_v1_authoritative",
+  "fallback": "nyra_neural_branch_network_v1",
+  "execution_authorized": false,
+  "verification_steps": [
+    "Set NYRA_DEEP_BRANCH_V2_ENABLED=false.",
+    "Confirm the V2 route reports disabled_v1_authoritative.",
+    "Confirm fallback is nyra_neural_branch_network_v1.",
+    "Confirm execution_authorized remains false.",
+    "Re-enable only after Universal Core ALLOW and explicit owner confirmation."
+  ]
+}

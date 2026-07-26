@@ -39,7 +39,7 @@ test("publishes only a verifiable build identity", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.11.7-native-provider-preflight");
+  assert.equal(health.version, "0.11.9-nyra-v2-evaluate");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -175,11 +175,15 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
   assert.match(body.result.instructions, /Never call work_preflight before provider status/i);
   assert.match(body.result.instructions, /bounded_execution_ready=true/);
+  assert.match(body.result.instructions, /NYRA V2 EVALUATION/);
 }));
 
-test("keeps only the bounded provider control plane outside generic shared-memory preflight", () => {
+test("keeps native provider and attested V2 read-only controls outside generic shared-memory preflight", () => {
   for (const name of [
     "work_preflight",
+    "nyra_v2_preview",
+    "nyra_v2_evidence_prepare",
+    "nyra_v2_evaluate",
     "tenant_provider_openai_status",
     "tenant_provider_openai_setup_panel",
     "tenant_provider_openai_setup_link",
