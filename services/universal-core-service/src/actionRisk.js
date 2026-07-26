@@ -7,15 +7,11 @@ const HIGH_CONFIRM_PATTERNS = [
   /\bpermission\b|\bpermess[oi]\b/i,
 ];
 
-function textOf(body = {}) {
+function intentTextOf(body = {}) {
   return [
     body.action_type,
-    body.action_label,
     body.operation_class,
-    body.task,
-    body.request,
     body.action?.type,
-    body.action?.label,
   ].map((value) => String(value || "").toLowerCase().replace(/[_-]+/g, " ")).join(" ");
 }
 
@@ -54,7 +50,10 @@ function profile({
 }
 
 export function classifyActionRisk(body = {}) {
-  const text = textOf(body);
+  // Security classification must use structured intent only. Human-readable
+  // labels often describe a blocked condition (for example while fixing it)
+  // and must not accidentally become the condition being classified.
+  const text = intentTextOf(body);
   const secretExposure = body.contains_secret === true ||
     /\b(expose|show|display|print|mostra|stampa|rivela)\b.*\b(secret|token|password|credential|api[_ -]?key|chiave)\b/i.test(text) ||
     /\bsuite pay key\b/i.test(text);
@@ -104,22 +103,70 @@ export function classifyActionRisk(body = {}) {
 
   const operationClass = String(body.operation_class || "").toLowerCase();
   const actionType = String(body.action_type || body.action?.type || "").toLowerCase();
-  const learningOperation = ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record"].includes(operationClass) ||
-    ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record", "activate_unverified_learning"].includes(actionType);
-  const explicitlyUnverified = body.verified_outcome === false;
-  const unverifiedLearning = (learningOperation && explicitlyUnverified) ||
-    /\b(unverified learning|apprend(?:imento|ere).{0,24}non verific|without verified outcome)\b/i.test(text);
-  if (unverifiedLearning) {
+  const legalViolation = body.legal_violation === true || actionType === "perform_illegal_action";
+  if (legalViolation) {
     return profile({
-      classification: "unverified_learning",
-      operationClass: "forbidden_unverified_learning",
+      classification: "legal_violation",
+      operationClass: "forbidden_legal_action",
       state: "blocked",
       riskBand: "high",
-      riskScore: 90,
+      riskScore: 100,
       controlLevel: "blocked",
       confirmationRequired: false,
       hardBlock: true,
-      reasonCodes: ["unverified_learning_denied"],
+      reasonCodes: ["legal_violation_denied"],
+    });
+  }
+
+  const missingTargetAuthority = body.target_authority_verified === false ||
+    body.actor_authorized_for_target === false;
+  if (missingTargetAuthority) {
+    return profile({
+      classification: "missing_target_authority",
+      operationClass: "forbidden_unauthorized_target_action",
+      state: "blocked",
+      riskBand: "high",
+      riskScore: 100,
+      controlLevel: "blocked",
+      confirmationRequired: false,
+      hardBlock: true,
+      reasonCodes: ["target_authority_required"],
+    });
+  }
+
+  const learningOperation = ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record"].includes(operationClass) ||
+    ["learning_update", "learning_consolidation", "outcome_record", "verified_outcome_record", "activate_unverified_learning"].includes(actionType);
+  const falseVerifiedOutcomeWrite = ["outcome_record", "verified_outcome_record"].includes(operationClass) &&
+    body.verified_outcome !== true;
+  if (falseVerifiedOutcomeWrite) {
+    return profile({
+      classification: "false_verified_outcome_write",
+      operationClass: "forbidden_false_verified_outcome_write",
+      state: "blocked",
+      riskBand: "high",
+      riskScore: 100,
+      controlLevel: "blocked",
+      confirmationRequired: false,
+      hardBlock: true,
+      reasonCodes: ["verified_outcome_integrity_required"],
+    });
+  }
+
+  const unverifiedLearning = learningOperation && body.verified_outcome !== true;
+  if (unverifiedLearning) {
+    return profile({
+      classification: "unverified_learning_change",
+      operationClass: "owner_confirmed_unverified_learning_change",
+      state: "attention",
+      riskBand: "high",
+      riskScore: 90,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: [
+        "owner_confirmation_required",
+        "unverified_learning_requires_explicit_confirmation",
+        "rollback_and_audit_required",
+      ],
     });
   }
 
@@ -246,9 +293,15 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
-  const safeRead = body.read_only === true ||
-    (/\b(read|list|get|status|health|audit|preview|inspect|leggi|elenca|stato|anteprima)\w*/i.test(text) &&
-      body.external_side_effect !== true && body.configuration_changes !== true);
+  const effectFree = body.external_side_effect !== true &&
+    body.configuration_changes !== true &&
+    body.destructive !== true &&
+    body.cross_tenant !== true &&
+    body.contains_secret !== true;
+  const safeRead = effectFree && (
+    body.read_only === true ||
+    /\b(read|list|get|status|health|audit|preview|inspect|leggi|elenca|stato|anteprima)\w*/i.test(text)
+  );
   if (safeRead) {
     return profile({
       classification: "tenant_scoped_read",
@@ -262,8 +315,11 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
-  const sandboxed = body.dry_run === true || /\b(analy[sz]e|analizz|test|verify|verifica|prepare|prepara|patch|plan|piano)\w*/i.test(text);
-  if (sandboxed && body.external_side_effect !== true) {
+  const sandboxed = effectFree && (
+    body.dry_run === true ||
+    /\b(analy[sz]e|analizz|test|verify|verifica|prepare|prepara|patch|plan|piano)\w*/i.test(text)
+  );
+  if (sandboxed) {
     return profile({
       classification: "sandboxed_scoped_work",
       operationClass: "sandboxed_scoped_work",
@@ -278,13 +334,13 @@ export function classifyActionRisk(body = {}) {
 
   return profile({
     classification: "governed_action",
-    operationClass: body.operation_class || "evaluation_only",
+    operationClass: body.operation_class || "owner_confirmed_governed_action",
     state: "attention",
     riskBand: "medium",
     riskScore: 50,
     controlLevel: "confirm",
     confirmationRequired: true,
-    governanceVerdict: "DEFER",
+    governanceVerdict: "CONFIRM",
     reasonCodes: ["insufficient_action_context"],
   });
 }
