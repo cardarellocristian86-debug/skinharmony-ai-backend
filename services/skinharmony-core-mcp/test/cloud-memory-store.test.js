@@ -71,3 +71,19 @@ test("canonical bootstrap lookup uses exact tenant-scoped source paths", async (
   assert.deepEqual(inspect.params, ["codexai", paths]);
   assert.deepEqual(fetch.params, ["codexai", paths]);
 });
+
+test("project run lookup is prefix bounded and tenant scoped", async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      return { rows: [] };
+    },
+  };
+  const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.listBySourcePrefix("tenant-a", "PROJECTS/alpha_100%/RUNS/", 80);
+  const call = calls.at(-1);
+  assert.match(call.sql, /tenant_id = \$1 AND source_path LIKE \$2 ESCAPE/);
+  assert.deepEqual(call.params, ["tenant-a", "PROJECTS/alpha\\_100\\%/RUNS/%", 50]);
+  await assert.rejects(store.listBySourcePrefix("tenant-a", "../tenant-b/"), /memory_source_path_invalid/);
+});

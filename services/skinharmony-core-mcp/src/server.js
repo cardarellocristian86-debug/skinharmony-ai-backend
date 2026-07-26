@@ -6,6 +6,7 @@ import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
+import { createProjectContextService } from "./project-context-service.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
@@ -15,6 +16,7 @@ import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
+const projectContextService = createProjectContextService(cloudMemoryStore);
 const decisionLedger = createDecisionLedger(config);
 if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
@@ -26,6 +28,7 @@ const collaborationHandlers = (config.agentWorkspaceRoot || config.collaboration
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
+  projectContextService,
 });
 const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
 const researchCortex = config.researchCortexRoot
@@ -46,6 +49,7 @@ const PROVIDER_ONBOARDING_EXEMPT_TOOLS = new Set([
   "tenant_provider_openai_setup_link",
   "tenant_provider_openai_multi_agent_run_read",
   "tenant_provider_openai_multi_agent_run_cancel",
+  "project_context_review_commit",
 ]);
 
 function summarizeToolRequest(toolName, args = {}) {
