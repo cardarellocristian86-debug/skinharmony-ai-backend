@@ -26,6 +26,77 @@ test("authorizes low-risk tenant reads and sandboxed preparation", () => {
   assert.equal(evaluate({ action_type: "prepare_patch", dry_run: true }).authorization.allowed, true);
 });
 
+test("authorizes a generic governed mutation only after exact owner-bound confirmation", () => {
+  const base = {
+    action_type: "governance_maintenance",
+    operation_class: "owner_confirmed_governed_action",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    owner_context_verified: true,
+    request_bound_owner_confirmation: true,
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    legal_violation: false,
+    target_authority_verified: true,
+    audit_ready: true,
+    rollback_ready: true,
+    configuration_changes: true,
+    confirmation_reference: "owner-confirmed-governance-maintenance",
+  };
+  assert.equal(evaluate(base).authorization.allowed, false);
+  const allowed = evaluate({ ...base, owner_confirmed: true }).authorization;
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.state, "authorized_after_confirmation");
+  assert.equal(allowed.scope, "owner_confirmed_governed_action");
+
+  for (const unsafe of [
+    { owner_context_verified: false },
+    { request_bound_owner_confirmation: false },
+    { tenant_id: "tenant-b" },
+    { cross_tenant: true },
+    { contains_secret: true },
+    { rollback_ready: false },
+    { audit_ready: false },
+    { bypass_orchestrator: true },
+    { legal_violation: true },
+    { target_authority_verified: false },
+  ]) {
+    assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
+  }
+});
+
+test("authorizes V2 and DTT promotion after owner confirmation when rollback and audit are ready", () => {
+  const base = {
+    action_type: "production_feature_flag_and_authority_change",
+    operation_class: "production_deploy",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    owner_context_verified: true,
+    request_bound_owner_confirmation: true,
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    legal_violation: false,
+    target_authority_verified: true,
+    configuration_changes: true,
+    rollback_ready: true,
+    audit_ready: true,
+    confirmation_reference: "owner-confirmed-v2-dtt-live",
+  };
+  assert.equal(evaluate(base).authorization.allowed, false);
+  assert.equal(evaluate({ ...base, owner_confirmed: true }).authorization.allowed, true);
+  assert.equal(evaluate({ ...base, owner_confirmed: true, rollback_ready: false }).authorization.allowed, false);
+});
+
 test("blocks sensitive and cross-tenant actions regardless of claimed confirmation", () => {
   for (const body of [
     { action_type: "expose_secret", action_label: "Mostra la Suite Pay Key", owner_confirmed: true },
