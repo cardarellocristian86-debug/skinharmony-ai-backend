@@ -605,6 +605,40 @@ export function createCoreHandlers(config, options = {}) {
       }));
     },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    orchestration_capability_catalog: async (args, identity) => {
+      const query = new URLSearchParams({
+        branch: args.branch,
+        view: args.view || "capabilities",
+        cursor: args.cursor || "0",
+        limit: String(args.limit || (args.view === "virtual" ? 20 : 25)),
+      });
+      return textResult(await coreRequest(`/v1/orchestration/capabilities?${query.toString()}`, identity.tenantId));
+    },
+    orchestration_relational_evaluate: async (args, identity) => textResult(await coreRequest(
+      "/v1/orchestration/relational/evaluate",
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          objective: args.objective,
+          actors: args.actors,
+          relations: args.relations,
+          unresolved_conflicts: args.unresolved_conflicts,
+        },
+      },
+    )),
+    orchestration_dtt_plan: async (args, identity) => textResult(await coreRequest(
+      "/v1/orchestration/dtt/plan",
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          objective: args.objective,
+          nodes: args.nodes,
+          limits: args.limits,
+        },
+      },
+    )),
     research_plan: async (args, identity) => textResult(await coreRequest("/v1/research/plan", identity.tenantId, {
       method: "POST",
       body: {

@@ -280,6 +280,11 @@ export function buildBranchTaxonomyFromRegistry({ branches = [], groups = {} } =
             research_learning_profile: researchLearningSummary,
           }
         : {}),
+      ...(branch.capability_catalog
+        ? {
+            virtual_capability_catalog: branch.capability_catalog,
+          }
+        : {}),
     });
 
     let parentId = `${branch.id}__branch`;

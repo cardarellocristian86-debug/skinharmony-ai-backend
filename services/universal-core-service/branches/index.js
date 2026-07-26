@@ -36,6 +36,8 @@ import { branchCommerceFulfillmentGuard } from "./branch-commerce-fulfillment-gu
 import { branchObservabilityRoiGuard } from "./branch-observability-roi-guard.js";
 import { branchLegalPrivacyComplianceGuard } from "./branch-legal-privacy-compliance-guard.js";
 import { branchAgentOrchestrationGuard } from "./branch-agent-orchestration-guard.js";
+import { branchAgentOrchestration } from "./branch-agent-orchestration.js";
+import { branchAiOrchestration } from "./branch-ai-orchestration.js";
 import { branchRuntimeDeploymentScalingGuard } from "./branch-runtime-deployment-scaling-guard.js";
 import { branchConsentLedgerGuard } from "./branch-consent-ledger-guard.js";
 import { branchEventTaxonomyGuard } from "./branch-event-taxonomy-guard.js";
@@ -107,6 +109,8 @@ const BRANCHES = [
   branchObservabilityRoiGuard,
   branchLegalPrivacyComplianceGuard,
   branchAgentOrchestrationGuard,
+  branchAgentOrchestration,
+  branchAiOrchestration,
   branchRuntimeDeploymentScalingGuard,
   branchConsentLedgerGuard,
   branchEventTaxonomyGuard,
@@ -155,6 +159,8 @@ const CODEX_GUARD_BRANCHES = [
   "observability_roi_guard",
   "legal_privacy_compliance_guard",
   "agent_orchestration_guard",
+  "agent_orchestration",
+  "ai_orchestration",
   "workload_identity_delegation_guard",
   "runtime_deployment_scaling_guard",
   "change_impact_orchestration",
@@ -366,7 +372,21 @@ export const BRANCH_GROUPS = Object.freeze({
   automation_control: {
     label: "Automation Control",
     description: "Codex, agenti, runbook, audit, action mediation, deploy e ROI delle automazioni.",
-    branches: ["agent_orchestration_guard", "workload_identity_delegation_guard", "decision_provenance_intelligence", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
+    branches: ["agent_orchestration", "ai_orchestration", "agent_orchestration_guard", "workload_identity_delegation_guard", "decision_provenance_intelligence", "observability_roi_guard", "runtime_deployment_scaling_guard", "change_impact_orchestration", "data_integration_orchestration", "codex_code_safety", "codex_release_gate"],
+  },
+  orchestration_cortex: {
+    label: "Agent & AI Orchestration Cortex",
+    description: "Factory virtuale, capability atomiche, topologie agentiche e routing multi-AI governati da Core.",
+    branches: [
+      "agent_orchestration",
+      "ai_orchestration",
+      "agent_orchestration_guard",
+      "workload_identity_delegation_guard",
+      "execution_coordination_intelligence",
+      "quality_verification_intelligence",
+      "decision_provenance_intelligence",
+      "observability_roi_guard",
+    ],
   },
   nyra_interpretation: {
     label: "Nyra Interpretation Layer",
@@ -418,6 +438,7 @@ export function deterministicBranchRegistry() {
         production_status: branch.production_status,
         description: branch.description,
         subbranches: branch.subbranches || [],
+        ...(branch.capability_catalog ? { capability_catalog: branch.capability_catalog } : {}),
         file: branch.file,
       },
     ]),
@@ -542,3 +563,13 @@ export function composeBranchContext({ keyRecord, requestedBranches = [], task =
     ],
   };
 }
+
+export {
+  ORCHESTRATION_CAPABILITY_CATALOG_VERSION,
+  ORCHESTRATION_CAPABILITY_PAGE_LIMIT,
+  ORCHESTRATION_VIRTUAL_PAGE_LIMIT,
+  listOrchestrationCapabilities,
+  listVirtualOrchestrationCombinations,
+  orchestrationCapabilityIds,
+  orchestrationCatalogDescriptor,
+} from "./orchestration-capability-catalog.js";
