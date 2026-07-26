@@ -5257,15 +5257,14 @@ export function createUniversalCoreService(options = {}) {
     const governedReq = Object.create(req);
     governedReq.body = {
       ...(req.body || {}),
-      owner_confirmed: trustedOwnerContext || providerSetupLinkOwnerConfirmed || explicitAutomationConfirmation,
+      // Identity proves who is calling; consent proves that this exact action
+      // was approved. Never silently turn a valid owner identity into consent.
+      owner_confirmed: requestBoundOwnerConfirmation || providerSetupLinkOwnerConfirmed || explicitAutomationConfirmation,
       // Server-derived and deliberately written after the caller payload. The
-      // production tenant correction below must never accept a caller boolean
-      // or the broader automation compatibility path in place of an exact,
-      // request-bound owner proof.
-      ...(tenantBindingAttempt || coreAdminBootstrapAttempt ? {
-        request_bound_owner_confirmation: requestBoundOwnerConfirmation,
-        authenticated_key_type: req.coreKey?.key_type || null,
-      } : {}),
+      // generic owner-sovereignty gate and specialized production gates must
+      // never accept caller-provided identity or request-binding booleans.
+      request_bound_owner_confirmation: requestBoundOwnerConfirmation,
+      authenticated_key_type: req.coreKey?.key_type || null,
     };
     const workPreflight = composeMandatoryWorkPreflight(governedReq, {
       domainPack: domainPackAccess.pack,
