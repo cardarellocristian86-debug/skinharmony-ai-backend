@@ -61,6 +61,10 @@ const ALLOWED_FIELDS = new Set([
   "owner_context",
   "owner_context_verified",
   "owner_context_approval_bound",
+  // Added by /v1/action-evaluator after authentication. They are overwritten
+  // server-side and therefore cannot expand a caller's submitted scope.
+  "request_bound_owner_confirmation",
+  "authenticated_key_type",
 ]);
 
 function value(body, key) {
