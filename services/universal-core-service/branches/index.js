@@ -64,6 +64,7 @@ import { branchPlanningPriorityIntelligence } from "./branch-planning-priority-i
 import { branchExecutionCoordinationIntelligence } from "./branch-execution-coordination-intelligence.js";
 import { branchQualityVerificationIntelligence } from "./branch-quality-verification-intelligence.js";
 import { branchAdaptiveLearningIntelligence } from "./branch-adaptive-learning-intelligence.js";
+import { branchLexicalSemanticIntelligence } from "./branch-lexical-semantic-intelligence.js";
 import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identity-delegation-guard.js";
 import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
@@ -136,6 +137,7 @@ const BRANCHES = [
   branchExecutionCoordinationIntelligence,
   branchQualityVerificationIntelligence,
   branchAdaptiveLearningIntelligence,
+  branchLexicalSemanticIntelligence,
   branchWorkloadIdentityDelegationGuard,
   branchDecisionProvenanceIntelligence,
   branchBeautyVerticalOrchestration,
@@ -221,6 +223,7 @@ const SECURITY_CORTEX_BRANCHES = [
 export const HORIZONTAL_WORK_BRANCHES = Object.freeze([
   "work_intake_intelligence",
   "research_evidence_intelligence",
+  "lexical_semantic_intelligence",
   "planning_priority_intelligence",
   "execution_coordination_intelligence",
   "quality_verification_intelligence",
@@ -280,7 +283,20 @@ export const BRANCH_GROUPS = Object.freeze({
   content_intelligence: {
     label: "Content Intelligence",
     description: "Marketing, claim, traduzione, correzione testo, fonti e publish safety.",
-    branches: ["marketing_copy", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+    branches: ["lexical_semantic_intelligence", "marketing_copy", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+  },
+  language_intelligence: {
+    label: "Lexical & Semantic Intelligence Cortex",
+    description: "Normalizzazione, lessico, sintassi, semantica, pragmatica, ontologie, rischio linguistico e distillazione verificata.",
+    branches: [
+      "lexical_semantic_intelligence",
+      "ramo_testo",
+      "translation_governance",
+      "content_localization_guard",
+      "translator_marketing_governance",
+      "research_evidence_intelligence",
+      "quality_verification_intelligence",
+    ],
   },
   marketing_intelligence: {
     label: "Marketing Intelligence",

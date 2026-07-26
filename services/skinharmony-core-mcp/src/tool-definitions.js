@@ -475,6 +475,19 @@ export const TOOLS = [
     cursor: { type: "string", pattern: "^\\d+$", maxLength: 40 },
     limit: { type: "integer", minimum: 1, maximum: 100 },
   }, ["branch"]), ["core:read"], true, true),
+  tool("lexical_semantic_catalog", "Read lexical-semantic catalog", "Read a bounded page of lexical-semantic capabilities or one lazily generated page from 777,600 proposal-only variants. It never materializes DTT nodes, invokes models or changes policy.", object({
+    view: { type: "string", enum: ["capabilities", "virtual"] },
+    cursor: { type: "string", pattern: "^\\d+$", maxLength: 40 },
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+  }), ["core:read"], true, true),
+  tool("lexical_semantic_analyze", "Analyze lexical-semantic context", "Analyze bounded text for direct commands, quotations, negation, multilingual risk and ambiguity. The branch proposes allow, clarify or block signals; Universal Core remains the final authority and execution is always disabled.", object({
+    text: text(32_768),
+    locale: { type: "string", minLength: 2, maxLength: 64 },
+    source_context: {
+      type: "string",
+      enum: ["user_input", "inter_agent_handoff", "retrieved_web", "tool_output", "model_output", "documentation", "untrusted_data"],
+    },
+  }, ["text"]), ["core:read"], true, true),
   tool("orchestration_relational_evaluate", "Evaluate agent relationships", "Build a tenant-bound relational supervision contract under Universal Core. The relational supervisor coordinates Nyra, detects conflicts and proposes reconciliation but cannot invoke models, tools or external actions.", object({
     objective: text(4_000),
     actors: {
