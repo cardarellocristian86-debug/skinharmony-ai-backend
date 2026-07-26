@@ -150,6 +150,10 @@ export function loadConfig(env = process.env) {
     env.SUITE_CONTROL_PLANE_TENANT_ID,
   );
   const agentSignatureSecret = String(env.AGENT_SIGNATURE_SECRET || "").trim();
+  const dttAgentIdentitySigningSecretCandidate = String(env.DTT_AGENT_IDENTITY_SIGNING_SECRET || "").trim();
+  const dttAgentIdentitySigningSecret = dttAgentIdentitySigningSecretCandidate.length >= 32
+    ? dttAgentIdentitySigningSecretCandidate
+    : "";
   const ownerContextSigningSecretCandidate = String(env.CORE_OWNER_CONTEXT_SIGNING_SECRET || "").trim();
   // Keep this independent from Core bearer credentials. A short value is not
   // a usable signature key and therefore deliberately behaves as missing.
@@ -236,6 +240,7 @@ export function loadConfig(env = process.env) {
     suiteControlPlaneTimeoutMs: integer(env.SUITE_CONTROL_PLANE_TIMEOUT_MS, 8_000, 100, 30_000),
     suiteControlPlaneCacheTtlMs: integer(env.SUITE_CONTROL_PLANE_CACHE_TTL_MS, 5_000, 0, 60_000),
     agentSignatureSecret,
+    dttAgentIdentitySigningSecret,
     ownerContextSigningSecret,
     runtimeBuildCommit,
     defaultTenantId,

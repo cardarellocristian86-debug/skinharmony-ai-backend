@@ -2,6 +2,7 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import pg from "pg";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
@@ -23,6 +24,10 @@ import {
   deterministicBranchTaxonomy,
   resolveBranchesForKey,
 } from "../branches/index.js";
+import {
+  listOrchestrationCapabilities,
+  listVirtualOrchestrationCombinations,
+} from "../branches/orchestration-capability-catalog.js";
 import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
 import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
@@ -86,6 +91,27 @@ import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
 import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
 import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./governedAgentRegistry.js";
+import { createRelationalOrchestrationSupervisor } from "./relationalOrchestrationSupervisor.js";
+import { createDynamicTaskTreeRuntime } from "./dynamicTaskTree.js";
+import {
+  buildVerificationEvidenceContract,
+  prepareVerificationEvidenceDraft,
+} from "./verificationEvidenceContract.js";
+import { createFileDynamicTaskTreeStateStore, createPostgresDynamicTaskTreeStateStore } from "./dynamicTaskTreeStateStore.js";
+import {
+  createFileDynamicTaskTreeJoinVerdictStore,
+  createPostgresDynamicTaskTreeJoinVerdictStore,
+} from "./dynamicTaskTreeJoinVerdictStore.js";
+import { mountDttAgentIdentityReceiptRoutes } from "./dttAgentIdentityReceiptRoutes.js";
+import {
+  createFileDttVerificationTrustStore,
+  createPostgresDttVerificationTrustStore,
+} from "./dttVerificationTrustStore.js";
+import {
+  createAsyncDttAgentIdentityReceiptService,
+  createFileDttAgentIdentityReceiptStore,
+  createPostgresDttAgentIdentityReceiptStore,
+} from "../../shared/dtt-agent-identity-receipts.js";
 import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
 import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
@@ -98,7 +124,7 @@ import { mountAdminControlRoom } from "./adminControlRoom.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.10.6-tenant-openai-multiagent";
+const SERVICE_VERSION = "0.11.0-agent-ai-orchestration";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -3562,11 +3588,66 @@ export function createUniversalCoreService(options = {}) {
     root: path.join(storageRoot, "generic-agent-orchestrations"),
   });
   const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
+  const relationalOrchestrationSupervisor = options.relationalOrchestrationSupervisor || createRelationalOrchestrationSupervisor();
+  const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
+  const dynamicTaskTreeStateStore = options.dynamicTaskTreeStateStore || (governedAgentDatabaseUrl
+    ? createPostgresDynamicTaskTreeStateStore({
+        connectionString: governedAgentDatabaseUrl,
+        pool: options.dynamicTaskTreePostgresPool || null,
+      })
+    : createFileDynamicTaskTreeStateStore({ root: path.join(storageRoot, "dynamic-task-trees") }));
+  const dynamicTaskTreeJoinVerdictStore = options.dynamicTaskTreeJoinVerdictStore
+    || (governedAgentDatabaseUrl
+      ? createPostgresDynamicTaskTreeJoinVerdictStore({
+          connectionString: governedAgentDatabaseUrl,
+          pool: options.dynamicTaskTreePostgresPool || null,
+        })
+      : createFileDynamicTaskTreeJoinVerdictStore({
+          root: path.join(storageRoot, "dynamic-task-tree-join-verdicts"),
+        }));
+  const dttAgentIdentitySecretCandidate = String(
+    options.dttAgentIdentitySigningSecret ?? process.env.DTT_AGENT_IDENTITY_SIGNING_SECRET ?? "",
+  ).trim();
+  const dttAgentIdentitySecret = dttAgentIdentitySecretCandidate.length >= 32
+    ? dttAgentIdentitySecretCandidate
+    : "";
+  const dttAgentIdentityPostgresPool = options.dttAgentIdentityPostgresPool
+    || (dttAgentIdentitySecret && governedAgentDatabaseUrl ? new pg.Pool({ connectionString: governedAgentDatabaseUrl }) : null);
+  const dttVerificationTrustStore = options.dttVerificationTrustStore
+    || (dttAgentIdentityPostgresPool
+      ? createPostgresDttVerificationTrustStore({ pool: dttAgentIdentityPostgresPool })
+      : createFileDttVerificationTrustStore({
+        root: path.join(storageRoot, "dynamic-task-tree-verification-trust"),
+      }));
+  const dttAgentIdentityReceiptStore = options.dttAgentIdentityReceiptStore || (dttAgentIdentitySecret
+    ? (dttAgentIdentityPostgresPool
+      ? createPostgresDttAgentIdentityReceiptStore({ pool: dttAgentIdentityPostgresPool })
+      : createFileDttAgentIdentityReceiptStore({
+        file_path: path.join(storageRoot, "dynamic-task-tree-agent-identities.json"),
+      }))
+    : null);
+  const dttAgentIdentityReceiptService = options.dttAgentIdentityReceiptService
+    || (dttAgentIdentitySecret && dttAgentIdentityReceiptStore
+      ? createAsyncDttAgentIdentityReceiptService({
+        secret: dttAgentIdentitySecret,
+        store: dttAgentIdentityReceiptStore,
+        resolve_assignment: (input) => dttVerificationTrustStore.verifyAssignment(input),
+      })
+      : null);
+  const dttVerifierIdentityResolverConfigured = typeof options.resolveDttVerifierIdentity === "function"
+    || dttAgentIdentityReceiptService?.configured === true;
+  const resolveDttVerifierIdentity = dttVerifierIdentityResolverConfigured
+    ? (options.resolveDttVerifierIdentity || ((input) => dttAgentIdentityReceiptService.validate(input)))
+    : () => ({ verified: false });
+  const dynamicTaskTreeRuntime = options.dynamicTaskTreeRuntime || createDynamicTaskTreeRuntime({
+    state_store: dynamicTaskTreeStateStore,
+    resolve_verifier_identity: resolveDttVerifierIdentity,
+    resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
+  });
   const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
     root: path.join(storageRoot, "governed-agent-activations"),
   });
   const governedAgentBudgetStore = options.governedAgentBudgetStore || createGovernedAgentBudgetStore({ root: path.join(storageRoot, "governed-agent-budgets") });
-  const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
   const governedAgentQueueStore = options.governedAgentQueueStore || (governedAgentDatabaseUrl
     ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
     : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
@@ -3688,6 +3769,79 @@ export function createUniversalCoreService(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
+  mountDttAgentIdentityReceiptRoutes({
+    app,
+    auth: createAuth(keyStore, audit, SCOPES.WRITE_DECISION),
+    receiptService: dttAgentIdentityReceiptService,
+    audit,
+  });
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/verifier-assignments", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    if (!dttAgentIdentityReceiptService?.configured) {
+      return res.status(503).json({ ok: false, error: "dtt_agent_identity_not_ready" });
+    }
+    try {
+      const context = dttAgentIdentityReceiptService.verifyContext(
+        req.get("x-sh-dtt-agent-context"),
+        req.tenantId,
+      );
+      const tree = await dynamicTaskTreeRuntime.get({ tenant_id: req.tenantId, tree_id: req.params.treeId });
+      const node = tree.nodes.find((item) => item.node_id === req.params.nodeId);
+      if (!node) throw new Error("dtt_verifier_assignment_node_invalid");
+      if (node.kind === "verification" && !node.verification_policy?.allowed_verifier_ids?.includes(context.agent_id)) {
+        throw new Error("dtt_verifier_not_allowlisted");
+      }
+      const occupied = await dttVerificationTrustStore.listAssignments({
+        tenant_id: req.tenantId, tree_id: req.params.treeId, node_id: req.params.nodeId,
+      });
+      if (occupied.some((item) => item.actor_provenance === context.actor_provenance
+        && (item.verifier_id !== context.agent_id
+          || item.session_fingerprint !== context.session_fingerprint
+          || item.opaque_agent_id !== context.opaque_agent_id))) {
+        throw new Error("dtt_verifier_actor_already_assigned");
+      }
+      if (occupied.some((item) => item.verifier_id === context.agent_id
+        && item.session_fingerprint !== context.session_fingerprint)) {
+        throw new Error("dtt_verifier_slot_already_assigned");
+      }
+      if (node.kind !== "verification" && occupied.length > 0
+        && !occupied.some((item) => item.verifier_id === context.agent_id
+          && item.session_fingerprint === context.session_fingerprint)) {
+        throw new Error("dtt_nonverification_slot_already_assigned");
+      }
+      const assignment = await dttVerificationTrustStore.assignVerifier({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        node_id: req.params.nodeId,
+        verifier_id: context.agent_id,
+        session_fingerprint: context.session_fingerprint,
+        opaque_agent_id: context.opaque_agent_id,
+        actor_provenance: context.actor_provenance,
+      });
+      return res.json({ ok: true, assignment_id: assignment.assignment_id, verifier_id: assignment.verifier_id });
+    } catch (error) {
+      return publicError(res, 403, error.message || "dtt_verifier_assignment_denied");
+    }
+  });
+  app.post("/v1/orchestration/evidence/artifacts", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    try {
+      const artifact = await dttVerificationTrustStore.registerArtifact({
+        tenant_id: req.tenantId,
+        artifact_id: req.body?.artifact_id,
+        content: req.body?.content,
+        source_reference: req.body?.source_reference,
+        registry_reference: req.body?.registry_reference,
+      });
+      audit.append("dtt_evidence_artifact_registered", {
+        tenant_id: req.tenantId,
+        artifact_id: artifact.artifact_id,
+        content_digest: artifact.content_digest,
+        registry_id: artifact.registry_id,
+      });
+      return res.json({ ok: true, ...artifact });
+    } catch (error) {
+      return publicError(res, 400, error.message || "dtt_evidence_artifact_invalid");
+    }
+  });
   mountAdminControlRoom({
     app,
     storageRoot,
@@ -4200,7 +4354,8 @@ export function createUniversalCoreService(options = {}) {
       recoverGenericOrchestration(req.tenantId, req.params.planId);
       const plan = genericAgentOrchestrator.completeWorker({ tenant_id: req.tenantId, plan_id: req.params.planId, worker_id: req.params.workerId, result: req.body?.result });
       persistGenericOrchestration(plan);
-      audit.append("generic_agent_worker_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id, worker_id: req.params.workerId });
+      const worker = plan.workers.find((candidate) => candidate.worker_id === req.params.workerId);
+      audit.append(worker?.status === "quarantined" ? "generic_agent_worker_result_quarantined" : "generic_agent_worker_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id, worker_id: req.params.workerId });
       return res.json({ ok: true, tenant_id: req.tenantId, plan });
     } catch (error) {
       return publicError(res, 400, error.message || "generic_agent_worker_complete_failed");
@@ -4245,6 +4400,22 @@ export function createUniversalCoreService(options = {}) {
       render_ready: true,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
+      dynamic_task_tree: {
+        state_backend: dynamicTaskTreeStateStore.kind || "injected",
+        restart_durable: dynamicTaskTreeStateStore.restart_durable === true,
+        distributed_store: dynamicTaskTreeStateStore.distributed === true,
+        verifier_identity_resolver_configured: dttVerifierIdentityResolverConfigured,
+        agent_identity_receipts_ready: dttAgentIdentityReceiptService?.configured === true,
+        agent_identity_receipt_backend: dttAgentIdentityPostgresPool ? "postgresql" : "file_fallback",
+        verification_trust_backend: dttVerificationTrustStore.kind || "injected",
+        verification_trust_distributed: dttVerificationTrustStore.distributed === true,
+        core_join_verdict_source: "universal_core_append_only_ledger",
+        join_verdict_backend: dynamicTaskTreeJoinVerdictStore.kind || "injected",
+        join_verdict_restart_durable: dynamicTaskTreeJoinVerdictStore.restart_durable === true,
+        join_verdict_distributed: dynamicTaskTreeJoinVerdictStore.distributed === true,
+        verified_outcome_and_join_ready: dttVerifierIdentityResolverConfigured,
+        execution_authorized: false,
+      },
       governed_agent_runner: {
         mode: tenantOpenAiMultiAgentRunner ? "manual_dry_run_plus_bounded_provider" : "manual_dry_run",
         // Availability is not a global permission to call a provider: every
@@ -5701,6 +5872,440 @@ export function createUniversalCoreService(options = {}) {
       model_calls_budget: plan.credit_control.model_calls_budget,
     });
     res.json({ ok: true, ...plan });
+  });
+
+  app.get("/v1/orchestration/capabilities", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const branchId = String(req.query.branch || "");
+      const view = String(req.query.view || "capabilities");
+      if (!["capabilities", "virtual"].includes(view)) return publicError(res, 400, "orchestration_catalog_view_invalid");
+      const input = {
+        branchId,
+        cursor: req.query.cursor,
+        limit: req.query.limit,
+      };
+      const catalog = view === "virtual"
+        ? listVirtualOrchestrationCombinations(input)
+        : listOrchestrationCapabilities(input);
+      audit.append("orchestration_capability_catalog_read", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch_id: branchId,
+        view,
+        item_count: catalog.items.length,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        view,
+        ...catalog,
+        execution_authorized: false,
+      });
+    } catch (error) {
+      return publicError(res, 400, error.message || "orchestration_catalog_invalid");
+    }
+  });
+
+  app.post("/v1/orchestration/relational/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const supervision = relationalOrchestrationSupervisor.create({
+        ...(req.body || {}),
+        tenant_id: req.tenantId,
+      });
+      audit.append("relational_orchestration_evaluated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        supervision_id: supervision.supervision_id,
+        actor_count: supervision.actors.length,
+        conflict_count: supervision.unresolved_conflicts.length,
+      });
+      return res.json({ ok: true, ...supervision });
+    } catch (error) {
+      return publicError(res, 400, error.message || "relational_orchestration_invalid");
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    try {
+      const tree = await dynamicTaskTreeRuntime.create({
+        ...(req.body || {}),
+        tenant_id: req.tenantId,
+      });
+      audit.append("dynamic_task_tree_planned", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: tree.tree_id,
+        node_count: tree.nodes.length,
+        max_depth: tree.limits.max_depth,
+        max_parallel: tree.limits.max_parallel,
+      });
+      return res.json({ ok: true, ...tree });
+    } catch (error) {
+      return publicError(res, 400, error.message || "dynamic_task_tree_invalid");
+    }
+  });
+
+  app.get("/v1/orchestration/dtt/:treeId", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    try {
+      const tree = await dynamicTaskTreeRuntime.get({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+      });
+      audit.append("dynamic_task_tree_read", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: tree.tree_id,
+        status: tree.status,
+      });
+      return res.json({ ok: true, ...tree, execution_authorized: false });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_read_failed";
+      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/expansion-proposals", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    try {
+      const proposal = await dynamicTaskTreeRuntime.proposeExpansion({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        parent_node_id: req.body?.parent_node_id,
+        nodes: req.body?.nodes,
+      });
+      audit.append("dynamic_task_tree_expansion_proposed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: proposal.tree_id,
+        proposal_id: proposal.proposal_id,
+        node_count: proposal.nodes.length,
+      });
+      return res.json({ ok: true, ...proposal });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_expansion_invalid";
+      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/replan-proposals", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    try {
+      const proposal = await dynamicTaskTreeRuntime.proposePruneReplan({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        prune_node_ids: req.body?.prune_node_ids,
+        replacement_nodes: req.body?.replacement_nodes,
+        reason: req.body?.reason,
+      });
+      audit.append("dynamic_task_tree_replan_proposed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: proposal.tree_id,
+        proposal_id: proposal.proposal_id,
+        prune_count: proposal.prune_node_ids.length,
+        replacement_count: proposal.replacement_nodes.length,
+      });
+      return res.json({ ok: true, ...proposal });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_replan_invalid";
+      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/evidence-drafts", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const draft = prepareVerificationEvidenceDraft({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        node_id: req.params.nodeId,
+        claim: req.body?.claim,
+        artifacts: req.body?.artifacts,
+        provenance: {
+          ...(req.body?.provenance || {}),
+          tenant_id: req.tenantId,
+          tree_id: req.params.treeId,
+          node_id: req.params.nodeId,
+        },
+        required_approvals: req.body?.required_approvals,
+      });
+      return res.json({ ok: true, ...draft });
+    } catch (error) {
+      return publicError(res, 400, error.message || "verification_evidence_draft_invalid");
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/outcomes", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    try {
+      let outcomeEvidence = req.body?.evidence;
+      if (!outcomeEvidence && req.body?.evidence_draft) {
+        const suppliedDraft = req.body.evidence_draft;
+        const built = buildVerificationEvidenceContract({
+          ...suppliedDraft,
+          tenant_id: req.tenantId,
+          tree_id: req.params.treeId,
+          node_id: req.params.nodeId,
+          votes: req.body?.votes,
+          required_approvals: suppliedDraft?.quorum?.required_approvals,
+        });
+        if (built.evidence_digest !== suppliedDraft.evidence_digest) throw new Error("evidence_draft_digest_mismatch");
+        outcomeEvidence = built;
+      }
+      const outcome = await dynamicTaskTreeRuntime.recordOutcome({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        node_id: req.params.nodeId,
+        outcome: req.body?.outcome,
+        evidence: outcomeEvidence,
+      });
+      audit.append("dynamic_task_tree_outcome_recorded", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: outcome.tree_id,
+        node_id: outcome.node_id,
+        state: outcome.state,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, ...outcome });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_outcome_invalid";
+      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : code === "node_terminal" ? 409 : 400, code);
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    try {
+      const tree = await dynamicTaskTreeRuntime.cancel({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        reason: req.body?.reason,
+      });
+      audit.append("dynamic_task_tree_cancelled", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: tree.tree_id,
+        cancelled_node_count: tree.kill_signal?.cancelled_node_count || 0,
+      });
+      return res.json({ ok: true, ...tree, execution_authorized: false });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_cancel_failed";
+      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+    }
+  });
+
+  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+    try {
+      const tree = await dynamicTaskTreeRuntime.get({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+      });
+      const nodes = tree.nodes
+        .filter((node) => node.status === "retry_proposed" || (node.status === "failed" && node.fallback_node_id))
+        .map((node) => ({
+          node_id: node.node_id,
+          state: node.status === "retry_proposed" ? "retry_proposed" : "fallback_proposed",
+          attempts: node.attempts,
+          max_attempts: node.retry_policy.max_attempts,
+          fallback_node_id: node.fallback_node_id,
+          execution_authorized: false,
+        }));
+      audit.append("dynamic_task_tree_retry_fallback_read", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: tree.tree_id,
+        proposal_count: nodes.length,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        tree_id: tree.tree_id,
+        tree_status: tree.status,
+        nodes,
+        execution_authorized: false,
+      });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_retry_fallback_read_failed";
+      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/core-join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    let issuedVerdict = null;
+    let joined = null;
+    try {
+      if (
+        Object.hasOwn(req.body || {}, "verdict_reference")
+        || Object.hasOwn(req.body || {}, "core_verdict")
+        || Object.hasOwn(req.body || {}, "allowed")
+        || Object.hasOwn(req.body || {}, "authority")
+      ) {
+        throw new Error("client_core_verdict_denied");
+      }
+      const persistedTree = await dynamicTaskTreeRuntime.get({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+      });
+      if (persistedTree.status === "core_joined") {
+        const reference = persistedTree.core_join?.verdict_reference;
+        const events = await dynamicTaskTreeJoinVerdictStore.read({
+          tenant_id: req.tenantId,
+          tree_id: persistedTree.tree_id,
+        });
+        const issued = events.find((event) =>
+          event.event_type === "issued" && event.verdict_reference === reference);
+        const consumed = events.some((event) =>
+          event.event_type === "consumed" && event.verdict_reference === reference);
+        const voided = events.some((event) =>
+          event.event_type === "voided" && event.verdict_reference === reference);
+        if (!issued) throw new Error("joined_tree_verdict_missing");
+        if (voided) throw new Error("joined_tree_verdict_voided");
+        if (consumed) throw new Error("task_tree_already_joined");
+        try {
+          await dynamicTaskTreeJoinVerdictStore.consume({
+            tenant_id: req.tenantId,
+            tree_id: persistedTree.tree_id,
+            verdict_reference: reference,
+          });
+        } catch {
+          throw new Error("dtt_join_finalization_pending");
+        }
+        audit.append("dynamic_task_tree_core_join_reconciled", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          tree_id: persistedTree.tree_id,
+          verdict_reference: reference,
+        });
+        return res.json({
+          ok: true,
+          tree_id: persistedTree.tree_id,
+          tenant_id: persistedTree.tenant_id,
+          status: persistedTree.status,
+          core_join: persistedTree.core_join,
+          reconciled: true,
+          execution_authorized: false,
+        });
+      }
+      const readiness = await dynamicTaskTreeRuntime.inspectCoreJoin({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+      });
+      const existingEvents = await dynamicTaskTreeJoinVerdictStore.read({
+        tenant_id: req.tenantId,
+        tree_id: readiness.tree_id,
+      });
+      const activeIssued = [...existingEvents].reverse().find((event) => {
+        if (event.event_type !== "issued") return false;
+        return !existingEvents.some((candidate) =>
+          candidate.verdict_reference === event.verdict_reference
+          && ["consumed", "voided"].includes(candidate.event_type));
+      });
+      if (activeIssued && activeIssued.evidence_set_digest !== readiness.evidence_set_digest) {
+        await dynamicTaskTreeJoinVerdictStore.void({
+          tenant_id: req.tenantId,
+          tree_id: readiness.tree_id,
+          verdict_reference: activeIssued.verdict_reference,
+          reason: "persisted_tree_evidence_digest_changed",
+        });
+      } else if (activeIssued) {
+        issuedVerdict = activeIssued;
+      }
+      issuedVerdict ||= await dynamicTaskTreeJoinVerdictStore.issue({
+        tenant_id: req.tenantId,
+        tree_id: readiness.tree_id,
+        key_id: req.coreKey.key_id,
+        evidence_set_digest: readiness.evidence_set_digest,
+      });
+      joined = await dynamicTaskTreeRuntime.coreJoin({
+        tenant_id: req.tenantId,
+        tree_id: req.params.treeId,
+        core_verdict: {
+          allowed: issuedVerdict.allowed === true,
+          authority: issuedVerdict.authority,
+          verdict_reference: issuedVerdict.verdict_reference,
+        },
+        verification: {
+          source: "universal_core_persisted_tree_inspection",
+          evidence_set_digest: readiness.evidence_set_digest,
+          verified_node_count: readiness.verified_node_count,
+          verification_node_count: readiness.verification_node_count,
+        },
+      });
+      await dynamicTaskTreeJoinVerdictStore.consume({
+        tenant_id: req.tenantId,
+        tree_id: joined.tree_id,
+        verdict_reference: issuedVerdict.verdict_reference,
+      });
+      audit.append("dynamic_task_tree_core_joined", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: joined.tree_id,
+        verdict_reference: joined.core_join.verdict_reference,
+      });
+      return res.json({ ok: true, ...joined });
+    } catch (error) {
+      let code = error.message || "dynamic_task_tree_core_join_failed";
+      if (issuedVerdict?.verdict_reference) {
+        try {
+          const persistedTree = await dynamicTaskTreeRuntime.get({
+            tenant_id: req.tenantId,
+            tree_id: req.params.treeId,
+          });
+          if (
+            persistedTree.status === "core_joined"
+            && persistedTree.core_join?.verdict_reference === issuedVerdict.verdict_reference
+          ) {
+            try {
+              await dynamicTaskTreeJoinVerdictStore.consume({
+                tenant_id: req.tenantId,
+                tree_id: req.params.treeId,
+                verdict_reference: issuedVerdict.verdict_reference,
+              });
+              audit.append("dynamic_task_tree_core_join_reconciled", {
+                tenant_id: req.tenantId,
+                key_id: req.coreKey.key_id,
+                tree_id: req.params.treeId,
+                verdict_reference: issuedVerdict.verdict_reference,
+              });
+              return res.json({
+                ok: true,
+                tree_id: persistedTree.tree_id,
+                tenant_id: persistedTree.tenant_id,
+                status: persistedTree.status,
+                core_join: persistedTree.core_join,
+                reconciled: true,
+                execution_authorized: false,
+              });
+            } catch {
+              code = "dtt_join_finalization_pending";
+            }
+          } else {
+            await dynamicTaskTreeJoinVerdictStore.void({
+              tenant_id: req.tenantId,
+              tree_id: req.params.treeId,
+              verdict_reference: issuedVerdict.verdict_reference,
+              reason: code,
+            });
+          }
+        } catch {}
+      }
+      audit.append("dynamic_task_tree_core_join_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        tree_id: req.params.treeId,
+        reason: code,
+      });
+      return publicError(
+        res,
+        code === "task_tree_not_found"
+          ? 404
+          : code === "cross_tenant_task_tree_denied"
+            ? 403
+            : ["task_tree_not_verified", "task_tree_already_joined", "dtt_join_verdict_already_issued"].includes(code)
+              ? 409
+              : ["dtt_join_finalization_pending"].includes(code)
+                ? 503
+                : ["joined_tree_verdict_missing", "joined_tree_verdict_voided"].includes(code)
+                  ? 500
+                  : 400,
+        code,
+      );
+    }
   });
 
   app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {

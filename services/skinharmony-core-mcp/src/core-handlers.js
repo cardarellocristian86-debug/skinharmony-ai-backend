@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
+import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
 import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
 import {
   PROVIDER_SETUP_LINK_BINDING_OPERATION_CLASS,
@@ -333,11 +334,12 @@ export function createCoreHandlers(config, options = {}) {
       : body;
   }
 
-  async function coreRequest(path, tenantId, { method = "GET", body } = {}) {
+  async function coreRequest(path, tenantId, { method = "GET", body, additionalHeaders = {} } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${coreKey(tenantId)}`;
+    Object.assign(headers, additionalHeaders);
     if (config.tenantGatewayKey && coreKey(tenantId) === config.tenantGatewayKey) {
       // The gateway key has a synthetic tenant. Core therefore needs the
       // requested tenant alongside the signed context even for body-less GET
@@ -605,6 +607,163 @@ export function createCoreHandlers(config, options = {}) {
       }));
     },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    orchestration_capability_catalog: async (args, identity) => {
+      const query = new URLSearchParams({
+        branch: args.branch,
+        view: args.view || "capabilities",
+        cursor: args.cursor || "0",
+        limit: String(args.limit || (args.view === "virtual" ? 20 : 25)),
+      });
+      return textResult(await coreRequest(`/v1/orchestration/capabilities?${query.toString()}`, identity.tenantId));
+    },
+    orchestration_relational_evaluate: async (args, identity) => textResult(await coreRequest(
+      "/v1/orchestration/relational/evaluate",
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          objective: args.objective,
+          actors: args.actors,
+          relations: args.relations,
+          unresolved_conflicts: args.unresolved_conflicts,
+        },
+      },
+    )),
+    orchestration_dtt_plan: async (args, identity) => textResult(await coreRequest(
+      "/v1/orchestration/dtt/plan",
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          objective: args.objective,
+          nodes: args.nodes,
+          limits: args.limits,
+        },
+      },
+    )),
+    orchestration_dtt_read: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}`,
+      identity.tenantId,
+    )),
+    orchestration_dtt_expansion_propose: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/expansion-proposals`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          parent_node_id: args.parent_node_id,
+          nodes: args.nodes,
+        },
+      },
+    )),
+    orchestration_dtt_replan_propose: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/replan-proposals`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          prune_node_ids: args.prune_node_ids,
+          replacement_nodes: args.replacement_nodes,
+          reason: args.reason,
+        },
+      },
+    )),
+    orchestration_dtt_outcome_record: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/outcomes`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          outcome: args.outcome,
+          evidence: args.evidence,
+          evidence_draft: args.evidence_draft,
+          votes: args.votes,
+        },
+      },
+    )),
+    orchestration_dtt_evidence_prepare: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/evidence-drafts`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          claim: args.claim,
+          artifacts: args.artifacts,
+          provenance: args.provenance,
+          required_approvals: args.required_approvals,
+        },
+      },
+    )),
+    orchestration_dtt_agent_attest: async (args, identity) => {
+      if (!config.dttAgentIdentitySigningSecret) throw new Error("dtt_agent_identity_not_ready");
+      if (!identity.agentPresence) throw new Error("agent_presence_session_required");
+      const context = issueDttAgentContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: identity.tenantId,
+        agent_presence: identity.agentPresence,
+      });
+      return textResult(await coreRequest(
+        `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/attestations`,
+        identity.tenantId,
+        {
+          method: "POST",
+          body: {
+            evidence_digest: args.evidence_digest,
+            decision: args.decision,
+            rationale: args.rationale,
+            assignment_id: args.assignment_id,
+          },
+          additionalHeaders: { "x-sh-dtt-agent-context": context },
+        },
+      ));
+    },
+    orchestration_dtt_verifier_assign_self: async (args, identity) => {
+      if (!config.dttAgentIdentitySigningSecret) throw new Error("dtt_agent_identity_not_ready");
+      if (!identity.agentPresence) throw new Error("agent_presence_session_required");
+      const context = issueDttAgentContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: identity.tenantId,
+        agent_presence: identity.agentPresence,
+      });
+      return textResult(await coreRequest(
+        `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/verifier-assignments`,
+        identity.tenantId,
+        { method: "POST", body: {}, additionalHeaders: { "x-sh-dtt-agent-context": context } },
+      ));
+    },
+    orchestration_dtt_artifact_register: async (args, identity) => textResult(await coreRequest(
+      "/v1/orchestration/evidence/artifacts",
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          artifact_id: args.artifact_id,
+          content: args.content,
+          source_reference: args.source_reference,
+          registry_reference: args.registry_reference,
+        },
+      },
+    )),
+    orchestration_dtt_cancel: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/cancel`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: { reason: args.reason },
+      },
+    )),
+    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/retry-fallback`,
+      identity.tenantId,
+    )),
+    orchestration_dtt_core_join: async (args, identity) => textResult(await coreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/core-join`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {},
+      },
+    )),
     research_plan: async (args, identity) => textResult(await coreRequest("/v1/research/plan", identity.tenantId, {
       method: "POST",
       body: {

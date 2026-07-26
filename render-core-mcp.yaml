@@ -67,6 +67,8 @@ services:
       # internal fromService reference. It is not an OpenAI key.
       - key: CORE_OWNER_CONTEXT_SIGNING_SECRET
         generateValue: true
+      - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
+        generateValue: true
       - key: SUITE_CONTROL_PLANE_URL
         value: https://skinharmony-suite-control.onrender.com
       - key: SUITE_CONTROL_PLANE_KEYS_JSON

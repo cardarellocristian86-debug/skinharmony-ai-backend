@@ -51,6 +51,33 @@ const NYRA_BRANCHES = Object.freeze([
     "decision_contract", "confirmation_scope", "decision_expiry", "revalidation_trigger", "reversal_path",
     "audit_safe_summary", "cross_tenant_replay_check", "accountability_handoff", "provenance_summary",
   ], ["*"], { workPhase: "governance", coreBranchBindings: ["decision_provenance_intelligence"] }),
+  branch("relational_supervision", "Relational Orchestration Supervision", [
+    "relazioni agenti", "supervisore relazionale", "relational supervisor", "collisioni", "duplicazioni", "conflitti agenti",
+  ], [
+    "actor_relation_graph", "authority_relation_matrix", "creator_parent_lineage", "trust_attestation",
+    "delegation_relation", "dependency_relation", "communication_health", "context_overlap",
+    "duplicate_work_detection", "conflict_detection", "consensus_quality", "sycophancy_detection",
+    "collusion_detection", "handoff_precision", "load_balance", "idle_agent_detection",
+    "relationship_repair_proposal", "escalation_proposal", "core_join_readiness", "relational_health_summary",
+  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["agent_orchestration", "ai_orchestration"] }),
+  branch("agent_orchestration", "Agent Orchestration", [
+    "crea agent", "creare agent", "orchestra agent", "multiagente", "multi-agent", "squadra agent", "agent factory",
+  ], [
+    "mission_compilation", "agent_archetype_selection", "capability_composition", "identity_attestation",
+    "delegation_lease", "tool_scope_binding", "memory_scope_binding", "budget_envelope",
+    "topology_selection", "task_graph_compilation", "scheduler_selection", "handoff_contract",
+    "checkpoint_strategy", "verification_assignment", "conflict_resolution", "termination_contract",
+    "kill_switch", "recovery_strategy", "core_join", "verified_retirement",
+  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["agent_orchestration"] }),
+  branch("ai_orchestration", "AI Orchestration", [
+    "orchestra ai", "multi-ai", "modelli ai", "provider ai", "model routing", "ensemble ai", "fallback modello",
+  ], [
+    "provider_discovery", "model_capability_profile", "quality_cost_latency_route", "modality_route",
+    "context_compilation", "prompt_skill_composition", "retrieval_evidence_route", "tool_mcp_mediation",
+    "model_cascade", "parallel_ensemble", "critic_verifier", "judge_calibration",
+    "uncertainty_abstention", "quota_rate_limit", "provider_failover", "data_locality",
+    "trace_provenance", "eval_drift", "distillation_candidate", "core_model_join",
+  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["ai_orchestration"] }),
   branch("execution_planning", "Execution Planning", ["piano", "esegui", "runbook", "deploy", "render", "automat", "implementa"], [
     "goal_decomposition", "dependency_mapping", "runbook_design", "resource_estimation", "failure_mode_analysis",
     "test_strategy", "release_strategy", "rollback_plan", "human_confirmation", "evidence_plan",
@@ -150,7 +177,16 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
   const inferred = available
     .filter((item) => item.triggers.some((trigger) => String(text || "").toLowerCase().includes(trigger)))
     .map((item) => item.id);
-  const candidates = [...new Set(["context_intelligence", "work_intake", "risk_governance", ...requested, ...inferred])];
+  const orchestrationSupervisionRequired = [...requested, ...inferred]
+    .some((id) => id === "agent_orchestration" || id === "ai_orchestration");
+  const candidates = [...new Set([
+    "context_intelligence",
+    "work_intake",
+    "risk_governance",
+    ...(orchestrationSupervisionRequired ? ["relational_supervision"] : []),
+    ...requested,
+    ...inferred,
+  ])];
   const opened = candidates.filter((id) => availableIds.has(id));
   const denied = requested.filter((id) => !availableIds.has(id));
   const openedRecords = opened.map((id) => available.find((candidate) => candidate.id === id));
