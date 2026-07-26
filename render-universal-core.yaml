@@ -45,6 +45,8 @@ services:
           envVarKey: CORE_OWNER_CONTEXT_SIGNING_SECRET
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
+      - key: CORE_RUNTIME_V2_MODE
+        value: active
       - key: NYRA_DEEP_RUNTIME_ENABLED
         value: "true"
       - key: NYRA_DEEP_RUNTIME_MODE
