@@ -12,38 +12,68 @@ function contract(overrides = {}) {
   };
 }
 
-const reversibleWrite = {
-  operation_class: "reversible_internal_collaboration_write",
+const boundedCoordinationWrite = {
+  action_type: "task.claim",
+  operation_class: "bounded_internal_coordination_write",
   external_side_effect: false,
   contains_customer_data: false,
-  rollback_ready: true,
+  contains_secret: false,
+  secret_value_transmitted: false,
+  cross_tenant: false,
+  configuration_changes: false,
+  destructive: false,
+  bypass_orchestrator: false,
+  provider_execution: false,
+  bounded_scope: true,
+  low_impact: true,
+  idempotent_or_compensable: true,
+  audit_ready: true,
+  target_authority_verified: true,
+  actor_authorized_for_target: true,
 };
 
-test("requires explicit owner confirmation for a reversible internal write", () => {
-  const result = buildActionAuthorization(contract(), reversibleWrite);
-  assert.equal(result.allowed, false);
-  assert.equal(result.state, "confirmation_required");
-  assert.equal(result.confirmation_required, true);
+test("authorizes a bounded low-impact coordination write without confirmation", () => {
+  const result = buildActionAuthorization(contract(), boundedCoordinationWrite);
+  assert.equal(result.allowed, true);
+  assert.equal(result.state, "authorized");
+  assert.equal(result.confirmation_required, false);
   assert.equal(result.confirmation_satisfied, false);
 });
 
-test("authorizes the exact low-risk internal write after confirmation", () => {
-  const result = buildActionAuthorization(contract(), {
-    ...reversibleWrite,
-    owner_confirmed: true,
-    confirmation_reference: "user confirmed token=must-not-leak",
-  });
-  assert.equal(result.allowed, true);
-  assert.equal(result.state, "authorized_after_confirmation");
-  assert.equal(result.mediation, "confirmed");
-  assert.equal(result.confirmation_satisfied, true);
-  assert(!result.confirmation_reference.includes("must-not-leak"));
-});
-
-test("keeps hard blocks, higher risk and external writes closed", () => {
-  assert.equal(buildActionAuthorization(contract({ state: "blocked" }), { ...reversibleWrite, owner_confirmed: true }).allowed, false);
-  assert.equal(buildActionAuthorization(contract({ risk_band: "medium" }), { ...reversibleWrite, owner_confirmed: true }).allowed, false);
-  assert.equal(buildActionAuthorization(contract(), { ...reversibleWrite, owner_confirmed: true, external_side_effect: true }).allowed, false);
+test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {
+  assert.equal(buildActionAuthorization(contract({ state: "blocked" }), { ...boundedCoordinationWrite, owner_confirmed: true }).allowed, false);
+  assert.equal(buildActionAuthorization(contract({ risk_band: "medium" }), { ...boundedCoordinationWrite, owner_confirmed: true }).allowed, false);
+  for (const unsafe of [
+    { external_side_effect: true },
+    { contains_customer_data: true },
+    { contains_secret: true },
+    { secret_value_transmitted: true },
+    { cross_tenant: true },
+    { configuration_changes: true },
+    { destructive: true },
+    { bypass_orchestrator: true },
+    { provider_execution: true },
+    { bounded_scope: false },
+    { low_impact: false },
+    { idempotent_or_compensable: false },
+    { action_type: "task.create" },
+    { action_type: "message.post" },
+    { action_type: "deploy" },
+    { action_type: "provider.execute" },
+    { action_type: "secret.rotate" },
+    { deploy: true },
+    { production_deploy: true },
+    { merge: true },
+    { delete: true },
+    { execution_enabled: true },
+    { force: true },
+    { admin_bypass: true },
+    { audit_ready: false },
+    { target_authority_verified: false },
+    { actor_authorized_for_target: false },
+  ]) {
+    assert.equal(buildActionAuthorization(contract(), { ...boundedCoordinationWrite, ...unsafe }).allowed, false);
+  }
 });
 
 const reversibleDeploy = {

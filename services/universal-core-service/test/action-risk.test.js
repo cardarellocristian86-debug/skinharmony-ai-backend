@@ -76,16 +76,28 @@ test("makes reversible unverified learning owner-confirmable", () => {
   assert.equal(result.governance_verdict, "CONFIRM");
 });
 
-test("does not classify ordinary collaboration writes as unverified learning", () => {
+test("does not classify bounded coordination writes as unverified learning", () => {
   const result = classifyActionRisk({
-    action_type: "task.create",
-    operation_class: "reversible_internal_collaboration_write",
+    action_type: "task.claim",
+    operation_class: "bounded_internal_coordination_write",
     external_side_effect: false,
     contains_customer_data: false,
-    rollback_ready: true,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
     verified_outcome: false,
   });
-  assert.equal(result.classification, "reversible_internal_write");
+  assert.equal(result.classification, "bounded_internal_coordination_write");
   assert.equal(result.hard_block, false);
   assert.equal(result.risk_band, "low");
 });
@@ -129,18 +141,65 @@ test("requires confirmation for deploy, pricing and publishing", () => {
   }
 });
 
-test("keeps reversible internal writes low-risk but owner-confirmed", () => {
+test("keeps bounded low-impact coordination writes autonomous", () => {
   const result = classifyActionRisk({
-    action_type: "write",
-    operation_class: "reversible_internal_collaboration_write",
+    action_type: "task.claim",
+    operation_class: "bounded_internal_coordination_write",
     external_side_effect: false,
     contains_customer_data: false,
-    rollback_ready: true,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
   });
-  assert.equal(result.classification, "reversible_internal_write");
+  assert.equal(result.classification, "bounded_internal_coordination_write");
   assert.equal(result.risk_band, "low");
-  assert.equal(result.control_level, "confirm");
-  assert.equal(result.confirmation_required, true);
+  assert.equal(result.control_level, "observe");
+  assert.equal(result.confirmation_required, false);
+  for (const unsafe of [
+    { action_type: "deploy" },
+    { action_type: "provider.execute" },
+    { action_type: "secret.rotate" },
+    { action_type: "research.feedback" },
+    { deploy: true },
+    { production_deploy: true },
+    { merge: true },
+    { delete: true },
+    { execution_enabled: true },
+    { force: true },
+    { admin_bypass: true },
+  ]) {
+    const denied = classifyActionRisk({
+      action_type: "task.claim",
+      operation_class: "bounded_internal_coordination_write",
+      external_side_effect: false,
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      configuration_changes: false,
+      destructive: false,
+      bypass_orchestrator: false,
+      provider_execution: false,
+      bounded_scope: true,
+      low_impact: true,
+      idempotent_or_compensable: true,
+      audit_ready: true,
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      ...unsafe,
+    });
+    assert.notEqual(denied.classification, "bounded_internal_coordination_write");
+  }
 });
 
 test("classifies verified outcome persistence as a low-risk confirmed learning write", () => {

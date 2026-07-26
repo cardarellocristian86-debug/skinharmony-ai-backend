@@ -166,16 +166,47 @@ test("allows only the owner-confirmed, new PostgreSQL staging target through the
   ]) assert.equal(evaluate({ ...base, owner_confirmed: true, ...unsafe }).authorization.allowed, false);
 });
 
-test("allows only confirmed reversible internal writes", () => {
+test("allows only bounded low-impact coordination writes without confirmation", () => {
   const base = {
-    action_type: "write",
-    operation_class: "reversible_internal_collaboration_write",
+    action_type: "task.claim",
+    operation_class: "bounded_internal_coordination_write",
     external_side_effect: false,
     contains_customer_data: false,
-    rollback_ready: true,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
   };
-  assert.equal(evaluate(base).authorization.allowed, false);
-  assert.equal(evaluate({ ...base, owner_confirmed: true }).authorization.allowed, true);
+  const authorization = evaluate(base).authorization;
+  assert.equal(authorization.allowed, true);
+  assert.equal(authorization.confirmation_required, false);
+  for (const unsafe of [
+    { cross_tenant: true },
+    { contains_secret: true },
+    { destructive: true },
+    { configuration_changes: true },
+    { audit_ready: false },
+    { actor_authorized_for_target: false },
+    { bounded_scope: false },
+    { low_impact: false },
+    { idempotent_or_compensable: false },
+    { action_type: "task.create" },
+    { action_type: "message.post" },
+    { action_type: "deploy" },
+    { action_type: "research.feedback" },
+    { deploy: true },
+    { merge: true },
+    { execution_enabled: true },
+  ]) assert.equal(evaluate({ ...base, ...unsafe }).authorization.allowed, false);
 });
 
 test("allows only a reference-only tenant provider vault secret configuration", () => {

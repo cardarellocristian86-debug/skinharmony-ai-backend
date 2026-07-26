@@ -670,7 +670,6 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
   const replies = [
     { authorization: { allowed: false, state: "confirmation_required", mediation: "confirm", confirmation_required: true, confirmation_satisfied: false } },
     { authorization: { allowed: true, state: "authorized_after_confirmation", mediation: "confirmed", confirmation_required: true, confirmation_satisfied: true } },
-    { verdict: { decision: "unknown", action_mediation: { state: "unknown" } } },
     { verdict: { decision: "allow_controlled", action_mediation: { state: "allow" } } },
   ];
   const guard = createCoreWriteGuard({ universalCoreUrl: "https://core.test", universalCoreKeys: { "tenant-a": "tenant-a-key" }, defaultTenantId: "owner-private", universalCoreKey: "owner-key", ownerContextSigningSecret: OWNER_CONTEXT_SECRET }, {
@@ -680,8 +679,16 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
     }
   });
   const identity = { tenantId: "tenant-a" };
-  assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, identity)).allowed, false);
-  const confirmed = await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, {
+  const safeTask = {
+    action_label: "create task",
+    action_type: "task.create",
+    target: "task",
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  };
+  assert.equal((await guard(safeTask, identity)).allowed, false);
+  const confirmed = await guard(safeTask, {
     ...identity,
     role: "owner_root",
     godMode: true,
@@ -695,6 +702,9 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
   assert.equal(calls[1].confirmation_reference, "explicit user confirmation");
   assert.equal(calls[1].rollback_ready, true);
   assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, identity)).allowed, false);
+  assert.equal(calls.length, 2);
+  assert.equal((await guard({ ...safeTask, action_type: "deploy", deploy: true }, identity)).allowed, false);
+  assert.equal(calls.length, 2);
   assert.equal((await guard({
     action_label: "external research",
     action_type: "research.external_web_search",
@@ -702,7 +712,7 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
     operation_class: "billable_external_read",
     external_side_effect: true,
   }, identity)).allowed, true);
-  assert.equal(calls[3].operation_class, "billable_external_read");
-  assert.equal(calls[3].external_side_effect, true);
-  assert.equal(calls[3].rollback_ready, false);
+  assert.equal(calls[2].operation_class, "billable_external_read");
+  assert.equal(calls[2].external_side_effect, true);
+  assert.equal(calls[2].rollback_ready, false);
 });

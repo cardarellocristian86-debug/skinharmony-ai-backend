@@ -863,14 +863,69 @@ export function createCoreHandlers(config, options = {}) {
 export function createCoreWriteGuard(config, options = {}) {
   const handlers = createCoreHandlers(config, options);
   return async function governWrite(action, identity) {
+    const autonomousInternalActionTypes = new Set([
+      "agent.heartbeat",
+      "task.claim",
+      "task.update",
+      "message.acknowledge",
+    ]);
+    const ownerConfirmedInternalActionTypes = new Set([
+      "workspace.create_folder",
+      "workspace.write_document",
+      "task.create",
+      "message.post",
+      "memory.append",
+      "memory.checkpoint",
+      "memory.handoff",
+      "memory.handoff_acknowledge",
+      "research.plan_issued",
+      "research.ingest",
+      "research.feedback",
+    ]);
+    const actionType = String(action.action_type || "").toLowerCase();
+    const operationClass = action.operation_class ||
+      (autonomousInternalActionTypes.has(actionType)
+        ? "bounded_internal_coordination_write"
+        : "owner_confirmed_governed_action");
+    if (!action.operation_class &&
+      !autonomousInternalActionTypes.has(actionType) &&
+      !ownerConfirmedInternalActionTypes.has(actionType)) {
+      return {
+        allowed: false,
+        decision: "not_authorized",
+        mediation: "defer",
+        owner_confirmation_required: true,
+        confirmation_satisfied: false,
+      };
+    }
     const result = await handlers.core_gate_action({
       action_label: action.action_label,
       action_type: action.action_type,
       target: action.target,
-      operation_class: action.operation_class || "reversible_internal_collaboration_write",
+      operation_class: operationClass,
       external_side_effect: action.external_side_effect === true,
       contains_customer_data: action.contains_customer_data === true,
+      contains_secret: action.contains_secret === true,
+      secret_value_transmitted: action.secret_value_transmitted === true,
+      cross_tenant: action.cross_tenant === true,
+      configuration_changes: action.configuration_changes === true,
+      destructive: action.destructive === true,
+      bypass_orchestrator: action.bypass_orchestrator === true,
+      provider_execution: action.provider_execution === true,
+      bounded_scope: action.bounded_scope === true,
+      low_impact: action.low_impact === true,
+      idempotent_or_compensable: action.idempotent_or_compensable === true,
+      deploy: action.deploy === true,
+      production_deploy: action.production_deploy === true,
+      merge: action.merge === true,
+      delete: action.delete === true,
+      execution_enabled: action.execution_enabled === true,
+      force: action.force === true,
+      admin_bypass: action.admin_bypass === true,
       rollback_ready: action.rollback_ready === undefined ? action.external_side_effect !== true : action.rollback_ready === true,
+      audit_ready: action.audit_ready === true,
+      target_authority_verified: action.target_authority_verified === true,
+      actor_authorized_for_target: action.actor_authorized_for_target === true,
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
       ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {})
     }, identity);
