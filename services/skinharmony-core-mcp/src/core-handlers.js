@@ -101,6 +101,7 @@ function compactWorkPreflight(preflight) {
     mandatory: preflight.mandatory === true,
     governance: preflight.governance,
     gate: preflight.gate,
+    core_research: preflight.core_research,
     tool_routing: preflight.tool_routing?.preferred_route
       ? { preferred_route: preflight.tool_routing.preferred_route }
       : preflight.tool_routing,
@@ -125,6 +126,22 @@ function compactCoreRuntime(payload) {
     execution_allowed: false,
     latency_ms: Number.isFinite(Number(payload?.latency_ms)) ? Number(payload.latency_ms) : null,
   };
+}
+
+function coreRuntimeFromBridge(payload) {
+  const actual = payload?.result?.core_runtime;
+  const route = actual?.router?.route;
+  const authority = actual?.selected_authority;
+  if (
+    !actual ||
+    !["active", "shadow", "off"].includes(actual.mode) ||
+    !["V0", "V1", "V2"].includes(route) ||
+    !["V0", "V1", "V2"].includes(authority) ||
+    actual.execution_allowed !== false
+  ) {
+    throw new Error("core_runtime_binding_mismatch");
+  }
+  return compactCoreRuntime({ result: actual });
 }
 
 function compactNyraNetwork(network) {
@@ -193,6 +210,7 @@ function compactNyraPayload(payload, { analysisId, detail = "fast" } = {}) {
   return {
     ok: payload?.ok === true,
     tenant_id: payload?.tenant_id,
+    core_runtime: payload?.core_runtime || null,
     received_memory: compactMemoryContext(payload?.received_memory || result.memory_context || payload?.memory_context),
     analysis_id: analysisId,
     response_mode: detail,
@@ -520,6 +538,12 @@ export function createCoreHandlers(config, options = {}) {
           target_system: args.target_system || "universal_core",
           operation_type: args.operation_type || "advisory_work",
           source_tool: args.tool_name,
+          ...(args.evidence_state && typeof args.evidence_state === "object"
+            ? { evidence_state: args.evidence_state }
+            : {}),
+          ...(Array.isArray(args.research_allowed_domains)
+            ? { research_allowed_domains: args.research_allowed_domains }
+            : {}),
           ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
           ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
           owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
@@ -600,6 +624,9 @@ export function createCoreHandlers(config, options = {}) {
       },
     })),
     nyra_interpret_request: async (args, identity) => {
+      // The Core bridge evaluates the runtime hierarchy internally. Keeping
+      // that decision server-side avoids duplicate routing and ensures that
+      // callers and Nyra cannot nominate V0/V1/V2 or become the authority.
       const sharedContext = await memoryContext({
         query: args.message,
         project_id: args.project_id,
@@ -620,20 +647,27 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId
         }
       });
-      const analysisId = cacheAnalysis(identity.tenantId, payload);
+      const coreRuntime = coreRuntimeFromBridge(payload);
+      const governedPayload = { ...payload, core_runtime: coreRuntime };
+      const analysisId = cacheAnalysis(identity.tenantId, governedPayload);
       if (args.response_mode === "full") {
-        return compactTextResult({ ...payload, analysis_id: analysisId, response_mode: "full" }, {
-          ok: payload.ok === true,
+        return compactTextResult({ ...governedPayload, analysis_id: analysisId, response_mode: "full" }, {
+          ok: governedPayload.ok === true,
           analysis_id: analysisId,
           response_mode: "full",
+          core_route: coreRuntime.route,
+          core_authority: coreRuntime.selected_authority,
+          execution_allowed: false,
         });
       }
       const detail = args.response_mode === "deep" ? "deep" : "fast";
-      const compact = compactNyraPayload(payload, { analysisId, detail });
+      const compact = compactNyraPayload(governedPayload, { analysisId, detail });
       return compactTextResult(compact, {
         ok: compact.ok,
         analysis_id: analysisId,
         response_mode: detail,
+        core_route: coreRuntime.route,
+        core_authority: coreRuntime.selected_authority,
         selected_action: compact.result?.selected_by_core?.primary_action_label,
         risk_band: compact.result?.selected_by_core?.risk_band,
         preferred_reply: compact.result?.deep_nyra_runtime?.dialogue?.preferred_reply,

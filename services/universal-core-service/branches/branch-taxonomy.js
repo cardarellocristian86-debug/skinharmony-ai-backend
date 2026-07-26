@@ -1,3 +1,8 @@
+import {
+  getBranchResearchLearningProfile,
+  researchLearningProfileSummary,
+} from "./branch-research-learning-profiles.js";
+
 const STAGE_SEQUENCE = [
   ["sensory_ingest", "Sensory Ingest", "stage_7", ["ingest", "signals", "capture"]],
   ["intent_router", "Intent Router", "stage_8", ["intent", "routing", "selection"]],
@@ -192,6 +197,8 @@ export function buildBranchTaxonomyFromRegistry({ branches = [], groups = {} } =
   });
 
   for (const branch of normalizedBranches) {
+    const researchLearningProfile = getBranchResearchLearningProfile(branch.id);
+    const researchLearningSummary = researchLearningProfileSummary(researchLearningProfile);
     const branchGroups = unique(membershipByBranch.get(branch.id) || []);
     const primaryGroupId = branchGroups[0] || `${slugify(branch.domain || "generic")}_cluster`;
     const primaryGroup = groups[primaryGroupId] || {
@@ -264,21 +271,45 @@ export function buildBranchTaxonomyFromRegistry({ branches = [], groups = {} } =
         slugify(branch.domain || "generic"),
         slugify(branch.tier || "generic"),
         ...(Array.isArray(branch.subbranches) ? branch.subbranches.map(slugify) : []),
+        ...(researchLearningProfile?.semantic_tags || []),
+        ...(researchLearningProfile?.operational_subbranches || []),
       ]).filter(Boolean),
+      ...(researchLearningSummary
+        ? {
+            operational_mission: researchLearningProfile.mission,
+            research_learning_profile: researchLearningSummary,
+          }
+        : {}),
     });
 
     let parentId = `${branch.id}__branch`;
     let depth = 7;
     for (const [stageId, stageLabel, level, tags] of STAGE_SEQUENCE) {
+      const stageProfile = researchLearningProfile?.stage_map?.[stageId] || null;
       pushNode(nodes, seen, {
         node_id: `${branch.id}__${stageId}`,
         parent_id: parentId,
         depth,
         level,
-        label: `${branch.label} · ${stageLabel}`,
+        label: `${branch.label} · ${stageProfile?.label || stageLabel}`,
         kind: "stage",
         branch_bindings: [branch.id],
-        semantic_tags: unique([slugify(branch.id), ...tags]),
+        semantic_tags: unique([
+          slugify(branch.id),
+          ...tags,
+          ...(researchLearningProfile?.semantic_tags || []),
+          ...(stageProfile?.semantic_tags || []),
+        ]),
+        ...(stageProfile
+          ? {
+              stage_profile: {
+                profile_id: researchLearningProfile.id,
+                area: researchLearningProfile.area,
+                research_focus: stageProfile.research_focus,
+                expected_artifact: stageProfile.expected_artifact,
+              },
+            }
+          : {}),
       });
       parentId = `${branch.id}__${stageId}`;
       depth += 1;

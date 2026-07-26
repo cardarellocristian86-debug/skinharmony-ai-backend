@@ -51,6 +51,9 @@ test("builds a mandatory memory-first role and task contract", () => {
   assert.equal(result.governance.execution_allowed_by_preflight, false);
   assert.equal(result.protocol.fail_closed_when_preflight_unavailable, true);
   assert.equal(result.governed_learning.policy_activation_requires_verify, true);
+  assert.equal(result.core_research.assessment.required, true);
+  assert.equal(result.core_research.directive.issued_by, "universal_core");
+  assert.equal(result.core_research.directive.authority.research_execution_authorized, false);
 });
 
 test("routes GitHub to the connected app and prevents the previous CLI error", () => {
@@ -103,4 +106,15 @@ test("tracks explicit owner confirmation while keeping a write Core-gated", () =
   assert.equal(result.governance.owner_confirmation_required, false);
   assert.equal(result.governance.owner_confirmation_satisfied, true);
   assert.equal(result.governance.execution_allowed_by_preflight, false);
+});
+
+test("preflight emits no directive when supplied evidence is fresh and sufficient", () => {
+  const result = fixture({
+    requestText: "Riassumi il documento verificato",
+    operationType: "advisory_work",
+    evidenceState: { source_count: 2, confidence: 0.92, freshness_state: "fresh" },
+  });
+  assert.equal(result.core_research.assessment.required, false);
+  assert.equal(result.core_research.directive, null);
+  assert.equal(result.task_graph.nodes.find((node) => node.id === "research_and_plan").status, "not_required_by_core_evidence_gate");
 });

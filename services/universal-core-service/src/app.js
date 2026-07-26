@@ -1195,6 +1195,8 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
     nyraNetwork: resolvedNyraNetwork,
     domainPack: publicDomainPack(domainPack),
     ownerConfirmed: body.owner_confirmed === true,
+    evidenceState: body.evidence_state || body.research_evidence_state || {},
+    researchAllowedDomains: normalizeList(body.research_allowed_domains, 20),
   });
 }
 
@@ -4608,6 +4610,8 @@ export function createUniversalCoreService(options = {}) {
       selected_branches: preflight.core_route.selected_branches,
       preferred_route: preflight.tool_routing.preferred_route.id,
       owner_confirmation_required: preflight.governance.owner_confirmation_required,
+      research_required: preflight.core_research.assessment.required,
+      research_directive_id: preflight.core_research.directive?.directive_id || null,
     });
     return res.json({
       ok: true,
@@ -5848,7 +5852,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -5876,6 +5880,52 @@ export function createUniversalCoreService(options = {}) {
       || req.body?.god_mode === true
       || trustedOwnerContext;
     const ownerVerified = Boolean(trustedOwnerContext || (explicitOwnerConfirmation && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX)));
+    let coreRuntimeDecision;
+    try {
+      coreRuntimeDecision = await evaluateCoreRuntimeHierarchy({
+        request_id: req.body?.request_id || `nyra_runtime_${crypto.randomUUID()}`,
+        generated_at: new Date().toISOString(),
+        domain: domainPackAccess.pack.domain,
+        context: {
+          tenant_id: req.tenantId,
+          metadata: { operation_type: "nyra_interpret_request" },
+        },
+        signals: [{
+          id: "nyra_runtime_request",
+          source: "universal_core_nyra_bridge",
+          category: "runtime",
+          label: "Nyra interpretation request",
+          value: 20,
+          normalized_score: 20,
+          severity_hint: 20,
+          confidence_hint: 80,
+          reliability_hint: 80,
+          friction_hint: 20,
+          risk_hint: 20,
+          reversibility_hint: 80,
+          tags: ["nyra", "core_runtime"],
+        }],
+        data_quality: {
+          score: 80,
+          completeness: 80,
+          freshness: 80,
+          consistency: 80,
+          reliability: 80,
+        },
+        constraints: {
+          allow_automation: false,
+          require_confirmation: false,
+          blocked_actions: [],
+          blocked_action_rules: [],
+        },
+      }, {
+        worker: coreRuntime,
+        mode: coreRuntimeMode,
+        ownerMode: options.coreRuntimeOwnerMode || "normal",
+      });
+    } catch {
+      return publicError(res, 503, "core_runtime_hierarchy_unavailable");
+    }
     const requestedBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(req.body || {})])];
     const branchContext = composeBranchContext({
       keyRecord: req.coreKey,
@@ -5958,6 +6008,7 @@ export function createUniversalCoreService(options = {}) {
       memory_context: memoryContext.value,
       work_preflight: workPreflight,
       deep_nyra_runtime: deepNyraRuntime,
+      core_runtime: coreRuntimeDecision,
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -5974,6 +6025,9 @@ export function createUniversalCoreService(options = {}) {
       preflight_id: workPreflight.preflight_id,
       deep_runtime_mode: deepNyraRuntime.mode,
       deep_runtime_hard_block: deepNyraRuntime.owner_protection?.hard_block === true,
+      core_runtime_route: coreRuntimeDecision.router.route,
+      core_runtime_authority: coreRuntimeDecision.selected_authority,
+      core_runtime_parity_matched: coreRuntimeDecision.parity.matched,
     });
     res.json({
       ok: true,

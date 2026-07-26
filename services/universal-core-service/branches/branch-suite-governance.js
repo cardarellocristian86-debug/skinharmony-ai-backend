@@ -6,6 +6,17 @@ export const branchSuiteGovernance = {
   domain: "suite_waas_governance",
   production_status: "advisory",
   description: "Regole Suite per WaaS, licenze, moduli, claim, pricing, template, CRM B2B e rete commerciale.",
+  subbranches: [
+    "tenant_site_registry", "brand_node_scope", "waas_template_lifecycle", "module_entitlement_matrix",
+    "license_activation_revocation", "wordpress_plugin_compatibility", "content_schema_governance",
+    "claim_evidence_ledger", "pricing_advisory_policy", "catalog_offer_consistency",
+    "lead_capture_consent", "b2b_crm_handoff", "distributor_visibility_scope",
+    "translation_locale_parity", "seo_schema_quality", "analytics_attribution",
+    "update_channel_integrity", "site_backup_restore", "credential_boundary",
+    "template_accessibility", "performance_budget", "publish_preview_approval",
+    "node_health_observability", "waas_onboarding_completion", "renewal_churn_signals",
+    "cross_site_regression", "owner_override_audit", "commercial_policy_learning",
+  ],
   rules: [
     "Suite governa la rete: clienti, brand, distributori, nodi, licenze, moduli, claim, prezzi e offerte.",
     "Non imporre prezzi finali pubblici ai rivenditori; usare prezzo consigliato, range, policy interna e owner approval.",

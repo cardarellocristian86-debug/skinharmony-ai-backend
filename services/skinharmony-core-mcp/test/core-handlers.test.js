@@ -38,6 +38,22 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
         return new Response(JSON.stringify({ ok: true, result: { hierarchy_version: "core_runtime_hierarchy_v1", mode: "shadow", router: { route: "V2" }, selected_authority: "V1", parity: { attempted: true, matched: false, fallback: "V1" }, execution_allowed: true } }), { status: 200, headers: { "content-type": "application/json" } });
       }
       const path = new URL(url).pathname;
+      if (path === "/v1/nira/core-bridge") {
+        return new Response(JSON.stringify({
+          ok: true,
+          path,
+          result: {
+            core_runtime: {
+              hierarchy_version: "core_runtime_hierarchy_v1",
+              mode: "shadow",
+              router: { route: "V2" },
+              selected_authority: "V1",
+              parity: { attempted: true, matched: false, fallback: "V1" },
+              execution_allowed: false,
+            },
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       if (path === "/v1/generic-agents/providers/openai") {
         return new Response(JSON.stringify({ ok: true, path, tenant_id: "tenant-a" }), { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -50,7 +66,16 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   });
   const identity = { tenantId: "tenant-a" };
   await handlers.core_health({}, identity);
-  await handlers.work_preflight({ request: "publish GitHub PR", agent_id: "codex-test", client_type: "codex", session_id: "session-core-one", domain_pack: "analyzer", available_capabilities: ["github_connected_app"] }, identity);
+  await handlers.work_preflight({
+    request: "publish GitHub PR",
+    agent_id: "codex-test",
+    client_type: "codex",
+    session_id: "session-core-one",
+    domain_pack: "analyzer",
+    available_capabilities: ["github_connected_app"],
+    evidence_state: { source_count: 0, confidence: 0, freshness_state: "unknown", evidence_gap: true },
+    research_allowed_domains: ["docs.github.com"],
+  }, identity);
   await handlers.nyra_runtime_context({ include_control_snapshot: true, domain_pack: "analyzer" }, identity);
   await handlers.nyra_branch_catalog({}, identity);
   await handlers.research_plan({ question: "ricerca fonti", allowed_domains: ["example.org"], domain_pack: "analyzer" }, identity);
@@ -64,6 +89,8 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert(calls.filter((call) => call.init.body && new URL(call.url).pathname !== "/v1/runtime/hierarchy/evaluate").every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
   assert.equal(JSON.parse(calls[1].init.body).core_input.context.tenant_id, "tenant-a");
   assert.deepEqual(JSON.parse(calls[2].init.body).available_capabilities, ["github_connected_app"]);
+  assert.equal(JSON.parse(calls[2].init.body).evidence_state.evidence_gap, true);
+  assert.deepEqual(JSON.parse(calls[2].init.body).research_allowed_domains, ["docs.github.com"]);
   assert.equal("domain_pack" in JSON.parse(calls[2].init.body), false);
   assert.equal("domain_pack" in JSON.parse(calls[3].init.body), false);
   assert.equal("domain_pack" in JSON.parse(calls[5].init.body), false);
@@ -74,6 +101,7 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.deepEqual(JSON.parse(calls[7].init.body).nyra_branches, ["context_intelligence"]);
   assert.equal(JSON.parse(calls[2].init.body).memory_context.tenant_id, "tenant-a");
   assert.equal(JSON.parse(calls[7].init.body).memory_context.revision, 7);
+  assert.equal("core_runtime" in JSON.parse(calls[7].init.body), false);
   assert.equal(calls[8].init.method, "GET");
   assert.deepEqual(setupPortal.structuredContent, {
     ok: true,
@@ -487,6 +515,86 @@ test("runtime hierarchy is tenant-scoped, redacts V2 fallback details, and never
   assert.equal(runtime.execution_allowed, false);
   assert.equal(JSON.stringify(result).includes("tenant-a-key"), false);
   assert.equal(JSON.stringify(result).includes("worker timeout"), false);
+});
+
+test("direct Nyra interpretation accepts only the Core bridge hierarchy verdict", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (url, init) => {
+      const path = new URL(url).pathname;
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ path, body });
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "tenant-a",
+        result: {
+          selected_by_core: { primary_action_label: "Analyze", risk_band: "low" },
+          core_runtime: {
+            hierarchy_version: "core_runtime_hierarchy_v1",
+            mode: "active",
+            router: { route: "V2" },
+            selected_authority: "V2",
+            parity: { attempted: true, matched: true, fallback: null },
+            execution_allowed: false,
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const result = await handlers.nyra_interpret_request({
+    message: "Analizza la richiesta",
+    session_id: "session-nyra-runtime",
+    selected_authority: "V0",
+    core_input: {
+      selected_authority: "V0",
+      signals: [{ id: "bounded", severity: 10, risk_hint: 10, reversibility_hint: 90 }],
+    },
+  }, { tenantId: "tenant-a" });
+
+  assert.deepEqual(calls.map((call) => call.path), ["/v1/nira/core-bridge"]);
+  assert.equal("core_runtime" in calls[0].body, false);
+  assert.equal("selected_authority" in calls[0].body, false);
+  assert.equal(result.structuredContent.core_runtime.selected_authority, "V2");
+  assert.equal(result.structuredContent.core_runtime.execution_allowed, false);
+
+  const narration = JSON.parse(result.content[0].text);
+  assert.equal(narration.core_route, "V2");
+  assert.equal(narration.core_authority, "V2");
+  assert.equal(narration.execution_allowed, false);
+
+  const cached = await handlers.nyra_fetch_analysis({
+    analysis_id: result.structuredContent.analysis_id,
+  }, { tenantId: "tenant-a" });
+  assert.equal(cached.structuredContent.core_runtime.selected_authority, "V2");
+});
+
+test("direct Nyra interpretation fails closed when the Core bridge hierarchy is unavailable", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (url) => {
+      calls.push(new URL(url).pathname);
+      return new Response(JSON.stringify({ ok: false, error: "runtime_unavailable" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await assert.rejects(
+    handlers.nyra_interpret_request({
+      message: "Analizza senza Core",
+      session_id: "session-nyra-fail-closed",
+    }, { tenantId: "tenant-a" }),
+    /core_request_failed:503:runtime_unavailable/,
+  );
+  assert.deepEqual(calls, ["/v1/nira/core-bridge"]);
 });
 
 test("reports owner binding checks without exposing OAuth identifiers", async () => {

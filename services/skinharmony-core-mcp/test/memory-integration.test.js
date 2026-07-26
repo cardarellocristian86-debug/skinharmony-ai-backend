@@ -25,6 +25,14 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
         selected_by_core: { state: "controlled" },
         automation_plan: { execution_allowed: false },
         nyra_neural_network: { opened_branches: [{ id: "context_intelligence" }] },
+        core_runtime: {
+          hierarchy_version: "core_runtime_hierarchy_v1",
+          mode: "active",
+          router: { route: "V2" },
+          selected_authority: "V2",
+          parity: { attempted: true, matched: true, fallback: null },
+          execution_allowed: false,
+        },
       },
     }), { status: 200 });
   };
