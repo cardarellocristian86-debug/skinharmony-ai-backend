@@ -340,6 +340,23 @@ export function createMemoryFabric(config, options = {}) {
   if (!root) throw new Error("memory_fabric_not_configured");
   const govern = options.govern;
 
+  const governedMemoryAction = (action) => ({
+    ...action,
+    external_side_effect: false,
+    contains_customer_data: true,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    rollback_ready: false,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  });
+
   function read(tenantId) {
     const state = readState(root, tenantId);
     pruneState(state);
@@ -360,7 +377,7 @@ export function createMemoryFabric(config, options = {}) {
 
   async function append(input, identity) {
     const record = normalizeMemoryInput(input, identity, config);
-    return governed(identity, { action_type: "memory.append", action_label: `Append tenant memory ${record.kind}`, target: record.project_id || record.session_id || record.id }, async (state) => {
+    return governed(identity, governedMemoryAction({ action_type: "memory.append", action_label: `Append tenant memory ${record.kind}`, target: record.project_id || record.session_id || record.id }), async (state) => {
       const existing = record.idempotency_key && state.memories.find((item) => item.idempotency_key === record.idempotency_key && item.actor_subject === record.actor_subject);
       if (existing) return { memory: publicRecord(existing), created: false, idempotent_replay: true };
       state.memories.push(record);
@@ -371,7 +388,7 @@ export function createMemoryFabric(config, options = {}) {
 
   async function checkpoint(input, identity) {
     const record = normalizeMemoryInput({ ...input, kind: "checkpoint", title: input.title || "Agent checkpoint" }, identity, config, "checkpoint");
-    return governed(identity, { action_type: "memory.checkpoint", action_label: "Create tenant memory checkpoint", target: record.project_id || record.session_id || record.id }, async (state) => {
+    return governed(identity, governedMemoryAction({ action_type: "memory.checkpoint", action_label: "Create tenant memory checkpoint", target: record.project_id || record.session_id || record.id }), async (state) => {
       state.checkpoints.push(record);
       state.events.push({ ...record, id: `evt_${crypto.randomUUID()}`, checkpoint_id: record.id });
       return { checkpoint: publicRecord(record), created: true };
@@ -381,7 +398,7 @@ export function createMemoryFabric(config, options = {}) {
   async function handoff(input, identity) {
     const record = normalizeMemoryInput({ ...input, kind: "handoff", title: input.title || "Agent handoff" }, identity, config, "handoff");
     const toAgentId = input.to_agent_id === "all" ? "all" : safeId(input.to_agent_id, "to_agent");
-    return governed(identity, { action_type: "memory.handoff", action_label: `Create memory handoff to ${toAgentId}`, target: toAgentId }, async (state) => {
+    return governed(identity, governedMemoryAction({ action_type: "memory.handoff", action_label: `Create memory handoff to ${toAgentId}`, target: toAgentId }), async (state) => {
       const handoffRecord = { ...record, to_agent_id: toAgentId, status: "pending", acknowledged_at: null, acknowledged_by: null };
       state.handoffs.push(handoffRecord);
       state.events.push({ ...record, id: `evt_${crypto.randomUUID()}`, handoff_id: record.id, to_agent_id: toAgentId });
@@ -393,7 +410,7 @@ export function createMemoryFabric(config, options = {}) {
     const handoffId = String(input.handoff_id || "").trim();
     if (!/^mem_[a-f0-9-]{36}$/.test(handoffId)) fail("handoff_id_invalid");
     const agentId = safeId(input.agent_id, "agent");
-    return governed(identity, { action_type: "memory.handoff_acknowledge", action_label: `Acknowledge memory handoff ${handoffId}`, target: handoffId }, async (state) => {
+    return governed(identity, governedMemoryAction({ action_type: "memory.handoff_acknowledge", action_label: `Acknowledge memory handoff ${handoffId}`, target: handoffId }), async (state) => {
       const record = state.handoffs.find((item) => item.id === handoffId);
       if (!record) fail("handoff_not_found");
       if (record.to_agent_id !== "all" && record.to_agent_id !== agentId) fail("handoff_recipient_mismatch");

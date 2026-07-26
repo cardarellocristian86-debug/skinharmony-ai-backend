@@ -16,13 +16,21 @@ function fixture(t, govern = async () => ({ allowed: true, decision: "allow_cont
 }
 
 async function register(handlers, agentId, identity, options = {}) {
-  return handlers.agent_heartbeat({
+  const result = await handlers.agent_heartbeat({
     agent_id: agentId,
     client_type: options.client_type || "codex",
     session_id: options.session_id || `session-${agentId}`,
     display_name: options.display_name,
     capabilities: options.capabilities || [],
   }, identity);
+  const agent = payload(result).agent;
+  identity.agentPresence = {
+    agent_id: agent.id,
+    signature: agent.signature,
+    session_fingerprint: agent.session_fingerprint,
+    client_type: agent.client_type,
+  };
+  return result;
 }
 
 test("workspace folders and versioned documents stay inside the authenticated tenant", async (t) => {
@@ -55,40 +63,42 @@ test("workspace folders and versioned documents stay inside the authenticated te
 
 test("tasks use optimistic claims and cannot be claimed twice", async (t) => {
   const { handlers } = fixture(t);
-  const identity = { tenantId: "tenant-a", subject: "auth0|owner" };
-  await register(handlers, "codex-one", identity);
-  await register(handlers, "codex-two", identity);
-  const created = payload(await handlers.task_create({ title: "Verify Nyra", priority: "high", idempotency_key: "task-1" }, identity));
-  const replay = payload(await handlers.task_create({ title: "Verify Nyra", priority: "high", idempotency_key: "task-1" }, identity));
+  const identityOne = { tenantId: "tenant-a", subject: "auth0|owner" };
+  const identityTwo = { tenantId: "tenant-a", subject: "auth0|owner" };
+  await register(handlers, "codex-one", identityOne);
+  await register(handlers, "codex-two", identityTwo);
+  const created = payload(await handlers.task_create({ title: "Verify Nyra", priority: "high", idempotency_key: "task-1" }, identityOne));
+  const replay = payload(await handlers.task_create({ title: "Verify Nyra", priority: "high", idempotency_key: "task-1" }, identityOne));
   assert.equal(replay.idempotent_replay, true);
 
-  const claimed = payload(await handlers.task_claim({ task_id: created.task.id, agent_id: "codex-one", expected_version: 1 }, identity));
+  const claimed = payload(await handlers.task_claim({ task_id: created.task.id, agent_id: "codex-one", expected_version: 1 }, identityOne));
   assert.equal(claimed.task.claimed_by, "codex-one");
   assert.match(claimed.task.claimed_by_signature, /^ags_[a-f0-9]{32}$/);
   assert.equal(claimed.gate.allowed, true);
   await assert.rejects(
-    handlers.task_claim({ task_id: created.task.id, agent_id: "codex-two", expected_version: 1 }, identity),
+    handlers.task_claim({ task_id: created.task.id, agent_id: "codex-two", expected_version: 1 }, identityTwo),
     /task_version_conflict/
   );
-  const completed = payload(await handlers.task_update({ task_id: created.task.id, agent_id: "codex-one", status: "completed", expected_version: 2, note: "done" }, identity));
+  const completed = payload(await handlers.task_update({ task_id: created.task.id, agent_id: "codex-one", status: "completed", expected_version: 2, note: "done" }, identityOne));
   assert.equal(completed.task.status, "completed");
 });
 
 test("registered agents exchange tenant-scoped messages", async (t) => {
   const { handlers } = fixture(t);
-  const identity = { tenantId: "tenant-a", subject: "auth0|owner" };
+  const senderIdentity = { tenantId: "tenant-a", subject: "auth0|owner" };
+  const recipientIdentity = { tenantId: "tenant-a", subject: "auth0|owner" };
   const outsider = { tenantId: "tenant-b", subject: "auth0|owner" };
-  const sender = payload(await register(handlers, "codex-one", identity, { capabilities: ["analysis"] })).agent;
-  const recipient = payload(await register(handlers, "codex-two", identity, { capabilities: ["review"] })).agent;
-  const posted = payload(await handlers.message_post({ from_agent_id: "codex-one", to_agent_id: "codex-two", body: "Review task 42", idempotency_key: "msg-1" }, identity));
-  const inbox = payload(await handlers.message_inbox({ agent_id: "codex-two", unread_only: true }, identity));
+  const sender = payload(await register(handlers, "codex-one", senderIdentity, { capabilities: ["analysis"] })).agent;
+  const recipient = payload(await register(handlers, "codex-two", recipientIdentity, { capabilities: ["review"] })).agent;
+  const posted = payload(await handlers.message_post({ from_agent_id: "codex-one", to_agent_id: "codex-two", body: "Review task 42", idempotency_key: "msg-1" }, senderIdentity));
+  const inbox = payload(await handlers.message_inbox({ agent_id: "codex-two", unread_only: true }, recipientIdentity));
   assert.equal(inbox.messages.length, 1);
   assert.equal(inbox.messages[0].body, "Review task 42");
   assert.equal(inbox.messages[0].from_agent_signature, sender.signature);
   assert.equal(inbox.messages[0].to_agent_signature, recipient.signature);
   assert.equal(inbox.messages[0].from_client_type, "codex");
-  await handlers.message_acknowledge({ message_id: posted.message.id, agent_id: "codex-two" }, identity);
-  assert.equal(payload(await handlers.message_inbox({ agent_id: "codex-two", unread_only: true }, identity)).messages.length, 0);
+  await handlers.message_acknowledge({ message_id: posted.message.id, agent_id: "codex-two" }, recipientIdentity);
+  assert.equal(payload(await handlers.message_inbox({ agent_id: "codex-two", unread_only: true }, recipientIdentity)).messages.length, 0);
   await assert.rejects(handlers.message_inbox({ agent_id: "codex-two" }, outsider), /agent_not_registered/);
 });
 
@@ -116,16 +126,39 @@ test("agent presence is uniquely signed and conflicting sessions fail closed", a
   );
 });
 
+test("heartbeat metadata requires the owner-confirmed governance path", async (t) => {
+  const actions = [];
+  const { handlers } = fixture(t, async (action) => {
+    actions.push(action);
+    return { allowed: true, decision: "allow_controlled", mediation: "allow" };
+  });
+  const basicIdentity = { tenantId: "tenant-a", subject: "auth0|owner" };
+  const customIdentity = { tenantId: "tenant-a", subject: "auth0|owner" };
+  await register(handlers, "basic-agent", basicIdentity, { session_id: "basic-session" });
+  await register(handlers, "custom-agent", customIdentity, {
+    session_id: "custom-session",
+    display_name: "Custom Operator",
+    capabilities: ["analysis"],
+  });
+  assert.equal(actions[0].operation_class, undefined);
+  assert.equal(actions[0].contains_customer_data, false);
+  assert.equal(actions[0].rollback_ready, false);
+  assert.equal(actions[1].operation_class, "owner_confirmed_governed_action");
+  assert.equal(actions[1].contains_customer_data, true);
+  assert.equal(actions[1].rollback_ready, false);
+});
+
 test("messages fail explicitly until the recipient registers a signed presence", async (t) => {
   const { handlers } = fixture(t);
-  const identity = { tenantId: "tenant-a", subject: "auth0|owner" };
-  await register(handlers, "sender", identity, { session_id: "sender-session" });
+  const senderIdentity = { tenantId: "tenant-a", subject: "auth0|owner" };
+  const recipientIdentity = { tenantId: "tenant-a", subject: "auth0|owner" };
+  await register(handlers, "sender", senderIdentity, { session_id: "sender-session" });
   await assert.rejects(
-    handlers.message_post({ from_agent_id: "sender", to_agent_id: "missing-recipient", body: "hello" }, identity),
+    handlers.message_post({ from_agent_id: "sender", to_agent_id: "missing-recipient", body: "hello" }, senderIdentity),
     /recipient_not_registered/
   );
-  await register(handlers, "missing-recipient", identity, { client_type: "api_agent", session_id: "recipient-session" });
-  const delivered = payload(await handlers.message_post({ from_agent_id: "sender", to_agent_id: "missing-recipient", body: "hello" }, identity));
+  await register(handlers, "missing-recipient", recipientIdentity, { client_type: "api_agent", session_id: "recipient-session" });
+  const delivered = payload(await handlers.message_post({ from_agent_id: "sender", to_agent_id: "missing-recipient", body: "hello" }, senderIdentity));
   assert.equal(delivered.created, true);
   assert.match(delivered.message.to_agent_signature, /^ags_[a-f0-9]{32}$/);
 });
@@ -148,4 +181,21 @@ test("agent identities cannot be impersonated inside the same tenant", async (t)
     /agent_not_registered/
   );
   await assert.rejects(handlers.message_inbox({ agent_id: "alice-agent" }, bob), /agent_not_registered/);
+});
+
+test("sessions owned by the same OAuth subject cannot impersonate each other", async (t) => {
+  const { handlers } = fixture(t);
+  const firstSession = { tenantId: "tenant-a", subject: "auth0|owner" };
+  const secondSession = { tenantId: "tenant-a", subject: "auth0|owner" };
+  await register(handlers, "first-agent", firstSession, { session_id: "session-one" });
+  await register(handlers, "second-agent", secondSession, { session_id: "session-two" });
+  const task = payload(await handlers.task_create({ title: "Session-bound assignment" }, firstSession)).task;
+  await assert.rejects(
+    handlers.task_claim({ task_id: task.id, agent_id: "first-agent", expected_version: 1 }, secondSession),
+    /agent_instance_conflict/
+  );
+  await assert.rejects(
+    handlers.message_inbox({ agent_id: "first-agent" }, secondSession),
+    /agent_instance_conflict/
+  );
 });

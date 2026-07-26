@@ -260,21 +260,47 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
+  const boundedInternalActionTypes = new Set([
+    "agent.heartbeat",
+    "task.claim",
+    "task.update",
+    "message.acknowledge",
+  ]);
   if (
-    body.operation_class === "reversible_internal_collaboration_write" &&
+    body.operation_class === "bounded_internal_coordination_write" &&
+    boundedInternalActionTypes.has(String(body.action_type || "").toLowerCase()) &&
     body.external_side_effect === false &&
     body.contains_customer_data === false &&
-    body.rollback_ready === true
+    body.contains_secret === false &&
+    body.secret_value_transmitted === false &&
+    body.cross_tenant === false &&
+    body.configuration_changes === false &&
+    body.destructive === false &&
+    body.bypass_orchestrator === false &&
+    body.provider_execution === false &&
+    body.deploy !== true &&
+    body.production_deploy !== true &&
+    body.merge !== true &&
+    body.delete !== true &&
+    body.execution_enabled !== true &&
+    body.force !== true &&
+    body.admin_bypass !== true &&
+    body.bounded_scope === true &&
+    body.low_impact === true &&
+    body.idempotent_or_compensable === true &&
+    body.audit_ready === true &&
+    body.target_authority_verified === true &&
+    body.actor_authorized_for_target === true
   ) {
     return profile({
-      classification: "reversible_internal_write",
-      operationClass: "reversible_internal_collaboration_write",
-      state: "attention",
+      classification: "bounded_internal_coordination_write",
+      operationClass: "bounded_internal_coordination_write",
+      state: "ready",
       riskBand: "low",
-      riskScore: 25,
-      controlLevel: "confirm",
-      confirmationRequired: true,
-      reasonCodes: ["owner_confirmation_required"],
+      riskScore: 15,
+      controlLevel: "observe",
+      confirmationRequired: false,
+      reasonCodes: ["tenant_scoped", "bounded_scope", "low_impact", "audited", "actor_authorized"],
     });
   }
 

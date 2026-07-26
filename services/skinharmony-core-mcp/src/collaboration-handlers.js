@@ -184,7 +184,33 @@ function requireOwnedAgent(state, agentId, identity) {
   const registered = state.agents.find((agent) => agent.id === agentId && agent.actor_subject === actor(identity));
   if (!registered) fail("agent_not_registered");
   if (!registered.session_fingerprint || String(registered.signature || "").startsWith("ags_legacy_")) fail("agent_reregistration_required");
+  const bound = identity.agentPresence || {};
+  if (!bound.signature || !bound.session_fingerprint) fail("agent_presence_session_required");
+  if (registered.signature !== bound.signature || registered.session_fingerprint !== bound.session_fingerprint) fail("agent_instance_conflict");
   return registered;
+}
+
+function boundedCollaborationAction(action) {
+  return {
+    ...action,
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: false,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    ...action,
+  };
 }
 
 export function createCollaborationHandlers(config, options = {}) {
@@ -229,7 +255,7 @@ export function createCollaborationHandlers(config, options = {}) {
 
     workspace_create_folder: async ({ path: requestedPath }, identity) => {
       const folderPath = logicalPath(requestedPath, { folder: true });
-      return governed(identity, { action_type: "workspace.create_folder", action_label: `Create shared folder ${folderPath}`, target: folderPath }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "workspace.create_folder", contains_customer_data: true, action_label: `Create shared folder ${folderPath}`, target: folderPath }), async (state) => {
         const existing = state.folders.find((folder) => folder.path === folderPath);
         if (existing) return { folder: existing, created: false };
         const folder = { id: crypto.randomUUID(), path: folderPath, created_at: new Date().toISOString(), created_by: actor(identity) };
@@ -253,7 +279,7 @@ export function createCollaborationHandlers(config, options = {}) {
       const documentTitle = optionalText(title, "document_title", 200) || documentPath.split("/").at(-1);
       const documentContent = requiredText(content, "document_content", 100_000);
       const idempotencyKey = optionalText(idempotency_key, "idempotency_key", 120);
-      return governed(identity, { action_type: "workspace.write_document", action_label: `Write shared document ${documentPath}`, target: documentPath }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "workspace.write_document", contains_customer_data: true, action_label: `Write shared document ${documentPath}`, target: documentPath }), async (state) => {
         const existing = state.documents.find((document) => document.path === documentPath);
         if (existing && idempotencyKey && existing.last_idempotency_key === idempotencyKey && existing.updated_by === actor(identity)) {
           return { document: publicDocument(existing), created: false, idempotent_replay: true };
@@ -296,7 +322,7 @@ export function createCollaborationHandlers(config, options = {}) {
       const taskDescription = optionalText(description, "task_description", 20_000);
       if (!PRIORITIES.has(priority)) fail("task_priority_invalid");
       const key = optionalText(idempotency_key, "idempotency_key", 120);
-      return governed(identity, { action_type: "task.create", action_label: `Create shared task ${taskTitle}`, target: taskTitle }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "task.create", operation_class: "owner_confirmed_governed_action", action_label: `Create shared task ${taskTitle}`, target: taskTitle }), async (state) => {
         const existing = key && state.tasks.find((task) => task.idempotency_key === key && task.created_by === actor(identity));
         if (existing) return { task: publicTask(existing), created: false, idempotent_replay: true };
         const timestamp = new Date().toISOString();
@@ -315,7 +341,7 @@ export function createCollaborationHandlers(config, options = {}) {
       const taskId = requiredText(task_id, "task_id", 80);
       const agentId = safeId(agent_id, "agent");
       if (!Number.isInteger(Number(expected_version)) || Number(expected_version) < 1) fail("task_expected_version_required");
-      return governed(identity, { action_type: "task.claim", action_label: `Claim shared task ${taskId}`, target: taskId }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "task.claim", action_label: `Claim shared task ${taskId}`, target: taskId }), async (state) => {
         const registeredAgent = requireOwnedAgent(state, agentId, identity);
         const task = state.tasks.find((candidate) => candidate.id === taskId);
         if (!task) fail("task_not_found");
@@ -341,7 +367,7 @@ export function createCollaborationHandlers(config, options = {}) {
       if (!TASK_STATUSES.has(status) || status === "open") fail("task_status_invalid");
       if (!Number.isInteger(Number(expected_version)) || Number(expected_version) < 1) fail("task_expected_version_required");
       const taskNote = optionalText(note, "task_note", 10_000);
-      return governed(identity, { action_type: "task.update", action_label: `Update shared task ${taskId} to ${status}`, target: taskId }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "task.update", ...(taskNote ? { operation_class: "owner_confirmed_governed_action", contains_customer_data: true } : {}), action_label: `Update shared task ${taskId} to ${status}`, target: taskId }), async (state) => {
         const registeredAgent = requireOwnedAgent(state, agentId, identity);
         const task = state.tasks.find((candidate) => candidate.id === taskId);
         if (!task) fail("task_not_found");
@@ -368,7 +394,8 @@ export function createCollaborationHandlers(config, options = {}) {
       const signature = presence.signature;
       const displayName = optionalText(display_name, "display_name", 120) || agentId;
       const safeCapabilities = Array.isArray(capabilities) ? [...new Set(capabilities.map((value) => safeId(value, "capability")))].slice(0, 20) : fail("capabilities_invalid");
-      return governed(identity, { action_type: "agent.heartbeat", action_label: `Register agent ${agentId}`, target: agentId }, async (state) => {
+      const customMetadata = displayName !== agentId || safeCapabilities.length > 0;
+      return governed(identity, boundedCollaborationAction({ action_type: "agent.heartbeat", ...(customMetadata ? { operation_class: "owner_confirmed_governed_action", contains_customer_data: true } : {}), action_label: `Register agent ${agentId}`, target: agentId }), async (state) => {
         const timestamp = new Date().toISOString();
         let record = state.agents.find((candidate) => candidate.id === agentId);
         if (!record) {
@@ -388,7 +415,9 @@ export function createCollaborationHandlers(config, options = {}) {
           state.agents.push(record);
         } else {
           if (record.actor_subject !== actor(identity)) fail("agent_identity_conflict");
-          if (record.session_fingerprint && record.signature !== signature) fail("agent_instance_conflict");
+          const lastSeen = Date.parse(record.last_seen_at || "");
+          const active = Number.isFinite(lastSeen) && Date.now() - lastSeen <= AGENT_ACTIVE_WINDOW_MS;
+          if (record.session_fingerprint && record.signature !== signature && active) fail("agent_instance_conflict");
           record.opaque_agent_id = presence.opaque_agent_id;
           record.signature = signature;
           record.signature_version = presence.signature_version;
@@ -415,7 +444,7 @@ export function createCollaborationHandlers(config, options = {}) {
       const messageBody = requiredText(body, "message_body", 20_000);
       const threadId = optionalText(thread_id, "thread_id", 80);
       const key = optionalText(idempotency_key, "idempotency_key", 120);
-      return governed(identity, { action_type: "message.post", action_label: `Post agent message from ${fromAgentId} to ${toAgentId}`, target: toAgentId }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "message.post", operation_class: "owner_confirmed_governed_action", contains_customer_data: true, action_label: `Post agent message from ${fromAgentId} to ${toAgentId}`, target: toAgentId }), async (state) => {
         const sender = requireOwnedAgent(state, fromAgentId, identity);
         const recipient = toAgentId === "all" ? null : state.agents.find((agent) => agent.id === toAgentId);
         if (toAgentId !== "all" && !recipient) fail("recipient_not_registered");
@@ -457,7 +486,7 @@ export function createCollaborationHandlers(config, options = {}) {
       if (postgres) return postgres.acknowledge({ message_id, agent_id }, identity);
       const messageId = requiredText(message_id, "message_id", 80);
       const agentId = safeId(agent_id, "agent");
-      return governed(identity, { action_type: "message.acknowledge", action_label: `Acknowledge agent message ${messageId}`, target: messageId }, async (state) => {
+      return governed(identity, boundedCollaborationAction({ action_type: "message.acknowledge", action_label: `Acknowledge agent message ${messageId}`, target: messageId }), async (state) => {
         const registeredAgent = requireOwnedAgent(state, agentId, identity);
         const message = state.messages.find((candidate) => candidate.id === messageId);
         if (!message || (message.to_agent_id !== "all" && message.to_agent_id !== agentId)) fail("message_not_found");

@@ -486,6 +486,25 @@ function extractOpenAiResponse(payload, query) {
   };
 }
 
+function governedResearchAction(action) {
+  return {
+    ...action,
+    external_side_effect: false,
+    contains_customer_data: true,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    rollback_ready: false,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  };
+}
+
 export function createResearchCortex(config, options = {}) {
   const root = String(config.researchCortexRoot || config.memoryFabricRoot || "").trim();
   if (!root) throw new Error("research_cortex_not_configured");
@@ -620,11 +639,11 @@ export function createResearchCortex(config, options = {}) {
       redaction_count: evidence.redaction_count,
       expires_at: new Date(Date.now() + retentionDays * 86_400_000).toISOString(),
     };
-    return governed(identity, {
+    return governed(identity, governedResearchAction({
       action_type: "research.ingest",
       action_label: `Ingest tenant research evidence ${record.id}`,
       target: record.id,
-    }, async (store) => {
+    }), async (store) => {
       const existing = store.records.find((candidate) => candidate.idempotency_key === record.idempotency_key);
       if (existing) {
         if (existing.evidence_fingerprint && existing.evidence_fingerprint !== record.evidence_fingerprint) fail("research_idempotency_conflict");
@@ -724,11 +743,11 @@ export function createResearchCortex(config, options = {}) {
     const verdict = String(input.verdict || "").trim().toLowerCase();
     if (!FEEDBACK_VERDICTS.has(verdict)) fail("research_feedback_verdict_invalid");
     const rationale = sanitizeText(input.rationale, "research_feedback_rationale", 2_000);
-    const result = await governed(identity, {
+    const result = await governed(identity, governedResearchAction({
       action_type: "research.feedback",
       action_label: `${verdict} tenant research evidence ${recordId}`,
       target: recordId,
-    }, async (state, gate) => {
+    }), async (state, gate) => {
       const record = state.records.find((candidate) => candidate.id === recordId);
       if (!record) fail("research_record_not_found");
       let idempotentReplay = false;
