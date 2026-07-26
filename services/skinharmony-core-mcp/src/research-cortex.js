@@ -3,6 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { redactText } from "./memory-fabric.js";
+import { assessLexicalSemanticText } from "../../shared/lexical-semantic-engine.mjs";
 
 const ID_PATTERN = /^[a-z][a-z0-9_-]{1,63}$/i;
 const RECORD_ID_PATTERN = /^research_[a-f0-9-]{36}$/;
@@ -65,7 +66,8 @@ function sanitizeText(value, name, max = 2_000, { required = true } = {}) {
   if (raw.length > max) fail(`${name}_too_long`);
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(raw)) fail(`${name}_invalid`);
   if (hasPattern(raw, SECRET_PATTERNS)) fail("research_sensitive_content_rejected");
-  const promptInjection = hasPattern(raw, PROMPT_INJECTION_PATTERNS);
+  const lexicalAssessment = assessLexicalSemanticText({ text: raw, source_context: "retrieved_web" });
+  const promptInjection = hasPattern(raw, PROMPT_INJECTION_PATTERNS) || lexicalAssessment.disposition !== "allow";
   const withoutActiveHtml = raw
     .replace(/<\s*(?:script|iframe|object|embed|style)[^>]*>[\s\S]*?<\s*\/\s*(?:script|iframe|object|embed|style)\s*>/gi, " ")
     .replace(/<[^>]+>/g, " ")
@@ -77,7 +79,13 @@ function sanitizeText(value, name, max = 2_000, { required = true } = {}) {
     phoneRedactions += 1;
     return "[REDACTED_PHONE]";
   });
-  return { text, redaction_count: redacted.redaction_count + phoneRedactions, prompt_injection: promptInjection };
+  return {
+    text,
+    redaction_count: redacted.redaction_count + phoneRedactions,
+    prompt_injection: promptInjection,
+    lexical_disposition: lexicalAssessment.disposition,
+    lexical_families: [...lexicalAssessment.matched_families],
+  };
 }
 
 function normalizeDate(value, name, { optional = true } = {}) {
@@ -425,22 +433,24 @@ function validationSummary(validation) {
 }
 
 function providerSource(raw, index) {
+  let url;
   try {
-    const url = normalizeUrl(raw?.url);
-    const title = sanitizeText(raw?.title || new URL(url).hostname, "research_provider_source_title", 500);
-    return {
-      id: `source_${index + 1}`,
-      url,
-      title: title.text,
-      publisher: new URL(url).hostname,
-      source_type: "other",
-      published_at: null,
-      fetched_at: new Date().toISOString(),
-      excerpt: null,
-    };
+    url = normalizeUrl(raw?.url);
   } catch {
     return null;
   }
+  const title = sanitizeText(raw?.title || new URL(url).hostname, "research_provider_source_title", 500);
+  if (title.prompt_injection) fail("openai_research_source_quarantined");
+  return {
+    id: `source_${index + 1}`,
+    url,
+    title: title.text,
+    publisher: new URL(url).hostname,
+    source_type: "other",
+    published_at: null,
+    fetched_at: new Date().toISOString(),
+    excerpt: null,
+  };
 }
 
 function extractOpenAiResponse(payload, query) {
@@ -457,6 +467,7 @@ function extractOpenAiResponse(payload, query) {
     }
   }
   const synthesis = sanitizeText(textParts.join("\n") || payload?.output_text, "research_provider_synthesis", 8_000);
+  if (synthesis.prompt_injection) fail("openai_research_synthesis_quarantined");
   const deduplicated = [];
   const seen = new Set();
   for (const row of sourceRows) {

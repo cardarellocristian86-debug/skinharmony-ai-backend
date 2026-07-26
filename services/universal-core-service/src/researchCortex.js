@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import net from "node:net";
+import { assessLexicalSemanticText } from "../../shared/lexical-semantic-engine.mjs";
 
 const SOURCE_TYPES = new Set([
   "official",
@@ -268,7 +269,8 @@ export function validateResearchEvidence(input = {}, options = {}) {
     if (!SOURCE_TYPES.has(sourceType)) fail("research_source_type_invalid");
     const inspected = [source?.title, source?.publisher, source?.excerpt, source?.summary].map((value) => String(value || "")).join(" ");
     if (hasPattern(inspected, SECRET_PATTERNS)) fail("research_sensitive_content_rejected");
-    const promptInjection = hasPattern(inspected, PROMPT_INJECTION_PATTERNS);
+    const promptInjection = hasPattern(inspected, PROMPT_INJECTION_PATTERNS)
+      || assessLexicalSemanticText({ text: inspected, source_context: "retrieved_web" }).disposition !== "allow";
     const sensitive = EMAIL_PATTERN.test(inspected) || PHONE_PATTERN.test(inspected);
     if (promptInjection) injectionCount += 1;
     if (sensitive) sensitiveCount += 1;
@@ -295,7 +297,8 @@ export function validateResearchEvidence(input = {}, options = {}) {
     const references = unique((Array.isArray(claim?.source_ids) ? claim.source_ids : []).map((id) => normalizeIdentifier(id, "research_claim_source_id")));
     if (references.some((id) => !sourceIds.has(id))) fail("research_claim_source_unknown");
     const contradicts = unique((Array.isArray(claim?.contradicts_claim_ids) ? claim.contradicts_claim_ids : []).map((id) => normalizeIdentifier(id, "research_contradiction_id")));
-    if (hasPattern(text, PROMPT_INJECTION_PATTERNS)) injectionCount += 1;
+    if (hasPattern(text, PROMPT_INJECTION_PATTERNS)
+      || assessLexicalSemanticText({ text, source_context: "retrieved_web" }).disposition !== "allow") injectionCount += 1;
     return { claimId, kind, references, contradicts, confidence: boundedNumber(claim?.confidence, kind === "fact" ? 0.7 : 0.5, 0, 1) };
   });
   for (const claim of claimInputs) {

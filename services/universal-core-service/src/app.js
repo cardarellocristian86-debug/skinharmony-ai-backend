@@ -112,6 +112,12 @@ import {
   createFileDttAgentIdentityReceiptStore,
   createPostgresDttAgentIdentityReceiptStore,
 } from "../../shared/dtt-agent-identity-receipts.js";
+import {
+  assessLexicalSemanticText,
+  lexicalSemanticCatalogDescriptor,
+  listLexicalSemanticCapabilities,
+  listVirtualLexicalSemanticVariants,
+} from "../../shared/lexical-semantic-engine.mjs";
 import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
 import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
@@ -124,7 +130,7 @@ import { mountAdminControlRoom } from "./adminControlRoom.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.11.0-agent-ai-orchestration";
+const SERVICE_VERSION = "0.12.0-lexical-semantic-intelligence";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -1421,6 +1427,11 @@ function buildConnectorSdkManifest() {
 
 function repoRoot() {
   return path.resolve(__dirname, "../../..");
+}
+
+function lexicalSemanticRuntimeMode() {
+  const requested = String(process.env.LEXICAL_SEMANTIC_MODE || "active").trim().toLowerCase();
+  return ["active", "shadow", "off"].includes(requested) ? requested : "shadow";
 }
 
 function extractorBinaryPath() {
@@ -5903,6 +5914,135 @@ export function createUniversalCoreService(options = {}) {
       });
     } catch (error) {
       return publicError(res, 400, error.message || "orchestration_catalog_invalid");
+    }
+  });
+
+  app.get("/v1/lexical-semantics/catalog", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const resolution = resolveBranchesForKey(req.coreKey, ["lexical_semantic_intelligence"]);
+      if (!resolution.selected_branches.includes("lexical_semantic_intelligence")) {
+        return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+      }
+      const view = String(req.query.view || "capabilities");
+      if (!["capabilities", "virtual"].includes(view)) return publicError(res, 400, "lexical_catalog_view_invalid");
+      const input = { cursor: req.query.cursor, limit: req.query.limit };
+      const catalog = view === "virtual"
+        ? listVirtualLexicalSemanticVariants(input)
+        : listLexicalSemanticCapabilities(input);
+      audit.append("lexical_semantic_catalog_read", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        view,
+        item_count: catalog.items.length,
+        fingerprint: catalog.fingerprint,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        view,
+        ...catalog,
+        execution_authorized: false,
+      });
+    } catch (error) {
+      return publicError(res, 400, error.message || "lexical_catalog_invalid");
+    }
+  });
+
+  app.post("/v1/lexical-semantics/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try {
+      const runtimeMode = lexicalSemanticRuntimeMode();
+      if (runtimeMode === "off") {
+        return publicError(res, 503, "lexical_semantic_runtime_disabled");
+      }
+      const resolution = resolveBranchesForKey(req.coreKey, ["lexical_semantic_intelligence"]);
+      if (!resolution.selected_branches.includes("lexical_semantic_intelligence")) {
+        return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+      }
+      const text = String(req.body?.text || "");
+      if (!text.trim()) return publicError(res, 400, "lexical_text_required");
+      if (text.length > 32_768) return publicError(res, 413, "lexical_text_too_large");
+      const assessment = assessLexicalSemanticText({
+        text,
+        locale: req.body?.locale,
+        source_context: req.body?.source_context,
+        scope_salt: `${req.tenantId}\u0000${process.env.CORE_EVIDENCE_SIGNING_SECRET || "tenant_bound_digest_v1"}`,
+      });
+      const score = assessment.disposition === "block" ? 94 : assessment.disposition === "clarify" ? 58 : 6;
+      const coreInput = {
+        context: {
+          tenant_id: req.tenantId,
+          source: "lexical_semantic_intelligence",
+          locale: assessment.locale,
+          source_context: assessment.source_context,
+        },
+        signals: [normalizeSignal({
+          id: `lexical-semantic:${assessment.text_digest.slice(0, 20)}`,
+          label: `Lexical semantic disposition: ${assessment.disposition}`,
+          category: "language_security",
+          normalized_score: score,
+          severity_hint: score,
+          confidence_hint: assessment.disposition === "allow" ? 86 : 92,
+          evidence: [
+            { label: "text_digest", value: assessment.text_digest },
+            { label: "matched_families", value: assessment.matched_families },
+            { label: "quoted_or_reported", value: assessment.context.quoted || assessment.context.reported },
+          ],
+          tags: ["lexical_semantic_intelligence", assessment.disposition, ...assessment.matched_families],
+        })],
+        data_quality: {
+          score: assessment.disposition === "clarify" ? 62 : 88,
+          missing_fields: assessment.disposition === "clarify" ? ["explicit_context_or_confirmation"] : [],
+        },
+        constraints: safeConstraints({
+          require_confirmation: assessment.disposition !== "allow",
+          max_control_level: assessment.disposition === "allow" ? "observe" : "confirm",
+          risk_floor: assessment.disposition === "block" ? "high" : assessment.disposition === "clarify" ? "low" : "low",
+          passive_only: true,
+          allow_automation: false,
+          safety_mode: true,
+          blocked_actions: assessment.disposition === "block"
+            ? ["execute_or_propagate_lexically_unsafe_content"]
+            : [],
+        }, req.coreKey, false),
+      };
+      const coreOutput = runtimeMode === "active" ? runUniversalCore(coreInput) : null;
+      audit.append("lexical_semantic_analyzed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        catalog_fingerprint: assessment.catalog_fingerprint,
+        disposition: assessment.disposition,
+        matched_families: assessment.matched_families,
+        normalized_changed: assessment.normalized_changed,
+        core_state: coreOutput?.state || null,
+        core_risk: coreOutput?.risk?.band || null,
+        runtime_mode: runtimeMode,
+        digest_persisted: false,
+        raw_text_persisted: false,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        branch: "lexical_semantic_intelligence",
+        assessment,
+        catalog: lexicalSemanticCatalogDescriptor(),
+        core_output: coreOutput,
+        authority: {
+          lexical_semantic: "advisory",
+          final_router: "universal_core",
+          nyra_role: "interpret_and_explain",
+        },
+        guardrail: {
+          execution_allowed: false,
+          raw_text_persisted: false,
+          explicit_confirmation_eligible: assessment.explicit_confirmation_eligible,
+          mode: runtimeMode === "active"
+            ? "active_advisory_core_governed"
+            : "shadow_observe_only",
+          rollback_mode: "shadow",
+        },
+      });
+    } catch (error) {
+      return publicError(res, 400, error.message || "lexical_semantic_analysis_invalid");
     }
   });
 

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { assessLexicalSemanticText } from "./lexical-semantic-engine.mjs";
 
 export const HANDOFF_INJECTION_SCANNER_VERSION = "handoff_injection_guard_v7";
 // This scanner is a deterministic, high-recall quarantine layer. A clean scan
@@ -320,6 +321,10 @@ export function scanInterAgentHandoff({
   const extracted = extractBoundedInterAgentText(body);
   const normalized = extracted.texts.map((entry) => `${entry.path}: ${normalizeForScan(entry.text)}`).join("\n");
   const variants = scanVariants(normalized);
+  const lexicalAssessment = assessLexicalSemanticText({
+    text: normalized,
+    source_context: "inter_agent_handoff",
+  });
   const matchedRules = RULES
     .filter((rule) => rule.patterns.some((pattern) => variants.some((variant) => pattern.test(variant))))
     .map((rule) => rule.id);
@@ -328,6 +333,9 @@ export function scanInterAgentHandoff({
   }
   const uniqueMatchedRules = [...new Set(matchedRules)];
   if (extracted.truncated) uniqueMatchedRules.push("envelope_unscannable");
+  if (lexicalAssessment.disposition === "block") uniqueMatchedRules.push("lexical_semantic_block");
+  if (lexicalAssessment.disposition === "clarify") uniqueMatchedRules.push("lexical_semantic_clarify");
+  const deduplicatedRules = [...new Set(uniqueMatchedRules)];
   const tenantId = boundedIdentity(tenant_id);
   const sender = boundedIdentity(from_agent_id);
   const recipient = boundedIdentity(to_agent_id);
@@ -341,12 +349,12 @@ export function scanInterAgentHandoff({
   const tenantScopeDigest = crypto.createHash("sha256").update(tenantId).digest("hex").slice(0, 24);
 
   return {
-    suspicious: uniqueMatchedRules.length > 0,
-    action: uniqueMatchedRules.length > 0 ? "quarantine" : "allow",
+    suspicious: deduplicatedRules.length > 0,
+    action: deduplicatedRules.length > 0 ? "quarantine" : "allow",
     scanner_version: HANDOFF_INJECTION_SCANNER_VERSION,
     trust_boundary: { ...UNTRUSTED_DATA_BOUNDARY },
     content_digest: contentDigest,
-    matched_rules: uniqueMatchedRules,
+    matched_rules: deduplicatedRules,
     envelope: {
       text_count: extracted.text_count,
       item_count: extracted.item_count,
@@ -363,10 +371,25 @@ export function scanInterAgentHandoff({
       from_client_type: clientType || null,
       thread_id: thread || null,
     },
-    false_positive_policy: uniqueMatchedRules.length > 0
+    lexical_assessment: {
+      engine_version: lexicalAssessment.engine_version,
+      catalog_fingerprint: lexicalAssessment.catalog_fingerprint,
+      disposition: lexicalAssessment.disposition,
+      risk_band: lexicalAssessment.risk_band,
+      matched_families: [...lexicalAssessment.matched_families],
+      quoted_or_reported: lexicalAssessment.context.quoted || lexicalAssessment.context.reported,
+      negated: lexicalAssessment.context.negated,
+      explicit_confirmation_eligible: lexicalAssessment.explicit_confirmation_eligible,
+      grants_authority: false,
+    },
+    false_positive_policy: deduplicatedRules.length > 0
       ? {
           automatic_release: false,
           review_required: true,
+          recommended_disposition: lexicalAssessment.disposition === "block" || extracted.truncated ? "block" : "clarify",
+          explicit_confirmation_eligible: lexicalAssessment.disposition === "clarify"
+            || (lexicalAssessment.disposition === "allow" && !extracted.truncated),
+          final_authority: "universal_core",
           safe_retry: "Resubmit a declarative summary without executable instructions or quoted control-language.",
         }
       : null,
@@ -402,6 +425,9 @@ export function guardInterAgentEnvelope(context = {}) {
       false_positive_policy: {
         automatic_release: false,
         review_required: true,
+        recommended_disposition: "clarify",
+        explicit_confirmation_eligible: true,
+        final_authority: "universal_core",
         safe_retry: "Resubmit a declarative summary without executable instructions or quoted control-language.",
       },
     };
@@ -427,6 +453,7 @@ export function publicQuarantineReceipt(scan, { quarantine_id, created_at, idemp
     matched_rules: [...scan.matched_rules],
     provenance: { ...scan.provenance },
     false_positive_policy: scan.false_positive_policy,
+    lexical_assessment: scan.lexical_assessment,
     created_at,
     idempotent_replay,
   };

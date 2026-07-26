@@ -616,6 +616,26 @@ export function createCoreHandlers(config, options = {}) {
       });
       return textResult(await coreRequest(`/v1/orchestration/capabilities?${query.toString()}`, identity.tenantId));
     },
+    lexical_semantic_catalog: async (args, identity) => {
+      const query = new URLSearchParams({
+        view: args.view || "capabilities",
+        cursor: args.cursor || "0",
+        limit: String(args.limit || (args.view === "virtual" ? 20 : 25)),
+      });
+      return textResult(await coreRequest(`/v1/lexical-semantics/catalog?${query.toString()}`, identity.tenantId));
+    },
+    lexical_semantic_analyze: async (args, identity) => textResult(await coreRequest(
+      "/v1/lexical-semantics/analyze",
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          text: args.text,
+          locale: args.locale,
+          source_context: args.source_context,
+        },
+      },
+    )),
     orchestration_relational_evaluate: async (args, identity) => textResult(await coreRequest(
       "/v1/orchestration/relational/evaluate",
       identity.tenantId,

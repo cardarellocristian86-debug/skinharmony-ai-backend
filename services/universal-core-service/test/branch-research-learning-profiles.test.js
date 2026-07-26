@@ -18,14 +18,15 @@ const TARGET_BRANCHES = Object.freeze([
   "smartdesk_operations_guard",
   "skinharmony_analyzer",
   "beauty_vertical_orchestration",
+  "lexical_semantic_intelligence",
 ]);
 
-test("four target areas expose rich governed research and learning profiles", () => {
+test("five target areas expose rich governed research and learning profiles", () => {
   const profiles = Object.values(BRANCH_RESEARCH_LEARNING_PROFILES);
-  assert.equal(profiles.length, 4);
+  assert.equal(profiles.length, 5);
   assert.deepEqual(
     profiles.map((profile) => profile.area).sort(),
-    ["analyzer_vertical", "programming_architecture", "smartdesk_vertical", "suite_vertical"],
+    ["analyzer_vertical", "lexical_semantic_intelligence", "programming_architecture", "smartdesk_vertical", "suite_vertical"],
   );
 
   for (const profile of profiles) {
@@ -62,6 +63,7 @@ test("target L6 branches are operationally full and preserve specific depth-30 p
     smartdesk_operations_guard: 28,
     skinharmony_analyzer: 30,
     beauty_vertical_orchestration: 18,
+    lexical_semantic_intelligence: 50,
   };
 
   for (const branchId of TARGET_BRANCHES) {
@@ -130,4 +132,3 @@ test("Suite, SmartDesk and Analyzer domain packs keep vertical research isolated
   assert(analyzer.denied_branches.includes("suite_governance"));
   assert(analyzer.denied_branches.includes("smartdesk_operations_guard"));
 });
-
