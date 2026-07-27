@@ -1375,7 +1375,7 @@ function suiteRunbookCatalog() {
 
 function buildConnectorSdkManifest() {
   return {
-    manifest_version: "core_connector_sdk_v1",
+    manifest_version: "core_connector_sdk_v2",
     positioning: "AI Governance + Automation Control Plane per PMI e verticali premium",
     rule: "AI e automazioni possono agire solo passando da Core, policy, audit, tenant isolation e conferma quando serve.",
     transports: ["rest_json", "mcp_ready_schema"],
@@ -1396,8 +1396,24 @@ function buildConnectorSdkManifest() {
     core_routes: {
       work_preflight: "/v1/work/preflight",
       gate: "/v1/ai-gateway/evaluate",
+      tenant_status: "/v1/tenant/status",
+      entitlements: "/v1/entitlements/current",
+      domain_pack: "/v1/domain-packs/current",
+      branches: "/v1/branches",
+      branch_taxonomy: "/v1/branches/taxonomy",
+      branch_maturity: "/v1/branches/maturity",
+      branch_authorized: "/v1/branches/authorized",
+      branch_analyze: "/v1/branches/:branch/analyze",
+      semantic_selection: "/v1/semantic-selection",
       software_language_gate: "/v1/software-language-gate/evaluate",
+      content_guard: "/v1/content-guard/check",
+      claim_guard: "/v1/claim-guard/check",
+      pricing_guard: "/v1/pricing-guard/check",
+      policy_check: "/v1/policy/check",
+      action_mediation: "/v1/action-mediation/evaluate",
       control_plane: "/v1/control-plane/overview",
+      control_plane_dashboard: "/v1/control-plane/dashboard",
+      ecosystem_pulse: "/v1/ecosystem-pulse",
       translator_extractor_status: "/v1/translator/extractor/status",
       translator_extractor_catalog: "/v1/translator/extractor/catalog",
       runbooks: "/v1/runbooks",
@@ -1421,6 +1437,10 @@ function buildConnectorSdkManifest() {
       software_intelligence_jobs_submit: "/v1/software-intelligence/jobs",
       software_intelligence_jobs_list: "/v1/software-intelligence/jobs",
       software_intelligence_job_get: "/v1/software-intelligence/jobs/:jobId",
+      entity_graph: "/v1/entity-graph",
+      entity_graph_upsert: "/v1/entity-graph/upsert",
+      review_pending: "/v1/review/pending",
+      review_action: "/v1/review/action",
     },
   };
 }
@@ -1745,7 +1765,7 @@ function buildControlPlaneOverview({ tenantId, keyRecord, keyStore, snapshot, au
     control_plane: {
       api_keys: { total: tenantKeys.length, active: activeKeys, suspended: suspendedKeys, revoked: revokedKeys },
       licenses: { tier: branchResolution.tier, suite_policy: suitePolicy },
-      versions: { service_version: SERVICE_VERSION, connector_sdk_manifest: "core_connector_sdk_v1" },
+      versions: { service_version: SERVICE_VERSION, connector_sdk_manifest: "core_connector_sdk_v2" },
       update: { release_manifest_check: "/v1/releases/manifest/check", automatic_update_allowed: false },
       gate: { ai_gateway: "/v1/ai-gateway/evaluate", policy_check: "/v1/policy/check" },
       automations: { runbook_count: suiteRunbookCatalog().length, execution_default: "confirm_or_block" },
