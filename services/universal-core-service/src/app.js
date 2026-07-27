@@ -7145,7 +7145,7 @@ export function createUniversalCoreService(options = {}) {
       ownerContextSigningSecret,
       { allowed_branches: resolution.allowed_branches },
     );
-    if (!branchAvailableForContext(branchRegistry()[branch], context, { semantic: true })) {
+    if (!branchAvailableForContext(branchRegistry()[branch], context)) {
       audit.append("core_branch_client_exposure_denied", {
         tenant_id: req.tenantId,
         key_id: req.coreKey.key_id,

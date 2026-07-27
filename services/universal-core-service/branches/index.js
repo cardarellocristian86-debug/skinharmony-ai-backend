@@ -77,6 +77,7 @@ import { branchLexicalSemanticIntelligence } from "./branch-lexical-semantic-int
 import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identity-delegation-guard.js";
 import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
+import { branchExposureClassification } from "./branch-exposure-classification.js";
 import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
 import { branchAllowedForDomainPack, resolveDomainPackForKey } from "../src/domainPacks.js";
 
@@ -495,31 +496,27 @@ export function expandBranchIds(ids = []) {
 
 export function deterministicBranchRegistry() {
   return Object.fromEntries(
-    BRANCHES.map((branch) => [
-      branch.id,
-      {
-        label: branch.label,
-        domain: branch.domain,
-        tier: branch.tier,
-        production_status: branch.production_status,
-        description: branch.description,
-        subbranches: branch.subbranches || [],
-        ...(branch.capability_catalog ? { capability_catalog: branch.capability_catalog } : {}),
-        ...(branch.capability_facets ? { capability_facets: branch.capability_facets } : {}),
-        ...(branch.subbranch_contracts ? { subbranch_contracts: branch.subbranch_contracts } : {}),
-        ...(branch.all_capability_ids ? { all_capability_ids: branch.all_capability_ids } : {}),
-        ...(branch.core_branch_bindings ? { core_branch_bindings: branch.core_branch_bindings } : {}),
-        ...(branch.exposure_class ? {
-          exposure_class: branch.exposure_class,
-          allowed_client_types: branch.allowed_client_types,
-          allowed_audiences: branch.allowed_audiences,
-          required_entitlements: branch.required_entitlements,
-          discoverable_in_connector: branch.discoverable_in_connector,
-          semantic_select_allowed: branch.semantic_select_allowed,
-        } : {}),
-        file: branch.file,
-      },
-    ]),
+    BRANCHES.map((branch) => {
+      const exposure = branchExposureClassification(branch.id);
+      return [
+        branch.id,
+        {
+          label: branch.label,
+          domain: branch.domain,
+          tier: branch.tier,
+          production_status: branch.production_status,
+          description: branch.description,
+          subbranches: branch.subbranches || [],
+          ...(branch.capability_catalog ? { capability_catalog: branch.capability_catalog } : {}),
+          ...(branch.capability_facets ? { capability_facets: branch.capability_facets } : {}),
+          ...(branch.subbranch_contracts ? { subbranch_contracts: branch.subbranch_contracts } : {}),
+          ...(branch.all_capability_ids ? { all_capability_ids: branch.all_capability_ids } : {}),
+          ...(branch.core_branch_bindings ? { core_branch_bindings: branch.core_branch_bindings } : {}),
+          ...(exposure || {}),
+          file: branch.file,
+        },
+      ];
+    }),
   );
 }
 

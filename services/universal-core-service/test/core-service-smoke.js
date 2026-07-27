@@ -110,6 +110,40 @@ try {
   const codexKey = codexGenerated.json.key;
   mark("codex_key_generate", true, { key_id: codexGenerated.json.record.key_id, tier: codexGenerated.json.record.metadata.tier });
 
+  const analyzerGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_demo_skinharmony",
+    brand_scope: "skinharmony",
+    key_type: "connector",
+    tier: "network",
+    domain_pack_id: "analyzer",
+    metadata: {
+      client_type: "analyzer",
+      audience: "analyzer_runtime",
+    },
+    label: "Analyzer adjacent exposure test",
+  });
+  assert(analyzerGenerated.status === 201 && analyzerGenerated.json.key, "analyzer key generation failed");
+  const analyzerKey = analyzerGenerated.json.key;
+  mark("analyzer_key_generate", true, {
+    key_id: analyzerGenerated.json.record.key_id,
+    client_type: analyzerGenerated.json.record.metadata.client_type,
+  });
+
+  const controlRoomGenerated = await api(base, "POST", "/v1/keys/generate", {
+    tenant_id: "tenant_demo_skinharmony",
+    brand_scope: "skinharmony",
+    key_type: "connector",
+    tier: "omni_360",
+    allowed_scopes: ["read:decision", "admin:tenant"],
+    label: "Admin control room exposure test",
+  });
+  assert(controlRoomGenerated.status === 201 && controlRoomGenerated.json.key, "control room key generation failed");
+  const controlRoomKey = controlRoomGenerated.json.key;
+  mark("control_room_key_generate", true, {
+    key_id: controlRoomGenerated.json.record.key_id,
+    scopes: controlRoomGenerated.json.record.allowed_scopes,
+  });
+
   const codexGenericGenerated = await api(base, "POST", "/v1/keys/generate", {
     tenant_id: "tenant_demo_skinharmony",
     brand_scope: "skinharmony",
@@ -683,18 +717,19 @@ try {
   });
 
   const branches = await api(base, "GET", "/v1/branches?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.nyra_finance_beauty_test?.production_status === "test_only", "branches registry failed");
-  assert(branches.json.branches?.skinharmony_analyzer?.production_status === "advisory", "skinharmony analyzer branch missing");
-  assert(branches.json.branches?.codex_site_factory_guard?.production_status === "advisory", "site factory guard branch missing");
-  assert(branches.json.branches?.codex_website_visual_guard?.production_status === "advisory", "website visual guard branch missing");
-  assert(branches.json.branches?.change_impact_orchestration?.subbranches?.includes("rollback_impact"), "change impact orchestration branch missing");
+  assert(branches.status === 200 && branches.json.branches?.marketing_copy && branches.json.branches?.suite_governance, "branches registry failed");
+  assert(!branches.json.branches?.nyra_finance_beauty_test, "test-only branch leaked to Suite");
+  assert(!branches.json.branches?.skinharmony_analyzer, "Analyzer branch leaked to Suite");
+  assert(!branches.json.branches?.codex_site_factory_guard, "Codex branch leaked to Suite");
+  assert(!branches.json.branches?.codex_website_visual_guard, "Codex visual branch leaked to Suite");
+  assert(!branches.json.branches?.change_impact_orchestration, "Codex change-impact branch leaked to Suite");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translation_governance"), "suite connector branch package failed");
   assert(branches.json.tenant_package?.allowed_branches?.includes("translator_marketing_governance"), "suite connector branch package missing translator marketing governance");
   assert(branches.json.tenant_package?.allowed_branches?.includes("ramo_testo"), "suite connector branch package missing ramo_testo");
   mark("branches_registry", true, { branches: Object.keys(branches.json.branches), tenant_package: branches.json.tenant_package });
 
-  const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=front_desk_base,nyra_finance_beauty_test", undefined, connectorKey);
-  assert(authorizedBranches.status === 200 && authorizedBranches.json.branch_package?.selected_branches?.includes("front_desk_base"), "authorized branches failed");
+  const authorizedBranches = await api(base, "GET", "/v1/branches/authorized?tenant_id=tenant_demo_skinharmony&branches=suite_governance,nyra_finance_beauty_test", undefined, connectorKey);
+  assert(authorizedBranches.status === 200 && authorizedBranches.json.branch_package?.selected_branches?.includes("suite_governance"), "authorized branches failed");
   assert(authorizedBranches.json.branch_package?.denied_branches?.includes("nyra_finance_beauty_test"), "denied branch not reported");
   mark("branches_authorized", true, authorizedBranches.json.branch_package);
 
@@ -1175,7 +1210,7 @@ try {
       sources_provided: false,
       claims: "senza claim terapeutici",
     },
-  }, codexKey);
+  }, analyzerKey);
   assert(chemistryBranch.status === 200 && chemistryBranch.json.branch_output?.web_research_required === true, "chemistry branch failed");
   mark("branch_cosmetic_chemistry", true, {
     state: chemistryBranch.json.output.state,
@@ -1197,7 +1232,7 @@ try {
       protocols: [],
       data_quality_score: 88,
     },
-  }, codexKey);
+  }, analyzerKey);
   assert(analyzerBranch.status === 200 && analyzerBranch.json.branch_output?.branch === "skinharmony_skin_ensemble_v2", "skinharmony analyzer branch failed");
   assert(analyzerBranch.json.branch_output?.dominant_pattern?.id === "pores_texture_matrix", "skinharmony analyzer dominant pattern failed");
   assert(analyzerBranch.json.branch_output?.secondary_patterns?.some((item) => item.id === "sensitivity_reactivity_matrix"), "skinharmony analyzer secondary pattern failed");
@@ -1209,11 +1244,16 @@ try {
     secondary: analyzerBranch.json.branch_output.secondary_patterns,
   });
 
-  const analyzerAbstention = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", { data: { scores: [{ key: "pores_texture", score: 25 }], data_quality_score: 40, acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard", focus_score: 35, illumination_score: 45 } } }, codexKey);
+  const analyzerFromCodex = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", {
+    data: { scores: [{ key: "pores_texture", score: 25 }], data_quality_score: 40 },
+  }, codexKey);
+  assert(analyzerFromCodex.status === 403 && analyzerFromCodex.json.error === "branch_not_available_for_client", "Codex reached an Analyzer vertical");
+
+  const analyzerAbstention = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", { data: { scores: [{ key: "pores_texture", score: 25 }], data_quality_score: 40, acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard", focus_score: 35, illumination_score: 45 } } }, analyzerKey);
   assert(analyzerAbstention.status === 200, "skinharmony analyzer abstention request failed");
   assert(analyzerAbstention.json.branch_output?.data_quality?.abstained === true, "skinharmony analyzer did not abstain on low quality");
   assert(analyzerAbstention.json.branch_output?.dominant_pattern === null, "skinharmony analyzer exposed a dominant pattern after abstention");
-  const analyzerLearning = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", { data: { scores: [{ key: "pores_texture", score: 50 }, { key: "water_oil_balance", score: 75 }], previous_scores: [{ key: "pores_texture", score: 45 }, { key: "water_oil_balance", score: 70 }], acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard", focus_score: 90, illumination_score: 90 }, previous_acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard" }, learning_context: { outcome_verified: true, human_reviewed: true, comparable_capture_count: 3 }, data_quality_score: 90 } }, codexKey);
+  const analyzerLearning = await api(base, "POST", "/v1/branches/skinharmony_analyzer/analyze", { data: { scores: [{ key: "pores_texture", score: 50 }, { key: "water_oil_balance", score: 75 }], previous_scores: [{ key: "pores_texture", score: 45 }, { key: "water_oil_balance", score: 70 }], acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard", focus_score: 90, illumination_score: 90 }, previous_acquisition: { device_model: "test-camera", capture_protocol_id: "skin-standard" }, learning_context: { outcome_verified: true, human_reviewed: true, comparable_capture_count: 3 }, data_quality_score: 90 } }, analyzerKey);
   assert(analyzerLearning.json.branch_output?.longitudinal?.comparable === true, "skinharmony analyzer comparable series failed");
   assert(analyzerLearning.json.branch_output?.longitudinal?.deltas?.pores_texture === 5, "skinharmony analyzer delta failed");
   assert(analyzerLearning.json.branch_output?.learning?.eligible_candidate === true, "skinharmony analyzer verified candidate failed");
@@ -1273,7 +1313,7 @@ try {
       volatility: 70,
       commercial_relevance: 48,
     },
-  }, codexKey);
+  }, controlRoomKey);
   assert(financeTestBranch.status === 200 && financeTestBranch.json.guardrail.mode === "test_only" && financeTestBranch.json.branch_output?.production_connected === false, "finance test branch failed");
   mark("branch_nyra_finance_test", true, {
     mode: financeTestBranch.json.guardrail.mode,

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 
+import { BRANCH_EXPOSURE_CLASSIFICATION } from "../branches/branch-exposure-classification.js";
+import { deterministicBranchRegistry } from "../branches/index.js";
 import {
   branchAvailableForContext,
   branchExposureValidation,
@@ -192,4 +194,126 @@ test("groups, packages and taxonomy never leak hidden branch labels", () => {
     ["root", "horizontal_domain", "horizontal__branch"],
   );
   assert.equal(taxonomy.synapses.length, 0);
+});
+
+test("the central matrix classifies every one of the 79 registered branches", () => {
+  const registered = deterministicBranchRegistry();
+  const branchIds = Object.keys(registered).sort();
+  const classifiedIds = Object.keys(BRANCH_EXPOSURE_CLASSIFICATION).sort();
+
+  assert.equal(branchIds.length, 79);
+  assert.equal(classifiedIds.length, 79);
+  assert.deepEqual(classifiedIds, branchIds);
+  for (const branchId of branchIds) {
+    assert.deepEqual(
+      branchExposureValidation(registered[branchId]),
+      { ok: true, errors: [] },
+      `incomplete exposure contract: ${branchId}`,
+    );
+    if (registered[branchId].exposure_class === "software_adjacent") {
+      assert.deepEqual(registered[branchId].required_entitlements, [`branch:${branchId}`]);
+    }
+  }
+});
+
+test("real registry exposes only explicitly entitled adjacent product branches", () => {
+  const registered = deterministicBranchRegistry();
+  const entitlement = (branchId) => `branch:${branchId}`;
+  const smartdesk = {
+    client_type: "smartdesk",
+    audience: "smartdesk_runtime",
+    entitlements: [
+      entitlement("front_desk_base"),
+      entitlement("beauty_protocol_guard"),
+      entitlement("customer_360_guard"),
+      entitlement("suite_governance"),
+    ],
+  };
+  const analyzer = {
+    client_type: "analyzer",
+    audience: "analyzer_runtime",
+    entitlements: [
+      entitlement("skinharmony_analyzer"),
+      entitlement("scalp_analyzer"),
+      entitlement("cosmetic_chemistry"),
+      entitlement("beauty_protocol_guard"),
+      entitlement("suite_governance"),
+    ],
+  };
+  const suite = {
+    client_type: "suite",
+    audience: "suite_runtime",
+    entitlements: [
+      entitlement("suite_governance"),
+      entitlement("lifecycle_crm_guard"),
+      entitlement("product_inventory_guard"),
+      entitlement("beauty_market"),
+      entitlement("skinharmony_analyzer"),
+    ],
+  };
+
+  const smartdeskVisible = filterBranchRegistry(registered, smartdesk);
+  assert(smartdeskVisible.front_desk_base);
+  assert(smartdeskVisible.beauty_protocol_guard);
+  assert(smartdeskVisible.customer_360_guard);
+  assert.equal(smartdeskVisible.suite_governance, undefined);
+  assert.equal(smartdeskVisible.skinharmony_analyzer, undefined);
+
+  const analyzerVisible = filterBranchRegistry(registered, analyzer);
+  assert(analyzerVisible.skinharmony_analyzer);
+  assert(analyzerVisible.scalp_analyzer);
+  assert(analyzerVisible.cosmetic_chemistry);
+  assert(analyzerVisible.beauty_protocol_guard);
+  assert.equal(analyzerVisible.suite_governance, undefined);
+  assert.equal(analyzerVisible.smartdesk_operations_guard, undefined);
+
+  const suiteVisible = filterBranchRegistry(registered, suite);
+  assert(suiteVisible.suite_governance);
+  assert(suiteVisible.lifecycle_crm_guard);
+  assert(suiteVisible.product_inventory_guard);
+  assert(suiteVisible.beauty_market);
+  assert.equal(suiteVisible.skinharmony_analyzer, undefined);
+  assert.equal(suiteVisible.smartdesk_operations_guard, undefined);
+});
+
+test("owner_root ChatGPT cannot bypass vertical, internal or test exposure", () => {
+  const registered = deterministicBranchRegistry();
+  const allEntitlements = Object.keys(registered).map((branchId) => `branch:${branchId}`);
+  const ownerRootChatGpt = {
+    client_type: "chatgpt",
+    audience: "chatgpt_connector",
+    entitlements: [...allEntitlements, "owner:root", "admin:tenant"],
+    role: "owner_root",
+  };
+  const visible = filterBranchRegistry(registered, ownerRootChatGpt);
+
+  assert.equal(Object.keys(visible).length, 15);
+  assert(
+    Object.values(visible).every((branch) => branch.exposure_class === "chatgpt_horizontal"),
+  );
+  for (const branchId of [
+    "front_desk_base",
+    "suite_governance",
+    "skinharmony_analyzer",
+    "codex_code_safety",
+    "model_adaptation_lab",
+    "nyra_finance_beauty_test",
+  ]) {
+    assert.equal(visible[branchId], undefined, `${branchId} leaked to ChatGPT owner_root`);
+  }
+});
+
+test("admin control room sees all branches while test branches never enter semantic selection", () => {
+  const registered = deterministicBranchRegistry();
+  const admin = {
+    client_type: "admin",
+    audience: "admin_control_room",
+    entitlements: [],
+    role: "admin",
+  };
+  assert.equal(Object.keys(filterBranchRegistry(registered, admin)).length, 79);
+  const semantic = filterBranchRegistry(registered, admin, { semantic: true });
+  assert.equal(semantic.model_adaptation_lab, undefined);
+  assert.equal(semantic.nyra_finance_beauty_test, undefined);
+  assert.equal(Object.keys(semantic).length, 77);
 });
