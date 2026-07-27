@@ -3,6 +3,7 @@ import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
 import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
+import { readCoreCapabilityCatalog } from "./core-capability-catalog.js";
 import {
   PROVIDER_SETUP_LINK_BINDING_OPERATION_CLASS,
   buildProviderSetupLinkBindingEnvelope,
@@ -607,6 +608,131 @@ export function createCoreHandlers(config, options = {}) {
       }));
     },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    core_capability_catalog: async (args, identity) => textResult({
+      ...readCoreCapabilityCatalog(args),
+      tenant_id: identity.tenantId,
+    }),
+    core_branch_registry: async (args, identity) => {
+      const paths = {
+        registry: "/v1/branches",
+        taxonomy: "/v1/branches/taxonomy",
+        maturity: "/v1/branches/maturity",
+        authorized: "/v1/branches/authorized",
+      };
+      const view = args.view || "registry";
+      const query = view === "authorized" && Array.isArray(args.branches) && args.branches.length
+        ? `?${new URLSearchParams({ branches: args.branches.join(",") }).toString()}`
+        : "";
+      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId));
+    },
+    core_branch_analyze: async (args, identity) => textResult(await coreRequest(
+      `/v1/branches/${encodeURIComponent(args.branch)}/analyze`,
+      identity.tenantId,
+      {
+        method: "POST",
+        body: {
+          request: args.request,
+          ...(args.signals ? { signals: args.signals } : {}),
+          ...(args.context ? { context: args.context } : {}),
+        },
+      },
+    )),
+    core_control_plane_read: async (args, identity) => {
+      const paths = {
+        tenant_status: "/v1/tenant/status",
+        entitlements: "/v1/entitlements/current",
+        domain_pack: "/v1/domain-packs/current",
+        overview: "/v1/control-plane/overview",
+        dashboard: "/v1/control-plane/dashboard",
+        ecosystem_pulse: "/v1/ecosystem-pulse",
+        connector_manifest: "/v1/connectors/sdk/manifest",
+        customer_intelligence_contract: "/v1/customer-intelligence/contract",
+      };
+      return textResult(await coreRequest(paths[args.view], identity.tenantId));
+    },
+    core_evidence_recent: async (args, identity) => {
+      const query = new URLSearchParams({ limit: String(args.limit || 50) });
+      return textResult(await coreRequest(`/v1/evidence/recent?${query.toString()}`, identity.tenantId));
+    },
+    core_semantic_select: async (args, identity) => textResult(await coreRequest("/v1/semantic-selection", identity.tenantId, {
+      method: "POST",
+      body: {
+        candidates: args.candidates,
+        target_language: args.target_language,
+        adapter: args.adapter,
+        intent: args.intent,
+        limit: args.limit,
+      },
+    })),
+    core_software_language_evaluate: async (args, identity) => textResult(await coreRequest("/v1/software-language-gate/evaluate", identity.tenantId, {
+      method: "POST",
+      body: { app: args.app, target_lang: args.target_lang, entries: args.entries },
+    })),
+    core_content_guard_check: async (args, identity) => textResult(await coreRequest("/v1/content-guard/check", identity.tenantId, {
+      method: "POST",
+      body: { text: args.text, locale: args.locale, context: args.context },
+    })),
+    core_claim_guard_check: async (args, identity) => textResult(await coreRequest("/v1/claim-guard/check", identity.tenantId, {
+      method: "POST",
+      body: { text: args.text, forbidden_terms: args.forbidden_terms },
+    })),
+    core_pricing_guard_check: async (args, identity) => textResult(await coreRequest("/v1/pricing-guard/check", identity.tenantId, {
+      method: "POST",
+      body: { official_prices: args.official_prices, observed_prices: args.observed_prices },
+    })),
+    core_policy_check: async (args, identity) => textResult(await coreRequest("/v1/policy/check", identity.tenantId, {
+      method: "POST",
+      body: { action: args.action, policy: args.policy, context: args.context },
+    })),
+    core_action_mediation_evaluate: async (args, identity) => textResult(await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
+      method: "POST",
+      body: { action: args.action, policy: args.policy, context: args.context },
+    })),
+    core_release_manifest_check: async (args, identity) => textResult(await coreRequest("/v1/releases/manifest/check", identity.tenantId, {
+      method: "POST",
+      body: { manifest: args.manifest },
+    })),
+    core_translator_extractor_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/translator/extractor/status", identity.tenantId),
+    ),
+    core_software_intelligence_components: async (_args, identity) => textResult(
+      await coreRequest("/v1/software-intelligence/components", identity.tenantId),
+    ),
+    core_software_intelligence_analyze: async (args, identity) => textResult(await coreRequest("/v1/software-intelligence/analyze", identity.tenantId, {
+      method: "POST",
+      body: { artifact: args.artifact, authorization: args.authorization, options: args.options },
+    })),
+    core_software_intelligence_jobs: async (args, identity) => {
+      const suffix = args.job_id ? `/${encodeURIComponent(args.job_id)}` : "";
+      return textResult(await coreRequest(`/v1/software-intelligence/jobs${suffix}`, identity.tenantId));
+    },
+    core_entity_graph_read: async (_args, identity) => textResult(await coreRequest("/v1/entity-graph", identity.tenantId)),
+    core_entity_graph_upsert: async (args, identity) => {
+      if (!hasExplicitVerifiedOwnerConfirmation(identity)) throw new Error("owner_confirmation_required");
+      return textResult(await coreRequest("/v1/entity-graph/upsert", identity.tenantId, {
+        method: "POST",
+        body: {
+          entities: args.entities || [],
+          relations: args.relations || [],
+          owner_context: ownerContext(identity),
+          confirmation_reference: verifiedConfirmationReference(identity),
+        },
+      }));
+    },
+    core_review_pending: async (_args, identity) => textResult(await coreRequest("/v1/review/pending", identity.tenantId)),
+    core_review_action: async (args, identity) => {
+      if (!hasExplicitVerifiedOwnerConfirmation(identity)) throw new Error("owner_confirmation_required");
+      return textResult(await coreRequest("/v1/review/action", identity.tenantId, {
+        method: "POST",
+        body: {
+          review_id: args.review_id,
+          action: args.action,
+          note: args.note,
+          owner_context: ownerContext(identity),
+          confirmation_reference: verifiedConfirmationReference(identity),
+        },
+      }));
+    },
     orchestration_capability_catalog: async (args, identity) => {
       const query = new URLSearchParams({
         branch: args.branch,

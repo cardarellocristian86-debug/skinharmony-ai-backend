@@ -423,6 +423,50 @@ const dttVoteInput = object({
   assignment_id: { type: "string", minLength: 1, maxLength: 160 },
 }, ["verifier_id", "decision", "rationale", "identity_receipt", "assignment_id"]);
 
+const boundedJsonValue = {
+  anyOf: [
+    { type: "string", maxLength: 20_000 },
+    { type: "number" },
+    { type: "boolean" },
+    { type: "null" },
+    { type: "array", maxItems: 500, items: { anyOf: [
+      { type: "string", maxLength: 20_000 },
+      { type: "number" },
+      { type: "boolean" },
+      { type: "null" },
+    ] } },
+    { type: "object", maxProperties: 500, additionalProperties: {
+      anyOf: [
+        { type: "string", maxLength: 20_000 },
+        { type: "number" },
+        { type: "boolean" },
+        { type: "null" },
+      ],
+    } },
+  ],
+};
+const semanticCandidate = object({
+  id: { type: "string", minLength: 1, maxLength: 160 },
+  text: text(8_000),
+  label: { type: "string", maxLength: 500 },
+  locale: { type: "string", maxLength: 64 },
+  metadata: { type: "object", maxProperties: 50, additionalProperties: boundedJsonValue },
+}, ["id", "text"]);
+const entityGraphEntity = object({
+  id: identifier,
+  entity_type: identifier,
+  label: text(500),
+  risk_band: { type: "string", enum: ["none", "low", "medium", "high", "critical"] },
+  attributes: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+}, ["id", "entity_type"]);
+const entityGraphRelation = object({
+  id: identifier,
+  from: identifier,
+  to: identifier,
+  relation_type: identifier,
+  attributes: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+}, ["id", "from", "to", "relation_type"]);
+
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
   tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
@@ -469,6 +513,118 @@ export const TOOLS = [
   }, ["request"]), ["core:read"], true, true, { outputSchema: workPreflightOutputSchema, meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html", "openai/toolInvocation/invoking": "Preparo Nyra…", "openai/toolInvocation/invoked": "Nyra è pronta." } }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
+  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({
+    group: { type: "string", enum: ["branches", "governance", "semantic", "guardrails", "release", "translation", "software_intelligence", "semantic_graph", "review"] },
+    cursor: { type: "string", pattern: "^\\d+$", maxLength: 12 },
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+  }), ["core:read"]),
+  tool("core_branch_registry", "Read Core branch intelligence", "Read the registry, taxonomy, maturity or authenticated authorization view for Core branches. Tenant and entitlements are derived from the Core key.", object({
+    view: { type: "string", enum: ["registry", "taxonomy", "maturity", "authorized"] },
+    branches: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
+  }), ["core:read"]),
+  tool("core_branch_analyze", "Analyze through a Core branch", "Run one authorized Core branch in advisory mode. It cannot execute, publish or bypass the final Core verdict.", object({
+    branch: identifier,
+    request: text(20_000),
+    signals: { type: "array", maxItems: 100, items: { type: "object", maxProperties: 50, additionalProperties: boundedJsonValue } },
+    context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+  }, ["branch", "request"]), ["core:read"]),
+  tool("core_control_plane_read", "Read Core control plane", "Read one tenant-scoped governance view. Key secrets and administrative bootstrap data are never returned by this connector.", object({
+    view: { type: "string", enum: ["tenant_status", "entitlements", "domain_pack", "overview", "dashboard", "ecosystem_pulse", "connector_manifest", "customer_intelligence_contract"] },
+  }, ["view"]), ["core:read"]),
+  tool("core_evidence_recent", "Read recent Core evidence", "Read a bounded list of tenant-scoped Core evidence records.", object({
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+  }), ["core:read"]),
+  tool("core_semantic_select", "Select semantic candidates", "Rank bounded semantic candidates through Core without publishing or execution.", object({
+    candidates: { type: "array", minItems: 1, maxItems: 500, items: semanticCandidate },
+    target_language: { type: "string", minLength: 2, maxLength: 64 },
+    adapter: { type: "string", maxLength: 120 },
+    intent: { type: "string", maxLength: 240 },
+    limit: { type: "integer", minimum: 1, maximum: 200 },
+  }, ["candidates"]), ["core:read"]),
+  tool("core_software_language_evaluate", "Evaluate software language", "Apply the horizontal V2/V1/V0 software-language gate to bounded UI copy. This returns findings only and never publishes changes.", object({
+    app: identifier,
+    target_lang: { type: "string", minLength: 2, maxLength: 64 },
+    entries: { type: "array", minItems: 1, maxItems: 1_000, items: object({
+      id: { type: "string", minLength: 1, maxLength: 240 },
+      text: text(8_000),
+      context: { type: "string", maxLength: 1_000 },
+    }, ["id", "text"]) },
+  }, ["app", "target_lang", "entries"]), ["core:read"]),
+  tool("core_content_guard_check", "Check governed content", "Check bounded text through the Core content branch. Suggestions remain review-only and publication stays disabled.", object({
+    text: text(100_000),
+    locale: { type: "string", minLength: 2, maxLength: 64 },
+    context: { type: "string", maxLength: 4_000 },
+  }, ["text"]), ["core:read"]),
+  tool("core_claim_guard_check", "Check claims", "Check bounded claims for unsupported or risky assertions. The result is advisory and cannot publish.", object({
+    text: text(100_000),
+    forbidden_terms: { type: "array", maxItems: 500, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
+  }, ["text"]), ["core:read"]),
+  tool("core_pricing_guard_check", "Check pricing content", "Check bounded pricing offers for completeness and consistency without changing catalog or payment data.", object({
+    official_prices: { type: "array", minItems: 1, maxItems: 500, items: object({
+      id: { type: "string", minLength: 1, maxLength: 160 },
+      sku: { type: "string", maxLength: 160 },
+      name: { type: "string", maxLength: 500 },
+      price: { type: "number", minimum: 0 },
+    }, ["id", "price"]) },
+    observed_prices: { type: "array", minItems: 1, maxItems: 500, items: object({
+      id: { type: "string", minLength: 1, maxLength: 160 },
+      sku: { type: "string", maxLength: 160 },
+      name: { type: "string", maxLength: 500 },
+      price: { type: "number", minimum: 0 },
+    }, ["id", "price"]) },
+  }, ["official_prices", "observed_prices"]), ["core:read"]),
+  tool("core_policy_check", "Check Core policy", "Evaluate a bounded action and policy through the tenant Core policy engine. It returns mediation only and authorizes no execution.", object({
+    action: { type: "object", minProperties: 1, maxProperties: 100, additionalProperties: boundedJsonValue },
+    policy: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+    context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+  }, ["action"]), ["core:read"]),
+  tool("core_action_mediation_evaluate", "Evaluate action mediation", "Return Core action mediation for a bounded proposed action. This tool does not perform the action.", object({
+    action: { type: "object", minProperties: 1, maxProperties: 100, additionalProperties: boundedJsonValue },
+    policy: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+    context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+  }, ["action"]), ["core:read"]),
+  tool("core_release_manifest_check", "Check release manifest", "Validate a bounded release manifest and rollback declaration through Core. It never merges or deploys.", object({
+    manifest: object({
+      version: { type: "string", minLength: 1, maxLength: 160 },
+      channel: { type: "string", enum: ["stable", "beta", "canary"] },
+      package_url: { type: "string", format: "uri", maxLength: 2_048 },
+      checksum_sha256: { type: "string", pattern: "^[a-fA-F0-9]{64}$" },
+      rollback_url: { type: "string", format: "uri", maxLength: 2_048 },
+      signed: { type: "boolean" },
+      signature: { type: "string", maxLength: 4_000 },
+    }, ["version", "channel", "package_url", "checksum_sha256", "rollback_url"]),
+  }, ["manifest"]), ["core:read"]),
+  tool("core_translator_extractor_status", "Read translator extractor status", "Read the governed Core-side lexical extractor readiness without running the binary.", object(), ["core:read"]),
+  tool("core_software_intelligence_components", "Read software intelligence components", "Read available static-analysis components and artifact limits. Execution remains unsupported.", object(), ["core:read"]),
+  tool("core_software_intelligence_analyze", "Analyze a software artifact", "Perform bounded static observation of one embedded artifact. Raw content is not persisted and patches require a separate Core verdict.", object({
+    artifact: object({
+      name: { type: "string", minLength: 1, maxLength: 240 },
+      content_base64: { type: "string", minLength: 1, maxLength: 7_000_000, pattern: "^[A-Za-z0-9+/]+={0,2}$" },
+    }, ["name", "content_base64"]),
+    authorization: object({
+      asserted: { const: true },
+      basis: { type: "string", enum: ["owned", "written_permission", "open_source"] },
+      purpose: { type: "string", enum: ["compatibility", "customization", "debugging", "interoperability", "maintenance", "security_review", "testing"] },
+    }, ["asserted", "basis", "purpose"]),
+    options: object({
+      minimum_string_length: { type: "integer", minimum: 4, maximum: 64 },
+      maximum_string_samples: { type: "integer", minimum: 0, maximum: 500 },
+    }),
+  }, ["artifact", "authorization"]), ["core:read"], true, false),
+  tool("core_software_intelligence_jobs", "Read software intelligence jobs", "List tenant-scoped software-analysis jobs or read one exact job. Submission and authorization stay on governed dedicated flows.", object({
+    job_id: { type: "string", minLength: 1, maxLength: 160, pattern: "^[a-zA-Z0-9_-]+$" },
+  }), ["core:read"]),
+  tool("core_entity_graph_read", "Read Core entity graph", "Read the authenticated tenant's generic semantic entity graph.", object(), ["core:read"]),
+  tool("core_entity_graph_upsert", "Upsert Core entity graph", "Upsert bounded tenant entities and relations. Exact owner confirmation is required and Core records evidence.", object({
+    entities: { type: "array", maxItems: 1_000, items: entityGraphEntity },
+    relations: { type: "array", maxItems: 2_000, items: entityGraphRelation },
+  }), ["core:govern"], false, true),
+  tool("core_review_pending", "Read pending Core reviews", "Read pending review gates for the authenticated tenant.", object(), ["core:read"]),
+  tool("core_review_action", "Resolve Core review", "Apply an explicit owner-confirmed decision to one tenant review record.", object({
+    review_id: { type: "string", minLength: 1, maxLength: 160 },
+    action: { type: "string", enum: ["approve", "reject", "request_changes"] },
+    note: { type: "string", maxLength: 4_000 },
+  }, ["review_id", "action"]), ["core:govern"], false, false),
   tool("orchestration_capability_catalog", "Read orchestration capability catalog", "Read one bounded page of the Agent Orchestration or AI Orchestration catalog. Virtual combinations are generated lazily and remain proposal-only; reading this catalog never creates agents or invokes models.", object({
     branch: { type: "string", enum: ["agent_orchestration", "ai_orchestration"] },
     view: { type: "string", enum: ["capabilities", "virtual"] },
