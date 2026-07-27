@@ -51,6 +51,17 @@ import {
 } from "./customerIntelligenceContract.js";
 import { selectSemanticCandidates } from "./semanticSelection.js";
 import {
+  BRANCH_EXPOSURE_CONTRACT_VERSION,
+  deriveBranchAccessContext,
+  branchAvailableForContext,
+  filterBranchGroups,
+  filterBranchMaturity,
+  filterBranchPackages,
+  filterBranchRegistry,
+  filterBranchTaxonomy,
+  filterSemanticBranchCandidates,
+} from "./branchExposure.js";
+import {
   SOFTWARE_LANGUAGE_GATE_VERSION,
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
@@ -1184,7 +1195,14 @@ const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
   "adaptive_learning",
 ]);
 
-function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, branchContext = null, nyraNetwork = null } = {}) {
+function composeMandatoryWorkPreflight(req, {
+  domainPack,
+  memoryContext = null,
+  branchContext = null,
+  nyraNetwork = null,
+  exposureContext = null,
+  visibleBranchIds = null,
+} = {}) {
   const body = req.body || {};
   const requestText = String(
     body.request || body.message || body.text || body.task || body.user_request || body.user_input || body.input || body.action_label ||
@@ -1199,13 +1217,24 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
     userInput: requestText,
     locale: body.locale || "it",
   });
-  const resolvedBranchContext = branchContext ? {
+  const mergedBranchContext = branchContext ? {
     ...mandatoryBranchContext,
     selected_branches: [...new Set([...(mandatoryBranchContext.selected_branches || []), ...(branchContext.selected_branches || [])])],
     denied_branches: [...new Set([...(mandatoryBranchContext.denied_branches || []), ...(branchContext.denied_branches || [])])]
       .filter((id) => !(mandatoryBranchContext.selected_branches || []).includes(id) && !(branchContext.selected_branches || []).includes(id)),
     selected_groups: [...new Set([...(mandatoryBranchContext.selected_groups || []), ...(branchContext.selected_groups || [])])],
   } : mandatoryBranchContext;
+  const visible = Array.isArray(visibleBranchIds) ? new Set(visibleBranchIds) : null;
+  const resolvedBranchContext = visible ? {
+    ...mergedBranchContext,
+    selected_branches: (mergedBranchContext.selected_branches || []).filter((branchId) => visible.has(branchId)),
+    denied_branches: [
+      ...new Set([
+        ...(mergedBranchContext.denied_branches || []),
+        ...(mergedBranchContext.selected_branches || []).filter((branchId) => !visible.has(branchId)),
+      ]),
+    ],
+  } : mergedBranchContext;
   const requestedNyraBranches = [
     ...MANDATORY_NYRA_WORK_BRANCHES,
     ...normalizeList(body.nyra_branches, 20),
@@ -1213,7 +1242,7 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
   const resolvedNyraNetwork = nyraNetwork || routeNyraBranches({
     text: requestText,
     requestedBranches: requestedNyraBranches,
-    domainPackId: domainPack.id,
+    domainPackId: exposureContext?.client_type === "chatgpt" ? "generic" : domainPack.id,
   });
   return buildWorkPreflight({
     tenantId: req.tenantId,
@@ -1928,9 +1957,11 @@ function arrayValue(value, max = 20) {
 }
 
 function branchRegistry() {
+  const deterministic = deterministicBranchRegistry();
   return {
-    ...deterministicBranchRegistry(),
+    ...deterministic,
     beauty_market: {
+      ...(deterministic.beauty_market || {}),
       label: "Beauty Market Intelligence",
       domain: "market",
       tier: "network",
@@ -1938,6 +1969,7 @@ function branchRegistry() {
       description: "Legge segnali mercato beauty/wellness e produce postura commerciale, senza trading e senza dati finanziari sensibili.",
     },
     marketing_copy: {
+      ...(deterministic.marketing_copy || {}),
       label: "Nyra Marketing Copy",
       domain: "marketing",
       tier: "network",
@@ -1945,6 +1977,7 @@ function branchRegistry() {
       description: "Prepara brief copywriting e testi da revisionare con Claim Guard, non pubblica automaticamente.",
     },
     cosmetic_chemistry: {
+      ...(deterministic.cosmetic_chemistry || {}),
       label: "Cosmetic Chemistry Positioning",
       domain: "product",
       tier: "network",
@@ -1952,6 +1985,7 @@ function branchRegistry() {
       description: "Aiuta a posizionare attivi cosmetici in modo prudente, senza claim medici o terapeutici.",
     },
     technology_market: {
+      ...(deterministic.technology_market || {}),
       label: "Technology Trend Intelligence",
       domain: "technology",
       tier: "network",
@@ -1959,6 +1993,7 @@ function branchRegistry() {
       description: "Valuta domanda, maturita e messaggio commerciale per tecnologie beauty/wellness.",
     },
     business_strategy: {
+      ...(deterministic.business_strategy || {}),
       label: "Business Strategy",
       domain: "strategy",
       tier: "network",
@@ -1966,6 +2001,7 @@ function branchRegistry() {
       description: "Ordina priorita commerciali, canale, CRM e prossime azioni per owner/manager.",
     },
     translation_governance: {
+      ...(deterministic.translation_governance || {}),
       label: "Translation Governance",
       domain: "translation",
       tier: "network",
@@ -1973,6 +2009,7 @@ function branchRegistry() {
       description: "Valuta payload traducibili, readiness e rischio di traduzione. Non traduce HTML finale.",
     },
     translator_marketing_governance: {
+      ...(deterministic.translator_marketing_governance || {}),
       label: "Translator Marketing Governance",
       domain: "translation_marketing",
       tier: "network",
@@ -1980,6 +2017,7 @@ function branchRegistry() {
       description: "Valuta traduttore plugin e app surfaces: microcopy, CTA, fallback, review marketing/compliance e sync strutturato.",
     },
     ramo_testo: {
+      ...(deterministic.ramo_testo || {}),
       label: "Ramo Testo / Content Guard",
       domain: "content_guard",
       tier: "network",
@@ -1987,6 +2025,7 @@ function branchRegistry() {
       description: "Valuta qualita testo, traduzioni, claim risk, brand tone e publish safety. Non pubblica automaticamente.",
     },
     nyra_finance_beauty_test: {
+      ...(deterministic.nyra_finance_beauty_test || {}),
       label: "Nyra Finance Beauty Test",
       domain: "market_test",
       tier: "internal",
@@ -3561,6 +3600,40 @@ export function createUniversalCoreService(options = {}) {
   const ownerContextSigningSecret = ownerContextSigningSecretCandidate.length >= 32
     ? ownerContextSigningSecretCandidate
     : "";
+
+  function exposureView(req, { semantic = false } = {}) {
+    const resolution = resolveBranchesForKey(req.coreKey);
+    const context = deriveBranchAccessContext(
+      req,
+      req.coreKey,
+      ownerContextSigningSecret,
+      { allowed_branches: resolution.allowed_branches },
+    );
+    const completeRegistry = branchRegistry();
+    const registry = filterBranchRegistry(completeRegistry, context, { semantic });
+    const visibleBranchIds = Object.keys(registry);
+    return {
+      context,
+      resolution: {
+        ...resolution,
+        allowed_branches: resolution.allowed_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
+        selected_branches: resolution.selected_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
+        denied_branches: [
+          ...new Set([
+            ...resolution.denied_branches,
+            ...resolution.allowed_branches.filter((branchId) => !visibleBranchIds.includes(branchId)),
+          ]),
+        ],
+      },
+      complete_registry: completeRegistry,
+      registry,
+      visible_branch_ids: visibleBranchIds,
+      groups: filterBranchGroups(deterministicBranchGroups(), visibleBranchIds),
+      taxonomy: filterBranchTaxonomy(deterministicBranchTaxonomy(), visibleBranchIds),
+      packages: filterBranchPackages(BRANCH_PACKAGES, visibleBranchIds),
+    };
+  }
+
   let providerSetupLinkBootstrapConfigured = false;
   let providerSetupLinkBootstrapState = getProviderSetupLinkBootstrapState({
     key: providerSetupLinkBootstrapKey,
@@ -4799,9 +4872,12 @@ export function createUniversalCoreService(options = {}) {
     if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > 20) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
+    const exposure = exposureView(req);
     const preflight = composeMandatoryWorkPreflight(req, {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
+      exposureContext: exposure.context,
+      visibleBranchIds: exposure.visible_branch_ids,
     });
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,
@@ -5472,9 +5548,12 @@ export function createUniversalCoreService(options = {}) {
       request_bound_owner_confirmation: requestBoundOwnerConfirmation,
       authenticated_key_type: req.coreKey?.key_type || null,
     };
+    const exposure = exposureView(req);
     const workPreflight = composeMandatoryWorkPreflight(governedReq, {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
+      exposureContext: exposure.context,
+      visibleBranchIds: exposure.visible_branch_ids,
     });
     const riskClassification = classifyActionRisk(governedReq.body);
     const input = buildActionEvaluatorInput(governedReq, req.coreKey);
@@ -5577,7 +5656,23 @@ export function createUniversalCoreService(options = {}) {
     if (!candidates.length) {
       return publicError(res, 400, "semantic_selection_candidates_missing", "Provide candidates array.");
     }
-    const result = selectSemanticCandidates(candidates, {
+    const view = exposureView(req, { semantic: true });
+    const visibleCandidates = filterSemanticBranchCandidates(
+      candidates,
+      view.complete_registry,
+      view.context,
+    );
+    if (!visibleCandidates.length) {
+      audit.append("core_semantic_selection_exposure_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        client_type: view.context.client_type,
+        audience: view.context.audience,
+        candidate_count: candidates.length,
+      });
+      return publicError(res, 403, "branch_not_available_for_client");
+    }
+    const result = selectSemanticCandidates(visibleCandidates, {
       tenant_id: req.tenantId,
       target_language: body.target_language || body.locale || "it",
       adapter: body.adapter || "generic",
@@ -5588,7 +5683,7 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
       adapter: body.adapter || "generic",
-      candidate_count: candidates.length,
+      candidate_count: visibleCandidates.length,
       summary: result.summary,
     });
     res.json({
@@ -5596,6 +5691,7 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       schema_version: "semantic_selection_v1",
       read_only: true,
+      exposure_contract_version: BRANCH_EXPOSURE_CONTRACT_VERSION,
       result,
     });
   }
@@ -5836,29 +5932,38 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
-    const resolution = resolveBranchesForKey(req.coreKey);
+    const view = exposureView(req);
     res.json({
       ok: true,
-      branches: branchRegistry(),
-      groups: deterministicBranchGroups(),
-      taxonomy: deterministicBranchTaxonomy(),
-      packages: BRANCH_PACKAGES,
-      tenant_package: resolution,
+      schema_version: BRANCH_EXPOSURE_CONTRACT_VERSION,
+      branches: view.registry,
+      groups: view.groups,
+      taxonomy: view.taxonomy,
+      packages: view.packages,
+      tenant_package: view.resolution,
+      exposure: {
+        client_type: view.context.client_type,
+        audience: view.context.audience,
+        policy: "server_derived_fail_closed",
+      },
       rule: "Ogni ramo produce decisioni advisory/read-only. Azioni operative e pubblicazione richiedono conferma owner.",
     });
   });
 
   app.get("/v1/branches/taxonomy", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const view = exposureView(req);
     res.json({
       ok: true,
-      taxonomy: deterministicBranchTaxonomy(),
-      groups: deterministicBranchGroups(),
-      packages: BRANCH_PACKAGES,
+      schema_version: BRANCH_EXPOSURE_CONTRACT_VERSION,
+      taxonomy: view.taxonomy,
+      groups: view.groups,
+      packages: view.packages,
     });
   });
 
   app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
-    const report = branchMaturityReport();
+    const view = exposureView(req);
+    const report = filterBranchMaturity(branchMaturityReport(), view.visible_branch_ids);
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
   });
@@ -5867,14 +5972,32 @@ export function createUniversalCoreService(options = {}) {
     const requested = typeof req.query.branches === "string" && req.query.branches.trim()
       ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
       : [];
-    const resolution = resolveBranchesForKey(req.coreKey, requested);
+    const view = exposureView(req);
+    const selected = requested.length
+      ? requested.filter((branchId) => view.visible_branch_ids.includes(branchId))
+      : view.resolution.selected_branches;
+    const resolution = {
+      ...view.resolution,
+      selected_branches: selected,
+      denied_branches: [
+        ...new Set([
+          ...view.resolution.denied_branches,
+          ...requested.filter((branchId) => !view.visible_branch_ids.includes(branchId)),
+        ]),
+      ],
+    };
     res.json({
       ok: true,
       tenant_id: req.tenantId,
+      schema_version: BRANCH_EXPOSURE_CONTRACT_VERSION,
       branch_package: resolution,
-      groups: deterministicBranchGroups(),
-      taxonomy: deterministicBranchTaxonomy(),
-      branches: Object.fromEntries(resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value))),
+      groups: view.groups,
+      taxonomy: view.taxonomy,
+      branches: Object.fromEntries(
+        resolution.selected_branches
+          .map((id) => [id, view.registry[id]])
+          .filter(([, value]) => Boolean(value)),
+      ),
     });
   });
 
@@ -7015,6 +7138,22 @@ export function createUniversalCoreService(options = {}) {
     if (!resolution.selected_branches.includes(branch)) {
       audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch });
       return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+    }
+    const context = deriveBranchAccessContext(
+      req,
+      req.coreKey,
+      ownerContextSigningSecret,
+      { allowed_branches: resolution.allowed_branches },
+    );
+    if (!branchAvailableForContext(branchRegistry()[branch], context, { semantic: true })) {
+      audit.append("core_branch_client_exposure_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        branch,
+        client_type: context.client_type,
+        audience: context.audience,
+      });
+      return publicError(res, 403, "branch_not_available_for_client");
     }
     const payload = buildBranchPayload(branch, { ...(req.body || {}), tenant_id: req.tenantId });
     if (!payload) return publicError(res, 404, "branch_not_found");

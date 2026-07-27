@@ -56,6 +56,7 @@ function writeTool(name = "workspace_dynamic_write") {
         value: { type: "string", minLength: 1 },
         owner_confirmed: { type: "boolean" },
         confirmation_reference: { type: "string" },
+        idempotency_key: { type: "string", minLength: 8 },
       },
       required: ["value", "owner_confirmed"],
     },
@@ -126,17 +127,19 @@ test("reads only exact server-registered capabilities with scopes and a fresh re
       catalog_revision: revision,
       arguments: { query: "status" },
     }, { ...identity, scopes: [] }),
-    /insufficient_scope/,
+    /dynamic_capability_catalog_revision_mismatch|dynamic_capability_unavailable/,
   );
 });
 
 test("mutations fail closed unless owner confirmation, Core gate, and safe arguments agree", async () => {
   const tool = writeTool();
   let writes = 0;
+  let receivedArguments = null;
   let gateAllowed = true;
   const handlers = {
-    [tool.name]: async () => {
+    [tool.name]: async (arguments_) => {
       writes += 1;
+      receivedArguments = arguments_;
       return { structuredContent: { ok: true } };
     },
   };
@@ -152,7 +155,7 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   const args = {
     capability_id: tool.name,
     catalog_revision: revision,
-    idempotency_key: "write-1",
+    idempotency_key: "write-01",
     owner_confirmed: true,
     confirmation_reference: "owner-approved",
     arguments: { value: "safe" },
@@ -160,17 +163,18 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
 
   await router.core_capability_invoke(args, identity);
   assert.equal(writes, 1);
+  assert.equal(receivedArguments.idempotency_key, "write-01");
 
   gateAllowed = false;
   await assert.rejects(
-    router.core_capability_invoke({ ...args, idempotency_key: "write-2" }, identity),
+    router.core_capability_invoke({ ...args, idempotency_key: "write-02" }, identity),
     /dynamic_capability_not_authorized/,
   );
   assert.equal(writes, 1);
 
   await assert.rejects(
     router.core_capability_invoke(
-      { ...args, idempotency_key: "write-3", arguments: { value: "unsafe", nested: { tenant_id: "tenant-b" } } },
+      { ...args, idempotency_key: "write-03", arguments: { value: "unsafe", nested: { tenant_id: "tenant-b" } } },
       identity,
     ),
     /dynamic_capability_reserved_argument/,

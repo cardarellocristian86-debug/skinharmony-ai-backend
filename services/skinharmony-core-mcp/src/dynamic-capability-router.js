@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 
 import { requireScopes } from "./auth.js";
 import { validateToolArguments } from "./schema-validation.js";
+import {
+  CAPABILITY_EXPOSURE_CONTRACT_VERSION,
+  candidateLooksVertical,
+  capabilityAvailableForIdentity,
+  capabilityExposureProfile,
+} from "./capability-exposure.js";
 
 export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_health",
@@ -108,6 +114,7 @@ function dynamicToolDefinitions(tools, handlers) {
 
 function summary(tool) {
   const readOnly = tool.annotations?.readOnlyHint === true;
+  const exposure = capabilityExposureProfile(tool);
   return {
     capability_id: tool.name,
     group: capabilityGroup(tool.name),
@@ -121,11 +128,15 @@ function summary(tool) {
     required_scopes: [...(tool.scopes || [])],
     owner_confirmation_required: tool._meta?.["skinharmony/ownerConfirmationRequired"] === true,
     schema_hash: sha256(tool.inputSchema || {}),
+    ...exposure,
   };
 }
 
-function catalogState(tools, handlers) {
-  const definitions = dynamicToolDefinitions(tools, handlers);
+function catalogState(tools, handlers, identity = null) {
+  const allDefinitions = dynamicToolDefinitions(tools, handlers);
+  const definitions = identity
+    ? allDefinitions.filter((tool) => capabilityAvailableForIdentity(tool, identity))
+    : allDefinitions;
   const summaries = definitions.map(summary).sort((left, right) =>
     left.capability_id.localeCompare(right.capability_id),
   );
@@ -143,10 +154,12 @@ function textResult(payload) {
   };
 }
 
-function exactCapability(tools, handlers, capabilityId) {
+function exactCapability(tools, handlers, capabilityId, identity = null) {
   if (!CAPABILITY_ID.test(String(capabilityId || ""))) throw new Error("dynamic_capability_id_invalid");
   const tool = dynamicToolDefinitions(tools, handlers).find((item) => item.name === capabilityId);
-  if (!tool) throw new Error("dynamic_capability_unavailable");
+  if (!tool || (identity && !capabilityAvailableForIdentity(tool, identity))) {
+    throw new Error("dynamic_capability_unavailable");
+  }
   return tool;
 }
 
@@ -161,6 +174,13 @@ function targetArguments(tool, wrapperArgs) {
   if (tool.annotations?.readOnlyHint !== true) {
     args.owner_confirmed = wrapperArgs.owner_confirmed === true;
     if (wrapperArgs.confirmation_reference) args.confirmation_reference = wrapperArgs.confirmation_reference;
+    if (
+      tool.inputSchema?.properties?.idempotency_key &&
+      !args.idempotency_key &&
+      wrapperArgs.idempotency_key
+    ) {
+      args.idempotency_key = wrapperArgs.idempotency_key;
+    }
   }
   assertBoundedSafeArguments(args);
   const errors = validateToolArguments(tool.inputSchema, args);
@@ -194,13 +214,14 @@ export function createDynamicCapabilityHandlers({
 
   return {
     core_capability_catalog: async (args, identity) => {
-      const state = catalogState(tools, handlers);
+      const state = catalogState(tools, handlers, identity);
       if (args.capability_id) {
-        const tool = exactCapability(tools, handlers, args.capability_id);
+        const tool = exactCapability(tools, handlers, args.capability_id, identity);
         const item = summary(tool);
         return textResult({
           ok: true,
           schema_version: CATALOG_VERSION,
+          exposure_contract_version: CAPABILITY_EXPOSURE_CONTRACT_VERSION,
           tenant_id: identity.tenantId,
           catalog_revision: state.revision,
           capability: {
@@ -222,6 +243,7 @@ export function createDynamicCapabilityHandlers({
       return textResult({
         ok: true,
         schema_version: CATALOG_VERSION,
+        exposure_contract_version: CAPABILITY_EXPOSURE_CONTRACT_VERSION,
         tenant_id: identity.tenantId,
         catalog_revision: state.revision,
         capabilities,
@@ -235,11 +257,20 @@ export function createDynamicCapabilityHandlers({
 
     core_semantic_select: async (args, identity) => {
       if (Array.isArray(args.candidates) && args.candidates.length) {
-        return semanticSelect(args, identity);
+        const allDefinitions = new Map(
+          dynamicToolDefinitions(tools, handlers).map((tool) => [tool.name, tool]),
+        );
+        const candidates = args.candidates.filter((candidate) => {
+          const tool = allDefinitions.get(String(candidate?.id || ""));
+          if (tool) return capabilityAvailableForIdentity(tool, identity, { semantic: true });
+          return !candidateLooksVertical(candidate);
+        });
+        if (!candidates.length) throw new Error("dynamic_capability_candidates_empty");
+        return semanticSelect({ ...args, candidates }, identity);
       }
       const query = String(args.query || "").trim();
       if (!query) throw new Error("dynamic_capability_query_required");
-      const state = catalogState(tools, handlers);
+      const state = catalogState(tools, handlers, identity);
       const allowedIds = new Set(
         Array.isArray(args.capability_ids) && args.capability_ids.length
           ? args.capability_ids
@@ -274,9 +305,9 @@ export function createDynamicCapabilityHandlers({
     },
 
     core_capability_read: async (args, identity) => {
-      const state = catalogState(tools, handlers);
+      const state = catalogState(tools, handlers, identity);
       assertRevision(args.catalog_revision, state.revision);
-      const tool = exactCapability(tools, handlers, args.capability_id);
+      const tool = exactCapability(tools, handlers, args.capability_id, identity);
       if (tool.annotations?.readOnlyHint !== true) throw new Error("dynamic_capability_read_only_required");
       requireScopes(identity, tool.scopes || []);
       const callArgs = targetArguments(tool, args);
@@ -295,9 +326,9 @@ export function createDynamicCapabilityHandlers({
     },
 
     core_capability_invoke: async (args, identity) => {
-      const state = catalogState(tools, handlers);
+      const state = catalogState(tools, handlers, identity);
       assertRevision(args.catalog_revision, state.revision);
-      const tool = exactCapability(tools, handlers, args.capability_id);
+      const tool = exactCapability(tools, handlers, args.capability_id, identity);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
       if (args.owner_confirmed !== true || identity.ownerConfirmed !== true) {

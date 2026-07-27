@@ -20,6 +20,50 @@ function tenantContextHeader(tenantId, signingSecret) {
   return Buffer.from(JSON.stringify({ ...context, assertion })).toString("base64url");
 }
 
+function serverClientType(identity = {}) {
+  if (identity.kind === "oauth") return "chatgpt";
+  if (identity.kind === "codex") return "codex";
+  const trusted = String(identity.serverClientType || "");
+  return [
+    "api_agent",
+    "smartdesk",
+    "analyzer",
+    "tricocamera",
+    "suite",
+    "waas",
+    "admin",
+  ].includes(trusted) ? trusted : "api_agent";
+}
+
+function serverClientAudience(identity = {}, clientType = serverClientType(identity)) {
+  if (clientType === "chatgpt") return "chatgpt_connector";
+  if (clientType === "codex") return "codex_internal";
+  if (clientType === "smartdesk") return "smartdesk_runtime";
+  if (clientType === "analyzer" || clientType === "tricocamera") return "analyzer_runtime";
+  if (clientType === "suite" || clientType === "waas") return "suite_runtime";
+  if (clientType === "admin") return "admin_control_room";
+  return "api_agent";
+}
+
+function clientContextHeader(identity, signingSecret) {
+  if (!identity || !signingSecret || signingSecret.length < 32) return "";
+  const clientType = serverClientType(identity);
+  const context = {
+    version: "mcp_client_context_v1",
+    tenant_id: String(identity.tenantId || ""),
+    client_type: clientType,
+    audience: serverClientAudience(identity, clientType),
+    entitlements: [...new Set((identity.scopes || []).map(String))].sort(),
+    role: String(identity.role || "member"),
+    issued_at: new Date().toISOString(),
+  };
+  const canonical = JSON.stringify(context);
+  const assertion = `mcc_${crypto.createHmac("sha256", signingSecret)
+    .update(`mcp-client-context\u0000${canonical}`)
+    .digest("hex")}`;
+  return Buffer.from(JSON.stringify({ ...context, assertion })).toString("base64url");
+}
+
 function ownerContextCanonical(context) {
   return JSON.stringify({
     version: context.assertion_version,
@@ -335,12 +379,19 @@ export function createCoreHandlers(config, options = {}) {
       : body;
   }
 
-  async function coreRequest(path, tenantId, { method = "GET", body, additionalHeaders = {} } = {}) {
+  async function coreRequest(path, tenantId, {
+    method = "GET",
+    body,
+    additionalHeaders = {},
+    identity,
+  } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     headers.authorization = `Bearer ${coreKey(tenantId)}`;
     Object.assign(headers, additionalHeaders);
+    const clientContext = clientContextHeader(identity, config.ownerContextSigningSecret);
+    if (clientContext) headers["x-sh-client-context"] = clientContext;
     if (config.tenantGatewayKey && coreKey(tenantId) === config.tenantGatewayKey) {
       // The gateway key has a synthetic tenant. Core therefore needs the
       // requested tenant alongside the signed context even for body-less GET
@@ -516,6 +567,40 @@ export function createCoreHandlers(config, options = {}) {
     }
   }
 
+  async function aiLearningRead(path, args, identity) {
+    const query = new URLSearchParams();
+    for (const key of [
+      "scorecard_id",
+      "release_version",
+      "dataset_id",
+      "version",
+      "trace_id",
+      "run_id",
+      "experiment_id",
+      "candidate_id",
+      "state",
+      "cursor",
+      "limit",
+    ]) {
+      if (args[key] !== undefined && args[key] !== "") query.set(key, String(args[key]));
+    }
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return textResult(await coreRequest(`${path}${suffix}`, identity.tenantId, { identity }));
+  }
+
+  async function aiLearningWrite(path, purpose, args, identity) {
+    const requestBody = { ...args };
+    const binding = ownerRequestBinding(purpose, requestBody);
+    return textResult(await coreRequest(path, identity.tenantId, {
+      method: "POST",
+      identity,
+      body: {
+        ...requestBody,
+        owner_context: ownerContext(identity, binding),
+      },
+    }));
+  }
+
   const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
@@ -536,6 +621,7 @@ export function createCoreHandlers(config, options = {}) {
       }, identity);
       const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
         method: "POST",
+        identity,
         body: {
           request: args.request,
           target_system: args.target_system || "universal_core",
@@ -623,13 +709,14 @@ export function createCoreHandlers(config, options = {}) {
       const query = view === "authorized" && Array.isArray(args.branches) && args.branches.length
         ? `?${new URLSearchParams({ branches: args.branches.join(",") }).toString()}`
         : "";
-      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId));
+      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId, { identity }));
     },
     core_branch_analyze: async (args, identity) => textResult(await coreRequest(
       `/v1/branches/${encodeURIComponent(args.branch)}/analyze`,
       identity.tenantId,
       {
         method: "POST",
+        identity,
         body: {
           request: args.request,
           ...(args.signals ? { signals: args.signals } : {}),
@@ -656,6 +743,7 @@ export function createCoreHandlers(config, options = {}) {
     },
     core_semantic_select: async (args, identity) => textResult(await coreRequest("/v1/semantic-selection", identity.tenantId, {
       method: "POST",
+      identity,
       body: {
         candidates: args.candidates,
         target_language: args.target_language,
@@ -1006,7 +1094,25 @@ export function createCoreHandlers(config, options = {}) {
     outcome_verify: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/verify", args, identity),
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity, { ownerBindingPurpose: "intelligence_outcome_record" }),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
-    skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
+    ai_eval_scorecard_read: async (args, identity) => aiLearningRead("/v1/ai-learning/eval/scorecards", args, identity),
+    ai_eval_dataset_read: async (args, identity) => aiLearningRead("/v1/ai-learning/eval/datasets", args, identity),
+    ai_eval_trace_read: async (args, identity) => aiLearningRead("/v1/ai-learning/eval/traces", args, identity),
+    ai_performance_scorecard_read: async (args, identity) => aiLearningRead("/v1/ai-learning/performance/scorecards", args, identity),
+    ai_experiment_read: async (args, identity) => aiLearningRead("/v1/ai-learning/experiments", args, identity),
+    ai_learning_candidate_read: async (args, identity) => aiLearningRead("/v1/ai-learning/candidates", args, identity),
+    ai_learning_candidate_review: async (args, identity) => aiLearningWrite(
+      "/v1/ai-learning/candidates/review",
+      "ai_learning_candidate_review",
+      args,
+      identity,
+    ),
+    ai_learning_outcome_record: async (args, identity) => aiLearningWrite(
+      "/v1/ai-learning/outcomes",
+      "ai_learning_outcome_record",
+      args,
+      identity,
+    ),
+    skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", identity, body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     tenant_provider_openai_status: async (_args, identity) => {
       const payload = await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId);
       if (String(payload?.tenant_id || "").trim() !== String(identity.tenantId || "").trim()) {
@@ -1148,6 +1254,7 @@ export function createCoreHandlers(config, options = {}) {
         const approvedBinding = { ...binding, owner_confirmed: confirmed };
         return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
           method: "POST",
+          identity,
           body: {
             ...approvedBinding,
             owner_context: ownerContext(identity, {
@@ -1182,6 +1289,7 @@ export function createCoreHandlers(config, options = {}) {
       });
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
+        identity,
         body: {
           ...requestBody,
           owner_context: ownerContext(identity, ownerRequestBinding("core_action_evaluator", requestBody)),

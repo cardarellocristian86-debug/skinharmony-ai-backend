@@ -17,11 +17,12 @@ function ownerIdentity(overrides = {}) {
   };
 }
 
-function harness() {
+function harness(configOverrides = {}) {
   const calls = [];
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    ...configOverrides,
   }, {
     fetchImpl: async (url, init) => {
       calls.push({ url: new URL(url), init, body: init.body ? JSON.parse(init.body) : undefined });
@@ -33,6 +34,27 @@ function harness() {
   });
   return { calls, handlers };
 }
+
+test("bridge derives and signs client exposure context without trusting owner role or payload labels", async () => {
+  const { calls, handlers } = harness({
+    ownerContextSigningSecret: "test-owner-context-signing-secret-1234567890",
+  });
+  await handlers.core_branch_registry({ view: "registry" }, {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    role: "owner_root",
+    godMode: true,
+    serverClientType: "admin",
+    scopes: ["core:read", "owner:root"],
+  });
+  const encoded = calls[0].init.headers["x-sh-client-context"];
+  assert(encoded);
+  const context = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  assert.equal(context.tenant_id, "tenant-a");
+  assert.equal(context.client_type, "chatgpt");
+  assert.equal(context.audience, "chatgpt_connector");
+  assert.match(context.assertion, /^mcc_[a-f0-9]{64}$/);
+});
 
 test("catalog classifies connector capabilities and excludes arbitrary/admin invocation", () => {
   const catalog = readCoreCapabilityCatalog({ limit: 100 });
@@ -125,4 +147,79 @@ test("new write tools advertise owner confirmation while all analytical tools re
       assert.equal(definition._meta["skinharmony/ownerConfirmationRequired"], true, item.tool);
     }
   }
+});
+
+test("AI learning factory capabilities stay dynamic, tenant-bound and governed", async () => {
+  const ids = [
+    "ai_eval_scorecard_read",
+    "ai_eval_dataset_read",
+    "ai_eval_trace_read",
+    "ai_performance_scorecard_read",
+    "ai_experiment_read",
+    "ai_learning_candidate_read",
+    "ai_learning_candidate_review",
+    "ai_learning_outcome_record",
+  ];
+  const definitions = ids.map((id) => TOOLS.find((tool) => tool.name === id));
+  assert(definitions.every(Boolean));
+  assert(definitions.slice(0, 6).every((tool) => tool.annotations.readOnlyHint === true));
+  assert(definitions.slice(6).every((tool) =>
+    tool.annotations.readOnlyHint === false &&
+    tool._meta["skinharmony/ownerConfirmationRequired"] === true &&
+    tool.inputSchema.properties.idempotency_key,
+  ));
+
+  const { calls, handlers } = harness();
+  const reader = { tenantId: "tenant-a" };
+  await handlers.ai_eval_scorecard_read({ release_version: "0.16.0", limit: 5 }, reader);
+  await handlers.ai_learning_candidate_read({ state: "review_required" }, reader);
+  const owner = ownerIdentity();
+  await handlers.ai_learning_candidate_review({
+    candidate_id: "candidate_one",
+    review_action: "defer",
+    expected_version: 1,
+    evidence_digest: `sha256:${"a".repeat(64)}`,
+    rationale: "Needs another independent evaluation.",
+    idempotency_key: "review-candidate-one",
+    owner_confirmed: true,
+    confirmation_reference: "owner-reviewed-candidate-one",
+  }, owner);
+  await handlers.ai_learning_outcome_record({
+    outcome_id: "outcome_one",
+    candidate_id: "candidate_one",
+    outcome_status: "abstained",
+    outcome_verified: true,
+    evidence_digest: `sha256:${"b".repeat(64)}`,
+    policy_snapshot: "policy_snapshot_one",
+    rollback_reference: "rollback-one",
+    idempotency_key: "outcome-candidate-one",
+    owner_confirmed: true,
+    confirmation_reference: "owner-recorded-outcome-one",
+  }, owner);
+
+  assert.deepEqual(calls.map((call) => call.url.pathname), [
+    "/v1/ai-learning/eval/scorecards",
+    "/v1/ai-learning/candidates",
+    "/v1/ai-learning/candidates/review",
+    "/v1/ai-learning/outcomes",
+  ]);
+  assert.equal(calls[0].url.searchParams.get("release_version"), "0.16.0");
+  assert.equal(calls[0].url.searchParams.get("limit"), "5");
+  assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert(calls.slice(2).every((call) => call.body.owner_context?.owner_verified === true));
+  assert.equal(TOOLS.filter((tool) => [
+    "core_health",
+    "work_preflight",
+    "core_capability_catalog",
+    "core_branch_registry",
+    "core_semantic_select",
+    "core_capability_read",
+    "core_capability_invoke",
+    "tenant_provider_openai_status",
+    "tenant_provider_openai_setup_panel",
+    "tenant_provider_openai_setup_link",
+    "tenant_provider_openai_multi_agent_smoke_run",
+    "tenant_provider_openai_multi_agent_run_read",
+    "tenant_provider_openai_multi_agent_run_cancel",
+  ].includes(tool.name)).length, 13);
 });
