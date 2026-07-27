@@ -64,7 +64,13 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const reference = String(proof?.confirmationReference || "").trim();
   const requestBinding = String(proof?.requestBinding || "").trim();
   if (!reference || reference.length > 240 || !requestBinding || requestBinding.length > 20_000) throw new Error("owner_confirmation_invalid");
-  const authTime = Number(identity.authenticatedAt);
+  // `auth_time` is the time of the original interactive login and remains
+  // unchanged when an OAuth client legitimately refreshes its access token.
+  // ChatGPT connectors therefore cannot satisfy a short owner-confirmation
+  // window if freshness is measured from `auth_time`. Measure freshness from
+  // the currently verified access token's `iat` instead. The confirmation is
+  // still subject-bound, request-bound and single-use below.
+  const authTime = Number(identity.tokenIssuedAt);
   const now = Math.floor(Date.now() / 1000);
   const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
   if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
@@ -137,6 +143,7 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     ...(ownerTenantId ? { oauthOwnerBound: true } : {}),
     ...(tenantRole ? { tenantRole } : {}),
     ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
+    ...(Number.isFinite(Number(payload.iat)) ? { tokenIssuedAt: Number(payload.iat) } : {}),
     scopes: tokenScopes(payload)
   };
 }
