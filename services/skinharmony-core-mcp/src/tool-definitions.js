@@ -514,7 +514,9 @@ export const TOOLS = [
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
   tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({
-    group: { type: "string", enum: ["branches", "governance", "semantic", "guardrails", "release", "translation", "software_intelligence", "semantic_graph", "review"] },
+    group: identifier,
+    capability_id: identifier,
+    include_schema: { type: "boolean" },
     cursor: { type: "string", pattern: "^\\d+$", maxLength: 12 },
     limit: { type: "integer", minimum: 1, maximum: 100 },
   }), ["core:read"]),
@@ -536,11 +538,24 @@ export const TOOLS = [
   }), ["core:read"]),
   tool("core_semantic_select", "Select semantic candidates", "Rank bounded semantic candidates through Core without publishing or execution.", object({
     candidates: { type: "array", minItems: 1, maxItems: 500, items: semanticCandidate },
+    query: text(4_000),
+    capability_ids: { type: "array", maxItems: 500, uniqueItems: true, items: identifier },
     target_language: { type: "string", minLength: 2, maxLength: 64 },
     adapter: { type: "string", maxLength: 120 },
     intent: { type: "string", maxLength: 240 },
     limit: { type: "integer", minimum: 1, maximum: 200 },
-  }, ["candidates"]), ["core:read"]),
+  }), ["core:read"]),
+  tool("core_capability_read", "Read a dynamic Core capability", "Invoke one server-registered read-only capability by exact capability id and catalog revision. Routes, methods, tenant identity and authorization are resolved only server-side.", object({
+    capability_id: identifier,
+    catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    arguments: { type: "object", maxProperties: 200, additionalProperties: true },
+  }, ["capability_id", "catalog_revision"]), ["core:read"]),
+  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one server-registered mutating capability by exact capability id and catalog revision. It is fail-closed and requires target scopes, exact schema validation, explicit owner confirmation, idempotency and a fresh Universal Core gate.", object({
+    capability_id: identifier,
+    catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    arguments: { type: "object", maxProperties: 200, additionalProperties: true },
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  }, ["capability_id", "catalog_revision", "idempotency_key"]), ["core:govern"], false, false),
   tool("core_software_language_evaluate", "Evaluate software language", "Apply the horizontal V2/V1/V0 software-language gate to bounded UI copy. This returns findings only and never publishes changes.", object({
     app: identifier,
     target_lang: { type: "string", minLength: 2, maxLength: 64 },
