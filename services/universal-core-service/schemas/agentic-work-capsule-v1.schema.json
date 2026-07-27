@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skinharmony.internal/schemas/agentic-work-capsule-v1.schema.json",
+  "title": "Agentic Work Capsule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "goal",
+    "scope",
+    "success_criteria",
+    "decisions",
+    "completed",
+    "open_risks",
+    "relevant_files",
+    "changed_files",
+    "diff_summary",
+    "test_state",
+    "artifact_hashes",
+    "reusable_results",
+    "next_action",
+    "budget",
+    "created_at",
+    "expires_at"
+  ],
+  "properties": {
+    "goal": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "scope": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "success_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "decisions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "completed": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "open_risks": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "relevant_files": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "changed_files": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "diff_summary": { "type": "string", "maxLength": 4000 },
+    "test_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "pending"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "pending": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "artifact_hashes": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    },
+    "reusable_results": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+    },
+    "next_action": { "type": "string", "maxLength": 1000 },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token_limit", "invocation_limit", "retry_limit"],
+      "properties": {
+        "token_limit": { "type": "integer", "minimum": 0 },
+        "invocation_limit": { "type": "integer", "minimum": 0 },
+        "retry_limit": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" }
+  }
+}

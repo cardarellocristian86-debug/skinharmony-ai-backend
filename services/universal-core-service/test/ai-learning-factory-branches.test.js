@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   AI_AGENTIC_EFFICIENCY_BRANCHES,
+  AI_LEARNING_FACTORY_CAPABILITY_ALIASES,
   AI_LEARNING_CORE_GUARDS,
   AI_LEARNING_FACTORY_BRANCHES,
   AI_LEARNING_FACTORY_EXTENSION_FACETS,
@@ -73,18 +74,31 @@ const EXPECTED_EXTENSIONS = {
     "skill_deprecation", "skill_rollback",
   ],
   adaptive_learning_intelligence: [
-    "hard_case_prioritization", "negative_example_replay", "feedback_bias_detection",
-    "reviewer_disagreement", "learning_value_estimation",
+    "active_learning", "hard_case_prioritization", "negative_example_replay",
+    "feedback_bias_detection", "reviewer_disagreement", "learning_value_estimation",
+    "savings_outcome_validation",
   ],
   learning_knowledge_intelligence: [
-    "retrieval_precision_recall", "chunking_strategy_evaluation", "embedding_version_registry",
-    "reranking_quality", "freshness_expiry", "citation_coverage", "knowledge_poisoning_detection",
-    "index_rebuild_policy",
+    "retrieval_precision_recall", "context_relevance_scoring", "chunking_strategy_evaluation",
+    "embedding_version_registry", "reranking_quality", "freshness_expiry", "citation_coverage",
+    "knowledge_poisoning_detection", "index_rebuild_policy",
   ],
   ai_orchestration: [
     "universal_abstention_policy", "confidence_to_autonomy_mapping", "task_difficulty_classifier",
     "quality_cost_router", "model_snapshot_registry", "prompt_budget_enforcement",
-    "tool_surface_minimization",
+    "tool_surface_minimization", "tool_schema_budget", "stable_prefix_compilation",
+    "provider_usage_normalization",
+  ],
+  observability_roi_guard: [
+    "cost_per_verified_outcome", "tokens_per_verified_outcome",
+    "invocations_per_verified_outcome", "duplicate_work_cost", "retry_cost", "reviewer_cost",
+    "cache_savings", "context_compaction_savings", "model_routing_savings",
+    "quality_adjusted_savings",
+  ],
+  decision_provenance_intelligence: [
+    "baseline_run_reference", "optimized_run_reference", "usage_source",
+    "rate_card_reference", "savings_calculation", "quality_delta",
+    "approval_and_expiry", "rollback_reference",
   ],
 };
 
@@ -179,6 +193,7 @@ test("new and directly extended descriptors carry complete least-privilege expos
     "agent_orchestration",
     "adaptive_learning_intelligence",
     "ai_orchestration",
+    "decision_provenance_intelligence",
   ];
   for (const branchId of horizontal) {
     const descriptor = registry[branchId];
@@ -190,7 +205,11 @@ test("new and directly extended descriptors carry complete least-privilege expos
     assert.equal(descriptor.semantic_select_allowed, true);
   }
 
-  for (const branchId of ["learning_knowledge_intelligence", ...Object.keys(EXPECTED_GUARDS)]) {
+  for (const branchId of [
+    "learning_knowledge_intelligence",
+    "observability_roi_guard",
+    ...Object.keys(EXPECTED_GUARDS),
+  ]) {
     const descriptor = registry[branchId];
     assert.equal(descriptor.exposure_class, "codex_internal");
     assert.deepEqual(descriptor.allowed_client_types, ["codex", "admin"]);
@@ -218,7 +237,7 @@ test("extensions use bounded facets or lazy catalogs and every added capability 
   }
 
   assert.equal(registry.adaptive_learning_intelligence.subbranches.length, 16);
-  assert.equal(registry.learning_knowledge_intelligence.subbranches.length, 16);
+  assert.equal(registry.learning_knowledge_intelligence.subbranches.length, 17);
 
   for (const branchId of ["agent_orchestration", "ai_orchestration"]) {
     const page = listOrchestrationCapabilities({ branchId, limit: 100 });
@@ -230,6 +249,21 @@ test("extensions use bounded facets or lazy catalogs and every added capability 
       assert.equal(capability.execution_effect, "none");
     }
   }
+});
+
+test("agentic addendum aliases resolve to one canonical behavior without duplicate capability IDs", () => {
+  assert.deepEqual(AI_LEARNING_FACTORY_CAPABILITY_ALIASES, {
+    agent_orchestration: {
+      skill_extraction: "skill_candidate_extraction",
+      skill_replay_verification: "skill_sandbox_replay",
+    },
+  });
+  const page = listOrchestrationCapabilities({ branchId: "agent_orchestration", limit: 100 });
+  const ids = page.items.map((item) => item.action_id);
+  assert.equal(ids.includes("skill_extraction"), false);
+  assert.equal(ids.includes("skill_replay_verification"), false);
+  assert.equal(ids.filter((id) => id === "skill_candidate_extraction").length, 1);
+  assert.equal(ids.filter((id) => id === "skill_sandbox_replay").length, 1);
 });
 
 test("agentic efficiency and budget descriptors preserve all IDs with at most twenty direct subbranches", () => {

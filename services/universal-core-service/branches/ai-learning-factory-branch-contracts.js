@@ -474,14 +474,17 @@ export const AI_LEARNING_FACTORY_EXTENSION_FACETS = freezeRecord({
     ["skill_rollback", "Ripristinare il contratto skill verificato precedente."],
   ]),
   adaptive_learning_intelligence: defineExtensionFacet("adaptive_learning_intelligence", [
+    ["active_learning", "Selezionare casi per review solo quando il valore informativo atteso giustifica costo e rischio."],
     ["hard_case_prioritization", "Prioritizzare casi difficili per valore di apprendimento e rischio."],
     ["negative_example_replay", "Riprodurre esempi negativi versionati contro la baseline."],
     ["feedback_bias_detection", "Rilevare bias di selezione, provenienza e rappresentativita del feedback."],
     ["reviewer_disagreement", "Conservare e misurare disaccordo tra revisori indipendenti."],
     ["learning_value_estimation", "Stimare beneficio atteso del candidato prima di una eval costosa."],
+    ["savings_outcome_validation", "Verificare che un risparmio preservi outcome, quality floor e guardrail prima di apprendere dal risultato."],
   ]),
   learning_knowledge_intelligence: defineExtensionFacet("learning_knowledge_intelligence", [
     ["retrieval_precision_recall", "Misurare precisione e richiamo del retrieval contro casi versionati."],
+    ["context_relevance_scoring", "Misurare quanta parte del contesto trasferito e realmente pertinente all'outcome verificato."],
     ["chunking_strategy_evaluation", "Confrontare strategie di chunking su qualita e copertura."],
     ["embedding_version_registry", "Versionare embedding, dimensioni, provider e compatibilita."],
     ["reranking_quality", "Misurare il contributo del reranking a rilevanza e citazioni."],
@@ -498,7 +501,39 @@ export const AI_LEARNING_FACTORY_EXTENSION_FACETS = freezeRecord({
     ["model_snapshot_registry", "Vincolare route e eval a snapshot modello immutabili."],
     ["prompt_budget_enforcement", "Applicare budget di prompt e contesto prima della chiamata."],
     ["tool_surface_minimization", "Ridurre strumenti esposti al minimo richiesto dal task."],
+    ["tool_schema_budget", "Limitare numero e dimensione degli schemi tool al minimo verificato necessario."],
+    ["stable_prefix_compilation", "Compilare un prefisso stabile versionato e privo di autorita o dati dinamici sensibili."],
+    ["provider_usage_normalization", "Normalizzare usage provider distinguendo ricevute effettive da stime trasparenti."],
   ]),
+  observability_roi_guard: defineExtensionFacet("observability_roi_guard", [
+    ["cost_per_verified_outcome", "Misurare costo effettivo o stimato per outcome verificato dichiarandone la provenienza."],
+    ["tokens_per_verified_outcome", "Misurare token input, cache e output per outcome verificato."],
+    ["invocations_per_verified_outcome", "Misurare nuove invocazioni agente, modello e tool per outcome verificato."],
+    ["duplicate_work_cost", "Attribuire il costo del lavoro duplicato senza confonderlo con attivita indipendente necessaria."],
+    ["retry_cost", "Attribuire costo e valore dei retry classificati rispetto al checkpoint valido."],
+    ["reviewer_cost", "Misurare il costo reviewer preservando profondita e indipendenza richieste dal rischio."],
+    ["cache_savings", "Stimare o riconciliare il risparmio cache soltanto con hit e tenant binding verificati."],
+    ["context_compaction_savings", "Misurare contesto evitato dalla compaction rispetto allo stesso snapshot e rubric."],
+    ["model_routing_savings", "Attribuire risparmi di routing solo quando l'host prova il modello realmente usato."],
+    ["quality_adjusted_savings", "Calcolare il risparmio corretto per delta qualita e invalidarlo oltre il quality floor."],
+  ]),
+  decision_provenance_intelligence: defineExtensionFacet("decision_provenance_intelligence", [
+    ["baseline_run_reference", "Legare la decisione alla run baseline, allo snapshot e alla rubric immutabili."],
+    ["optimized_run_reference", "Legare la decisione alla variante ottimizzata e al medesimo criterio di accettazione."],
+    ["usage_source", "Dichiarare provider receipt, stima, formula e affidabilita della fonte usage."],
+    ["rate_card_reference", "Vincolare calcoli economici a rate card versionata, datata e attestata."],
+    ["savings_calculation", "Conservare formula, input e rounding del confronto senza falsa precisione."],
+    ["quality_delta", "Conservare qualita baseline, ottimizzata, delta e verifica del quality floor."],
+    ["approval_and_expiry", "Legare approvazione, autorita, ambito e scadenza alla decisione di efficienza."],
+    ["rollback_reference", "Legare ogni ottimizzazione al checkpoint e al comportamento verificato precedente."],
+  ]),
+});
+
+export const AI_LEARNING_FACTORY_CAPABILITY_ALIASES = freezeRecord({
+  agent_orchestration: {
+    skill_extraction: "skill_candidate_extraction",
+    skill_replay_verification: "skill_sandbox_replay",
+  },
 });
 
 export function learningFactoryBranch(branchId) {

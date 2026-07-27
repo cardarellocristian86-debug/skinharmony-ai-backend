@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchDecisionProvenanceIntelligence = {
   id: "decision_provenance_intelligence",
   file: "branch-decision-provenance-intelligence.js",
@@ -5,12 +10,14 @@ export const branchDecisionProvenanceIntelligence = {
   label: "Decision Provenance Intelligence",
   domain: "horizontal_work",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.horizontal,
   description: "Mantiene una catena verificabile tra richiesta, identita, regole, evidenze, decisione, conferma, scadenza e rollback.",
   subbranches: [
     "decision_request", "actor_and_authority", "policy_snapshot", "input_fingerprint", "evidence_lineage",
     "risk_rationale", "decision_contract", "human_confirmation", "decision_expiry", "revalidation_trigger",
     "reversal_path", "audit_safe_summary", "provenance_graph", "decision_replay_check", "accountability_handoff",
   ],
+  capability_facets: extensionFacetDescriptor("decision_provenance_intelligence"),
   rules: [
     "Ogni decisione ad impatto deve distinguere richiesta, identita autorizzata, policy applicata, evidenza, verdict e azione eseguita.",
     "La provenienza conserva riferimenti e fingerprint minimizzati, non segreti, token, prompt completi o dati personali non necessari.",

@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchObservabilityRoiGuard = {
   id: "observability_roi_guard",
   file: "branch-observability-roi-guard.js",
@@ -5,7 +10,9 @@ export const branchObservabilityRoiGuard = {
   label: "Observability ROI Guard",
   domain: "observability_roi",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.guard,
   description: "Guardrail per audit, prove, metriche, performance, ROI telemetry, salute nodi e valore misurabile delle automazioni.",
+  capability_facets: extensionFacetDescriptor("observability_roi_guard"),
   rules: [
     "Ogni azione automatizzata deve produrre audit_id, trace_id, input sintetico, decisione Core, rischio, esito e possibile rollback.",
     "Prima di vendere un'automazione enterprise, misurare cosa migliora: tempo risparmiato, errori evitati, lead recuperati, ordini sbloccati, costi ridotti.",

@@ -103,6 +103,9 @@ const AI_CAPABILITY_DEFINITIONS = [
   ["model_snapshot_registry", "registry", "Bind routes and evaluations to immutable model snapshots."],
   ["prompt_budget_enforcement", "optimization", "Enforce prompt and context budgets before provider invocation."],
   ["tool_surface_minimization", "tools", "Expose only the minimum tool surface required by a task."],
+  ["tool_schema_budget", "tools", "Limit tool schema count and size to the verified minimum required by a task."],
+  ["stable_prefix_compilation", "context", "Compile a versioned stable prefix without dynamic authority or sensitive data."],
+  ["provider_usage_normalization", "interoperability", "Normalize provider usage while separating verified receipts from estimates."],
 ];
 
 const AGENT_VIRTUAL_DIMENSIONS = Object.freeze({

@@ -23,6 +23,7 @@ export const branchLearningKnowledgeIntelligence = {
     "world_research_alignment",
     "self_repair_scope",
     "retrieval_precision_recall",
+    "context_relevance_scoring",
     "chunking_strategy_evaluation",
     "embedding_version_registry",
     "reranking_quality",
