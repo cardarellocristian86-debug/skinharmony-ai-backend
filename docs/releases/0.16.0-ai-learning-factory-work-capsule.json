@@ -1,0 +1,90 @@
+{
+  "schema_version": "agentic_work_capsule_v1",
+  "release": "0.16.0-ai-learning-factory",
+  "goal": "Implementare, verificare e distribuire la Nyra/Core AI Learning Factory con exposure fail-closed e ottimizzazione reale del lavoro agentico.",
+  "scope": [
+    "services/universal-core-service",
+    "services/skinharmony-core-mcp",
+    "personal-control-center solo se realmente modificato",
+    "specifica, benchmark, release manifest, rollback runbook e AGENTS.md applicabili"
+  ],
+  "success_criteria": [
+    "ChatGPT vede soltanto la corteccia orizzontale anche con owner_root",
+    "superficie MCP top-level uguale a 13",
+    "execution_enabled rimane false",
+    "benchmark learning factory di almeno 240 casi",
+    "benchmark agentic efficiency accoppiato di almeno 100 casi",
+    "zero cross-tenant, injection accettate, bypass budget ed esecuzioni esterne non autorizzate",
+    "costi effettivi sempre distinti dalle stime",
+    "CI, smoke live e rollback rehearsal verdi sul commit esatto"
+  ],
+  "decisions": [
+    "Continuare sul branch feature/nyra-ai-learning-factory-v0.16 senza una seconda PR",
+    "Usare Nyra/Core remoto su Render tramite SkinHarmony Agent Workspace",
+    "Separare architettura, exposure/security ed evaluation/performance in worktree indipendenti",
+    "Integrare l'addendum Agentic Efficiency come corsia della stessa release",
+    "Non creare servizi Render o database aggiuntivi"
+  ],
+  "completed": [
+    "Preflight Nyra/Core remoto e autorizzazione Core draft_code_change",
+    "Allineamento origin/main e registrazione dei commit live",
+    "Creazione dei worktree multi-agente",
+    "Specifica v0.16 iniziale materializzata nel repository",
+    "Audit iniziali su registry, exposure, telemetry e benchmark"
+  ],
+  "open_risks": [
+    "Le modifiche parallele non sono ancora integrate né testate insieme",
+    "L'addendum Agentic Efficiency non è ancora implementato",
+    "I target economici devono essere misurati, non presunti",
+    "Il connettore privato legacy è stato sostituito dal percorso Agent Workspace remoto"
+  ],
+  "relevant_files": [
+    "NYRA_CORE_AI_LEARNING_FACTORY_V0_16_EXECUTION_SPEC.md",
+    "services/universal-core-service/AGENTS.md",
+    "services/universal-core-service/branches/index.js",
+    "services/universal-core-service/src/app.js",
+    "services/skinharmony-core-mcp/src/dynamic-capability-router.js",
+    "services/skinharmony-core-mcp/src/tool-definitions.js"
+  ],
+  "changed_files": [
+    "NYRA_CORE_AI_LEARNING_FACTORY_V0_16_EXECUTION_SPEC.md",
+    "docs/releases/0.16.0-ai-learning-factory-work-capsule.json"
+  ],
+  "diff_summary": "Specifica v0.16 registrata; tre corsie di implementazione sono attive in worktree separati. L'addendum Agentic Efficiency è stato acquisito e deve essere integrato prima dell'integrazione finale.",
+  "test_state": {
+    "passed": 0,
+    "failed": 0,
+    "pending": 3
+  },
+  "artifact_hashes": [],
+  "reusable_results": [
+    "Core gate action_69fde75d-6ccf-4ba7-9439-f0391d0701e3",
+    "preflight_744a30c5-b089-429c-91d0-669f84adfdba",
+    "audit architetturale iniziale",
+    "audit exposure/security iniziale",
+    "audit evaluation/performance iniziale"
+  ],
+  "next_action": "Integrare i requisiti Agentic Efficiency nella specifica e coordinare la corsia dedicata con gli agenti e il supervisor esistenti.",
+  "budget": {
+    "token_limit": 0,
+    "invocation_limit": 0,
+    "retry_limit": 3
+  },
+  "rollback": {
+    "git_base_commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94",
+    "universal_core": {
+      "deploy_id": "dep-d9jnlb43plds73e2vep0",
+      "commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
+    },
+    "core_mcp": {
+      "deploy_id": "dep-d9jnlb1q7b2c73cve46g",
+      "commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
+    },
+    "nyra_core": {
+      "deploy_id": "dep-d9iiaq3eo5us73a0n6t0",
+      "commit": "a03521a3ca44ec1e5cdd1625bd01521bd0cef2ff"
+    }
+  },
+  "created_at": "2026-07-27T20:53:06Z",
+  "expires_at": "2026-07-28T20:53:06Z"
+}
