@@ -88,7 +88,14 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   const writeTools = body.result.tools.filter((tool) => tool.annotations.readOnlyHint === false);
   assert(readTools.length > 0);
   assert(writeTools.length > 0);
-  assert(writeTools.every((tool) => tool.securitySchemes[0].scopes.includes("core:govern")));
+  const nativeProviderOwnerWrites = new Set([
+    "tenant_provider_openai_multi_agent_smoke_run",
+    "tenant_provider_openai_multi_agent_run_cancel",
+  ]);
+  assert(writeTools.every((tool) =>
+    tool.securitySchemes[0].scopes.includes(
+      nativeProviderOwnerWrites.has(tool.name) ? "core:read" : "core:govern",
+    )));
   assert(writeTools.every((tool) =>
     tool._meta["skinharmony/ownerConfirmationRequired"] === false
     || tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
