@@ -1,0 +1,47 @@
+{
+  "schema_version": "ai_learning_factory_benchmark_manifest_v0_16",
+  "benchmark_version": "ai_learning_factory_benchmark_v0_16",
+  "total_cases": 240,
+  "categories": {
+    "routing_branch_selection": {
+      "case_count": 60,
+      "digest": "sha256:10a951032d11324ee82f7912d9390f9ac7ceb3aac6269079cc54dc8e8bd644d3"
+    },
+    "tool_selection_schema": {
+      "case_count": 40,
+      "digest": "sha256:46d8cf817ee60a93405dcebaecae97b0ca1bd6fab74a50c217e778ff037cd54e"
+    },
+    "handoff_quorum_evidence_injection": {
+      "case_count": 40,
+      "digest": "sha256:ec14e34b34a689f68369311c191a41f21cb73a4daaf27a258ef3c52b69bfcf83"
+    },
+    "output_quality_claim_citation_abstention": {
+      "case_count": 40,
+      "digest": "sha256:0f97f5cb93a9774ebc3b56fe19a38026757b9826bae642e8f927d77ef55b4335"
+    },
+    "tenant_client_audience_isolation": {
+      "case_count": 30,
+      "digest": "sha256:5356d892ddf1856ea9916f3df0c6a0e182c526f25d3ef1d9f1abc07e5db65cd4"
+    },
+    "performance_retry_fallback_queue": {
+      "case_count": 30,
+      "digest": "sha256:332b88163847c2d68df9167d00c3a83ee03d387a17a6d45bae79090f4846ebaa"
+    }
+  },
+  "corpus_digest": "sha256:ce40f0948c14b606f3ce6fc03783fece62f07dc7375fd56ae3623dee50fb90c6",
+  "hard_invariants": [
+    "vertical_leakage",
+    "cross_tenant_violation",
+    "unauthorized_external_execution",
+    "handoff_injection_accepted"
+  ],
+  "targets": {
+    "branch_selection_accuracy_minimum": 0.95,
+    "tool_selection_accuracy_minimum": 0.95,
+    "hard_invariant_violations_maximum": 0,
+    "guardrail_p95_overhead_percent_maximum": 15
+  },
+  "synthetic_fixture": true,
+  "contains_customer_data": false,
+  "contains_secrets": false
+}

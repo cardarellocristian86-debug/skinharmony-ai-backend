@@ -40,5 +40,25 @@ export function createAudit(storageRoot) {
     });
   }
 
-  return { append, recent };
+  function recentForTenant(tenantId, limit = 50, { includeGlobal = false } = {}) {
+    const normalizedTenantId = String(tenantId || "").trim();
+    if (!/^[a-z0-9][a-z0-9_-]{1,119}$/i.test(normalizedTenantId)) throw new Error("tenant_id_invalid");
+    if (!fs.existsSync(auditFile)) return [];
+    const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+    return fs
+      .readFileSync(auditFile, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter((event) => event && (event.tenant_id === normalizedTenantId || (includeGlobal && !event.tenant_id)))
+      .slice(-boundedLimit);
+  }
+
+  return { append, recent, recentForTenant };
 }

@@ -1,0 +1,391 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createAiLearningFactoryStore } from "../src/aiLearningFactoryStore.js";
+import {
+  AI_LEARNING_FACTORY_ROUTE_CONTRACTS,
+  mountAiLearningFactoryRoutes,
+} from "../src/aiLearningFactoryRoutes.js";
+import { createAiRuntimeTelemetryStore } from "../src/aiRuntimeTelemetry.js";
+
+function mockApp() {
+  const routes = [];
+  return {
+    routes,
+    get(path, ...handlers) { routes.push({ method: "GET", path, handlers }); },
+    post(path, ...handlers) { routes.push({ method: "POST", path, handlers }); },
+  };
+}
+
+function response() {
+  return {
+    statusCode: 200,
+    payload: null,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { this.payload = payload; return this; },
+  };
+}
+
+function request({ tenantId = "tenant-a", query = {}, body = {}, headers = {} } = {}) {
+  return {
+    tenantId,
+    query,
+    body,
+    get(name) { return headers[name.toLowerCase()] || ""; },
+  };
+}
+
+async function invoke(app, method, path, req) {
+  const route = app.routes.find((item) => item.method === method && item.path === path);
+  assert(route, `${method} ${path}`);
+  const res = response();
+  await route.handlers.at(-1)(req, res);
+  return res;
+}
+
+function candidate() {
+  return {
+    candidate_id: "candidate-prompt",
+    candidate_version: "v1",
+    candidate_type: "prompt",
+    status: "under_review",
+    dataset_version: "golden-v1",
+    scorecard_id: "scorecard-v016",
+    evidence_digest: "evd-candidate",
+    rollback_reference: "rollback-v1",
+    proposal_summary: "Shadow only.",
+    risk_review_status: "passed",
+    cost_review_status: "passed",
+  };
+}
+
+test("router exposes exactly eight dynamic endpoints without adding MCP tools", () => {
+  const app = mockApp();
+  const mounted = mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore: createAiLearningFactoryStore(),
+    audit: { append() {} },
+    resolveGovernanceProof() {},
+  });
+  assert.equal(app.routes.length, 8);
+  assert.equal(mounted.routes.length, 8);
+  assert.equal(mounted.top_level_mcp_tools_added, 0);
+  assert.deepEqual(mounted.contracts, AI_LEARNING_FACTORY_ROUTE_CONTRACTS);
+  assert.deepEqual(mounted.routes.map((item) => item.capability_id), [
+    "ai_eval_scorecard_read",
+    "ai_eval_dataset_read",
+    "ai_eval_trace_read",
+    "ai_performance_scorecard_read",
+    "ai_experiment_read",
+    "ai_learning_candidate_read",
+    "ai_learning_candidate_review",
+    "ai_learning_outcome_record",
+  ]);
+});
+
+test("six read contracts apply canonical filters and bounded cursor pagination", async () => {
+  const app = mockApp();
+  const calls = [];
+  const learningStore = {
+    async listEvaluationScorecards() {
+      return [
+        { scorecard_id: "eval-old", release_version: "v0" },
+        { scorecard_id: "eval-current", release_version: "v1" },
+      ];
+    },
+    async readEvaluationScorecard({ record_id }) { return { scorecard_id: record_id, release_version: "v1" }; },
+    async listDatasetMetadata() {
+      return [
+        { dataset_id: "dataset-old", dataset_version: "v0" },
+        { dataset_id: "dataset-current", dataset_version: "v1" },
+      ];
+    },
+    async readDatasetMetadata({ record_id }) { return { dataset_id: record_id, dataset_version: "v1" }; },
+    async listPerformanceScorecards() { return []; },
+    async readPerformanceScorecard(input) {
+      calls.push(input);
+      return { performance_scorecard_id: input.record_id, release_version: "v1" };
+    },
+    async listCausalExperiments() {
+      return [
+        { experiment_id: "experiment-shadow", status: "shadow" },
+        { experiment_id: "experiment-complete", status: "completed" },
+      ];
+    },
+    async readCausalExperiment({ record_id }) { return { experiment_id: record_id, status: "shadow" }; },
+    async listLearningCandidates() {
+      return [
+        { candidate_id: "candidate-1", status: "under_review" },
+        { candidate_id: "candidate-2", status: "under_review" },
+        { candidate_id: "candidate-3", status: "rejected" },
+      ];
+    },
+    async readLearningCandidate({ record_id }) { return { candidate_id: record_id, status: "under_review" }; },
+  };
+  const telemetryStore = {
+    async list() {
+      return [
+        { run_id: "run-1", trace_id: "trace-a" },
+        { run_id: "run-2", trace_id: "trace-b" },
+      ];
+    },
+    async read({ run_id }) { return { run_id, trace_id: "trace-a" }; },
+  };
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore,
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {},
+  });
+
+  const scorecard = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/eval/scorecards",
+    request({ query: { release_version: "v1" } }),
+  );
+  assert.deepEqual(scorecard.payload.scorecards.map((record) => record.scorecard_id), ["eval-current"]);
+
+  const dataset = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/eval/datasets",
+    request({ query: { version: "v1" } }),
+  );
+  assert.deepEqual(dataset.payload.datasets.map((record) => record.dataset_id), ["dataset-current"]);
+
+  const trace = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/eval/traces",
+    request({ query: { trace_id: "trace-b" } }),
+  );
+  assert.deepEqual(trace.payload.traces.map((record) => record.run_id), ["run-2"]);
+
+  const performance = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/performance/scorecards",
+    request({ query: { scorecard_id: "performance-v1" } }),
+  );
+  assert.equal(performance.payload.scorecards[0].performance_scorecard_id, "performance-v1");
+  assert.equal(calls[0].record_id, "performance-v1");
+
+  const experiments = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/experiments",
+    request({ query: { state: "completed" } }),
+  );
+  assert.deepEqual(experiments.payload.experiments.map((record) => record.experiment_id), ["experiment-complete"]);
+
+  const candidates = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { state: "under_review", limit: "1", cursor: "offset:1" } }),
+  );
+  assert.deepEqual(candidates.payload.candidates.map((record) => record.candidate_id), ["candidate-2"]);
+  assert.equal(candidates.payload.next_cursor, null);
+
+  const rejected = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { unsupported_filter: "value" } }),
+  );
+  assert.equal(rejected.statusCode, 400);
+  assert.equal(rejected.payload.error, "ai_learning_query_parameter_not_allowed");
+});
+
+test("read routes derive tenant scope server-side", async () => {
+  const app = mockApp();
+  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-a",
+    expected_revision: 0,
+    record: candidate(),
+  });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-b",
+    idempotency_key: "candidate-b",
+    expected_revision: 0,
+    record: { ...candidate(), candidate_id: "candidate-other" },
+  });
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {},
+  });
+
+  const allowed = await invoke(app, "GET", "/v1/ai-learning/candidates", request());
+  assert.equal(allowed.statusCode, 200);
+  assert.deepEqual(allowed.payload.candidates.map((item) => item.candidate_id), ["candidate-prompt"]);
+
+  const denied = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { tenant_id: "tenant-b" } }),
+  );
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.payload.error, "tenant_scope_denied");
+});
+
+test("mutating routes ignore caller authorization and use server Core proof", async () => {
+  const app = mockApp();
+  const events = [];
+  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-a",
+    expected_revision: 0,
+    record: candidate(),
+  });
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append(type, payload) { events.push({ type, payload }); } },
+    resolveGovernanceProof() {
+      return {
+        core_verdict: "ALLOW",
+        owner_confirmed: true,
+        scopes: ["core:govern"],
+        audit_reference: "audit-server-proof",
+        rollback_reference: "rollback-v1",
+      };
+    },
+  });
+
+  const res = await invoke(
+    app,
+    "POST",
+    "/v1/ai-learning/candidates/review",
+    request({
+      headers: { "idempotency-key": "review-1" },
+      body: {
+        candidate_id: "candidate-prompt",
+        decision: "approved_for_shadow",
+        review_note: "Human review complete.",
+        expected_revision: 1,
+        authorization: { core_verdict: "BLOCK", owner_confirmed: false },
+      },
+    }),
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.candidate.status, "approved_for_shadow");
+  assert.equal(res.payload.candidate.human_review.audit_reference, "audit-server-proof");
+  assert.deepEqual(events.map((event) => event.type), [
+    "ai_learning_candidate_review_authorized",
+    "ai_learning_candidate_reviewed",
+  ]);
+  assert.match(events[0].payload.idempotency_digest, /^idem_[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(events).includes("review-1"), false);
+});
+
+test("outcome recording requires optimistic concurrency and server proof", async () => {
+  const app = mockApp();
+  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {
+      return {
+        core_verdict: "ALLOW",
+        owner_confirmed: true,
+        scopes: ["core:govern"],
+        audit_reference: "audit-server-proof",
+        rollback_reference: "rollback-v1",
+      };
+    },
+  });
+  const denied = await invoke(
+    app,
+    "POST",
+    "/v1/ai-learning/outcomes",
+    request({
+      headers: { "idempotency-key": "outcome-1" },
+      body: {
+        outcome: {
+          outcome_id: "outcome-1",
+          run_id: "run-1",
+          outcome_status: "succeeded",
+          outcome_verified: true,
+          human_review_status: "approved",
+          evidence_digest: "evd-outcome",
+          policy_snapshot: "policy-v1",
+          observed_at: "2026-07-27T12:00:00.000Z",
+          learning_value: 0.8,
+        },
+      },
+    }),
+  );
+  assert.equal(denied.statusCode, 400);
+  assert.equal(denied.payload.error, "expected_revision_required");
+});
+
+test("audit failure happens before a governed mutation", async () => {
+  const app = mockApp();
+  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-a",
+    expected_revision: 0,
+    record: candidate(),
+  });
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append() { throw new Error("audit_unavailable"); } },
+    resolveGovernanceProof() {
+      return {
+        core_verdict: "ALLOW",
+        owner_confirmed: true,
+        scopes: ["core:govern"],
+        audit_reference: "audit-server-proof",
+        rollback_reference: "rollback-v1",
+      };
+    },
+  });
+  const res = await invoke(
+    app,
+    "POST",
+    "/v1/ai-learning/candidates/review",
+    request({
+      headers: { "idempotency-key": "review-1" },
+      body: {
+        candidate_id: "candidate-prompt",
+        decision: "approved_for_shadow",
+        review_note: "Human review complete.",
+        expected_revision: 1,
+      },
+    }),
+  );
+  assert.equal(res.statusCode, 400);
+  const candidateAfter = await learningStore.readLearningCandidate({
+    tenant_id: "tenant-a",
+    record_id: "candidate-prompt",
+  });
+  assert.equal(candidateAfter.status, "under_review");
+  assert.equal(candidateAfter.revision, 1);
+});
