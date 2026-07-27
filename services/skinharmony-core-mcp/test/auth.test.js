@@ -298,6 +298,33 @@ test("uses the current OAuth access-token issuance for owner freshness after a r
   }));
 });
 
+test("accepts a current request-bound confirmation from a long-lived valid connector token", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({
+    sub: "oauth-owner-fixture",
+    iat: now - 3_600,
+    auth_time: now - 86_400,
+  });
+  const auth = createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+  const proof = {
+    confirmed: true,
+    confirmationReference: "current explicit tool confirmation",
+    requestBinding: "tenant-provider-smoke-run",
+  };
+
+  assert.throws(() => auth.elevateOAuthOwner(identity, proof), /owner_authentication_stale/);
+  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, {
+    ...proof,
+    requireFreshAuthentication: false,
+  }));
+});
+
 test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {
   const stale = auth0Fixture({ sub: "oauth-owner-fixture", iat: 1, auth_time: 1 });
   const config = { ...stale.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 60 };
