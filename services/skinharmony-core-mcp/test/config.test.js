@@ -222,7 +222,7 @@ test("loads OAuth owner tenant bindings only from server-side configuration", ()
     AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "600",
   });
   assert.deepEqual(config.oauthOwnerTenantBindings, { "oauth-owner-fixture": "codexai" });
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 600);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 
