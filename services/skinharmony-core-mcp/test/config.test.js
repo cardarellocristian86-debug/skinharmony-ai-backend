@@ -226,6 +226,11 @@ test("loads OAuth owner tenant bindings only from server-side configuration", ()
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 
+test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {
+  const config = loadConfig({});
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
+});
+
 test("maps Suite Control Plane keys only to their configured tenants", () => {
   const config = loadConfig({
     SUITE_CONTROL_PLANE_URL: "https://suite.example.test/",
