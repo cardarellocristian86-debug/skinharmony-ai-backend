@@ -4,6 +4,26 @@ Remote MCP endpoint compatible with existing scoped Codex bearer tokens and Chat
 
 The repository path and package name retain the historical SkinHarmony name for deployment compatibility, but the gateway contract is horizontal. MCP tools do not expose a `domain_pack` selector and never forward one supplied out of schema. Suite, SmartDesk and Analyzer packs are resolved only from the authenticated server-side Core key metadata.
 
+## Stable dynamic connector surface
+
+Version `0.15.0` keeps the ChatGPT connector registration stable while Nyra and
+Core evolve. Production advertises thirteen bounded entrypoints instead of the
+entire internal tool registry. New handler-backed capabilities appear
+automatically in `core_capability_catalog`; clients select them through
+`core_semantic_select`, inspect the exact schema, then use
+`core_capability_read` or the separately governed `core_capability_invoke`.
+Adding an internal capability therefore changes the catalog revision, not the
+OAuth app or the MCP `tools/list` surface.
+
+Dynamic routing never accepts a URL, HTTP method, tenant id, credential or
+arbitrary handler name. Every capability must exist in the server registry,
+match its current catalog revision and pass its original schema and scopes.
+Reads and mutations are separate. Mutations additionally require a fresh,
+request-bound owner confirmation, an idempotency key, a Universal Core verdict
+and the target handler's own controls. Provider setup and the fixed OpenAI
+multi-agent run remain direct native tools because they have dedicated OAuth,
+vault, billing and cancellation contracts.
+
 ## Authentication
 
 ## ChatGPT install and tenant API-key onboarding
@@ -231,13 +251,12 @@ and propose branches, lets Universal Core open and join the authorized branches,
 assigns roles, emits a dependency-aware task graph and selects the least-privilege
 connected capability. It never authorizes execution.
 
-The MCP initialization instructions and every advertised tool identify
-`work_preflight` as the first tool. For work tools that do not natively call a
-Core routing endpoint, the server runs the preflight automatically before the
-tool handler and returns the preflight with the result. Failure is closed.
-`work_preflight` itself is the only middleware exemption because it is the
-entrypoint; health, memory, Nyra, Codex and action tools all receive the same
-automatic preflight before their handler runs.
+The MCP initialization instructions identify `work_preflight` as the first tool
+for generic work. For work tools that do not natively call a Core routing
+endpoint, the server runs the preflight automatically before the tool handler
+and returns the preflight with the result. Failure is closed. Health,
+capability discovery/routing and the dedicated provider controls are exempt
+because they have their own authenticated, fail-closed governance path.
 
 ### Automatic shared-memory bootstrap
 
