@@ -313,6 +313,136 @@ test("Core gate preserves governed memory and agent presence for the exact admin
   assert.deepEqual(calls[0].allowed_environment_variables, environmentVariables);
 });
 
+test("Core gate transports the MCP staging topology while deriving tenant and owner proofs server-side", async () => {
+  const calls = [];
+  const paths = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (url, init) => {
+      paths.push(new URL(url).pathname);
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    contextProvider: async (_input, identity) => ({
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: identity.tenantId,
+      revision: 9,
+      relevant_memories: [],
+    }),
+  });
+  const topologyFields = {
+    domain_action_id: "skinharmony_mcp_staging_topology_v1",
+    secret_value_transmitted: false,
+    values_present_in_envelope: false,
+    provider_execution: true,
+    execution_enabled: true,
+    deploy: true,
+    database_connection: false,
+    database_mutation: false,
+    readback_required: true,
+    auth0_changes: false,
+    production_deploy: false,
+    merge: false,
+    delete: false,
+    create_missing_only: true,
+    overwrite_existing: false,
+    target_branch: "agent/mcp-staging-shared-memory-release",
+    environment: "staging",
+    region: "Oregon",
+    phase: "blueprint_apply_dependencies",
+    topology: {
+      schema_version: "skinharmony_mcp_staging_topology_v1",
+      tenant_id: "codexai",
+      environment: "staging",
+      region: "Oregon",
+      services: [{ name: "skinharmony-mcp-staging-db-bootstrap" }],
+    },
+    provider_native_references: true,
+    secret_values_present: false,
+    spec_digest: "a".repeat(64),
+    confirmation_spec_digest: "a".repeat(64),
+    maximum_recurring_monthly_cost_cents: 5_300,
+    recurring_cost_currency: "USD",
+    recurring_cost_confirmed: true,
+    confirmation_maximum_recurring_monthly_cost_cents: 5_300,
+    confirmation_recurring_cost_currency: "USD",
+  };
+
+  await handlers.core_gate_action({
+    action_label: "Deploy isolated SkinHarmony MCP staging topology",
+    action_type: "render_mcp_staging_topology_phase",
+    operation_class: "reversible_owner_confirmed_mcp_staging_topology",
+    target_commit: "1".repeat(40),
+    external_side_effect: true,
+    contains_customer_data: false,
+    contains_secret: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    rollback_ready: true,
+    audit_ready: true,
+    configuration_changes: true,
+    agent_id: "codex_mcp_staging_release",
+    client_type: "codex",
+    session_id: "mcp_staging_release_20260727",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-mcp-staging-topology",
+    ...topologyFields,
+    tenant_id: "caller-tenant",
+    authenticated_tenant_id: "caller-tenant",
+    memory_context: {
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "caller-tenant",
+      revision: 999,
+    },
+    owner_context: { assertion: "attacker-controlled" },
+    owner_context_verified: true,
+    owner_context_approval_bound: true,
+    request_bound_owner_confirmation: true,
+    authenticated_key_type: "connector",
+  }, {
+    tenantId: "codexai",
+    kind: "oauth",
+    subject: "oauth|owner",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+    confirmationReference: "owner-confirmed-mcp-staging-topology",
+  });
+
+  assert.deepEqual(paths, ["/v1/action-evaluator"]);
+  assert.equal(calls.length, 1);
+  for (const [field, value] of Object.entries(topologyFields)) {
+    assert.deepEqual(calls[0][field], value, field);
+  }
+  assert.equal(calls[0].agent_id, "codex_mcp_staging_release");
+  assert.equal(calls[0].client_type, "codex");
+  assert.equal(calls[0].session_id, "mcp_staging_release_20260727");
+  assert.equal(calls[0].tenant_id, "codexai");
+  assert.equal(calls[0].memory_context.tenant_id, "codexai");
+  assert.equal(calls[0].memory_context.revision, 9);
+  assert.equal(calls[0].owner_confirmed, true);
+  assert.equal(calls[0].confirmation_reference, "owner-confirmed-mcp-staging-topology");
+  assert.equal(calls[0].owner_context.tenant_id, "codexai");
+  assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.notEqual(calls[0].owner_context.assertion, "attacker-controlled");
+  for (const coreDerived of [
+    "authenticated_tenant_id",
+    "owner_context_verified",
+    "owner_context_approval_bound",
+    "request_bound_owner_confirmation",
+    "authenticated_key_type",
+  ]) {
+    assert.equal(Object.hasOwn(calls[0], coreDerived), false, coreDerived);
+  }
+});
+
 test("Core gate discards caller memory when governed context is unavailable", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

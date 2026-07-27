@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 export const MCP_STAGING_BLUEPRINT_FILES = Object.freeze({
   bootstrap: "render-mcp-staging-bootstrap.yaml",
+  control: "render-mcp-staging-control-plane.yaml",
   final: "render-mcp-staging.yaml",
 });
 
@@ -18,6 +19,30 @@ const MCP = "skinharmony-core-mcp-staging";
 
 const EXPECTED_SERVICES = Object.freeze({
   bootstrap: Object.freeze({
+    [BOOTSTRAP_SERVICE]: Object.freeze({
+      type: "pserv",
+      plan: "starter",
+      buildCommand:
+        "npm ci --prefix services/mcp-staging-db-bootstrap && npm ci --prefix services/skinharmony-core-mcp",
+      startCommand: "npm --prefix services/mcp-staging-db-bootstrap start",
+      port: "10001",
+    }),
+    [CORE_ISSUER]: Object.freeze({
+      type: "pserv",
+      plan: "starter",
+      buildCommand: "npm ci --prefix services/mcp-staging-issuer",
+      startCommand: "npm --prefix services/mcp-staging-issuer start",
+      port: "8789",
+    }),
+    [NYRA_ISSUER]: Object.freeze({
+      type: "pserv",
+      plan: "starter",
+      buildCommand: "npm ci --prefix services/mcp-staging-issuer",
+      startCommand: "npm --prefix services/mcp-staging-issuer start",
+      port: "8789",
+    }),
+  }),
+  control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze({
       type: "pserv",
       plan: "starter",
@@ -85,6 +110,25 @@ const EXPECTED_SERVICES = Object.freeze({
 
 const EXPECTED_ENV_KEYS = Object.freeze({
   bootstrap: Object.freeze({
+    [BOOTSTRAP_SERVICE]: Object.freeze([
+      "NODE_ENV", "PORT", "MCP_STAGING_BOOTSTRAP_ENVIRONMENT",
+      "MCP_STAGING_CONTROL_PLANE_PROFILE", "MCP_STAGING_DB_BOOTSTRAP_MODE",
+      "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+    ]),
+    [CORE_ISSUER]: Object.freeze([
+      "NODE_ENV", "PORT", "MCP_STAGING_ENVIRONMENT", "MCP_STAGING_ISSUER_MODE",
+      "MCP_STAGING_ISSUER_PROTOCOL", "MCP_STAGING_ISSUER_STARTUP_MODE",
+      "MCP_STAGING_COLLABORATION_AUDIENCE", "MCP_STAGING_ISSUER_SIGNING_SECRET",
+      "MCP_STAGING_ISSUER_AUTH_TOKEN", "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+    ]),
+    [NYRA_ISSUER]: Object.freeze([
+      "NODE_ENV", "PORT", "MCP_STAGING_ENVIRONMENT", "MCP_STAGING_ISSUER_MODE",
+      "MCP_STAGING_ISSUER_PROTOCOL", "MCP_STAGING_ISSUER_STARTUP_MODE",
+      "MCP_STAGING_COLLABORATION_AUDIENCE", "MCP_STAGING_ISSUER_SIGNING_SECRET",
+      "MCP_STAGING_ISSUER_AUTH_TOKEN", "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+    ]),
+  }),
+  control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze([
       "NODE_ENV", "PORT", "MCP_STAGING_BOOTSTRAP_ENVIRONMENT",
       "MCP_STAGING_CONTROL_PLANE_PROFILE", "MCP_STAGING_DB_BOOTSTRAP_MODE",
@@ -161,6 +205,35 @@ const EXPECTED_ENV_KEYS = Object.freeze({
 
 const EXPECTED_LITERAL_VALUES = Object.freeze({
   bootstrap: Object.freeze({
+    [BOOTSTRAP_SERVICE]: Object.freeze({
+      NODE_ENV: "production",
+      PORT: "10001",
+      MCP_STAGING_BOOTSTRAP_ENVIRONMENT: "staging",
+      MCP_STAGING_CONTROL_PLANE_PROFILE: "collaboration",
+      MCP_STAGING_DB_BOOTSTRAP_MODE: "hold",
+    }),
+    [CORE_ISSUER]: Object.freeze({
+      NODE_ENV: "production",
+      PORT: "8789",
+      MCP_STAGING_ENVIRONMENT: "staging",
+      MCP_STAGING_ISSUER_MODE: "core",
+      MCP_STAGING_ISSUER_PROTOCOL: "collaboration",
+      MCP_STAGING_ISSUER_STARTUP_MODE: "jwks_only",
+      MCP_STAGING_COLLABORATION_AUDIENCE:
+        "https://skinharmony-core-mcp-staging.onrender.com/mcp",
+    }),
+    [NYRA_ISSUER]: Object.freeze({
+      NODE_ENV: "production",
+      PORT: "8789",
+      MCP_STAGING_ENVIRONMENT: "staging",
+      MCP_STAGING_ISSUER_MODE: "nyra",
+      MCP_STAGING_ISSUER_PROTOCOL: "collaboration",
+      MCP_STAGING_ISSUER_STARTUP_MODE: "jwks_only",
+      MCP_STAGING_COLLABORATION_AUDIENCE:
+        "https://skinharmony-core-mcp-staging.onrender.com/mcp",
+    }),
+  }),
+  control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze({
       NODE_ENV: "production",
       PORT: "10001",
@@ -251,6 +324,17 @@ const EXPECTED_LITERAL_VALUES = Object.freeze({
 
 const EXPECTED_GENERATED_KEYS = Object.freeze({
   bootstrap: Object.freeze({
+    [BOOTSTRAP_SERVICE]: Object.freeze([]),
+    [CORE_ISSUER]: Object.freeze([
+      "MCP_STAGING_ISSUER_SIGNING_SECRET",
+      "MCP_STAGING_ISSUER_AUTH_TOKEN",
+    ]),
+    [NYRA_ISSUER]: Object.freeze([
+      "MCP_STAGING_ISSUER_SIGNING_SECRET",
+      "MCP_STAGING_ISSUER_AUTH_TOKEN",
+    ]),
+  }),
+  control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze([
       "MCP_STAGING_GATE_CONTROL_PASSWORD",
       "MCP_STAGING_CORE_NONCE_API_TOKEN",
@@ -298,6 +382,11 @@ const EXPECTED_SYNC_KEYS = Object.freeze({});
 
 const EXPECTED_DATABASE_REFERENCES = Object.freeze({
   bootstrap: Object.freeze({
+    [BOOTSTRAP_SERVICE]: Object.freeze({}),
+    [CORE_ISSUER]: Object.freeze({}),
+    [NYRA_ISSUER]: Object.freeze({}),
+  }),
+  control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze({
       PG_ADMIN_DATABASE_URL: Object.freeze({
         name: DATABASE,
@@ -336,6 +425,23 @@ const EXPECTED_DATABASE_REFERENCES = Object.freeze({
 
 const EXPECTED_SERVICE_REFERENCES = Object.freeze({
   bootstrap: Object.freeze({
+    [BOOTSTRAP_SERVICE]: Object.freeze({
+      MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
+        type: "pserv", name: BOOTSTRAP_SERVICE, envVarKey: "RENDER_GIT_COMMIT",
+      }),
+    }),
+    [CORE_ISSUER]: Object.freeze({
+      MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
+        type: "pserv", name: CORE_ISSUER, envVarKey: "RENDER_GIT_COMMIT",
+      }),
+    }),
+    [NYRA_ISSUER]: Object.freeze({
+      MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
+        type: "pserv", name: NYRA_ISSUER, envVarKey: "RENDER_GIT_COMMIT",
+      }),
+    }),
+  }),
+  control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze({
       MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
         type: "pserv", name: BOOTSTRAP_SERVICE, envVarKey: "RENDER_GIT_COMMIT",
@@ -710,18 +816,33 @@ function scanForbiddenValues(value, errors) {
 
 function validateCrossBlueprintContracts(documents, errors) {
   const bootstrapServices = servicesFromBlueprint("bootstrap", documents.bootstrap, errors);
+  const controlServices = servicesFromBlueprint("control", documents.control, errors);
   const finalServices = servicesFromBlueprint("final", documents.final, errors);
-  if (!bootstrapServices || !finalServices) return;
+  if (!bootstrapServices || !controlServices || !finalServices) return;
   const bootstrap = new Map(bootstrapServices.map((service) => [service.name, service]));
+  const control = new Map(controlServices.map((service) => [service.name, service]));
   const final = new Map(finalServices.map((service) => [service.name, service]));
-  if (envMap(bootstrap.get(BOOTSTRAP_SERVICE)).get("MCP_STAGING_DB_BOOTSTRAP_MODE")?.value !== "initialize" ||
+  if (envMap(bootstrap.get(BOOTSTRAP_SERVICE)).get("MCP_STAGING_DB_BOOTSTRAP_MODE")?.value !== "hold" ||
+      envMap(control.get(BOOTSTRAP_SERVICE)).get("MCP_STAGING_DB_BOOTSTRAP_MODE")?.value !== "initialize" ||
       envMap(final.get(BOOTSTRAP_SERVICE)).get("MCP_STAGING_DB_BOOTSTRAP_MODE")?.value !== "steady") {
     errors.add("database_bootstrap_phase_invalid");
   }
   for (const issuer of [CORE_ISSUER, NYRA_ISSUER]) {
     if (envMap(bootstrap.get(issuer)).get("MCP_STAGING_ISSUER_STARTUP_MODE")?.value !== "jwks_only" ||
+        envMap(control.get(issuer)).get("MCP_STAGING_ISSUER_STARTUP_MODE")?.value !== "jwks_only" ||
         envMap(final.get(issuer)).get("MCP_STAGING_ISSUER_STARTUP_MODE")?.value !== "full") {
       errors.add("issuer_bootstrap_phase_invalid");
+    }
+  }
+  for (const service of bootstrapServices) {
+    const environment = envMap(service);
+    if ([...environment.values()].some((entry) => Object.hasOwn(entry, "fromDatabase")) ||
+        [...environment.keys()].some((key) =>
+          ["PG_ADMIN_DATABASE_URL", "PG_EXPECTED_DATABASE_NAME",
+            "MCP_STAGING_GATE_CONTROL_PASSWORD", "MCP_STAGING_CORE_NONCE_API_TOKEN",
+            "MCP_STAGING_NYRA_NONCE_API_TOKEN",
+            "MCP_STAGING_RECEIPT_CONSUMER_API_TOKEN"].includes(key))) {
+      errors.add("bootstrap_hold_database_surface_forbidden");
     }
   }
   const finalMcp = envMap(final.get(MCP));
@@ -764,6 +885,7 @@ export function validateMcpStagingBlueprints(documents) {
   const errors = new Set();
   if (!plainObject(documents) ||
       !plainObject(documents.bootstrap) ||
+      !plainObject(documents.control) ||
       !plainObject(documents.final)) {
     return Object.freeze({
       schema_version: "mcp_staging_blueprint_policy_v1",
@@ -776,6 +898,7 @@ export function validateMcpStagingBlueprints(documents) {
     });
   }
   validateBlueprint("bootstrap", documents.bootstrap, errors);
+  validateBlueprint("control", documents.control, errors);
   validateBlueprint("final", documents.final, errors);
   if (!errors.size) validateCrossBlueprintContracts(documents, errors);
   scanForbiddenValues(documents, errors);

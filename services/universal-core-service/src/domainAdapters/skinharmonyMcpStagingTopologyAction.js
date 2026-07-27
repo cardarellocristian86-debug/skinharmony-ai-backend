@@ -26,6 +26,8 @@ const PHASE_CONTROLS = Object.freeze({
     provider_execution: false,
     execution_enabled: false,
     deploy: false,
+    database_connection: false,
+    database_mutation: false,
   }),
   blueprint_apply_dependencies: Object.freeze({
     external_side_effect: true,
@@ -33,13 +35,17 @@ const PHASE_CONTROLS = Object.freeze({
     provider_execution: true,
     execution_enabled: true,
     deploy: true,
+    database_connection: false,
+    database_mutation: false,
   }),
   bootstrap_control_plane: Object.freeze({
     external_side_effect: true,
     configuration_changes: true,
     provider_execution: true,
     execution_enabled: true,
-    deploy: false,
+    deploy: true,
+    database_connection: true,
+    database_mutation: false,
   }),
   database_runtime_role_transition: Object.freeze({
     external_side_effect: true,
@@ -47,6 +53,8 @@ const PHASE_CONTROLS = Object.freeze({
     provider_execution: true,
     execution_enabled: true,
     deploy: false,
+    database_connection: true,
+    database_mutation: true,
   }),
   blueprint_apply_runtime: Object.freeze({
     external_side_effect: true,
@@ -54,6 +62,8 @@ const PHASE_CONTROLS = Object.freeze({
     provider_execution: true,
     execution_enabled: true,
     deploy: true,
+    database_connection: true,
+    database_mutation: false,
   }),
   persistence_canary: Object.freeze({
     external_side_effect: true,
@@ -61,6 +71,8 @@ const PHASE_CONTROLS = Object.freeze({
     provider_execution: true,
     execution_enabled: true,
     deploy: false,
+    database_connection: true,
+    database_mutation: true,
   }),
 });
 
@@ -113,6 +125,14 @@ const TOPOLOGY = Object.freeze({
     }),
   ]),
   phases: SKINHARMONY_MCP_STAGING_PHASES,
+  rollout_contract: Object.freeze({
+    dependency_manifest: "render-mcp-staging-bootstrap.yaml",
+    control_plane_manifest: "render-mcp-staging-control-plane.yaml",
+    runtime_manifest: "render-mcp-staging.yaml",
+    database_bootstrap_modes: Object.freeze(["hold", "initialize", "steady"]),
+    initial_database_reference: false,
+    provider_managed_runtime_role: "mcp_collaboration_runtime",
+  }),
   reference_policy: Object.freeze({
     database_connection: "fromDatabase",
     service_connection: "fromService",
@@ -153,6 +173,8 @@ const REQUIRED_ACTION_FIELDS = Object.freeze([
   "provider_execution",
   "execution_enabled",
   "deploy",
+  "database_connection",
+  "database_mutation",
   "create_missing_only",
   "overwrite_existing",
   "target_branch",
@@ -174,6 +196,15 @@ const REQUIRED_ACTION_FIELDS = Object.freeze([
 ]);
 
 const REQUIRED_ACTION_FIELD_SET = new Set(REQUIRED_ACTION_FIELDS);
+const REQUIRED_TRANSPORT_FIELDS = Object.freeze([
+  "agent_id",
+  "client_type",
+  "session_id",
+  "owner_context",
+  "request_bound_owner_confirmation",
+  "authenticated_key_type",
+]);
+const REQUIRED_TRANSPORT_FIELD_SET = new Set(REQUIRED_TRANSPORT_FIELDS);
 const RESERVED_NAMES = Object.freeze([
   "skinharmony-mcp-staging-db",
   "skinharmony-universal-core-staging",
@@ -242,9 +273,23 @@ function isDeployLikeAttempt(body) {
 }
 
 function hasExactActionFields(body) {
-  return body && typeof body === "object" && !Array.isArray(body) &&
-    Object.keys(body).length === REQUIRED_ACTION_FIELDS.length &&
-    Object.keys(body).every((key) => REQUIRED_ACTION_FIELD_SET.has(key));
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const keys = Object.keys(body);
+  return keys.length === REQUIRED_ACTION_FIELDS.length + REQUIRED_TRANSPORT_FIELDS.length &&
+    REQUIRED_ACTION_FIELDS.every((key) => Object.hasOwn(body, key)) &&
+    REQUIRED_TRANSPORT_FIELDS.every((key) => Object.hasOwn(body, key)) &&
+    keys.every((key) =>
+      REQUIRED_ACTION_FIELD_SET.has(key) || REQUIRED_TRANSPORT_FIELD_SET.has(key));
+}
+
+function hasValidTransportContext(body) {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(String(body.agent_id || "")) &&
+    ["chatgpt", "codex", "api_agent", "other"].includes(String(body.client_type || "")) &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(String(body.session_id || "")) &&
+    body.owner_context && typeof body.owner_context === "object" &&
+    !Array.isArray(body.owner_context) &&
+    body.request_bound_owner_confirmation === true &&
+    body.authenticated_key_type === "connector";
 }
 
 function hasValidMemoryContext(value) {
@@ -326,6 +371,7 @@ export function evaluateSkinHarmonyMcpStagingTopologyAction(context = {}) {
     body.domain_action_id === SKINHARMONY_MCP_STAGING_TOPOLOGY_ACTION_ID;
   if (!claimed) return blocked("reserved_mcp_staging_action_requires_dedicated_gate", false);
   if (!hasExactActionFields(body)) return blocked("mcp_staging_action_shape_mismatch");
+  if (!hasValidTransportContext(body)) return blocked("mcp_staging_transport_context_invalid");
   if (!hasValidCostConfirmation(body)) return blocked("mcp_staging_cost_confirmation_required");
 
   const phaseControls = PHASE_CONTROLS[body.phase];

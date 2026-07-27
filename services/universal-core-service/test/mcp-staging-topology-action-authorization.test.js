@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { createUniversalCoreService } from "../src/app.js";
 import { buildActionAuthorization } from "../src/actionAuthorization.js";
 import { evaluateDomainActionAuthorization } from "../src/domainActionAuthorization.js";
 import {
@@ -9,6 +14,7 @@ import {
   skinHarmonyMcpStagingPhaseControls,
   skinHarmonyMcpStagingTopology,
 } from "../src/domainAdapters/skinharmonyMcpStagingTopologyAction.js";
+import { SCOPES } from "../src/scope.js";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
@@ -41,6 +47,16 @@ function topologyAction(overrides = {}) {
     owner_confirmed: true,
     owner_context_verified: true,
     owner_context_approval_bound: false,
+    agent_id: "codex_mcp_staging_release",
+    client_type: "codex",
+    session_id: "mcp_staging_release_20260727",
+    owner_context: {
+      schema_version: "core_owner_context_v1",
+      tenant_id: "codexai",
+      assertion: `ocs_${"1".repeat(64)}`,
+    },
+    request_bound_owner_confirmation: true,
+    authenticated_key_type: "connector",
     memory_context: {
       schema_version: "tenant_memory_context_v1",
       tenant_id: "codexai",
@@ -85,6 +101,84 @@ function topologyAction(overrides = {}) {
     body.confirmation_spec_digest = digest;
   }
   return body;
+}
+
+function stableCanonical(value) {
+  if (Array.isArray(value)) return value.map(stableCanonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    if (value[key] !== undefined) result[key] = stableCanonical(value[key]);
+    return result;
+  }, {});
+}
+
+function signedActionOwnerContext(key, tenantId, body) {
+  const { owner_context: _ownerContext, ...payload } = body;
+  const binding = `core_action_evaluator\u0000${JSON.stringify(stableCanonical(payload))}`;
+  const context = {
+    assertion_version: "owner_context_assertion_v1",
+    audience: "nira_core_bridge",
+    tenant_id: tenantId,
+    access_mode: "god_mode",
+    role: "owner_root",
+    delegated_actor: "integration_test",
+    owner_verified: true,
+    issued_at: new Date().toISOString(),
+    binding_version: "owner_request_binding_v1",
+    binding_hash: crypto.createHash("sha256").update(binding).digest("hex"),
+  };
+  const canonical = JSON.stringify({
+    version: context.assertion_version,
+    audience: context.audience,
+    tenant_id: context.tenant_id,
+    access_mode: context.access_mode,
+    role: context.role,
+    delegated_actor: context.delegated_actor,
+    owner_verified: context.owner_verified,
+    issued_at: context.issued_at,
+    binding_version: context.binding_version,
+    binding_hash: context.binding_hash,
+  });
+  return {
+    ...context,
+    assertion: `ocs_${crypto.createHmac("sha256", key)
+      .update(`owner-context\u0000${canonical}`)
+      .digest("hex")}`,
+  };
+}
+
+function topologyHttpEnvelope() {
+  const body = topologyAction();
+  for (const serverDerived of [
+    "authenticated_tenant_id",
+    "tenant_id",
+    "owner_context_verified",
+    "owner_context_approval_bound",
+    "owner_context",
+    "request_bound_owner_confirmation",
+    "authenticated_key_type",
+  ]) {
+    delete body[serverDerived];
+  }
+  return body;
+}
+
+async function listen(app) {
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { server, base: `http://127.0.0.1:${server.address().port}` };
+}
+
+async function request(base, method, pathname, body, key) {
+  const response = await fetch(`${base}${pathname}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { status: response.status, json: await response.json() };
 }
 
 test("authorizes only the exact server-confirmed MCP staging topology spec", () => {
@@ -206,7 +300,12 @@ test("hard-blocks aliases, extra fields, production, main, Auth0 and topology ex
     { rollback_ready: false },
     { audit_ready: false },
     { readback_required: false },
+    { database_connection: true },
+    { database_mutation: true },
     { owner_context_approval_bound: true },
+    { request_bound_owner_confirmation: false },
+    { authenticated_key_type: "automation" },
+    { owner_context: null },
     { topology: aliasTopology },
     { topology: extraServiceTopology },
     { topology: extraTopologyField },
@@ -264,4 +363,82 @@ test("rejects digest substitution and decision-level hard blocks", () => {
   );
   assert.equal(decisionBlocked.allowed, false);
   assert.equal(decisionBlocked.state, "blocked");
+});
+
+test("HTTP action evaluator authorizes only a connector-bound MCP staging topology proof", async () => {
+  const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
+  process.env.CORE_SERVICE_ADMIN_KEY = "mcp-staging-topology-http-admin";
+  const service = createUniversalCoreService({
+    storageRoot: path.join(
+      os.tmpdir(),
+      `mcp-staging-topology-http-${Date.now()}-${Math.random()}`,
+    ),
+  });
+  const { server, base } = await listen(service.app);
+
+  try {
+    const connector = await request(base, "POST", "/v1/keys/generate", {
+      tenant_id: "codexai",
+      key_type: "connector",
+      label: "MCP staging topology HTTP integration",
+      allowed_scopes: [SCOPES.READ_DECISION, SCOPES.OWNER_ASSERTION],
+    }, "mcp-staging-topology-http-admin");
+    assert.equal(connector.status, 201);
+
+    const envelope = topologyHttpEnvelope();
+    const ownerContext = signedActionOwnerContext(
+      connector.json.key,
+      "codexai",
+      envelope,
+    );
+    const authorized = await request(base, "POST", "/v1/action-evaluator", {
+      ...envelope,
+      owner_context: ownerContext,
+    }, connector.json.key);
+    assert.equal(authorized.status, 200);
+    assert.equal(authorized.json.tenant_id, "codexai");
+    assert.equal(authorized.json.authorization.allowed, true);
+    assert.equal(
+      authorized.json.authorization.scope,
+      "reversible_owner_confirmed_mcp_staging_topology",
+    );
+    assert.equal(
+      authorized.json.authorization.domain_action_id,
+      "skinharmony_mcp_staging_topology_v1",
+    );
+    assert.equal(authorized.json.authorization.spec_digest, envelope.spec_digest);
+    assert.equal(authorized.json.authorization.workflow_phase, envelope.phase);
+
+    const replay = await request(base, "POST", "/v1/action-evaluator", {
+      ...envelope,
+      confirmation_reference: "different-safe-confirmation-reference",
+      owner_context: ownerContext,
+    }, connector.json.key);
+    assert.equal(replay.status, 200);
+    assert.equal(replay.json.authorization.allowed, false);
+    assert.equal(replay.json.authorization.state, "blocked");
+    assert.equal(replay.json.authorization.mediation, "hard_block");
+    assert.equal(replay.json.guardrail.execution_allowed, false);
+
+    const forgedEnvelope = topologyHttpEnvelope();
+    const forged = await request(base, "POST", "/v1/action-evaluator", {
+      ...forgedEnvelope,
+      request_bound_owner_confirmation: true,
+      authenticated_key_type: "connector",
+      owner_context: signedActionOwnerContext(
+        "not-the-authenticated-connector-key",
+        "codexai",
+        forgedEnvelope,
+      ),
+    }, connector.json.key);
+    assert.equal(forged.status, 200);
+    assert.equal(forged.json.authorization.allowed, false);
+    assert.equal(forged.json.authorization.state, "blocked");
+    assert.equal(forged.json.authorization.mediation, "hard_block");
+    assert.equal(forged.json.guardrail.execution_allowed, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
+    else process.env.CORE_SERVICE_ADMIN_KEY = previousAdmin;
+  }
 });

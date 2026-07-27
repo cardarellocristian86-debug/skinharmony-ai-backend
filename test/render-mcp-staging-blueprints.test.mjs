@@ -29,7 +29,7 @@ function env(serviceValue, key) {
   return serviceValue.envVars.find((entry) => entry.key === key);
 }
 
-test("the two Blueprint documents satisfy the closed static staging policy", () => {
+test("the three Blueprint documents satisfy the closed static staging policy", () => {
   const report = validateMcpStagingBlueprints(documents());
   assert.equal(report.static_policy_ok, true);
   assert.equal(report.deploy_ready, false);
@@ -45,9 +45,14 @@ test("the two Blueprint documents satisfy the closed static staging policy", () 
   assert.equal(report.secrets_exposed, false);
 });
 
-test("declares only the exact bootstrap and final service sets", () => {
+test("declares only the exact bootstrap, control and final service sets", () => {
   const value = documents();
   assert.deepEqual(services(value.bootstrap).map(({ name }) => name).sort(), [
+    "skinharmony-core-staging-issuer",
+    "skinharmony-mcp-staging-db-bootstrap",
+    "skinharmony-nyra-staging-issuer",
+  ]);
+  assert.deepEqual(services(value.control).map(({ name }) => name).sort(), [
     "skinharmony-core-staging-issuer",
     "skinharmony-mcp-staging-db-bootstrap",
     "skinharmony-nyra-staging-issuer",
@@ -104,6 +109,14 @@ test("matches the topology reserved by the Universal Core domain gate", () => {
   assert.equal(reserved.database.required_status, "available");
   assert.equal(reserved.environment, "staging");
   assert.equal(reserved.region, "Oregon");
+  assert.deepEqual(reserved.rollout_contract, {
+    dependency_manifest: "render-mcp-staging-bootstrap.yaml",
+    control_plane_manifest: "render-mcp-staging-control-plane.yaml",
+    runtime_manifest: "render-mcp-staging.yaml",
+    database_bootstrap_modes: ["hold", "initialize", "steady"],
+    initial_database_reference: false,
+    provider_managed_runtime_role: "mcp_collaboration_runtime",
+  });
 });
 
 test("references the existing PostgreSQL only and never declares or aliases DATABASE_URL", () => {
@@ -231,9 +244,18 @@ test("discovers issuer trust dynamically and originates Universal Core shared va
 
 test("pins phase transitions without hardcoding the provider build commit", () => {
   const value = documents();
-  const bootstrapControl = service(value.bootstrap, "skinharmony-mcp-staging-db-bootstrap");
+  const bootstrapHold = service(value.bootstrap, "skinharmony-mcp-staging-db-bootstrap");
+  const controlInitialize = service(value.control, "skinharmony-mcp-staging-db-bootstrap");
   const finalControl = service(value.final, "skinharmony-mcp-staging-db-bootstrap");
-  assert.equal(env(bootstrapControl, "MCP_STAGING_DB_BOOTSTRAP_MODE").value, "initialize");
+  assert.equal(env(bootstrapHold, "MCP_STAGING_DB_BOOTSTRAP_MODE").value, "hold");
+  assert.equal(
+    bootstrapHold.envVars.some((entry) => Boolean(entry.fromDatabase)),
+    false,
+  );
+  assert.equal(
+    env(controlInitialize, "MCP_STAGING_DB_BOOTSTRAP_MODE").value,
+    "initialize",
+  );
   assert.equal(env(finalControl, "MCP_STAGING_DB_BOOTSTRAP_MODE").value, "steady");
   for (const document of Object.values(value)) {
     for (const item of services(document)) {

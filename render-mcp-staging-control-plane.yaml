@@ -22,7 +22,25 @@
         { "key": "PORT", "value": "10001" },
         { "key": "MCP_STAGING_BOOTSTRAP_ENVIRONMENT", "value": "staging" },
         { "key": "MCP_STAGING_CONTROL_PLANE_PROFILE", "value": "collaboration" },
-        { "key": "MCP_STAGING_DB_BOOTSTRAP_MODE", "value": "hold" },
+        { "key": "MCP_STAGING_DB_BOOTSTRAP_MODE", "value": "initialize" },
+        {
+          "key": "PG_ADMIN_DATABASE_URL",
+          "fromDatabase": {
+            "name": "skinharmony-mcp-staging-db",
+            "property": "connectionString"
+          }
+        },
+        {
+          "key": "PG_EXPECTED_DATABASE_NAME",
+          "fromDatabase": {
+            "name": "skinharmony-mcp-staging-db",
+            "property": "database"
+          }
+        },
+        { "key": "MCP_STAGING_GATE_CONTROL_PASSWORD", "generateValue": true },
+        { "key": "MCP_STAGING_CORE_NONCE_API_TOKEN", "generateValue": true },
+        { "key": "MCP_STAGING_NYRA_NONCE_API_TOKEN", "generateValue": true },
+        { "key": "MCP_STAGING_RECEIPT_CONSUMER_API_TOKEN", "generateValue": true },
         {
           "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
           "fromService": {

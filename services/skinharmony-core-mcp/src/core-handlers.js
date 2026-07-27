@@ -1197,6 +1197,10 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: _untrustedTenantId,
         authenticated_tenant_id: _untrustedAuthenticatedTenantId,
         owner_context: _untrustedOwnerContext,
+        owner_context_verified: _untrustedOwnerContextVerified,
+        owner_context_approval_bound: _untrustedOwnerContextApprovalBound,
+        request_bound_owner_confirmation: _untrustedRequestBoundOwnerConfirmation,
+        authenticated_key_type: _untrustedAuthenticatedKeyType,
         memory_context: _untrustedMemoryContext,
         ...safeArgs
       } = args;

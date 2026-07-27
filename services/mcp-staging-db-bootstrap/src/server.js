@@ -28,6 +28,16 @@ const SENSITIVE_ENV_KEYS = Object.freeze([
 const API_TOKEN_KEYS = Object.freeze(["coreNonce", "nyraNonce", "receiptConsumer"]);
 const REQUEST_BODY_LIMIT = 65_536;
 const PRIVATE_PORT = 10_001;
+const HOLD_MODE = "hold";
+const HELD_HEALTH = Object.freeze({
+  ok: true,
+  status: "held",
+  environment: "staging",
+  held: true,
+  database_connected: false,
+  database_mutated: false,
+  secrets_exposed: false,
+});
 const BASE_HEALTH_KEYS = Object.freeze([
   "ok",
   "status",
@@ -216,7 +226,59 @@ export function createHealthServer(health, { controlPlane = null, apiTokens = nu
   return server;
 }
 
+export function createHeldHealthServer() {
+  const body = JSON.stringify(HELD_HEALTH);
+  const server = http.createServer((request, response) => {
+    if (request.method === "GET" && request.url === "/healthz") {
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(body);
+      return;
+    }
+    if (request.method === "POST") {
+      send(response, 405, { ok: false, status: "held_operation_denied" });
+      return;
+    }
+    send(response, 404, { ok: false, status: "not_found" });
+  });
+  server.requestTimeout = 5_000;
+  server.headersTimeout = 6_000;
+  server.keepAliveTimeout = 2_000;
+  return server;
+}
+
+function readHoldSetting(env, key) {
+  try {
+    return env[key];
+  } catch {
+    throw new Error("bootstrap_hold_environment_invalid");
+  }
+}
+
+export function startHeldBootstrap(env = process.env, { listen = true } = {}) {
+  try {
+    loadMcpStagingDependencyBuildIdentity(env);
+    if (readHoldSetting(env, "MCP_STAGING_DB_BOOTSTRAP_MODE") !== HOLD_MODE ||
+        readHoldSetting(env, "MCP_STAGING_BOOTSTRAP_ENVIRONMENT") !== "staging") {
+      throw new Error("bootstrap_hold_environment_invalid");
+    }
+    const profile = readHoldSetting(env, "MCP_STAGING_CONTROL_PLANE_PROFILE") || "render_executor";
+    if (!["render_executor", "collaboration"].includes(profile)) {
+      throw new Error("control_plane_profile_invalid");
+    }
+  } finally {
+    scrubBootstrapEnvironment(env);
+  }
+  const port = loadPrivatePort(env);
+  const server = createHeldHealthServer();
+  if (listen) server.listen(port, "0.0.0.0");
+  return server;
+}
+
 async function main() {
+  if (process.env.MCP_STAGING_DB_BOOTSTRAP_MODE === HOLD_MODE) {
+    startHeldBootstrap(process.env);
+    return;
+  }
   const buildIdentity = loadMcpStagingDependencyBuildIdentity(process.env);
   const profile = process.env.MCP_STAGING_CONTROL_PLANE_PROFILE || "render_executor";
   if (!["render_executor", "collaboration"].includes(profile)) {
