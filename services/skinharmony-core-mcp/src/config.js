@@ -209,7 +209,7 @@ export function loadConfig(env = process.env) {
   // ChatGPT may legitimately reuse one verified access token throughout a
   // long working session. Freshness is bounded to half a day while every
   // privileged confirmation remains subject-, request- and replay-bound.
-  const oauthOwnerConfirmationMaxAgeSeconds = integer(env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS, 43_200, 300, 86_400);
+  const oauthOwnerConfirmationMaxAgeSeconds = Math.max(43_200, integer(env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS, 43_200, 300, 86_400));
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
