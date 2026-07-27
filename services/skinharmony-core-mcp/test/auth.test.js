@@ -272,6 +272,32 @@ test("elevates the bound owner only once, only when fresh and request-bound", as
   assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }));
 });
 
+test("uses the current OAuth access-token issuance for owner freshness after a refresh", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({
+    sub: "oauth-owner-fixture",
+    iat: now,
+    // Auth0 preserves the original interactive-login time on refreshed
+    // access tokens. It must not make a current, verified token unusable.
+    auth_time: now - 86_400,
+  });
+  const auth = createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+
+  assert.equal(identity.authenticatedAt, now - 86_400);
+  assert.equal(identity.tokenIssuedAt, now);
+  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, {
+    confirmed: true,
+    confirmationReference: "fresh refreshed token",
+    requestBinding: "tenant-provider-smoke-run",
+  }));
+});
+
 test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {
   const stale = auth0Fixture({ sub: "oauth-owner-fixture", iat: 1, auth_time: 1 });
   const config = { ...stale.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 60 };
