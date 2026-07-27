@@ -291,10 +291,11 @@ export function createApp(config, options = {}) {
     }
   }));
 
-  const protectedResourceMetadata = (req, res) => res.json({
-    resource: req.path.endsWith("/mcp-v015")
-      ? `${config.publicUrl}/mcp-v015`
-      : config.resource,
+  const protectedResourceMetadata = (_req, res) => res.json({
+    // Keep one canonical OAuth resource/audience across versioned transport
+    // paths. The versioned path exists only to give MCP clients a fresh
+    // connector identity; Auth0 tokens are still issued for config.resource.
+    resource: config.resource,
     authorization_servers: config.auth0Issuer ? [config.auth0Issuer] : [],
     scopes_supported: config.supportedScopes,
     bearer_methods_supported: ["header"],
