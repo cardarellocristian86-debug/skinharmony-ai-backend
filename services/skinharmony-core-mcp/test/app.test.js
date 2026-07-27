@@ -53,6 +53,9 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
   const pathResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
   assert.deepEqual(pathResource, resource);
+  const migrationResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp-v015`).then((r) => r.json());
+  assert.equal(migrationResource.resource, `${config.publicUrl}/mcp-v015`);
+  assert.deepEqual(migrationResource.authorization_servers, [config.auth0Issuer]);
   const oauth = await fetch(`${base}/.well-known/oauth-authorization-server`).then((r) => r.json());
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
 }));
@@ -70,6 +73,9 @@ test("returns RFC 9728 challenge when bearer is absent", async () => serve(async
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(response.status, 401);
   assert.match(response.headers.get("www-authenticate"), /oauth-protected-resource/);
+  const migrationResponse = await fetch(`${base}/mcp-v015`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+  assert.equal(migrationResponse.status, 401);
+  assert.match(migrationResponse.headers.get("www-authenticate"), /oauth-protected-resource\/mcp-v015/);
 }));
 
 test("keeps Codex bearer compatibility and exposes MCP security schemes", async () => serve(async (base) => {
@@ -168,19 +174,23 @@ test("production compact mode exposes only the stable connector surface", async 
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try {
-    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer codex-key",
-        "content-type": "application/json",
-        "mcp-session-id": "compact-surface-test",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 200, method: "tools/list" }),
-    });
-    const body = await response.json();
-    assert.equal(response.status, 200);
-    assert.deepEqual(body.result.tools.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-    assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
+    for (const [index, path] of ["/mcp", "/mcp-v015"].entries()) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `compact-surface-test-${index}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 200 + index, method: "tools/list" }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200);
+      assert.deepEqual(body.result.tools.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
+      assert(body.result.tools.some((tool) => tool.name === "tenant_provider_openai_multi_agent_smoke_run"));
+      assert(body.result.tools.some((tool) => tool.name === "tenant_provider_openai_multi_agent_run_read"));
+      assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

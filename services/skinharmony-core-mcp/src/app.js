@@ -197,8 +197,14 @@ function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
 }
 
-function challenge(config, error = "invalid_token", scope = "", description = "Authentication is required to use this MCP resource") {
-  const metadata = `${config.publicUrl}/.well-known/oauth-protected-resource`;
+function challenge(
+  config,
+  error = "invalid_token",
+  scope = "",
+  description = "Authentication is required to use this MCP resource",
+  metadataPath = "/.well-known/oauth-protected-resource",
+) {
+  const metadata = `${config.publicUrl}${metadataPath}`;
   const safeDescription = String(description).replace(/["\\\r\n]/g, " ").slice(0, 160);
   return `Bearer resource_metadata="${metadata}", error="${error}", error_description="${safeDescription}"${scope ? `, scope="${scope}"` : ""}`;
 }
@@ -285,8 +291,10 @@ export function createApp(config, options = {}) {
     }
   }));
 
-  const protectedResourceMetadata = (_req, res) => res.json({
-    resource: config.resource,
+  const protectedResourceMetadata = (req, res) => res.json({
+    resource: req.path.endsWith("/mcp-v015")
+      ? `${config.publicUrl}/mcp-v015`
+      : config.resource,
     authorization_servers: config.auth0Issuer ? [config.auth0Issuer] : [],
     scopes_supported: config.supportedScopes,
     bearer_methods_supported: ["header"],
@@ -294,6 +302,7 @@ export function createApp(config, options = {}) {
   });
   app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
   app.get("/.well-known/oauth-protected-resource/mcp", protectedResourceMetadata);
+  app.get("/.well-known/oauth-protected-resource/mcp-v015", protectedResourceMetadata);
   app.get("/.well-known/oauth-authorization-server", (_req, res) => {
     if (!config.auth0Issuer) return res.status(404).json({ error: "oauth_not_configured" });
     return res.json({
@@ -308,12 +317,21 @@ export function createApp(config, options = {}) {
     });
   });
 
-  app.post("/mcp", async (req, res) => {
+  app.post(["/mcp", "/mcp-v015"], async (req, res) => {
+    const resourceMetadataPath = req.path === "/mcp-v015"
+      ? "/.well-known/oauth-protected-resource/mcp-v015"
+      : "/.well-known/oauth-protected-resource";
     let identity;
     try {
       identity = await authenticate(req.headers.authorization);
     } catch {
-      res.set("WWW-Authenticate", challenge(config));
+      res.set("WWW-Authenticate", challenge(
+        config,
+        "invalid_token",
+        "",
+        "Authentication is required to use this MCP resource",
+        resourceMetadataPath,
+      ));
       return res.status(401).json({ jsonrpc: "2.0", id: req.body?.id ?? null, error: { code: -32001, message: "Unauthorized" } });
     }
     const { id = null, method, params = {} } = req.body || {};
@@ -515,7 +533,13 @@ export function createApp(config, options = {}) {
         } catch {}
       }
       if (error.message === "insufficient_scope") {
-        res.set("WWW-Authenticate", challenge(config, "insufficient_scope", error.missing.join(" ")));
+        res.set("WWW-Authenticate", challenge(
+          config,
+          "insufficient_scope",
+          error.missing.join(" "),
+          "Authentication is required to use this MCP resource",
+          resourceMetadataPath,
+        ));
         return res.status(403).json({ jsonrpc: "2.0", id, error: { code: -32003, message: "Insufficient scope" } });
       }
       if (error.message === "memory_checksum_mismatch") {
