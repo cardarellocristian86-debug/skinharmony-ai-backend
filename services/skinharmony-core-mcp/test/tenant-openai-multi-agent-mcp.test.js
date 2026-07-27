@@ -44,7 +44,10 @@ test("bounded OpenAI multi-agent MCP tool exposes only fixed safe input and owne
   assert(start);
   assert(read);
   assert(cancel);
-  assert.deepEqual(start.scopes, ["core:govern"]);
+  // The MCP host must be able to deliver this native owner-gated request with
+  // the already-issued read scope. Authorization to spend remains enforced by
+  // the OAuth owner binding, fresh confirmation and signed Core gate.
+  assert.deepEqual(start.scopes, ["core:read"]);
   assert.equal(start.annotations.readOnlyHint, false);
   assert.equal(start._meta["skinharmony/confirmation_authority"], "tenant_provider_owner");
   assert.deepEqual(start.inputSchema.required, ["task"]);
@@ -57,7 +60,7 @@ test("bounded OpenAI multi-agent MCP tool exposes only fixed safe input and owne
   }
   assert.deepEqual(read.scopes, ["core:read"]);
   assert.equal(read.annotations.readOnlyHint, true);
-  assert.deepEqual(cancel.scopes, ["core:govern"]);
+  assert.deepEqual(cancel.scopes, ["core:read"]);
   assert.equal(cancel._meta["skinharmony/confirmation_authority"], "tenant_provider_owner");
 });
 
