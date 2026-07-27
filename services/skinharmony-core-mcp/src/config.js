@@ -206,7 +206,10 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
-  const oauthOwnerConfirmationMaxAgeSeconds = integer(env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS, 300, 30, 900);
+  // ChatGPT may legitimately reuse one verified access token throughout a
+  // long working session. Freshness is bounded to half a day while every
+  // privileged confirmation remains subject-, request- and replay-bound.
+  const oauthOwnerConfirmationMaxAgeSeconds = integer(env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS, 43_200, 300, 86_400);
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
