@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
+import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -39,7 +40,7 @@ test("publishes only a verifiable build identity", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
-  assert.equal(health.version, "0.14.0-core-capability-sync");
+  assert.equal(health.version, "0.15.0-stable-dynamic-capabilities");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -157,6 +158,33 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
     assert(tool.outputSchema, `missing output schema for ${name}`);
   }
 }));
+
+test("production compact mode exposes only the stable connector surface", async () => {
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [
+    tool.name,
+    async () => ({ content: [{ type: "text", text: "ok" }] }),
+  ]));
+  const app = createApp(config, { handlers, toolSurface: "compact" });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "compact-surface-test",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 200, method: "tools/list" }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(body.result.tools.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
+    assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test("publishes the governed host-browsing research sequence", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {
