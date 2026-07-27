@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { extensionFacetContracts } from "./ai-learning-factory-branch-contracts.js";
 
 export const ORCHESTRATION_CAPABILITY_CATALOG_VERSION = "orchestration_capability_catalog_v1";
 export const ORCHESTRATION_CAPABILITY_PAGE_LIMIT = 100;
@@ -45,6 +46,15 @@ const AGENT_CAPABILITY_DEFINITIONS = [
   ["budget_accounting", "governance", "Account for agent, model, tool, token, time and cost budgets."],
   ["trace_observability", "observability", "Emit structured spans for agent, handoff, tool and verifier events."],
   ["agent_teardown", "lifecycle", "Revoke leases and destroy ephemeral state after completion."],
+  ["skill_candidate_extraction", "learning", "Extract a bounded skill candidate from verified outcomes."],
+  ["skill_contract_compilation", "learning", "Compile skill input, output, scope, limits and evidence contracts."],
+  ["skill_sandbox_replay", "learning", "Replay a candidate skill in a sandbox against versioned cases."],
+  ["skill_certification", "learning", "Produce a non-activating certification record for a verified skill."],
+  ["skill_versioning", "learning", "Version a skill contract, dependencies, digest and compatibility."],
+  ["skill_reuse_telemetry", "learning", "Measure redacted skill reuse, quality and cost telemetry."],
+  ["skill_failure_detection", "learning", "Detect regressions, drift and failures attributable to a skill."],
+  ["skill_deprecation", "learning", "Deprecate unsafe skill versions while preserving lineage."],
+  ["skill_rollback", "learning", "Restore the previous verified skill contract."],
 ];
 
 const AI_CAPABILITY_DEFINITIONS = [
@@ -86,6 +96,13 @@ const AI_CAPABILITY_DEFINITIONS = [
   ["provider_output_normalization", "interoperability", "Normalize provider-specific responses into a common contract."],
   ["model_version_rollback", "lifecycle", "Restore a verified model-route version after regression."],
   ["learning_signal_proposal", "learning", "Propose routing improvements from verified outcomes only."],
+  ["universal_abstention_policy", "governance", "Apply a consistent abstention policy across providers and task risk."],
+  ["confidence_to_autonomy_mapping", "governance", "Map calibrated confidence to advisory, review or block states."],
+  ["task_difficulty_classifier", "routing", "Classify task difficulty for bounded budget and verification selection."],
+  ["quality_cost_router", "routing", "Optimize routes against verified quality per unit cost."],
+  ["model_snapshot_registry", "registry", "Bind routes and evaluations to immutable model snapshots."],
+  ["prompt_budget_enforcement", "optimization", "Enforce prompt and context budgets before provider invocation."],
+  ["tool_surface_minimization", "tools", "Expose only the minimum tool surface required by a task."],
 ];
 
 const AGENT_VIRTUAL_DIMENSIONS = Object.freeze({
@@ -109,15 +126,31 @@ const AI_VIRTUAL_DIMENSIONS = Object.freeze({
 });
 
 function freezeCapabilities(branchId, definitions) {
-  return Object.freeze(definitions.map(([id, category, description]) => Object.freeze({
-    capability_id: `${branchId}.${id}`,
-    action_id: id,
-    category,
-    description,
-    authority: "advisory",
-    execution_effect: "none",
-    contract_version: 1,
-  })));
+  const extensionContracts = extensionFacetContracts(branchId);
+  return Object.freeze(definitions.map(([id, category, description]) => {
+    const extension = extensionContracts[id] || null;
+    return Object.freeze({
+      capability_id: `${branchId}.${id}`,
+      action_id: id,
+      category,
+      description,
+      authority: "advisory",
+      execution_effect: "none",
+      contract_version: 1,
+      ...(extension ? {
+        input: extension.input,
+        output: extension.output,
+        activation: extension.activation,
+        non_activation: extension.non_activation,
+        evidence: extension.evidence,
+        metrics: extension.metrics,
+        fallback: extension.fallback,
+        abstention: extension.abstention,
+        audit: extension.audit,
+        rollback: extension.rollback,
+      } : {}),
+    });
+  }));
 }
 
 function fingerprint(value) {

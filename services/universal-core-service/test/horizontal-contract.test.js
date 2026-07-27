@@ -170,7 +170,7 @@ test("every horizontal Nyra Core binding resolves to an agnostic registered work
   for (const item of catalog.branches) {
     for (const binding of item.core_branch_bindings) {
       assert(registry[binding], `missing Core binding ${binding}`);
-      assert(["horizontal_work", "identity_delegation"].includes(registry[binding].domain));
+      assert(["horizontal_work", "identity_delegation", "learning_knowledge", "ai_learning_governance"].includes(registry[binding].domain));
       if (registry[binding].capability_catalog) {
         assert.equal(registry[binding].capability_catalog.expansion_mode, "lazy_deterministic_paged");
         assert.equal(registry[binding].capability_catalog.runtime_policy, "bounded_materialization_only_with_explicit_plan_depth");

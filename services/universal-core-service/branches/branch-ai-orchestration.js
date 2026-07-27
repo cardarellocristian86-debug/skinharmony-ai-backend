@@ -2,6 +2,10 @@ import {
   orchestrationCapabilityIds,
   orchestrationCatalogDescriptor,
 } from "./orchestration-capability-catalog.js";
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
 
 export const branchAiOrchestration = {
   id: "ai_orchestration",
@@ -10,9 +14,11 @@ export const branchAiOrchestration = {
   label: "AI Orchestration",
   domain: "horizontal_work",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.horizontal,
   description: "Orchestrazione vendor-neutral di provider e modelli AI per routing, composizione, evidenza, verifica, resilienza, sicurezza ed economia.",
   subbranches: orchestrationCapabilityIds("ai_orchestration"),
   capability_catalog: orchestrationCatalogDescriptor("ai_orchestration"),
+  capability_facets: extensionFacetDescriptor("ai_orchestration"),
   rules: [
     "Core seleziona provider, modello, composizione, budget e fallback; un modello non puo scegliere la propria autorita.",
     "Il routing deve partire da candidati policy-validi e ottimizzare qualita verificata, rischio, latenza, costo e privacy.",

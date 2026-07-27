@@ -64,6 +64,15 @@ import { branchPlanningPriorityIntelligence } from "./branch-planning-priority-i
 import { branchExecutionCoordinationIntelligence } from "./branch-execution-coordination-intelligence.js";
 import { branchQualityVerificationIntelligence } from "./branch-quality-verification-intelligence.js";
 import { branchAdaptiveLearningIntelligence } from "./branch-adaptive-learning-intelligence.js";
+import { branchAiEvaluationIntelligence } from "./branch-ai-evaluation-intelligence.js";
+import { branchLearningDataGovernance } from "./branch-learning-data-governance.js";
+import { branchAiRuntimePerformanceIntelligence } from "./branch-ai-runtime-performance-intelligence.js";
+import { branchExperimentCausalLearning } from "./branch-experiment-causal-learning.js";
+import { branchModelAdaptationLab } from "./branch-model-adaptation-lab.js";
+import { branchAiLearningGovernanceGuard } from "./branch-ai-learning-governance-guard.js";
+import { branchAiDataIntegrityGuard } from "./branch-ai-data-integrity-guard.js";
+import { branchAgenticEfficiencyIntelligence } from "./branch-agentic-efficiency-intelligence.js";
+import { branchAgenticBudgetGovernanceGuard } from "./branch-agentic-budget-governance-guard.js";
 import { branchLexicalSemanticIntelligence } from "./branch-lexical-semantic-intelligence.js";
 import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identity-delegation-guard.js";
 import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
@@ -137,6 +146,15 @@ const BRANCHES = [
   branchExecutionCoordinationIntelligence,
   branchQualityVerificationIntelligence,
   branchAdaptiveLearningIntelligence,
+  branchAiEvaluationIntelligence,
+  branchLearningDataGovernance,
+  branchAiRuntimePerformanceIntelligence,
+  branchExperimentCausalLearning,
+  branchModelAdaptationLab,
+  branchAiLearningGovernanceGuard,
+  branchAiDataIntegrityGuard,
+  branchAgenticEfficiencyIntelligence,
+  branchAgenticBudgetGovernanceGuard,
   branchLexicalSemanticIntelligence,
   branchWorkloadIdentityDelegationGuard,
   branchDecisionProvenanceIntelligence,
@@ -166,6 +184,9 @@ const CODEX_GUARD_BRANCHES = [
   "workload_identity_delegation_guard",
   "runtime_deployment_scaling_guard",
   "change_impact_orchestration",
+  "ai_learning_governance_guard",
+  "ai_data_integrity_guard",
+  "agentic_budget_governance_guard",
 ];
 
 const MARKETING_INTELLIGENCE_BRANCHES = [
@@ -228,6 +249,11 @@ export const HORIZONTAL_WORK_BRANCHES = Object.freeze([
   "execution_coordination_intelligence",
   "quality_verification_intelligence",
   "adaptive_learning_intelligence",
+  "ai_evaluation_intelligence",
+  "learning_data_governance",
+  "ai_runtime_performance_intelligence",
+  "experiment_causal_learning",
+  "agentic_efficiency_intelligence",
   "decision_provenance_intelligence",
 ]);
 
@@ -242,6 +268,15 @@ const LEARNING_CORTEX_BRANCHES = [
   "workload_identity_delegation_guard",
   "decision_provenance_intelligence",
   "runtime_deployment_scaling_guard",
+  "ai_evaluation_intelligence",
+  "learning_data_governance",
+  "ai_runtime_performance_intelligence",
+  "experiment_causal_learning",
+  "model_adaptation_lab",
+  "ai_learning_governance_guard",
+  "ai_data_integrity_guard",
+  "agentic_efficiency_intelligence",
+  "agentic_budget_governance_guard",
 ];
 
 const BEAUTY_CORTEX_BRANCHES = [
@@ -375,6 +410,21 @@ export const BRANCH_GROUPS = Object.freeze({
     description: "Memoria viva, benchmark, distillazione, feedback loop, reweighting policy e consolidamento.",
     branches: LEARNING_CORTEX_BRANCHES,
   },
+  ai_learning_factory: {
+    label: "AI Learning Factory",
+    description: "Valutazione, data governance, performance, sperimentazione, adaptation lab e guard Core senza auto-promozione o auto-esecuzione.",
+    branches: [
+      "ai_evaluation_intelligence",
+      "learning_data_governance",
+      "ai_runtime_performance_intelligence",
+      "experiment_causal_learning",
+      "model_adaptation_lab",
+      "ai_learning_governance_guard",
+      "ai_data_integrity_guard",
+      "agentic_efficiency_intelligence",
+      "agentic_budget_governance_guard",
+    ],
+  },
   beauty_cortex: {
     label: "Beauty Cortex",
     description: "Loop verticale beauty: analyzer, protocolli, narrativa commerciale, recall e valore operativo del centro.",
@@ -419,7 +469,7 @@ export const BRANCH_PACKAGES = Object.freeze({
   gold: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
   network: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
   enterprise: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
-  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "software_binary_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
+  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_systems_intelligence", "software_binary_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "model_adaptation_lab", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
   codex_guard: [...HORIZONTAL_WORK_BRANCHES, ...CODEX_GUARD_BRANCHES],
   omni_360: BRANCHES.map((branch) => branch.id),
 });
@@ -455,6 +505,18 @@ export function deterministicBranchRegistry() {
         description: branch.description,
         subbranches: branch.subbranches || [],
         ...(branch.capability_catalog ? { capability_catalog: branch.capability_catalog } : {}),
+        ...(branch.capability_facets ? { capability_facets: branch.capability_facets } : {}),
+        ...(branch.subbranch_contracts ? { subbranch_contracts: branch.subbranch_contracts } : {}),
+        ...(branch.all_capability_ids ? { all_capability_ids: branch.all_capability_ids } : {}),
+        ...(branch.core_branch_bindings ? { core_branch_bindings: branch.core_branch_bindings } : {}),
+        ...(branch.exposure_class ? {
+          exposure_class: branch.exposure_class,
+          allowed_client_types: branch.allowed_client_types,
+          allowed_audiences: branch.allowed_audiences,
+          required_entitlements: branch.required_entitlements,
+          discoverable_in_connector: branch.discoverable_in_connector,
+          semantic_select_allowed: branch.semantic_select_allowed,
+        } : {}),
         file: branch.file,
       },
     ]),

@@ -2,6 +2,10 @@ import {
   orchestrationCapabilityIds,
   orchestrationCatalogDescriptor,
 } from "./orchestration-capability-catalog.js";
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
 
 export const branchAgentOrchestration = {
   id: "agent_orchestration",
@@ -10,9 +14,11 @@ export const branchAgentOrchestration = {
   label: "Agent Orchestration",
   domain: "horizontal_work",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.horizontal,
   description: "Factory e orchestrazione governata di agenti specializzati attraverso capability atomiche, identita, deleghe, topologie, verifica e resilienza.",
   subbranches: orchestrationCapabilityIds("agent_orchestration"),
   capability_catalog: orchestrationCatalogDescriptor("agent_orchestration"),
+  capability_facets: extensionFacetDescriptor("agent_orchestration"),
   rules: [
     "Core e l'unica autorita che seleziona, materializza, delega, avvia, ferma e verifica un agente.",
     "Nyra e gli altri agenti possono proporre ruoli, topologie e capability, ma non concedere privilegi o attivare esecuzioni.",

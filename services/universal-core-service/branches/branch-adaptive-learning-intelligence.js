@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchAdaptiveLearningIntelligence = {
   id: "adaptive_learning_intelligence",
   file: "branch-adaptive-learning-intelligence.js",
@@ -5,6 +10,7 @@ export const branchAdaptiveLearningIntelligence = {
   label: "Adaptive Learning Intelligence",
   domain: "horizontal_work",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.horizontal,
   description: "Apprende da outcome e feedback nel perimetro tenant, propone lezioni e le consolida solo dopo evidenza e verifica.",
   subbranches: [
     "outcome_capture", "expected_actual_delta", "success_pattern", "failure_pattern", "feedback_weighting",
@@ -12,6 +18,7 @@ export const branchAdaptiveLearningIntelligence = {
     "benchmark_update_candidate", "policy_change_candidate", "regression_requirement", "human_review_gate",
     "verified_consolidation", "learning_handoff",
   ],
+  capability_facets: extensionFacetDescriptor("adaptive_learning_intelligence"),
   rules: [
     "La fonte di continuita e il Tenant Memory Fabric isolato per tenant, non una memoria globale condivisa.",
     "Apprendere significa catturare, confrontare, distillare, proporre, verificare e poi consolidare.",

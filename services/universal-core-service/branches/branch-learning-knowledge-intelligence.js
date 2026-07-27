@@ -1,3 +1,9 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetContracts,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchLearningKnowledgeIntelligence = {
   id: "learning_knowledge_intelligence",
   file: "branch-learning-knowledge-intelligence.js",
@@ -5,6 +11,7 @@ export const branchLearningKnowledgeIntelligence = {
   label: "Learning Knowledge Intelligence",
   domain: "learning_knowledge",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.guard,
   description: "Ramo orizzontale per memoria, retrieval, benchmark, studio, verify, distillazione e miglioramento governato.",
   subbranches: [
     "semantic_memory",
@@ -15,7 +22,17 @@ export const branchLearningKnowledgeIntelligence = {
     "evidence_quality",
     "world_research_alignment",
     "self_repair_scope",
+    "retrieval_precision_recall",
+    "chunking_strategy_evaluation",
+    "embedding_version_registry",
+    "reranking_quality",
+    "freshness_expiry",
+    "citation_coverage",
+    "knowledge_poisoning_detection",
+    "index_rebuild_policy",
   ],
+  subbranch_contracts: extensionFacetContracts("learning_knowledge_intelligence"),
+  capability_facets: extensionFacetDescriptor("learning_knowledge_intelligence"),
   rules: [
     "Memoria e apprendimento non sostituiscono prove e contratti: servono a migliorare selezione, continuita e compressione del contesto.",
     "Distillare prima di ricordare: non usare log grezzi come verita operativa senza governance.",

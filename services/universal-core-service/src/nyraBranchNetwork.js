@@ -1,3 +1,9 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  AI_LEARNING_FACTORY_BRANCHES,
+  extensionFacetDescriptor,
+} from "../branches/ai-learning-factory-branch-contracts.js";
+
 const MAX_SUBBRANCHES_PER_BRANCH = 20;
 const MAX_PARALLEL_BRANCHES = 6;
 
@@ -9,7 +15,30 @@ const branch = (id, label, triggers, subbranches, domainPacks = ["*"], options =
   subbranches: Object.freeze(subbranches.map((subbranch) => Object.freeze(subbranch))),
   work_phase: String(options.workPhase || "general"),
   core_branch_bindings: Object.freeze(Array.isArray(options.coreBranchBindings) ? options.coreBranchBindings : []),
+  production_status: String(options.productionStatus || "advisory"),
+  default_route_enabled: options.defaultRouteEnabled !== false,
+  ...(options.exposure ? options.exposure : {}),
+  ...(options.subbranchContracts ? { subbranch_contracts: options.subbranchContracts } : {}),
+  ...(options.capabilityFacets ? { capability_facets: options.capabilityFacets } : {}),
 });
+
+const learningFactoryNyraBranch = (id, triggers, {
+  workPhase = "learning",
+  coreBranchBindings = [id],
+  defaultRouteEnabled = true,
+  exposure = AI_LEARNING_EXPOSURE.horizontal,
+  domainPacks = ["*"],
+} = {}) => {
+  const blueprint = AI_LEARNING_FACTORY_BRANCHES[id];
+  return branch(id, blueprint.label, triggers, blueprint.subbranches, domainPacks, {
+    workPhase,
+    coreBranchBindings,
+    productionStatus: blueprint.production_status,
+    defaultRouteEnabled,
+    exposure,
+    subbranchContracts: blueprint.subbranch_contracts,
+  });
+};
 
 const NYRA_BRANCHES = Object.freeze([
   branch("context_intelligence", "Context Intelligence", ["contesto", "stato", "dati", "input", "mappa"], [
@@ -68,7 +97,12 @@ const NYRA_BRANCHES = Object.freeze([
     "topology_selection", "task_graph_compilation", "scheduler_selection", "handoff_contract",
     "checkpoint_strategy", "verification_assignment", "conflict_resolution", "termination_contract",
     "kill_switch", "recovery_strategy", "core_join", "verified_retirement",
-  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["agent_orchestration"] }),
+  ], ["*"], {
+    workPhase: "coordination",
+    coreBranchBindings: ["agent_orchestration"],
+    exposure: AI_LEARNING_EXPOSURE.horizontal,
+    capabilityFacets: extensionFacetDescriptor("agent_orchestration"),
+  }),
   branch("ai_orchestration", "AI Orchestration", [
     "orchestra ai", "multi-ai", "modelli ai", "provider ai", "model routing", "ensemble ai", "fallback modello",
   ], [
@@ -77,7 +111,12 @@ const NYRA_BRANCHES = Object.freeze([
     "model_cascade", "parallel_ensemble", "critic_verifier", "judge_calibration",
     "uncertainty_abstention", "quota_rate_limit", "provider_failover", "data_locality",
     "trace_provenance", "eval_drift", "distillation_candidate", "core_model_join",
-  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["ai_orchestration"] }),
+  ], ["*"], {
+    workPhase: "coordination",
+    coreBranchBindings: ["ai_orchestration"],
+    exposure: AI_LEARNING_EXPOSURE.horizontal,
+    capabilityFacets: extensionFacetDescriptor("ai_orchestration"),
+  }),
   branch("execution_planning", "Execution Planning", ["piano", "esegui", "runbook", "deploy", "render", "automat", "implementa"], [
     "goal_decomposition", "dependency_mapping", "runbook_design", "resource_estimation", "failure_mode_analysis",
     "test_strategy", "release_strategy", "rollback_plan", "human_confirmation", "evidence_plan",
@@ -95,7 +134,50 @@ const NYRA_BRANCHES = Object.freeze([
   branch("learning_memory", "Learning & Memory", ["impara", "memoria", "feedback", "correzione", "benchmark", "lezione"], [
     "episodic_recall", "semantic_recall", "feedback_interpretation", "pattern_detection", "knowledge_gap",
     "correction_proposal", "benchmark_comparison", "retention_policy", "memory_safety", "learning_summary",
-  ], ["*"], { workPhase: "learning", coreBranchBindings: ["adaptive_learning_intelligence"] }),
+  ], ["*"], {
+    workPhase: "learning",
+    coreBranchBindings: ["adaptive_learning_intelligence"],
+    exposure: AI_LEARNING_EXPOSURE.horizontal,
+    capabilityFacets: extensionFacetDescriptor("adaptive_learning_intelligence"),
+  }),
+  branch("learning_knowledge_intelligence", "Learning Knowledge Intelligence", [
+    "retrieval", "conoscenza", "knowledge", "embedding", "reranking", "citazioni", "indice",
+  ], [
+    "semantic_memory", "branch_learning", "retrieval_governance", "benchmark_and_regression",
+    "study_and_distillation", "evidence_quality", "world_research_alignment", "self_repair_scope",
+    "retrieval_precision_recall", "chunking_strategy_evaluation", "embedding_version_registry", "reranking_quality",
+    "freshness_expiry", "citation_coverage", "knowledge_poisoning_detection", "index_rebuild_policy",
+  ], ["*"], {
+    workPhase: "learning",
+    coreBranchBindings: ["learning_knowledge_intelligence"],
+    exposure: AI_LEARNING_EXPOSURE.guard,
+    capabilityFacets: extensionFacetDescriptor("learning_knowledge_intelligence"),
+  }),
+  learningFactoryNyraBranch("ai_evaluation_intelligence", [
+    "valutazione ai", "ai evaluation", "scorecard", "golden set", "regressione ai", "benchmark ai",
+  ], {
+    coreBranchBindings: ["ai_evaluation_intelligence", "ai_learning_governance_guard"],
+  }),
+  learningFactoryNyraBranch("learning_data_governance", [
+    "learning data", "dataset candidate", "dataset governance", "label provenance", "train eval", "poisoning",
+  ], {
+    coreBranchBindings: ["learning_data_governance", "ai_data_integrity_guard"],
+  }),
+  learningFactoryNyraBranch("ai_runtime_performance_intelligence", [
+    "performance ai", "ttft", "latenza ai", "costo per successo", "queue pressure", "slo ai",
+  ]),
+  learningFactoryNyraBranch("experiment_causal_learning", [
+    "esperimento ai", "causal learning", "shadow experiment", "canary", "a b test", "uplift",
+  ], {
+    coreBranchBindings: ["experiment_causal_learning", "ai_learning_governance_guard"],
+  }),
+  learningFactoryNyraBranch("model_adaptation_lab", [], {
+    workPhase: "test_lab",
+    coreBranchBindings: ["model_adaptation_lab", "ai_learning_governance_guard", "ai_data_integrity_guard"],
+    defaultRouteEnabled: false,
+    exposure: AI_LEARNING_EXPOSURE.test_only,
+    domainPacks: ["test_only"],
+  }),
   branch("adaptive_learning", "Adaptive Learning", ["apprendi", "migliora", "retrospettiva", "outcome", "errore", "lezione", "pattern", "feedback"], [
     "outcome_capture", "expected_actual_delta", "success_pattern", "failure_pattern", "feedback_weighting",
     "noise_filtering", "lesson_distillation", "procedural_memory_candidate", "semantic_memory_candidate", "knowledge_gap_update",
@@ -137,6 +219,19 @@ function availableForPack(item, packId) {
   return item.domain_packs.includes("*") || item.domain_packs.includes(packId);
 }
 
+const REQUIRED_NODE_CONTRACT_FIELDS = Object.freeze([
+  "input",
+  "output",
+  "activation",
+  "non_activation",
+  "evidence",
+  "metrics",
+  "fallback",
+  "abstention",
+  "audit",
+  "rollback",
+]);
+
 export function validateNyraBranchNetwork(branches = NYRA_BRANCHES) {
   const errors = [];
   const ids = new Set();
@@ -149,6 +244,38 @@ export function validateNyraBranchNetwork(branches = NYRA_BRANCHES) {
     if (new Set(item.subbranches).size !== item.subbranches.length) errors.push(`duplicate_subbranch:${item.id}`);
     if (item.subbranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(id))) errors.push(`invalid_subbranch_id:${item.id}`);
     if (item.core_branch_bindings.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(id))) errors.push(`invalid_core_binding:${item.id}`);
+    if (item.subbranch_contracts) {
+      for (const [subbranchId, contract] of Object.entries(item.subbranch_contracts)) {
+        if (!item.subbranches.includes(subbranchId)) errors.push(`orphan_subbranch_contract:${item.id}.${subbranchId}`);
+        for (const field of REQUIRED_NODE_CONTRACT_FIELDS) {
+          if (!contract?.[field] || (Array.isArray(contract[field]) && contract[field].length === 0)) {
+            errors.push(`incomplete_subbranch_contract:${item.id}.${subbranchId}.${field}`);
+          }
+        }
+      }
+    }
+    if (item.capability_facets) {
+      if (item.capability_facets.facet_count > MAX_SUBBRANCHES_PER_BRANCH) errors.push(`capability_facet_limit_exceeded:${item.id}`);
+      if (item.capability_facets.facets.length !== item.capability_facets.facet_count) errors.push(`capability_facet_count_mismatch:${item.id}`);
+      for (const contract of item.capability_facets.facets) {
+        for (const field of REQUIRED_NODE_CONTRACT_FIELDS) {
+          if (!contract?.[field] || (Array.isArray(contract[field]) && contract[field].length === 0)) {
+            errors.push(`incomplete_capability_facet:${item.id}.${contract?.id || "unknown"}.${field}`);
+          }
+        }
+      }
+    }
+    if (item.exposure_class) {
+      for (const field of [
+        "allowed_client_types",
+        "allowed_audiences",
+        "required_entitlements",
+        "discoverable_in_connector",
+        "semantic_select_allowed",
+      ]) {
+        if (!Object.hasOwn(item, field)) errors.push(`incomplete_exposure_contract:${item.id}.${field}`);
+      }
+    }
   }
   return { ok: errors.length === 0, errors, max_subbranches_per_branch: MAX_SUBBRANCHES_PER_BRANCH };
 }
@@ -163,9 +290,21 @@ export function nyraBranchCatalog(packId = "generic") {
       id: item.id,
       label: item.label,
       work_phase: item.work_phase,
+      production_status: item.production_status,
+      default_route_enabled: item.default_route_enabled,
       subbranch_count: item.subbranches.length,
       subbranches: [...item.subbranches],
       core_branch_bindings: [...item.core_branch_bindings],
+      ...(item.subbranch_contracts ? { subbranch_contracts: item.subbranch_contracts } : {}),
+      ...(item.capability_facets ? { capability_facets: item.capability_facets } : {}),
+      ...(item.exposure_class ? {
+        exposure_class: item.exposure_class,
+        allowed_client_types: [...item.allowed_client_types],
+        allowed_audiences: [...item.allowed_audiences],
+        required_entitlements: [...item.required_entitlements],
+        discoverable_in_connector: item.discoverable_in_connector,
+        semantic_select_allowed: item.semantic_select_allowed,
+      } : {}),
     })),
   };
 }
@@ -175,6 +314,7 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
   const availableIds = new Set(available.map((item) => item.id));
   const requested = normalizeList(requestedBranches);
   const inferred = available
+    .filter((item) => item.default_route_enabled)
     .filter((item) => item.triggers.some((trigger) => String(text || "").toLowerCase().includes(trigger)))
     .map((item) => item.id);
   const orchestrationSupervisionRequired = [...requested, ...inferred]
@@ -194,7 +334,15 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
   for (let index = 0; index < openedRecords.length; index += MAX_PARALLEL_BRANCHES) {
     waves.push(openedRecords.slice(index, index + MAX_PARALLEL_BRANCHES).map((item) => item.id));
   }
-  const learningActive = opened.includes("learning_memory") || opened.includes("adaptive_learning");
+  const learningActive = opened.some((id) => [
+    "learning_memory",
+    "adaptive_learning",
+    "learning_knowledge_intelligence",
+    "ai_evaluation_intelligence",
+    "learning_data_governance",
+    "ai_runtime_performance_intelligence",
+    "experiment_causal_learning",
+  ].includes(id));
   return {
     schema_version: "nyra_neural_branch_route_v1",
     domain_pack_id: domainPackId,
@@ -204,8 +352,20 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
       id: item.id,
       status: "opened",
       work_phase: item.work_phase,
+      production_status: item.production_status,
+      default_route_enabled: item.default_route_enabled,
       subbranches: [...item.subbranches],
       core_branch_bindings: [...item.core_branch_bindings],
+      ...(item.subbranch_contracts ? { subbranch_contracts: item.subbranch_contracts } : {}),
+      ...(item.capability_facets ? { capability_facets: item.capability_facets } : {}),
+      ...(item.exposure_class ? {
+        exposure_class: item.exposure_class,
+        allowed_client_types: [...item.allowed_client_types],
+        allowed_audiences: [...item.allowed_audiences],
+        required_entitlements: [...item.required_entitlements],
+        discoverable_in_connector: item.discoverable_in_connector,
+        semantic_select_allowed: item.semantic_select_allowed,
+      } : {}),
     })),
     denied_branches: denied,
     unknown_or_unentitled_branch_count: denied.length,
