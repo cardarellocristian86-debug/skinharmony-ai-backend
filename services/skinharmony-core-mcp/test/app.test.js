@@ -54,7 +54,7 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   const pathResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
   assert.deepEqual(pathResource, resource);
   const migrationResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp-v015`).then((r) => r.json());
-  assert.equal(migrationResource.resource, `${config.publicUrl}/mcp-v015`);
+  assert.equal(migrationResource.resource, config.resource);
   assert.deepEqual(migrationResource.authorization_servers, [config.auth0Issuer]);
   const oauth = await fetch(`${base}/.well-known/oauth-authorization-server`).then((r) => r.json());
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
