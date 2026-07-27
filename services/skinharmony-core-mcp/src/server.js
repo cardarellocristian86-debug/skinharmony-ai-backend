@@ -12,6 +12,8 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
+import { TOOLS } from "./tool-definitions.js";
+import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
@@ -55,9 +57,8 @@ function summarizeToolRequest(toolName, args = {}) {
   ).slice(0, 20_000);
 }
 
-const app = createApp(config, {
-  handlers: {
-    tenant_provider_openai_setup_panel: async (_args, identity) => ({
+const baseHandlers = {
+  tenant_provider_openai_setup_panel: async (_args, identity) => ({
       structuredContent: {
         ok: true,
         tenant_id: identity.tenantId,
@@ -67,18 +68,47 @@ const app = createApp(config, {
       },
       content: [{ type: "text", text: "Apri il pannello Collega OpenAI e premi Crea link sicuro." }],
       _meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
-    }),
-    ...coreHandlers,
-    ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
-    ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
-    ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
-    ...suiteHandlers,
-    ...collaborationHandlers,
-    ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
-      const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
-      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
-    } } : {}),
-  },
+  }),
+  ...coreHandlers,
+  ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
+  ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
+  ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
+  ...suiteHandlers,
+  ...collaborationHandlers,
+  ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
+    const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
+    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+  } } : {}),
+};
+const dynamicHandlers = createDynamicCapabilityHandlers({
+  tools: TOOLS,
+  handlers: baseHandlers,
+  semanticSelect: coreHandlers.core_semantic_select,
+  gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => coreHandlers.core_gate_action({
+    action_label: `Invoke dynamic capability ${tool.name}`,
+    action_type: "dynamic_capability.invoke",
+    target: tool.name,
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: tool.annotations?.openWorldHint === true,
+    destructive: tool.annotations?.destructiveHint === true,
+    bounded_scope: true,
+    low_impact: tool.annotations?.destructiveHint !== true,
+    idempotent_or_compensable: tool.annotations?.idempotentHint === true,
+    rollback_ready: tool.annotations?.idempotentHint === true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    catalog_revision: catalogRevision,
+    idempotency_key: idempotencyKey,
+    owner_confirmed: identity.ownerConfirmed === true,
+    confirmation_reference: identity.confirmationReference,
+  }, identity),
+});
+const handlers = { ...baseHandlers, ...dynamicHandlers };
+
+const app = createApp(config, {
+  handlers,
+  toolSurface: "compact",
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     let providerStatus = null;
