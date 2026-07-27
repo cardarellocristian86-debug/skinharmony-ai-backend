@@ -397,7 +397,7 @@ try {
   });
 
   const sdkManifest = await api(base, "GET", "/v1/connectors/sdk/manifest?tenant_id=tenant_demo_skinharmony", undefined, connectorKey);
-  assert(sdkManifest.status === 200 && sdkManifest.json.sdk?.manifest_version === "core_connector_sdk_v1", "connector sdk manifest failed");
+  assert(sdkManifest.status === 200 && sdkManifest.json.sdk?.manifest_version === "core_connector_sdk_v2", "connector sdk manifest failed");
   assert(sdkManifest.json.sdk?.transports?.includes("mcp_ready_schema"), "connector sdk mcp-ready transport missing");
   assert(sdkManifest.json.sdk?.core_routes?.work_preflight === "/v1/work/preflight", "connector sdk missing mandatory work preflight route");
   assert(sdkManifest.json.sdk?.required_client_behaviour?.includes("call_work_preflight_before_any_ai_work"), "connector sdk does not require preflight");
