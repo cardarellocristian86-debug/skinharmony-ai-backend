@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "migrate:collaboration": "node scripts/migrate-collaboration-postgres.js",
+    "test:postgres": "node --test test/postgres-integration/*.test.js"
   },
   "dependencies": {
     "express": "^5.2.1",

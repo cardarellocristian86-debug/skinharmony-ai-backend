@@ -36,11 +36,20 @@ rustup default stable
 
 # Invoke the toolchain binary directly. In constrained runtimes the rustup Cargo
 # proxy can resolve rustc back to itself even when the stable toolchain is valid.
-TOOLCHAIN_CARGO="$(rustup which --toolchain stable cargo)"
+TOOLCHAIN_CARGO=""
+if ! TOOLCHAIN_CARGO="$(rustup which --toolchain stable cargo 2>/dev/null)"; then
+  for candidate in "$RUSTUP_HOME"/toolchains/stable-*/bin/cargo; do
+    if [ -x "$candidate" ]; then
+      TOOLCHAIN_CARGO="$candidate"
+      break
+    fi
+  done
+fi
+test -x "$TOOLCHAIN_CARGO"
 TOOLCHAIN_BIN="$(dirname "$TOOLCHAIN_CARGO")"
 PATH="$TOOLCHAIN_BIN:$PATH" "$TOOLCHAIN_CARGO" build --release --manifest-path "$MANIFEST"
 test -x "$BIN"
-rustup run stable cargo build --release --manifest-path "$CORE_RUNTIME_MANIFEST"
+PATH="$TOOLCHAIN_BIN:$PATH" "$TOOLCHAIN_CARGO" build --release --manifest-path "$CORE_RUNTIME_MANIFEST"
 test -x "$CORE_RUNTIME_BIN"
 echo "SkinHarmony Rust extractor ready: $BIN"
 echo "SkinHarmony Core V2 runtime ready: $CORE_RUNTIME_BIN"

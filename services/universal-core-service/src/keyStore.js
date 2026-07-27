@@ -35,6 +35,9 @@ const PROVIDER_SETUP_LINK_SERVICE_TENANT = "__provider_setup_service__";
 const MCP_TENANT_GATEWAY_KIND = "mcp_tenant_gateway";
 const MCP_TENANT_GATEWAY_TENANT = "__mcp_tenant_gateway__";
 const MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES]);
+const MCP_STAGING_SERVICE_KIND = "mcp_staging_service";
+const MCP_STAGING_SERVICE_TENANT = "codexai";
+const MCP_STAGING_SERVICE_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES]);
 const PROVIDER_SETUP_LINK_SCOPES = Object.freeze([SCOPES.WRITE_PROVIDER_SETUP_LINK]);
 
 function isDedicatedProviderSetupLinkRecord(record, tenantId, keyHash) {
@@ -75,6 +78,18 @@ export function isMcpTenantGatewayRecord(record) {
     record.allowed_scopes.length === MCP_TENANT_GATEWAY_SCOPES.length &&
     MCP_TENANT_GATEWAY_SCOPES.every((scope) => record.allowed_scopes.includes(scope)) &&
     record.metadata?.bootstrap_kind === MCP_TENANT_GATEWAY_KIND,
+  );
+}
+
+export function isMcpStagingServiceRecord(record) {
+  return Boolean(
+    record && record.tenant_id === MCP_STAGING_SERVICE_TENANT &&
+    record.key_type === "automation" && record.status === "active" &&
+    record.expires_at === null && record.preset === null && record.brand_scope === "" &&
+    Array.isArray(record.allowed_scopes) &&
+    record.allowed_scopes.length === MCP_STAGING_SERVICE_SCOPES.length &&
+    MCP_STAGING_SERVICE_SCOPES.every((scope) => record.allowed_scopes.includes(scope)) &&
+    record.metadata?.bootstrap_kind === MCP_STAGING_SERVICE_KIND,
   );
 }
 
@@ -298,6 +313,56 @@ export function createKeyStore(storageRoot, audit) {
     return { created: true, record: publicRecord(record) };
   }
 
+  function ensureMcpStagingServiceKey(input = {}) {
+    const secret = String(input.secret || "").trim();
+    if (!secret) throw new Error("mcp_staging_service_key_required");
+    const keyHash = sha256(secret);
+    const records = listAll();
+    const existing = records.find((record) => record.key_hash === keyHash);
+    if (existing) {
+      if (!isMcpStagingServiceRecord(existing)) {
+        throw new Error("mcp_staging_service_key_conflict");
+      }
+      return { created: false, record: publicRecord(existing) };
+    }
+    if (records.some((record) =>
+      record.tenant_id === MCP_STAGING_SERVICE_TENANT &&
+      record.metadata?.bootstrap_kind === MCP_STAGING_SERVICE_KIND)) {
+      throw new Error("mcp_staging_service_key_rotation_required");
+    }
+    const record = {
+      key_id: `key_${crypto.randomUUID()}`,
+      key_type: "automation",
+      key_hash: keyHash,
+      tenant_id: MCP_STAGING_SERVICE_TENANT,
+      brand_scope: "",
+      label: "MCP staging service",
+      preset: null,
+      allowed_scopes: [...MCP_STAGING_SERVICE_SCOPES],
+      status: "active",
+      created_at: new Date().toISOString(),
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: null,
+      metadata: {
+        bootstrap_kind: MCP_STAGING_SERVICE_KIND,
+        suite_modules: [],
+        suite_limits: normalizeSuiteLimits({}),
+        allowed_domains: [],
+        suite_policy: { soft_gate: true, hard_block: false },
+      },
+    };
+    records.push(record);
+    saveAll(records);
+    audit?.append("core_mcp_staging_service_key_seeded", {
+      key_id: record.key_id,
+      tenant_id: record.tenant_id,
+      key_type: record.key_type,
+      scopes: record.allowed_scopes,
+    });
+    return { created: true, record: publicRecord(record) };
+  }
+
   function authenticate(secret) {
     if (!secret) return { ok: false, error: "missing_key" };
     const records = listAll();
@@ -336,6 +401,7 @@ export function createKeyStore(storageRoot, audit) {
     ensureProviderSetupLinkKey,
     ensureProviderSetupLinkServiceKey,
     ensureMcpTenantGatewayKey,
+    ensureMcpStagingServiceKey,
     authenticate,
     revokeKey,
     listKeys,

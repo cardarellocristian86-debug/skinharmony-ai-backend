@@ -28,3 +28,24 @@ test("search and fetch stay inside the authenticated tenant", async (t) => {
   const isolated = JSON.parse((await handlers.search({ query: "beta" }, { tenantId: "tenant-a" })).content[0].text);
   assert.deepEqual(isolated.results, []);
 });
+
+test("cloud document synchronization requires an explicit Core write verdict", async () => {
+  const writes = [];
+  const cloudMemoryStore = {
+    upsert: async (tenantId, args) => { writes.push({ tenantId, args }); return { id: "a".repeat(24) }; },
+  };
+  const denied = createMemoryHandlers({ sharedMemoryRoot: "/unused" }, {
+    cloudMemoryStore,
+    govern: async () => ({ allowed: false }),
+  });
+  await assert.rejects(denied.memory_document_upsert({ source_path: "STATE.json", text: "safe" }, { tenantId: "tenant-a" }), /core_gate_denied/);
+  assert.equal(writes.length, 0);
+
+  const allowed = createMemoryHandlers({ sharedMemoryRoot: "/unused" }, {
+    cloudMemoryStore,
+    govern: async () => ({ allowed: true, decision: "allow_controlled", mediation: "allow" }),
+  });
+  const result = await allowed.memory_document_upsert({ source_path: "STATE.json", text: "safe" }, { tenantId: "tenant-a" });
+  assert.equal(result.structuredContent.gate.allowed, true);
+  assert.equal(writes.length, 1);
+});

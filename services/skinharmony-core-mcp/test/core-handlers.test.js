@@ -824,3 +824,144 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
   assert.equal(calls[2].external_side_effect, true);
   assert.equal(calls[2].rollback_ready, false);
 });
+
+test("write guard issues and verifies a collaboration receipt only after Core allows the write", async () => {
+  const events = [];
+  const receiptConfig = {
+    publicUrl: "https://mcp.example.test",
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    defaultTenantId: "owner-private",
+    collaborationReceiptEnforcement: true,
+    collaborationReceiptAudience: "https://mcp.example.test/mcp",
+    collaborationTargetService: "skinharmony-core-mcp-staging",
+    collaborationTargetEnvironment: "staging",
+    collaborationBuildCommit: "a".repeat(40),
+  };
+  const replies = [
+    { authorization: { allowed: false, state: "blocked", mediation: "hard_block" } },
+    {
+      authorization: { allowed: true, state: "authorized", mediation: "allow" },
+      collaboration_core_gate: {
+        claims: { schema_version: "mcp_collaboration_core_gate_v1" },
+        signature: "a".repeat(43),
+      },
+    },
+  ];
+  const receipt = { binding: {}, core: {}, nyra: {} };
+  const guard = createCoreWriteGuard(receiptConfig, {
+    fetchImpl: async () => {
+      events.push("core_gate");
+      return new Response(JSON.stringify(replies.shift()), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    collaborationReceiptClient: {
+      ready: true,
+      issue: async (binding, options) => {
+        events.push("issue");
+        assert.equal(options.coreGate.signature, "a".repeat(43));
+        receipt.binding = binding;
+        return receipt;
+      },
+    },
+    collaborationReceiptVerifier: {
+      ready: true,
+      verify: async (bundle, expected) => {
+        events.push("verify");
+        assert.equal(bundle, receipt);
+        assert.equal(expected.action.payload_sha256, "c".repeat(64));
+        return { schema_version: "mcp_collaboration_verified_receipt_v1" };
+      },
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "subject-a",
+    agentPresence: {
+      agent_id: "codex-a",
+      session_id: "session-a",
+      session_fingerprint: "0123456789abcdef01234567",
+      signature: "ags_0123456789abcdef0123456789abcdef",
+    },
+    governanceContext: {
+      tool_name: "workspace_write_document",
+      trace_id: "33333333-3333-4333-8333-333333333333",
+      preflight_id: "preflight-1",
+      task_contract_id: "contract-1",
+      task_trace_id: "task-trace-1",
+      coordination_lock: "lock-1",
+      shared_memory_checksum: "b".repeat(64),
+    },
+  };
+  const action = {
+    action_label: "write",
+    action_type: "workspace.write_document",
+    target: "SHARED_MEMORY/report.md",
+    payload_sha256: "c".repeat(64),
+    expected_version: 0,
+    lock_id: "11111111-1111-4111-8111-111111111111",
+    fencing_token: 1,
+    idempotency_key_sha256: "d".repeat(64),
+  };
+  assert.equal((await guard(action, identity)).allowed, false);
+  assert.deepEqual(events, ["core_gate"]);
+  const allowed = await guard(action, identity);
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.coordination_receipt, receipt);
+  assert.deepEqual(events, ["core_gate", "core_gate", "issue", "verify"]);
+});
+
+test("write guard rejects contradictory Core confirmation and strips client owner assertions", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    defaultTenantId: "owner-private",
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        authorization: {
+          allowed: true,
+          state: "authorized",
+          mediation: "confirm",
+          confirmation_required: true,
+          confirmation_satisfied: false,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  await handlers.core_gate_action({
+    action_label: "unsafe client assertion",
+    action_type: "workspace.write",
+    owner_confirmed: true,
+    confirmation_reference: "client supplied",
+    owner_context: { assertion: "attacker-controlled" },
+    tenant_id: "other-tenant",
+  }, { tenantId: "tenant-a", kind: "oauth" });
+  assert.equal(calls[0].owner_confirmed, false);
+  assert.equal(calls[0].confirmation_reference, undefined);
+  assert.equal(calls[0].tenant_id, "tenant-a");
+  assert.equal(calls[0].owner_context.tenant_id, "tenant-a");
+  assert.notEqual(calls[0].owner_context.assertion, "attacker-controlled");
+
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    defaultTenantId: "owner-private",
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      authorization: {
+        allowed: true,
+        state: "authorized",
+        mediation: "confirm",
+        confirmation_required: true,
+        confirmation_satisfied: false,
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  assert.equal((await guard({ action_label: "write", action_type: "workspace.write", target: "doc" }, {
+    tenantId: "tenant-a",
+    ownerConfirmed: true,
+    confirmationReference: "verified owner",
+  })).allowed, false);
+});

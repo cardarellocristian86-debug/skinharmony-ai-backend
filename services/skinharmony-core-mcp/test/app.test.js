@@ -203,6 +203,135 @@ test("production compact mode exposes only the stable connector surface", async 
   }
 });
 
+test("advertises automatic receipted lifecycle checkpoints in PostgreSQL mode", async () => {
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
+  const app = createApp({ ...config, collaborationDatabaseUrl: "configured" }, { handlers });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-postgres-metadata" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 29, method: "tools/list" }),
+    });
+    const body = await response.json();
+    assert(body.result.tools.length > 0);
+    assert(body.result.tools.every((tool) =>
+      tool._meta["skinharmony/shared_memory_lifecycle"] === "automatic_receipted_task_contract_and_checkpoint"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("PostgreSQL mode forces direct governed writes even when compact mode is requested", async () => {
+  const lifecycle = [];
+  let writeIdentity;
+  const app = createApp({
+    ...config,
+    collaborationDatabaseUrl: "configured",
+    coordinationReceiptVerifierReady: true,
+    collaborationTaskContractRequired: false,
+  }, {
+    toolSurface: "compact",
+    handlers: {
+      core_capability_invoke: async () => {
+        throw new Error("dynamic mutation wrapper must not run in PostgreSQL mode");
+      },
+      workspace_write_document: async (_args, identity) => {
+        lifecycle.push("write");
+        writeIdentity = identity;
+        return { structuredContent: { ok: true }, content: [{ type: "text", text: "ok" }] };
+      },
+    },
+    beforeToolCall: async ({ toolName }) => {
+      lifecycle.push(`before:${toolName}`);
+      return {
+        work_preflight: {
+          preflight_id: "preflight-postgres-direct-write",
+          tenant_id: "owner-private",
+          shared_memory_bootstrap: { tenant_id: "owner-private" },
+          governance: {
+            execution_allowed_by_preflight: true,
+            core_verdict_required_before_execution: true,
+            direct_connector_bypass_forbidden_by_protocol: true,
+            cross_tenant_actions_allowed: false,
+            audit_required: true,
+          },
+        },
+      };
+    },
+    afterToolCall: async ({ toolName }) => lifecycle.push(`after:${toolName}`),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/mcp`;
+    const headers = {
+      authorization: "Bearer codex-key",
+      "content-type": "application/json",
+      "mcp-session-id": "mcp-postgres-direct-surface",
+    };
+    const listed = await fetch(base, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 301, method: "tools/list" }),
+    }).then((response) => response.json());
+    assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["workspace_write_document"]);
+    assert.equal(listed.result.tools.some((tool) => tool.name === "core_capability_invoke"), false);
+    assert.deepEqual(
+      listed.result.tools[0].inputSchema.required,
+      ["path", "content", "expected_version", "idempotency_key", "lock_id", "fencing_token"],
+    );
+
+    const dynamic = await fetch(base, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 302,
+        method: "tools/call",
+        params: { name: "core_capability_invoke", arguments: {} },
+      }),
+    }).then((response) => response.json());
+    assert.equal(dynamic.error.code, -32602);
+    assert.deepEqual(lifecycle, []);
+
+    const direct = await fetch(base, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 303,
+        method: "tools/call",
+        params: {
+          name: "workspace_write_document",
+          arguments: {
+            path: "reports/direct-write.md",
+            content: "governed",
+            expected_version: 0,
+            idempotency_key: "direct-write-1",
+            lock_id: "11111111-1111-4111-8111-111111111111",
+            fencing_token: 1,
+          },
+        },
+      }),
+    }).then((response) => response.json());
+    assert.equal(direct.result.structuredContent.ok, true);
+    assert.deepEqual(lifecycle, [
+      "before:workspace_write_document",
+      "write",
+      "after:workspace_write_document",
+    ]);
+    assert.equal(writeIdentity.governanceContext.tool_name, "workspace_write_document");
+    assert.equal(
+      writeIdentity.governanceContext.preflight_id,
+      "preflight-postgres-direct-write",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("publishes the governed host-browsing research sequence", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {
     method: "POST",
@@ -598,8 +727,142 @@ test("journals successful and failed tool calls without changing client response
     assert.equal(events.length, 2);
     assert.equal(events[0].toolName, "core_health");
     assert.equal(events[0].error, undefined);
+    assert.equal(events[0].toolAnnotations.readOnlyHint, true);
     assert.equal(events[1].toolName, "core_gate_action");
     assert.match(events[1].error.message, /expected_failure/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("returns a committed write with an explicit no-retry warning when post-commit journaling degrades", async () => {
+  const app = createApp(config, {
+    handlers: {
+      core_gate_action: async () => ({ structuredContent: { ok: true }, content: [{ type: "text", text: "ok" }] }),
+    },
+    afterToolCall: async () => { throw new Error("journal_unavailable"); },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "post-commit-session" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 111, method: "tools/call", params: { name: "core_gate_action", arguments: { action_label: "write", action_type: "workspace.write" } } }),
+    });
+    const body = await response.json();
+    assert.equal(body.result.isError, undefined);
+    assert.deepEqual(body.result.structuredContent.post_commit_journal, { ok: false, retry_tool: false, state: "committed_journal_degraded" });
+    assert.deepEqual(JSON.parse(body.result.content.at(-1).text).post_commit_journal, { ok: false, retry_tool: false, state: "committed_journal_degraded" });
+    assert.equal(body.result._meta["skinharmony/post_commit_journal"], "degraded");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("returns an explicit no-retry warning when audit of a successful read degrades", async () => {
+  const app = createApp(config, {
+    handlers: {
+      core_health: async () => ({ structuredContent: { ok: true }, content: [{ type: "text", text: "ok" }] }),
+    },
+    afterToolCall: async () => { throw new Error("audit_unavailable"); },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "read-audit-session" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 112, method: "tools/call", params: { name: "core_health", arguments: {} } }),
+    });
+    const body = await response.json();
+    assert.deepEqual(body.result.structuredContent.post_call_audit, { ok: false, retry_tool: false, state: "read_succeeded_audit_degraded" });
+    assert.deepEqual(JSON.parse(body.result.content.at(-1).text).post_call_audit, { ok: false, retry_tool: false, state: "read_succeeded_audit_degraded" });
+    assert.equal(body.result._meta["skinharmony/post_call_audit"], "degraded");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("health reports PostgreSQL coordination unavailable until startup verification succeeds", async () => {
+  const app = createApp({ ...config, collaborationDatabaseUrl: "configured", coordinationDatabaseVerified: false }, { handlers: {} });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const health = await fetch(`http://127.0.0.1:${server.address().port}/healthz`).then((response) => response.json());
+    assert.equal(health.ok, false);
+    assert.equal(health.coordination_store.available, false);
+    assert.equal(health.coordination_store.schema_verified, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("health fails after a verified PostgreSQL store becomes unreachable", async () => {
+  const app = createApp({ ...config, collaborationDatabaseUrl: "configured", coordinationDatabaseVerified: true }, {
+    handlers: {},
+    coordinationHealthCheck: async () => { throw new Error("database_unavailable"); },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(health.ok, false);
+    assert.equal(health.coordination_store.available, false);
+    assert.equal(health.coordination_store.schema_verified, true);
+    assert.equal(health.coordination_store.runtime_probe, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("health remains closed when PostgreSQL is ready but the signed-receipt verifier is absent", async () => {
+  const app = createApp({
+    ...config,
+    collaborationDatabaseUrl: "configured",
+    coordinationDatabaseVerified: true,
+    coordinationReceiptVerifierReady: false,
+  }, {
+    handlers: {},
+    coordinationHealthCheck: async () => true,
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(health.coordination_store.available, true);
+    assert.equal(health.coordination_store.signed_receipts_required, true);
+    assert.equal(health.coordination_store.signed_receipt_verifier_ready, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("health remains closed when PostgreSQL and verifier are ready but either issuer is unreachable", async () => {
+  const app = createApp({
+    ...config,
+    collaborationDatabaseUrl: "configured",
+    coordinationDatabaseVerified: true,
+    coordinationReceiptVerifierReady: true,
+  }, {
+    handlers: {},
+    coordinationHealthCheck: async () => true,
+    coordinationIssuerHealthCheck: async () => false,
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(health.ok, false);
+    assert.equal(health.coordination_store.available, true);
+    assert.equal(health.coordination_store.signed_receipt_verifier_ready, true);
+    assert.equal(health.coordination_store.signed_receipt_issuers_reachable, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -783,6 +1046,7 @@ test("does not accept a raw confirmation flag from a non-owner MCP caller", asyn
       }),
     });
     assert.equal(response.status, 200);
+    assert.equal(seenIdentity.ownerConfirmationClaimed, true);
     assert.equal(seenIdentity.ownerConfirmed, false);
     assert.equal(seenIdentity.confirmationReference, "");
   } finally {

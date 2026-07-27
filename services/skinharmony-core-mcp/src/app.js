@@ -148,6 +148,7 @@ function attachWorkPreflight(result, preflight) {
         active_task_count: resolvedPayload.shared_memory_bootstrap.active_task_count,
         active_lock_count: resolvedPayload.shared_memory_bootstrap.active_lock_count,
         artifact_count: resolvedPayload.shared_memory_bootstrap.artifact_count,
+        checksum: resolvedPayload.shared_memory_bootstrap.checksum,
       }
       : undefined,
   };
@@ -209,12 +210,39 @@ function challenge(
   return `Bearer resource_metadata="${metadata}", error="${error}", error_description="${safeDescription}"${scope ? `, scope="${scope}"` : ""}`;
 }
 
+const NON_RETRYABLE_CONFLICT_CODES = new Set([
+  "collaboration_receipt_expired_or_replayed",
+  "workspace_lock_conflict",
+  "workspace_lock_lost",
+  "workspace_lock_required",
+  "workspace_version_conflict",
+  "idempotency_conflict",
+  "idempotency_in_progress",
+  "task_lease_conflict",
+  "task_lease_lost",
+]);
+
+function domainFailureStatus(code) {
+  if (NON_RETRYABLE_CONFLICT_CODES.has(code) || /(?:^|_)(?:conflict|replayed)$/.test(code)) return 409;
+  if (code === "core_gate_denied" ||
+      /^collaboration_receipt_(?:binding|claims|digest|evidence|signature|scope|independent|issuer|kid).*invalid$/.test(code) ||
+      /^(?:core|nyra)_collaboration_(?:claims|signature|issuer|kid).*invalid$/.test(code) ||
+      /_collaboration_issuer_(?:auth_required|forbidden|rejected)$/.test(code)) return 403;
+  if (/(?:_invalid|_required|_mismatch)$/.test(code)) return 400;
+  return 500;
+}
+
 function toolFailure(error) {
   const raw = String(error?.code || error?.message || "tool_execution_failed");
-  const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
-  const status = Number(error?.status || (core ? core[1] : 500));
+  const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_.-]{1,80})$/);
   const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
-  const retryable = error?.retryable === true || status === 429 || status >= 500;
+  const explicitStatus = Number(error?.status || (core ? core[1] : 0));
+  const status = Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599
+    ? explicitStatus
+    : domainFailureStatus(code);
+  const retryable = typeof error?.retryable === "boolean"
+    ? error.retryable
+    : status === 429 || status >= 500;
   const payload = {
     ok: false,
     error: {
@@ -231,16 +259,152 @@ function toolFailure(error) {
   };
 }
 
+const POSTGRES_REQUIRED_INPUTS = Object.freeze({
+  workspace_create_folder: ["idempotency_key", "lock_id", "fencing_token"],
+  workspace_write_document: ["expected_version", "idempotency_key", "lock_id", "fencing_token"],
+  memory_append: ["idempotency_key"],
+  memory_checkpoint: ["idempotency_key"],
+  memory_handoff: ["idempotency_key"],
+  task_create: ["idempotency_key"],
+  task_update: ["lease_token", "fencing_token"],
+  message_post: ["to_agent_id", "idempotency_key"],
+});
+
+const PROGRESSIVE_COORDINATION_TOOLS = new Set([
+  "agent_heartbeat",
+  "task_create",
+  "task_claim",
+  "workspace_lock_acquire",
+]);
+
+function configureToolForRuntime(tool, config) {
+  if (!config.collaborationDatabaseUrl) return tool;
+  const required = (POSTGRES_REQUIRED_INPUTS[tool.name] || []).filter((field) =>
+    config.collaborationLocksRequired !== false || !["lock_id", "fencing_token"].includes(field));
+  if (!required.length) return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      required: [...new Set([...(tool.inputSchema?.required || []), ...required])],
+    },
+  };
+}
+
+function coordinationGovernanceContext(config, tool, preflight, hookContext, identity) {
+  if (!config.collaborationDatabaseUrl || tool?.annotations?.readOnlyHint === true ||
+      !requiresGenericWorkPreflight(tool?.name)) return null;
+  if (config.coordinationReceiptVerifierReady !== true) {
+    throw new Error("collaboration_signed_receipt_verifier_required");
+  }
+  const payload = preflight?.work_preflight || preflight || {};
+  const bootstrap = payload.shared_memory_bootstrap || preflight?.shared_memory_bootstrap;
+  const preflightId = String(payload.preflight_id || "").trim();
+  const traceId = String(hookContext?.ledgerContext?.traceId || "").trim();
+  const taskContract = bootstrap?.task_contract;
+  const coordinationLock = bootstrap?.coordination_lock;
+  const presence = identity?.agentPresence || {};
+  const progressive = PROGRESSIVE_COORDINATION_TOOLS.has(tool.name);
+  if (payload.tenant_id !== identity.tenantId || bootstrap?.tenant_id !== identity.tenantId) {
+    throw new Error("preflight_tenant_mismatch");
+  }
+  if (config.collaborationTaskContractRequired !== false) {
+    if (!preflightId) throw new Error("collaboration_task_contract_required");
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(traceId)) {
+      throw new Error("collaboration_trace_required");
+    }
+    if (bootstrap?.loaded !== true) throw new Error("shared_memory_bootstrap_required");
+    if (!/^[a-f0-9]{64}$/.test(String(bootstrap.checksum || ""))) throw new Error("shared_memory_checksum_required");
+    if (!Number.isSafeInteger(Number(bootstrap.active_task_count)) || Number(bootstrap.active_task_count) < 0 ||
+        !Number.isSafeInteger(Number(bootstrap.active_lock_count)) || Number(bootstrap.active_lock_count) < 0) {
+      throw new Error("shared_memory_bootstrap_invalid");
+    }
+    if (progressive && (!presence.agent_id || !presence.session_id ||
+        !presence.signature || !presence.session_fingerprint)) {
+      throw new Error("agent_presence_required");
+    }
+    if (taskContract && (!taskContract.contract_id || !taskContract.trace_id || taskContract.status !== "current" ||
+        !Number.isFinite(Date.parse(taskContract.updated_at)))) {
+      throw new Error("collaboration_task_contract_required");
+    }
+    if (taskContract && (taskContract.agent_id !== presence.agent_id || taskContract.session_id !== presence.session_id ||
+        taskContract.agent_signature !== presence.signature ||
+        taskContract.session_fingerprint !== presence.session_fingerprint)) {
+      throw new Error("collaboration_task_contract_identity_mismatch");
+    }
+    if (!taskContract && (!progressive || tool.name === "workspace_lock_acquire")) {
+      throw new Error("collaboration_task_contract_required");
+    }
+    if (coordinationLock && (!taskContract || !coordinationLock.name ||
+        coordinationLock.trace_id !== taskContract.trace_id)) {
+      throw new Error("collaboration_lock_required");
+    }
+    if (coordinationLock && !Number.isFinite(Date.parse(coordinationLock.acquired_at))) {
+      throw new Error("collaboration_lock_required");
+    }
+    if (coordinationLock && (coordinationLock.agent_id !== presence.agent_id ||
+        coordinationLock.session_id !== presence.session_id ||
+        coordinationLock.agent_signature !== presence.signature ||
+        coordinationLock.session_fingerprint !== presence.session_fingerprint)) {
+      throw new Error("collaboration_lock_identity_mismatch");
+    }
+    if (!coordinationLock && !progressive) throw new Error("collaboration_lock_required");
+    const governance = payload.governance || {};
+    if (governance.core_verdict_required_before_execution !== true ||
+        governance.direct_connector_bypass_forbidden_by_protocol !== true ||
+        governance.cross_tenant_actions_allowed !== false || governance.audit_required !== true) {
+      throw new Error("collaboration_preflight_invalid");
+    }
+  }
+  return {
+    tool_name: tool.name,
+    preflight_id: preflightId || null,
+    trace_id: traceId || null,
+    shared_memory_checksum: bootstrap?.checksum || null,
+    task_contract_id: taskContract?.contract_id || `mcp-enrollment:${presence.agent_id}`,
+    task_trace_id: taskContract?.trace_id || traceId,
+    coordination_lock: coordinationLock?.name || `mcp-enrollment:${presence.agent_id}`,
+  };
+}
+
+function attachPostCallWarning(result, readOnly) {
+  const field = readOnly ? "post_call_audit" : "post_commit_journal";
+  const state = readOnly ? "read_succeeded_audit_degraded" : "committed_journal_degraded";
+  const warning = { ok: false, retry_tool: false, state };
+  return {
+    ...(result || {}),
+    structuredContent: result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
+      ? { ...result.structuredContent, [field]: warning }
+      : { result: result?.structuredContent, [field]: warning },
+    content: [
+      ...(Array.isArray(result?.content) ? result.content : []),
+      { type: "text", text: JSON.stringify({ [field]: warning }) },
+    ],
+    _meta: { ...(result?._meta || {}), [`skinharmony/${field}`]: "degraded" },
+  };
+}
+
 export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
-  const availableTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
-  const visibleTools = options.toolSurface === "compact"
-    ? compactMcpTools(TOOLS, handlers)
+  const postgresGovernedSurface = Boolean(config.collaborationDatabaseUrl);
+  const availableTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function")
+    .map((tool) => configureToolForRuntime(tool, config));
+  // The dynamic mutation wrapper invokes its target handler internally, so the
+  // outer MCP lifecycle hooks would otherwise see only core_capability_invoke.
+  // PostgreSQL coordination requires those hooks and the derived receipt context
+  // on the actual write. Expose direct, runtime-configured tools in that isolated
+  // mode and disable only the unsafe mutation wrapper; compact routing remains
+  // unchanged for the production connector without the staging database.
+  const directlyInvokableTools = postgresGovernedSurface
+    ? availableTools.filter((tool) => tool.name !== "core_capability_invoke")
     : availableTools;
+  const visibleTools = options.toolSurface === "compact" && !postgresGovernedSurface
+    ? compactMcpTools(directlyInvokableTools, handlers)
+    : directlyInvokableTools;
   // A host can rotate the MCP transport between tool calls from one logical chat.
   // Keep the transport binding for anti-switch protection, while correlating the
   // server-signed presence through the explicitly declared logical session id.
@@ -249,8 +413,21 @@ export function createApp(config, options = {}) {
   const transportPresenceBindings = new Map();
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/healthz", (_req, res) => res.json({
-    ok: true,
+  app.get("/healthz", async (_req, res) => {
+    let coordinationAvailable = !config.collaborationDatabaseUrl || config.coordinationDatabaseVerified === true;
+    if (config.collaborationDatabaseUrl && coordinationAvailable && typeof options.coordinationHealthCheck === "function") {
+      try { coordinationAvailable = await options.coordinationHealthCheck() === true; }
+      catch { coordinationAvailable = false; }
+    }
+    const receiptVerifierReady = !config.collaborationDatabaseUrl || config.coordinationReceiptVerifierReady === true;
+    let issuerAvailable = !config.collaborationDatabaseUrl;
+    if (config.collaborationDatabaseUrl && receiptVerifierReady && typeof options.coordinationIssuerHealthCheck === "function") {
+      try { issuerAvailable = await options.coordinationIssuerHealthCheck() === true; }
+      catch { issuerAvailable = false; }
+    }
+    const ok = !config.collaborationDatabaseUrl || (coordinationAvailable && receiptVerifierReady && issuerAvailable);
+    return res.status(ok ? 200 : 503).json({
+    ok,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
     build: buildIdentity(),
@@ -261,20 +438,37 @@ export function createApp(config, options = {}) {
     owner_context_signing_configured: Boolean(config.ownerContextSigningSecret),
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
     cloud_memory: {
-      configured: Boolean(config.databaseUrl),
-      backend: config.databaseUrl ? "postgres" : "filesystem",
-      persistent: Boolean(config.databaseUrl),
+      configured: Boolean(config.cloudMemoryDatabaseUrl ?? config.databaseUrl),
+      backend: (config.cloudMemoryDatabaseUrl ?? config.databaseUrl) ? "postgres" : "filesystem",
+      persistent: Boolean(config.cloudMemoryDatabaseUrl ?? config.databaseUrl),
       tenant_isolated: true,
     },
     decision_ledger: {
-      configured: Boolean(config.databaseUrl),
+      configured: Boolean(config.decisionLedgerDatabaseUrl || config.databaseUrl),
       required: config.decisionLedgerRequired === true,
-      backend: config.databaseUrl ? "postgres_append_only" : "disabled",
+      backend: (config.decisionLedgerDatabaseUrl || config.databaseUrl) ? "postgres_append_only" : "disabled",
       tenant_isolated: true,
       raw_prompts_stored: false,
     },
-    agent_workspace_configured: Boolean(config.agentWorkspaceRoot),
-    memory_fabric_configured: Boolean(config.memoryFabricRoot),
+    agent_workspace_configured: Boolean(config.agentWorkspaceRoot || config.collaborationDatabaseUrl),
+    memory_fabric_configured: Boolean(config.memoryFabricRoot || config.collaborationDatabaseUrl),
+    coordination_store: {
+      configured: Boolean(config.agentWorkspaceRoot || config.collaborationDatabaseUrl),
+      backend: config.collaborationDatabaseUrl ? "postgres" : config.agentWorkspaceRoot ? "filesystem" : "disabled",
+      persistent: Boolean(config.collaborationDatabaseUrl),
+      distributed_locks: Boolean(config.collaborationDatabaseUrl),
+      fencing_tokens: Boolean(config.collaborationDatabaseUrl),
+      available: config.collaborationDatabaseUrl ? coordinationAvailable : Boolean(config.agentWorkspaceRoot),
+      schema_verified: config.collaborationDatabaseUrl ? config.coordinationDatabaseVerified === true : null,
+      signed_receipts_required: Boolean(config.collaborationDatabaseUrl),
+      signed_receipt_verifier_ready: config.collaborationDatabaseUrl ? receiptVerifierReady : null,
+      signed_receipt_issuers_reachable: config.collaborationDatabaseUrl ? issuerAvailable : null,
+      runtime_probe: config.collaborationDatabaseUrl && typeof options.coordinationHealthCheck === "function"
+        ? coordinationAvailable
+        : null,
+      tenant_isolated: true,
+      filesystem_fallback: config.collaborationDatabaseUrl ? false : Boolean(config.agentWorkspaceRoot),
+    },
     research_cortex_configured: Boolean(config.researchCortexRoot),
     openai_research_fallback_enabled: config.openaiResearchEnabled === true,
     openai_research_fallback_configured: Boolean(config.openaiApiKey),
@@ -289,7 +483,8 @@ export function createApp(config, options = {}) {
       tenant_isolated: true,
       emergency_stop: config.godModeEmergencyStop === true
     }
-  }));
+    });
+  });
 
   const protectedResourceMetadata = (_req, res) => res.json({
     // Keep one canonical OAuth resource/audience across versioned transport
@@ -374,14 +569,16 @@ export function createApp(config, options = {}) {
             ...(genericPreflightRequired ? { "skinharmony/mandatory_first_tool": "work_preflight" } : {}),
             ...(!genericPreflightRequired ? { "skinharmony/native_governance": "authenticated_tenant_control_plane" } : {}),
             "skinharmony/preflight_entrypoint": tool.name === "work_preflight",
-            "skinharmony/shared_memory_lifecycle": "automatic_task_contract_and_checkpoint",
+            "skinharmony/shared_memory_lifecycle": config.collaborationDatabaseUrl
+              ? "automatic_receipted_task_contract_and_checkpoint"
+              : "automatic_task_contract_and_checkpoint",
             "skinharmony/research_entrypoint": tool.name === "nyra_research_plan",
             "skinharmony/research_sequence": "plan -> host web -> ingest -> query -> feedback",
           },
         };
       }) } });
       if (method === "tools/call") {
-        const tool = TOOLS.find((item) => item.name === params.name);
+        const tool = visibleTools.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
@@ -477,7 +674,8 @@ export function createApp(config, options = {}) {
           args.owner_confirmed === true;
         const callIdentity = {
           ...identity,
-          agentPresence,
+          agentPresence: presenceBinding,
+          ownerConfirmationClaimed: args.owner_confirmed === true,
           ownerConfirmed: explicitOwnerConfirmation,
           confirmationReference: explicitOwnerConfirmation
             ? String(args.confirmation_reference || "").slice(0, 240)
@@ -487,13 +685,21 @@ export function createApp(config, options = {}) {
             ? String(args.confirmation_reference || "").slice(0, 240)
             : "",
         };
-        activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
+        activeToolCall = {
+          identity: callIdentity,
+          toolName: tool.name,
+          args,
+          hookContext: null,
+          preflight: null,
+          toolAnnotations: tool.annotations,
+        };
         let hookContext = null;
         if (typeof beforeToolCall === "function") {
           try {
             hookContext = await beforeToolCall({ identity: callIdentity, toolName: tool.name, args });
           } catch (error) {
-            if (error?.hookContext) activeToolCall.hookContext = error.hookContext;
+            const failureHookContext = error?.hookContext || error?.toolHookContext;
+            if (failureHookContext) activeToolCall.hookContext = failureHookContext;
             throw error;
           }
         }
@@ -505,14 +711,25 @@ export function createApp(config, options = {}) {
           ? (hookContext?.preflight ?? hookContext)
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
-        const rawResult = await handlers[tool.name](args, callIdentity);
-        const result = attachAgentPresence(attachProviderOnboarding(attachWorkPreflight(rawResult, preflight), hookContext?.providerStatus), agentPresence);
+        const governanceContext = coordinationGovernanceContext(config, tool, preflight, hookContext, callIdentity);
+        const executionIdentity = governanceContext ? { ...callIdentity, governanceContext } : callIdentity;
+        activeToolCall = { ...activeToolCall, identity: executionIdentity };
+        const rawResult = await handlers[tool.name](args, executionIdentity);
+        let result = attachAgentPresence(attachProviderOnboarding(attachWorkPreflight(rawResult, preflight), hookContext?.providerStatus), agentPresence);
         if (typeof afterToolCall === "function") {
           afterToolCallAttempted = true;
           try {
-            await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight, hookContext });
+            await afterToolCall({
+              identity: executionIdentity,
+              toolName: tool.name,
+              args,
+              result,
+              preflight,
+              hookContext,
+              toolAnnotations: tool.annotations,
+            });
           } catch (hookError) {
-            if (tool.annotations?.readOnlyHint !== true) throw hookError;
+            result = attachPostCallWarning(result, tool.annotations?.readOnlyHint === true);
           }
         }
         return res.json({ jsonrpc: "2.0", id, result });
@@ -557,4 +774,16 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachProviderOnboarding, attachWorkPreflight, buildIdentity, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
+export {
+  attachProviderOnboarding,
+  attachWorkPreflight,
+  buildIdentity,
+  configureToolForRuntime,
+  coordinationGovernanceContext,
+  inferClientType,
+  resolveWorkPreflight,
+  securitySchemes,
+  serverIssuedBootstrapSession,
+  toolFailure,
+  TOOLS,
+};

@@ -140,14 +140,15 @@ const stagingPostgres = {
   merge: false, production_deploy: false, delete: false,
   target_commit: "6bd1aecda5defeb1c50e1e753d814b1e05c9b559", confirmation_reference: "owner confirmed staging postgres",
 };
-test("authorizes only the exact owner-confirmed staging PostgreSQL configuration", () => {
-  const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...stagingPostgres, owner_confirmed: true });
-  assert.equal(allowed.allowed, true); assert.equal(allowed.state, "authorized_after_confirmation");
-  assert.equal(allowed.confirmation_satisfied, true);
-  assert.equal(allowed.scope, "reversible_owner_confirmed_deploy");
+test("retires the legacy staging PostgreSQL creation gate behind the reserved topology domain", () => {
+  const blocked = buildActionAuthorization(contract({ risk_band: "high" }), { ...stagingPostgres, owner_confirmed: true });
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.scope, "mcp_staging_reserved_domain");
+  assert.equal(blocked.reason, "reserved_mcp_staging_action_requires_dedicated_gate");
   const missingConfirmation = buildActionAuthorization(contract({ risk_band: "high" }), stagingPostgres);
   assert.equal(missingConfirmation.allowed, false);
-  assert.equal(missingConfirmation.state, "confirmation_required");
+  assert.equal(missingConfirmation.state, "blocked");
   for (const unsafe of [
     { target: "skinharmony-db" }, { environment: "production" },
     { rollback_ready: false }, { audit_ready: false }, { cross_tenant: true }, { destructive: true },

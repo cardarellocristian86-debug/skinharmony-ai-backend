@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createAgentPresence } from "./agent-presence.js";
 import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
+import { createSharedMemoryPostgresStore, requestDigest } from "./shared-memory-postgres-store.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const CLASSIFICATIONS = new Set(["internal", "customer_aggregate", "customer_personal", "restricted"]);
@@ -82,7 +83,14 @@ function tagList(value) {
 }
 
 function actor(identity) {
-  return String(identity?.subject || identity?.kind || "system").slice(0, 200);
+  const value = String(identity?.subject || identity?.kind || "").trim();
+  if (!value || value.length > 500 || /[\u0000-\u001f]/.test(value)) fail("actor_subject_invalid");
+  return value;
+}
+
+function idempotencyKeyDigest(value) {
+  const normalized = String(value || "").trim();
+  return normalized ? crypto.createHash("sha256").update(normalized).digest("hex") : null;
 }
 
 function tenantRoot(root, tenantId) {
@@ -198,7 +206,7 @@ function expiry(input, config, classificationValue) {
   return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
-function normalizeMemoryInput(input, identity, config, kindOverride = "") {
+function normalizeMemoryInput(input, identity, config, kindOverride = "", options = {}) {
   const kind = String(kindOverride || input.kind || "observation").trim().toLowerCase();
   if (!EVENT_KINDS.has(kind)) fail("memory_kind_invalid");
   const title = requiredText(input.title, "memory_title", 240);
@@ -212,6 +220,9 @@ function normalizeMemoryInput(input, identity, config, kindOverride = "") {
   const consent = optionalText(input.consent_reference, 240);
   const redactionCount = title.redaction_count + summary.redaction_count + facts.redaction_count + decisions.redaction_count
     + actions.redaction_count + outcomes.redaction_count + nextSteps.redaction_count + consent.redaction_count;
+  const boundPresence = options.bindPresence === false ? null : identity?.agentPresence;
+  const requestedAgentId = safeId(input.agent_id, "agent", { optional: true });
+  if (boundPresence?.agent_id && requestedAgentId && requestedAgentId !== boundPresence.agent_id) fail("agent_presence_conflict");
   return {
     id: `mem_${crypto.randomUUID()}`,
     kind,
@@ -227,13 +238,13 @@ function normalizeMemoryInput(input, identity, config, kindOverride = "") {
     data_classification: classificationValue,
     consent_reference: consent.text || null,
     project_id: safeId(input.project_id, "project", { optional: true }) || null,
-    session_id: safeId(input.session_id, "session", { optional: true }) || null,
-    agent_id: safeId(input.agent_id, "agent", { optional: true }) || null,
-    logical_agent_id: safeId(input.logical_agent_id, "logical_agent", { optional: true }) || null,
-    agent_signature: safeId(input.agent_signature, "agent_signature", { optional: true }) || null,
-    agent_signature_version: safeId(input.agent_signature_version, "agent_signature_version", { optional: true }) || null,
-    client_type: safeId(input.client_type, "client_type", { optional: true }) || null,
-    session_fingerprint: safeId(input.session_fingerprint, "session_fingerprint", { optional: true }) || null,
+    session_id: safeId(input.session_id || boundPresence?.session_id, "session", { optional: true }) || null,
+    agent_id: boundPresence?.agent_id || requestedAgentId || null,
+    logical_agent_id: safeId(input.logical_agent_id, "logical_agent", { optional: true }) || boundPresence?.agent_id || null,
+    agent_signature: safeId(boundPresence?.signature || input.agent_signature, "agent_signature", { optional: true }) || null,
+    agent_signature_version: safeId(boundPresence?.signature_version || input.agent_signature_version, "agent_signature_version", { optional: true }) || null,
+    client_type: safeId(boundPresence?.client_type || input.client_type, "client_type", { optional: true }) || null,
+    session_fingerprint: safeId(boundPresence?.session_fingerprint || input.session_fingerprint, "session_fingerprint", { optional: true }) || null,
     source: safeId(input.source || "mcp_explicit", "source"),
     actor_subject: actor(identity),
     created_at: new Date().toISOString(),
@@ -247,6 +258,23 @@ function normalizeMemoryInput(input, identity, config, kindOverride = "") {
 function publicRecord(record) {
   const { actor_subject: _actor, idempotency_key: _key, ...safe } = record;
   return safe;
+}
+
+function publicActivity(record = {}) {
+  if (!record.handoff_id) return publicRecord(record);
+  return {
+    id: record.id,
+    kind: "handoff",
+    handoff_id: record.handoff_id,
+    project_id: record.project_id || null,
+    session_id: record.session_id || null,
+    agent_id: record.agent_id || null,
+    to_agent_id: record.to_agent_id || null,
+    status: record.status || "pending",
+    source: record.source || "mcp_explicit",
+    created_at: record.created_at,
+    expires_at: record.expires_at || null,
+  };
 }
 
 function audit(state, identity, type, target, gate = null, explicitPresence = null) {
@@ -274,6 +302,31 @@ function searchableText(record) {
     ...(record.outcomes || []), ...(record.next_steps || []), ...(record.tags || [])].join(" ").toLowerCase();
 }
 
+function isProjectVisible(record, projectId) {
+  return !projectId || !record.project_id || record.project_id === projectId;
+}
+
+function isSessionVisible(record, sessionId) {
+  return !sessionId || !record.session_id || record.session_id === sessionId;
+}
+
+function isExplicitCheckpoint(record) {
+  return record.kind === "checkpoint" && record.source === "mcp_explicit";
+}
+
+function isCrossSessionCheckpoint(record) {
+  return record.kind === "checkpoint"
+    && (record.source === "mcp_explicit" || record.source === "mcp_work_lifecycle");
+}
+
+function isCheckpointProjectVisible(record, projectId) {
+  if (!isProjectVisible(record, projectId)) return false;
+  // Tenant-wide explicit checkpoints are inherited by a project. Automatic
+  // lifecycle records without a project stay in the tenant-wide supervisor
+  // view instead of replacing a project's latest checkpoint.
+  return !projectId || Boolean(record.project_id) || record.source !== "mcp_work_lifecycle";
+}
+
 function searchState(state, input = {}) {
   const queryTokens = tokens(input.query);
   const projectId = safeId(input.project_id, "project", { optional: true });
@@ -284,8 +337,8 @@ function searchState(state, input = {}) {
     // Lifecycle checkpoints are surfaced deterministically as latest_checkpoint
     // and recent_activity; keep free-text recall focused on user/agent knowledge.
     .filter((record) => record.source !== "mcp_work_lifecycle")
-    .filter((record) => !projectId || !record.project_id || record.project_id === projectId)
-    .filter((record) => !sessionId || !record.session_id || record.session_id === sessionId)
+    .filter((record) => isProjectVisible(record, projectId))
+    .filter((record) => isSessionVisible(record, sessionId) || isExplicitCheckpoint(record))
     .map((record) => {
       const haystack = searchableText(record);
       const lexical = queryTokens.reduce((sum, token) => sum + (haystack.includes(token) ? 12 : 0), 0);
@@ -340,7 +393,10 @@ function safeAutomaticDetails(toolName, args = {}, result = null) {
 
 export function createMemoryFabric(config, options = {}) {
   const root = String(config.memoryFabricRoot || config.agentWorkspaceRoot || "").trim();
-  if (!root) throw new Error("memory_fabric_not_configured");
+  const postgres = options.sharedMemoryPostgresStore || createSharedMemoryPostgresStore(config, options);
+  const postgresConfigured = Boolean(config.collaborationDatabaseUrl || options.pool || options.sharedMemoryPostgresStore);
+  if (postgresConfigured && !postgres) throw new Error("memory_postgres_backend_incomplete");
+  if (!root && !postgres) throw new Error("memory_fabric_not_configured");
   const govern = options.govern;
 
   const governedMemoryAction = (action) => ({
@@ -361,6 +417,7 @@ export function createMemoryFabric(config, options = {}) {
   });
 
   function read(tenantId) {
+    if (postgres) return postgres.readMemoryState(tenantId);
     const state = readState(root, tenantId);
     pruneState(state);
     return state;
@@ -380,7 +437,15 @@ export function createMemoryFabric(config, options = {}) {
 
   async function append(input, identity) {
     const record = normalizeMemoryInput(input, identity, config);
-    return governed(identity, governedMemoryAction({ action_type: "memory.append", action_label: `Append tenant memory ${record.kind}`, target: record.project_id || record.session_id || record.id }), async (state) => {
+    const action = governedMemoryAction({
+      action_type: "memory.append",
+      action_label: `Append tenant memory ${record.kind}`,
+      target: record.project_id || record.session_id || record.id,
+      payload_sha256: requestDigest(record),
+      idempotency_key_sha256: idempotencyKeyDigest(record.idempotency_key),
+    });
+    if (postgres) return postgres.appendMemory(record, identity, { kind: "memory", action });
+    return governed(identity, action, async (state) => {
       const existing = record.idempotency_key && state.memories.find((item) => item.idempotency_key === record.idempotency_key && item.actor_subject === record.actor_subject);
       if (existing) return { memory: publicRecord(existing), created: false, idempotent_replay: true };
       state.memories.push(record);
@@ -391,7 +456,15 @@ export function createMemoryFabric(config, options = {}) {
 
   async function checkpoint(input, identity) {
     const record = normalizeMemoryInput({ ...input, kind: "checkpoint", title: input.title || "Agent checkpoint" }, identity, config, "checkpoint");
-    return governed(identity, governedMemoryAction({ action_type: "memory.checkpoint", action_label: "Create tenant memory checkpoint", target: record.project_id || record.session_id || record.id }), async (state) => {
+    const action = governedMemoryAction({
+      action_type: "memory.checkpoint",
+      action_label: "Create tenant memory checkpoint",
+      target: record.project_id || record.session_id || record.id,
+      payload_sha256: requestDigest(record),
+      idempotency_key_sha256: idempotencyKeyDigest(record.idempotency_key),
+    });
+    if (postgres) return postgres.appendMemory(record, identity, { kind: "checkpoint", action });
+    return governed(identity, action, async (state) => {
       state.checkpoints.push(record);
       state.events.push({ ...record, id: `evt_${crypto.randomUUID()}`, checkpoint_id: record.id });
       return { checkpoint: publicRecord(record), created: true };
@@ -409,17 +482,49 @@ export function createMemoryFabric(config, options = {}) {
       ...(Array.isArray(input.outcomes) ? input.outcomes : []),
       ...(Array.isArray(input.next_steps) ? input.next_steps : []),
     ].filter(Boolean).join("\n");
+    const record = normalizeMemoryInput(
+      { ...input, kind: "handoff", title: input.title || "Agent handoff" },
+      identity,
+      config,
+      "handoff",
+    );
     const scan = scanInterAgentHandoff({
       tenant_id: identity.tenantId,
-      from_agent_id: input.agent_id || identity.agentPresence?.agent_id || "mcp-agent",
+      from_agent_id: record.agent_id || "mcp-agent",
       to_agent_id: toAgentId,
-      from_agent_signature: input.agent_signature || identity.agentPresence?.signature,
-      from_client_type: input.client_type || identity.agentPresence?.client_type,
-      thread_id: input.session_id || input.project_id || "",
+      from_agent_signature: record.agent_signature,
+      from_client_type: record.client_type,
+      thread_id: record.session_id || record.project_id || "",
       body: rawHandoff,
     });
-    const record = normalizeMemoryInput({ ...input, kind: "handoff", title: input.title || "Agent handoff" }, identity, config, "handoff");
-    return governed(identity, governedMemoryAction({ action_type: "memory.handoff", action_label: `Create memory handoff to ${toAgentId}`, target: toAgentId }), async (state) => {
+    const action = governedMemoryAction({
+      action_type: "memory.handoff",
+      action_label: `Create memory handoff to ${toAgentId}`,
+      target: toAgentId,
+      payload_sha256: requestDigest(record),
+      idempotency_key_sha256: idempotencyKeyDigest(record.idempotency_key),
+    });
+    if (postgres) {
+      if (scan.suspicious) {
+        return {
+          quarantined: true,
+          created: false,
+          quarantine: publicQuarantineReceipt(scan, {
+            quarantine_id: `memq_${crypto.randomUUID()}`,
+            created_at: record.created_at,
+          }),
+        };
+      }
+      const handoffRecord = {
+        ...record,
+        to_agent_id: toAgentId,
+        status: "pending",
+        acknowledged_at: null,
+        acknowledged_by: null,
+      };
+      return postgres.createHandoff(handoffRecord, identity, action);
+    }
+    return governed(identity, action, async (state) => {
       const existingQuarantine = record.idempotency_key && state.handoff_quarantines.find((item) => item.idempotency_key === record.idempotency_key && item.actor_subject === record.actor_subject);
       if (existingQuarantine) {
         return { quarantined: true, created: false, quarantine: publicQuarantineReceipt(existingQuarantine.scan, { quarantine_id: existingQuarantine.id, created_at: existingQuarantine.created_at, idempotent_replay: true }) };
@@ -438,7 +543,19 @@ export function createMemoryFabric(config, options = {}) {
       }
       const handoffRecord = { ...record, to_agent_id: toAgentId, status: "pending", acknowledged_at: null, acknowledged_by: null };
       state.handoffs.push(handoffRecord);
-      state.events.push({ ...record, id: `evt_${crypto.randomUUID()}`, handoff_id: record.id, to_agent_id: toAgentId });
+      state.events.push({
+        id: `evt_${crypto.randomUUID()}`,
+        kind: "handoff",
+        handoff_id: record.id,
+        project_id: record.project_id,
+        session_id: record.session_id,
+        agent_id: record.agent_id,
+        to_agent_id: toAgentId,
+        status: "pending",
+        source: record.source,
+        created_at: record.created_at,
+        expires_at: record.expires_at,
+      });
       return { handoff: publicRecord(handoffRecord), created: true };
     });
   }
@@ -447,7 +564,17 @@ export function createMemoryFabric(config, options = {}) {
     const handoffId = String(input.handoff_id || "").trim();
     if (!/^mem_[a-f0-9-]{36}$/.test(handoffId)) fail("handoff_id_invalid");
     const agentId = safeId(input.agent_id, "agent");
-    return governed(identity, governedMemoryAction({ action_type: "memory.handoff_acknowledge", action_label: `Acknowledge memory handoff ${handoffId}`, target: handoffId }), async (state) => {
+    const boundAgentId = safeId(identity?.agentPresence?.agent_id, "agent", { optional: true });
+    if (!boundAgentId) fail("agent_presence_required");
+    if (agentId !== boundAgentId) fail("agent_presence_conflict");
+    const action = governedMemoryAction({
+      action_type: "memory.handoff_acknowledge",
+      action_label: `Acknowledge memory handoff ${handoffId}`,
+      target: handoffId,
+      payload_sha256: requestDigest({ handoff_id: handoffId, agent_id: agentId }),
+    });
+    if (postgres) return postgres.acknowledgeHandoff({ ...input, handoff_id: handoffId, agent_id: agentId }, identity, action);
+    return governed(identity, action, async (state) => {
       const record = state.handoffs.find((item) => item.id === handoffId);
       if (!record) fail("handoff_not_found");
       if (record.to_agent_id !== "all" && record.to_agent_id !== agentId) fail("handoff_recipient_mismatch");
@@ -458,22 +585,31 @@ export function createMemoryFabric(config, options = {}) {
     });
   }
 
-  function context(input, identity) {
-    const state = read(identity.tenantId);
+  function buildContext(state, input, identity) {
     const projectId = safeId(input.project_id, "project", { optional: true });
     const sessionId = safeId(input.session_id, "session", { optional: true });
-    const agentId = safeId(input.agent_id, "agent", { optional: true });
-    const matchesScope = (record) => (!projectId || !record.project_id || record.project_id === projectId)
-      && (!sessionId || !record.session_id || record.session_id === sessionId);
+    const requestedAgentId = safeId(input.agent_id, "agent", { optional: true });
+    const boundAgentId = safeId(identity?.agentPresence?.agent_id, "agent", { optional: true });
+    if (requestedAgentId && !boundAgentId) fail("agent_presence_required");
+    if (requestedAgentId && boundAgentId && requestedAgentId !== boundAgentId) fail("agent_presence_conflict");
+    const agentId = boundAgentId;
+    const matchesProject = (record) => isProjectVisible(record, projectId);
+    const matchesSession = (record) => isSessionVisible(record, sessionId);
+    const matchesCheckpoint = (record) => isCheckpointProjectVisible(record, projectId)
+      && (matchesSession(record) || isCrossSessionCheckpoint(record));
     const relevant = searchState(state, { ...input, project_id: projectId, session_id: sessionId, limit: input.limit || 10 });
-    const checkpoints = state.checkpoints.filter(matchesScope).sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const checkpoints = state.checkpoints.filter(matchesCheckpoint).sort((a, b) => b.created_at.localeCompare(a.created_at));
     const pending = state.handoffs
-      .filter(matchesScope)
-      .filter((item) => item.status === "pending" && (!agentId || item.to_agent_id === "all" || item.to_agent_id === agentId))
+      .filter(matchesProject)
+      .filter((item) => item.status === "pending" && Boolean(agentId) && (item.to_agent_id === "all" || item.to_agent_id === agentId))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, 20)
       .map(publicRecord);
-    const recent = state.events.filter(matchesScope).slice(-boundedNumber(input.activity_limit, 20, 1, 50)).reverse().map(publicRecord);
+    const recent = state.events
+      .filter((record) => matchesProject(record) && matchesSession(record))
+      .slice(-boundedNumber(input.activity_limit, 20, 1, 50))
+      .reverse()
+      .map(publicActivity);
     return {
       schema_version: "tenant_memory_context_v1",
       tenant_id: identity.tenantId,
@@ -493,8 +629,21 @@ export function createMemoryFabric(config, options = {}) {
     };
   }
 
-  async function recordToolActivity({ identity, toolName, args = {}, result = null, error = null, preflight = null }) {
-    if (!identity?.tenantId || String(toolName || "").startsWith("memory_")) return;
+  function context(input, identity) {
+    if (postgres) {
+      const requestedAgentId = safeId(input.agent_id, "agent", { optional: true });
+      const boundAgentId = safeId(identity?.agentPresence?.agent_id, "agent", { optional: true });
+      if (requestedAgentId && boundAgentId && requestedAgentId !== boundAgentId) fail("agent_presence_conflict");
+      const agentId = boundAgentId || requestedAgentId;
+      return postgres.readMemoryState(identity.tenantId, { agentId, identity })
+        .then((state) => buildContext(state, input, identity));
+    }
+    return buildContext(read(identity.tenantId), input, identity);
+  }
+
+  async function recordToolActivity({ identity, toolName, args = {}, result = null, error = null, preflight = null, toolAnnotations = null }) {
+    if (!identity?.tenantId || toolAnnotations?.readOnlyHint === true || String(toolName || "").startsWith("memory_")) return;
+    if (postgres && !identity.governanceContext?.preflight_id) fail("collaboration_task_contract_required");
     const details = safeAutomaticDetails(toolName, args, result);
     const preflightPresence = preflight?.agent_presence || preflight?.work_preflight?.agent_presence || null;
     const presence = identity.agentPresence || details.agent_presence || preflightPresence || createAgentPresence(config, identity, {
@@ -504,74 +653,76 @@ export function createMemoryFabric(config, options = {}) {
     });
     const agentId = presence.opaque_agent_id;
     const preflightId = String(preflight?.work_preflight?.preflight_id || preflight?.preflight_id || "").trim();
+    const timestamp = new Date().toISOString();
+    const lifecycleKey = `agent_lifecycle:${preflightId || `${presence.signature}:${toolName}:${timestamp}`}`;
+    // A preflight is the durable task contract. Every subsequent Core/Nyra
+    // operation is a checkpoint, so a different connected AI can continue
+    // even if the original ChatGPT/Codex session disappears.
+    const lifecycleRecord = normalizeMemoryInput({
+      kind: "checkpoint",
+      title: toolName === "work_preflight" ? "Connected AI task contract" : "Connected AI progress checkpoint",
+      summary: error
+        ? `Connected AI ${agentId} failed while running ${toolName}; the next agent must inspect this checkpoint before retrying.`
+        : toolName === "work_preflight"
+          ? `Connected AI ${agentId} opened governed work through Core/Nyra.`
+          : `Connected AI ${agentId} completed ${toolName} through Core/Nyra.`,
+      facts: [...(preflightId ? [`Preflight: ${preflightId}`] : []), `Agent signature: ${presence.signature}`, `Client type: ${presence.client_type}`, `Session fingerprint: ${presence.session_fingerprint}`],
+      decisions: details.decision_state ? [`Core state: ${details.decision_state}`] : [],
+      actions: [`Tool call: ${toolName}`],
+      outcomes: [error ? "failed" : "completed"],
+      next_steps: error ? ["Inspect the failed checkpoint and continue with a governed retry or handoff."] : ["Read tenant memory context before the next action."],
+      tags: ["connected_ai", "core_nyra", toolName === "work_preflight" ? "task_contract" : "checkpoint", error ? "failed" : "completed"],
+      importance: error ? 75 : toolName === "work_preflight" ? 70 : 45,
+      data_classification: "internal",
+      project_id: details.project_id,
+      session_id: details.session_id,
+      agent_id: agentId,
+      logical_agent_id: presence.agent_id,
+      agent_signature: presence.signature,
+      agent_signature_version: presence.signature_version,
+      client_type: presence.client_type,
+      session_fingerprint: presence.session_fingerprint,
+      source: "mcp_work_lifecycle",
+      idempotency_key: lifecycleKey,
+    }, identity, config, "checkpoint", { bindPresence: false });
+    const activityEvent = {
+      id: `evt_${crypto.randomUUID()}`,
+      kind: error ? "outcome" : "action",
+      title: `MCP ${toolName}`,
+      summary: error ? `Tool ${toolName} failed.` : `Tool ${toolName} completed.`,
+      facts: [],
+      decisions: details.decision_state ? [`Core state: ${details.decision_state}`] : [],
+      actions: [`Tool call: ${toolName}`],
+      outcomes: [error ? "failed" : "completed"],
+      next_steps: [],
+      tags: ["mcp_auto_journal", error ? "failed" : "completed"],
+      importance: error ? 70 : 35,
+      data_classification: "internal",
+      consent_reference: null,
+      project_id: details.project_id,
+      session_id: details.session_id,
+      agent_id: agentId,
+      logical_agent_id: presence.agent_id,
+      agent_signature: presence.signature,
+      agent_signature_version: presence.signature_version,
+      client_type: presence.client_type,
+      session_fingerprint: presence.session_fingerprint,
+      source: "mcp_auto_journal",
+      actor_subject: actor(identity),
+      created_at: timestamp,
+      expires_at: new Date(Date.now() + config.memoryRetentionDays * 86_400_000).toISOString(),
+      redacted: true,
+      redaction_count: 0,
+      tool_activity: details,
+    };
+    if (postgres) return postgres.recordAutomatic({ checkpoint: lifecycleRecord, event: activityEvent }, identity);
     await updateState(root, identity.tenantId, async (state) => {
-      const timestamp = new Date().toISOString();
-      const lifecycleKey = `agent_lifecycle:${preflightId || `${presence.signature}:${toolName}:${timestamp}`}`;
-      // A preflight is the durable task contract. Every subsequent Core/Nyra
-      // operation is a checkpoint, so a different connected AI can continue
-      // even if the original ChatGPT/Codex session disappears.
-      const lifecycleRecord = normalizeMemoryInput({
-        kind: "checkpoint",
-        title: toolName === "work_preflight" ? "Connected AI task contract" : "Connected AI progress checkpoint",
-        summary: error
-          ? `Connected AI ${agentId} failed while running ${toolName}; the next agent must inspect this checkpoint before retrying.`
-          : toolName === "work_preflight"
-            ? `Connected AI ${agentId} opened governed work through Core/Nyra.`
-            : `Connected AI ${agentId} completed ${toolName} through Core/Nyra.`,
-        facts: [...(preflightId ? [`Preflight: ${preflightId}`] : []), `Agent signature: ${presence.signature}`, `Client type: ${presence.client_type}`, `Session fingerprint: ${presence.session_fingerprint}`],
-        decisions: details.decision_state ? [`Core state: ${details.decision_state}`] : [],
-        actions: [`Tool call: ${toolName}`],
-        outcomes: [error ? "failed" : "completed"],
-        next_steps: error ? ["Inspect the failed checkpoint and continue with a governed retry or handoff."] : ["Read tenant memory context before the next action."],
-        tags: ["connected_ai", "core_nyra", toolName === "work_preflight" ? "task_contract" : "checkpoint", error ? "failed" : "completed"],
-        importance: error ? 75 : toolName === "work_preflight" ? 70 : 45,
-        data_classification: "internal",
-        project_id: details.project_id,
-        session_id: details.session_id,
-        agent_id: agentId,
-        logical_agent_id: presence.agent_id,
-        agent_signature: presence.signature,
-        agent_signature_version: presence.signature_version,
-        client_type: presence.client_type,
-        session_fingerprint: presence.session_fingerprint,
-        source: "mcp_work_lifecycle",
-        idempotency_key: lifecycleKey,
-      }, identity, config, "checkpoint");
       const existing = state.checkpoints.find((item) => item.idempotency_key === lifecycleRecord.idempotency_key && item.actor_subject === lifecycleRecord.actor_subject);
       if (!existing) {
         state.checkpoints.push(lifecycleRecord);
         state.events.push({ ...lifecycleRecord, id: `evt_${crypto.randomUUID()}`, checkpoint_id: lifecycleRecord.id });
       }
-      state.events.push({
-        id: `evt_${crypto.randomUUID()}`,
-        kind: error ? "outcome" : "action",
-        title: `MCP ${toolName}`,
-        summary: error ? `Tool ${toolName} failed.` : `Tool ${toolName} completed.`,
-        facts: [],
-        decisions: details.decision_state ? [`Core state: ${details.decision_state}`] : [],
-        actions: [`Tool call: ${toolName}`],
-        outcomes: [error ? "failed" : "completed"],
-        next_steps: [],
-        tags: ["mcp_auto_journal", error ? "failed" : "completed"],
-        importance: error ? 70 : 35,
-        data_classification: "internal",
-        consent_reference: null,
-        project_id: details.project_id,
-        session_id: details.session_id,
-        agent_id: agentId,
-        logical_agent_id: presence.agent_id,
-        agent_signature: presence.signature,
-        agent_signature_version: presence.signature_version,
-        client_type: presence.client_type,
-        session_fingerprint: presence.session_fingerprint,
-        source: "mcp_auto_journal",
-        actor_subject: actor(identity),
-        created_at: timestamp,
-        expires_at: new Date(Date.now() + config.memoryRetentionDays * 86_400_000).toISOString(),
-        redacted: true,
-        redaction_count: 0,
-        tool_activity: details,
-      });
+      state.events.push(activityEvent);
       audit(state, identity, error ? "tool.failed" : "tool.completed", toolName, null, presence);
       return { recorded: true, agent_id: agentId, agent_signature: presence.signature, task_contract_id: preflightId || null, checkpoint_created: !existing };
     });
@@ -583,19 +734,25 @@ export function createMemoryFabric(config, options = {}) {
     handoff,
     acknowledge,
     context,
-    search: (input, identity) => ({
-      schema_version: "tenant_memory_search_v1",
-      tenant_id: identity.tenantId,
-      results: searchState(read(identity.tenantId), input),
-    }),
+    search: (input, identity) => postgres
+      ? postgres.readMemoryState(identity.tenantId).then((state) => ({
+          schema_version: "tenant_memory_search_v1",
+          tenant_id: identity.tenantId,
+          results: searchState(state, input),
+        }))
+      : ({
+          schema_version: "tenant_memory_search_v1",
+          tenant_id: identity.tenantId,
+          results: searchState(read(identity.tenantId), input),
+        }),
     recordToolActivity,
   };
 }
 
 export function createMemoryFabricHandlers(fabric) {
   return {
-    memory_context: async (args, identity) => textResult(fabric.context(args, identity)),
-    memory_search: async (args, identity) => textResult(fabric.search(args, identity)),
+    memory_context: async (args, identity) => textResult(await fabric.context(args, identity)),
+    memory_search: async (args, identity) => textResult(await fabric.search(args, identity)),
     memory_append: async (args, identity) => textResult(await fabric.append(args, identity)),
     memory_checkpoint: async (args, identity) => textResult(await fabric.checkpoint(args, identity)),
     memory_handoff: async (args, identity) => textResult(await fabric.handoff(args, identity)),

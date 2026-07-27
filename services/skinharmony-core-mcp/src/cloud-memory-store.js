@@ -33,10 +33,15 @@ export function stableMemoryId(tenantId, sourcePath) {
 }
 
 export function createCloudMemoryStore(config, options = {}) {
-  if (!config.databaseUrl) return null;
+  const configuredUrl = Object.hasOwn(options, "connectionString")
+    ? options.connectionString
+    : (config.cloudMemoryDatabaseUrl ?? config.databaseUrl);
+  const databaseUrl = String(configuredUrl || "").trim();
+  if (!databaseUrl && !options.pool) return null;
+  const ownsPool = !options.pool;
   const pool = options.pool || new Pool({
-    connectionString: config.databaseUrl,
-    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
+    connectionString: databaseUrl,
+    ssl: (options.ssl ?? config.sharedMemoryDatabaseSsl ?? config.databaseSsl) ? { rejectUnauthorized: false } : undefined,
     max: config.databasePoolMax || 5,
   });
   let ready;
@@ -61,6 +66,7 @@ export function createCloudMemoryStore(config, options = {}) {
 
   return {
     backend: "postgres",
+    initialize,
     async search(tenantId, query, limit = 20) {
       await initialize();
       const terms = String(query || "").trim().split(/\s+/).filter(Boolean).slice(0, 12);
@@ -118,7 +124,15 @@ export function createCloudMemoryStore(config, options = {}) {
       await initialize();
       const sourcePath = String(input.source_path || "").replace(/^\/+/, "").slice(0, 500);
       if (!sourcePath || sourcePath.includes("..")) throw new Error("memory_source_path_invalid");
+      if (redactMemoryText(sourcePath).redactions) throw new Error("memory_source_path_sensitive");
       const cleaned = redactMemoryText(input.text);
+      const cleanedTitle = redactMemoryText(input.title || sourcePath);
+      const metadata = Object.fromEntries(Object.entries(input.metadata || {}).slice(0, 50).map(([key, value]) => [
+        String(key).slice(0, 80),
+        typeof value === "string"
+          ? redactMemoryText(value).text.slice(0, 2_000)
+          : (value === null || typeof value === "number" || typeof value === "boolean") ? value : "[REDACTED_UNSUPPORTED]",
+      ]));
       const content = cleaned.text.slice(0, config.cloudMemoryMaxDocumentBytes || 250_000);
       const sha256 = crypto.createHash("sha256").update(content).digest("hex");
       if (input.content_sha256 && input.content_sha256 !== sha256) throw new Error("memory_checksum_mismatch");
@@ -133,8 +147,8 @@ export function createCloudMemoryStore(config, options = {}) {
            redaction_count=EXCLUDED.redaction_count,
            metadata=EXCLUDED.metadata, updated_at=now()
          RETURNING id, source_path, content_sha256, redaction_count, updated_at`,
-        [tenant(tenantId), id, sourcePath, String(input.title || sourcePath).slice(0, 240), content, sha256,
-          cleaned.redactions, JSON.stringify(input.metadata || {})],
+        [tenant(tenantId), id, sourcePath, cleanedTitle.text.slice(0, 240), content, sha256,
+          cleaned.redactions + cleanedTitle.redactions, JSON.stringify(metadata)],
       );
       return result.rows[0];
     },
@@ -148,6 +162,6 @@ export function createCloudMemoryStore(config, options = {}) {
       );
       return { backend: "postgres", ...result.rows[0] };
     },
-    close: () => pool.end(),
+    close: () => ownsPool ? pool.end() : Promise.resolve(),
   };
 }

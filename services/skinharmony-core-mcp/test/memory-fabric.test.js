@@ -14,6 +14,21 @@ function fixture(govern = async () => ({ allowed: true, decision: "allow_control
 const tenantA = { tenantId: "tenant-a", subject: "agent-a" };
 const tenantB = { tenantId: "tenant-b", subject: "agent-b" };
 
+function sessionIdentity(base, agentId, sessionId) {
+  return {
+    ...base,
+    agentPresence: {
+      agent_id: agentId,
+      opaque_agent_id: `ai_${agentId}`,
+      signature: `ags_${agentId}_${sessionId}`,
+      signature_version: "v1",
+      session_fingerprint: `fingerprint_${sessionId}`,
+      session_id: sessionId,
+      client_type: "codex",
+    },
+  };
+}
+
 test("isolates tenants and returns only lexically relevant memories", async (t) => {
   const { root, fabric } = fixture();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -44,6 +59,251 @@ test("inherits tenant and project memory into a new session without leaking sibl
     new Set(context.relevant_memories.map((item) => item.title)),
     new Set(["Tenant rule", "Project decision"]),
   );
+});
+
+test("shares explicit checkpoints and recipient handoffs across sessions without leaking sibling scopes", async (t) => {
+  const { root, fabric } = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sender = sessionIdentity(tenantA, "sender-agent", "session-old");
+  const recipient = sessionIdentity(tenantA, "core-agent", "session-new");
+  const otherAgent = sessionIdentity(tenantA, "wrong-agent", "session-new");
+  const otherTenant = sessionIdentity(tenantB, "core-agent", "session-new");
+
+  await fabric.append({
+    title: "Old private note",
+    summary: "This ordinary session memory must remain private",
+    project_id: "project-x",
+  }, sender);
+  await fabric.checkpoint({
+    title: "Project continuity checkpoint",
+    summary: "Continue the shared PostgreSQL work",
+    project_id: "project-x",
+  }, sender);
+  await fabric.checkpoint({
+    title: "Shared lifecycle checkpoint",
+    summary: "Automatic progress from the sender session",
+    project_id: "project-lifecycle",
+    source: "mcp_work_lifecycle",
+  }, sender);
+  await fabric.handoff({
+    summary: "Direct work for the Core agent",
+    to_agent_id: "core-agent",
+    project_id: "project-x",
+  }, sender);
+  await fabric.handoff({
+    summary: "Broadcast work for every project agent",
+    to_agent_id: "all",
+    project_id: "project-x",
+  }, sender);
+
+  const recipientContext = fabric.context({
+    project_id: "project-x",
+    session_id: "session-new",
+    agent_id: "core-agent",
+    query: "PostgreSQL",
+    limit: 20,
+  }, recipient);
+  assert.equal(recipientContext.latest_checkpoint.title, "Project continuity checkpoint");
+  assert.deepEqual(
+    new Set(recipientContext.pending_handoffs.map((item) => item.summary)),
+    new Set(["Direct work for the Core agent", "Broadcast work for every project agent"]),
+  );
+  assert.deepEqual(
+    recipientContext.relevant_memories.map((item) => item.title),
+    ["Project continuity checkpoint"],
+  );
+  assert.doesNotMatch(JSON.stringify(recipientContext), /Old private note|Old lifecycle checkpoint/);
+  assert.equal(
+    fabric.search({ query: "PostgreSQL", project_id: "project-x", session_id: "session-new" }, recipient).results[0].title,
+    "Project continuity checkpoint",
+  );
+
+  const lifecycleContext = fabric.context({
+    project_id: "project-lifecycle",
+    session_id: "session-new",
+    agent_id: "core-agent",
+  }, recipient);
+  assert.equal(lifecycleContext.latest_checkpoint.title, "Shared lifecycle checkpoint");
+  assert.equal(lifecycleContext.recent_activity.length, 0);
+
+  const otherAgentContext = fabric.context({
+    project_id: "project-x",
+    session_id: "session-new",
+    agent_id: "wrong-agent",
+  }, otherAgent);
+  assert.deepEqual(otherAgentContext.pending_handoffs.map((item) => item.summary), ["Broadcast work for every project agent"]);
+
+  const otherProjectContext = fabric.context({
+    project_id: "project-y",
+    session_id: "session-new",
+    agent_id: "core-agent",
+  }, recipient);
+  assert.equal(otherProjectContext.latest_checkpoint, null);
+  assert.equal(otherProjectContext.pending_handoffs.length, 0);
+
+  const otherTenantContext = fabric.context({
+    project_id: "project-x",
+    session_id: "session-new",
+    agent_id: "core-agent",
+  }, otherTenant);
+  assert.equal(otherTenantContext.latest_checkpoint, null);
+  assert.equal(otherTenantContext.pending_handoffs.length, 0);
+});
+
+test("records a redacted failure checkpoint that another session can resume", async (t) => {
+  const { root, fabric } = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sender = sessionIdentity(tenantA, "sender-agent", "session-old");
+  const recipient = sessionIdentity(tenantA, "core-agent", "session-new");
+  const rawFailure = "password=must-never-be-stored";
+
+  await fabric.recordToolActivity({
+    identity: sender,
+    toolName: "workspace_write_document",
+    args: { project_id: "project-failure", session_id: "session-old" },
+    error: new Error(rawFailure),
+    preflight: { work_preflight: { preflight_id: "preflight-failure" } },
+    toolAnnotations: { readOnlyHint: false },
+  });
+
+  const context = fabric.context({
+    project_id: "project-failure",
+    session_id: "session-new",
+    agent_id: "core-agent",
+  }, recipient);
+  assert.equal(context.latest_checkpoint.source, "mcp_work_lifecycle");
+  assert.match(context.latest_checkpoint.summary, /failed while running workspace_write_document/);
+  assert.deepEqual(context.latest_checkpoint.outcomes, ["failed"]);
+  assert.deepEqual(context.latest_checkpoint.next_steps, ["Inspect the failed checkpoint and continue with a governed retry or handoff."]);
+  const stored = fs.readFileSync(path.join(root, "tenants", "tenant-a", "memory-fabric", "state.json"), "utf8");
+  assert(!stored.includes(rawFailure));
+  assert(!stored.includes("must-never-be-stored"));
+});
+
+test("applies cross-session checkpoint and handoff visibility to the PostgreSQL state adapter", async () => {
+  const timestamp = new Date().toISOString();
+  const state = {
+    revision: 7,
+    memories: [{
+      id: "mem_old_private",
+      kind: "observation",
+      title: "Old private PostgreSQL note",
+      summary: "Must remain session scoped",
+      project_id: "project-x",
+      session_id: "session-old",
+      source: "mcp_explicit",
+      created_at: timestamp,
+    }],
+    checkpoints: [
+      {
+        id: "mem_explicit_checkpoint",
+        kind: "checkpoint",
+        title: "PostgreSQL continuity checkpoint",
+        summary: "Visible to the next session",
+        project_id: "project-x",
+        session_id: "session-old",
+        source: "mcp_explicit",
+        created_at: timestamp,
+      },
+      {
+        id: "mem_lifecycle_checkpoint",
+        kind: "checkpoint",
+        title: "PostgreSQL lifecycle checkpoint",
+        summary: "Must remain session scoped",
+        project_id: "project-x",
+        session_id: "session-old",
+        source: "mcp_work_lifecycle",
+        created_at: new Date(Date.now() + 1_000).toISOString(),
+      },
+    ],
+    handoffs: [{
+      id: "mem_direct_handoff",
+      kind: "handoff",
+      title: "Agent handoff",
+      summary: "Continue through PostgreSQL",
+      project_id: "project-x",
+      session_id: "session-old",
+      source: "mcp_explicit",
+      to_agent_id: "core-agent",
+      status: "pending",
+      created_at: timestamp,
+    }],
+    events: [{
+      id: "evt_old_session",
+      kind: "action",
+      title: "Old session event",
+      summary: "Must remain session scoped",
+      project_id: "project-x",
+      session_id: "session-old",
+      source: "mcp_auto_journal",
+      created_at: timestamp,
+    }],
+    audit: [],
+  };
+  const fabric = createMemoryFabric(
+    { memoryRetentionDays: 365, personalMemoryRetentionDays: 90 },
+    { sharedMemoryPostgresStore: { readMemoryState: async () => state } },
+  );
+  const recipient = sessionIdentity(tenantA, "core-agent", "session-new");
+  const context = await fabric.context({
+    project_id: "project-x",
+    session_id: "session-new",
+    agent_id: "core-agent",
+    query: "continuity",
+  }, recipient);
+  assert.equal(context.latest_checkpoint.title, "PostgreSQL lifecycle checkpoint");
+  assert.deepEqual(context.pending_handoffs.map((item) => item.summary), ["Continue through PostgreSQL"]);
+  assert.deepEqual(context.relevant_memories.map((item) => item.title), ["PostgreSQL continuity checkpoint"]);
+  assert.equal(context.recent_activity.length, 0);
+});
+
+test("keeps tenant-global lifecycle checkpoints out of a project latest checkpoint", async () => {
+  const timestamp = Date.now();
+  const state = {
+    revision: 2,
+    memories: [],
+    checkpoints: [
+      {
+        id: "mem_project_checkpoint",
+        kind: "checkpoint",
+        title: "Project checkpoint",
+        summary: "Project-specific continuity",
+        project_id: "project-x",
+        session_id: "session-old",
+        source: "mcp_work_lifecycle",
+        created_at: new Date(timestamp).toISOString(),
+      },
+      {
+        id: "mem_tenant_checkpoint",
+        kind: "checkpoint",
+        title: "Tenant supervisor checkpoint",
+        summary: "Tenant-global activity",
+        project_id: null,
+        session_id: "session-other",
+        source: "mcp_work_lifecycle",
+        created_at: new Date(timestamp + 1_000).toISOString(),
+      },
+    ],
+    handoffs: [],
+    events: [],
+    audit: [],
+  };
+  const fabric = createMemoryFabric(
+    { memoryRetentionDays: 365, personalMemoryRetentionDays: 90 },
+    { sharedMemoryPostgresStore: { readMemoryState: async () => state } },
+  );
+  const recipient = sessionIdentity(tenantA, "core-agent", "session-new");
+  const projectContext = await fabric.context({
+    project_id: "project-x",
+    session_id: "session-new",
+    agent_id: "core-agent",
+  }, recipient);
+  assert.equal(projectContext.latest_checkpoint.title, "Project checkpoint");
+  const tenantContext = await fabric.context({
+    session_id: "session-new",
+    agent_id: "core-agent",
+  }, recipient);
+  assert.equal(tenantContext.latest_checkpoint.title, "Tenant supervisor checkpoint");
 });
 
 test("redacts secrets and personal identifiers before persistence", async (t) => {
@@ -96,15 +356,20 @@ test("supports idempotent append, checkpoint, handoff and acknowledgement", asyn
 
   await fabric.checkpoint({ summary: "Implementation is ready for integration tests", project_id: "project-x" }, tenantA);
   const handoff = await fabric.handoff({ summary: "Run end-to-end tests", to_agent_id: "core-agent", project_id: "project-x" }, tenantA);
-  let context = fabric.context({ project_id: "project-x", agent_id: "core-agent" }, tenantA);
+  const coreAgent = { ...tenantA, agentPresence: { agent_id: "core-agent" } };
+  const wrongAgent = { ...tenantA, agentPresence: { agent_id: "wrong-agent" } };
+  let context = fabric.context({ project_id: "project-x", agent_id: "core-agent" }, coreAgent);
   assert(context.latest_checkpoint);
   assert.equal(context.pending_handoffs.length, 1);
+  const wrongContext = fabric.context({ project_id: "project-x", agent_id: "wrong-agent" }, wrongAgent);
+  assert.equal(wrongContext.pending_handoffs.length, 0);
+  assert.doesNotMatch(JSON.stringify(wrongContext.recent_activity), /Run end-to-end tests/);
   await assert.rejects(
-    fabric.acknowledge({ handoff_id: handoff.handoff.id, agent_id: "wrong-agent" }, tenantA),
+    fabric.acknowledge({ handoff_id: handoff.handoff.id, agent_id: "wrong-agent" }, wrongAgent),
     /handoff_recipient_mismatch/,
   );
-  await fabric.acknowledge({ handoff_id: handoff.handoff.id, agent_id: "core-agent" }, tenantA);
-  context = fabric.context({ project_id: "project-x", agent_id: "core-agent" }, tenantA);
+  await fabric.acknowledge({ handoff_id: handoff.handoff.id, agent_id: "core-agent" }, coreAgent);
+  context = fabric.context({ project_id: "project-x", agent_id: "core-agent" }, coreAgent);
   assert.equal(context.pending_handoffs.length, 0);
 
   const reloaded = createMemoryFabric(config, { govern: async () => ({ allowed: true }) });
@@ -125,7 +390,8 @@ test("memory handoffs quarantine injection without persisting or returning raw i
   assert.equal(response.quarantined, true);
   assert.equal(response.quarantine.propagation_allowed, false);
   assert.equal(JSON.stringify(response).includes(hostile), false);
-  assert.equal(fabric.context({ project_id: "project-x", agent_id: "core-agent" }, tenantA).pending_handoffs.length, 0);
+  const coreAgent = sessionIdentity(tenantA, "core-agent", "session-quarantine");
+  assert.equal(fabric.context({ project_id: "project-x", agent_id: "core-agent" }, coreAgent).pending_handoffs.length, 0);
   const persisted = fs.readFileSync(path.join(root, "tenants", "tenant-a", "memory-fabric", "state.json"), "utf8");
   assert.equal(persisted.includes(hostile), false);
   assert.equal(JSON.parse(persisted).handoffs.length, 0);

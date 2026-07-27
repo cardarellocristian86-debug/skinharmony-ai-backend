@@ -7,7 +7,7 @@ import { createApp } from "../src/app.js";
 import { createCoreHandlers, createCoreWriteGuard } from "../src/core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "../src/memory-fabric.js";
 
-test("runs write, automatic recall, Nyra/Core interpretation and safe journal end to end", async (t) => {
+test("runs write, automatic recall and Nyra/Core interpretation without journaling read-only calls", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sh-memory-integration-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const coreBodies = [];
@@ -111,9 +111,10 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
 
   const context = await call(4, "memory_context", { project_id: "project-one", session_id: "session-one" });
   assert.equal(context.status, 200);
-  assert(context.body.result.structuredContent.recent_activity.some((item) => item.title === "MCP nyra_interpret_request"));
+  assert.equal(context.body.result.structuredContent.recent_activity.some((item) => item.title === "MCP nyra_interpret_request"), false);
   const stored = fs.readFileSync(path.join(root, "tenants", "tenant-integration", "memory-fabric", "state.json"), "utf8");
   assert(!stored.includes(rawMessage));
+  assert(!stored.includes("mcp_auto_journal"));
   assert(coreBodies.some((entry) => entry.path === "/v1/action-evaluator"));
   assert(coreBodies.some((entry) => entry.path === "/v1/work/preflight" && entry.body.memory_context?.tenant_id === "tenant-integration"));
   assert(coreBodies.some((entry) => entry.path === "/v1/nira/core-bridge" && entry.body.memory_context?.tenant_id === "tenant-integration"));

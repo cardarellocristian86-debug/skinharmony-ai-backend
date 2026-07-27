@@ -79,7 +79,7 @@ function extractDecisionMetadata(result = {}) {
   };
 }
 
-const CREATE_SCHEMA_SQL = `
+export const DECISION_LEDGER_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS core_ai_work_sessions (
   tenant_id varchar(64) NOT NULL,
   work_id uuid NOT NULL,
@@ -136,10 +136,14 @@ FROM core_decision_events GROUP BY tenant_id, date_trunc('day', occurred_at);
 `;
 
 export function createDecisionLedger(config, options = {}) {
-  if (!config.databaseUrl && !options.pool) return null;
-  const pool = options.pool || new Pool({ connectionString: config.databaseUrl, ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined, max: config.databasePoolMax || 5 });
+  const databaseUrl = String(config.decisionLedgerDatabaseUrl || config.databaseUrl || "").trim();
+  if (!databaseUrl && !options.pool) return null;
+  const ownsPool = !options.pool;
+  const pool = options.pool || new Pool({ connectionString: databaseUrl, ssl: (config.decisionLedgerDatabaseSsl ?? config.databaseSsl) ? { rejectUnauthorized: false } : undefined, max: config.databasePoolMax || 5 });
   let ready;
-  const initialize = () => ready ||= pool.query(CREATE_SCHEMA_SQL);
+  const initialize = () => ready ||= options.schemaReady
+    ? Promise.resolve(options.schemaReady)
+    : pool.query(DECISION_LEDGER_SCHEMA_SQL);
 
   async function startWork(identity, toolName, args = {}) {
     await initialize();
@@ -147,23 +151,35 @@ export function createDecisionLedger(config, options = {}) {
     const workId = crypto.randomUUID();
     const traceId = crypto.randomUUID();
     const summary = safeText(args.request || args.message || args.action_label || args.question || args.title || `MCP ${toolName}`, 2_000);
-    await pool.query(`INSERT INTO core_ai_work_sessions
-      (tenant_id,work_id,trace_id,project_id,session_id,agent_id,agent_type,provider,model,client_application,request_type,request_summary,input_hash)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [tenantId, workId, traceId, args.project_id || null, args.session_id || null, args.agent_id || identity.subject || "connected_ai",
-      identity.kind || "connected_ai", identity.issuer || null, safeText(args.model, 160) || null, identity.clientId || null,
-      safeText(toolName, 120), summary, hash({ toolName, args: stable(args), tenantId })]);
     const context = { tenantId, workId, traceId, toolName, agentId: args.agent_id || identity.subject || "connected_ai" };
-    await append(context, "work_received", { reason_summary: summary, metadata: { input_redacted: true } });
-    return context;
+    const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+    const transactional = client !== pool;
+    try {
+      if (transactional) await client.query("BEGIN");
+      await client.query(`INSERT INTO core_ai_work_sessions
+        (tenant_id,work_id,trace_id,project_id,session_id,agent_id,agent_type,provider,model,client_application,request_type,request_summary,input_hash)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [tenantId, workId, traceId, args.project_id || null, args.session_id || null, args.agent_id || identity.subject || "connected_ai",
+        identity.kind || "connected_ai", identity.issuer || null, safeText(args.model, 160) || null, identity.clientId || null,
+        safeText(toolName, 120), summary, hash({ toolName, args: stable(args), tenantId })]);
+      await append(context, "work_received", { reason_summary: summary, metadata: { input_redacted: true } }, client);
+      if (transactional) await client.query("COMMIT");
+      return context;
+    } catch (error) {
+      if (transactional) await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      if (transactional) client.release?.();
+    }
   }
 
-  async function append(context, eventType, input = {}) {
+  async function append(context, eventType, input = {}, transactionClient = null) {
     await initialize();
     if (!EVENT_TYPES.has(eventType)) throw new Error("decision_ledger_event_type_invalid");
-    const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+    const client = transactionClient || (typeof pool.connect === "function" ? await pool.connect() : pool);
+    const transactional = !transactionClient && client !== pool;
     try {
-      if (client.query !== pool.query) await client.query("BEGIN");
+      if (transactional) await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [context.tenantId, context.workId]);
       const previous = await client.query(`SELECT sequence_number,event_hash FROM core_decision_events
         WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [context.tenantId, context.workId]);
@@ -191,12 +207,14 @@ export function createDecisionLedger(config, options = {}) {
         input.risk_band || null, input.risk_score ?? null, input.control_level || null, input.decision_state || null,
         input.execution_allowed === true, JSON.stringify(input.reason_codes || []), safeText(input.reason_summary, 2_000),
         JSON.stringify(input.evidence_refs || []), JSON.stringify(input.metadata || {}), payload.previous_event_hash, eventHash]);
-      if (client.query !== pool.query) await client.query("COMMIT");
+      if (transactional) await client.query("COMMIT");
       return { schema_version: DECISION_LEDGER_SCHEMA_VERSION, work_id: context.workId, trace_id: context.traceId, sequence_number: sequence, event_type: eventType, event_hash: eventHash };
     } catch (error) {
-      if (client.query !== pool.query) await client.query("ROLLBACK").catch(() => {});
+      if (transactional) await client.query("ROLLBACK").catch(() => {});
       throw error;
-    } finally { client.release?.(); }
+    } finally {
+      if (transactional) client.release?.();
+    }
   }
 
   async function finishWork(context, { result, error, preflight, args = {} } = {}) {
@@ -256,5 +274,5 @@ export function createDecisionLedger(config, options = {}) {
     };
   }
 
-  return { initialize, startWork, append, finishWork, report, close: () => pool.end(), schemaSql: CREATE_SCHEMA_SQL };
+  return { initialize, startWork, append, finishWork, report, close: () => ownsPool ? pool.end() : Promise.resolve(), schemaSql: DECISION_LEDGER_SCHEMA_SQL };
 }

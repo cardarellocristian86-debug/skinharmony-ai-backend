@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
+import { collaborationDigest, collaborationReceiptRequired, createCollaborationActionBinding } from "./collaboration-receipt.js";
 import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
 import { readCoreCapabilityCatalog } from "./core-capability-catalog.js";
 import {
@@ -86,9 +87,12 @@ function compactBootstrap(bootstrap) {
     active_task_count: Number(bootstrap.active_task_count || 0),
     active_lock_count: Number(bootstrap.active_lock_count || 0),
     artifact_count: Number(bootstrap.artifact_count || 0),
+    checksum: bootstrap.checksum,
     latest_handoff: bootstrap.latest_handoff,
     recent_tasks: Array.isArray(bootstrap.recent_tasks) ? bootstrap.recent_tasks.slice(0, 5) : [],
     recent_artifacts: Array.isArray(bootstrap.recent_artifacts) ? bootstrap.recent_artifacts.slice(0, 5) : [],
+    task_contract: bootstrap.task_contract || null,
+    coordination_lock: bootstrap.coordination_lock || null,
     ...(bootstrap.loaded === false ? { missing_files: bootstrap.missing_files || [] } : {}),
   };
 }
@@ -377,10 +381,10 @@ export function createCoreHandlers(config, options = {}) {
         !String(identity.subject || "").trim() ||
         String(config.ownerContextSigningSecret || "").length < 32
       ) {
-        return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+        return { tenant_id: identity.tenantId, access_mode: "standard", role: identity.role || "standard", owner_verified: false };
       }
     } else if (identity.godMode !== true) {
-      return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      return { tenant_id: identity.tenantId, access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
     const approvalDigest = approvalEnvelope
       ? providerSetupLinkBindingApprovalDigest(approvalEnvelope, identity.tenantId)
@@ -453,6 +457,26 @@ export function createCoreHandlers(config, options = {}) {
     return { ...supplied, request, signals, context: { ...(supplied.context || {}), tenant_id: identity.tenantId } };
   }
 
+  function trustedCoreArgs(args = {}, identity) {
+    const {
+      tenant_id: _tenantId,
+      authenticated_tenant_id: _authenticatedTenantId,
+      owner_confirmed: _ownerConfirmed,
+      confirmation_reference: _confirmationReference,
+      owner_context: _ownerContext,
+      memory_context: _memoryContext,
+      ...safeArgs
+    } = args || {};
+    return {
+      ...safeArgs,
+      tenant_id: identity.tenantId,
+      owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
+      ...(verifiedConfirmationReference(identity)
+        ? { confirmation_reference: verifiedConfirmationReference(identity) }
+        : {}),
+    };
+  }
+
   async function runtimeHierarchyEvaluate(args, identity, operation) {
     const started = Date.now();
     const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
@@ -469,7 +493,10 @@ export function createCoreHandlers(config, options = {}) {
       session_id: args.session_id,
       agent_id: args.agent_id || "nyra",
     }, identity);
-    const requestBody = { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId };
+    const requestBody = {
+      ...trustedCoreArgs(args, identity),
+      ...(sharedContext ? { memory_context: sharedContext } : {}),
+    };
     const requestBinding = options.ownerBindingPurpose
       ? ownerRequestBinding(options.ownerBindingPurpose, requestBody)
       : undefined;
@@ -1117,7 +1144,7 @@ export function createCoreHandlers(config, options = {}) {
     })),
     generic_agent_start: async (args, identity) => textResult(await coreRequest("/v1/generic-agents/runs", identity.tenantId, {
       method: "POST",
-      body: { ...args, tenant_id: identity.tenantId },
+      body: trustedCoreArgs(args, identity),
     })),
     generic_agent_checkpoint: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/runs/${encodeURIComponent(args.run_id)}/checkpoint`, identity.tenantId, {
       method: "POST",
@@ -1201,6 +1228,8 @@ export function createCoreHandlers(config, options = {}) {
 
 export function createCoreWriteGuard(config, options = {}) {
   const handlers = createCoreHandlers(config, options);
+  const collaborationReceiptClient = options.collaborationReceiptClient;
+  const collaborationReceiptVerifier = options.collaborationReceiptVerifier;
   return async function governWrite(action, identity) {
     const autonomousInternalActionTypes = new Set([
       "agent.heartbeat",
@@ -1237,10 +1266,39 @@ export function createCoreWriteGuard(config, options = {}) {
         confirmation_satisfied: false,
       };
     }
+    const governance = identity?.governanceContext || {};
+    const receiptRequired = collaborationReceiptRequired(config, action);
+    const collaborationBinding = receiptRequired
+      ? createCollaborationActionBinding(config, action, identity)
+      : null;
+    const collaborationBindingDigest = collaborationBinding
+      ? collaborationDigest("mcp-collaboration-binding-v1", collaborationBinding)
+      : null;
+    const payloadSha256 = /^[a-f0-9]{64}$/.test(String(action.payload_sha256 || ""))
+      ? String(action.payload_sha256)
+      : undefined;
     const result = await handlers.core_gate_action({
       action_label: action.action_label,
       action_type: action.action_type,
       target: action.target,
+      ...(payloadSha256 ? { payload_sha256: payloadSha256 } : {}),
+      ...(collaborationBindingDigest ? {
+        collaboration_binding_digest: collaborationBindingDigest,
+        collaboration_audience: collaborationBinding.audience,
+        collaboration_target_service: collaborationBinding.target_service,
+        collaboration_target_environment: collaborationBinding.target_environment,
+        collaboration_target_commit: collaborationBinding.target_commit,
+        expected_version: collaborationBinding.expected_version,
+        lock_id: collaborationBinding.lock_id,
+        fencing_token: collaborationBinding.fencing_token,
+        idempotency_key_sha256: collaborationBinding.idempotency_key_sha256,
+      } : {}),
+      ...(governance.preflight_id ? { preflight_id: String(governance.preflight_id).slice(0, 160) } : {}),
+      ...(governance.trace_id ? { trace_id: String(governance.trace_id).slice(0, 160) } : {}),
+      ...(governance.task_contract_id ? { task_contract_id: String(governance.task_contract_id).slice(0, 240) } : {}),
+      ...(governance.task_trace_id ? { task_trace_id: String(governance.task_trace_id).slice(0, 240) } : {}),
+      ...(governance.coordination_lock ? { coordination_lock: String(governance.coordination_lock).slice(0, 240) } : {}),
+      ...(governance.shared_memory_checksum ? { shared_memory_checksum: String(governance.shared_memory_checksum).slice(0, 64) } : {}),
       operation_class: operationClass,
       external_side_effect: action.external_side_effect === true,
       contains_customer_data: action.contains_customer_data === true,
@@ -1279,18 +1337,42 @@ export function createCoreWriteGuard(config, options = {}) {
     const confirmationRequired = authorization.confirmation_required === true ||
       (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
     const confirmationSatisfied = authorization.confirmation_satisfied === true ||
-      (identity.ownerConfirmed === true && confirmationRequired);
+      (!payload.authorization && hasExplicitVerifiedOwnerConfirmation(identity) && confirmationRequired);
     const legacyExplicitlyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decision)
       || mediation === "allow";
     const allowed = payload.authorization
-      ? authorization.allowed === true && !blocked
+      ? authorization.allowed === true && !blocked && (!confirmationRequired || confirmationSatisfied)
       : legacyExplicitlyAllowed && !blocked && (!confirmationRequired || confirmationSatisfied);
+    let coordinationReceipt;
+    if (allowed && receiptRequired) {
+      if (!collaborationReceiptClient?.ready || !collaborationReceiptVerifier?.ready) {
+        throw new Error("collaboration_signed_receipt_verifier_required");
+      }
+      coordinationReceipt = await collaborationReceiptClient.issue(collaborationBinding, {
+        coreDecision: {
+          binding_digest: collaborationBindingDigest,
+          decision,
+          mediation,
+          confirmation_satisfied: confirmationSatisfied,
+        },
+        coreGate: payload.collaboration_core_gate,
+      });
+      await collaborationReceiptVerifier.verify(coordinationReceipt, { config, action, identity });
+    }
     return {
       allowed,
       decision,
       mediation,
       owner_confirmation_required: confirmationRequired,
       confirmation_satisfied: confirmationSatisfied,
+      request_binding: {
+        payload_sha256: payloadSha256 || null,
+        preflight_id: governance.preflight_id || null,
+        trace_id: governance.trace_id || null,
+        task_contract_id: governance.task_contract_id || null,
+        coordination_lock: governance.coordination_lock || null,
+      },
+      ...(coordinationReceipt ? { coordination_receipt: coordinationReceipt } : {}),
     };
   };
 }

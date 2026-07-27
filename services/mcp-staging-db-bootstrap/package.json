@@ -1,0 +1,14 @@
+{
+  "name": "@skinharmony/mcp-staging-db-bootstrap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "canonical:import": "node src/canonical-bootstrap-command.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
+  }
+}

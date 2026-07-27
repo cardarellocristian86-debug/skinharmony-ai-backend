@@ -5,6 +5,7 @@ import {
   hasOnlyProviderSetupLinkBindingFields,
   isProviderSetupLinkBindingAttempt,
 } from "./providerSetupLinkBinding.js";
+import { evaluateDomainActionAuthorization } from "./domainActionAuthorization.js";
 
 function cleanReference(value) {
   return String(value || "")
@@ -141,6 +142,52 @@ function hasValidCoreAdminBootstrapContext(body = {}) {
 export function buildActionAuthorization(decisionContract = {}, body = {}) {
   const ownerConfirmed = body.owner_confirmed === true;
   const exactCommit = /^[a-f0-9]{40}$/i.test(String(body.target_commit || ""));
+  const domainAction = evaluateDomainActionAuthorization({ decisionContract, body });
+  if (domainAction.reserved === true) {
+    const decisionHardBlocked =
+      decisionContract.state === "blocked" ||
+      decisionContract.recommended_actions?.some?.((action) => action.blocked === true) === true;
+    const hardBlocked = decisionHardBlocked || domainAction.hard_block === true;
+    const confirmationRequired = true;
+    const confirmationSatisfied = domainAction.confirmation_satisfied === true;
+    const riskAllowed = ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""));
+    const executionAllowed =
+      domainAction.claimed === true &&
+      domainAction.eligible === true &&
+      confirmationSatisfied &&
+      riskAllowed &&
+      !hardBlocked;
+    return {
+      allowed: executionAllowed,
+      state: executionAllowed
+        ? "authorized_after_confirmation"
+        : hardBlocked
+          ? "blocked"
+          : confirmationRequired && !confirmationSatisfied
+            ? "confirmation_required"
+            : "not_authorized",
+      mediation: executionAllowed
+        ? "confirmed"
+        : hardBlocked
+          ? "hard_block"
+          : confirmationRequired && !confirmationSatisfied
+            ? "confirm"
+            : "defer",
+      confirmation_required: confirmationRequired,
+      confirmation_satisfied: confirmationSatisfied,
+      confirmation_reference: executionAllowed
+        ? cleanReference(body.confirmation_reference) || "explicit_owner_confirmation"
+        : null,
+      scope: executionAllowed
+        ? "reversible_owner_confirmed_mcp_staging_topology"
+        : "mcp_staging_reserved_domain",
+      target_commit: domainAction.target_commit || null,
+      workflow_phase: domainAction.workflow_phase || null,
+      domain_action_id: domainAction.domain_action_id || null,
+      spec_digest: domainAction.spec_digest || null,
+      reason: domainAction.reason || "mcp_staging_domain_not_authorized",
+    };
+  }
   const tenantScopedRead =
     body.operation_class === "tenant_scoped_read" &&
     body.external_side_effect !== true &&

@@ -2,6 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadConfig } from "../src/config.js";
 
+function collaborationRuntimeEnv(overrides = {}) {
+  return {
+    MCP_COLLABORATION_DATABASE_URL: "postgres://staging-collaboration-db",
+    MCP_COLLABORATION_CORE_ISSUER_HOSTPORT: "skinharmony-core-staging-issuer:8789",
+    MCP_COLLABORATION_NYRA_ISSUER_HOSTPORT: "skinharmony-nyra-staging-issuer:8789",
+    MCP_COLLABORATION_CORE_ISSUER_TOKEN: "core-token-test-only-0123456789abcdef",
+    MCP_COLLABORATION_NYRA_ISSUER_TOKEN: "nyra-token-test-only-0123456789abcdef",
+    ...overrides,
+  };
+}
+
 test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => {
   const config = loadConfig({
     CORE_BASE_URL: "https://core.example.test/"
@@ -20,18 +31,75 @@ test("keeps agent collaboration disabled until a persistent root is configured",
   assert(enabled.supportedScopes.includes("core:read"));
   assert(enabled.supportedScopes.includes("core:govern"));
   assert.equal(enabled.researchCortexRoot, "/var/data/skinharmony-core-mcp");
-  const postgresOnly = loadConfig({
+  const postgresOnly = loadConfig(collaborationRuntimeEnv({
     DATABASE_URL: "postgres://existing-service-db",
-    MCP_COLLABORATION_DATABASE_URL: "postgres://staging-collaboration-db",
-  });
+    MCP_COLLABORATION_LOCKS_REQUIRED: "false",
+    MCP_COLLABORATION_IDEMPOTENCY_REQUIRED: "false",
+    MCP_COLLABORATION_TASK_CONTRACT_REQUIRED: "false",
+  }));
   assert.equal(postgresOnly.databaseUrl, "postgres://existing-service-db");
   assert.equal(postgresOnly.collaborationDatabaseUrl, "postgres://staging-collaboration-db");
+  assert.equal(postgresOnly.collaborationReceiptEnforcement, true);
+  assert.equal(postgresOnly.sharedMemoryDatabaseUrl, "postgres://staging-collaboration-db");
+  assert.equal(postgresOnly.cloudMemoryDatabaseUrl, "");
+  assert.equal(postgresOnly.decisionLedgerDatabaseUrl, "postgres://staging-collaboration-db");
+  assert.equal(postgresOnly.collaborationLocksRequired, true);
+  assert.equal(postgresOnly.collaborationIdempotencyRequired, true);
+  assert.equal(postgresOnly.collaborationTaskContractRequired, true);
+  assert.equal(postgresOnly.collaborationLockLeaseSeconds, 60);
+  assert.equal(postgresOnly.collaborationDatabaseTimeoutMs, 8_000);
 });
 
 test("does not enable PostgreSQL collaboration from the generic database URL", () => {
   const config = loadConfig({ DATABASE_URL: "postgres://existing-service-db" });
   assert.equal(config.collaborationDatabaseUrl, "");
+  assert.equal(config.collaborationReceiptEnforcement, false);
   assert.equal(config.collaborationDatabaseSsl, false);
+  assert.equal(config.sharedMemoryDatabaseUrl, "");
+  assert.equal(config.cloudMemoryDatabaseUrl, "postgres://existing-service-db");
+  assert.equal(config.decisionLedgerDatabaseUrl, "postgres://existing-service-db");
+  assert.equal(config.collaborationLocksRequired, false);
+  assert.equal(config.collaborationIdempotencyRequired, false);
+  assert.equal(config.collaborationTaskContractRequired, false);
+});
+
+test("maps the collaboration receipt configuration without reusing generic credentials", () => {
+  assert.throws(() => loadConfig(collaborationRuntimeEnv({
+    MCP_COLLABORATION_CORE_JWK: "core-public-jwk",
+    MCP_COLLABORATION_CORE_KID: "core-kid",
+  })), /Static collaboration trust anchors are forbidden/);
+  const config = loadConfig(collaborationRuntimeEnv({
+    MCP_COLLABORATION_TARGET_SERVICE: "skinharmony-core-mcp-staging",
+    MCP_COLLABORATION_TARGET_ENVIRONMENT: "staging",
+    MCP_COLLABORATION_BUILD_COMMIT: "a".repeat(40),
+    MCP_COLLABORATION_RUNTIME_DATABASE_ROLE: "mcp_collaboration_runtime",
+    MCP_COLLABORATION_RECEIPT_TTL_MS: "999999",
+    MCP_COLLABORATION_ISSUER_TIMEOUT_MS: "999999",
+  }));
+
+  assert.equal(config.collaborationReceiptCoreJwk, "");
+  assert.equal(config.collaborationReceiptCoreKid, "");
+  assert.equal(config.collaborationReceiptNyraJwk, "");
+  assert.equal(config.collaborationReceiptNyraKid, "");
+  assert.equal(config.collaborationCoreIssuerHostport, "skinharmony-core-staging-issuer:8789");
+  assert.equal(config.collaborationNyraIssuerHostport, "skinharmony-nyra-staging-issuer:8789");
+  assert.equal(config.collaborationCoreIssuerToken, "core-token-test-only-0123456789abcdef");
+  assert.equal(config.collaborationNyraIssuerToken, "nyra-token-test-only-0123456789abcdef");
+  assert.equal(config.collaborationTargetService, "skinharmony-core-mcp-staging");
+  assert.equal(config.collaborationTargetEnvironment, "staging");
+  assert.equal(config.collaborationBuildCommit, "a".repeat(40));
+  assert.equal(config.collaborationAllowedTenantId, "codexai");
+  assert.equal(config.collaborationRuntimeDatabaseRole, "mcp_collaboration_runtime");
+  assert.equal(config.collaborationReceiptTtlMs, 30_000);
+  assert.equal(config.collaborationIssuerTimeoutMs, 10_000);
+});
+
+test("hard-pins PostgreSQL collaboration to the codexai staging service and a full build commit", () => {
+  const base = { MCP_COLLABORATION_DATABASE_URL: "postgres://staging-collaboration-db" };
+  assert.throws(() => loadConfig({ ...base, MCP_COLLABORATION_ALLOWED_TENANT_ID: "other-tenant" }), /must be codexai/);
+  assert.throws(() => loadConfig({ ...base, MCP_COLLABORATION_TARGET_ENVIRONMENT: "production" }), /must be staging/);
+  assert.throws(() => loadConfig({ ...base, MCP_COLLABORATION_TARGET_SERVICE: "other-service" }), /must be skinharmony-core-mcp-staging/);
+  assert.throws(() => loadConfig({ ...base, MCP_COLLABORATION_BUILD_COMMIT: "short" }), /must be a full Git commit/);
 });
 
 test("configures independent memory storage and bounded retention", () => {

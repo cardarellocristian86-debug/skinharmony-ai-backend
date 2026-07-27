@@ -1,6 +1,15 @@
 import { createApp, requiresGenericWorkPreflight } from "./app.js";
 import express from "express";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
+import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
+import { createCollaborationPostgresPool } from "./collaboration-postgres-pool.js";
+import { createSharedMemoryPostgresStore } from "./shared-memory-postgres-store.js";
+import { createCollaborationReceiptVerifier } from "./collaboration-receipt.js";
+import { createCollaborationIssuerClient } from "./collaboration-issuer-client.js";
+import { verifyCollaborationPostgresSchema } from "./collaboration-postgres-schema.js";
+import { pinOrVerifyCollaborationIssuerTrust } from "./collaboration-trust-pins.js";
+import { discoverMcpStagingPrivateTrust } from
+  "../../mcp-staging-issuer/src/privateJwksClient.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
@@ -16,14 +25,107 @@ import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 
 const config = loadConfig();
-const cloudMemoryStore = createCloudMemoryStore(config);
-const decisionLedger = createDecisionLedger(config);
+const receiptConfiguration = [
+  config.collaborationCoreIssuerHostport,
+  config.collaborationNyraIssuerHostport,
+  config.collaborationCoreIssuerToken,
+  config.collaborationNyraIssuerToken,
+  config.collaborationTargetService,
+  config.collaborationTargetEnvironment,
+  config.collaborationBuildCommit,
+  config.collaborationAllowedTenantId,
+  config.collaborationRuntimeDatabaseRole,
+];
+const receiptConfigurationCount = receiptConfiguration.filter(Boolean).length;
+if (config.collaborationReceiptEnforcement && receiptConfigurationCount !== receiptConfiguration.length) {
+  throw new Error("collaboration_receipt_configuration_incomplete");
+}
+const collaborationPool = createCollaborationPostgresPool(config);
+const collaborationSchemaReady = collaborationPool
+  ? verifyCollaborationPostgresSchema(collaborationPool, {
+      expectedRuntimeRole: config.collaborationRuntimeDatabaseRole,
+    })
+  : null;
+let collaborationTrust = null;
+if (config.collaborationReceiptEnforcement) {
+  if (!collaborationPool || !collaborationSchemaReady) {
+    throw new Error("collaboration_trust_database_required");
+  }
+  await collaborationSchemaReady;
+  collaborationTrust = await discoverMcpStagingPrivateTrust({
+    coreHostport: config.collaborationCoreIssuerHostport,
+    nyraHostport: config.collaborationNyraIssuerHostport,
+    coreToken: config.collaborationCoreIssuerToken,
+    nyraToken: config.collaborationNyraIssuerToken,
+    targetCommit: config.collaborationBuildCommit,
+    timeoutMs: config.collaborationIssuerTimeoutMs,
+    attempts: 12,
+  });
+  await pinOrVerifyCollaborationIssuerTrust(
+    collaborationPool,
+    collaborationTrust,
+    config.collaborationBuildCommit,
+  );
+}
+const collaborationReceiptVerifier = config.collaborationReceiptEnforcement &&
+  receiptConfigurationCount === receiptConfiguration.length && collaborationTrust
+  ? createCollaborationReceiptVerifier({
+      coreJwk: collaborationTrust.core.jwkJson,
+      coreKid: collaborationTrust.core.kid,
+      nyraJwk: collaborationTrust.nyra.jwkJson,
+      nyraKid: collaborationTrust.nyra.kid,
+      coreIssuer: config.collaborationReceiptCoreIssuer,
+      nyraIssuer: config.collaborationReceiptNyraIssuer,
+      maxTtlMs: config.collaborationReceiptTtlMs,
+      expectedTenantId: config.collaborationAllowedTenantId,
+      expectedTargetService: config.collaborationTargetService,
+      expectedTargetEnvironment: config.collaborationTargetEnvironment,
+      expectedTargetCommit: config.collaborationBuildCommit,
+    })
+  : null;
+const collaborationReceiptClient = collaborationReceiptVerifier
+  ? createCollaborationIssuerClient(config)
+  : null;
+config.coordinationReceiptVerifierReady = Boolean(collaborationReceiptVerifier?.ready && collaborationReceiptClient?.ready);
+const cloudMemoryStore = createCloudMemoryStore(config, {
+  connectionString: config.cloudMemoryDatabaseUrl,
+  ssl: config.databaseSsl,
+});
+const govern = createCoreWriteGuard(config, { collaborationReceiptClient, collaborationReceiptVerifier });
+const collaborationPostgresStore = collaborationPool
+  ? createCollaborationPostgresStore(config, {
+      govern,
+      pool: collaborationPool,
+      collaborationReceiptVerifier,
+      schemaReady: collaborationSchemaReady,
+    })
+  : null;
+const sharedMemoryPostgresStore = collaborationPool
+  ? createSharedMemoryPostgresStore(config, {
+      govern,
+      pool: collaborationPool,
+      collaborationReceiptVerifier,
+      schemaReady: collaborationSchemaReady,
+    })
+  : null;
+const decisionLedger = collaborationPool
+  ? createDecisionLedger(config, { pool: collaborationPool, schemaReady: collaborationSchemaReady })
+  : createDecisionLedger(config);
 if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
-const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
-const govern = createCoreWriteGuard(config);
-const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
+if (collaborationPool) {
+  await Promise.all([
+    collaborationPostgresStore.initialize(),
+    sharedMemoryPostgresStore.initialize(),
+    ...(decisionLedger ? [decisionLedger.initialize()] : []),
+  ]);
+  config.coordinationDatabaseVerified = true;
+}
+const sharedMemoryBootstrap = createSharedMemoryBootstrap(sharedMemoryPostgresStore || cloudMemoryStore, { cacheTtlMs: 300_000 });
+const memoryFabric = (config.memoryFabricRoot || sharedMemoryPostgresStore)
+  ? createMemoryFabric(config, { govern, sharedMemoryPostgresStore })
+  : null;
 const collaborationHandlers = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
-  ? createCollaborationHandlers(config, { govern })
+  ? createCollaborationHandlers(config, { govern, collaborationPostgresStore, sharedMemoryPostgresStore })
   : {};
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
@@ -59,18 +161,18 @@ function summarizeToolRequest(toolName, args = {}) {
 
 const baseHandlers = {
   tenant_provider_openai_setup_panel: async (_args, identity) => ({
-      structuredContent: {
-        ok: true,
-        tenant_id: identity.tenantId,
-        provider: "openai",
-        execution_enabled: false,
-        key_entry: "one_time_secure_link_only",
-      },
-      content: [{ type: "text", text: "Apri il pannello Collega OpenAI e premi Crea link sicuro." }],
-      _meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
+    structuredContent: {
+      ok: true,
+      tenant_id: identity.tenantId,
+      provider: "openai",
+      execution_enabled: false,
+      key_entry: "one_time_secure_link_only",
+    },
+    content: [{ type: "text", text: "Apri il pannello Collega OpenAI e premi Crea link sicuro." }],
+    _meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
   }),
   ...coreHandlers,
-  ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
+  ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore, govern }),
   ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
   ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
   ...suiteHandlers,
@@ -107,8 +209,16 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
 const app = createApp(config, {
+  coordinationHealthCheck: collaborationPool
+    ? async () => (await verifyCollaborationPostgresSchema(collaborationPool, {
+        expectedRuntimeRole: config.collaborationRuntimeDatabaseRole,
+      })).ready === true
+    : null,
+  coordinationIssuerHealthCheck: collaborationReceiptClient
+    ? async () => collaborationReceiptClient.probe()
+    : null,
   handlers,
-  toolSurface: "compact",
+  toolSurface: collaborationPool ? "full" : "compact",
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     let providerStatus = null;
@@ -143,7 +253,7 @@ const app = createApp(config, {
   },
   afterToolCall: async (event) => {
     if (decisionLedger && event.hookContext?.ledgerContext) await decisionLedger.finishWork(event.hookContext.ledgerContext, event);
-    if (memoryFabric) await memoryFabric.recordToolActivity(event);
+    if (memoryFabric && requiresGenericWorkPreflight(event.toolName)) await memoryFabric.recordToolActivity(event);
   },
 });
 const openAiPortal = createOpenAiConnectPortal({

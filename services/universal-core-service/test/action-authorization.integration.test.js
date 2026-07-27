@@ -127,7 +127,7 @@ test("allows high-risk deploy only with the existing strict reversible envelope"
   assert.equal(evaluate({ ...base, owner_confirmed: true }).authorization.allowed, true);
 });
 
-test("allows only the owner-confirmed, new PostgreSQL staging target through the action-risk gate", () => {
+test("keeps the retired standalone PostgreSQL staging gate behind the reserved topology domain", () => {
   const base = {
     action_type: "environment_configuration",
     operation_class: "reversible_owner_confirmed_deploy",
@@ -153,11 +153,11 @@ test("allows only the owner-confirmed, new PostgreSQL staging target through the
     target_commit: "6bd1aecda5defeb1c50e1e753d814b1e05c9b559",
     confirmation_reference: "owner-confirmed-staging-postgres",
   };
-  const allowed = evaluate({ ...base, owner_confirmed: true }).authorization;
-  assert.equal(allowed.allowed, true);
-  assert.equal(allowed.state, "authorized_after_confirmation");
-  assert.equal(allowed.confirmation_satisfied, true);
-  assert.equal(allowed.scope, "reversible_owner_confirmed_deploy");
+  const blocked = evaluate({ ...base, owner_confirmed: true }).authorization;
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.state, "blocked");
+  assert.equal(blocked.confirmation_satisfied, false);
+  assert.equal(blocked.scope, "mcp_staging_reserved_domain");
 
   for (const unsafe of [
     { owner_confirmed: false }, { environment: "production" }, { target: "skinharmony-db" },

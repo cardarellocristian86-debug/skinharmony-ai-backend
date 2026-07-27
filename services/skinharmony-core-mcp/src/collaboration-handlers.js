@@ -4,6 +4,7 @@ import path from "node:path";
 import { createAgentPresence } from "./agent-presence.js";
 import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
 import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
+import { createSharedMemoryPostgresStore } from "./shared-memory-postgres-store.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
@@ -216,8 +217,11 @@ function boundedCollaborationAction(action) {
 
 export function createCollaborationHandlers(config, options = {}) {
   const root = String(config.agentWorkspaceRoot || "").trim();
-  const postgres = createCollaborationPostgresStore(config, options);
-  if (!root && !postgres) throw new Error("agent_workspace_not_configured");
+  const postgres = options.collaborationPostgresStore || createCollaborationPostgresStore(config, options);
+  const sharedPostgres = options.sharedMemoryPostgresStore || createSharedMemoryPostgresStore(config, options);
+  const postgresConfigured = Boolean(config.collaborationDatabaseUrl || options.pool || options.collaborationPostgresStore || options.sharedMemoryPostgresStore);
+  if (postgresConfigured && (!postgres || !sharedPostgres)) throw new Error("collaboration_postgres_backend_incomplete");
+  if (!root && !postgresConfigured) throw new Error("agent_workspace_not_configured");
   const govern = options.govern;
 
   async function governed(identity, action, mutate) {
@@ -244,6 +248,7 @@ export function createCollaborationHandlers(config, options = {}) {
 
   return {
     workspace_list: async ({ prefix = "" }, identity) => {
+      if (sharedPostgres) return sharedPostgres.listWorkspace({ prefix }, identity);
       const state = readState(root, identity.tenantId);
       const normalizedPrefix = prefix ? logicalPath(prefix, { folder: true }) : "";
       const matches = (entry) => !normalizedPrefix || entry.path === normalizedPrefix || entry.path.startsWith(`${normalizedPrefix}/`);
@@ -254,7 +259,8 @@ export function createCollaborationHandlers(config, options = {}) {
       });
     },
 
-    workspace_create_folder: async ({ path: requestedPath }, identity) => {
+    workspace_create_folder: async ({ path: requestedPath, idempotency_key, lock_id, fencing_token }, identity) => {
+      if (sharedPostgres) return sharedPostgres.createFolder({ path: requestedPath, idempotency_key, lock_id, fencing_token }, identity);
       const folderPath = logicalPath(requestedPath, { folder: true });
       return governed(identity, boundedCollaborationAction({ action_type: "workspace.create_folder", contains_customer_data: true, action_label: `Create shared folder ${folderPath}`, target: folderPath }), async (state) => {
         const existing = state.folders.find((folder) => folder.path === folderPath);
@@ -266,6 +272,7 @@ export function createCollaborationHandlers(config, options = {}) {
     },
 
     workspace_read_document: async ({ id, path: requestedPath }, identity) => {
+      if (sharedPostgres) return sharedPostgres.readDocument({ id, path: requestedPath }, identity);
       if ((!id && !requestedPath) || (id && requestedPath)) fail("document_selector_invalid");
       const state = readState(root, identity.tenantId);
       const document = id
@@ -275,7 +282,8 @@ export function createCollaborationHandlers(config, options = {}) {
       return textResult({ document: publicDocument(document, true), revision: state.revision });
     },
 
-    workspace_write_document: async ({ path: requestedPath, title, content, expected_version, idempotency_key }, identity) => {
+    workspace_write_document: async ({ path: requestedPath, title, content, expected_version, idempotency_key, lock_id, fencing_token }, identity) => {
+      if (sharedPostgres) return sharedPostgres.writeDocument({ path: requestedPath, title, content, expected_version, idempotency_key, lock_id, fencing_token }, identity);
       const documentPath = logicalPath(requestedPath);
       const documentTitle = optionalText(title, "document_title", 200) || documentPath.split("/").at(-1);
       const documentContent = requiredText(content, "document_content", 100_000);
@@ -361,8 +369,8 @@ export function createCollaborationHandlers(config, options = {}) {
       });
     },
 
-    task_update: async ({ task_id, agent_id, status, note = "", expected_version }, identity) => {
-      if (postgres) return postgres.updateTask({ task_id, agent_id, status, note, expected_version }, identity);
+    task_update: async ({ task_id, agent_id, status, note = "", expected_version, lease_token, fencing_token }, identity) => {
+      if (postgres) return postgres.updateTask({ task_id, agent_id, status, note, expected_version, lease_token, fencing_token }, identity);
       const taskId = requiredText(task_id, "task_id", 80);
       const agentId = safeId(agent_id, "agent");
       if (!TASK_STATUSES.has(status) || status === "open") fail("task_status_invalid");
@@ -537,7 +545,14 @@ export function createCollaborationHandlers(config, options = {}) {
         if (!message.read_by_signatures.includes(registeredAgent.signature)) message.read_by_signatures.push(registeredAgent.signature);
         return { message_id: message.id, acknowledged_by: agentId, acknowledged_by_signature: registeredAgent.signature };
       });
-    }
+    },
+
+    ...(sharedPostgres ? {
+      workspace_lock_acquire: (args, identity) => sharedPostgres.acquireLock(args, identity),
+      workspace_lock_renew: (args, identity) => sharedPostgres.renewLock(args, identity),
+      workspace_lock_release: (args, identity) => sharedPostgres.releaseLock(args, identity),
+      workspace_lock_list: (args, identity) => sharedPostgres.listLocks(args, identity),
+    } : {})
   };
 }
 

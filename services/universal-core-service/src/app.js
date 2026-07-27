@@ -16,6 +16,7 @@ import { createSetupTokenStore } from "./setupTokenStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
 import { buildCodexGuardResponse, normalizeDecisionContract } from "./decisionContract.js";
+import { createCollaborationCoreGateIssuer } from "./collaborationCoreGateEvidence.js";
 import {
   BRANCH_PACKAGES,
   composeBranchContext,
@@ -3538,6 +3539,22 @@ export function createUniversalCoreService(options = {}) {
   ensureDir(storageRoot);
 
   const audit = createAudit(storageRoot);
+  const collaborationCoreGateSecret = String(
+    options.collaborationCoreGateSecret ?? process.env.CORE_EVIDENCE_SIGNING_SECRET ?? "",
+  ).trim();
+  const collaborationCoreGateTargetCommit = String(
+    options.collaborationCoreGateTargetCommit ??
+      process.env.RENDER_GIT_COMMIT ??
+      process.env.GIT_COMMIT ??
+      "",
+  ).trim().toLowerCase();
+  let collaborationCoreGateIssuer = null;
+  if (collaborationCoreGateSecret && /^[a-f0-9]{40}$/.test(collaborationCoreGateTargetCommit)) {
+    collaborationCoreGateIssuer = createCollaborationCoreGateIssuer({
+      secret: collaborationCoreGateSecret,
+      targetCommit: collaborationCoreGateTargetCommit,
+    });
+  }
   const keyStore = createKeyStore(storageRoot, audit);
   const providerSetupLinkBootstrapKey = String(
     options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
@@ -3546,6 +3563,9 @@ export function createUniversalCoreService(options = {}) {
     options.providerSetupLinkServiceKey ?? process.env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY ?? "",
   ).trim();
   const mcpTenantGatewayKey = String(options.mcpTenantGatewayKey ?? process.env.CORE_MCP_TENANT_GATEWAY_KEY ?? "").trim();
+  const mcpStagingServiceKey = String(
+    options.mcpStagingServiceKey ?? process.env.CORE_MCP_STAGING_SERVICE_KEY ?? "",
+  ).trim();
   const providerSetupLinkTenantId = String(
     options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
   ).trim();
@@ -3600,6 +3620,15 @@ export function createUniversalCoreService(options = {}) {
   if (mcpTenantGatewayKey) {
     try { keyStore.ensureMcpTenantGatewayKey({ secret: mcpTenantGatewayKey }); }
     catch (error) { audit.append("core_mcp_tenant_gateway_key_bootstrap_unavailable", { reason: providerSetupLinkBootstrapErrorCode(error) }); }
+  }
+  if (mcpStagingServiceKey) {
+    try {
+      keyStore.ensureMcpStagingServiceKey({ secret: mcpStagingServiceKey });
+    } catch (error) {
+      audit.append("core_mcp_staging_service_key_bootstrap_unavailable", {
+        reason: providerSetupLinkBootstrapErrorCode(error),
+      });
+    }
   }
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
@@ -5504,6 +5533,21 @@ export function createUniversalCoreService(options = {}) {
       owner_context_approval_bound: providerSetupLinkApprovalBound,
     };
     const authorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
+    let collaborationCoreGate = null;
+    if (authorization.allowed === true && evaluatedActionBody.collaboration_binding_digest) {
+      if (!collaborationCoreGateIssuer) {
+        return publicError(res, 503, "collaboration_core_gate_unavailable");
+      }
+      try {
+        collaborationCoreGate = collaborationCoreGateIssuer.issue({
+          tenantId: req.tenantId,
+          body: evaluatedActionBody,
+          authorization,
+        });
+      } catch {
+        return publicError(res, 403, "collaboration_core_gate_denied");
+      }
+    }
     const tenantBindingAuthorization = authorization.allowed === true && [
       "reversible_owner_confirmed_mcp_default_tenant_correction",
       "reversible_owner_confirmed_mcp_default_tenant_blueprint_alignment",
@@ -5560,6 +5604,7 @@ export function createUniversalCoreService(options = {}) {
       output,
       work_preflight: workPreflight,
       authorization,
+      ...(collaborationCoreGate ? { collaboration_core_gate: collaborationCoreGate } : {}),
       risk_classification: riskClassification,
       guardrail: {
         destructive_automation: false,

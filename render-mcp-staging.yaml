@@ -1,0 +1,377 @@
+{
+  "projects": [
+    {
+      "name": "My project",
+      "environments": [
+        {
+          "name": "staging",
+          "services": [
+    {
+      "type": "pserv",
+      "name": "skinharmony-mcp-staging-db-bootstrap",
+      "runtime": "node",
+      "plan": "starter",
+      "region": "oregon",
+      "repo": "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend",
+      "branch": "agent/mcp-staging-shared-memory-release",
+      "autoDeployTrigger": "off",
+      "buildCommand": "npm ci --prefix services/mcp-staging-db-bootstrap && npm ci --prefix services/skinharmony-core-mcp",
+      "startCommand": "npm --prefix services/mcp-staging-db-bootstrap start",
+      "envVars": [
+        { "key": "NODE_ENV", "value": "production" },
+        { "key": "PORT", "value": "10001" },
+        { "key": "MCP_STAGING_BOOTSTRAP_ENVIRONMENT", "value": "staging" },
+        { "key": "MCP_STAGING_CONTROL_PLANE_PROFILE", "value": "collaboration" },
+        { "key": "MCP_STAGING_DB_BOOTSTRAP_MODE", "value": "steady" },
+        {
+          "key": "PG_ADMIN_DATABASE_URL",
+          "fromDatabase": {
+            "name": "skinharmony-mcp-staging-db",
+            "property": "connectionString"
+          }
+        },
+        {
+          "key": "PG_EXPECTED_DATABASE_NAME",
+          "fromDatabase": {
+            "name": "skinharmony-mcp-staging-db",
+            "property": "database"
+          }
+        },
+        { "key": "MCP_STAGING_GATE_CONTROL_PASSWORD", "generateValue": true },
+        { "key": "MCP_STAGING_CORE_NONCE_API_TOKEN", "generateValue": true },
+        { "key": "MCP_STAGING_NYRA_NONCE_API_TOKEN", "generateValue": true },
+        { "key": "MCP_STAGING_RECEIPT_CONSUMER_API_TOKEN", "generateValue": true },
+        {
+          "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-mcp-staging-db-bootstrap",
+            "envVarKey": "RENDER_GIT_COMMIT"
+          }
+        },
+        {
+          "key": "MCP_STAGING_UNIVERSAL_CORE_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-universal-core-staging",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_STAGING_UNIVERSAL_CORE_KEY",
+          "fromService": {
+            "type": "web",
+            "name": "skinharmony-core-mcp-staging",
+            "envVarKey": "UNIVERSAL_CORE_KEY"
+          }
+        },
+        {
+          "key": "MCP_STAGING_CORE_ISSUER_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-core-staging-issuer",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_STAGING_NYRA_ISSUER_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_STAGING_CORE_ISSUER_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-core-staging-issuer",
+            "envVarKey": "MCP_STAGING_ISSUER_AUTH_TOKEN"
+          }
+        },
+        {
+          "key": "MCP_STAGING_NYRA_ISSUER_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "envVarKey": "MCP_STAGING_ISSUER_AUTH_TOKEN"
+          }
+        }
+      ]
+    },
+    {
+      "type": "pserv",
+      "name": "skinharmony-core-staging-issuer",
+      "runtime": "node",
+      "plan": "starter",
+      "region": "oregon",
+      "repo": "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend",
+      "branch": "agent/mcp-staging-shared-memory-release",
+      "autoDeployTrigger": "off",
+      "buildCommand": "npm ci --prefix services/mcp-staging-issuer",
+      "startCommand": "npm --prefix services/mcp-staging-issuer start",
+      "envVars": [
+        { "key": "NODE_ENV", "value": "production" },
+        { "key": "PORT", "value": "8789" },
+        { "key": "MCP_STAGING_ENVIRONMENT", "value": "staging" },
+        { "key": "MCP_STAGING_ISSUER_MODE", "value": "core" },
+        { "key": "MCP_STAGING_ISSUER_PROTOCOL", "value": "collaboration" },
+        { "key": "MCP_STAGING_ISSUER_STARTUP_MODE", "value": "full" },
+        {
+          "key": "MCP_STAGING_COLLABORATION_AUDIENCE",
+          "value": "https://skinharmony-core-mcp-staging.onrender.com/mcp"
+        },
+        { "key": "MCP_STAGING_ISSUER_SIGNING_SECRET", "generateValue": true },
+        { "key": "MCP_STAGING_ISSUER_AUTH_TOKEN", "generateValue": true },
+        {
+          "key": "MCP_STAGING_CORE_GATE_VERIFY_SECRET",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-universal-core-staging",
+            "envVarKey": "CORE_EVIDENCE_SIGNING_SECRET"
+          }
+        },
+        {
+          "key": "MCP_STAGING_CONTROL_PLANE_INTERNAL_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-mcp-staging-db-bootstrap",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_STAGING_ISSUER_NONCE_API_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-mcp-staging-db-bootstrap",
+            "envVarKey": "MCP_STAGING_CORE_NONCE_API_TOKEN"
+          }
+        },
+        {
+          "key": "MCP_STAGING_NYRA_JWKS_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_STAGING_NYRA_JWKS_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "envVarKey": "MCP_STAGING_ISSUER_AUTH_TOKEN"
+          }
+        },
+        {
+          "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-core-staging-issuer",
+            "envVarKey": "RENDER_GIT_COMMIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "pserv",
+      "name": "skinharmony-nyra-staging-issuer",
+      "runtime": "node",
+      "plan": "starter",
+      "region": "oregon",
+      "repo": "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend",
+      "branch": "agent/mcp-staging-shared-memory-release",
+      "autoDeployTrigger": "off",
+      "buildCommand": "npm ci --prefix services/mcp-staging-issuer",
+      "startCommand": "npm --prefix services/mcp-staging-issuer start",
+      "envVars": [
+        { "key": "NODE_ENV", "value": "production" },
+        { "key": "PORT", "value": "8789" },
+        { "key": "MCP_STAGING_ENVIRONMENT", "value": "staging" },
+        { "key": "MCP_STAGING_ISSUER_MODE", "value": "nyra" },
+        { "key": "MCP_STAGING_ISSUER_PROTOCOL", "value": "collaboration" },
+        { "key": "MCP_STAGING_ISSUER_STARTUP_MODE", "value": "full" },
+        {
+          "key": "MCP_STAGING_COLLABORATION_AUDIENCE",
+          "value": "https://skinharmony-core-mcp-staging.onrender.com/mcp"
+        },
+        { "key": "MCP_STAGING_ISSUER_SIGNING_SECRET", "generateValue": true },
+        { "key": "MCP_STAGING_ISSUER_AUTH_TOKEN", "generateValue": true },
+        {
+          "key": "MCP_STAGING_CONTROL_PLANE_INTERNAL_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-mcp-staging-db-bootstrap",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_STAGING_ISSUER_NONCE_API_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-mcp-staging-db-bootstrap",
+            "envVarKey": "MCP_STAGING_NYRA_NONCE_API_TOKEN"
+          }
+        },
+        {
+          "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "envVarKey": "RENDER_GIT_COMMIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "pserv",
+      "name": "skinharmony-universal-core-staging",
+      "runtime": "node",
+      "plan": "starter",
+      "region": "oregon",
+      "repo": "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend",
+      "branch": "agent/mcp-staging-shared-memory-release",
+      "autoDeployTrigger": "off",
+      "buildCommand": "npm ci --prefix services/universal-core-service && bash scripts/build-rust-extractor-render.sh",
+      "startCommand": "npm --prefix services/universal-core-service start",
+      "envVars": [
+        { "key": "NODE_ENV", "value": "production" },
+        { "key": "PORT", "value": "8787" },
+        { "key": "CORE_SERVICE_NAME", "value": "universal-core-staging" },
+        { "key": "CORE_SERVICE_STORAGE_ROOT", "value": "/tmp/universal-core-staging" },
+        {
+          "key": "CORE_MCP_STAGING_SERVICE_KEY",
+          "fromService": {
+            "type": "web",
+            "name": "skinharmony-core-mcp-staging",
+            "envVarKey": "UNIVERSAL_CORE_KEY"
+          }
+        },
+        { "key": "CORE_EVIDENCE_SIGNING_SECRET", "generateValue": true },
+        {
+          "key": "CORE_OWNER_CONTEXT_SIGNING_SECRET",
+          "fromService": {
+            "type": "web",
+            "name": "skinharmony-core-mcp-staging",
+            "envVarKey": "CORE_OWNER_CONTEXT_SIGNING_SECRET"
+          }
+        },
+        {
+          "key": "CORE_MCP_TENANT_GATEWAY_KEY",
+          "fromService": {
+            "type": "web",
+            "name": "skinharmony-core-mcp-staging",
+            "envVarKey": "CORE_MCP_TENANT_GATEWAY_KEY"
+          }
+        }
+      ]
+    },
+    {
+      "type": "web",
+      "name": "skinharmony-core-mcp-staging",
+      "runtime": "node",
+      "plan": "free",
+      "region": "oregon",
+      "repo": "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend",
+      "branch": "agent/mcp-staging-shared-memory-release",
+      "autoDeployTrigger": "off",
+      "buildCommand": "npm ci --prefix services/skinharmony-core-mcp",
+      "startCommand": "npm --prefix services/skinharmony-core-mcp start",
+      "healthCheckPath": "/healthz",
+      "envVars": [
+        { "key": "NODE_ENV", "value": "production" },
+        { "key": "PORT", "value": "8790" },
+        {
+          "key": "MCP_PUBLIC_URL",
+          "value": "https://skinharmony-core-mcp-staging.onrender.com"
+        },
+        { "key": "CODEX_BEARER_KEYS", "generateValue": true },
+        {
+          "key": "CODEX_BEARER_SCOPES",
+          "value": "core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate"
+        },
+        {
+          "key": "MCP_SUPPORTED_SCOPES",
+          "value": "core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate"
+        },
+        { "key": "MCP_DEFAULT_TENANT_ID", "value": "codexai" },
+        { "key": "MCP_CHATGPT_TENANT_ID", "value": "codexai" },
+        {
+          "key": "UNIVERSAL_CORE_URL",
+          "value": "http://skinharmony-universal-core-staging:8787"
+        },
+        { "key": "UNIVERSAL_CORE_KEY", "generateValue": true },
+        { "key": "CORE_OWNER_CONTEXT_SIGNING_SECRET", "generateValue": true },
+        { "key": "CORE_MCP_TENANT_GATEWAY_KEY", "generateValue": true },
+        { "key": "AGENT_SIGNATURE_SECRET", "generateValue": true },
+        {
+          "key": "MCP_COLLABORATION_DATABASE_URL",
+          "fromDatabase": {
+            "name": "skinharmony-mcp-staging-db",
+            "property": "connectionString"
+          }
+        },
+        { "key": "MCP_COLLABORATION_DATABASE_SSL", "value": "true" },
+        {
+          "key": "MCP_COLLABORATION_CORE_ISSUER_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-core-staging-issuer",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_COLLABORATION_NYRA_ISSUER_HOSTPORT",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "property": "hostport"
+          }
+        },
+        {
+          "key": "MCP_COLLABORATION_CORE_ISSUER_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-core-staging-issuer",
+            "envVarKey": "MCP_STAGING_ISSUER_AUTH_TOKEN"
+          }
+        },
+        {
+          "key": "MCP_COLLABORATION_NYRA_ISSUER_TOKEN",
+          "fromService": {
+            "type": "pserv",
+            "name": "skinharmony-nyra-staging-issuer",
+            "envVarKey": "MCP_STAGING_ISSUER_AUTH_TOKEN"
+          }
+        },
+        {
+          "key": "MCP_COLLABORATION_RECEIPT_AUDIENCE",
+          "value": "https://skinharmony-core-mcp-staging.onrender.com/mcp"
+        },
+        { "key": "MCP_COLLABORATION_CORE_ISSUER", "value": "universal-core-staging" },
+        { "key": "MCP_COLLABORATION_NYRA_ISSUER", "value": "nyra-staging" },
+        { "key": "MCP_COLLABORATION_ALLOWED_TENANT_ID", "value": "codexai" },
+        {
+          "key": "MCP_COLLABORATION_TARGET_SERVICE",
+          "value": "skinharmony-core-mcp-staging"
+        },
+        { "key": "MCP_COLLABORATION_TARGET_ENVIRONMENT", "value": "staging" },
+        {
+          "key": "MCP_COLLABORATION_BUILD_COMMIT",
+          "fromService": {
+            "type": "web",
+            "name": "skinharmony-core-mcp-staging",
+            "envVarKey": "RENDER_GIT_COMMIT"
+          }
+        },
+        { "key": "MCP_COLLABORATION_RUNTIME_DATABASE_ROLE", "value": "mcp_collaboration_runtime" },
+        { "key": "MCP_COLLABORATION_RECEIPT_TTL_MS", "value": "20000" },
+        { "key": "CORE_DECISION_LEDGER_REQUIRED", "value": "true" }
+      ]
+    }
+          ]
+        }
+      ]
+    }
+  ]
+}

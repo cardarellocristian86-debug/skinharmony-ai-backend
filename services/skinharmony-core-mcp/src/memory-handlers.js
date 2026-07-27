@@ -22,6 +22,7 @@ function content(payload) {
 export function createMemoryHandlers(config, options = {}) {
   const research = options.researchCortex;
   const cloud = options.cloudMemoryStore;
+  const govern = options.govern;
   return {
     search: async ({ query }, identity) => {
       const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean).slice(0, 12);
@@ -57,7 +58,24 @@ export function createMemoryHandlers(config, options = {}) {
       return content(researchDocument);
     },
     ...(cloud ? {
-      memory_document_upsert: async (args, identity) => content(await cloud.upsert(identity.tenantId, args)),
+      memory_document_upsert: async (args, identity) => {
+        if (typeof govern !== "function") throw new Error("governance_unavailable");
+        const gate = await govern({
+          action_type: "memory.document_upsert",
+          action_label: `Synchronize cloud memory document ${String(args.source_path || "").slice(0, 500)}`,
+          target: String(args.source_path || "").slice(0, 500),
+        }, identity);
+        if (!gate?.allowed) throw new Error("core_gate_denied");
+        return content({
+          ...(await cloud.upsert(identity.tenantId, args)),
+          gate: {
+            allowed: true,
+            decision: gate.decision || "unknown",
+            mediation: gate.mediation || "unknown",
+            confirmation_satisfied: gate.confirmation_satisfied === true,
+          },
+        });
+      },
     } : {}),
     memory_cloud_status: async (_args, identity) => content(cloud
       ? await cloud.status(identity.tenantId)

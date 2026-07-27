@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachWorkPreflight, TOOLS } from "../src/app.js";
+import { attachWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 
 test("advertises explicit confirmation fields only on write tools", () => {
   const readTools = TOOLS.filter((tool) => tool.annotations.readOnlyHint === true);
@@ -65,4 +65,38 @@ test("reports a confirmed Core-gated write as completed", () => {
   assert.equal(result.structuredContent.work_preflight.governance.execution_authorized_by_core_gate, true);
   assert.equal(result.structuredContent.work_preflight.governance.owner_confirmation_required, false);
   assert.equal(JSON.parse(result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
+});
+
+test("maps deterministic coordination failures to non-retryable public statuses", () => {
+  for (const [code, status] of [
+    ["collaboration_receipt_expired_or_replayed", 409],
+    ["workspace_lock_conflict", 409],
+    ["workspace_version_conflict", 409],
+    ["idempotency_conflict", 409],
+    ["core_gate_denied", 403],
+    ["collaboration_receipt_signature_invalid", 403],
+    ["collaboration_binding_invalid", 400],
+  ]) {
+    const result = toolFailure(Object.assign(new Error(code), { code }));
+    assert.equal(result.structuredContent.error.code, code);
+    assert.equal(result.structuredContent.error.status, status);
+    assert.equal(result.structuredContent.error.retryable, false);
+  }
+});
+
+test("preserves bounded Core error codes and explicit issuer retryability", () => {
+  const core = toolFailure(new Error("core_request_failed:409:conflict.with.detail"));
+  assert.deepEqual(core.structuredContent.error, {
+    code: "conflict.with.detail",
+    message: "The governed request was rejected.",
+    retryable: false,
+    status: 409,
+  });
+  const outage = toolFailure(Object.assign(new Error("nyra_collaboration_issuer_unavailable"), {
+    code: "nyra_collaboration_issuer_unavailable",
+    status: 503,
+    retryable: true,
+  }));
+  assert.equal(outage.structuredContent.error.status, 503);
+  assert.equal(outage.structuredContent.error.retryable, true);
 });

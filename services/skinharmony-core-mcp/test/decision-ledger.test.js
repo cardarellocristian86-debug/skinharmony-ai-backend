@@ -72,3 +72,32 @@ test("ledger reports are always filtered by authenticated tenant", async () => {
 test("ledger stays disabled when PostgreSQL is not configured", () => {
   assert.equal(createDecisionLedger({ databaseUrl: "" }), null);
 });
+
+test("work session and first event roll back atomically when the append fails", async () => {
+  const calls = [];
+  let released = false;
+  const client = {
+    async query(sql) {
+      calls.push(sql);
+      if (/SELECT sequence_number,event_hash/.test(sql)) return { rows: [] };
+      if (/INSERT INTO core_decision_events/.test(sql)) throw new Error("append_failed");
+      return { rows: [] };
+    },
+    release() { released = true; },
+  };
+  const pool = {
+    async query() { return { rows: [] }; },
+    async connect() { return client; },
+  };
+  const ledger = createDecisionLedger({}, { pool, schemaReady: Promise.resolve() });
+  await assert.rejects(
+    ledger.startWork({ tenantId: "codexai", subject: "agent" }, "task_create", { title: "test" }),
+    /append_failed/,
+  );
+  assert.equal(calls[0], "BEGIN");
+  assert(calls.some((sql) => /INSERT INTO core_ai_work_sessions/.test(sql)));
+  assert(calls.some((sql) => /INSERT INTO core_decision_events/.test(sql)));
+  assert.equal(calls.at(-1), "ROLLBACK");
+  assert.equal(calls.includes("COMMIT"), false);
+  assert.equal(released, true);
+});

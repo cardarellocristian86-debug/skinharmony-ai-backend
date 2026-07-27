@@ -71,3 +71,23 @@ test("canonical bootstrap lookup uses exact tenant-scoped source paths", async (
   assert.deepEqual(inspect.params, ["codexai", paths]);
   assert.deepEqual(fetch.params, ["codexai", paths]);
 });
+
+test("cloud memory also redacts titles and metadata before persistence", async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, params) => {
+      calls.push({ sql, params });
+      return { rows: params ? [{ id: "a".repeat(24) }] : [] };
+    },
+  };
+  const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db", cloudMemoryMaxDocumentBytes: 250_000 }, { pool });
+  await store.upsert("tenant-a", {
+    source_path: "SHARED_MEMORY/report.md",
+    title: "token=title-secret-value",
+    text: "password=body-secret-value",
+    metadata: { note: "api_key=metadata-secret-value", nested: { secret: "must-not-persist" } },
+  });
+  const persisted = JSON.stringify(calls.at(-1).params);
+  assert.doesNotMatch(persisted, /title-secret|body-secret|metadata-secret|must-not-persist/);
+  assert.match(persisted, /REDACTED/);
+});

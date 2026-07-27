@@ -196,6 +196,62 @@ export function loadConfig(env = process.env) {
   // Collaboration state must never silently share the service's existing
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
+  const collaborationReceiptCoreJwk = String(env.MCP_COLLABORATION_CORE_JWK || "").trim();
+  const collaborationReceiptCoreKid = String(env.MCP_COLLABORATION_CORE_KID || "").trim();
+  const collaborationReceiptNyraJwk = String(env.MCP_COLLABORATION_NYRA_JWK || "").trim();
+  const collaborationReceiptNyraKid = String(env.MCP_COLLABORATION_NYRA_KID || "").trim();
+  const collaborationCoreIssuerHostport = String(env.MCP_COLLABORATION_CORE_ISSUER_HOSTPORT || "").trim();
+  const collaborationNyraIssuerHostport = String(env.MCP_COLLABORATION_NYRA_ISSUER_HOSTPORT || "").trim();
+  const collaborationCoreIssuerToken = String(env.MCP_COLLABORATION_CORE_ISSUER_TOKEN || "").trim();
+  const collaborationNyraIssuerToken = String(env.MCP_COLLABORATION_NYRA_ISSUER_TOKEN || "").trim();
+  const collaborationBuildCommit = String(env.MCP_COLLABORATION_BUILD_COMMIT || env.RENDER_GIT_COMMIT || "").trim().toLowerCase();
+  const collaborationAllowedTenantId = String(env.MCP_COLLABORATION_ALLOWED_TENANT_ID || "codexai").trim();
+  const collaborationTargetService = String(env.MCP_COLLABORATION_TARGET_SERVICE || "skinharmony-core-mcp-staging").trim();
+  const collaborationTargetEnvironment = String(env.MCP_COLLABORATION_TARGET_ENVIRONMENT || "staging").trim();
+  if (env.MCP_COLLABORATION_BUILD_COMMIT && env.RENDER_GIT_COMMIT &&
+      String(env.MCP_COLLABORATION_BUILD_COMMIT).trim().toLowerCase() !== String(env.RENDER_GIT_COMMIT).trim().toLowerCase()) {
+    throw new Error("MCP_COLLABORATION_BUILD_COMMIT must match RENDER_GIT_COMMIT");
+  }
+  if (collaborationDatabaseUrl && collaborationAllowedTenantId !== "codexai") {
+    throw new Error("MCP_COLLABORATION_ALLOWED_TENANT_ID must be codexai");
+  }
+  if (collaborationDatabaseUrl && collaborationTargetService !== "skinharmony-core-mcp-staging") {
+    throw new Error("MCP_COLLABORATION_TARGET_SERVICE must be skinharmony-core-mcp-staging");
+  }
+  if (collaborationDatabaseUrl && collaborationTargetEnvironment !== "staging") {
+    throw new Error("MCP_COLLABORATION_TARGET_ENVIRONMENT must be staging");
+  }
+  if (collaborationBuildCommit && !/^[a-f0-9]{40}$/.test(collaborationBuildCommit)) {
+    throw new Error("MCP_COLLABORATION_BUILD_COMMIT must be a full Git commit");
+  }
+  if (collaborationDatabaseUrl && [
+    collaborationReceiptCoreJwk,
+    collaborationReceiptCoreKid,
+    collaborationReceiptNyraJwk,
+    collaborationReceiptNyraKid,
+  ].some(Boolean)) {
+    throw new Error("Static collaboration trust anchors are forbidden for MCP staging");
+  }
+  if (collaborationDatabaseUrl &&
+      collaborationCoreIssuerHostport !== "skinharmony-core-staging-issuer:8789") {
+    throw new Error("MCP_COLLABORATION_CORE_ISSUER_HOSTPORT must reference the private staging issuer");
+  }
+  if (collaborationDatabaseUrl &&
+      collaborationNyraIssuerHostport !== "skinharmony-nyra-staging-issuer:8789") {
+    throw new Error("MCP_COLLABORATION_NYRA_ISSUER_HOSTPORT must reference the private staging issuer");
+  }
+  if (collaborationDatabaseUrl &&
+      [collaborationCoreIssuerToken, collaborationNyraIssuerToken]
+        .some((token) => token.length < 32 || token.length > 4_096 ||
+          !/^[\x21-\x7e]+$/.test(token))) {
+    throw new Error("MCP collaboration issuer tokens must be opaque generated staging values");
+  }
+  // Shared coordination is always explicit. When it is enabled, the generic
+  // DATABASE_URL is not used by the cloud-memory store, so staging cannot
+  // silently read or write an unrelated legacy database.
+  const sharedMemoryDatabaseUrl = collaborationDatabaseUrl;
+  const cloudMemoryDatabaseUrl = collaborationDatabaseUrl ? "" : databaseUrl;
+  const decisionLedgerDatabaseUrl = collaborationDatabaseUrl || databaseUrl;
   const decisionLedgerRequired = flag(env.CORE_DECISION_LEDGER_REQUIRED, env.NODE_ENV === "production");
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
@@ -256,10 +312,43 @@ export function loadConfig(env = process.env) {
     sharedMemoryRoot,
     databaseUrl,
     collaborationDatabaseUrl,
+    collaborationReceiptEnforcement: Boolean(collaborationDatabaseUrl),
+    collaborationReceiptAudience: String(env.MCP_COLLABORATION_RECEIPT_AUDIENCE || `${publicUrl}/mcp`).trim(),
+    collaborationReceiptCoreJwk,
+    collaborationReceiptCoreKid,
+    collaborationReceiptNyraJwk,
+    collaborationReceiptNyraKid,
+    collaborationReceiptCoreIssuer: String(env.MCP_COLLABORATION_CORE_ISSUER || "universal-core-staging").trim(),
+    collaborationReceiptNyraIssuer: String(env.MCP_COLLABORATION_NYRA_ISSUER || "nyra-staging").trim(),
+    collaborationAllowedTenantId,
+    collaborationCoreIssuerHostport,
+    collaborationNyraIssuerHostport,
+    collaborationCoreIssuerToken,
+    collaborationNyraIssuerToken,
+    collaborationIssuerTimeoutMs: integer(env.MCP_COLLABORATION_ISSUER_TIMEOUT_MS, 5_000, 250, 10_000),
+    collaborationReceiptTtlMs: integer(env.MCP_COLLABORATION_RECEIPT_TTL_MS, 20_000, 1_000, 30_000),
+    collaborationTargetService,
+    collaborationTargetEnvironment,
+    collaborationBuildCommit,
+    collaborationRuntimeDatabaseRole: String(env.MCP_COLLABORATION_RUNTIME_DATABASE_ROLE || "").trim(),
+    sharedMemoryDatabaseUrl,
+    cloudMemoryDatabaseUrl,
+    decisionLedgerDatabaseUrl,
     decisionLedgerRequired,
     databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
     collaborationDatabaseSsl: flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production"),
+    collaborationDatabaseTimeoutMs: integer(env.MCP_COLLABORATION_DATABASE_TIMEOUT_MS, 8_000, 250, 30_000),
+    sharedMemoryDatabaseSsl: collaborationDatabaseUrl
+      ? flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production")
+      : flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
+    decisionLedgerDatabaseSsl: collaborationDatabaseUrl
+      ? flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production")
+      : flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
     databasePoolMax: integer(env.DATABASE_POOL_MAX, 5, 1, 20),
+    collaborationLocksRequired: Boolean(collaborationDatabaseUrl),
+    collaborationIdempotencyRequired: Boolean(collaborationDatabaseUrl),
+    collaborationLockLeaseSeconds: integer(env.MCP_COLLABORATION_LOCK_LEASE_SECONDS, 60, 30, 300),
+    collaborationTaskContractRequired: Boolean(collaborationDatabaseUrl),
     cloudMemoryMaxDocumentBytes: integer(env.CLOUD_MEMORY_MAX_DOCUMENT_BYTES, 250_000, 1_000, 900_000),
     agentWorkspaceRoot,
     memoryFabricRoot,
