@@ -1829,7 +1829,6 @@ function buildApplyDigest(audit = {}, {
 }
 
 const CANONICAL_GLOBAL_PROTOCOL_IDS = new Set(skinHarmonyProtocolLibrary.map((item) => String(item.id || "")));
-const GOLD_IMPORT_VERIFICATION_CHECKS_TOTAL = 69;
 
 function isPreservedTechnicalRow(item = {}, collectionName = "") {
   const centerId = normalizedCenterId(item.centerId);
@@ -1860,7 +1859,7 @@ function structureManifest(dataset) {
   };
 }
 
-function isCompleteGoldImportManifest(manifests = [], dataset = null) {
+function isCompleteGoldImportManifest(manifests = [], dataset = null, expectedVerificationChecksTotal = 0) {
   if (!dataset || !Array.isArray(manifests) || manifests.length !== 1) return false;
   const manifest = manifests[0] || {};
   const expected = dataset.manifest || {};
@@ -1904,8 +1903,10 @@ function isCompleteGoldImportManifest(manifests = [], dataset = null) {
   const verificationAllowedKeys = new Set(["ok", "checksPassed", "checksTotal", "totals"]);
   const verificationMatches = Boolean(verification)
     && verification.ok === true
-    && verification.checksPassed === GOLD_IMPORT_VERIFICATION_CHECKS_TOTAL
-    && verification.checksTotal === GOLD_IMPORT_VERIFICATION_CHECKS_TOTAL
+    && Number.isInteger(expectedVerificationChecksTotal)
+    && expectedVerificationChecksTotal > 0
+    && verification.checksPassed === expectedVerificationChecksTotal
+    && verification.checksTotal === expectedVerificationChecksTotal
     && Object.keys(verification).every((key) => verificationAllowedKeys.has(key))
     && stableStringify(verification.totals || {}) === stableStringify(expectedTotals);
   return manifestMatches && manifestShapeMatches && verificationMatches;
@@ -2631,14 +2632,20 @@ function verifyGold18mCollections(
       actualDigest: actualManagedStateDigest,
       expectedDigest: expectedManagedStateDigest
     }),
-    check("gold_import_manifest_exact", !requireCompleteImportManifest || isCompleteGoldImportManifest(goldImports, dataset), {
-      actual: goldImports.length
-    }),
+    check("gold_import_manifest_exact", !requireCompleteImportManifest, { actual: goldImports.length }),
     check("dataset_digest_matches", !dataset || (
       String(goldImports[0]?.datasetDigest || "") === dataset.manifest.datasetDigest
       && managedDatasetPayloadExact
     ))
   ];
+  const goldImportManifestCheck = checks.find((item) => item.name === "gold_import_manifest_exact");
+  if (requireCompleteImportManifest && goldImportManifestCheck) {
+    goldImportManifestCheck.ok = isCompleteGoldImportManifest(goldImports, dataset, checks.length);
+    goldImportManifestCheck.details = {
+      actual: goldImports.length,
+      expectedChecksTotal: checks.length
+    };
+  }
   return {
     ok: checks.every((item) => item.ok),
     datasetVersion: DATASET_VERSION,
