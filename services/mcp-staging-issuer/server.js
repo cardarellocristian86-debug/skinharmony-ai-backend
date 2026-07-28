@@ -13,7 +13,10 @@ import { createCollaborationCoreGateVerifier } from
   "../universal-core-service/src/collaborationCoreGateEvidence.js";
 import { createMcpStagingIssuerReplayClientFromEnv } from
   "../universal-core-service/src/mcpStagingControlPlaneClient.js";
-import { loadMcpStagingDependencyBuildIdentity } from
+import {
+  loadMcpStagingDependencyBuildIdentity,
+  loadMcpStagingProviderBuildIdentity,
+} from
   "../universal-core-service/src/mcpStagingDependencyBuildIdentity.js";
 
 const SENSITIVE_ENV_KEYS = Object.freeze([
@@ -57,6 +60,19 @@ export function scrubIssuerEnvironment(env = process.env) {
       // Startup never reports environment values.
     }
   }
+}
+
+export function loadMcpStagingIssuerEntrypointBuildIdentity(env = process.env) {
+  const startupMode = env?.MCP_STAGING_ISSUER_STARTUP_MODE || "full";
+  if (startupMode !== "full" && startupMode !== "jwks_only") {
+    throw new Error("issuer_startup_mode_invalid");
+  }
+  return Object.freeze({
+    startupMode,
+    buildIdentity: startupMode === "jwks_only"
+      ? loadMcpStagingProviderBuildIdentity(env)
+      : loadMcpStagingDependencyBuildIdentity(env),
+  });
 }
 
 function anchorFromEnv(env, authority, prefix) {
@@ -184,11 +200,8 @@ export function createMcpStagingIssuerHttpServer(runtime) {
 }
 
 async function main() {
-  const buildIdentity = loadMcpStagingDependencyBuildIdentity(process.env);
-  const startupMode = process.env.MCP_STAGING_ISSUER_STARTUP_MODE || "full";
-  if (startupMode !== "full" && startupMode !== "jwks_only") {
-    throw new Error("issuer_startup_mode_invalid");
-  }
+  const { startupMode, buildIdentity } =
+    loadMcpStagingIssuerEntrypointBuildIdentity(process.env);
   const controlPlaneClient = startupMode === "full"
     ? createMcpStagingIssuerReplayClientFromEnv({ env: process.env })
     : undefined;

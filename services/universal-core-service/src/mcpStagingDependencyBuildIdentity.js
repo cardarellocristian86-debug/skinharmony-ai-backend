@@ -50,6 +50,21 @@ export function loadMcpStagingDependencyBuildIdentity(env = process.env) {
   });
 }
 
+export function loadMcpStagingProviderBuildIdentity(env = process.env) {
+  if (!env || (typeof env !== "object" && typeof env !== "function")) {
+    fail("dependency_build_identity_unavailable");
+  }
+  const renderCommit = readCommit(env, RENDER_COMMIT_ENV_KEY);
+  return Object.freeze({
+    schema_version: "mcp_staging_provider_build_identity_v1",
+    verified: true,
+    provider: "render",
+    commit: renderCommit,
+    commit_redacted: redactCommit(renderCommit),
+    secrets_exposed: false,
+  });
+}
+
 export const mcpStagingDependencyBuildIdentityContract = Object.freeze({
   render_commit_env_key: RENDER_COMMIT_ENV_KEY,
   approved_commit_env_key: APPROVED_COMMIT_ENV_KEY,

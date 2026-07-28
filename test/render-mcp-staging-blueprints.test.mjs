@@ -252,6 +252,9 @@ test("pins phase transitions without hardcoding the provider build commit", () =
     bootstrapHold.envVars.some((entry) => Boolean(entry.fromDatabase)),
     false,
   );
+  for (const item of services(value.bootstrap)) {
+    assert.equal(env(item, "MCP_STAGING_DEPENDENCY_BUILD_COMMIT"), undefined);
+  }
   assert.equal(
     env(controlInitialize, "MCP_STAGING_DB_BOOTSTRAP_MODE").value,
     "initialize",

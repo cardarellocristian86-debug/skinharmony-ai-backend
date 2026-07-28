@@ -7,7 +7,10 @@ import { bootstrapMcpStagingCollaborationDatabaseWithControlPlane } from
 import { createMcpStagingConsumptionEvidenceVerifier } from
   "../../universal-core-service/src/mcpStagingConsumptionEvidence.js";
 import { createMcpStagingPostgresControlPlaneFromBootstrap } from "../../universal-core-service/src/mcpStagingPostgresControlPlane.js";
-import { loadMcpStagingDependencyBuildIdentity } from
+import {
+  loadMcpStagingDependencyBuildIdentity,
+  loadMcpStagingProviderBuildIdentity,
+} from
   "../../universal-core-service/src/mcpStagingDependencyBuildIdentity.js";
 
 const SENSITIVE_ENV_KEYS = Object.freeze([
@@ -256,7 +259,7 @@ function readHoldSetting(env, key) {
 
 export function startHeldBootstrap(env = process.env, { listen = true } = {}) {
   try {
-    loadMcpStagingDependencyBuildIdentity(env);
+    loadMcpStagingProviderBuildIdentity(env);
     if (readHoldSetting(env, "MCP_STAGING_DB_BOOTSTRAP_MODE") !== HOLD_MODE ||
         readHoldSetting(env, "MCP_STAGING_BOOTSTRAP_ENVIRONMENT") !== "staging") {
       throw new Error("bootstrap_hold_environment_invalid");

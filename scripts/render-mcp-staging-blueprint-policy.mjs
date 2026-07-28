@@ -113,19 +113,18 @@ const EXPECTED_ENV_KEYS = Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze([
       "NODE_ENV", "PORT", "MCP_STAGING_BOOTSTRAP_ENVIRONMENT",
       "MCP_STAGING_CONTROL_PLANE_PROFILE", "MCP_STAGING_DB_BOOTSTRAP_MODE",
-      "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
     ]),
     [CORE_ISSUER]: Object.freeze([
       "NODE_ENV", "PORT", "MCP_STAGING_ENVIRONMENT", "MCP_STAGING_ISSUER_MODE",
       "MCP_STAGING_ISSUER_PROTOCOL", "MCP_STAGING_ISSUER_STARTUP_MODE",
       "MCP_STAGING_COLLABORATION_AUDIENCE", "MCP_STAGING_ISSUER_SIGNING_SECRET",
-      "MCP_STAGING_ISSUER_AUTH_TOKEN", "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+      "MCP_STAGING_ISSUER_AUTH_TOKEN",
     ]),
     [NYRA_ISSUER]: Object.freeze([
       "NODE_ENV", "PORT", "MCP_STAGING_ENVIRONMENT", "MCP_STAGING_ISSUER_MODE",
       "MCP_STAGING_ISSUER_PROTOCOL", "MCP_STAGING_ISSUER_STARTUP_MODE",
       "MCP_STAGING_COLLABORATION_AUDIENCE", "MCP_STAGING_ISSUER_SIGNING_SECRET",
-      "MCP_STAGING_ISSUER_AUTH_TOKEN", "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
+      "MCP_STAGING_ISSUER_AUTH_TOKEN",
     ]),
   }),
   control: Object.freeze({
@@ -425,21 +424,9 @@ const EXPECTED_DATABASE_REFERENCES = Object.freeze({
 
 const EXPECTED_SERVICE_REFERENCES = Object.freeze({
   bootstrap: Object.freeze({
-    [BOOTSTRAP_SERVICE]: Object.freeze({
-      MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
-        type: "pserv", name: BOOTSTRAP_SERVICE, envVarKey: "RENDER_GIT_COMMIT",
-      }),
-    }),
-    [CORE_ISSUER]: Object.freeze({
-      MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
-        type: "pserv", name: CORE_ISSUER, envVarKey: "RENDER_GIT_COMMIT",
-      }),
-    }),
-    [NYRA_ISSUER]: Object.freeze({
-      MCP_STAGING_DEPENDENCY_BUILD_COMMIT: Object.freeze({
-        type: "pserv", name: NYRA_ISSUER, envVarKey: "RENDER_GIT_COMMIT",
-      }),
-    }),
+    [BOOTSTRAP_SERVICE]: Object.freeze({}),
+    [CORE_ISSUER]: Object.freeze({}),
+    [NYRA_ISSUER]: Object.freeze({}),
   }),
   control: Object.freeze({
     [BOOTSTRAP_SERVICE]: Object.freeze({

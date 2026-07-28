@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import {
   createMcpStagingIssuerServiceRuntime,
+  loadMcpStagingIssuerEntrypointBuildIdentity,
   loadIssuerPrivatePort,
 } from "../server.js";
 import {
@@ -26,6 +27,34 @@ const ISSUER_HOSTPORTS = Object.freeze({
 const ISSUER_URLS = Object.freeze({
   core: `http://${ISSUER_HOSTPORTS.core}/v1/mcp-staging/core-grant`,
   nyra: `http://${ISSUER_HOSTPORTS.nyra}/v1/mcp-staging/nyra-attest`,
+});
+
+test("jwks_only startup binds directly to Render commit without reading a circular self-reference", () => {
+  let approvedCommitReads = 0;
+  const env = {
+    MCP_STAGING_ISSUER_STARTUP_MODE: "jwks_only",
+    RENDER_GIT_COMMIT: TARGET_COMMIT,
+  };
+  Object.defineProperty(env, "MCP_STAGING_DEPENDENCY_BUILD_COMMIT", {
+    enumerable: true,
+    get() {
+      approvedCommitReads += 1;
+      throw new Error("approved-commit-must-not-be-read");
+    },
+  });
+  const result = loadMcpStagingIssuerEntrypointBuildIdentity(env);
+  assert.equal(result.startupMode, "jwks_only");
+  assert.equal(result.buildIdentity.verified, true);
+  assert.equal(result.buildIdentity.commit, TARGET_COMMIT);
+  assert.equal(result.buildIdentity.schema_version, "mcp_staging_provider_build_identity_v1");
+  assert.equal(approvedCommitReads, 0);
+  assert.throws(
+    () => loadMcpStagingIssuerEntrypointBuildIdentity({
+      MCP_STAGING_ISSUER_STARTUP_MODE: "full",
+      RENDER_GIT_COMMIT: TARGET_COMMIT,
+    }),
+    /dependency_build_identity_invalid/,
+  );
 });
 
 test("issuer private port is exact and getter failures are redacted", () => {

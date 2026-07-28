@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   loadMcpStagingDependencyBuildIdentity,
+  loadMcpStagingProviderBuildIdentity,
   McpStagingDependencyBuildIdentityError,
   mcpStagingDependencyBuildIdentityContract,
 } from "../src/mcpStagingDependencyBuildIdentity.js";
@@ -35,6 +36,29 @@ test("accepts only identical canonical Render and approved dependency commits", 
     render_commit_env_key: "RENDER_GIT_COMMIT",
     approved_commit_env_key: "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
   });
+});
+
+test("initial provider hold identity needs only Render's immutable runtime commit", () => {
+  let approvedCommitReads = 0;
+  const env = { RENDER_GIT_COMMIT: COMMIT };
+  Object.defineProperty(env, "MCP_STAGING_DEPENDENCY_BUILD_COMMIT", {
+    enumerable: true,
+    get() {
+      approvedCommitReads += 1;
+      throw new Error("approved-commit-must-not-be-read");
+    },
+  });
+  const identity = loadMcpStagingProviderBuildIdentity(env);
+  assert.deepEqual(identity, {
+    schema_version: "mcp_staging_provider_build_identity_v1",
+    verified: true,
+    provider: "render",
+    commit: COMMIT,
+    commit_redacted: "01234567...01234567",
+    secrets_exposed: false,
+  });
+  assert.equal(approvedCommitReads, 0);
+  assert.equal(Object.isFrozen(identity), true);
 });
 
 test("fails closed when either required commit is absent or non-canonical", () => {

@@ -22,15 +22,7 @@
         { "key": "PORT", "value": "10001" },
         { "key": "MCP_STAGING_BOOTSTRAP_ENVIRONMENT", "value": "staging" },
         { "key": "MCP_STAGING_CONTROL_PLANE_PROFILE", "value": "collaboration" },
-        { "key": "MCP_STAGING_DB_BOOTSTRAP_MODE", "value": "hold" },
-        {
-          "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
-          "fromService": {
-            "type": "pserv",
-            "name": "skinharmony-mcp-staging-db-bootstrap",
-            "envVarKey": "RENDER_GIT_COMMIT"
-          }
-        }
+        { "key": "MCP_STAGING_DB_BOOTSTRAP_MODE", "value": "hold" }
       ]
     },
     {
@@ -56,15 +48,7 @@
           "value": "https://skinharmony-core-mcp-staging.onrender.com/mcp"
         },
         { "key": "MCP_STAGING_ISSUER_SIGNING_SECRET", "generateValue": true },
-        { "key": "MCP_STAGING_ISSUER_AUTH_TOKEN", "generateValue": true },
-        {
-          "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
-          "fromService": {
-            "type": "pserv",
-            "name": "skinharmony-core-staging-issuer",
-            "envVarKey": "RENDER_GIT_COMMIT"
-          }
-        }
+        { "key": "MCP_STAGING_ISSUER_AUTH_TOKEN", "generateValue": true }
       ]
     },
     {
@@ -90,15 +74,7 @@
           "value": "https://skinharmony-core-mcp-staging.onrender.com/mcp"
         },
         { "key": "MCP_STAGING_ISSUER_SIGNING_SECRET", "generateValue": true },
-        { "key": "MCP_STAGING_ISSUER_AUTH_TOKEN", "generateValue": true },
-        {
-          "key": "MCP_STAGING_DEPENDENCY_BUILD_COMMIT",
-          "fromService": {
-            "type": "pserv",
-            "name": "skinharmony-nyra-staging-issuer",
-            "envVarKey": "RENDER_GIT_COMMIT"
-          }
-        }
+        { "key": "MCP_STAGING_ISSUER_AUTH_TOKEN", "generateValue": true }
       ]
     }
           ]
