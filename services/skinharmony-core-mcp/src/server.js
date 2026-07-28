@@ -88,7 +88,22 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
     action_label: `Invoke dynamic capability ${tool.name}`,
     action_type: "dynamic_capability.invoke",
     target: tool.name,
-    operation_class: "owner_confirmed_governed_action",
+    // These routes can only create or update the Core-owned,
+    // tenant-isolated Research Distillation shadow state.  They have no
+    // external side effect, and the Core runtime itself enforces shadow mode,
+    // review-before-promotion and persist_verified=false.  Treating them as
+    // sandboxed work lets a verified tenant owner use the compact router
+    // without granting owner-root authority.  OpenAI/web research and every
+    // other dynamic mutation retain the stricter owner-confirmed gate.
+    operation_class: new Set([
+      "nyra_research_envelope_authorize",
+      "nyra_research_workspace_open",
+      "nyra_research_workspace_attach",
+      "nyra_research_distill",
+      "nyra_research_workspace_close",
+    ]).has(tool.name)
+      ? "sandboxed_scoped_work"
+      : "owner_confirmed_governed_action",
     external_side_effect: tool.annotations?.openWorldHint === true,
     destructive: tool.annotations?.destructiveHint === true,
     bounded_scope: true,
