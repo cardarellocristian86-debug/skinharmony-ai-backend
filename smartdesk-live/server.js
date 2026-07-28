@@ -793,6 +793,22 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 
+function isWriteFreezeEnabled() {
+  return ["1", "true", "yes", "on"].includes(String(process.env.SMARTDESK_WRITE_FREEZE || "").toLowerCase());
+}
+
+app.use((req, res, next) => {
+  if (!isWriteFreezeEnabled() || !req.path.startsWith("/api") || req.path === "/api/health") {
+    return next();
+  }
+  res.setHeader("Retry-After", "120");
+  return res.status(503).json({
+    success: false,
+    code: "smartdesk_maintenance_write_freeze",
+    message: "Smart Desk e temporaneamente in manutenzione controllata. Riprova tra pochi minuti."
+  });
+});
+
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api")) return next();
   const startedAt = Date.now();
