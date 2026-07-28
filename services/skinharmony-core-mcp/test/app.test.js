@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
@@ -14,6 +15,45 @@ const config = {
   defaultTenantId: "owner-private",
   supportedScopes: ["core:read", "core:govern"]
 };
+
+function oauthOwnerFixture({ subject = "oauth-owner-fixture", tenantBinding = true } = {}) {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "owner-test-key";
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({
+    alg: "RS256",
+    typ: "JWT",
+    kid: jwk.kid,
+  })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    iss: `${config.auth0Issuer}/`,
+    aud: config.auth0Audience,
+    sub: subject,
+    scope: "core:govern",
+    iat: now,
+    auth_time: now,
+    exp: now + 60,
+    "https://skinharmony.it/tenant_id": "untrusted-tenant-claim",
+  })).toString("base64url");
+  const signature = crypto.sign(
+    "RSA-SHA256",
+    Buffer.from(`${header}.${payload}`),
+    privateKey,
+  ).toString("base64url");
+  return {
+    token: `${header}.${payload}.${signature}`,
+    cache: { get: async () => jwk },
+    config: {
+      ...config,
+      codexKeys: [],
+      defaultTenantId: "codexai",
+      selfServiceTenantsEnabled: true,
+      oauthOwnerTenantBindings: tenantBinding ? { [subject]: "codexai" } : {},
+      oauthOwnerConfirmationMaxAgeSeconds: 300,
+    },
+  };
+}
 
 async function serve(run, configOverride = {}) {
   const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
@@ -1011,6 +1051,120 @@ test("records explicit owner confirmation and completes a write after the Core g
     assert.equal(JSON.parse(body.result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("binds an OAuth owner confirmation to core_gate_action once without widening owner authority", async () => {
+  const owner = oauthOwnerFixture();
+  const seen = [];
+  const app = createApp(owner.config, {
+    jwksCache: owner.cache,
+    handlers: {
+      core_gate_action: async (args, identity) => {
+        seen.push({ args, identity });
+        return {
+          structuredContent: { authorization: { allowed: identity.ownerConfirmed === true } },
+          content: [{ type: "text", text: "ok" }],
+        };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const request = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${owner.token}`,
+        "content-type": "application/json",
+        "mcp-session-id": "oauth-owner-gate-session",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 23,
+        method: "tools/call",
+        params: {
+          name: "core_gate_action",
+          arguments: {
+            action_label: "Bound staging gate",
+            action_type: "render_mcp_staging_topology_phase",
+            owner_confirmed: true,
+            confirmation_reference: "owner confirmed exact staging envelope",
+          },
+        },
+      }),
+    };
+    const first = await fetch(`${base}/mcp`, request);
+    const firstBody = await first.json();
+    assert.equal(first.status, 200);
+    assert.equal(firstBody.result.structuredContent.authorization.allowed, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].identity.kind, "oauth");
+    assert.equal(seen[0].identity.tenantId, "codexai");
+    assert.equal(seen[0].identity.oauthOwnerElevated, true);
+    assert.equal(seen[0].identity.ownerConfirmed, true);
+    assert.equal(
+      seen[0].identity.confirmationReference,
+      "owner confirmed exact staging envelope",
+    );
+    assert.equal(seen[0].identity.godMode, undefined);
+
+    const replay = await fetch(`${base}/mcp`, request);
+    const replayBody = await replay.json();
+    assert.equal(replay.status, 200);
+    assert.equal(replayBody.result.isError, true);
+    assert.equal(
+      replayBody.result.structuredContent.error.code,
+      "owner_confirmation_replayed",
+    );
+    assert.equal(replayBody.result.structuredContent.error.retryable, false);
+    assert.equal(seen.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  const unbound = oauthOwnerFixture({ subject: "unbound-oauth-user", tenantBinding: false });
+  let unboundIdentity;
+  const unboundApp = createApp(unbound.config, {
+    jwksCache: unbound.cache,
+    handlers: {
+      core_gate_action: async (_args, identity) => {
+        unboundIdentity = identity;
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    },
+  });
+  const unboundServer = unboundApp.listen(0);
+  await new Promise((resolve) => unboundServer.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${unboundServer.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${unbound.token}`,
+        "content-type": "application/json",
+        "mcp-session-id": "unbound-oauth-gate-session",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 24,
+        method: "tools/call",
+        params: {
+          name: "core_gate_action",
+          arguments: {
+            action_label: "Must not elevate",
+            action_type: "render_mcp_staging_topology_phase",
+            owner_confirmed: true,
+            confirmation_reference: "unbound claim",
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(unboundIdentity.oauthOwnerElevated, undefined);
+    assert.equal(unboundIdentity.ownerConfirmed, false);
+  } finally {
+    await new Promise((resolve) => unboundServer.close(resolve));
   }
 });
 

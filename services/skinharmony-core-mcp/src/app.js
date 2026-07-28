@@ -43,6 +43,7 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "tenant_provider_openai_setup_panel",
 ]);
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
+  "core_gate_action",
   "core_capability_invoke",
   "tenant_provider_openai_setup_link",
   "tenant_provider_openai_multi_agent_smoke_run",
@@ -663,10 +664,13 @@ export function createApp(config, options = {}) {
         // A request flag is never an identity assertion. Generic Core writes
         // still require verified owner-root confirmation. The bounded provider
         // test has a deliberately narrower, separate tenant-OAuth-owner proof.
-        const explicitDynamicCapabilityConfirmation = tool.name === "core_capability_invoke" &&
+        const explicitCoreGovernanceConfirmation = [
+          "core_capability_invoke",
+          "core_gate_action",
+        ].includes(tool.name) &&
           identity.oauthOwnerElevated === true &&
           args.owner_confirmed === true;
-        const explicitOwnerConfirmation = (identity.godMode === true || explicitDynamicCapabilityConfirmation) &&
+        const explicitOwnerConfirmation = (identity.godMode === true || explicitCoreGovernanceConfirmation) &&
           args.owner_confirmed === true;
         const explicitProviderExecutionConfirmation = identity.kind === "oauth" &&
           identity.providerSetupOwner === true &&
