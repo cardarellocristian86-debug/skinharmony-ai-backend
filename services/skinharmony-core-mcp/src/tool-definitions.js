@@ -177,6 +177,63 @@ const researchPlanPolicy = object({
     allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
   }, ["minimum_independent_sources", "freshness_days"]),
 }, ["source_policy"]);
+const researchDistillationEvidence = object({
+  source_id: identifier,
+  canonical_url: { type: "string", format: "uri", maxLength: 2_048 },
+  title: text(500),
+  published_at: { type: "string", format: "date-time" },
+  claim_summary: text(2_000),
+  support_direction: { type: "string", enum: ["support", "contradict", "neutral"] },
+  citation: { type: "string", maxLength: 1_000 },
+}, ["source_id", "canonical_url", "title", "claim_summary"]);
+const researchDistillationEnvelopeProperties = {
+  request_id: identifier,
+  question: text(2_000),
+  branch_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
+  allowed_source_ids: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
+  max_documents: { type: "integer", minimum: 1, maximum: 100 },
+  max_bytes: { type: "integer", minimum: 1, maximum: 5_000_000 },
+  max_duration_ms: { type: "integer", minimum: 1_000, maximum: 300_000 },
+  max_cost: { type: "number", minimum: 0, maximum: 100 },
+  retention_mode: { type: "string", enum: ["ephemeral", "candidate", "review_required"] },
+};
+const nyraDeepV2RequestId = {
+  type: "string",
+  minLength: 1,
+  maxLength: 160,
+  pattern: "^[a-zA-Z0-9_.:-]+$",
+};
+const nyraDeepV2EvidenceRef = {
+  type: "string",
+  pattern: "^[a-f0-9]{64}$",
+};
+const nyraDeepV2Source = object({
+  id: identifier,
+  registry_source_id: identifier,
+  url: { type: "string", format: "uri", maxLength: 2_048 },
+  title: text(500),
+  source_type: sourceType,
+  excerpt: { type: "string", minLength: 16, maxLength: 1_200 },
+  published_at: { type: "string", format: "date-time" },
+}, ["id", "registry_source_id", "url", "title", "source_type", "excerpt"]);
+const nyraDeepV2Claim = object({
+  id: identifier,
+  kind: { type: "string", enum: ["fact", "inference", "hypothesis"] },
+  text: text(2_000),
+  source_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
+  confidence: probability,
+}, ["id", "kind", "text", "source_ids"]);
+const nyraDeepV2EvidencePack = object({
+  research_question: text(2_000),
+  sources: { type: "array", minItems: 1, maxItems: 20, items: nyraDeepV2Source },
+  claims: { type: "array", minItems: 1, maxItems: 30, items: nyraDeepV2Claim },
+}, ["sources", "claims"]);
+const nyraDeepV2RequirementBinding = object({
+  id: identifier,
+  requirement_ref: { type: "string", pattern: "^req_[a-f0-9]{64}$" },
+  source_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
+  claim_ids: { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: identifier },
+}, ["id", "requirement_ref", "source_ids", "claim_ids"]);
 const searchOutputSchema = object({
   results: {
     type: "array",
@@ -883,6 +940,60 @@ export const TOOLS = [
     allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
     search_context_size: { type: "string", enum: ["low", "medium", "high"] },
   }, ["query"]), ["core:govern"], false, false, { openWorld: true }),
+  tool("nyra_research_distillation_status", "Read Research Distillation status", "Read the tenant-bound Core mode, policy version, allowlist decision and shadow metrics. This never authorizes research or persistence.", object(), ["core:read"]),
+  tool("nyra_research_source_registry", "Read trusted research sources", "Read the Core-owned trusted source registry and branch bindings for this tenant. Use source ids from this registry when opening a workspace.", object(), ["core:read"]),
+  tool("nyra_research_learning_pack", "Read a branch learning pack", "Read the empty-by-default, versioned learning pack for one Core branch. Verified knowledge is never synthesized by the MCP.", object({
+    branch_id: identifier,
+  }), ["core:read"]),
+  tool("nyra_research_envelope_authorize", "Authorize a research envelope", "Ask Universal Core to issue its own non-executing directive and bound branches, source ids, document count, bytes, duration, cost and retention. Shadow mode returns shadow_only and never authorizes external side effects.", object(researchDistillationEnvelopeProperties, ["question", "branch_ids"]), ["core:govern"], false, false),
+  tool("nyra_research_workspace_open", "Open a governed research workspace", "Open a tenant-isolated Research Distillation workspace from a single-use opaque envelope issued by Universal Core. In shadow it is observational and has no durable workspace writes.", object({
+    envelope_id: { type: "string", pattern: "^rae_[a-f0-9-]{36}$" },
+  }, ["envelope_id"]), ["core:govern"], false, false),
+  tool("nyra_research_workspace_attach", "Attach governed research evidence", "Attach only short evidence records that match the Core source registry and workspace envelope. Raw pages, private hosts and unknown sources are rejected.", object({
+    workspace_id: { type: "string", pattern: "^rw_[a-f0-9-]{36}$" },
+    evidence: { type: "array", minItems: 1, maxItems: 100, items: researchDistillationEvidence },
+  }, ["workspace_id", "evidence"]), ["core:govern"], false, false),
+  tool("nyra_research_distill", "Distill a governed learning candidate", "Create a tenant-bound candidate from evidence already validated by Core. This MCP path always forces persist_verified=false; automatic promotion is impossible.", object({
+    workspace_id: { type: "string", pattern: "^rw_[a-f0-9-]{36}$" },
+    evidence: { type: "array", maxItems: 100, items: researchDistillationEvidence },
+    lesson: text(1_000),
+    learning: text(1_000),
+    scope: { type: "string", maxLength: 200 },
+    confidence: probability,
+    limitations: { type: "array", maxItems: 10, items: text(1_000) },
+    outcome_refs: { type: "array", maxItems: 10, items: identifier },
+    audit_reference: { type: "string", maxLength: 240 },
+  }, ["workspace_id"]), ["core:govern"], false, false),
+  tool("nyra_research_workspace_close", "Close a governed research workspace", "Close one tenant-bound Core workspace after candidate review. It cannot close another tenant's workspace.", object({
+    workspace_id: { type: "string", pattern: "^rw_[a-f0-9-]{36}$" },
+  }, ["workspace_id"]), ["core:govern"], false, true),
+  tool("nyra_research_cleanup", "Clean expired research workspaces", "Ask Core to remove only expired workspaces for the authenticated tenant. It cannot address another tenant.", object(), ["core:govern"], false, true, { destructive: true }),
+  tool("nyra_v2_preview", "Preview Deep Branch V2", "Ask Universal Core to route Nyra V1 first, issue a signed bounded Deep V2 preview request and return only a non-executing Core-authoritative preview.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    nyra_branches: { type: "array", maxItems: 64, uniqueItems: true, items: identifier },
+  }, ["message"]), ["core:read"], true, false),
+  tool("nyra_v2_requirements", "Read Deep V2 evidence requirements", "Ask Universal Core for the opaque evidence requirements of one Core-opened Deep V2 branch and subbranch. It never authorizes execution.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    branch_id: identifier,
+    subbranch_id: identifier,
+  }, ["message", "branch_id", "subbranch_id"]), ["core:read"], true, false),
+  tool("nyra_v2_evidence_prepare", "Prepare governed Deep V2 evidence", "Send a bounded evidence pack to Universal Core. MCP computes and signs the exact pack binding; Core retrieves only registry-authorized sources and returns opaque evidence references. No Nyra execution is authorized.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    branch_id: identifier,
+    subbranch_id: identifier,
+    evidence_pack: nyraDeepV2EvidencePack,
+    requirement_bindings: { type: "array", minItems: 1, maxItems: 64, items: nyraDeepV2RequirementBinding },
+  }, ["message", "branch_id", "subbranch_id", "evidence_pack", "requirement_bindings"]), ["core:govern"], false, false, { openWorld: true }),
+  tool("nyra_v2_evaluate", "Evaluate a Deep V2 branch", "Ask Universal Core to resolve previously prepared tenant evidence, issue the operational attestation and call Nyra for a non-executing advisory evaluation. Raw evidence cannot be supplied here.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    branch_id: identifier,
+    subbranch_id: identifier,
+    evidence_refs: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: nyraDeepV2EvidenceRef },
+  }, ["message", "branch_id", "subbranch_id", "evidence_refs"]), ["core:govern"], false, false, { openWorld: true }),
   tool("skin_analyzer", "Interpret Skin Analyzer scores", "Read-only cosmetic interpretation of structured skin scores through the authenticated tenant Core branch; never diagnoses, prescribes or auto-publishes.", object({
     scores: { type: "array", minItems: 1, maxItems: 12, items: skinScore }, products: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, protocols: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, report_text: { type: "string", maxLength: 10_000 }, data_quality_score: score,
     acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier, focus_score: score, illumination_score: score, color_calibrated: { type: "boolean" }, polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] } }), previous_scores: { type: "array", maxItems: 12, items: skinScore }, previous_acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier }), learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }), session_id: identifier,

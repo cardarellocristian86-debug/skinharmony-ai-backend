@@ -62,6 +62,80 @@ services:
         value: active
       - key: LEXICAL_SEMANTIC_MODE
         value: active
+      - key: CORE_DTT_ENABLED
+        value: "true"
+      - key: CORE_DTT_MODE
+        value: active
+      - key: CORE_DTT_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_RESEARCH_DISTILLATION_ENABLED
+        value: "true"
+      - key: CORE_RESEARCH_DISTILLATION_MODE
+        value: shadow
+      - key: CORE_RESEARCH_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_RESEARCH_MAX_DOCUMENTS
+        value: "10"
+      - key: CORE_RESEARCH_MAX_BYTES
+        value: "2000000"
+      - key: CORE_RESEARCH_TIMEOUT_MS
+        value: "30000"
+      - key: CORE_RESEARCH_CACHE_TTL_SECONDS
+        value: "3600"
+      - key: CORE_DISTILLATION_REQUIRES_REVIEW
+        value: "true"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ENABLED
+        value: "true"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MODE
+        value: shadow
+      - key: CORE_NYRA_DEEP_BRANCH_V2_URL
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ALLOWED_ORIGIN
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SERVICE_KEY
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_DEEP_BRANCH_V2_CORE_SHARED_SECRET
+      - key: CORE_NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_NYRA_DEEP_BRANCH_V2_BRANCHES
+        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
+      # Set these to the exact generated 21/299 artifact bindings before the
+      # Render rollout; missing values keep the Core client fail-closed.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_CATALOG_FINGERPRINT
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_ROOT_BINDING_HASH
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_TIMEOUT_MS
+        value: "2500"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_FAILURE_THRESHOLD
+        value: "3"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_COOLDOWN_MS
+        value: "30000"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET
+        generateValue: true
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SOURCE_FETCH_TIMEOUT_MS
+        value: "5000"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SOURCE_MAX_BYTES
+        value: "250000"
+      # Private/public Ed25519 material is populated only after the exact-state
+      # signed evaluation. Operational evaluation remains disabled until then.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID
+        value: universal-core-nyra-v2
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
+        value: "false"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_MODE
+        value: shadow
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST
+        value: codexai
       - key: NYRA_DEEP_RUNTIME_ENABLED
         value: "true"
       - key: NYRA_DEEP_RUNTIME_MODE

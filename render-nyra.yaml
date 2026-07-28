@@ -3,7 +3,10 @@ services:
     name: skinharmony-nyra-core
     env: node
     plan: starter
-    buildCommand: npm ci
+    # Federation anti-replay is process-local. Keep one instance until the
+    # persistent nonce ledger is the only configured implementation.
+    numInstances: 1
+    buildCommand: npm ci && npm run nyra:deep-v2:runtime:verify
     startCommand: npm run nyra:render
     healthCheckPath: /healthz
     envVars:
@@ -49,6 +52,38 @@ services:
         sync: false
       - key: NYRA_CORE_TENANT_ID
         value: "codexai"
+      - key: NYRA_DEEP_BRANCH_V2_ENABLED
+        value: "true"
+      - key: NYRA_DEEP_BRANCH_V2_RUNTIME_MODE
+        value: lazy
+      - key: NYRA_DEEP_BRANCH_V2_MODE
+        value: shadow
+      - key: NYRA_DEEP_BRANCH_V2_BRANCHES
+        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
+      - key: NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
+        value: codexai
+      - key: NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED
+        value: "true"
+      - key: NYRA_DEEP_BRANCH_V2_FEDERATION_TENANT_ALLOWLIST
+        value: codexai
+      - key: NYRA_DEEP_BRANCH_V2_CORE_SHARED_SECRET
+        generateValue: true
+      - key: NYRA_DEEP_BRANCH_V2_ENVELOPE_MAX_AGE_MS
+        value: "60000"
+      - key: NYRA_DEEP_BRANCH_V2_REPLAY_STORE_PATH
+        value: /var/data/runtime/nyra-learning/nyra_deep_v2_replay_store.json
+      # Operational evaluation stays off until the exact deployed artifact
+      # passes the signed Ed25519 evaluation.
+      - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
+        value: "false"
+      - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST
+        value: codexai
+      - key: NYRA_DEEP_BRANCH_V2_CORE_ATTESTATION_KEY_ID_ALLOWLIST
+        value: universal-core-nyra-v2
+      - key: NYRA_DEEP_BRANCH_V2_CORE_ATTESTATION_PUBLIC_KEYS
+        sync: false
+      - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_ATTESTATION_MAX_AGE_MS
+        value: "60000"
       - key: NYRA_RESEARCH_MCP_URL
         value: "https://skinharmony-core-mcp.onrender.com"
       - key: NYRA_SUITE_CORE_URL

@@ -363,7 +363,7 @@ try {
   assert(malformedNyraBranch.status === 400 && malformedNyraBranch.json.error === "invalid_nyra_branch_id", "malformed Nyra branch was not rejected");
   const excessiveNyraBranches = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "test",
-    nyra_branches: Array.from({ length: 21 }, (_, index) => `branch_${index}`),
+    nyra_branches: Array.from({ length: 65 }, (_, index) => `branch_${index}`),
   }, horizontalKey);
   assert(excessiveNyraBranches.status === 400 && excessiveNyraBranches.json.error === "nyra_branch_request_limit_exceeded", "Nyra branch request limit was not enforced");
   mark("horizontal_domain_pack_and_nyra_network", true, {

@@ -104,22 +104,127 @@ function normalizeNode(node, limits) {
   };
 }
 
-function assertAcyclic(nodes) {
-  const dependencies = new Map(nodes.map((node) => [
-    node.node_id,
-    [...node.dependencies, ...(node.parent_node_id ? [node.parent_node_id] : [])],
-  ]));
-  const visiting = new Set();
-  const visited = new Set();
-  function visit(id) {
-    if (visiting.has(id)) throw new Error("task_tree_cycle_detected");
-    if (visited.has(id)) return;
-    visiting.add(id);
-    for (const dependency of dependencies.get(id) || []) visit(dependency);
-    visiting.delete(id);
-    visited.add(id);
+function bitIsSet(bits, index) {
+  return (bits[index >>> 5] & (1 << (index & 31))) !== 0;
+}
+
+function setBit(bits, index) {
+  bits[index >>> 5] |= 1 << (index & 31);
+}
+
+function buildReachability(order, dependents) {
+  const indexes = new Map(order.map((id, index) => [id, index]));
+  const wordCount = Math.ceil(order.length / 32);
+  const reachable = order.map(() => new Uint32Array(wordCount));
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    for (const dependent of dependents.get(order[index]) || []) {
+      const dependentIndex = indexes.get(dependent);
+      reachable[index][dependentIndex >>> 5] |= 1 << (dependentIndex & 31);
+      for (let word = 0; word < wordCount; word += 1) {
+        reachable[index][word] |= reachable[dependentIndex][word];
+      }
+    }
   }
-  for (const id of dependencies.keys()) visit(id);
+  return reachable;
+}
+
+function areComparable(reachable, left, right) {
+  if (left === right) return true;
+  return left < right
+    ? bitIsSet(reachable[left], right)
+    : bitIsSet(reachable[right], left);
+}
+
+function assertParallelBound(order, dependents, nodes, maxParallel) {
+  const reachable = buildReachability(order, dependents);
+  const indexes = new Map(order.map((id, index) => [id, index]));
+  const wordCount = Math.ceil(order.length / 32);
+  const mutuallyExclusive = order.map(() => new Uint32Array(wordCount));
+  for (const node of nodes) {
+    if (!node.fallback_node_id) continue;
+    const source = indexes.get(node.node_id);
+    const fallback = indexes.get(node.fallback_node_id);
+    setBit(mutuallyExclusive[source], fallback);
+    setBit(mutuallyExclusive[fallback], source);
+  }
+  const concurrent = order.map(() => new Uint32Array(wordCount));
+
+  for (let left = 0; left < order.length; left += 1) {
+    for (let right = left + 1; right < order.length; right += 1) {
+      if (areComparable(reachable, left, right) || bitIsSet(mutuallyExclusive[left], right)) continue;
+      setBit(concurrent[left], right);
+      setBit(concurrent[right], left);
+    }
+  }
+
+  if (maxParallel === 1) {
+    if (concurrent.some((peers) => peers.some((word) => word !== 0))) {
+      throw new Error("max_parallel_exceeded");
+    }
+    return;
+  }
+
+  // HARD_LIMITS.max_parallel is two. A plan exceeds it iff the deterministic
+  // concurrency graph contains a triangle of three pairwise-compatible items.
+  for (let left = 0; left < order.length; left += 1) {
+    for (let right = left + 1; right < order.length; right += 1) {
+      if (!bitIsSet(concurrent[left], right)) continue;
+      for (let word = 0; word < wordCount; word += 1) {
+        if ((concurrent[left][word] & concurrent[right][word]) !== 0) {
+          throw new Error("max_parallel_exceeded");
+        }
+      }
+    }
+  }
+}
+
+function deriveTopology(nodes, limits) {
+  const prerequisites = new Map(nodes.map((node) => [
+    node.node_id,
+    [...new Set([
+      ...node.dependencies,
+      ...(node.parent_node_id ? [node.parent_node_id] : []),
+    ])].sort(),
+  ]));
+  const dependents = new Map(nodes.map((node) => [node.node_id, []]));
+  const remainingPrerequisites = new Map();
+  const depths = new Map(nodes.map((node) => [node.node_id, 0]));
+
+  for (const [nodeId, nodePrerequisites] of prerequisites) {
+    remainingPrerequisites.set(nodeId, nodePrerequisites.length);
+    for (const prerequisite of nodePrerequisites) dependents.get(prerequisite).push(nodeId);
+  }
+  for (const nodeDependents of dependents.values()) nodeDependents.sort();
+
+  const ready = [...remainingPrerequisites]
+    .filter(([, count]) => count === 0)
+    .map(([nodeId]) => nodeId)
+    .sort();
+  const order = [];
+  while (ready.length > 0) {
+    const nodeId = ready.shift();
+    order.push(nodeId);
+    for (const dependent of dependents.get(nodeId)) {
+      depths.set(dependent, Math.max(depths.get(dependent), depths.get(nodeId) + 1));
+      const remaining = remainingPrerequisites.get(dependent) - 1;
+      remainingPrerequisites.set(dependent, remaining);
+      if (remaining === 0) {
+        ready.push(dependent);
+        ready.sort();
+      }
+    }
+  }
+
+  if (order.length !== nodes.length) throw new Error("task_tree_cycle_detected");
+  if ([...depths.values()].some((depth) => depth > limits.max_depth)) {
+    throw new Error("max_depth_exceeded");
+  }
+  assertParallelBound(order, dependents, nodes, limits.max_parallel);
+  return depths;
+}
+
+function withDerivedDepths(nodes, depths) {
+  return nodes.map((node) => ({ ...node, depth: depths.get(node.node_id) }));
 }
 
 function validateNodes(nodes, limits) {
@@ -149,8 +254,8 @@ function validateNodes(nodes, limits) {
   if (totals.estimated_tokens > limits.max_tokens) throw new Error("token_budget_exceeded");
   if (totals.estimated_cost_micros > limits.max_cost_micros) throw new Error("cost_budget_exceeded");
   if (totals.estimated_time_ms > limits.max_time_ms) throw new Error("time_budget_exceeded");
-  assertAcyclic(nodes);
-  return totals;
+  const depths = deriveTopology(nodes, limits);
+  return { budget: totals, depths };
 }
 
 function publicTree(tree) {
@@ -163,19 +268,20 @@ export function buildDynamicTaskTreeContract({ tenant_id, objective, nodes, limi
   const normalizedNodes = (Array.isArray(nodes) ? nodes : [])
     .map((node) => normalizeNode(node, normalizedLimits))
     .sort((a, b) => a.node_id.localeCompare(b.node_id));
-  const budget = validateNodes(normalizedNodes, normalizedLimits);
+  const validation = validateNodes(normalizedNodes, normalizedLimits);
+  const boundedNodes = withDerivedDepths(normalizedNodes, validation.depths);
   const stable = {
     tenant_id: tenantId,
     objective: requireText(objective, "objective", 4_000),
     limits: normalizedLimits,
-    nodes: normalizedNodes.map(({ status, attempts, evidence, ...node }) => node),
+    nodes: boundedNodes.map(({ status, attempts, evidence, ...node }) => node),
   };
   return {
     schema_version: SCHEMA_VERSION,
     tree_id: digest("dtt", stable),
     ...stable,
-    nodes: normalizedNodes,
-    budget,
+    nodes: boundedNodes,
+    budget: validation.budget,
     status: "advisory_ready",
     execution: {
       authorized: false,
@@ -294,18 +400,18 @@ export function createDynamicTaskTreeRuntime({
       const candidates = (Array.isArray(nodes) ? nodes : []).map((node) => normalizeNode({
         ...node,
         parent_node_id: node?.parent_node_id || parentId,
-        depth: node?.depth ?? parent.depth + 1,
       }, tree.limits));
       const combined = [...tree.nodes.map((node) => clone(node)), ...candidates];
-      const budget = validateNodes(combined, tree.limits);
+      const validation = validateNodes(combined, tree.limits);
+      const boundedCandidates = withDerivedDepths(candidates, validation.depths);
       const proposal = {
         schema_version: "dynamic_task_tree_expansion_proposal_v1",
-        proposal_id: digest("dttx", { tree_id, parent_node_id: parentId, nodes: candidates }),
+        proposal_id: digest("dttx", { tree_id, parent_node_id: parentId, nodes: boundedCandidates }),
         tenant_id: tree.tenant_id,
         tree_id: tree.tree_id,
         parent_node_id: parentId,
-        nodes: candidates,
-        projected_budget: budget,
+        nodes: boundedCandidates,
+        projected_budget: validation.budget,
         state: "requires_core_review",
         applied: false,
         execution_authorized: false,
@@ -323,14 +429,15 @@ export function createDynamicTaskTreeRuntime({
       const remaining = tree.nodes.filter((node) => !pruneIds.includes(node.node_id));
       const replacements = (Array.isArray(replacement_nodes) ? replacement_nodes : [])
         .map((node) => normalizeNode(node, tree.limits));
-      validateNodes([...remaining, ...replacements], tree.limits);
+      const validation = validateNodes([...remaining, ...replacements], tree.limits);
+      const boundedReplacements = withDerivedDepths(replacements, validation.depths);
       return {
         schema_version: "dynamic_task_tree_replan_proposal_v1",
-        proposal_id: digest("dttr", { tree_id, prune_node_ids: pruneIds, replacement_nodes: replacements, reason }),
+        proposal_id: digest("dttr", { tree_id, prune_node_ids: pruneIds, replacement_nodes: boundedReplacements, reason }),
         tenant_id: tree.tenant_id,
         tree_id: tree.tree_id,
         prune_node_ids: pruneIds,
-        replacement_nodes: replacements,
+        replacement_nodes: boundedReplacements,
         reason: requireText(reason, "replan_reason", 500),
         state: "requires_core_review",
         applied: false,

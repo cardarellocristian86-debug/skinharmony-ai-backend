@@ -1,0 +1,274 @@
+name: Nyra Deep Branch V2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/nyra-deep-branch-v2.yml"
+      - "architecture/nyra-deep-branch-v2-*"
+      - "docs/NYRA_DEEP_BRANCH_*"
+      - "package.json"
+      - "package-lock.json"
+      - "personal-control-center/data/nyra-deep-branch-v2.*"
+      - "personal-control-center/data/nyra-deep-branch-v2.shards/**"
+      - "personal-control-center/lib/nyra-deep-branch-v2*.js"
+      - "personal-control-center/lib/nyra-horizontal-runtime.js"
+      - "personal-control-center/server.js"
+      - "personal-control-center/test/nyra-*"
+      - "render-nyra.yaml"
+      - "reports/nyra-deep-v2/**"
+      - "research/NYRA_DEEP_BRANCH_V2_RESEARCH.md"
+      - "scripts/*nyra-deep-branch-v2.mjs"
+      - "scripts/lib/nyra-deep-branch-v2-shards.mjs"
+      - "services/universal-core-service/src/nyraBranchNetwork.js"
+      - "services/universal-core-service/src/nyraDeepBranchV2*.js"
+      - "services/universal-core-service/src/nyraDeepV2*.js"
+      - "services/universal-core-service/test/nyra-deep-*"
+      - "verification/nyra-deep-branch-v2-verification-spec.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nyra-deep-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NYRA_CI_ROOT: ${{ runner.temp }}/nyra-deep-branch-v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies without deployment build hooks
+        run: npm ci --ignore-scripts
+      - name: Reject tracked Nyra monolith and fixture artifacts
+        shell: bash
+        run: |
+          tracked="$(
+            git ls-files -- \
+              personal-control-center/data/nyra-deep-branch-v2.catalog.json \
+              personal-control-center/data/nyra-deep-branch-v2.fixtures.json
+          )"
+          if [[ -n "$tracked" ]]; then
+            printf 'Forbidden tracked ephemeral artifacts:\n%s\n' "$tracked" >&2
+            exit 1
+          fi
+      - name: Generate, supervise and promote a temporary Nyra candidate
+        shell: bash
+        run: |
+          mkdir -p \
+            "$NYRA_CI_ROOT/source" \
+            "$NYRA_CI_ROOT/candidate" \
+            "$NYRA_CI_ROOT/promoted" \
+            "$NYRA_CI_ROOT/reports" \
+            "$NYRA_CI_ROOT/runtime"
+          captured_at="$(node -p "require('./personal-control-center/data/nyra-deep-branch-v2.runtime-manifest.json').catalog.source_catalog.captured_at")"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import { nyraBranchCatalog } from "./services/universal-core-service/src/nyraBranchNetwork.js";
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              ok: true,
+              tenant_id: "codexai",
+              catalog: nyraBranchCatalog("skinharmony")
+            }));
+          ' "$NYRA_CI_ROOT/source/nyra-live-branch-source.json"
+          node scripts/generate-nyra-deep-branch-v2.mjs \
+            --source "$NYRA_CI_ROOT/source/nyra-live-branch-source.json" \
+            --research research/NYRA_DEEP_BRANCH_V2_RESEARCH.md \
+            --tenant codexai \
+            --captured-at "$captured_at" \
+            --status PENDING \
+            --output "$NYRA_CI_ROOT/candidate/candidate.json" \
+            --fixture-output "$NYRA_CI_ROOT/candidate/fixtures.json"
+          node scripts/supervise-nyra-deep-branch-v2.mjs \
+            --candidate "$NYRA_CI_ROOT/candidate/candidate.json" \
+            --fixtures "$NYRA_CI_ROOT/candidate/fixtures.json" \
+            --output "$NYRA_CI_ROOT/candidate/supervisor.json"
+          node scripts/promote-nyra-deep-branch-v2.mjs \
+            --candidate "$NYRA_CI_ROOT/candidate/candidate.json" \
+            --fixtures "$NYRA_CI_ROOT/candidate/fixtures.json" \
+            --supervisor "$NYRA_CI_ROOT/candidate/supervisor.json" \
+            --catalog-output "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2.catalog.json" \
+            --fixtures-output "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2.fixtures.json" \
+            --yaml-output "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2.yaml" \
+            --registry-output "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2-function-registry.json" \
+            --snapshot-output "$NYRA_CI_ROOT/promoted/nyra-live-branch-v1.snapshot.json" \
+            --map-output "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2-map.md"
+      - name: Run Nyra unit, integration, regression and isolation suite
+        run: npm run nyra:runtime:test
+      - name: Run ephemeral full-catalog and fixture contract suite
+        env:
+          NYRA_DEEP_V2_TEST_CATALOG_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.catalog.json
+          NYRA_DEEP_V2_TEST_FIXTURES_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.fixtures.json
+        run: |
+          node --test \
+            personal-control-center/test/nyra-deep-branch-v2-federation.test.js \
+            personal-control-center/test/nyra-deep-branch-v2-memory.test.js \
+            personal-control-center/test/nyra-deep-branch-v2.test.js \
+            personal-control-center/test/nyra-deep-shadow-telemetry.test.js \
+            scripts/test/nyra-deep-branch-v2-promotion-shards.test.mjs
+      - name: Verify contracts, deep routing, benchmark and rollback
+        run: |
+          node scripts/verify-nyra-deep-branch-v2.mjs \
+            --catalog "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2.catalog.json" \
+            --fixtures "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2.fixtures.json" \
+            --registry "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2-function-registry.json" \
+            --supervisor "$NYRA_CI_ROOT/candidate/supervisor.json" \
+            --report-root "$NYRA_CI_ROOT/reports" \
+            --manifest "$NYRA_CI_ROOT/runtime/nyra-deep-branch-v2.runtime-manifest.json" \
+            --shard-root "$NYRA_CI_ROOT/runtime/nyra-deep-branch-v2.shards"
+      - name: Verify validation-attestation semantics
+        env:
+          NYRA_DEEP_V2_TEST_CATALOG_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.catalog.json
+          NYRA_DEEP_V2_TEST_VALIDATION_REPORT_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/reports/validation_report.json
+        run: node --test personal-control-center/test/nyra-deep-branch-v2-artifact-attestation.test.js
+      - name: Enforce fail-closed runtime artifact limits
+        shell: bash
+        run: |
+          node --input-type=module - \
+            "$NYRA_CI_ROOT/runtime/nyra-deep-branch-v2.runtime-manifest.json" \
+            "$NYRA_CI_ROOT/runtime/nyra-deep-branch-v2.shards" <<'NODE'
+          import crypto from "node:crypto";
+          import fs from "node:fs";
+          import path from "node:path";
+          import process from "node:process";
+          import zlib from "node:zlib";
+
+          const manifestPath = path.resolve(process.argv[2]);
+          const shardRoot = path.resolve(process.argv[3]);
+          const expectedShardCount = 299;
+          const manifestLimit = 5 * 1024 * 1024;
+          const compressedLimit = 256 * 1024;
+          const uncompressedLimit = 1024 * 1024;
+          const ratioLimit = 16;
+          const compressedAggregateLimit = 32 * 1024 * 1024;
+          const uncompressedAggregateLimit = 128 * 1024 * 1024;
+          const digest = (bytes) =>
+            crypto.createHash("sha256").update(bytes).digest("hex");
+          const fail = (message) => {
+            throw new Error(`nyra_runtime_artifact_gate:${message}`);
+          };
+          const entries = (directory) => {
+            const result = fs.readdirSync(directory, { withFileTypes: true });
+            if (result.some((entry) => entry.isSymbolicLink())) {
+              fail(`symlink_forbidden:${directory}`);
+            }
+            return result;
+          };
+
+          const manifestStat = fs.lstatSync(manifestPath);
+          if (
+            !manifestStat.isFile()
+            || manifestStat.isSymbolicLink()
+            || manifestStat.size > manifestLimit
+          ) fail(`manifest_size_or_type:${manifestStat.size}`);
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+          const fingerprint = String(manifest.catalog?.catalog_fingerprint || "");
+          const binding = String(manifest.catalog_binding_hash || "");
+          const hex = /^[a-f0-9]{64}$/;
+          if (
+            !hex.test(fingerprint)
+            || !hex.test(binding)
+            || manifest.root_binding?.catalog_fingerprint !== fingerprint
+          ) fail("manifest_identity");
+
+          const rootEntries = entries(shardRoot);
+          if (
+            rootEntries.length !== 1
+            || rootEntries[0].name !== "v1"
+            || !rootEntries[0].isDirectory()
+          ) fail("foreign_shard_root_entry");
+          const v1Root = path.join(shardRoot, "v1");
+          const fingerprintEntries = entries(v1Root);
+          if (
+            fingerprintEntries.length !== 1
+            || fingerprintEntries[0].name !== fingerprint
+            || !fingerprintEntries[0].isDirectory()
+          ) fail("fingerprint_count");
+          const fingerprintRoot = path.join(v1Root, fingerprint);
+          const bindingEntries = entries(fingerprintRoot);
+          if (
+            bindingEntries.length !== 1
+            || bindingEntries[0].name !== binding
+            || !bindingEntries[0].isDirectory()
+          ) fail("binding_count");
+          const generationRoot = path.join(fingerprintRoot, binding);
+          const shardEntries = entries(generationRoot);
+          if (
+            shardEntries.length !== expectedShardCount
+            || shardEntries.some((entry) =>
+              !entry.isFile() || !entry.name.endsWith(".json.gz"))
+          ) fail(`gzip_file_set:${shardEntries.length}`);
+
+          const descriptors = Array.isArray(manifest.shards)
+            ? manifest.shards
+            : [];
+          if (
+            descriptors.length !== expectedShardCount
+            || new Set(descriptors.map((item) => item.relative_path)).size
+              !== expectedShardCount
+          ) fail(`descriptor_count:${descriptors.length}`);
+          const descriptorByPath = new Map(descriptors.map((descriptor) => [
+            path.resolve(path.dirname(manifestPath), descriptor.relative_path),
+            descriptor,
+          ]));
+          const diskPaths = shardEntries.map((entry) =>
+            path.join(generationRoot, entry.name));
+          if (
+            diskPaths.some((filePath) => !descriptorByPath.has(filePath))
+            || [...descriptorByPath.keys()].some((filePath) =>
+              !diskPaths.includes(filePath))
+          ) fail("descriptor_disk_drift");
+
+          let compressedAggregate = 0;
+          let uncompressedAggregate = 0;
+          let maximumRatio = 0;
+          for (const filePath of diskPaths) {
+            const descriptor = descriptorByPath.get(filePath);
+            const compressed = fs.readFileSync(filePath);
+            if (
+              compressed.length === 0
+              || compressed.length > compressedLimit
+              || descriptor.compressed_bytes !== compressed.length
+              || descriptor.compressed_sha256 !== digest(compressed)
+            ) fail(`compressed:${path.basename(filePath)}`);
+            const uncompressed = zlib.gunzipSync(compressed, {
+              maxOutputLength: uncompressedLimit,
+            });
+            const ratio = uncompressed.length / compressed.length;
+            if (
+              uncompressed.length > uncompressedLimit
+              || ratio > ratioLimit
+              || descriptor.uncompressed_bytes !== uncompressed.length
+              || descriptor.uncompressed_sha256 !== digest(uncompressed)
+            ) fail(`uncompressed:${path.basename(filePath)}`);
+            compressedAggregate += compressed.length;
+            uncompressedAggregate += uncompressed.length;
+            maximumRatio = Math.max(maximumRatio, ratio);
+          }
+          if (
+            compressedAggregate > compressedAggregateLimit
+            || uncompressedAggregate > uncompressedAggregateLimit
+          ) fail("aggregate_size");
+          process.stdout.write(`${JSON.stringify({
+            ok: true,
+            manifest_bytes: manifestStat.size,
+            gzip_files: diskPaths.length,
+            fingerprints: fingerprintEntries.length,
+            bindings: bindingEntries.length,
+            compressed_bytes: compressedAggregate,
+            uncompressed_bytes: uncompressedAggregate,
+            maximum_ratio: maximumRatio,
+          }, null, 2)}\n`);
+          NODE
+      - name: Upload Nyra verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyra-deep-branch-v2-verification-${{ github.run_id }}
+          path: ${{ runner.temp }}/nyra-deep-branch-v2/reports
+          if-no-files-found: error
+          retention-days: 14

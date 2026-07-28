@@ -6,6 +6,12 @@ const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const {
+  signCoreEnvelope,
+} = require("../lib/nyra-deep-branch-v2-federation");
+const {
+  loadCatalog,
+} = require("../lib/nyra-deep-branch-v2");
 
 const repoRoot = path.resolve(__dirname, "../..");
 const nyraPort = 33000 + Math.floor(Math.random() * 1000);
@@ -14,6 +20,12 @@ const smartDeskPort = nyraPort + 2;
 const researchMcpPort = nyraPort + 3;
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-nyra-runtime-")).replace(/\\/g, "/");
 const auth = `Basic ${Buffer.from("test-user:test-password").toString("base64")}`;
+const deepV2ServiceKey = "nyra-runtime-smoke-deep-v2-service-key-0123456789";
+const statusOnly = process.env.NYRA_RUNTIME_SMOKE_STATUS_ONLY === "true";
+const deepV2ReplayStorePath = path.join(
+  storageRoot,
+  "runtime/nyra-learning/nyra_deep_v2_replay_store.json",
+);
 const foreignJourneyPath = path.join(storageRoot, "universal-core/runtime/nyra/nyra_decision_to_value_journey.json");
 fs.mkdirSync(path.dirname(foreignJourneyPath), { recursive: true });
 fs.writeFileSync(foreignJourneyPath, JSON.stringify({
@@ -256,6 +268,13 @@ async function main() {
       NYRA_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_CORE_KEY: "core-test-key",
       NYRA_CORE_TENANT_ID: "tenant-test",
+      NYRA_DEEP_BRANCH_V2_ENABLED: "true",
+      NYRA_DEEP_BRANCH_V2_MODE: "shadow",
+      NYRA_DEEP_BRANCH_V2_BRANCHES: "context_intelligence",
+      NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST: "codexai",
+      NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED: "true",
+      NYRA_DEEP_BRANCH_V2_FEDERATION_TENANT_ALLOWLIST: "codexai",
+      NYRA_DEEP_BRANCH_V2_CORE_SHARED_SECRET: deepV2ServiceKey,
       NYRA_RESEARCH_MCP_URL: `http://127.0.0.1:${researchMcpPort}`,
       NYRA_SUITE_CORE_URL: `http://127.0.0.1:${corePort}`,
       NYRA_SUITE_CORE_KEY: "suite-core-key",
@@ -278,6 +297,55 @@ async function main() {
     assert.equal(health.json.version, "0.9.0-research-cortex");
     assert.equal(health.json.service, "nyra-horizontal-runtime");
     assert.equal(health.json.runtime_kind, "horizontal_neural_branch_runtime");
+    assert.deepEqual(health.json.deep_branch_v2_federation, {
+      enabled: true,
+      configured: true,
+      ready: true,
+      tenant_allowlist_configured: true,
+      persistent_replay_store: true,
+      replay_store_healthy: true,
+      replay_store_ready: true,
+      replay_store_durable: true,
+      operational_evaluation_enabled: false,
+    });
+    const serializedHealth = JSON.stringify(health.json);
+    assert.equal(serializedHealth.includes(storageRoot), false);
+    assert.equal(serializedHealth.includes(deepV2ServiceKey), false);
+    assert.equal(fs.existsSync(deepV2ReplayStorePath), false);
+
+    fs.writeFileSync(
+      deepV2ReplayStorePath,
+      "{invalid",
+      { encoding: "utf8", mode: 0o600, flag: "wx" },
+    );
+    const corruptEmptyStoreHealth = await request("/healthz");
+    assert.equal(corruptEmptyStoreHealth.status, 503);
+    assert.equal(corruptEmptyStoreHealth.json.ok, false);
+    assert.equal(corruptEmptyStoreHealth.json.deep_branch_v2_federation.ready, false);
+    assert.equal(
+      corruptEmptyStoreHealth.json.deep_branch_v2_federation.replay_store_durable,
+      false,
+    );
+    const serializedCorruptEmptyHealth = JSON.stringify(corruptEmptyStoreHealth.json);
+    assert.equal(serializedCorruptEmptyHealth.includes(storageRoot), false);
+    assert.equal(serializedCorruptEmptyHealth.includes(deepV2ServiceKey), false);
+    fs.unlinkSync(deepV2ReplayStorePath);
+    const restoredEmptyStoreHealth = await request("/healthz");
+    assert.equal(restoredEmptyStoreHealth.status, 200);
+    assert.equal(restoredEmptyStoreHealth.json.deep_branch_v2_federation.ready, true);
+
+    if (statusOnly) {
+      console.log(JSON.stringify({
+        ok: true,
+        checks: [
+          "public_health_readiness",
+          "public_health_durability",
+          "public_health_redaction",
+          "public_health_corruption_fail_closed",
+        ],
+      }, null, 2));
+      return;
+    }
 
     const unauthenticated = await request("/api/nyra/control");
     assert.equal(unauthenticated.status, 401);
@@ -285,6 +353,104 @@ async function main() {
 
     const control = await request("/api/nyra/control", { auth: true });
     assert.equal(control.status, 200);
+
+    const basicCannotImpersonateFederation = await request(
+      "/api/nyra/runtime/v2/evaluate",
+      { method: "POST", auth: true, body: { envelope: {} } },
+    );
+    assert.equal(basicCannotImpersonateFederation.status, 401);
+    assert.equal(
+      basicCannotImpersonateFederation.json.error,
+      "nyra_deep_branch_v2_service_auth_invalid",
+    );
+
+    const loadedDeepV2 = loadCatalog({ runtimeMode: "lazy" });
+    assert.equal(
+      loadedDeepV2.ok,
+      true,
+      loadedDeepV2.errors?.join(",") || "deep_v2_catalog_load_failed",
+    );
+    const issuedAt = Date.now();
+    const deepV2Envelope = {
+      schema_version: "nyra_deep_branch_v2_core_envelope_v1",
+      issuer: "skinharmony-universal-core",
+      audience: "skinharmony-nyra-core",
+      tenant_id: "codexai",
+      request_id: "nyra-runtime-smoke-v2",
+      domain_pack: "skinharmony",
+      catalog_scope: "skinharmony",
+      entitlement_domain_pack: "skinharmony",
+      opened_branch_ids: ["context_intelligence"],
+      branch_allowlist: ["context_intelligence"],
+      preflight_id: "preflight-nyra-runtime-smoke-v2",
+      core_policy_hash: "a".repeat(64),
+      catalog_fingerprint: loadedDeepV2.catalog.catalog_fingerprint,
+      root_binding_hash: loadedDeepV2.manifest.root_binding_hash,
+      nonce: "7".repeat(64),
+      issued_at: new Date(issuedAt - 100).toISOString(),
+      expires_at: new Date(issuedAt + 30_000).toISOString(),
+    };
+    deepV2Envelope.signature = signCoreEnvelope(
+      deepV2Envelope,
+      deepV2ServiceKey,
+    );
+    const deepV2Preview = await request("/api/nyra/runtime/v2/evaluate", {
+      method: "POST",
+      headers: {
+        "x-nyra-deep-v2-service-key": deepV2ServiceKey,
+      },
+      body: { envelope: deepV2Envelope },
+    });
+    assert.equal(deepV2Preview.status, 200);
+    assert.equal(deepV2Preview.json.ok, true);
+    assert.equal(deepV2Preview.json.execution_authorized, false);
+    assert.equal(deepV2Preview.json.core_final_authority, true);
+    const deepV2Replay = await request("/api/nyra/runtime/v2/evaluate", {
+      method: "POST",
+      headers: {
+        "x-nyra-deep-v2-service-key": deepV2ServiceKey,
+      },
+      body: { envelope: deepV2Envelope },
+    });
+    assert.equal(deepV2Replay.status, 403);
+    assert.equal(
+      deepV2Replay.json.error,
+      "nyra_deep_branch_v2_envelope_replayed",
+    );
+    const replayStoreBeforeHealth = fs.readFileSync(deepV2ReplayStorePath, "utf8");
+    const replayStoreHealth = await request("/healthz");
+    assert.equal(replayStoreHealth.status, 200);
+    assert.equal(replayStoreHealth.json.deep_branch_v2_federation.ready, true);
+    assert.equal(replayStoreHealth.json.deep_branch_v2_federation.replay_store_healthy, true);
+    assert.equal(replayStoreHealth.json.deep_branch_v2_federation.replay_store_ready, true);
+    assert.equal(replayStoreHealth.json.deep_branch_v2_federation.replay_store_durable, true);
+    assert.equal(fs.readFileSync(deepV2ReplayStorePath, "utf8"), replayStoreBeforeHealth);
+
+    fs.writeFileSync(deepV2ReplayStorePath, "{invalid", "utf8");
+    const unhealthyReplayStore = await request("/healthz");
+    assert.equal(unhealthyReplayStore.status, 503);
+    assert.equal(unhealthyReplayStore.json.ok, false);
+    assert.equal(
+      unhealthyReplayStore.json.deep_branch_v2_federation.replay_store_healthy,
+      false,
+    );
+    assert.equal(unhealthyReplayStore.json.deep_branch_v2_federation.ready, false);
+    assert.equal(
+      unhealthyReplayStore.json.deep_branch_v2_federation.replay_store_ready,
+      false,
+    );
+    assert.equal(
+      unhealthyReplayStore.json.deep_branch_v2_federation.replay_store_durable,
+      false,
+    );
+    const serializedUnhealthyHealth = JSON.stringify(unhealthyReplayStore.json);
+    assert.equal(serializedUnhealthyHealth.includes(storageRoot), false);
+    assert.equal(serializedUnhealthyHealth.includes(deepV2ServiceKey), false);
+    assert.equal(serializedUnhealthyHealth.includes(deepV2Envelope.nonce), false);
+    fs.writeFileSync(deepV2ReplayStorePath, replayStoreBeforeHealth, "utf8");
+    const restoredReplayStoreHealth = await request("/healthz");
+    assert.equal(restoredReplayStoreHealth.status, 200);
+    assert.equal(restoredReplayStoreHealth.json.ok, true);
 
     const readiness = await request("/api/nyra/runtime/readiness", { auth: true });
     assert.equal(readiness.status, 200);
@@ -479,6 +645,8 @@ async function main() {
         "health",
         "auth_fail_closed",
         "authenticated_control",
+        "deep_v2_federation_service_auth_and_replay",
+        "deep_v2_replay_store_health",
         "runtime_readiness",
         "persistent_learning_path",
         "feedback_endpoint",

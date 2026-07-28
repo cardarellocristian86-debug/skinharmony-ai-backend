@@ -69,6 +69,10 @@ services:
         generateValue: true
       - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
         generateValue: true
+      # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
+      # the same generated value through an internal Render reference.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+        generateValue: true
       - key: SUITE_CONTROL_PLANE_URL
         value: https://skinharmony-suite-control.onrender.com
       - key: SUITE_CONTROL_PLANE_KEYS_JSON
@@ -98,7 +102,7 @@ services:
       - key: RESEARCH_RETENTION_DAYS
         value: "365"
       - key: NYRA_OPENAI_RESEARCH_ENABLED
-        value: "false"
+        value: "true"
       - key: NYRA_OPENAI_RESEARCH_MODEL
         value: gpt-5.6
       - key: NYRA_OPENAI_RESEARCH_TIMEOUT_MS

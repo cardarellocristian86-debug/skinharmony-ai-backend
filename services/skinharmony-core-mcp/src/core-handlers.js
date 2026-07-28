@@ -9,8 +9,21 @@ import {
   buildProviderSetupLinkBindingEnvelope,
   providerSetupLinkBindingApprovalDigest,
 } from "../../universal-core-service/src/providerSetupLinkBinding.js";
+import {
+  NYRA_DEEP_V2_MCP_REQUEST_ISSUER,
+  NYRA_DEEP_V2_MCP_REQUEST_MAX_AGE_SECONDS,
+  NYRA_DEEP_V2_MCP_REQUEST_SCHEMA_VERSION,
+  nyraDeepV2EvidencePackHash,
+  nyraDeepV2StableJson,
+} from "../../universal-core-service/src/nyraDeepV2McpRequest.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
+  preview: "nyra_v2_preview",
+  requirements: "nyra_v2_requirements",
+  prepare_evidence: "nyra_v2_evidence_prepare",
+  evaluate: "nyra_v2_evaluate",
+});
 
 function tenantContextHeader(tenantId, signingSecret) {
   if (!signingSecret || signingSecret.length < 32) return "";
@@ -55,6 +68,41 @@ function textResult(payload) {
   return {
     structuredContent: payload,
     content: [{ type: "text", text: JSON.stringify(payload) }]
+  };
+}
+
+function signNyraDeepV2McpRequest({
+  secret,
+  tenantId,
+  requestId,
+  operation,
+  branchId,
+  subbranchId,
+  evidenceRefs = [],
+  evidencePackHash,
+} = {}) {
+  const signingSecret = String(secret || "");
+  if (signingSecret.length < 32) throw new Error("nyra_deep_v2_mcp_request_signing_unavailable");
+  const payload = {
+    tenant_id: tenantId,
+    request_id: requestId,
+    operation,
+    ...(branchId ? { branch_id: branchId } : {}),
+    ...(subbranchId ? { subbranch_id: subbranchId } : {}),
+    evidence_refs: evidenceRefs,
+    ...(evidencePackHash ? { evidence_pack_hash: evidencePackHash } : {}),
+    issued_at: new Date().toISOString(),
+    nonce: crypto.randomBytes(16).toString("hex"),
+  };
+  return {
+    schema_version: NYRA_DEEP_V2_MCP_REQUEST_SCHEMA_VERSION,
+    issuer: NYRA_DEEP_V2_MCP_REQUEST_ISSUER,
+    ...payload,
+    max_age_seconds: NYRA_DEEP_V2_MCP_REQUEST_MAX_AGE_SECONDS,
+    signature: crypto
+      .createHmac("sha256", signingSecret)
+      .update(`nyra-deep-branch-v2-request\u0000${nyraDeepV2StableJson(payload)}`)
+      .digest("hex"),
   };
 }
 
@@ -516,6 +564,86 @@ export function createCoreHandlers(config, options = {}) {
     }
   }
 
+  async function nyraDeepV2Request(args, identity, operation) {
+    const operationType = NYRA_DEEP_V2_PREFLIGHT_OPERATION[operation];
+    if (!operationType) throw new Error("nyra_deep_v2_mcp_operation_invalid");
+    const requestId = String(
+      args.request_id || `mcp-nyra-v2-${crypto.randomUUID()}`,
+    ).slice(0, 160);
+    const branchId = operation === "preview" ? null : String(args.branch_id || "");
+    const subbranchId = operation === "preview" ? null : String(args.subbranch_id || "");
+    const evidenceRefs = operation === "evaluate"
+      ? [...(Array.isArray(args.evidence_refs) ? args.evidence_refs : [])]
+      : [];
+    const evidencePackHash = operation === "prepare_evidence"
+      ? nyraDeepV2EvidencePackHash(args.evidence_pack, args.requirement_bindings)
+      : null;
+    const requestAttestation = signNyraDeepV2McpRequest({
+      secret: config.nyraDeepV2McpRequestSigningSecret,
+      tenantId: identity.tenantId,
+      requestId,
+      operation,
+      branchId,
+      subbranchId,
+      evidenceRefs,
+      evidencePackHash,
+    });
+    const sharedContext = await memoryContext({
+      query: args.message,
+      project_id: args.project_id,
+      session_id: args.session_id,
+      agent_id: args.agent_id || "nyra",
+    }, identity);
+    const deepBranchV2 = {
+      operation,
+      ...(branchId ? { branch_id: branchId, subbranch_id: subbranchId } : {}),
+      evidence_refs: evidenceRefs,
+      ...(operation === "prepare_evidence"
+        ? {
+          evidence_pack: args.evidence_pack,
+          requirement_bindings: args.requirement_bindings,
+          evidence_pack_hash: evidencePackHash,
+        }
+        : {}),
+      request_attestation: requestAttestation,
+    };
+    const payload = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+      method: "POST",
+      body: {
+        text: args.message,
+        request_id: requestId,
+        source_tool: operationType,
+        operation_type: operationType,
+        nyra_branches: branchId
+          ? [branchId]
+          : [...(Array.isArray(args.nyra_branches) ? args.nyra_branches : [])],
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        deep_branch_v2: deepBranchV2,
+        tenant_id: identity.tenantId,
+      },
+    });
+    const runtime = payload?.result?.deep_branch_v2;
+    if (
+      !runtime
+      || typeof runtime !== "object"
+      || runtime.execution_authorized !== false
+      || runtime.core_final_authority !== true
+    ) {
+      throw new Error("nyra_deep_v2_core_authority_binding_mismatch");
+    }
+    return {
+      ok: payload?.ok === true,
+      tenant_id: identity.tenantId,
+      request_id: requestId,
+      operation,
+      core_runtime: coreRuntimeFromBridge(payload),
+      work_preflight: compactWorkPreflight(
+        payload?.result?.work_preflight || payload?.work_preflight,
+      ),
+      deep_branch_v2: runtime,
+    };
+  }
+
   const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
@@ -928,6 +1056,102 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
     })),
+    nyra_research_distillation_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/status", identity.tenantId),
+    ),
+    nyra_research_source_registry: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/source-registry", identity.tenantId),
+    ),
+    nyra_research_learning_pack: async (args, identity) => {
+      const query = new URLSearchParams();
+      if (args.branch_id) query.set("branch_id", String(args.branch_id));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return textResult(await coreRequest(`/v1/research/learning-packs${suffix}`, identity.tenantId));
+    },
+    nyra_research_envelope_authorize: async (args, identity) => textResult(
+      await coreRequest("/v1/research/envelope/authorize", identity.tenantId, {
+        method: "POST",
+        body: {
+          request_id: args.request_id,
+          question: args.question,
+          branch_ids: args.branch_ids,
+          allowed_source_ids: args.allowed_source_ids,
+          max_documents: args.max_documents,
+          max_bytes: args.max_bytes,
+          max_duration_ms: args.max_duration_ms,
+          max_cost: args.max_cost,
+          retention_mode: args.retention_mode,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_open: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/open", identity.tenantId, {
+        method: "POST",
+        body: {
+          envelope_id: args.envelope_id,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_attach: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/attach", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          evidence: args.evidence,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_distill: async (args, identity) => textResult(
+      await coreRequest("/v1/research/distill", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          evidence: args.evidence,
+          lesson: args.lesson,
+          learning: args.learning,
+          scope: args.scope,
+          confidence: args.confidence,
+          limitations: args.limitations,
+          outcome_refs: args.outcome_refs,
+          // The MCP bridge is deliberately candidate-only. Even if a direct
+          // caller bypasses its JSON schema, Core never receives a persistence
+          // request from this path.
+          persist_verified: false,
+          audit_reference: args.audit_reference,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_close: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/close", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_cleanup: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/cleanup", identity.tenantId, {
+        method: "POST",
+        body: { tenant_id: identity.tenantId },
+      }),
+    ),
+    nyra_v2_preview: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "preview"),
+    ),
+    nyra_v2_requirements: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "requirements"),
+    ),
+    nyra_v2_evidence_prepare: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "prepare_evidence"),
+    ),
+    nyra_v2_evaluate: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "evaluate"),
+    ),
     nyra_interpret_request: async (args, identity) => {
       // The Core bridge evaluates the runtime hierarchy internally. Keeping
       // that decision server-side avoids duplicate routing and ensures that

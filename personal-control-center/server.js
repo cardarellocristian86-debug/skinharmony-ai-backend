@@ -3,6 +3,10 @@ const path = require("path");
 const crypto = require("crypto");
 const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
 const { createNyraHorizontalRuntime } = require("./lib/nyra-horizontal-runtime");
+const {
+  createNyraDeepBranchV2Federation,
+  createPersistentReplayGuard,
+} = require("./lib/nyra-deep-branch-v2-federation");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -131,6 +135,29 @@ function resolveStoragePath(relativePath) {
   return path.join(rootDir, relativePath);
 }
 
+const NYRA_DEEP_V2_FEDERATION_PATH = "/api/nyra/runtime/v2/evaluate";
+const configuredNyraDeepV2ReplayPath = String(
+  process.env.NYRA_DEEP_BRANCH_V2_REPLAY_STORE_PATH || "",
+).trim();
+if (
+  process.env.NODE_ENV === "production"
+  && envTruthy("NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED")
+  && !nyraStorageRoot
+  && !configuredNyraDeepV2ReplayPath
+) {
+  throw new Error("nyra_deep_branch_v2_persistent_replay_store_required");
+}
+const nyraDeepV2ReplayPath = configuredNyraDeepV2ReplayPath
+  ? path.resolve(configuredNyraDeepV2ReplayPath)
+  : resolveStoragePath("runtime/nyra-learning/nyra_deep_v2_replay_store.json");
+const nyraDeepV2ReplayGuard = createPersistentReplayGuard({
+  filePath: nyraDeepV2ReplayPath,
+});
+const nyraDeepV2Federation = createNyraDeepBranchV2Federation({
+  env: process.env,
+  replayGuard: nyraDeepV2ReplayGuard,
+});
+
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
 }
@@ -205,6 +232,17 @@ function rateLimitAllowed(req) {
 }
 
 function authenticateNyraRequest(req) {
+  if (req.path === NYRA_DEEP_V2_FEDERATION_PATH && req.method === "POST") {
+    const suppliedServiceKey = String(
+      req.get("x-nyra-deep-v2-service-key") || "",
+    ).trim();
+    const federationAuthentication = nyraDeepV2Federation.authenticate(
+      suppliedServiceKey,
+    );
+    return federationAuthentication.ok
+      ? { ok: true, method: "deep_v2_service_key" }
+      : { ok: false, code: federationAuthentication.error };
+  }
   const authorization = String(req.headers.authorization || "");
   const bearer = bearerTokenFromHeader(authorization);
   if (req.path.startsWith("/api/nyra/suite/")) {
@@ -259,8 +297,12 @@ app.use((req, res, next) => {
   const auth = authenticateNyraRequest(req);
   if (!auth.ok) {
     appendNyraSecurityAudit("auth_rejected", { request_id: requestId, method: req.method, path: req.path, ip: clientIpFor(req), reason: auth.code });
-    if (basicAuthEnabled()) res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
-    res.status(auth.code === "nyra_auth_not_configured" ? 503 : 401).json({ ok: false, error: auth.code, request_id: requestId });
+    if (basicAuthEnabled() && req.path !== NYRA_DEEP_V2_FEDERATION_PATH) {
+      res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
+    }
+    const unavailable = auth.code === "nyra_auth_not_configured"
+      || auth.code === "nyra_deep_branch_v2_federation_unavailable";
+    res.status(unavailable ? 503 : 401).json({ ok: false, error: auth.code, request_id: requestId });
     return;
   }
 
@@ -281,8 +323,27 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: NYRA_BODY_LIMIT }));
 
 app.get("/healthz", (_req, res) => {
-  res.json({
-    ok: true,
+  const deepV2FederationConfig = nyraDeepV2Federation.config();
+  const replayStorePersistent = Boolean(
+    nyraStorageRoot || configuredNyraDeepV2ReplayPath,
+  );
+  const federationConfigured = Boolean(
+    deepV2FederationConfig.shared_secret
+    && deepV2FederationConfig.tenant_allowlist.length > 0,
+  );
+  const replayStoreProbe = deepV2FederationConfig.enabled
+    ? nyraDeepV2ReplayGuard.probe()
+    : { ok: true, ready: true, durable: true };
+  const replayStoreReady = replayStorePersistent && replayStoreProbe.ready === true;
+  const replayStoreDurable = replayStorePersistent && replayStoreProbe.durable === true;
+  const federationReady = !deepV2FederationConfig.enabled || (
+    federationConfigured
+    && replayStoreReady
+    && replayStoreDurable
+  );
+  const healthy = federationReady;
+  res.status(healthy ? 200 : 503).json({
+    ok: healthy,
     service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
     runtime_kind: "horizontal_neural_branch_runtime",
@@ -291,7 +352,40 @@ app.get("/healthz", (_req, res) => {
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),
     suite_bridge_configured: suiteBridgeKeyConfigured(),
+    deep_branch_v2_federation: {
+      enabled: deepV2FederationConfig.enabled,
+      configured: federationConfigured,
+      ready: federationReady,
+      tenant_allowlist_configured: deepV2FederationConfig.tenant_allowlist.length > 0,
+      persistent_replay_store: replayStorePersistent,
+      replay_store_healthy: replayStoreReady && replayStoreDurable,
+      replay_store_ready: replayStoreReady,
+      replay_store_durable: replayStoreDurable,
+      operational_evaluation_enabled: deepV2FederationConfig.operational_evaluation_enabled,
+    },
   });
+});
+
+app.post(NYRA_DEEP_V2_FEDERATION_PATH, (req, res) => {
+  try {
+    const result = nyraDeepV2Federation.evaluate(req.body?.envelope);
+    appendNyraSecurityAudit("deep_v2_federation_evaluated", {
+      request_id: req.nyraRequestId,
+      tenant_id: req.body?.envelope?.tenant_id || null,
+      federation_state: result?.state || null,
+      federation_error: result?.error || null,
+      execution_authorized: result?.execution_authorized === true,
+    });
+    res.status(result?.ok === true ? 200 : Number(result?.status || 403)).json(result);
+  } catch {
+    res.status(503).json({
+      ok: false,
+      error: "nyra_deep_branch_v2_federation_unavailable",
+      request_id: req.nyraRequestId,
+      execution_authorized: false,
+      core_final_authority: true,
+    });
+  }
 });
 
 function analyzerScopedKeys() {
