@@ -1,0 +1,74 @@
+{
+  "schema_version": "nyra_core_release_manifest_v1",
+  "release": "0.16.0-ai-learning-factory",
+  "status": "candidate",
+  "tenant_id": "codexai",
+  "repository": "cardarellocristian86-debug/skinharmony-ai-backend",
+  "branch": "feature/nyra-ai-learning-factory-v0.16",
+  "base_commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94",
+  "release_commit": null,
+  "execution_enabled": false,
+  "top_level_mcp_tool_count": 13,
+  "services_in_scope": [
+    "skinharmony-universal-core",
+    "skinharmony-core-mcp"
+  ],
+  "services_not_modified": [
+    "skinharmony-nyra-core",
+    "Site Suite",
+    "WordPress",
+    "Smart Desk application",
+    "Analyzer application"
+  ],
+  "feature_flags": {
+    "NYRA_AI_LEARNING_FACTORY_MODE": "shadow",
+    "NYRA_AGENTIC_EFFICIENCY_MODE": "shadow",
+    "CORE_AGENTIC_BUDGET_MODE": "observe",
+    "AGENTIC_HARD_BUDGET_STOP": "false"
+  },
+  "dynamic_capabilities": [
+    "ai_eval_scorecard_read",
+    "ai_eval_dataset_read",
+    "ai_eval_trace_read",
+    "ai_performance_scorecard_read",
+    "ai_experiment_read",
+    "ai_learning_candidate_read",
+    "ai_learning_candidate_review",
+    "ai_learning_outcome_record",
+    "agentic_efficiency_plan",
+    "agentic_efficiency_status",
+    "agentic_efficiency_report",
+    "agentic_budget_preview",
+    "agentic_budget_status",
+    "agentic_work_capsule_read",
+    "agentic_savings_compare",
+    "agentic_artifact_reuse_check"
+  ],
+  "benchmark_evidence": {
+    "learning_factory_case_count": 240,
+    "agentic_paired_case_count": 100,
+    "learning_factory_corpus_digest": "sha256:ce40f0948c14b606f3ce6fc03783fece62f07dc7375fd56ae3623dee50fb90c6",
+    "agentic_corpus_digest": "sha256:8e2b3a549c61bbdd29ec9cbef941eb506bc66c67e8f102743e03b561a523ec37",
+    "scorecard_status": "pending_real_measurement",
+    "actual_usage_case_count": 0,
+    "estimated_usage_case_count": 0,
+    "actual_savings_claimed": false
+  },
+  "release_gates": {
+    "vertical_leakage_to_chatgpt": null,
+    "cross_tenant_violations": null,
+    "unauthorized_external_executions": null,
+    "branch_selection_accuracy": null,
+    "tool_selection_accuracy": null,
+    "existing_regression_failures": null,
+    "ci_green": false,
+    "smoke_live_green": false,
+    "rollback_rehearsal_green": false
+  },
+  "deployments": {
+    "skinharmony-universal-core": null,
+    "skinharmony-core-mcp": null
+  },
+  "rollback_point": "docs/releases/0.16.0-ai-learning-factory-rollback-point.json",
+  "rollback_runbook": "docs/releases/0.16.0-ai-learning-factory-rollback-runbook.md"
+}

@@ -1,0 +1,28 @@
+{
+  "release": "0.16.0-ai-learning-factory",
+  "recorded_at": "2026-07-27T20:53:06Z",
+  "git": {
+    "repository": "cardarellocristian86-debug/skinharmony-ai-backend",
+    "base_commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
+  },
+  "services": {
+    "skinharmony-universal-core": {
+      "deploy_id": "dep-d9jnlb43plds73e2vep0",
+      "commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
+    },
+    "skinharmony-core-mcp": {
+      "deploy_id": "dep-d9jnlb1q7b2c73cve46g",
+      "commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
+    },
+    "skinharmony-nyra-core": {
+      "deploy_id": "dep-d9iiaq3eo5us73a0n6t0",
+      "commit": "a03521a3ca44ec1e5cdd1625bd01521bd0cef2ff"
+    }
+  },
+  "rollback_modes": {
+    "NYRA_AI_LEARNING_FACTORY_MODE": "off",
+    "NYRA_AGENTIC_EFFICIENCY_MODE": "off",
+    "CORE_AGENTIC_BUDGET_MODE": "observe",
+    "AGENTIC_HARD_BUDGET_STOP": "false"
+  }
+}

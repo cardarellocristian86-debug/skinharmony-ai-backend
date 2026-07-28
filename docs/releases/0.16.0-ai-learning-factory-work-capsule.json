@@ -1,89 +1,93 @@
 {
-  "schema_version": "agentic_work_capsule_v1",
-  "release": "0.16.0-ai-learning-factory",
-  "goal": "Implementare, verificare e distribuire la Nyra/Core AI Learning Factory con exposure fail-closed e ottimizzazione reale del lavoro agentico.",
+  "goal": "Completare, verificare e distribuire la release Nyra/Core 0.16.0-ai-learning-factory con exposure fail-closed e riduzione misurabile del costo agentico senza perdita di qualità o sicurezza.",
   "scope": [
     "services/universal-core-service",
     "services/skinharmony-core-mcp",
-    "personal-control-center solo se realmente modificato",
-    "specifica, benchmark, release manifest, rollback runbook e AGENTS.md applicabili"
+    ".github/workflows/nyra-core-intelligence.yml",
+    "NYRA_CORE_AI_LEARNING_FACTORY_V0_16_EXECUTION_SPEC.md",
+    "docs/releases"
   ],
   "success_criteria": [
     "ChatGPT vede soltanto la corteccia orizzontale anche con owner_root",
-    "superficie MCP top-level uguale a 13",
-    "execution_enabled rimane false",
-    "benchmark learning factory di almeno 240 casi",
-    "benchmark agentic efficiency accoppiato di almeno 100 casi",
-    "zero cross-tenant, injection accettate, bypass budget ed esecuzioni esterne non autorizzate",
-    "costi effettivi sempre distinti dalle stime",
-    "CI, smoke live e rollback rehearsal verdi sul commit esatto"
+    "I software adiacenti vedono soltanto i propri verticali autenticati",
+    "La superficie MCP top-level resta esattamente di 13 strumenti",
+    "execution_enabled resta false e non avvengono esecuzioni provider o azioni esterne autonome",
+    "Il benchmark learning factory contiene almeno 240 esecuzioni reali del runtime",
+    "Il benchmark agentic efficiency contiene almeno 100 coppie baseline-vs-optimized sullo stesso snapshot e sulla stessa rubric",
+    "I consumi effettivi sono sempre distinti dalle stime",
+    "CI, smoke live e rollback rehearsal sono verdi sul commit esatto"
   ],
   "decisions": [
-    "Continuare sul branch feature/nyra-ai-learning-factory-v0.16 senza una seconda PR",
-    "Usare Nyra/Core remoto su Render tramite SkinHarmony Agent Workspace",
-    "Separare architettura, exposure/security ed evaluation/performance in worktree indipendenti",
-    "Integrare l'addendum Agentic Efficiency come corsia della stessa release",
-    "Non creare servizi Render o database aggiuntivi"
+    "Continuare sul solo branch feature/nyra-ai-learning-factory-v0.16 senza creare una seconda PR",
+    "Usare Nyra e Universal Core remoti su Render per governance e memoria",
+    "Integrare Agentic Efficiency nella stessa release 0.16.0-ai-learning-factory",
+    "Usare il database di governance esistente con sole migrazioni additive e rollback-safe",
+    "Non creare nuovi servizi, database o costi infrastrutturali",
+    "Mantenere le ottimizzazioni in shadow finché i benchmark reali non dimostrano i target"
   ],
   "completed": [
-    "Preflight Nyra/Core remoto e autorizzazione Core draft_code_change",
-    "Allineamento origin/main e registrazione dei commit live",
-    "Creazione dei worktree multi-agente",
-    "Specifica v0.16 iniziale materializzata nel repository",
-    "Audit iniziali su registry, exposure, telemetry e benchmark"
+    "Registrati base Git e rollback point live dei servizi",
+    "Ottenuti i Core gate per la modifica locale v0.16 e per la corsia Agentic Efficiency",
+    "Integrati i descrittori dei nuovi rami Nyra e dei nuovi guard Core",
+    "Classificati esplicitamente 79 rami per exposure",
+    "Integrato il runtime Agentic Efficiency con schema work capsule, budget, artifact reuse e capability dinamiche",
+    "Creati corpus deterministici da 240 e 100 casi con digest verificabili",
+    "Avviata revisione indipendente di sicurezza, persistenza, benchmark e release"
   ],
   "open_risks": [
-    "Le modifiche parallele non sono ancora integrate né testate insieme",
-    "L'addendum Agentic Efficiency non è ancora implementato",
-    "I target economici devono essere misurati, non presunti",
-    "Il connettore privato legacy è stato sostituito dal percorso Agent Workspace remoto"
+    "Le correzioni P0 su client-audience, route dirette, atomicità e persistenza PostgreSQL sono ancora in integrazione",
+    "Il benchmark learning factory corrente è 235 su 240 e non soddisfa ancora tool-selection accuracy",
+    "Il benchmark agentic da 100 casi deve ancora eseguire vere coppie baseline-vs-optimized",
+    "La suite completa deve essere rieseguita fuori dal sandbox locale che blocca listen su 127.0.0.1",
+    "CI, PR, merge protetto, deploy, smoke live e rollback rehearsal sono ancora pendenti"
   ],
   "relevant_files": [
     "NYRA_CORE_AI_LEARNING_FACTORY_V0_16_EXECUTION_SPEC.md",
     "services/universal-core-service/AGENTS.md",
     "services/universal-core-service/branches/index.js",
     "services/universal-core-service/src/app.js",
-    "services/skinharmony-core-mcp/src/dynamic-capability-router.js",
-    "services/skinharmony-core-mcp/src/tool-definitions.js"
+    "services/universal-core-service/src/branchExposure.js",
+    "services/universal-core-service/src/agenticEfficiencyRuntime.js",
+    "services/universal-core-service/src/aiLearningFactoryRoutes.js",
+    "services/skinharmony-core-mcp/src/capability-exposure.js",
+    "services/skinharmony-core-mcp/src/dynamic-capability-router.js"
   ],
   "changed_files": [
     "NYRA_CORE_AI_LEARNING_FACTORY_V0_16_EXECUTION_SPEC.md",
-    "docs/releases/0.16.0-ai-learning-factory-work-capsule.json"
+    "docs/releases/0.16.0-ai-learning-factory-work-capsule.json",
+    "services/universal-core-service/AGENTS.md",
+    "services/universal-core-service/branches",
+    "services/universal-core-service/src",
+    "services/universal-core-service/test",
+    "services/universal-core-service/migrations",
+    "services/universal-core-service/benchmarks/ai-learning-factory-v0.16",
+    "services/skinharmony-core-mcp/src",
+    "services/skinharmony-core-mcp/test",
+    ".github/workflows/nyra-core-intelligence.yml"
   ],
-  "diff_summary": "Specifica v0.16 registrata; tre corsie di implementazione sono attive in worktree separati. L'addendum Agentic Efficiency è stato acquisito e deve essere integrato prima dell'integrazione finale.",
+  "diff_summary": "La release v0.16 e l'addendum Agentic Efficiency sono integrati sul branch esistente. Restano da chiudere i P0 della review, eseguire benchmark reali e suite complete, quindi pubblicare e distribuire soltanto i servizi modificati.",
   "test_state": {
-    "passed": 0,
-    "failed": 0,
-    "pending": 3
+    "passed": 55,
+    "failed": 5,
+    "pending": 8
   },
-  "artifact_hashes": [],
-  "reusable_results": [
-    "Core gate action_69fde75d-6ccf-4ba7-9439-f0391d0701e3",
-    "preflight_744a30c5-b089-429c-91d0-669f84adfdba",
-    "audit architetturale iniziale",
-    "audit exposure/security iniziale",
-    "audit evaluation/performance iniziale"
+  "artifact_hashes": [
+    "sha256:ce40f0948c14b606f3ce6fc03783fece62f07dc7375fd56ae3623dee50fb90c6",
+    "sha256:8e2b3a549c61bbdd29ec9cbef941eb506bc66c67e8f102743e03b561a523ec37"
   ],
-  "next_action": "Integrare i requisiti Agentic Efficiency nella specifica e coordinare la corsia dedicata con gli agenti e il supervisor esistenti.",
+  "reusable_results": [
+    "Core action action_69fde75d-6ccf-4ba7-9439-f0391d0701e3",
+    "Core preflight preflight_744a30c5-b089-429c-91d0-669f84adfdba",
+    "Core action action_75ff424d-1ffd-4a0f-a787-f7a4a8757aba",
+    "Core preflight preflight_37fa7ff0-1437-4ed0-9060-1ceeea9bfe85",
+    "rollback commit 54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94",
+    "review P0 exposure, persistence, benchmark e atomicità"
+  ],
+  "next_action": "Integrare le correzioni Core e benchmark, rieseguire i test reali e sottoporre il diff consolidato al supervisor prima della pubblicazione.",
   "budget": {
     "token_limit": 0,
     "invocation_limit": 0,
     "retry_limit": 3
-  },
-  "rollback": {
-    "git_base_commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94",
-    "universal_core": {
-      "deploy_id": "dep-d9jnlb43plds73e2vep0",
-      "commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
-    },
-    "core_mcp": {
-      "deploy_id": "dep-d9jnlb1q7b2c73cve46g",
-      "commit": "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94"
-    },
-    "nyra_core": {
-      "deploy_id": "dep-d9iiaq3eo5us73a0n6t0",
-      "commit": "a03521a3ca44ec1e5cdd1625bd01521bd0cef2ff"
-    }
   },
   "created_at": "2026-07-27T20:53:06Z",
   "expires_at": "2026-07-28T20:53:06Z"
