@@ -66,6 +66,14 @@ services:
         value: "true"
       - key: NYRA_DEEP_RUNTIME_MODE
         value: active
+      - key: NYRA_AI_LEARNING_FACTORY_MODE
+        value: shadow
+      - key: NYRA_AGENTIC_EFFICIENCY_MODE
+        value: shadow
+      - key: CORE_AGENTIC_BUDGET_MODE
+        value: observe
+      - key: AGENTIC_HARD_BUDGET_STOP
+        value: "false"
     disk:
       name: universal-core-service-data
       mountPath: /var/data
