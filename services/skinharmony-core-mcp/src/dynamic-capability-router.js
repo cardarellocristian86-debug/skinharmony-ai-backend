@@ -4,7 +4,6 @@ import { requireScopes } from "./auth.js";
 import { validateToolArguments } from "./schema-validation.js";
 import {
   CAPABILITY_EXPOSURE_CONTRACT_VERSION,
-  candidateLooksVertical,
   capabilityAvailableForIdentity,
   capabilityExposureProfile,
 } from "./capability-exposure.js";
@@ -65,6 +64,7 @@ function sha256(value) {
 
 function capabilityGroup(name) {
   const prefixes = [
+    ["agentic_", "agentic"],
     ["orchestration_dtt_", "orchestration"],
     ["generic_agent_", "agents"],
     ["tenant_provider_", "provider"],
@@ -133,7 +133,8 @@ function summary(tool) {
 }
 
 function catalogState(tools, handlers, identity = null) {
-  const allDefinitions = dynamicToolDefinitions(tools, handlers);
+  const allDefinitions = dynamicToolDefinitions(tools, handlers)
+    .filter((tool) => capabilityExposureProfile(tool).classification_complete === true);
   const definitions = identity
     ? allDefinitions.filter((tool) => capabilityAvailableForIdentity(tool, identity))
     : allDefinitions;
@@ -260,12 +261,13 @@ export function createDynamicCapabilityHandlers({
         const allDefinitions = new Map(
           dynamicToolDefinitions(tools, handlers).map((tool) => [tool.name, tool]),
         );
-        const candidates = args.candidates.filter((candidate) => {
+        const candidates = args.candidates.map((candidate) => {
           const tool = allDefinitions.get(String(candidate?.id || ""));
-          if (tool) return capabilityAvailableForIdentity(tool, identity, { semantic: true });
-          return !candidateLooksVertical(candidate);
+          if (!tool || !capabilityAvailableForIdentity(tool, identity, { semantic: true })) {
+            throw new Error("branch_not_available_for_client");
+          }
+          return candidate;
         });
-        if (!candidates.length) throw new Error("dynamic_capability_candidates_empty");
         return semanticSelect({ ...args, candidates }, identity);
       }
       const query = String(args.query || "").trim();
@@ -276,6 +278,11 @@ export function createDynamicCapabilityHandlers({
           ? args.capability_ids
           : state.summaries.map((item) => item.capability_id),
       );
+      if (Array.isArray(args.capability_ids) && args.capability_ids.some((id) =>
+        !state.summaries.some((item) => item.capability_id === id)
+      )) {
+        throw new Error("branch_not_available_for_client");
+      }
       const candidates = state.summaries
         .filter((item) => allowedIds.has(item.capability_id))
         .slice(0, 500)

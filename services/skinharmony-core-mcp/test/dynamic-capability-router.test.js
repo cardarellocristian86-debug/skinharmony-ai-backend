@@ -11,9 +11,18 @@ import {
 
 const identity = {
   tenantId: "tenant-a",
+  kind: "codex",
   scopes: ["core:read", "core:govern"],
   ownerConfirmed: true,
 };
+
+const horizontalExposure = Object.freeze({
+  exposure_class: "chatgpt_horizontal",
+  allowed_client_types: ["chatgpt", "codex", "api_agent", "admin"],
+  allowed_audiences: ["chatgpt_connector", "codex_internal", "api_agent", "admin_control_room"],
+  discoverable_in_connector: true,
+  semantic_select_allowed: true,
+});
 
 function readTool(name = "nyra_dynamic_read") {
   return {
@@ -21,6 +30,7 @@ function readTool(name = "nyra_dynamic_read") {
     title: "Dynamic read",
     description: "Reads a tenant-bound capability.",
     scopes: ["core:read"],
+    exposure: horizontalExposure,
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -42,6 +52,7 @@ function writeTool(name = "workspace_dynamic_write") {
     title: "Dynamic write",
     description: "Writes through the governed capability router.",
     scopes: ["core:govern"],
+    exposure: horizontalExposure,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -88,6 +99,15 @@ test("adds capabilities through the catalog without changing the connector surfa
     "nyra_dynamic_read",
     "nyra_future_read",
   ]);
+});
+
+test("unknown or incomplete capabilities stay hidden until explicitly classified", () => {
+  const unknown = { ...readTool("mystery_capability") };
+  delete unknown.exposure;
+  const handlers = { mystery_capability: async () => ({}) };
+  const snapshot = dynamicCapabilityCatalogSnapshot([unknown], handlers);
+
+  assert.deepEqual(snapshot.capabilities, []);
 });
 
 test("reads only exact server-registered capabilities with scopes and a fresh revision", async () => {
@@ -207,4 +227,27 @@ test("semantic selection builds candidates from the server catalog and never aut
   assert.deepEqual(selectedArgs.candidates.map((item) => item.id), ["nyra_dynamic_read"]);
   assert.equal(result.structuredContent.execution_authorized, false);
   assert.deepEqual(result.structuredContent.candidate_capability_ids, ["nyra_dynamic_read"]);
+});
+
+test("semantic selection rejects every candidate without an exact visible catalog binding", async () => {
+  const tool = readTool("nyra_dynamic_read");
+  const handlers = { [tool.name]: async () => ({}) };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => {
+      throw new Error("semantic_selector_must_not_run");
+    },
+  });
+
+  for (const candidate of [
+    { id: "mystery_capability", text: "Looks harmless" },
+    { id: "skin_private_read", text: "Prefixed vertical" },
+    { id: "operations_silver", text: "Non-prefixed vertical" },
+  ]) {
+    await assert.rejects(
+      router.core_semantic_select({ candidates: [candidate] }, identity),
+      /branch_not_available_for_client/,
+    );
+  }
 });

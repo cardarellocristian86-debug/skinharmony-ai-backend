@@ -32,7 +32,7 @@ function serverClientType(identity = {}) {
     "suite",
     "waas",
     "admin",
-  ].includes(trusted) ? trusted : "api_agent";
+  ].includes(trusted) ? trusted : "unbound";
 }
 
 function serverClientAudience(identity = {}, clientType = serverClientType(identity)) {
@@ -42,7 +42,8 @@ function serverClientAudience(identity = {}, clientType = serverClientType(ident
   if (clientType === "analyzer" || clientType === "tricocamera") return "analyzer_runtime";
   if (clientType === "suite" || clientType === "waas") return "suite_runtime";
   if (clientType === "admin") return "admin_control_room";
-  return "api_agent";
+  if (clientType === "api_agent") return "api_agent";
+  return "unbound";
 }
 
 function clientContextHeader(identity, signingSecret) {
@@ -411,6 +412,25 @@ export function createCoreHandlers(config, options = {}) {
     return payload;
   }
 
+  const AGENTIC_TASK_FIELDS = Object.freeze([
+    "goal", "scope", "success_criteria", "decisions", "completed", "open_risks",
+    "relevant_files", "changed_files", "diff_summary", "test_state", "artifact_hashes",
+    "reusable_results", "next_action", "budget", "risk", "reversibility", "separable",
+    "independent_workstreams", "requested_agent_count", "required_tools", "available_tools",
+    "checkpoint", "retry_count", "reviewer_required", "security_tests_required",
+    "security_tests_passed", "acceptance_evidence", "host_capabilities", "model_candidates",
+    "quality_baseline", "quality_prediction", "critical", "work_capsule",
+  ]);
+
+  function exactFields(source, fields) {
+    const input = source && typeof source === "object" && !Array.isArray(source) ? source : {};
+    return Object.fromEntries(fields.flatMap((field) => (
+      input[field] === undefined ? [] : [[field, input[field]]]
+    )));
+  }
+
+  const agenticTaskBody = (args) => exactFields(args, AGENTIC_TASK_FIELDS);
+
   function ownerContext(identity, options = {}) {
     const optionObject = options && typeof options === "object" && !Array.isArray(options);
     const requestBinding = optionObject ? options.requestBinding : options;
@@ -567,21 +587,9 @@ export function createCoreHandlers(config, options = {}) {
     }
   }
 
-  async function aiLearningRead(path, args, identity) {
+  async function aiLearningRead(path, args, identity, allowedQuery) {
     const query = new URLSearchParams();
-    for (const key of [
-      "scorecard_id",
-      "release_version",
-      "dataset_id",
-      "version",
-      "trace_id",
-      "run_id",
-      "experiment_id",
-      "candidate_id",
-      "state",
-      "cursor",
-      "limit",
-    ]) {
+    for (const key of allowedQuery) {
       if (args[key] !== undefined && args[key] !== "") query.set(key, String(args[key]));
     }
     const suffix = query.size ? `?${query.toString()}` : "";
@@ -589,7 +597,13 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   async function aiLearningWrite(path, purpose, args, identity) {
-    const requestBody = { ...args };
+    const requestBody = {
+      ...args,
+      owner_confirmed: args.owner_confirmed === true && identity.ownerConfirmed === true,
+      confirmation_reference: String(
+        args.confirmation_reference || identity.confirmationReference || "",
+      ).trim(),
+    };
     const binding = ownerRequestBinding(purpose, requestBody);
     return textResult(await coreRequest(path, identity.tenantId, {
       method: "POST",
@@ -1094,12 +1108,42 @@ export function createCoreHandlers(config, options = {}) {
     outcome_verify: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/verify", args, identity),
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity, { ownerBindingPurpose: "intelligence_outcome_record" }),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
-    ai_eval_scorecard_read: async (args, identity) => aiLearningRead("/v1/ai-learning/eval/scorecards", args, identity),
-    ai_eval_dataset_read: async (args, identity) => aiLearningRead("/v1/ai-learning/eval/datasets", args, identity),
-    ai_eval_trace_read: async (args, identity) => aiLearningRead("/v1/ai-learning/eval/traces", args, identity),
-    ai_performance_scorecard_read: async (args, identity) => aiLearningRead("/v1/ai-learning/performance/scorecards", args, identity),
-    ai_experiment_read: async (args, identity) => aiLearningRead("/v1/ai-learning/experiments", args, identity),
-    ai_learning_candidate_read: async (args, identity) => aiLearningRead("/v1/ai-learning/candidates", args, identity),
+    ai_eval_scorecard_read: async (args, identity) => aiLearningRead(
+      "/v1/ai-learning/eval/scorecards",
+      args,
+      identity,
+      ["scorecard_id", "release_version", "limit", "cursor"],
+    ),
+    ai_eval_dataset_read: async (args, identity) => aiLearningRead(
+      "/v1/ai-learning/eval/datasets",
+      args,
+      identity,
+      ["dataset_id", "version", "limit", "cursor"],
+    ),
+    ai_eval_trace_read: async (args, identity) => aiLearningRead(
+      "/v1/ai-learning/eval/traces",
+      args,
+      identity,
+      ["trace_id", "run_id", "limit", "cursor"],
+    ),
+    ai_performance_scorecard_read: async (args, identity) => aiLearningRead(
+      "/v1/ai-learning/performance/scorecards",
+      args,
+      identity,
+      ["scorecard_id", "release_version", "limit", "cursor"],
+    ),
+    ai_experiment_read: async (args, identity) => aiLearningRead(
+      "/v1/ai-learning/experiments",
+      args,
+      identity,
+      ["experiment_id", "state", "limit", "cursor"],
+    ),
+    ai_learning_candidate_read: async (args, identity) => aiLearningRead(
+      "/v1/ai-learning/candidates",
+      args,
+      identity,
+      ["candidate_id", "state", "limit", "cursor"],
+    ),
     ai_learning_candidate_review: async (args, identity) => aiLearningWrite(
       "/v1/ai-learning/candidates/review",
       "ai_learning_candidate_review",
@@ -1112,6 +1156,61 @@ export function createCoreHandlers(config, options = {}) {
       args,
       identity,
     ),
+    agentic_efficiency_plan: async (args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/plan",
+      identity.tenantId,
+      { method: "POST", identity, body: agenticTaskBody(args) },
+    )),
+    agentic_efficiency_status: async (_args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/status",
+      identity.tenantId,
+      { identity },
+    )),
+    agentic_efficiency_report: async (_args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/report",
+      identity.tenantId,
+      { identity },
+    )),
+    agentic_budget_preview: async (args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/budget/preview",
+      identity.tenantId,
+      {
+        method: "POST",
+        identity,
+        body: exactFields(args, ["task", "policy", "usage", "rate_card"]),
+      },
+    )),
+    agentic_budget_status: async (_args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/budget/status",
+      identity.tenantId,
+      { identity },
+    )),
+    agentic_work_capsule_read: async (args, identity) => textResult(await coreRequest(
+      `/v1/agentic-efficiency/work-capsules/${encodeURIComponent(args.capsule_id)}`,
+      identity.tenantId,
+      { identity },
+    )),
+    agentic_savings_compare: async (args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/savings/compare",
+      identity.tenantId,
+      {
+        method: "POST",
+        identity,
+        body: exactFields(args, [
+          "baseline", "optimized", "rate_card", "baseline_quality",
+          "optimized_quality", "security_preserved",
+        ]),
+      },
+    )),
+    agentic_artifact_reuse_check: async (args, identity) => textResult(await coreRequest(
+      "/v1/agentic-efficiency/artifacts/reuse-check",
+      identity.tenantId,
+      {
+        method: "POST",
+        identity,
+        body: exactFields(args, ["artifact_hash", "artifact_version"]),
+      },
+    )),
     skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", identity, body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     tenant_provider_openai_status: async (_args, identity) => {
       const payload = await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId);

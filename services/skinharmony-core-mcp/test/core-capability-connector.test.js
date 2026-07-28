@@ -4,6 +4,7 @@ import test from "node:test";
 import { CORE_CONNECTOR_CAPABILITIES, readCoreCapabilityCatalog } from "../src/core-capability-catalog.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
 import { TOOLS } from "../src/tool-definitions.js";
+import { mountAiLearningFactoryRoutes } from "../../universal-core-service/src/aiLearningFactoryRoutes.js";
 
 function ownerIdentity(overrides = {}) {
   return {
@@ -33,6 +34,135 @@ function harness(configOverrides = {}) {
     },
   });
   return { calls, handlers };
+}
+
+function aiLearningRouteBridge() {
+  const routes = [];
+  const app = {
+    get(path, ...handlers) { routes.push({ method: "GET", path, handlers }); },
+    post(path, ...handlers) { routes.push({ method: "POST", path, handlers }); },
+  };
+  const storeCalls = [];
+  const learningStore = {
+    async readEvaluationScorecard(input) {
+      storeCalls.push({ method: "readEvaluationScorecard", input });
+      return { scorecard_id: input.record_id, release_version: "0.16.0" };
+    },
+    async listEvaluationScorecards(input) {
+      storeCalls.push({ method: "listEvaluationScorecards", input });
+      return [{ scorecard_id: "scorecard-v016", release_version: "0.16.0" }];
+    },
+    async readDatasetMetadata(input) {
+      storeCalls.push({ method: "readDatasetMetadata", input });
+      return { dataset_id: input.record_id, dataset_version: "v1" };
+    },
+    async listDatasetMetadata(input) {
+      storeCalls.push({ method: "listDatasetMetadata", input });
+      return [{ dataset_id: "dataset-v1", dataset_version: "v1" }];
+    },
+    async readPerformanceScorecard(input) {
+      storeCalls.push({ method: "readPerformanceScorecard", input });
+      return { performance_scorecard_id: input.record_id, release_version: "0.16.0" };
+    },
+    async listPerformanceScorecards(input) {
+      storeCalls.push({ method: "listPerformanceScorecards", input });
+      return [{ performance_scorecard_id: "performance-v016", release_version: "0.16.0" }];
+    },
+    async readCausalExperiment(input) {
+      storeCalls.push({ method: "readCausalExperiment", input });
+      return { experiment_id: input.record_id, status: "shadow" };
+    },
+    async listCausalExperiments(input) {
+      storeCalls.push({ method: "listCausalExperiments", input });
+      return [{ experiment_id: "experiment-v016", status: "shadow" }];
+    },
+    async readLearningCandidate(input) {
+      storeCalls.push({ method: "readLearningCandidate", input });
+      return { candidate_id: input.record_id, status: "under_review" };
+    },
+    async listLearningCandidates(input) {
+      storeCalls.push({ method: "listLearningCandidates", input });
+      return [{ candidate_id: "candidate-v016", status: "under_review" }];
+    },
+    async reviewLearningCandidate(input) {
+      storeCalls.push({ method: "reviewLearningCandidate", input });
+      return {
+        candidate_id: input.candidate_id,
+        status: input.decision,
+        revision: input.expected_revision + 1,
+      };
+    },
+    async recordLearningOutcome(input) {
+      storeCalls.push({ method: "recordLearningOutcome", input });
+      return {
+        ...input.record,
+        revision: input.expected_revision + 1,
+      };
+    },
+  };
+  const telemetryStore = {
+    async read(input) {
+      storeCalls.push({ method: "telemetry.read", input });
+      return { run_id: input.run_id, trace_id: "trace-v016" };
+    },
+    async list(input) {
+      storeCalls.push({ method: "telemetry.list", input });
+      return [{ run_id: "run-v016", trace_id: "trace-v016" }];
+    },
+  };
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore,
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {
+      return {
+        core_verdict: "ALLOW",
+        owner_confirmed: true,
+        scopes: ["core:govern"],
+        audit_reference: "audit-route-bridge",
+        rollback_reference: "rollback-route-bridge",
+      };
+    },
+    resolveRequestContext() {
+      return { clientType: "codex", audience: "codex_internal" };
+    },
+  });
+
+  const fetchImpl = async (url, init) => {
+    const parsed = new URL(url);
+    const route = routes.find((item) => item.method === init.method && item.path === parsed.pathname);
+    assert(route, `missing mounted route ${init.method} ${parsed.pathname}`);
+    const requestHeaders = Object.fromEntries(
+      Object.entries(init.headers || {}).map(([key, value]) => [key.toLowerCase(), value]),
+    );
+    const req = {
+      tenantId: "tenant-a",
+      query: Object.fromEntries(parsed.searchParams),
+      body: init.body ? JSON.parse(init.body) : {},
+      get(name) { return requestHeaders[String(name).toLowerCase()] || ""; },
+    };
+    const res = {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this; },
+      json(payload) {
+        this.payload = payload;
+        return this;
+      },
+    };
+    await route.handlers.at(-1)(req, res);
+    return new Response(JSON.stringify(res.payload), {
+      status: res.statusCode,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, { fetchImpl });
+  return { handlers, storeCalls };
 }
 
 test("bridge derives and signs client exposure context without trusting owner role or payload labels", async () => {
@@ -176,22 +306,27 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
   const owner = ownerIdentity();
   await handlers.ai_learning_candidate_review({
     candidate_id: "candidate_one",
-    review_action: "defer",
-    expected_version: 1,
-    evidence_digest: `sha256:${"a".repeat(64)}`,
-    rationale: "Needs another independent evaluation.",
+    decision: "deferred",
+    expected_revision: 1,
+    review_note: "Needs another independent evaluation.",
     idempotency_key: "review-candidate-one",
     owner_confirmed: true,
     confirmation_reference: "owner-reviewed-candidate-one",
   }, owner);
   await handlers.ai_learning_outcome_record({
-    outcome_id: "outcome_one",
-    candidate_id: "candidate_one",
-    outcome_status: "abstained",
-    outcome_verified: true,
-    evidence_digest: `sha256:${"b".repeat(64)}`,
-    policy_snapshot: "policy_snapshot_one",
-    rollback_reference: "rollback-one",
+    outcome: {
+      outcome_id: "outcome_one",
+      run_id: "run_one",
+      candidate_id: "candidate_one",
+      outcome_status: "abstained",
+      outcome_verified: true,
+      human_review_status: "approved",
+      evidence_digest: `sha256:${"b".repeat(64)}`,
+      policy_snapshot: "policy_snapshot_one",
+      observed_at: "2026-07-27T12:00:00.000Z",
+      learning_value: 0.7,
+    },
+    expected_revision: 0,
     idempotency_key: "outcome-candidate-one",
     owner_confirmed: true,
     confirmation_reference: "owner-recorded-outcome-one",
@@ -222,4 +357,94 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
     "tenant_provider_openai_multi_agent_run_read",
     "tenant_provider_openai_multi_agent_run_cancel",
   ].includes(tool.name)).length, 13);
+});
+
+test("all eight MCP learning handlers satisfy the mounted Core route contracts end to end", async () => {
+  const { handlers, storeCalls } = aiLearningRouteBridge();
+  const reader = { tenantId: "tenant-a" };
+
+  await handlers.ai_eval_scorecard_read({
+    scorecard_id: "scorecard-v016",
+    release_version: "0.16.0",
+    limit: 3,
+    cursor: "offset:0",
+  }, reader);
+  await handlers.ai_eval_dataset_read({
+    dataset_id: "dataset-v1",
+    version: "v1",
+    limit: 4,
+    cursor: "offset:0",
+  }, reader);
+  await handlers.ai_eval_trace_read({
+    trace_id: "trace-v016",
+    run_id: "run-v016",
+    limit: 5,
+    cursor: "offset:0",
+  }, reader);
+  await handlers.ai_performance_scorecard_read({
+    scorecard_id: "performance-v016",
+    release_version: "0.16.0",
+    limit: 6,
+    cursor: "offset:0",
+  }, reader);
+  await handlers.ai_experiment_read({
+    experiment_id: "experiment-v016",
+    state: "shadow",
+    limit: 7,
+    cursor: "offset:0",
+  }, reader);
+  await handlers.ai_learning_candidate_read({
+    candidate_id: "candidate-v016",
+    state: "under_review",
+    limit: 8,
+    cursor: "offset:0",
+  }, reader);
+
+  const owner = ownerIdentity();
+  await handlers.ai_learning_candidate_review({
+    candidate_id: "candidate-v016",
+    decision: "deferred",
+    review_note: "Await another independent evaluation.",
+    expected_revision: 1,
+    idempotency_key: "review-v016-candidate",
+    owner_confirmed: true,
+    confirmation_reference: "owner-review-v016",
+  }, owner);
+  await handlers.ai_learning_outcome_record({
+    outcome: {
+      outcome_id: "outcome-v016",
+      run_id: "run-v016",
+      candidate_id: "candidate-v016",
+      outcome_status: "succeeded",
+      outcome_verified: true,
+      human_review_status: "approved",
+      evidence_digest: `sha256:${"a".repeat(64)}`,
+      policy_snapshot: "policy-v016",
+      observed_at: "2026-07-27T12:00:00.000Z",
+      learning_value: 0.9,
+    },
+    expected_revision: 0,
+    idempotency_key: "outcome-v016-record",
+    owner_confirmed: true,
+    confirmation_reference: "owner-outcome-v016",
+  }, owner);
+
+  assert.deepEqual(storeCalls.map((call) => call.method), [
+    "readEvaluationScorecard",
+    "readDatasetMetadata",
+    "telemetry.read",
+    "readPerformanceScorecard",
+    "readCausalExperiment",
+    "readLearningCandidate",
+    "reviewLearningCandidate",
+    "recordLearningOutcome",
+  ]);
+  assert.deepEqual(storeCalls[0].input, { tenant_id: "tenant-a", record_id: "scorecard-v016" });
+  assert.deepEqual(storeCalls[3].input, { tenant_id: "tenant-a", record_id: "performance-v016" });
+  assert.equal(storeCalls[6].input.decision, "deferred");
+  assert.equal(storeCalls[6].input.expected_revision, 1);
+  assert.equal(storeCalls[6].input.authorization.audit_reference, "audit-route-bridge");
+  assert.equal(storeCalls[7].input.record.run_id, "run-v016");
+  assert.equal(storeCalls[7].input.record.learning_value, 0.9);
+  assert.equal(storeCalls[7].input.expected_revision, 0);
 });

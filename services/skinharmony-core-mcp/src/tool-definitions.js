@@ -63,6 +63,7 @@ function tool(name, title, description, inputSchema, scopes, readOnly = true, id
 const object = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const text = (maxLength = 20_000) => ({ type: "string", minLength: 1, maxLength });
 const identifier = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$" };
+const governedReference = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:@/-]{0,239}$" };
 const memoryClassification = { type: "string", enum: ["internal", "customer_aggregate", "customer_personal", "restricted"] };
 const memoryKind = { type: "string", enum: ["observation", "decision", "action", "outcome", "learning"] };
 const memoryTextList = { type: "array", maxItems: 20, items: text(1_000) };
@@ -466,6 +467,75 @@ const entityGraphRelation = object({
   relation_type: identifier,
   attributes: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
 }, ["id", "from", "to", "relation_type"]);
+const agenticTextList = (maxItems = 100, maxLength = 1_000) => ({
+  type: "array",
+  maxItems,
+  items: { type: "string", maxLength },
+});
+const agenticUsage = object({
+  usage_kind: { type: "string", enum: ["actual", "estimated"] },
+  input_tokens: { type: "integer", minimum: 0, maximum: 1_000_000_000 },
+  cached_input_tokens: { type: "integer", minimum: 0, maximum: 1_000_000_000 },
+  output_tokens: { type: "integer", minimum: 0, maximum: 1_000_000_000 },
+  provider_receipt_digest: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+}, ["usage_kind", "input_tokens", "output_tokens"]);
+const agenticRateCard = object({
+  version: text(160),
+  provider: text(160),
+  model_id: text(160),
+  currency: text(16),
+  input_per_million: { type: "number", minimum: 0 },
+  cached_input_per_million: { type: "number", minimum: 0 },
+  output_per_million: { type: "number", minimum: 0 },
+  effective_at: text(64),
+  source: text(500),
+  provenance_digest: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+}, ["version", "provider", "model_id", "currency", "input_per_million", "output_per_million", "effective_at", "source", "provenance_digest"]);
+const agenticTask = object({
+  goal: text(1_000),
+  scope: agenticTextList(100),
+  success_criteria: { ...agenticTextList(100), minItems: 1 },
+  decisions: agenticTextList(),
+  completed: agenticTextList(),
+  open_risks: agenticTextList(),
+  relevant_files: agenticTextList(200),
+  changed_files: agenticTextList(200),
+  diff_summary: { type: "string", maxLength: 4_000 },
+  test_state: object({
+    passed: { type: "integer", minimum: 0 },
+    failed: { type: "integer", minimum: 0 },
+    pending: { type: "integer", minimum: 0 },
+  }),
+  artifact_hashes: { type: "array", maxItems: 200, items: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" } },
+  reusable_results: agenticTextList(),
+  next_action: { type: "string", maxLength: 1_000 },
+  budget: object({
+    token_limit: { type: "integer", minimum: 0 },
+    invocation_limit: { type: "integer", minimum: 0 },
+    retry_limit: { type: "integer", minimum: 0 },
+  }),
+  risk: { type: "string", enum: ["low", "medium", "high", "critical"] },
+  reversibility: { type: "string", enum: ["easy", "bounded", "difficult", "irreversible"] },
+  separable: { type: "boolean" },
+  independent_workstreams: { type: "integer", minimum: 0, maximum: 20 },
+  requested_agent_count: { type: "integer", minimum: 0, maximum: 100 },
+  required_tools: agenticTextList(100, 160),
+  available_tools: agenticTextList(200, 160),
+  checkpoint: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+  retry_count: { type: "integer", minimum: 0, maximum: 1_000 },
+  reviewer_required: { type: "boolean" },
+  security_tests_required: { type: "boolean" },
+  security_tests_passed: { type: "boolean" },
+  acceptance_evidence: agenticTextList(200),
+  host_capabilities: object({
+    model_control: { type: "boolean" },
+    usage_receipts: { type: "boolean" },
+  }),
+  model_candidates: agenticTextList(20, 160),
+  quality_baseline: probability,
+  quality_prediction: probability,
+  critical: { type: "boolean" },
+}, ["goal", "success_criteria"]);
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
@@ -874,34 +944,74 @@ export const TOOLS = [
   }), ["core:read"]),
   tool("ai_experiment_read", "Read governed AI experiments", "Read tenant-scoped shadow, canary or A/B experiment metadata and causal evidence. This cannot activate or promote an experiment.", object({
     experiment_id: identifier,
-    state: { type: "string", enum: ["draft", "shadow", "canary", "completed", "rolled_back", "expired"] },
+    state: { type: "string", enum: ["proposed", "shadow", "canary", "ab", "stopped", "completed"] },
     limit: { type: "integer", minimum: 1, maximum: 100 },
     cursor: { type: "string", maxLength: 160 },
   }), ["core:read"]),
   tool("ai_learning_candidate_read", "Read governed AI learning candidates", "Read versioned tenant-scoped learning candidates and their evidence, review and rollback status. Live prompt, routing, model and weight mutation remain disabled.", object({
     candidate_id: identifier,
-    state: { type: "string", enum: ["candidate", "review_required", "approved_proposal", "rejected", "expired", "quarantined"] },
+    state: { type: "string", enum: ["proposed", "under_review", "deferred", "rejected", "approved_for_shadow"] },
     limit: { type: "integer", minimum: 1, maximum: 100 },
     cursor: { type: "string", maxLength: 160 },
   }), ["core:read"]),
   tool("ai_learning_candidate_review", "Review an AI learning candidate", "Record an owner-confirmed, audited review decision for one versioned candidate. It creates no promotion, provider execution or live mutation.", object({
     candidate_id: identifier,
-    review_action: { type: "string", enum: ["approve_proposal", "reject", "defer", "quarantine"] },
-    expected_version: { type: "integer", minimum: 1 },
-    evidence_digest: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
-    rationale: text(2_000),
+    decision: { type: "string", enum: ["approved_for_shadow", "deferred", "rejected"] },
+    review_note: text(2_000),
+    expected_revision: { type: "integer", minimum: 1 },
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
-  }, ["candidate_id", "review_action", "expected_version", "evidence_digest", "rationale"]), ["core:govern"], false, true),
+  }, ["candidate_id", "decision", "review_note", "expected_revision"]), ["core:govern"], false, true),
   tool("ai_learning_outcome_record", "Record a governed AI learning outcome", "Record one verified, tenant-scoped learning outcome with provenance and an idempotency key. It never trains, promotes or changes live weights automatically.", object({
-    outcome_id: identifier,
-    candidate_id: identifier,
-    outcome_status: { type: "string", enum: ["success", "failure", "abstained", "rolled_back"] },
-    outcome_verified: { type: "boolean" },
-    evidence_digest: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
-    policy_snapshot: identifier,
-    rollback_reference: { type: "string", maxLength: 240 },
+    outcome: object({
+      outcome_id: identifier,
+      run_id: identifier,
+      candidate_id: identifier,
+      outcome_status: { type: "string", enum: ["succeeded", "failed", "partial", "abstained"] },
+      outcome_verified: { type: "boolean" },
+      human_review_status: { type: "string", enum: ["not_required", "pending", "approved", "rejected"] },
+      evidence_digest: governedReference,
+      policy_snapshot: governedReference,
+      observed_at: { type: "string", minLength: 20, maxLength: 64 },
+      learning_value: { type: "number", minimum: 0, maximum: 1 },
+    }, [
+      "outcome_id",
+      "run_id",
+      "outcome_status",
+      "outcome_verified",
+      "human_review_status",
+      "evidence_digest",
+      "policy_snapshot",
+      "observed_at",
+      "learning_value",
+    ]),
+    expected_revision: { type: "integer", minimum: 0 },
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
-  }, ["outcome_id", "candidate_id", "outcome_status", "outcome_verified", "evidence_digest", "policy_snapshot", "rollback_reference"]), ["core:govern"], false, true),
+  }, ["outcome", "expected_revision"]), ["core:govern"], false, true),
+  tool("agentic_efficiency_plan", "Plan bounded agentic work", "Build a tenant-bound minimum-agent, minimum-tool advisory plan with work capsule, reviewer, retry and early-stop controls. It never executes models or external actions.", agenticTask, ["core:read"], true, true, { exactInputSchema: true }),
+  tool("agentic_efficiency_status", "Read agentic efficiency status", "Read tenant-scoped planning, capsule and usage readiness without authorizing execution.", object(), ["core:read"]),
+  tool("agentic_efficiency_report", "Read agentic efficiency report", "Read tenant-scoped measured/estimated efficiency summaries with honest provenance.", object(), ["core:read"]),
+  tool("agentic_budget_preview", "Preview governed agentic budget", "Evaluate an observe/soft-enforce budget preview using server-verifiable usage and policy evidence. Caller-supplied actual usage is never trusted.", object({
+    task: agenticTask,
+    policy: { type: "object", minProperties: 1, maxProperties: 100, additionalProperties: boundedJsonValue },
+    usage: agenticUsage,
+    rate_card: agenticRateCard,
+  }, ["task", "policy"]), ["core:govern"], true, true),
+  tool("agentic_budget_status", "Read agentic budget status", "Read the bounded tenant budget mode and critical-task safe-degraded policy; hard stop remains disabled.", object(), ["core:read"]),
+  tool("agentic_work_capsule_read", "Read an agentic work capsule", "Read one tenant-bound resumable work capsule by exact ID; raw history and cross-tenant content are unavailable.", object({
+    capsule_id: { type: "string", minLength: 1, maxLength: 160, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$" },
+  }, ["capsule_id"]), ["core:read"]),
+  tool("agentic_savings_compare", "Compare agentic savings", "Compare baseline and optimized usage with server-attested receipts and canonical rate cards. Actual claims are recorded only in the governed audit ledger.", object({
+    baseline: agenticUsage,
+    optimized: agenticUsage,
+    rate_card: agenticRateCard,
+    baseline_quality: probability,
+    optimized_quality: probability,
+    security_preserved: { type: "boolean" },
+  }, ["baseline", "optimized", "rate_card", "baseline_quality", "optimized_quality", "security_preserved"]), ["core:govern"], true, true),
+  tool("agentic_artifact_reuse_check", "Check governed artifact reuse", "Check an exact tenant-scoped artifact hash/version for verified safe reuse without returning its content.", object({
+    artifact_hash: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+    artifact_version: text(160),
+  }, ["artifact_hash", "artifact_version"]), ["core:read"]),
   tool("decision_ledger_report", "Read Core decision ledger report", "Read tenant-scoped counts for AI work, Core corrections, denials, confirmations, failures and verified outcomes. Raw prompts and secrets are never returned.", object({ days: { type: "integer", minimum: 1, maximum: 365 } }), ["core:read"]),
   tool("nyra_research_plan", "Plan governed web research", "Use this when Nyra needs current external evidence. Core returns source, freshness, citation and safety constraints; then use the host ChatGPT or Codex web tool before ingesting evidence.", object({
     question: text(2_000),
