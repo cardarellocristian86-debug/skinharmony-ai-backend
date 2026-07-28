@@ -87,12 +87,12 @@ function topologyAction(overrides = {}) {
     topology: skinHarmonyMcpStagingTopology(),
     provider_native_references: true,
     secret_values_present: false,
-    maximum_recurring_monthly_cost_cents: 5_300,
+    maximum_recurring_monthly_cost_cents: 6_000,
     recurring_cost_currency: "USD",
     recurring_cost_confirmed: true,
-    confirmation_maximum_recurring_monthly_cost_cents: 5_300,
+    confirmation_maximum_recurring_monthly_cost_cents: 6_000,
     confirmation_recurring_cost_currency: "USD",
-    confirmation_reference: "owner-confirmed-staging-topology-at-53-usd-monthly-maximum",
+    confirmation_reference: "owner-confirmed-staging-topology-at-60-usd-monthly-maximum",
     ...overrides,
   };
   const digest = buildSkinHarmonyMcpStagingTopologySpecDigest(body);
@@ -183,6 +183,19 @@ async function request(base, method, pathname, body, key) {
 
 test("authorizes only the exact server-confirmed MCP staging topology spec", () => {
   const body = topologyAction();
+  const runtimeServices = body.topology.services.filter(({ name }) =>
+    body.topology.rollout_contract.runtime_services.includes(name));
+  assert.deepEqual(
+    runtimeServices.map(({ name }) => name),
+    [
+      "skinharmony-universal-core-staging",
+      "skinharmony-core-mcp-staging",
+    ],
+  );
+  assert.deepEqual(
+    runtimeServices.map(({ plan }) => plan),
+    ["starter", "starter"],
+  );
   const result = buildActionAuthorization(contract(), body);
   assert.equal(result.allowed, true);
   assert.equal(result.state, "authorized_after_confirmation");
@@ -283,6 +296,16 @@ test("hard-blocks aliases, extra fields, production, main, Auth0 and topology ex
   extraTopologyField.database.provider_id = "opaque-looking-but-unapproved";
   const unavailableDatabaseTopology = skinHarmonyMcpStagingTopology();
   unavailableDatabaseTopology.database.required_status = "suspended";
+  const freeMcpTopology = skinHarmonyMcpStagingTopology();
+  freeMcpTopology.services.find(({ name }) =>
+    name === "skinharmony-core-mcp-staging").plan = "free";
+  const freeUniversalCoreTopology = skinHarmonyMcpStagingTopology();
+  freeUniversalCoreTopology.services.find(({ name }) =>
+    name === "skinharmony-universal-core-staging").plan = "free";
+  const broadenedRuntimeTopology = skinHarmonyMcpStagingTopology();
+  broadenedRuntimeTopology.rollout_contract.runtime_services.push(
+    "skinharmony-core-staging-issuer",
+  );
 
   for (const unsafe of [
     { environment: "production" },
@@ -310,6 +333,9 @@ test("hard-blocks aliases, extra fields, production, main, Auth0 and topology ex
     { topology: extraServiceTopology },
     { topology: extraTopologyField },
     { topology: unavailableDatabaseTopology },
+    { topology: freeMcpTopology },
+    { topology: freeUniversalCoreTopology },
+    { topology: broadenedRuntimeTopology },
     { unexpected_field: "not-in-the-closed-envelope" },
   ]) {
     const result = buildActionAuthorization(contract(), topologyAction(unsafe));
@@ -326,7 +352,7 @@ test("hard-blocks missing or broadened cost authority and non-opaque references"
 
   for (const unsafe of [
     { recurring_cost_confirmed: false },
-    { confirmation_maximum_recurring_monthly_cost_cents: 5_299 },
+    { confirmation_maximum_recurring_monthly_cost_cents: 5_999 },
     { confirmation_recurring_cost_currency: "EUR" },
     { maximum_recurring_monthly_cost_cents: 0 },
     {

@@ -270,7 +270,7 @@
       "type": "web",
       "name": "skinharmony-core-mcp-staging",
       "runtime": "node",
-      "plan": "free",
+      "plan": "starter",
       "region": "oregon",
       "repo": "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend",
       "branch": "agent/mcp-staging-shared-memory-release",

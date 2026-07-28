@@ -120,7 +120,7 @@ const TOPOLOGY = Object.freeze({
     Object.freeze({
       name: "skinharmony-core-mcp-staging",
       resource_type: "web_service",
-      plan: "free",
+      plan: "starter",
       lifecycle: "create_only",
     }),
   ]),
@@ -132,6 +132,10 @@ const TOPOLOGY = Object.freeze({
     database_bootstrap_modes: Object.freeze(["hold", "initialize", "steady"]),
     initial_database_reference: false,
     provider_managed_runtime_role: "mcp_collaboration_runtime",
+    runtime_services: Object.freeze([
+      "skinharmony-universal-core-staging",
+      "skinharmony-core-mcp-staging",
+    ]),
   }),
   reference_policy: Object.freeze({
     database_connection: "fromDatabase",

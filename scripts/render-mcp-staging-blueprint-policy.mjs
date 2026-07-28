@@ -99,7 +99,7 @@ const EXPECTED_SERVICES = Object.freeze({
     }),
     [MCP]: Object.freeze({
       type: "web",
-      plan: "free",
+      plan: "starter",
       buildCommand: "npm ci --prefix services/skinharmony-core-mcp",
       startCommand: "npm --prefix services/skinharmony-core-mcp start",
       port: "8790",

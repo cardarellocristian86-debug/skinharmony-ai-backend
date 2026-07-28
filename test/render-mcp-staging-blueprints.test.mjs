@@ -116,6 +116,10 @@ test("matches the topology reserved by the Universal Core domain gate", () => {
     database_bootstrap_modes: ["hold", "initialize", "steady"],
     initial_database_reference: false,
     provider_managed_runtime_role: "mcp_collaboration_runtime",
+    runtime_services: [
+      "skinharmony-universal-core-staging",
+      "skinharmony-core-mcp-staging",
+    ],
   });
 });
 
