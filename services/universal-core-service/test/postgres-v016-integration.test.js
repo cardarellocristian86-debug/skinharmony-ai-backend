@@ -156,6 +156,12 @@ integrationTest("v0.16 static migrations attest roles, survive restart and prese
       actor_provenance: "postgres-integration-rollback",
       rollback_reference: "git:pre-v0.16",
     });
+    for (const artifact of [
+      "../migrations/0.16.0-ai-learning-factory.down.sql",
+      "../migrations/0.16.0-agentic-efficiency.down.sql",
+    ]) {
+      await pool.query(await readFile(new URL(artifact, import.meta.url), "utf8"));
+    }
     const retained = await pool.query(
       `SELECT
          (SELECT count(*)::int FROM ai_learning_governance.learning_record) AS learning_records,
@@ -166,9 +172,26 @@ integrationTest("v0.16 static migrations attest roles, survive restart and prese
     assert.deepEqual(retained.rows[0], {
       learning_records: 1,
       capsules: 1,
-      ai_rollbacks: 1,
-      agentic_rollbacks: 1,
+      ai_rollbacks: 2,
+      agentic_rollbacks: 2,
     });
+    const disabledAi = createAiLearningFactoryPostgresPersistence({
+      pool,
+      runtimeRole: AI_LEARNING_FACTORY_RUNTIME_ROLE,
+    });
+    await assert.rejects(
+      disabledAi.initialize(),
+      /ai_learning_static_migration_not_active/,
+    );
+    const disabledAgentic = createAgenticEfficiencyPostgresStore({
+      connectionString,
+      pool,
+      runtimeRole: AGENTIC_EFFICIENCY_RUNTIME_ROLE,
+    });
+    await assert.rejects(
+      disabledAgentic.initialize(),
+      /agentic_static_migration_not_active/,
+    );
   } finally {
     await pool.end();
   }

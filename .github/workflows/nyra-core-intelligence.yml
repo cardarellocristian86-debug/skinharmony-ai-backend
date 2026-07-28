@@ -27,6 +27,20 @@ jobs:
 
   universal-core:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nyra_core_v016_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nyra_core_v016_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: services/universal-core-service
@@ -67,6 +81,11 @@ jobs:
         run: bash scripts/build-rust-extractor-render.sh
       - run: npm ci
       - run: npm test
+      - name: Verify static v0.16 migrations, runtime roles, restart and rollback
+        env:
+          RUN_POSTGRES_INTEGRATION: "1"
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/nyra_core_v016_test
+        run: node --test test/postgres-v016-integration.test.js
 
   core-mcp:
     runs-on: ubuntu-latest
