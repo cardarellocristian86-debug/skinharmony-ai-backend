@@ -35,7 +35,8 @@ test("100 paired cases execute the production planner on one snapshot and rubric
   assert.equal(report.provider_calls_executed, 0);
   assert.equal(report.actual_provider_credits_observed, false);
   assert.equal(report.actual_savings_claimed, false);
-  assert.equal(report.evidence_kind, "integrated_replay_estimated");
+  assert.equal(report.evidence_kind, "synthetic_hypothetical_context_replay");
+  assert.equal(report.repository_snapshot_kind, "caller_declared_unverified");
   assert.equal(report.quality_evidence_kind, "structural_replay_estimated");
   assert.equal(report.release_economic_targets_verified, false);
   assert.equal(report.shadow_required, true);
@@ -54,6 +55,9 @@ test("paired replay uses the production generic orchestrator and preserves bound
   });
   assert(report.measurements.every(
     (row) => row.orchestration_evidence.baseline_pipeline === "createGenericAgentOrchestrator",
+  ));
+  assert(report.measurements.every(
+    (row) => row.orchestration_evidence.production_delta_packager_observed === false,
   ));
   assert(report.measurements.every(
     (row) => row.optimized_quality_evidence.checks.tools_preserved,

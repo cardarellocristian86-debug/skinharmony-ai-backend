@@ -211,7 +211,7 @@ function phaseMetrics(planResult, latencyMs, { earlyStopped = false } = {}) {
   const truncations = planResult.payloads.filter((payload) => payload.runtime_limit_truncated);
   return {
     usage_source: "estimated",
-    estimation_method: "production_generic_orchestrator_serialized_context_v1",
+    estimation_method: "synthetic_hypothetical_serialized_context_replay_v1",
     input_tokens: contextTokens,
     output_tokens: 0,
     cached_tokens: 0,
@@ -307,7 +307,8 @@ function categoryReport(rows, category) {
   };
   return {
     case_count: selected.length,
-    task_success_rate: selected.length
+    task_success_rate: null,
+    structural_contract_pass_rate: selected.length
       ? Number((
         selected.filter((row) => (
           row.baseline_quality_evidence.guardrails_preserved
@@ -462,8 +463,9 @@ export function executePairedAgenticEfficiencyBenchmark({
       orchestration_evidence: {
         baseline_pipeline: "createGenericAgentOrchestrator",
         optimized_pipeline: optimizedResult.plan
-          ? "buildAgenticEfficiencyPlan+createGenericAgentOrchestrator"
+          ? "benchmark_delta_packager+buildAgenticEfficiencyPlan+createGenericAgentOrchestrator"
           : "buildAgenticEfficiencyPlan:verified_early_stop",
+        production_delta_packager_observed: false,
         same_task_snapshot: true,
         same_acceptance_rubric: true,
       },
@@ -480,7 +482,7 @@ export function executePairedAgenticEfficiencyBenchmark({
   );
   return {
     schema_version: AI_AGENTIC_INTEGRATED_BENCHMARK_VERSION,
-    evidence_kind: "integrated_replay_estimated",
+    evidence_kind: "synthetic_hypothetical_context_replay",
     usage_kind: "estimated",
     quality_evidence_kind: "structural_replay_estimated",
     provider_calls_executed: 0,
@@ -489,6 +491,7 @@ export function executePairedAgenticEfficiencyBenchmark({
     release_economic_targets_verified: false,
     shadow_required: true,
     repository_snapshot: repositorySnapshot,
+    repository_snapshot_kind: "caller_declared_unverified",
     corpus_digest: buildAgenticEfficiencyManifest(corpus).corpus_digest,
     rubric_digest: rubricDigest,
     paired_case_count: rows.length,
@@ -507,6 +510,8 @@ export function executePairedAgenticEfficiencyBenchmark({
       "Token and cost values are serialized-context estimates, not provider usage.",
       "Quality evidence covers structural orchestration invariants, not semantic output quality.",
       "Duplicate-work and tool-call savings are not claimed when no execution was observed.",
+      "The delta context packager is benchmark-only and is not yet wired into production orchestration.",
+      "Latency is a single local planning pass and is not statistically representative.",
     ],
     categories,
     scorecard,
