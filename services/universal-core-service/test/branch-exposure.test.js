@@ -164,6 +164,94 @@ test("signed client context is tenant-bound and tampering falls back closed", ()
   assert.equal(access.source, "server_key_fail_closed_default");
 });
 
+test("admin scope alone never promotes a ChatGPT owner key to Control Room", () => {
+  const keyRecord = {
+    tenant_id: "tenant-a",
+    preset: "nyra_core_360_connector",
+    allowed_scopes: ["core:read", "admin:tenant"],
+    metadata: {
+      client_type: "chatgpt",
+      audience: "chatgpt_connector",
+      role: "owner_root",
+    },
+  };
+  const missingHeader = deriveBranchAccessContext({
+    tenantId: "tenant-a",
+    get: () => "",
+  }, keyRecord, "test-client-context-secret-1234567890");
+  assert.equal(missingHeader.client_type, "chatgpt");
+  assert.equal(missingHeader.audience, "chatgpt_connector");
+  assert.equal(missingHeader.source, "server_key_metadata");
+
+  const tamperedHeader = deriveBranchAccessContext({
+    tenantId: "tenant-a",
+    get: () => Buffer.from(JSON.stringify({
+      version: "mcp_client_context_v1",
+      tenant_id: "tenant-a",
+      client_type: "admin",
+      audience: "admin_control_room",
+      entitlements: ["admin:tenant"],
+      role: "admin",
+      issued_at: new Date().toISOString(),
+      assertion: `mcc_${"0".repeat(64)}`,
+    })).toString("base64url"),
+  }, keyRecord, "test-client-context-secret-1234567890");
+  assert.equal(tamperedHeader.client_type, "chatgpt");
+  assert.equal(tamperedHeader.audience, "chatgpt_connector");
+  assert.equal(tamperedHeader.source, "server_key_metadata");
+});
+
+test("forged admin metadata on a non-Control-Room key is ignored", () => {
+  const access = deriveBranchAccessContext({
+    tenantId: "tenant-a",
+    get: () => "",
+  }, {
+    tenant_id: "tenant-a",
+    preset: "readonly_monitor",
+    allowed_scopes: ["core:read"],
+    metadata: {
+      client_type: "admin",
+      audience: "admin_control_room",
+      role: "admin",
+    },
+  });
+  assert.equal(access.client_type, "api_agent");
+  assert.equal(access.audience, "api_agent");
+  assert.equal(access.source, "server_key_fail_closed_default");
+});
+
+test("a valid server-signed Control Room context can derive admin explicitly", () => {
+  const secret = "test-client-context-secret-1234567890";
+  const context = {
+    version: "mcp_client_context_v1",
+    tenant_id: "tenant-a",
+    client_type: "admin",
+    audience: "admin_control_room",
+    entitlements: ["admin:tenant"],
+    role: "admin",
+    issued_at: new Date().toISOString(),
+  };
+  const canonical = JSON.stringify({ ...context, entitlements: [...context.entitlements].sort() });
+  const header = Buffer.from(JSON.stringify({
+    ...context,
+    assertion: `mcc_${crypto.createHmac("sha256", secret)
+      .update(`mcp-client-context\u0000${canonical}`)
+      .digest("hex")}`,
+  })).toString("base64url");
+  const access = deriveBranchAccessContext({
+    tenantId: "tenant-a",
+    get: () => header,
+  }, {
+    tenant_id: "tenant-a",
+    preset: "readonly_monitor",
+    allowed_scopes: ["core:read"],
+    metadata: {},
+  }, secret);
+  assert.equal(access.client_type, "admin");
+  assert.equal(access.audience, "admin_control_room");
+  assert.equal(access.source, "verified_mcp_client_context");
+});
+
 test("groups, packages and taxonomy never leak hidden branch labels", () => {
   const visible = ["horizontal"];
   const groups = filterBranchGroups({
@@ -301,6 +389,7 @@ test("owner_root ChatGPT cannot bypass vertical, internal or test exposure", () 
   ]) {
     assert.equal(visible[branchId], undefined, `${branchId} leaked to ChatGPT owner_root`);
   }
+  assert.equal(JSON.stringify(visible).includes("agentic_budget_governance_guard"), false);
 });
 
 test("admin control room sees all branches while test branches never enter semantic selection", () => {

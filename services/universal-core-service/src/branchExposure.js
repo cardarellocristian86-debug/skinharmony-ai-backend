@@ -34,6 +34,22 @@ export const CLIENT_AUDIENCES = Object.freeze([
   "admin_control_room",
 ]);
 
+export const CANONICAL_CLIENT_AUDIENCE = Object.freeze({
+  chatgpt: "chatgpt_connector",
+  codex: "codex_internal",
+  api_agent: "api_agent",
+  smartdesk: "smartdesk_runtime",
+  analyzer: "analyzer_runtime",
+  tricocamera: "analyzer_runtime",
+  suite: "suite_runtime",
+  waas: "suite_runtime",
+  admin: "admin_control_room",
+});
+
+export function clientAudiencePairValid(clientType, audience) {
+  return CANONICAL_CLIENT_AUDIENCE[String(clientType || "")] === String(audience || "");
+}
+
 const CLIENT_CONTEXT_VERSION = "mcp_client_context_v1";
 const EXPOSURE_FIELDS = Object.freeze([
   "exposure_class",
@@ -81,7 +97,8 @@ function verifySignedClientContext(value, secret, tenantId, now = Date.now()) {
     context.version !== CLIENT_CONTEXT_VERSION ||
     String(context.tenant_id || "") !== String(tenantId || "") ||
     !CLIENT_TYPES.includes(String(context.client_type || "")) ||
-    !CLIENT_AUDIENCES.includes(String(context.audience || ""))
+    !CLIENT_AUDIENCES.includes(String(context.audience || "")) ||
+    !clientAudiencePairValid(context.client_type, context.audience)
   ) {
     return null;
   }
@@ -111,15 +128,25 @@ function keyMetadataContext(keyRecord = {}) {
     ? String(metadata.audience)
     : "";
 
-  if (hasScope(keyRecord, SCOPES.ADMIN_TENANT)) {
+  if (
+    explicitClientType === "admin" &&
+    explicitAudience === "admin_control_room" &&
+    keyRecord?.preset === "admin_control_room" &&
+    hasScope(keyRecord, SCOPES.ADMIN_TENANT)
+  ) {
     return {
       client_type: "admin",
       audience: "admin_control_room",
-      role: "admin",
-      source: "server_key_admin_scope",
+      role: String(metadata.role || "admin"),
+      source: "server_key_admin_control_room_binding",
     };
   }
-  if (explicitClientType && explicitAudience) {
+  if (
+    explicitClientType &&
+    explicitClientType !== "admin" &&
+    explicitAudience &&
+    clientAudiencePairValid(explicitClientType, explicitAudience)
+  ) {
     return {
       client_type: explicitClientType,
       audience: explicitAudience,
@@ -216,6 +243,15 @@ export function branchExposureValidation(profile) {
   if (allowedAudiences.some((value) => !CLIENT_AUDIENCES.includes(value) || value === "*")) {
     errors.push("allowed_audiences_invalid");
   }
+  const canonicalAudiences = [...new Set(
+    allowedClientTypes.map((clientType) => CANONICAL_CLIENT_AUDIENCE[clientType]).filter(Boolean),
+  )].sort();
+  if (
+    canonicalAudiences.length !== allowedAudiences.length ||
+    canonicalAudiences.some((audience, index) => audience !== [...allowedAudiences].sort()[index])
+  ) {
+    errors.push("allowed_client_audience_pairs_invalid");
+  }
   if (!Array.isArray(profile.required_entitlements) || requiredEntitlements.includes("*")) {
     errors.push("required_entitlements_invalid");
   }
@@ -230,6 +266,7 @@ export function branchExposureValidation(profile) {
 
 export function branchAvailableForContext(profile, context, { semantic = false } = {}) {
   if (!branchExposureValidation(profile).ok || !context) return false;
+  if (!clientAudiencePairValid(context.client_type, context.audience)) return false;
   if (!profile.allowed_client_types.includes(context.client_type)) return false;
   if (!profile.allowed_audiences.includes(context.audience)) return false;
   if (context.client_type === "chatgpt" && profile.exposure_class !== "chatgpt_horizontal") return false;
@@ -243,11 +280,25 @@ export function branchAvailableForContext(profile, context, { semantic = false }
 }
 
 export function filterBranchRegistry(registry, context, options = {}) {
-  return Object.fromEntries(
-    Object.entries(registry || {}).filter(([, profile]) =>
-      branchAvailableForContext(profile, context, options),
-    ),
+  const entries = Object.entries(registry || {}).filter(([, profile]) =>
+    branchAvailableForContext(profile, context, options),
   );
+  const visible = new Set(entries.map(([branchId]) => branchId));
+  const hidden = new Set(Object.keys(registry || {}).filter((branchId) => !visible.has(branchId)));
+  const project = (value) => {
+    if (typeof value === "string") return hidden.has(value) ? undefined : value;
+    if (Array.isArray(value)) {
+      return value.map(project).filter((item) => item !== undefined);
+    }
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, item]) => {
+        const projected = project(item);
+        return projected === undefined ? [] : [[key, projected]];
+      }),
+    );
+  };
+  return Object.fromEntries(entries.map(([branchId, profile]) => [branchId, project(profile)]));
 }
 
 export function filterBranchGroups(groups, visibleBranchIds) {

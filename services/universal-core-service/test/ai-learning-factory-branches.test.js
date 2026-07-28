@@ -7,6 +7,7 @@ import {
   AI_LEARNING_CORE_GUARDS,
   AI_LEARNING_FACTORY_BRANCHES,
   AI_LEARNING_FACTORY_EXTENSION_FACETS,
+  validateAiLearningFactoryContracts,
 } from "../branches/ai-learning-factory-branch-contracts.js";
 import {
   deterministicBranchGroups,
@@ -126,7 +127,7 @@ const EXPECTED_AGENTIC_EFFICIENCY = {
 
 const CONTRACT_FIELDS = [
   "input", "output", "activation", "non_activation", "evidence", "metrics", "fallback",
-  "abstention", "audit", "rollback",
+  "abstention", "audit", "rollback", "core_binding", "positive_tests", "negative_tests",
 ];
 
 function assertCompleteContract(contract, canonicalId) {
@@ -141,7 +142,21 @@ function assertCompleteContract(contract, canonicalId) {
   assert.equal(contract.evidence.raw_prompt_storage, false);
   assert.equal(contract.evidence.raw_sensitive_content_storage, false);
   assert.equal(contract.rollback.reference_required, true);
+  assert.equal(contract.core_binding.authority, "universal_core");
+  assert.equal(contract.core_binding.final_authority, true);
+  assert.equal(contract.core_binding.bypass_allowed, false);
+  assert(contract.core_binding.required_guards.length > 0);
+  assert(contract.positive_tests.length > 0);
+  assert(contract.negative_tests.length > 0);
 }
+
+test("AI Learning Factory contract validator rejects no registered contract", () => {
+  const result = validateAiLearningFactoryContracts();
+  assert.equal(result.valid, true, result.errors.join("\n"));
+  assert.equal(result.errors.length, 0);
+  assert(result.branch_count >= 10);
+  assert(result.contract_count >= 150);
+});
 
 test("AI Learning Factory registers the five exact Nyra branches with complete bounded contracts", () => {
   const registry = deterministicBranchRegistry();

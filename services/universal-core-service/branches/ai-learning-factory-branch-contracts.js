@@ -3,8 +3,8 @@ const CONTRACT_VERSION = "ai_learning_factory_branch_contract_v1";
 export const AI_LEARNING_EXPOSURE = freezeRecord({
   horizontal: {
     exposure_class: "chatgpt_horizontal",
-    allowed_client_types: ["chatgpt", "codex", "api_agent", "smartdesk", "analyzer", "tricocamera", "suite", "waas", "admin"],
-    allowed_audiences: ["chatgpt_connector", "codex_internal", "api_agent", "smartdesk_runtime", "analyzer_runtime", "suite_runtime", "admin_control_room"],
+    allowed_client_types: ["chatgpt", "codex", "api_agent", "admin"],
+    allowed_audiences: ["chatgpt_connector", "codex_internal", "api_agent", "admin_control_room"],
     required_entitlements: [],
     discoverable_in_connector: true,
     semantic_select_allowed: true,
@@ -35,6 +35,19 @@ function freezeRecord(value) {
     ));
   }
   return value;
+}
+
+function requiredCoreGuards(branchId) {
+  if (branchId === "ai_data_integrity_guard") return ["ai_data_integrity_guard"];
+  if (branchId === "ai_learning_governance_guard") return ["ai_learning_governance_guard"];
+  if (branchId === "agentic_budget_governance_guard") return ["agentic_budget_governance_guard"];
+  if (branchId === "agentic_efficiency_intelligence") {
+    return ["agentic_budget_governance_guard", "ai_learning_governance_guard"];
+  }
+  if (branchId === "learning_data_governance" || branchId === "learning_knowledge_intelligence") {
+    return ["ai_data_integrity_guard", "ai_learning_governance_guard"];
+  }
+  return ["ai_learning_governance_guard"];
 }
 
 function buildNodeContract(branch, [id, purpose]) {
@@ -98,6 +111,21 @@ function buildNodeContract(branch, [id, purpose]) {
       reference_required: true,
       preserves: ["audit_record", "dataset_metadata", "redacted_trace_metadata"],
     },
+    core_binding: {
+      authority: "universal_core",
+      required_guards: requiredCoreGuards(branch.id),
+      final_authority: true,
+      bypass_allowed: false,
+    },
+    positive_tests: [
+      "complete_tenant_scoped_redacted_evidence_returns_advisory_assessment",
+      "verified_policy_and_rollback_binding_preserve_zero_external_effect",
+    ],
+    negative_tests: [
+      "missing_or_mismatched_tenant_scope_fails_closed",
+      "missing_evidence_policy_or_rollback_fails_closed",
+      "autonomous_activation_or_external_execution_is_rejected",
+    ],
   });
 }
 
@@ -557,6 +585,72 @@ export function extensionFacetDescriptor(branchId) {
     facets: Object.values(contracts),
     authority: "advisory",
     autonomous_activation: false,
+  });
+}
+
+export function validateAiLearningFactoryContracts() {
+  const errors = [];
+  const canonicalIds = new Set();
+  const collections = [
+    ...Object.values(AI_LEARNING_FACTORY_BRANCHES),
+    ...Object.values(AI_LEARNING_CORE_GUARDS),
+    ...Object.values(AI_AGENTIC_EFFICIENCY_BRANCHES),
+    ...Object.entries(AI_LEARNING_FACTORY_EXTENSION_FACETS).map(([branchId, contracts]) => ({
+      id: branchId,
+      subbranches: Object.keys(contracts),
+      subbranch_contracts: contracts,
+    })),
+  ];
+  let contractCount = 0;
+  for (const branch of collections) {
+    if ((branch.subbranches || []).length > 20) errors.push(`direct_subbranch_limit_exceeded:${branch.id}`);
+    const contracts = {
+      ...(branch.subbranch_contracts || {}),
+      ...Object.fromEntries((branch.capability_facets?.facets || []).map((contract) => [contract.id, contract])),
+    };
+    for (const [subbranchId, contract] of Object.entries(contracts)) {
+      const canonicalId = `${branch.id}.${subbranchId}`;
+      contractCount += 1;
+      if (canonicalIds.has(canonicalId)) errors.push(`duplicate_contract:${canonicalId}`);
+      canonicalIds.add(canonicalId);
+      for (const field of [
+        "input",
+        "output",
+        "activation",
+        "non_activation",
+        "evidence",
+        "metrics",
+        "fallback",
+        "abstention",
+        "audit",
+        "rollback",
+        "core_binding",
+        "positive_tests",
+        "negative_tests",
+      ]) {
+        const value = contract?.[field];
+        if (
+          value === null
+          || value === undefined
+          || (Array.isArray(value) && value.length === 0)
+          || (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0)
+        ) {
+          errors.push(`incomplete_contract:${canonicalId}:${field}`);
+        }
+      }
+      if (!contract?.core_binding?.required_guards?.length) {
+        errors.push(`missing_core_guard_binding:${canonicalId}`);
+      }
+      if (contract?.output?.autonomous_activation !== false) {
+        errors.push(`autonomous_activation_not_disabled:${canonicalId}`);
+      }
+    }
+  }
+  return freezeRecord({
+    valid: errors.length === 0,
+    errors,
+    branch_count: collections.length,
+    contract_count: contractCount,
   });
 }
 

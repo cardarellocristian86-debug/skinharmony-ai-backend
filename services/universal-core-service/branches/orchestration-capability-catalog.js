@@ -151,6 +151,9 @@ function freezeCapabilities(branchId, definitions) {
         abstention: extension.abstention,
         audit: extension.audit,
         rollback: extension.rollback,
+        core_binding: extension.core_binding,
+        positive_tests: extension.positive_tests,
+        negative_tests: extension.negative_tests,
       } : {}),
     });
   }));

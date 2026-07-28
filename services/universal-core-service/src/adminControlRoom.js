@@ -273,11 +273,14 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
 
   function scopedAudit(user, tenantIds, requestedTenantId = "", limit = 30) {
     const allowedTenantIds = tenantIds === null ? null : new Set(tenantIds);
-    const includeGlobalEvents = isRootOwner(user) && !safeText(requestedTenantId, 120);
-    const rows = audit.recent(200).filter((event) => {
-      const eventTenantId = safeText(event.tenant_id, 120);
-      return eventTenantId ? allowedTenantIds === null || allowedTenantIds.has(eventTenantId) : includeGlobalEvents;
-    });
+    const requested = safeText(requestedTenantId, 120);
+    const rows = requested
+      ? audit.recentForTenant(requested, 200)
+      : allowedTenantIds === null
+        ? audit.recent(200)
+        : [...allowedTenantIds]
+          .flatMap((tenantId) => audit.recentForTenant(tenantId, 200))
+          .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")));
     return rows.slice(-Math.max(1, Math.min(100, Number(limit) || 30))).map(sanitizeAudit).reverse();
   }
 

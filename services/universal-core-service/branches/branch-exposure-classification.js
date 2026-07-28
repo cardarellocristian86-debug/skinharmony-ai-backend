@@ -2,11 +2,6 @@ const HORIZONTAL_CLIENT_TYPES = Object.freeze([
   "chatgpt",
   "codex",
   "api_agent",
-  "smartdesk",
-  "analyzer",
-  "tricocamera",
-  "suite",
-  "waas",
   "admin",
 ]);
 
@@ -14,9 +9,6 @@ const HORIZONTAL_AUDIENCES = Object.freeze([
   "chatgpt_connector",
   "codex_internal",
   "api_agent",
-  "smartdesk_runtime",
-  "analyzer_runtime",
-  "suite_runtime",
   "admin_control_room",
 ]);
 
