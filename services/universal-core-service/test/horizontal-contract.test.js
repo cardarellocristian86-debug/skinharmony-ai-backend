@@ -103,6 +103,15 @@ test("Nyra network respects limits and exposes only explicit product branches", 
   assert.equal(genericIds.includes("smartdesk_domain"), false);
   assert.equal(genericIds.includes("analyzer_domain"), false);
   assert.equal(genericIds.includes("skinharmony_domain"), false);
+  assert(genericIds.includes("agentic_efficiency_intelligence"));
+  assert(nyraBranchCatalog("generic").branches.every((item) => (
+    typeof item.exposure_class === "string"
+    && Array.isArray(item.allowed_client_types)
+    && Array.isArray(item.allowed_audiences)
+    && Array.isArray(item.required_entitlements)
+    && typeof item.discoverable_in_connector === "boolean"
+    && typeof item.semantic_select_allowed === "boolean"
+  )));
   assert(nyraBranchCatalog("suite").branches.some((item) => item.id === "suite_domain"));
   assert(nyraBranchCatalog("smartdesk").branches.some((item) => item.id === "smartdesk_domain"));
   assert(nyraBranchCatalog("analyzer").branches.some((item) => item.id === "analyzer_domain"));
@@ -114,6 +123,36 @@ test("Nyra network respects limits and exposes only explicit product branches", 
   assert(research.subbranches.includes("temporal_truth"));
   assert(research.subbranches.includes("knowledge_release_gate"));
   assert(research.subbranches.includes("source_injection_defense"));
+  const agentic = nyraBranchCatalog("generic").branches
+    .find((item) => item.id === "agentic_efficiency_intelligence");
+  assert.equal(agentic.exposure_class, "chatgpt_horizontal");
+  assert.equal(agentic.subbranch_count, 20);
+  assert.equal(agentic.capability_facets.facet_count, 4);
+});
+
+test("Nyra validation fails closed when a branch has no complete exposure metadata", () => {
+  const result = validateNyraBranchNetwork([{
+    id: "unclassified_branch",
+    label: "Unclassified",
+    triggers: [],
+    domain_packs: ["*"],
+    subbranches: ["bounded_node"],
+    work_phase: "test",
+    core_branch_bindings: [],
+    production_status: "advisory",
+    default_route_enabled: true,
+  }]);
+  assert.equal(result.ok, false);
+  for (const field of [
+    "exposure_class",
+    "allowed_client_types",
+    "allowed_audiences",
+    "required_entitlements",
+    "discoverable_in_connector",
+    "semantic_select_allowed",
+  ]) {
+    assert(result.errors.includes(`incomplete_exposure_contract:unclassified_branch.${field}`));
+  }
 });
 
 test("Core opens horizontal Nyra branches and isolates product-specific branches", () => {
