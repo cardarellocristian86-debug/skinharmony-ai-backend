@@ -1929,72 +1929,7 @@ function arrayValue(value, max = 20) {
 }
 
 function branchRegistry() {
-  return {
-    ...deterministicBranchRegistry(),
-    beauty_market: {
-      label: "Beauty Market Intelligence",
-      domain: "market",
-      tier: "network",
-      production_status: "advisory",
-      description: "Legge segnali mercato beauty/wellness e produce postura commerciale, senza trading e senza dati finanziari sensibili.",
-    },
-    marketing_copy: {
-      label: "Nyra Marketing Copy",
-      domain: "marketing",
-      tier: "network",
-      production_status: "advisory",
-      description: "Prepara brief copywriting e testi da revisionare con Claim Guard, non pubblica automaticamente.",
-    },
-    cosmetic_chemistry: {
-      label: "Cosmetic Chemistry Positioning",
-      domain: "product",
-      tier: "network",
-      production_status: "advisory",
-      description: "Aiuta a posizionare attivi cosmetici in modo prudente, senza claim medici o terapeutici.",
-    },
-    technology_market: {
-      label: "Technology Trend Intelligence",
-      domain: "technology",
-      tier: "network",
-      production_status: "advisory",
-      description: "Valuta domanda, maturita e messaggio commerciale per tecnologie beauty/wellness.",
-    },
-    business_strategy: {
-      label: "Business Strategy",
-      domain: "strategy",
-      tier: "network",
-      production_status: "advisory",
-      description: "Ordina priorita commerciali, canale, CRM e prossime azioni per owner/manager.",
-    },
-    translation_governance: {
-      label: "Translation Governance",
-      domain: "translation",
-      tier: "network",
-      production_status: "advisory",
-      description: "Valuta payload traducibili, readiness e rischio di traduzione. Non traduce HTML finale.",
-    },
-    translator_marketing_governance: {
-      label: "Translator Marketing Governance",
-      domain: "translation_marketing",
-      tier: "network",
-      production_status: "advisory",
-      description: "Valuta traduttore plugin e app surfaces: microcopy, CTA, fallback, review marketing/compliance e sync strutturato.",
-    },
-    ramo_testo: {
-      label: "Ramo Testo / Content Guard",
-      domain: "content_guard",
-      tier: "network",
-      production_status: "advisory",
-      description: "Valuta qualita testo, traduzioni, claim risk, brand tone e publish safety. Non pubblica automaticamente.",
-    },
-    nyra_finance_beauty_test: {
-      label: "Nyra Finance Beauty Test",
-      domain: "market_test",
-      tier: "internal",
-      production_status: "test_only",
-      description: "Area separata per correlare segnali finanziari/mercato beauty. Non entra nel prodotto operativo.",
-    },
-  };
+  return deterministicBranchRegistry();
 }
 
 function normalizeTextGuardSeverity(value) {

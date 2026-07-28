@@ -67,6 +67,7 @@ import { branchAdaptiveLearningIntelligence } from "./branch-adaptive-learning-i
 import { branchLexicalSemanticIntelligence } from "./branch-lexical-semantic-intelligence.js";
 import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identity-delegation-guard.js";
 import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
+import { branchNyraPolicyRegistry } from "./branch-nyra-policy-registry.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
 import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
 import { branchAllowedForDomainPack, resolveDomainPackForKey } from "../src/domainPacks.js";
@@ -140,6 +141,7 @@ const BRANCHES = [
   branchLexicalSemanticIntelligence,
   branchWorkloadIdentityDelegationGuard,
   branchDecisionProvenanceIntelligence,
+  branchNyraPolicyRegistry,
   branchBeautyVerticalOrchestration,
   branchChangeImpactOrchestration,
 ];
@@ -229,6 +231,7 @@ export const HORIZONTAL_WORK_BRANCHES = Object.freeze([
   "quality_verification_intelligence",
   "adaptive_learning_intelligence",
   "decision_provenance_intelligence",
+  "nyra_policy_registry",
 ]);
 
 const LEARNING_CORTEX_BRANCHES = [
@@ -455,6 +458,7 @@ export function deterministicBranchRegistry() {
         description: branch.description,
         subbranches: branch.subbranches || [],
         ...(branch.capability_catalog ? { capability_catalog: branch.capability_catalog } : {}),
+        ...(branch.policy_registry ? { policy_registry: branch.policy_registry } : {}),
         file: branch.file,
       },
     ]),
@@ -532,6 +536,7 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
 export function composeBranchContext({ keyRecord, requestedBranches = [], task = "", userInput = "", locale = "it" }) {
   const resolution = resolveBranchesForKey(keyRecord, requestedBranches);
   const branches = resolution.selected_branches.map(getBranch).filter(Boolean);
+  const policyRegistryBranch = branches.find((branch) => branch.id === "nyra_policy_registry") || null;
   const rules = branches.flatMap((branch) => branch.rules.map((rule) => ({ branch_id: branch.id, rule })));
   const guardrails = branches.map((branch) => ({ branch_id: branch.id, ...branch.guardrails }));
 
@@ -560,6 +565,7 @@ export function composeBranchContext({ keyRecord, requestedBranches = [], task =
         .map((groupId) => [groupId, BRANCH_GROUPS[groupId]]),
     ),
     branch_taxonomy: deterministicBranchTaxonomy(),
+    policy_registry: policyRegistryBranch?.policy_registry || null,
     deterministic_context: {
       rule_count: rules.length,
       rules,
