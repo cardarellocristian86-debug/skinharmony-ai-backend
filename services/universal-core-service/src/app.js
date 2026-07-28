@@ -149,6 +149,7 @@ import { mountAgenticEfficiencyRoutes } from "./agenticEfficiencyRoutes.js";
 import {
   buildAgenticEfficiencyPlan,
   digestAgenticArtifact,
+  evaluateAgenticBudgetGuard,
 } from "./agenticEfficiencyRuntime.js";
 import {
   AGENTIC_EFFICIENCY_RUNTIME_ROLE,
@@ -4132,14 +4133,95 @@ export function createUniversalCoreService(options = {}) {
     }
   }
 
-  async function reserveAgenticWorkCapsule(req, runId, shadowPlan) {
-    if (agenticEfficiencyMode !== "active") {
+  function agenticBudgetPolicyForTask(task) {
+    const baseline = Number(task.quality_baseline ?? 1);
+    const prediction = Number(task.quality_prediction ?? baseline);
+    return {
+      expires_at: new Date(Date.now() + 15 * 60 * 1_000).toISOString(),
+      override: false,
+      skip_security_tests: false,
+      remove_critical_reviewer: false,
+      model_escalation: false,
+      quality_baseline: baseline,
+      quality_prediction: prediction,
+      quality_floor: Math.max(0, baseline - 0.02),
+      security_checks_required: task.security_tests_required !== false,
+      usage_required: false,
+      token_limit: Number(task.budget?.token_limit || 0),
+      invocation_limit: Number(task.budget?.invocation_limit || 0),
+      retry_limit: Number(task.budget?.retry_limit || 0),
+      observed_invocations: 0,
+      observed_retries: Number(task.retry_count || 0),
+      critical_task: task.critical === true,
+      hard_budget_stop: false,
+    };
+  }
+
+  async function evaluateAgenticBudgetForRun(req, task, plan) {
+    const context = resolveAgenticRequestContext(req);
+    if (plan?.available === false || plan?.tenant_id !== context.tenantId) {
+      return {
+        schema_version: "agentic_budget_governance_verdict_v1",
+        tenant_id: context.tenantId,
+        mode: agenticBudgetMode,
+        branch_id: "agentic_budget_governance_guard",
+        optimization_allowed: false,
+        execution_authorized: false,
+        external_execution: false,
+        final_outcome_allowed: false,
+        action: "block_or_defer_optimization",
+        reasons: ["agentic_plan_unavailable_or_unbound"],
+      };
+    }
+    const policy = agenticBudgetPolicyForTask(task);
+    const verification = typeof options.verifyAgenticGovernanceEvidence === "function"
+      ? await options.verifyAgenticGovernanceEvidence({
+        req,
+        context,
+        task,
+        policy,
+        plan,
+      })
+      : {};
+    try {
+      return evaluateAgenticBudgetGuard({
+        trustedContext: context,
+        plan,
+        policy,
+        auditReceiptVerified: verification?.auditOverrideVerified === true,
+        trustedVerifications: verification || {},
+        mode: agenticBudgetMode,
+      });
+    } catch (error) {
+      return {
+        schema_version: "agentic_budget_governance_verdict_v1",
+        tenant_id: context.tenantId,
+        mode: agenticBudgetMode,
+        branch_id: "agentic_budget_governance_guard",
+        optimization_allowed: false,
+        execution_authorized: false,
+        external_execution: false,
+        final_outcome_allowed: false,
+        action: "block_or_defer_optimization",
+        reasons: [
+          String(error?.message || "agentic_budget_guard_unavailable").split(":")[0],
+        ],
+      };
+    }
+  }
+
+  async function reserveAgenticWorkCapsule(req, runId, shadowPlan, {
+    activeOptimizationAllowed = false,
+  } = {}) {
+    if (agenticEfficiencyMode !== "active" || !activeOptimizationAllowed) {
       return {
         available: true,
         claimed: false,
         observation_only: true,
         would_claim_in_active: Boolean(shadowPlan?.work_capsule?.capsule),
-        reason: "agentic_shadow_never_claims_or_blocks",
+        reason: agenticEfficiencyMode !== "active"
+          ? "agentic_shadow_never_claims_or_blocks"
+          : "agentic_budget_soft_enforcement_not_authorized",
         execution_authorized: false,
       };
     }
@@ -4270,7 +4352,7 @@ export function createUniversalCoreService(options = {}) {
     const source = Array.isArray(workers) ? workers : [];
     const limit = Math.max(1, Number(plan?.agent_count || source.length || 1));
     const reviewerRequired = plan?.reviewer?.mandatory === true;
-    if (agenticEfficiencyMode !== "active") {
+    if (agenticEfficiencyMode !== "active" || !plan) {
       return {
         workers: source,
         suppressed: [],
@@ -4907,13 +4989,34 @@ export function createUniversalCoreService(options = {}) {
           task: agenticTaskFromRequest(req, agenticOverrides),
         })
         : {};
+      const agenticTask = agenticTaskFromRequest(req, agenticOverrides);
       const agenticShadow = buildAgenticShadowForRequest(req, agenticOverrides, trustedVerification);
-      if (agenticEfficiencyMode === "active" && agenticShadow?.plan?.early_stop?.allowed === true) {
+      const agenticBudgetVerdict = await evaluateAgenticBudgetForRun(
+        req,
+        agenticTask,
+        agenticShadow,
+      );
+      const activeOptimizationAllowed = (
+        agenticEfficiencyMode === "active"
+        && agenticBudgetMode === "soft_enforce"
+        && agenticBudgetVerdict.optimization_allowed === true
+      );
+      if (
+        agenticEfficiencyMode === "active"
+        && agenticBudgetMode === "soft_enforce"
+        && !activeOptimizationAllowed
+      ) {
+        throw new Error(
+          `agentic_budget_governance_deferred:${agenticBudgetVerdict.reasons?.[0] || "unverified"}`,
+        );
+      }
+      if (activeOptimizationAllowed && agenticShadow?.plan?.early_stop?.allowed === true) {
         audit.append("generic_agent_run_early_stopped", {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,
           run_id: runId,
           receipt_digest: trustedVerification?.receiptDigest || null,
+          budget_mode: agenticBudgetMode,
           execution_authorized: false,
         });
         return res.status(200).json({
@@ -4924,12 +5027,15 @@ export function createUniversalCoreService(options = {}) {
             mode: "active",
             early_stopped: true,
             plan: agenticShadow,
+            budget_verdict: agenticBudgetVerdict,
             execution_authorized: false,
           },
         });
       }
-      agenticReservation = await reserveAgenticWorkCapsule(req, runId, agenticShadow);
-      const activeAgenticPlan = agenticEfficiencyMode === "active" ? agenticShadow?.plan : null;
+      agenticReservation = await reserveAgenticWorkCapsule(req, runId, agenticShadow, {
+        activeOptimizationAllowed,
+      });
+      const activeAgenticPlan = activeOptimizationAllowed ? agenticShadow?.plan : null;
       const effectiveTools = activeAgenticPlan?.tools?.selected || req.body?.tools;
       if (activeAgenticPlan && activeAgenticPlan.retry?.allowed === false) {
         throw new Error(
@@ -4948,10 +5054,13 @@ export function createUniversalCoreService(options = {}) {
           agentic_efficiency_shadow: {
             plan: agenticShadow,
             persistence: agenticReservation,
+            budget_verdict: agenticBudgetVerdict,
             execution_authorized: false,
           },
           agentic_control: {
             applied: Boolean(activeAgenticPlan),
+            budget_mode: agenticBudgetMode,
+            budget_guard_joined: true,
             recommended_agent_count: activeAgenticPlan?.agent_count || null,
             reviewer_required: activeAgenticPlan?.reviewer?.mandatory === true,
             retry: activeAgenticPlan?.retry || null,
@@ -4968,6 +5077,8 @@ export function createUniversalCoreService(options = {}) {
         agent_id: run.agent_id,
         agentic_capsule_id: agenticReservation?.capsule_id || null,
         agentic_claimed: agenticReservation?.claimed === true,
+        agentic_budget_guard_joined: true,
+        agentic_optimization_applied: Boolean(activeAgenticPlan),
         execution_authorized: false,
       });
       return res.status(201).json({ ok: true, tenant_id: req.tenantId, run });
@@ -5076,7 +5187,9 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/generic-agents/runs/:runId/orchestration", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
-      const agenticPlan = run.metadata?.agentic_efficiency_shadow?.plan?.plan || null;
+      const agenticPlan = run.metadata?.agentic_control?.applied === true
+        ? run.metadata?.agentic_efficiency_shadow?.plan?.plan || null
+        : null;
       const workerSelection = selectAgenticWorkers(req.body?.workers, agenticPlan);
       const recommendedConcurrency = agenticEfficiencyMode === "active"
         ? Number(agenticPlan?.agent_count || 1)

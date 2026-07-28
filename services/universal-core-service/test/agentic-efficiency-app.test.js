@@ -63,6 +63,7 @@ test("active generic run applies only server-verified early stop evidence", asyn
   const { app } = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `agentic-early-stop-${Date.now()}-${Math.random()}`),
     agenticEfficiencyMode: "active",
+    agenticBudgetMode: "soft_enforce",
     agenticEfficiencyStore,
     verifyAgenticAcceptanceEvidence: async () => ({
       receiptDigest: `sha256:${"a".repeat(64)}`,
@@ -71,6 +72,18 @@ test("active generic run applies only server-verified early stop evidence", asyn
       evidenceVerified: true,
       securityTestsVerified: true,
       humanReviewVerified: true,
+    }),
+    verifyAgenticGovernanceEvidence: async ({ task }) => ({
+      governanceReceiptDigest: `sha256:${"b".repeat(64)}`,
+      qualityVerified: true,
+      qualityBaseline: Number(task.quality_baseline ?? 1),
+      qualityPrediction: Number(task.quality_prediction ?? 1),
+      securityVerified: true,
+      tenantIsolationVerified: true,
+      exposurePolicyVerified: true,
+      criticalTask: task.critical === true,
+      modelEscalationAuthorized: false,
+      auditOverrideVerified: false,
     }),
   });
   const server = http.createServer(app);
@@ -109,6 +122,10 @@ test("active generic run applies only server-verified early stop evidence", asyn
     assert.equal(completed.payload.run, null);
     assert.equal(completed.payload.agentic_efficiency.early_stopped, true);
     assert.equal(completed.payload.agentic_efficiency.plan.plan.early_stop.allowed, true);
+    assert.equal(
+      completed.payload.agentic_efficiency.budget_verdict.optimization_allowed,
+      true,
+    );
 
     const pending = await request("POST", "/v1/generic-agents/runs", {
       agent_id: "continue-agent",
@@ -122,6 +139,8 @@ test("active generic run applies only server-verified early stop evidence", asyn
     }, key);
     assert.equal(pending.status, 201);
     assert(pending.payload.run?.run_id);
+    assert.equal(pending.payload.run.metadata.agentic_control.budget_guard_joined, true);
+    assert.equal(pending.payload.run.metadata.agentic_control.applied, true);
     assert.equal(pending.payload.run.metadata.agentic_control.early_stop.allowed, false);
     assert.equal(capsuleWrites.length, 2);
     assert.equal(capsuleWrites[0].expected_version, 0);
@@ -133,6 +152,84 @@ test("active generic run applies only server-verified early stop evidence", asyn
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
+    else process.env.CORE_SERVICE_ADMIN_KEY = previousAdmin;
+  }
+});
+
+test("generic agent optimizations never apply without a joined soft-enforce Core verdict", async () => {
+  const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
+  process.env.CORE_SERVICE_ADMIN_KEY = "agentic-budget-join-admin";
+  const exercise = async (agenticBudgetMode) => {
+    const { app } = createUniversalCoreService({
+      storageRoot: path.join(
+        os.tmpdir(),
+        `agentic-budget-join-${agenticBudgetMode}-${Date.now()}-${Math.random()}`,
+      ),
+      agenticEfficiencyMode: "active",
+      agenticBudgetMode,
+      verifyAgenticAcceptanceEvidence: async () => ({
+        receiptDigest: `sha256:${"c".repeat(64)}`,
+        acceptanceVerified: true,
+        testsVerified: true,
+        evidenceVerified: true,
+        securityTestsVerified: true,
+      }),
+    });
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const generated = await fetch(`${base}/v1/keys/generate`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer agentic-budget-join-admin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          tenant_id: `tenant-agentic-${agenticBudgetMode}`,
+          preset: "codex_automation",
+        }),
+      });
+      const key = (await generated.json()).key;
+      const response = await fetch(`${base}/v1/generic-agents/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          agent_id: "bounded-agent",
+          task: "Continue a bounded task without a governance attestation",
+          success_criteria: ["verified-output"],
+          completed: [],
+          test_state: { passed: 0, failed: 0, pending: 1 },
+          acceptance_evidence: ["partial-evidence"],
+          tools: ["read_file", "write_patch", "deploy"],
+        }),
+      });
+      return { status: response.status, payload: await response.json() };
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  };
+  try {
+    const observe = await exercise("observe");
+    assert.equal(observe.status, 201);
+    assert(observe.payload.run?.run_id);
+    assert.equal(observe.payload.run.metadata.agentic_control.budget_guard_joined, true);
+    assert.equal(observe.payload.run.metadata.agentic_control.applied, false);
+    assert.equal(
+      observe.payload.run.metadata.agentic_efficiency_shadow.budget_verdict.optimization_allowed,
+      false,
+    );
+    assert.deepEqual(observe.payload.run.tools, ["read_file", "write_patch", "deploy"]);
+
+    const enforced = await exercise("soft_enforce");
+    assert.equal(enforced.status, 400);
+    assert.match(enforced.payload.error, /^agentic_budget_governance_deferred/);
+    assert.equal(enforced.payload.run, undefined);
+  } finally {
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
     else process.env.CORE_SERVICE_ADMIN_KEY = previousAdmin;
   }
