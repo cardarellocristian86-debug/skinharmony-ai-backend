@@ -89,3 +89,25 @@ test("generic runtime quarantines hostile failure prose without trace leakage", 
   assert.equal(JSON.stringify(failed).includes(hostile), false);
   assert.equal(failed.trace.at(-1).event, "run_error_quarantined");
 });
+
+test("generic runtime rejects PII-shaped identifiers before persistence", () => {
+  const subject = runtime();
+  assert.throws(
+    () => subject.startRun({
+      tenant_id: "tenant_a",
+      run_id: "mario.rossi@example.test",
+      agent_id: "worker",
+      task: "Bounded task",
+    }),
+    /run_id_invalid/,
+  );
+  assert.throws(
+    () => subject.startRun({
+      tenant_id: "tenant_a",
+      run_id: "run_393331234567",
+      agent_id: "worker",
+      task: "Bounded task",
+    }),
+    /run_id_invalid/,
+  );
+});

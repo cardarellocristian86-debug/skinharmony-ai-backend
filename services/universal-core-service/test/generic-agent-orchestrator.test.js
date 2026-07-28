@@ -23,6 +23,10 @@ test("generic orchestrator respects dependencies, concurrency and Core join", ()
   const joined = orchestrator.coreJoin({ tenant_id: "tenant-a", plan_id: plan.plan_id });
   assert.equal(joined.status, "completed");
   assert.equal(joined.worker_results.length, 3);
+  assert.deepEqual(
+    orchestrator.coreJoin({ tenant_id: "tenant-a", plan_id: plan.plan_id }),
+    joined,
+  );
 });
 
 test("generic orchestrator blocks cross-tenant reads and cancellation is terminal", () => {

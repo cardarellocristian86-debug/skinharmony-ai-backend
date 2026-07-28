@@ -173,6 +173,14 @@ GRANT SELECT,INSERT ON agentic_governance.agentic_usage_ledger
   TO nyra_agentic_runtime_v016;
 GRANT SELECT,INSERT ON agentic_governance.agentic_efficiency_comparison
   TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT,UPDATE ON agentic_governance.agentic_run_budget
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT ON agentic_governance.agentic_efficiency_baseline
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT ON agentic_governance.agentic_savings_claim
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT ON agentic_governance.agentic_rate_card_snapshot
+  TO nyra_agentic_runtime_v016;
 
 INSERT INTO agentic_governance.agentic_schema_migration_audit
   (migration_version, state, applied_at, actor_provenance, rollback_reference)

@@ -91,6 +91,22 @@ const SECRET_PATTERNS = Object.freeze([
   /\b(?:password|client_secret|access_token)\s*[:=]\s*[^\s,;]{8,}/i,
 ]);
 
+const PERSONAL_DATA_PATTERNS = Object.freeze([
+  {
+    pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+    replacement: "[REDACTED_EMAIL]",
+  },
+  {
+    pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
+    replacement: "[REDACTED_IP]",
+  },
+  {
+    pattern: /(?:\+?\d[\d .()-]{7,}\d)/g,
+    replacement: "[REDACTED_PHONE]",
+  },
+]);
+const DURABLE_DIGEST_LABEL_PATTERN = /^[a-z_]+:sha256:[a-f0-9]{64}$/;
+
 function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
@@ -143,6 +159,27 @@ function requireText(value, field, max = 4_000, { allowEmpty = false } = {}) {
   const normalized = String(value ?? "").trim();
   if ((!allowEmpty && !normalized) || normalized.length > max || normalized.includes("\u0000")) {
     throw new Error(`${field}_invalid`);
+  }
+  return normalized;
+}
+
+function redactMetadataText(value, field, max = 4_000, { allowEmpty = false } = {}) {
+  let normalized = requireText(value, field, max, { allowEmpty });
+  if (DURABLE_DIGEST_LABEL_PATTERN.test(normalized)) return normalized;
+  for (const { pattern, replacement } of PERSONAL_DATA_PATTERNS) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  return normalized;
+}
+
+function rejectPersonalData(value, field) {
+  const normalized = requireText(value, field, 1_000);
+  if (DURABLE_DIGEST_LABEL_PATTERN.test(normalized)) return normalized;
+  if (PERSONAL_DATA_PATTERNS.some(({ pattern }) => {
+    pattern.lastIndex = 0;
+    return pattern.test(normalized);
+  })) {
+    throw new Error(`${field}_personal_data_forbidden`);
   }
   return normalized;
 }
@@ -247,26 +284,38 @@ export function validateWorkCapsule(capsule, {
   if (!allowExpired && expires.millis <= nowMs) throw new Error("work_capsule_stale");
 
   const normalized = {
-    goal: requireText(capsule.goal, "work_capsule_goal", 1_000),
+    goal: redactMetadataText(capsule.goal, "work_capsule_goal", 1_000),
     scope: requireTextList(capsule.scope, "work_capsule_scope", { maxItems: 100, maxItemLength: 1_000 })
-      .map((item, index) => validateRepoPath(item, `work_capsule_scope_${index}`)),
+      .map((item, index) => validateRepoPath(
+        rejectPersonalData(item, `work_capsule_scope_${index}`),
+        `work_capsule_scope_${index}`,
+      )),
     success_criteria: requireTextList(capsule.success_criteria, "work_capsule_success_criteria", {
       maxItems: 100,
       maxItemLength: 1_000,
       allowEmpty: false,
-    }),
-    decisions: requireTextList(capsule.decisions, "work_capsule_decisions"),
-    completed: requireTextList(capsule.completed, "work_capsule_completed"),
-    open_risks: requireTextList(capsule.open_risks, "work_capsule_open_risks"),
+    }).map((item, index) => redactMetadataText(item, `work_capsule_success_criteria_${index}`, 1_000)),
+    decisions: requireTextList(capsule.decisions, "work_capsule_decisions")
+      .map((item, index) => redactMetadataText(item, `work_capsule_decisions_${index}`, 1_000)),
+    completed: requireTextList(capsule.completed, "work_capsule_completed")
+      .map((item, index) => redactMetadataText(item, `work_capsule_completed_${index}`, 1_000)),
+    open_risks: requireTextList(capsule.open_risks, "work_capsule_open_risks")
+      .map((item, index) => redactMetadataText(item, `work_capsule_open_risks_${index}`, 1_000)),
     relevant_files: requireTextList(capsule.relevant_files, "work_capsule_relevant_files", {
       maxItems: 200,
       maxItemLength: 1_000,
-    }).map((item, index) => validateRepoPath(item, `work_capsule_relevant_files_${index}`)),
+    }).map((item, index) => validateRepoPath(
+      rejectPersonalData(item, `work_capsule_relevant_files_${index}`),
+      `work_capsule_relevant_files_${index}`,
+    )),
     changed_files: requireTextList(capsule.changed_files, "work_capsule_changed_files", {
       maxItems: 200,
       maxItemLength: 1_000,
-    }).map((item, index) => validateRepoPath(item, `work_capsule_changed_files_${index}`)),
-    diff_summary: requireText(capsule.diff_summary, "work_capsule_diff_summary", 4_000, { allowEmpty: true }),
+    }).map((item, index) => validateRepoPath(
+      rejectPersonalData(item, `work_capsule_changed_files_${index}`),
+      `work_capsule_changed_files_${index}`,
+    )),
+    diff_summary: redactMetadataText(capsule.diff_summary, "work_capsule_diff_summary", 4_000, { allowEmpty: true }),
     test_state: normalizeTestState(capsule.test_state),
     artifact_hashes: requireTextList(capsule.artifact_hashes, "work_capsule_artifact_hashes", {
       maxItems: 200,
@@ -275,8 +324,9 @@ export function validateWorkCapsule(capsule, {
       if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error(`work_capsule_artifact_hashes_${index}_invalid`);
       return digest;
     }),
-    reusable_results: requireTextList(capsule.reusable_results, "work_capsule_reusable_results"),
-    next_action: requireText(capsule.next_action, "work_capsule_next_action", 1_000, { allowEmpty: true }),
+    reusable_results: requireTextList(capsule.reusable_results, "work_capsule_reusable_results")
+      .map((item, index) => redactMetadataText(item, `work_capsule_reusable_results_${index}`, 1_000)),
+    next_action: redactMetadataText(capsule.next_action, "work_capsule_next_action", 1_000, { allowEmpty: true }),
     budget: normalizeBudget(capsule.budget),
     created_at: created.value,
     expires_at: expires.value,
@@ -548,6 +598,9 @@ function buildGeneratedCapsule(task, now, ttlMs) {
     created_at: created.toISOString(),
     expires_at: new Date(created.getTime() + ttlMs).toISOString(),
   };
+  // The planner keeps an actionable, bounded and redacted in-memory capsule.
+  // app.js compiles its separate PostgreSQL representation to digests at the
+  // persistence boundary, so durable storage never becomes a prompt archive.
   return validateWorkCapsule(source, { now: created });
 }
 
@@ -583,7 +636,9 @@ export function buildAgenticEfficiencyPlan({
     completed: task.completed,
     testState: task.test_state,
     evidence: task.acceptance_evidence,
-    securityTestsRequired: task.security_tests_required,
+    // Active optimization can never downgrade the release security floor.
+    // A caller may request additional checks, but cannot opt out of them.
+    securityTestsRequired: true,
     securityTestsPassed: task.security_tests_passed,
     critical: effectiveCritical,
     humanReviewVerified: verificationReceiptValid && trustedVerification.humanReviewVerified === true,
@@ -672,6 +727,9 @@ export function buildAgenticEfficiencyPlan({
       raw_prompt_stored: false,
       secret_stored: false,
       customer_content_stored: false,
+      durable_capsule_free_text_persisted: false,
+      durable_capsule_metadata_representation: "domain_separated_sha256",
+      ephemeral_capsule_actionable: true,
     },
   });
 }
@@ -818,7 +876,10 @@ export function evaluateAgenticBudgetGuard({
   });
   if (predicted < qualityFloor || baseline - predicted > 0.02) reasons.push("quality_floor_failed");
   if (!qualityAttested) reasons.push("quality_attestation_missing");
-  const securityRequired = budgetPolicy.security_checks_required !== false;
+  const securityRequired = true;
+  if (budgetPolicy.security_checks_required === false) {
+    reasons.push("security_policy_cannot_be_disabled");
+  }
   const securityVerified = governanceReceiptValid && trustedVerifications.securityVerified === true;
   const tenantIsolationVerified = governanceReceiptValid && trustedVerifications.tenantIsolationVerified === true;
   const exposurePolicyVerified = governanceReceiptValid && trustedVerifications.exposurePolicyVerified === true;

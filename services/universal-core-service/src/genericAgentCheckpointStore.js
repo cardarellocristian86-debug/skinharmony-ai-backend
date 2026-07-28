@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+  requireGenericAgentDurableIdentifier,
+  sanitizeGenericAgentCheckpoint,
+  sanitizeGenericAgentRunSnapshot,
+} from "./genericAgentDurableSnapshot.js";
+
 function requireText(value, field, max = 160) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.length > max) throw new Error(`${field}_invalid`);
@@ -35,20 +41,25 @@ export function createGenericAgentCheckpointStore({ root, now = () => new Date()
 
   return {
     save({ tenant_id, run_id, checkpoint, run_snapshot = null, expected_revision = null }) {
-      const tenantId = requireText(tenant_id, "tenant_id", 120);
-      const runId = requireText(run_id, "run_id", 160);
+      const tenantId = requireGenericAgentDurableIdentifier(tenant_id, "tenant_id", 120);
+      const runId = requireGenericAgentDurableIdentifier(run_id, "run_id", 160);
       if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) throw new Error("checkpoint_invalid");
       const file = fileFor(storageRoot, tenantId, runId);
       const current = readJson(file);
       const currentRevision = current?.revision || 0;
       if (expected_revision !== null && expected_revision !== currentRevision) throw new Error("checkpoint_revision_conflict");
+      const durableCheckpoint = sanitizeGenericAgentCheckpoint(checkpoint);
+      const durableRunSnapshot = run_snapshot && typeof run_snapshot === "object" && !Array.isArray(run_snapshot)
+        ? sanitizeGenericAgentRunSnapshot(run_snapshot, tenantId, runId)
+        : null;
       const record = {
-        schema_version: "generic_agent_checkpoint_store_v1",
+        schema_version: "generic_agent_checkpoint_store_v2",
         tenant_id: tenantId,
         run_id: runId,
         revision: currentRevision + 1,
-        checkpoint: clone(checkpoint),
-        ...(run_snapshot && typeof run_snapshot === "object" && !Array.isArray(run_snapshot) ? { run_snapshot: clone(run_snapshot) } : {}),
+        checkpoint: durableCheckpoint,
+        ...(durableRunSnapshot ? { run_snapshot: durableRunSnapshot } : {}),
+        raw_content_persisted: false,
         updated_at: now(),
       };
       atomicWrite(file, record);
@@ -56,10 +67,28 @@ export function createGenericAgentCheckpointStore({ root, now = () => new Date()
     },
 
     load({ tenant_id, run_id }) {
-      const tenantId = requireText(tenant_id, "tenant_id", 120);
-      const runId = requireText(run_id, "run_id", 160);
-      const record = readJson(fileFor(storageRoot, tenantId, runId));
-      return record ? clone(record) : null;
+      const tenantId = requireGenericAgentDurableIdentifier(tenant_id, "tenant_id", 120);
+      const runId = requireGenericAgentDurableIdentifier(run_id, "run_id", 160);
+      const file = fileFor(storageRoot, tenantId, runId);
+      const record = readJson(file);
+      if (!record) return null;
+      if (record.tenant_id !== tenantId || record.run_id !== runId) {
+        throw new Error("checkpoint_scope_invalid");
+      }
+      const sanitized = {
+        schema_version: "generic_agent_checkpoint_store_v2",
+        tenant_id: tenantId,
+        run_id: runId,
+        revision: Number(record.revision || 0),
+        checkpoint: sanitizeGenericAgentCheckpoint(record.checkpoint),
+        ...(record.run_snapshot ? {
+          run_snapshot: sanitizeGenericAgentRunSnapshot(record.run_snapshot, tenantId, runId),
+        } : {}),
+        raw_content_persisted: false,
+        updated_at: record.updated_at || now(),
+      };
+      if (JSON.stringify(record) !== JSON.stringify(sanitized)) atomicWrite(file, sanitized);
+      return clone(sanitized);
     },
   };
 }

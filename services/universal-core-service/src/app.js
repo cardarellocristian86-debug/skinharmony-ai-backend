@@ -141,6 +141,7 @@ import { mountAdminControlRoom } from "./adminControlRoom.js";
 import { createAiLearningFactoryStore } from "./aiLearningFactoryStore.js";
 import { mountAiLearningFactoryRoutes } from "./aiLearningFactoryRoutes.js";
 import { createAiRuntimeTelemetryStore } from "./aiRuntimeTelemetry.js";
+import { createAiRuntimeTelemetryProducer } from "./aiRuntimeTelemetryProducer.js";
 import {
   AI_LEARNING_FACTORY_RUNTIME_ROLE,
   createAiLearningFactoryPostgresPersistence,
@@ -3789,10 +3790,16 @@ export function createUniversalCoreService(options = {}) {
       : null);
   const aiLearningStore = options.aiLearningFactoryStore || createAiLearningFactoryStore({
     adapter: aiLearningFactoryPersistence?.learningAdapter || null,
+    verifyOutcomeEvidence: options.verifyAiLearningOutcomeEvidence,
   });
   const aiLearningTelemetryStore = options.aiRuntimeTelemetryStore || createAiRuntimeTelemetryStore({
     adapter: aiLearningFactoryPersistence?.telemetryAdapter || null,
+    verifyProviderUsage: options.verifyAiRuntimeProviderUsage,
+    verifyEstimatedUsage: options.verifyAiRuntimeEstimatedUsage,
+    verifyQualityEvidence: options.verifyAiRuntimeQualityEvidence,
   });
+  const aiRuntimeTelemetryProducer = options.aiRuntimeTelemetryProducer
+    || createAiRuntimeTelemetryProducer({ store: aiLearningTelemetryStore });
   const requestedAgenticEfficiencyMode = String(
     options.agenticEfficiencyMode ?? process.env.NYRA_AGENTIC_EFFICIENCY_MODE ?? "shadow",
   ).trim().toLowerCase();
@@ -3805,6 +3812,15 @@ export function createUniversalCoreService(options = {}) {
   const agenticBudgetMode = ["off", "observe", "soft_enforce"].includes(requestedAgenticBudgetMode)
     ? requestedAgenticBudgetMode
     : "observe";
+  const v016PersistenceRequired = options.v016PersistenceRequired === true
+    || String(process.env.V016_PERSISTENCE_REQUIRED || "").trim().toLowerCase() === "true"
+    || String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+  const aiLearningPersistenceRequired = Boolean(
+    v016PersistenceRequired && aiLearningFactoryMode !== "off",
+  );
+  const agenticPersistenceRequired = Boolean(
+    v016PersistenceRequired && agenticEfficiencyMode !== "off",
+  );
   const agenticEfficiencyDatabaseRole = String(
     options.agenticEfficiencyDatabaseRole ?? process.env.AGENTIC_EFFICIENCY_DATABASE_ROLE ?? "",
   ).trim() || AGENTIC_EFFICIENCY_RUNTIME_ROLE;
@@ -3927,6 +3943,20 @@ export function createUniversalCoreService(options = {}) {
     }
   }
 
+  function recoverGenericRunSnapshot(tenantId, runId) {
+    try {
+      return genericAgentRuntime.getRun({ tenant_id: tenantId, run_id: runId });
+    } catch (error) {
+      if (error.message !== "run_not_found") throw error;
+      const durable = genericAgentCheckpoints.load({ tenant_id: tenantId, run_id: runId });
+      if (!durable?.run_snapshot) throw error;
+      return genericAgentRuntime.restoreRun({
+        tenant_id: tenantId,
+        run_snapshot: durable.run_snapshot,
+      });
+    }
+  }
+
   function persistGenericOrchestration(plan) {
     return genericAgentOrchestrationStore.save({ tenant_id: plan.tenant_id, plan_snapshot: plan });
   }
@@ -4026,6 +4056,36 @@ export function createUniversalCoreService(options = {}) {
       state: authorization.state,
       autonomous_execution_allowed: false,
     });
+    const expectedIndependentReviewBinding = digestAgenticArtifact({
+      tenant_id: req.tenantId,
+      target_id: targetId,
+      expected_revision: expectedRevision,
+      decision: purpose === "ai_learning_candidate_review"
+        ? String(req.body?.decision || "")
+        : "record_outcome",
+    });
+    const independentReview = (
+      purpose === "ai_learning_candidate_review"
+      && typeof options.verifyIndependentAiLearningReview === "function"
+    )
+      ? await options.verifyIndependentAiLearningReview({
+        req,
+        tenant_id: req.tenantId,
+        target_id: targetId,
+        expected_revision: expectedRevision,
+        expected_binding_digest: expectedIndependentReviewBinding,
+      })
+      : null;
+    const independentReviewVerified = Boolean(
+      independentReview?.verified === true
+      && independentReview?.binding_digest === expectedIndependentReviewBinding
+      && /^sha256:[a-f0-9]{64}$/.test(String(independentReview?.receipt_digest || ""))
+      && String(independentReview?.reviewer_reference || "").trim()
+      && String(independentReview?.reviewer_reference || "").trim()
+        !== `key:${req.coreKey?.key_id || "authenticated-owner"}`
+      && Number.isFinite(Date.parse(String(independentReview?.reviewed_at || "")))
+      && Date.parse(String(independentReview?.review_expires_at || "")) > Date.now()
+    );
     return {
       core_verdict: "ALLOW",
       owner_confirmed: true,
@@ -4036,10 +4096,14 @@ export function createUniversalCoreService(options = {}) {
         .update(`${req.tenantId}\u0000${targetId}`)
         .digest("hex")}`,
       ...(purpose === "ai_learning_candidate_review" ? {
-        reviewer_reference: `key:${req.coreKey?.key_id || "authenticated-owner"}`,
-        reviewed_at: new Date().toISOString(),
-        review_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-        independent_human_review_verified: true,
+        human_owner_review_verified: true,
+        independent_human_review_verified: independentReviewVerified,
+        ...(independentReviewVerified ? {
+          reviewer_reference: String(independentReview.reviewer_reference).trim(),
+          reviewed_at: new Date(independentReview.reviewed_at).toISOString(),
+          review_expires_at: new Date(independentReview.review_expires_at).toISOString(),
+          independent_review_receipt_digest: independentReview.receipt_digest,
+        } : {}),
       } : {}),
     };
   }
@@ -4184,7 +4248,7 @@ export function createUniversalCoreService(options = {}) {
       })
       : {};
     try {
-      return evaluateAgenticBudgetGuard({
+      const verdict = evaluateAgenticBudgetGuard({
         trustedContext: context,
         plan,
         policy,
@@ -4192,6 +4256,10 @@ export function createUniversalCoreService(options = {}) {
         trustedVerifications: verification || {},
         mode: agenticBudgetMode,
       });
+      return {
+        ...verdict,
+        policy_snapshot: policy,
+      };
     } catch (error) {
       return {
         schema_version: "agentic_budget_governance_verdict_v1",
@@ -4210,27 +4278,73 @@ export function createUniversalCoreService(options = {}) {
     }
   }
 
-  async function reserveAgenticWorkCapsule(req, runId, shadowPlan, {
-    activeOptimizationAllowed = false,
-  } = {}) {
-    if (agenticEfficiencyMode !== "active" || !activeOptimizationAllowed) {
+  async function persistAgenticRunBudget(req, runId, verdict) {
+    const policy = verdict?.policy_snapshot;
+    if (!policy || typeof agenticEfficiencyStore.saveRunBudget !== "function") {
+      if (agenticPersistenceRequired) throw new Error("agentic_run_budget_persistence_required");
       return {
-        available: true,
-        claimed: false,
-        observation_only: true,
-        would_claim_in_active: Boolean(shadowPlan?.work_capsule?.capsule),
-        reason: agenticEfficiencyMode !== "active"
-          ? "agentic_shadow_never_claims_or_blocks"
-          : "agentic_budget_soft_enforcement_not_authorized",
+        persisted: false,
+        reason: "agentic_run_budget_store_unavailable",
+      };
+    }
+    const receiptDigest = digestAgenticArtifact({
+      tenant_id: req.tenantId,
+      run_id: runId,
+      policy,
+      verdict: {
+        mode: verdict.mode,
+        optimization_allowed: verdict.optimization_allowed === true,
+        reasons: verdict.reasons || [],
+      },
+      actor_id: req.coreKey?.key_id,
+    });
+    try {
+      const budget = await agenticEfficiencyStore.saveRunBudget({
+        tenant_id: req.tenantId,
+        run_id: runId,
+        policy_version: "agentic_budget_governance_v0.16",
+        budget: {
+          ...policy,
+          verdict_mode: verdict.mode,
+          optimization_allowed: verdict.optimization_allowed === true,
+          verdict_reasons: verdict.reasons || [],
+          execution_authorized: false,
+        },
+        policy_expires_at: policy.expires_at,
+        actor_provenance: String(req.coreKey?.key_id || "authenticated-core-key"),
+        receipt_digest: receiptDigest,
+      });
+      return {
+        persisted: true,
+        run_id: budget.run_id,
+        policy_version: budget.policy_version,
+        policy_expires_at: budget.policy_expires_at,
+        receipt_digest: receiptDigest,
+        execution_authorized: false,
+      };
+    } catch (error) {
+      if (agenticPersistenceRequired) throw error;
+      return {
+        persisted: false,
+        reason: String(error?.message || "agentic_run_budget_persistence_failed").split(":")[0],
         execution_authorized: false,
       };
     }
+  }
+
+  async function reserveAgenticWorkCapsule(req, runId, shadowPlan, {
+    activeOptimizationAllowed = false,
+  } = {}) {
+    const observationOnly = agenticEfficiencyMode !== "active" || !activeOptimizationAllowed;
     if (
       shadowPlan?.available === false
       || !shadowPlan?.work_capsule?.capsule
       || typeof agenticEfficiencyStore.saveWorkCapsule !== "function"
-      || typeof agenticEfficiencyStore.claimWork !== "function"
+      || (!observationOnly && typeof agenticEfficiencyStore.claimWork !== "function")
     ) {
+      if (agenticPersistenceRequired) {
+        throw new Error("agentic_work_capsule_persistence_required");
+      }
       return {
         available: false,
         claimed: false,
@@ -4300,6 +4414,7 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) {
       if (!String(error?.message || "").includes("revision_conflict")) {
         if (/unavailable|required$/.test(String(error?.message || ""))) {
+          if (agenticPersistenceRequired) throw error;
           return {
             available: false,
             claimed: false,
@@ -4328,6 +4443,23 @@ export function createUniversalCoreService(options = {}) {
           receipt_digest: receiptDigest,
         });
       }
+    }
+    if (observationOnly) {
+      return {
+        available: true,
+        claimed: false,
+        observation_only: true,
+        would_claim_in_active: true,
+        capsule_id: capsuleId,
+        capsule_hash: capsule.capsule_hash,
+        capsule_version: capsule.version,
+        restart_recovered: Number(capsule.version) > 1 || capsule.receipt_digest !== receiptDigest,
+        receipt_digest: receiptDigest,
+        reason: agenticEfficiencyMode !== "active"
+          ? "agentic_shadow_capsule_persisted_without_claim"
+          : "agentic_budget_soft_enforcement_not_authorized",
+        execution_authorized: false,
+      };
     }
     const claim = await agenticEfficiencyStore.claimWork({
       tenant_id: req.tenantId,
@@ -4977,6 +5109,26 @@ export function createUniversalCoreService(options = {}) {
     let agenticReservation = null;
     try {
       const runId = req.body?.run_id || `run_${crypto.randomUUID()}`;
+      if (agenticEfficiencyMode === "off") {
+        const run = genericAgentRuntime.startRun({
+          ...(req.body || {}),
+          run_id: runId,
+          tenant_id: req.tenantId,
+        });
+        audit.append("generic_agent_run_started", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          run_id: run.run_id,
+          agent_id: run.agent_id,
+          agentic_efficiency_mode: "off",
+          execution_authorized: false,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          run,
+        });
+      }
       const agenticOverrides = {
         goal: req.body?.task,
         required_tools: req.body?.tools,
@@ -4995,6 +5147,11 @@ export function createUniversalCoreService(options = {}) {
         req,
         agenticTask,
         agenticShadow,
+      );
+      const agenticBudgetPersistence = await persistAgenticRunBudget(
+        req,
+        runId,
+        agenticBudgetVerdict,
       );
       const activeOptimizationAllowed = (
         agenticEfficiencyMode === "active"
@@ -5028,6 +5185,7 @@ export function createUniversalCoreService(options = {}) {
             early_stopped: true,
             plan: agenticShadow,
             budget_verdict: agenticBudgetVerdict,
+            budget_persistence: agenticBudgetPersistence,
             execution_authorized: false,
           },
         });
@@ -5035,6 +5193,9 @@ export function createUniversalCoreService(options = {}) {
       agenticReservation = await reserveAgenticWorkCapsule(req, runId, agenticShadow, {
         activeOptimizationAllowed,
       });
+      if (agenticPersistenceRequired && agenticReservation?.available !== true) {
+        throw new Error("agentic_work_capsule_persistence_required");
+      }
       const activeAgenticPlan = activeOptimizationAllowed ? agenticShadow?.plan : null;
       const effectiveTools = activeAgenticPlan?.tools?.selected || req.body?.tools;
       if (activeAgenticPlan && activeAgenticPlan.retry?.allowed === false) {
@@ -5054,6 +5215,7 @@ export function createUniversalCoreService(options = {}) {
           agentic_efficiency_shadow: {
             plan: agenticShadow,
             persistence: agenticReservation,
+            budget_persistence: agenticBudgetPersistence,
             budget_verdict: agenticBudgetVerdict,
             execution_authorized: false,
           },
@@ -5078,6 +5240,7 @@ export function createUniversalCoreService(options = {}) {
         agentic_capsule_id: agenticReservation?.capsule_id || null,
         agentic_claimed: agenticReservation?.claimed === true,
         agentic_budget_guard_joined: true,
+        agentic_budget_persisted: agenticBudgetPersistence.persisted === true,
         agentic_optimization_applied: Boolean(activeAgenticPlan),
         execution_authorized: false,
       });
@@ -5271,12 +5434,25 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/generic-agents/orchestration/:planId/join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     try {
-      recoverGenericOrchestration(req.tenantId, req.params.planId);
+      const planSnapshot = recoverGenericOrchestration(req.tenantId, req.params.planId);
+      let runSnapshot = null;
+      try {
+        runSnapshot = recoverGenericRunSnapshot(req.tenantId, planSnapshot.run_id);
+      } catch (runRecoveryError) {
+        audit.append("generic_agent_runtime_snapshot_unavailable", {
+          tenant_id: req.tenantId,
+          plan_id: req.params.planId,
+          run_id: planSnapshot.run_id,
+          reason: String(runRecoveryError?.message || "run_snapshot_unavailable").split(":")[0],
+        });
+        if (aiLearningPersistenceRequired || agenticPersistenceRequired) {
+          throw new Error("generic_agent_runtime_snapshot_required");
+        }
+      }
       const joined = genericAgentOrchestrator.coreJoin({ tenant_id: req.tenantId, plan_id: req.params.planId });
       persistGenericOrchestration(genericAgentOrchestrator.getPlan({ tenant_id: req.tenantId, plan_id: req.params.planId }));
-      try {
-        const run = genericAgentRuntime.getRun({ tenant_id: req.tenantId, run_id: joined.run_id });
-        const reservation = run.metadata?.agentic_efficiency_shadow?.persistence;
+      if (runSnapshot) {
+        const reservation = runSnapshot.metadata?.agentic_efficiency_shadow?.persistence;
         if (reservation?.claimed && reservation?.capsule_id) {
           await agenticEfficiencyStore.releaseClaim({
             tenant_id: req.tenantId,
@@ -5284,9 +5460,39 @@ export function createUniversalCoreService(options = {}) {
             claimant_id: joined.run_id,
           });
         }
-      } catch {
-        // Lease expiry remains the bounded fail-safe when recovery metadata is
-        // unavailable. Joining the run must not authorize external execution.
+      }
+      if (runSnapshot && aiLearningFactoryMode !== "off") {
+        try {
+          const telemetry = await aiRuntimeTelemetryProducer.recordGenericRunCompletion({
+            trustedContext: resolveAgenticRequestContext(req),
+            run: runSnapshot,
+            joined,
+            policySnapshot: {
+              ai_learning_factory_mode: aiLearningFactoryMode,
+              agentic_efficiency_mode: agenticEfficiencyMode,
+              agentic_budget_mode: agenticBudgetMode,
+              execution_enabled: false,
+            },
+            rollbackReference: BUILD_COMMIT_SHA
+              ? `git:${BUILD_COMMIT_SHA}`
+              : "git:pre-v0.16",
+          });
+          audit.append("generic_agent_runtime_telemetry_recorded", {
+            tenant_id: req.tenantId,
+            run_id: joined.run_id,
+            telemetry_digest: telemetry.telemetry_digest,
+            usage_kind: telemetry.usage_kind,
+            provider_usage_verified: telemetry.provider_usage_verified,
+            raw_content_persisted: false,
+          });
+        } catch (telemetryError) {
+          audit.append("generic_agent_runtime_telemetry_unavailable", {
+            tenant_id: req.tenantId,
+            run_id: joined.run_id,
+            reason: String(telemetryError?.message || "telemetry_record_failed").split(":")[0],
+          });
+          if (aiLearningPersistenceRequired) throw new Error("ai_runtime_telemetry_persistence_required");
+        }
       }
       audit.append("generic_agent_orchestration_core_joined", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: joined.plan_id, run_id: joined.run_id });
       return res.json({ ok: true, tenant_id: req.tenantId, joined, execution_allowed: false });
@@ -5308,12 +5514,6 @@ export function createUniversalCoreService(options = {}) {
       writes_allowed: false,
       reason: "agentic_persistence_probe_unavailable",
     };
-    const aiLearningPersistenceRequired = Boolean(
-      governedAgentDatabaseUrl && aiLearningFactoryMode !== "off",
-    );
-    const agenticPersistenceRequired = Boolean(
-      governedAgentDatabaseUrl && agenticEfficiencyMode !== "off",
-    );
     const releasePersistenceReady = (
       (!aiLearningPersistenceRequired || (
         aiLearningPersistenceReadiness.persistence_read_ready === true &&
@@ -5379,6 +5579,7 @@ export function createUniversalCoreService(options = {}) {
         runtime_role_attested: aiLearningPersistenceReadiness.runtime_role_attested === true,
         persistence_reason: aiLearningPersistenceReadiness.reason,
         runtime_write_mode: aiLearningFactoryPersistence?.runtime_write_mode || "memory_only_shadow",
+        persistence_required: aiLearningPersistenceRequired,
         execution_enabled: false,
         autonomous_training_enabled: false,
         live_weight_mutation_enabled: false,
@@ -5392,6 +5593,7 @@ export function createUniversalCoreService(options = {}) {
         persistence_write_ready: agenticPersistenceReadiness.writes_allowed === true,
         runtime_role_attested: agenticPersistenceReadiness.attested === true,
         persistence_reason: agenticPersistenceReadiness.reason,
+        persistence_required: agenticPersistenceRequired,
         hard_budget_stop: false,
         execution_enabled: false,
         external_execution_enabled: false,

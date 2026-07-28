@@ -8,6 +8,7 @@ export const AI_RUNTIME_TELEMETRY_FIELDS = Object.freeze([
   "audience",
   "agent_id",
   "session_id",
+  "logical_task",
   "run_id",
   "trace_id",
   "parent_trace_id",
@@ -15,6 +16,7 @@ export const AI_RUNTIME_TELEMETRY_FIELDS = Object.freeze([
   "subbranch_id",
   "route_reason",
   "route_confidence",
+  "route_confidence_kind",
   "model_provider",
   "model_id",
   "model_snapshot",
@@ -26,16 +28,36 @@ export const AI_RUNTIME_TELEMETRY_FIELDS = Object.freeze([
   "handoff_from",
   "handoff_to",
   "handoff_verified",
+  "agent_count",
+  "new_invocations",
+  "invocation_usage_kind",
+  "tool_call_count",
+  "artifacts_reused",
+  "context_avoided",
+  "context_avoidance_estimate",
+  "context_avoidance_kind",
   "input_tokens",
   "output_tokens",
   "cached_tokens",
+  "usage_kind",
+  "actual_cost",
   "estimated_cost",
+  "usage_source",
+  "rate_card_version",
+  "cost_formula",
+  "provider_receipt_digest",
   "ttft_ms",
+  "ttft_observed",
   "latency_ms",
+  "latency_observed",
   "queue_ms",
+  "queue_observed",
   "outcome_status",
   "outcome_verified",
   "human_review_status",
+  "quality",
+  "quality_verified",
+  "provider_usage_verified",
   "evidence_digest",
   "policy_snapshot",
   "rollback_reference",
@@ -63,6 +85,8 @@ const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._:@/-]*$/i;
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9_-]{1,119}$/i;
 const REFERENCE_PATTERN = /^[a-z0-9][a-z0-9._:@/-]{0,239}$/i;
 const SENSITIVE_REFERENCE_PATTERN = /(?:\b(?:sk|gho|ghp|ghs|github_pat|akia)[-_a-z0-9]{12,}\b|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)/i;
+const PHONE_LIKE_IDENTIFIER_PATTERN = /(?:\+?\d[\d .()-]{7,}\d)/;
+const GENERATED_IDENTIFIER_PATTERN = /^(?:[a-z][a-z0-9._:@/-]*[_:-](?:(?=[a-f0-9]{24,64}$)(?=.*[a-f])[a-f0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))$/i;
 
 function requireObject(value, field) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field}_invalid`);
@@ -81,8 +105,17 @@ function redactText(value, field, max = 500) {
 }
 
 function requireIdentifier(value, field, max = 160) {
-  const normalized = redactText(value, field, max);
-  if (!IDENTIFIER_PATTERN.test(normalized)) throw new Error(`${field}_invalid`);
+  const normalized = String(value ?? "").trim();
+  if (
+    !normalized
+    || normalized.length > max
+    || !IDENTIFIER_PATTERN.test(normalized)
+    || SENSITIVE_REFERENCE_PATTERN.test(normalized)
+    || (
+      PHONE_LIKE_IDENTIFIER_PATTERN.test(normalized)
+      && !GENERATED_IDENTIFIER_PATTERN.test(normalized)
+    )
+  ) throw new Error(`${field}_invalid`);
   return normalized;
 }
 
@@ -111,6 +144,11 @@ function requireNumber(value, field, { integer = false, maximum = Number.MAX_SAF
   return number;
 }
 
+function nullableNumber(value, field, options = {}) {
+  if (value === null || value === undefined || value === "") return null;
+  return requireNumber(value, field, options);
+}
+
 function requireBoolean(value, field) {
   if (typeof value !== "boolean") throw new Error(`${field}_invalid`);
   return value;
@@ -130,15 +168,103 @@ function canonicalDigest(value) {
  * Produces the only telemetry shape accepted by the AI Learning Factory.
  * Unknown fields are omitted and known raw-content fields fail closed.
  */
-export function normalizeAiRuntimeTelemetry(input, { recordedAt = new Date().toISOString() } = {}) {
+export function normalizeAiRuntimeTelemetry(input, {
+  recordedAt = new Date().toISOString(),
+  trustedAttestation = {},
+  trustedPersistence = false,
+} = {}) {
   const source = requireObject(input, "telemetry");
   rejectRawContentFields(source);
+  const requestedUsageKind = requireIdentifier(source.usage_kind, "usage_kind", 40);
+  if (!["actual", "estimated", "unavailable"].includes(requestedUsageKind)) {
+    throw new Error("usage_kind_invalid");
+  }
+  const providerUsageVerified = (
+    trustedAttestation.provider_usage_verified === true
+    && (
+      trustedPersistence === true
+      || /^sha256:[a-f0-9]{64}$/.test(String(trustedAttestation.provider_attestation_digest || ""))
+    )
+  );
+  const estimatedUsageVerified = (
+    trustedAttestation.estimated_usage_verified === true
+    && (
+      trustedPersistence === true
+      || /^sha256:[a-f0-9]{64}$/.test(String(trustedAttestation.estimate_attestation_digest || ""))
+    )
+  );
+  const qualityVerified = (
+    trustedAttestation.quality_verified === true
+    && (
+      trustedPersistence === true
+      || /^sha256:[a-f0-9]{64}$/.test(String(trustedAttestation.quality_attestation_digest || ""))
+    )
+  );
+  let canonicalUsage;
+  if (trustedPersistence) {
+    canonicalUsage = {
+      usage_kind: requestedUsageKind,
+      input_tokens: source.input_tokens,
+      output_tokens: source.output_tokens,
+      cached_tokens: source.cached_tokens,
+      actual_cost: source.actual_cost,
+      estimated_cost: source.estimated_cost,
+      usage_source: source.usage_source,
+      rate_card_version: source.rate_card_version,
+      cost_formula: source.cost_formula,
+      provider_receipt_digest: source.provider_receipt_digest,
+    };
+  } else if (requestedUsageKind === "actual" && providerUsageVerified) {
+    canonicalUsage = requireObject(trustedAttestation.canonical_usage, "provider_canonical_usage");
+  } else if (requestedUsageKind === "estimated" && estimatedUsageVerified) {
+    canonicalUsage = requireObject(trustedAttestation.canonical_usage, "estimate_canonical_usage");
+  } else if (requestedUsageKind === "unavailable") {
+    if (
+      Number(source.input_tokens || 0) !== 0
+      || Number(source.output_tokens || 0) !== 0
+      || Number(source.cached_tokens || 0) !== 0
+      || source.actual_cost !== null && source.actual_cost !== undefined
+      || source.estimated_cost !== null && source.estimated_cost !== undefined
+      || String(source.rate_card_version || "").trim()
+      || String(source.provider_receipt_digest || "").trim()
+    ) {
+      throw new Error("unavailable_usage_claim_forbidden");
+    }
+    canonicalUsage = {
+      usage_kind: "unavailable",
+      input_tokens: 0,
+      output_tokens: 0,
+      cached_tokens: 0,
+      actual_cost: null,
+      estimated_cost: null,
+      usage_source: "host_usage_unavailable",
+      rate_card_version: null,
+      cost_formula: null,
+      provider_receipt_digest: null,
+    };
+  } else {
+    throw new Error("usage_attestation_required");
+  }
+  if (canonicalUsage.usage_kind !== requestedUsageKind) throw new Error("usage_attestation_binding_invalid");
+  const canonicalQuality = qualityVerified
+    ? requireNumber(
+      trustedPersistence ? source.quality : trustedAttestation.canonical_quality,
+      "quality",
+      { maximum: 1 },
+    )
+    : null;
+  const attestedOutcomeVerified = qualityVerified && (
+    trustedPersistence
+      ? source.outcome_verified === true
+      : trustedAttestation.outcome_verified === true
+  );
   const event = {
     tenant_id: requireTenant(source.tenant_id),
     client_type: requireIdentifier(source.client_type, "client_type", 80),
     audience: requireIdentifier(source.audience, "audience", 160),
     agent_id: requireIdentifier(source.agent_id, "agent_id"),
     session_id: requireIdentifier(source.session_id, "session_id"),
+    logical_task: requireReference(source.logical_task, "logical_task"),
     run_id: requireIdentifier(source.run_id, "run_id"),
     trace_id: requireIdentifier(source.trace_id, "trace_id"),
     parent_trace_id: nullableIdentifier(source.parent_trace_id, "parent_trace_id"),
@@ -146,6 +272,11 @@ export function normalizeAiRuntimeTelemetry(input, { recordedAt = new Date().toI
     subbranch_id: requireIdentifier(source.subbranch_id, "subbranch_id"),
     route_reason: redactText(source.route_reason, "route_reason"),
     route_confidence: requireNumber(source.route_confidence, "route_confidence", { maximum: 1 }),
+    route_confidence_kind: requireIdentifier(
+      source.route_confidence_kind,
+      "route_confidence_kind",
+      80,
+    ),
     model_provider: requireIdentifier(source.model_provider, "model_provider", 80),
     model_id: requireIdentifier(source.model_id, "model_id"),
     model_snapshot: requireReference(source.model_snapshot, "model_snapshot"),
@@ -157,20 +288,85 @@ export function normalizeAiRuntimeTelemetry(input, { recordedAt = new Date().toI
     handoff_from: nullableIdentifier(source.handoff_from, "handoff_from"),
     handoff_to: nullableIdentifier(source.handoff_to, "handoff_to"),
     handoff_verified: requireBoolean(source.handoff_verified, "handoff_verified"),
-    input_tokens: requireNumber(source.input_tokens, "input_tokens", { integer: true }),
-    output_tokens: requireNumber(source.output_tokens, "output_tokens", { integer: true }),
-    cached_tokens: requireNumber(source.cached_tokens, "cached_tokens", { integer: true }),
-    estimated_cost: requireNumber(source.estimated_cost, "estimated_cost"),
+    agent_count: requireNumber(source.agent_count, "agent_count", { integer: true, maximum: 100 }),
+    new_invocations: requireNumber(source.new_invocations, "new_invocations", { integer: true, maximum: 1_000_000 }),
+    invocation_usage_kind: requireIdentifier(source.invocation_usage_kind, "invocation_usage_kind", 80),
+    tool_call_count: requireNumber(source.tool_call_count, "tool_call_count", { integer: true, maximum: 1_000_000 }),
+    artifacts_reused: requireNumber(source.artifacts_reused, "artifacts_reused", { integer: true, maximum: 1_000_000 }),
+    context_avoided: requireNumber(source.context_avoided, "context_avoided", { integer: true }),
+    context_avoidance_estimate: requireNumber(
+      source.context_avoidance_estimate,
+      "context_avoidance_estimate",
+      { integer: true },
+    ),
+    context_avoidance_kind: requireIdentifier(
+      source.context_avoidance_kind,
+      "context_avoidance_kind",
+      80,
+    ),
+    input_tokens: requireNumber(canonicalUsage.input_tokens, "input_tokens", { integer: true }),
+    output_tokens: requireNumber(canonicalUsage.output_tokens, "output_tokens", { integer: true }),
+    cached_tokens: requireNumber(canonicalUsage.cached_tokens, "cached_tokens", { integer: true }),
+    usage_kind: requestedUsageKind,
+    actual_cost: nullableNumber(canonicalUsage.actual_cost, "actual_cost"),
+    estimated_cost: nullableNumber(canonicalUsage.estimated_cost, "estimated_cost"),
+    usage_source: requireIdentifier(canonicalUsage.usage_source, "usage_source", 120),
+    rate_card_version: nullableIdentifier(canonicalUsage.rate_card_version, "rate_card_version", 160),
+    cost_formula: canonicalUsage.cost_formula === null || canonicalUsage.cost_formula === undefined || canonicalUsage.cost_formula === ""
+      ? null
+      : redactText(canonicalUsage.cost_formula, "cost_formula", 500),
+    provider_receipt_digest: canonicalUsage.provider_receipt_digest === null
+      || canonicalUsage.provider_receipt_digest === undefined
+      || canonicalUsage.provider_receipt_digest === ""
+      ? null
+      : requireReference(canonicalUsage.provider_receipt_digest, "provider_receipt_digest"),
     ttft_ms: requireNumber(source.ttft_ms, "ttft_ms"),
+    ttft_observed: requireBoolean(source.ttft_observed, "ttft_observed"),
     latency_ms: requireNumber(source.latency_ms, "latency_ms"),
+    latency_observed: requireBoolean(source.latency_observed, "latency_observed"),
     queue_ms: requireNumber(source.queue_ms, "queue_ms"),
+    queue_observed: requireBoolean(source.queue_observed, "queue_observed"),
     outcome_status: requireIdentifier(source.outcome_status, "outcome_status", 80),
-    outcome_verified: requireBoolean(source.outcome_verified, "outcome_verified"),
+    outcome_verified: attestedOutcomeVerified,
     human_review_status: requireIdentifier(source.human_review_status, "human_review_status", 80),
+    quality: canonicalQuality,
+    quality_verified: qualityVerified,
+    provider_usage_verified: providerUsageVerified,
     evidence_digest: requireReference(source.evidence_digest, "evidence_digest"),
     policy_snapshot: requireReference(source.policy_snapshot, "policy_snapshot"),
     rollback_reference: requireReference(source.rollback_reference, "rollback_reference"),
   };
+  if (event.cached_tokens > event.input_tokens) throw new Error("cached_usage_exceeds_input");
+  if (event.cached_tokens > 0 && event.provider_usage_verified !== true) {
+    throw new Error("cached_usage_unverified");
+  }
+  if (event.usage_kind === "actual") {
+    if (
+      event.provider_usage_verified !== true
+      || event.actual_cost === null
+      || event.estimated_cost !== null
+      || event.rate_card_version === null
+      || !/^sha256:[a-f0-9]{64}$/.test(String(event.provider_receipt_digest || ""))
+    ) {
+      throw new Error("actual_usage_provenance_invalid");
+    }
+  } else if (
+    event.actual_cost !== null
+    || event.provider_usage_verified === true
+    || event.provider_receipt_digest !== null
+  ) {
+    throw new Error("non_actual_usage_provenance_invalid");
+  }
+  if (event.quality_verified && event.quality === null) throw new Error("quality_attestation_invalid");
+  if (event.usage_kind === "estimated" && event.estimated_cost === null) {
+    throw new Error("estimated_usage_cost_required");
+  }
+  if (
+    event.usage_kind === "unavailable"
+    && (event.estimated_cost !== null || event.rate_card_version !== null || event.cost_formula !== null)
+  ) {
+    throw new Error("unavailable_usage_cost_forbidden");
+  }
   const normalizedRecordedAt = new Date(recordedAt);
   if (Number.isNaN(normalizedRecordedAt.getTime())) throw new Error("recorded_at_invalid");
   return {
@@ -199,8 +395,17 @@ function clone(value) {
  * Tenant-first immutable telemetry store. Persistence is optional and adapter
  * methods never receive an unscoped key.
  */
-export function createAiRuntimeTelemetryStore({ adapter = null, now = () => new Date().toISOString() } = {}) {
+export function createAiRuntimeTelemetryStore({
+  adapter = null,
+  now = () => new Date().toISOString(),
+  verifyProviderUsage = async () => ({ verified: false }),
+  verifyEstimatedUsage = async () => ({ verified: false }),
+  verifyQualityEvidence = async () => ({ verified: false }),
+} = {}) {
   const persistence = validateAiRuntimeTelemetryAdapter(adapter);
+  if (typeof verifyProviderUsage !== "function") throw new Error("telemetry_provider_verifier_required");
+  if (typeof verifyEstimatedUsage !== "function") throw new Error("telemetry_estimate_verifier_required");
+  if (typeof verifyQualityEvidence !== "function") throw new Error("telemetry_quality_verifier_required");
   const records = new Map();
   const idempotency = new Map();
   const writeQueues = new Map();
@@ -238,7 +443,29 @@ export function createAiRuntimeTelemetryStore({ adapter = null, now = () => new 
     ) {
       throw new Error("telemetry_adapter_integrity_violation");
     }
-    const normalized = normalizeAiRuntimeTelemetry(persisted, { recordedAt: persisted.recorded_at });
+    const normalized = normalizeAiRuntimeTelemetry(persisted, {
+      recordedAt: persisted.recorded_at,
+      trustedPersistence: true,
+      trustedAttestation: {
+        provider_usage_verified: persisted.provider_usage_verified === true,
+        estimated_usage_verified: persisted.usage_kind === "estimated",
+        quality_verified: persisted.quality_verified === true,
+        canonical_usage: {
+          usage_kind: persisted.usage_kind,
+          input_tokens: persisted.input_tokens,
+          output_tokens: persisted.output_tokens,
+          cached_tokens: persisted.cached_tokens,
+          actual_cost: persisted.actual_cost,
+          estimated_cost: persisted.estimated_cost,
+          usage_source: persisted.usage_source,
+          rate_card_version: persisted.rate_card_version,
+          cost_formula: persisted.cost_formula,
+          provider_receipt_digest: persisted.provider_receipt_digest,
+        },
+        canonical_quality: persisted.quality,
+        outcome_verified: persisted.outcome_verified === true,
+      },
+    });
     if (normalized.tenant_id !== tenantId || (runId && normalized.run_id !== runId)) throw new Error("telemetry_adapter_scope_violation");
     if (persisted.telemetry_digest !== normalized.telemetry_digest) throw new Error("telemetry_adapter_integrity_violation");
     return normalized;
@@ -262,7 +489,38 @@ export function createAiRuntimeTelemetryStore({ adapter = null, now = () => new 
     async record({ tenant_id, idempotency_key, telemetry }) {
       const tenantId = requireTenant(tenant_id);
       const idempotencyKey = requireIdentifier(idempotency_key, "idempotency_key", 200);
-      const normalized = normalizeAiRuntimeTelemetry({ ...requireObject(telemetry, "telemetry"), tenant_id: tenantId }, { recordedAt: now() });
+      const candidate = { ...requireObject(telemetry, "telemetry"), tenant_id: tenantId };
+      const [providerAttestation, estimateAttestation, qualityAttestation] = await Promise.all([
+        verifyProviderUsage({ tenant_id: tenantId, telemetry: clone(candidate) }),
+        verifyEstimatedUsage({ tenant_id: tenantId, telemetry: clone(candidate) }),
+        verifyQualityEvidence({ tenant_id: tenantId, telemetry: clone(candidate) }),
+      ]);
+      const requestedUsageKind = String(candidate.usage_kind || "").trim();
+      const canonicalUsageAttestation = requestedUsageKind === "actual"
+        ? providerAttestation
+        : requestedUsageKind === "estimated"
+          ? estimateAttestation
+          : null;
+      const normalized = normalizeAiRuntimeTelemetry(candidate, {
+        recordedAt: now(),
+        trustedAttestation: {
+          provider_usage_verified: providerAttestation?.verified === true,
+          provider_attestation_digest: providerAttestation?.attestation_digest
+            || providerAttestation?.receipt_digest
+            || null,
+          estimated_usage_verified: estimateAttestation?.verified === true,
+          estimate_attestation_digest: estimateAttestation?.attestation_digest
+            || estimateAttestation?.receipt_digest
+            || null,
+          canonical_usage: canonicalUsageAttestation?.canonical_usage || null,
+          quality_verified: qualityAttestation?.verified === true,
+          quality_attestation_digest: qualityAttestation?.attestation_digest
+            || qualityAttestation?.receipt_digest
+            || null,
+          canonical_quality: qualityAttestation?.canonical_quality,
+          outcome_verified: qualityAttestation?.outcome_verified === true,
+        },
+      });
       const key = `${tenantId}:${idempotencyKey}`;
       return serializeWrite(tenantId, async () => {
         const existingIdempotency = idempotency.get(key);
@@ -274,9 +532,15 @@ export function createAiRuntimeTelemetryStore({ adapter = null, now = () => new 
         const existing = bucket.get(normalized.run_id) || await loadPersisted(tenantId, normalized.run_id);
         if (existing && existing.telemetry_digest !== normalized.telemetry_digest) throw new Error("telemetry_run_conflict");
         const stored = existing || normalized;
+        if (!existing && persistence) {
+          await persistence.save({
+            tenant_id: tenantId,
+            run_id: stored.run_id,
+            record: clone(stored),
+          });
+        }
         bucket.set(stored.run_id, stored);
         idempotency.set(key, stored);
-        if (!existing && persistence) await persistence.save({ tenant_id: tenantId, run_id: stored.run_id, record: clone(stored) });
         return clone(stored);
       });
     },

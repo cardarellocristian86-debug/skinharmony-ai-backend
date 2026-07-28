@@ -461,6 +461,49 @@ test("performance scorecards and governed outcomes remain bounded", async () => 
   assert.equal(outcome.training_triggered, false);
   assert.equal(outcome.external_action_triggered, false);
   assert.equal(outcome.governance.core_verdict, "ALLOW");
+  assert.equal(outcome.outcome_verified, false);
+  assert.equal(outcome.human_review_status, "pending");
+  assert.equal(outcome.learning_value, 0);
+  assert.equal(outcome.governance.outcome_attestation_verified, false);
+});
+
+test("learning outcome verification is server-resolved and bound to the exact run evidence", async () => {
+  const store = createAiLearningFactoryStore({
+    now: () => timestamp,
+    verifyOutcomeEvidence: async ({ record, expected_binding_digest }) => ({
+      verified: record.run_id === "run-existing",
+      binding_digest: expected_binding_digest,
+      receipt_digest: `sha256:${"c".repeat(64)}`,
+      canonical_outcome: {
+        ...record,
+        outcome_verified: true,
+        human_review_status: "approved",
+        learning_value: 0.8,
+      },
+    }),
+  });
+  const record = {
+    outcome_id: "outcome-attested",
+    run_id: "run-existing",
+    candidate_id: null,
+    outcome_status: "succeeded",
+    outcome_verified: false,
+    human_review_status: "pending",
+    evidence_digest: "evd-outcome",
+    policy_snapshot: "policy-v1",
+    observed_at: timestamp,
+    learning_value: 0,
+  };
+  const verified = await store.recordLearningOutcome({
+    tenant_id: "tenant-a",
+    idempotency_key: "idem-outcome-attested",
+    expected_revision: 0,
+    authorization: authorization(),
+    record,
+  });
+  assert.equal(verified.outcome_verified, true);
+  assert.equal(verified.governance.outcome_attestation_verified, true);
+  assert.match(verified.governance.outcome_attestation_receipt, /^sha256:/);
 });
 
 test("optional adapter contract remains tenant-first", async () => {

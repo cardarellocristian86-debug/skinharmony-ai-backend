@@ -33,10 +33,61 @@ function capsule(overrides = {}) {
   };
 }
 
+function normalizedUsage(overrides = {}) {
+  return {
+    usage_kind: "estimated",
+    reconciled: false,
+    input_tokens: 100,
+    cached_input_tokens: 0,
+    output_tokens: 20,
+    total_tokens: 120,
+    amount: 0.001,
+    currency: "EUR",
+    formula: "(uncached_input*input_rate + cached_input*cached_rate + output*output_rate)/1000000",
+    rate_card_version: "rate-v1",
+    rate_card_provenance: ARTIFACT,
+    rate_card_verified: true,
+    usage_source: "verified_rate_card_estimate",
+    provider_receipt_digest: null,
+    ...overrides,
+  };
+}
+
+function comparison(overrides = {}) {
+  return {
+    schema_version: "agentic_savings_comparison_v1",
+    tenant_id: "tenant-a",
+    usage_kind: "estimated",
+    reconciled: false,
+    baseline: normalizedUsage(),
+    optimized: normalizedUsage({ input_tokens: 80, output_tokens: 20, total_tokens: 100 }),
+    token_savings_ratio: 0.1667,
+    amount_savings: 0.0002,
+    quality: {
+      baseline: 1,
+      optimized: 1,
+      loss: 0,
+      within_floor: true,
+    },
+    security_preserved: true,
+    quality_safety_attestation_verified: false,
+    rate_card_verified: true,
+    actual_savings_claim_allowed: false,
+    label: "estimated_or_unreconciled_comparison",
+    execution_authorized: false,
+    ...overrides,
+  };
+}
+
 class FakePostgresPool {
   constructor() {
     this.calls = [];
     this.capsules = new Map();
+    this.budgets = new Map();
+    this.baselines = new Map();
+    this.comparisons = new Map();
+    this.savingsClaims = new Map();
+    this.rateCards = new Map();
     this.migrationAudit = [];
   }
 
@@ -68,6 +119,10 @@ class FakePostgresPool {
           artifact_ready: true,
           usage_ready: true,
           comparison_ready: true,
+          budget_ready: true,
+          baseline_ready: true,
+          savings_ready: true,
+          rate_card_ready: true,
         }],
         rowCount: 1,
       };
@@ -144,6 +199,129 @@ class FakePostgresPool {
       if (!row || row.lease_owner !== claimant) return { rows: [], rowCount: 0 };
       Object.assign(row, { lease_owner: null, lease_expires_at: null, updated_at: timestamp });
       return { rows: [{ capsule_id: capsuleId }], rowCount: 1 };
+    }
+    if (sql.startsWith("INSERT INTO agentic_governance.agentic_run_budget")) {
+      const [tenantId, runId, policyVersion, budgetJson, policyExpiresAt, actor, receipt, timestamp] = params;
+      const key = `${tenantId}:${runId}`;
+      const prior = this.budgets.get(key);
+      if (prior && prior.receipt_digest !== receipt) return { rows: [], rowCount: 0 };
+      const row = {
+        tenant_id: tenantId,
+        run_id: runId,
+        policy_version: policyVersion,
+        budget: JSON.parse(budgetJson),
+        policy_expires_at: policyExpiresAt,
+        actor_provenance: actor,
+        receipt_digest: receipt,
+        created_at: prior?.created_at || timestamp,
+        updated_at: timestamp,
+      };
+      this.budgets.set(key, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (sql.startsWith("SELECT tenant_id,run_id,policy_version,budget,policy_expires_at")) {
+      const [tenantId, runId] = params;
+      const row = this.budgets.get(`${tenantId}:${runId}`);
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.startsWith("INSERT INTO agentic_governance.agentic_efficiency_baseline")) {
+      const [tenantId, baselineId, repositorySnapshot, rubricDigest, metricsJson, usageKind, actor, receipt, createdAt] = params;
+      const key = `${tenantId}:${baselineId}`;
+      if (this.baselines.has(key)) return { rows: [], rowCount: 0 };
+      const row = {
+        tenant_id: tenantId,
+        baseline_id: baselineId,
+        repository_snapshot: repositorySnapshot,
+        rubric_digest: rubricDigest,
+        metrics: JSON.parse(metricsJson),
+        usage_kind: usageKind,
+        actor_provenance: actor,
+        receipt_digest: receipt,
+        created_at: createdAt,
+      };
+      this.baselines.set(key, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (sql.startsWith("SELECT tenant_id,baseline_id,repository_snapshot,rubric_digest")) {
+      const [tenantId, baselineId] = params;
+      const row = this.baselines.get(`${tenantId}:${baselineId}`);
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.startsWith("INSERT INTO agentic_governance.agentic_rate_card_snapshot")) {
+      const [
+        tenantId,
+        rateCardVersion,
+        provider,
+        modelId,
+        currency,
+        ratesJson,
+        sourceReference,
+        provenanceDigest,
+        effectiveAt,
+        expiresAt,
+        actor,
+        receipt,
+        createdAt,
+      ] = params;
+      const key = `${tenantId}:${rateCardVersion}`;
+      if (this.rateCards.has(key)) return { rows: [], rowCount: 0 };
+      const row = {
+        tenant_id: tenantId,
+        rate_card_version: rateCardVersion,
+        provider,
+        model_id: modelId,
+        currency,
+        rates: JSON.parse(ratesJson),
+        source_reference: sourceReference,
+        provenance_digest: provenanceDigest,
+        effective_at: effectiveAt,
+        expires_at: expiresAt,
+        actor_provenance: actor,
+        receipt_digest: receipt,
+        created_at: createdAt,
+      };
+      this.rateCards.set(key, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (sql.startsWith("SELECT tenant_id,rate_card_version,provider,model_id")) {
+      const [tenantId, rateCardVersion] = params;
+      const row = this.rateCards.get(`${tenantId}:${rateCardVersion}`);
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.startsWith("SELECT usage_kind,quality_floor_preserved,safety_preserved")) {
+      const [tenantId, comparisonId] = params;
+      const row = this.comparisons.get(`${tenantId}:${comparisonId}`);
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.startsWith("INSERT INTO agentic_governance.agentic_savings_claim")) {
+      const [
+        tenantId,
+        claimId,
+        comparisonId,
+        claimKind,
+        reconciled,
+        amountJson,
+        qualityJson,
+        actor,
+        receipt,
+        createdAt,
+      ] = params;
+      const key = `${tenantId}:${claimId}`;
+      if (this.savingsClaims.has(key)) return { rows: [], rowCount: 0 };
+      const row = {
+        tenant_id: tenantId,
+        claim_id: claimId,
+        comparison_id: comparisonId,
+        claim_kind: claimKind,
+        reconciled,
+        amount: JSON.parse(amountJson),
+        quality_delta: JSON.parse(qualityJson),
+        actor_provenance: actor,
+        receipt_digest: receipt,
+        created_at: createdAt,
+      };
+      this.savingsClaims.set(key, row);
+      return { rows: [{ ...row }], rowCount: 1 };
     }
     throw new Error(`unexpected_fake_query:${sql}`);
   }
@@ -283,6 +461,261 @@ test("optimistic concurrency supports create-update and rejects stale capsule ve
       receipt_digest: RECEIPT,
     }),
     /work_capsule_revision_conflict/,
+  );
+});
+
+test("run budgets, baselines, rate cards and savings claims are operational and provenance-bound", async () => {
+  const pool = new FakePostgresPool();
+  const store = createAgenticEfficiencyPostgresStore({
+    connectionString: "postgres://governance:masked@localhost:5432/nyra",
+    pool,
+    now: () => new Date(NOW),
+    runtimeRole: "agentic_runtime",
+  });
+  const budget = await store.saveRunBudget({
+    tenant_id: "tenant-a",
+    run_id: "run-a",
+    policy_version: "budget-v1",
+    budget: { token_limit: 10_000, invocation_limit: 4, retry_limit: 2 },
+    policy_expires_at: "2026-07-27T21:00:00.000Z",
+    actor_provenance: "core:budget-guard",
+    receipt_digest: RECEIPT,
+  });
+  assert.equal(budget.policy_version, "budget-v1");
+  assert.equal((await store.getRunBudget({ tenant_id: "tenant-a", run_id: "run-a" })).run_id, "run-a");
+  assert.equal(await store.getRunBudget({ tenant_id: "tenant-b", run_id: "run-a" }), null);
+  await assert.rejects(
+    store.saveRunBudget({
+      tenant_id: "tenant-a",
+      run_id: "run-a",
+      policy_version: "budget-v2",
+      budget: { token_limit: 1 },
+      policy_expires_at: "2026-07-27T21:00:00.000Z",
+      actor_provenance: "core:budget-guard",
+      receipt_digest: `sha256:${"c".repeat(64)}`,
+    }),
+    /agentic_run_budget_conflict/,
+  );
+
+  const baseline = await store.recordBaseline({
+    tenant_id: "tenant-a",
+    baseline_id: "baseline-a",
+    repository_snapshot: ARTIFACT,
+    rubric_digest: RECEIPT,
+    metrics: { usage_kind: "estimated", quality: 1 },
+    usage_kind: "estimated",
+    actor_provenance: "core:evaluation",
+    receipt_digest: RECEIPT,
+  });
+  assert.equal(baseline.usage_kind, "estimated");
+  assert.equal((await store.getBaseline({ tenant_id: "tenant-a", baseline_id: "baseline-a" })).baseline_id, "baseline-a");
+  await assert.rejects(
+    store.recordBaseline({
+      tenant_id: "tenant-a",
+      baseline_id: "baseline-forged-actual",
+      repository_snapshot: ARTIFACT,
+      rubric_digest: RECEIPT,
+      metrics: { usage_kind: "actual" },
+      usage_kind: "actual",
+      actor_provenance: "core:evaluation",
+      receipt_digest: RECEIPT,
+    }),
+    /actual_usage_unverified/,
+  );
+
+  const rateCard = await store.saveRateCardSnapshot({
+    tenant_id: "tenant-a",
+    rate_card_version: "rate-v1",
+    provider: "provider-a",
+    model_id: "model-a",
+    currency: "EUR",
+    rates: { input_per_million: 1, output_per_million: 2 },
+    source_reference: "provider-published-rate-card",
+    provenance_digest: ARTIFACT,
+    effective_at: "2026-07-27T19:00:00.000Z",
+    expires_at: "2026-07-28T20:00:00.000Z",
+    actor_provenance: "core:rate-card",
+    receipt_digest: RECEIPT,
+  });
+  assert.equal(rateCard.rate_card_version, "rate-v1");
+  assert.equal((await store.getRateCardSnapshot({
+    tenant_id: "tenant-a",
+    rate_card_version: "rate-v1",
+  })).provider, "provider-a");
+
+  pool.comparisons.set("tenant-a:comparison-estimated", {
+    usage_kind: "estimated",
+    quality_floor_preserved: true,
+    safety_preserved: true,
+  });
+  await assert.rejects(
+    store.recordSavingsClaim({
+      tenant_id: "tenant-a",
+      claim_id: "claim-forged-actual",
+      comparison_id: "comparison-estimated",
+      claim_kind: "actual",
+      reconciled: true,
+      amount: { value: 10, currency: "EUR" },
+      quality_delta: { loss: 0 },
+      actor_provenance: "core:savings",
+      receipt_digest: RECEIPT,
+    }),
+    /actual_savings_claim_unverified/,
+  );
+  const estimatedClaim = await store.recordSavingsClaim({
+    tenant_id: "tenant-a",
+    claim_id: "claim-estimated",
+    comparison_id: "comparison-estimated",
+    claim_kind: "estimated",
+    reconciled: false,
+    amount: { value: 10, currency: "EUR" },
+    quality_delta: { loss: 0 },
+    actor_provenance: "core:savings",
+    receipt_digest: RECEIPT,
+  });
+  assert.equal(estimatedClaim.claim_kind, "estimated");
+  assert.equal(estimatedClaim.reconciled, false);
+});
+
+test("every JSONB write boundary rejects raw fields, PII and usage-kind ambiguity", async () => {
+  const store = createAgenticEfficiencyPostgresStore({
+    connectionString: "postgres://governance:masked@localhost:5432/nyra",
+    pool: new FakePostgresPool(),
+    now: () => new Date(NOW),
+    runtimeRole: "agentic_runtime",
+  });
+  const common = {
+    tenant_id: "tenant-a",
+    actor_provenance: "core:privacy-guard",
+    receipt_digest: RECEIPT,
+  };
+
+  await assert.rejects(
+    store.saveRunBudget({
+      ...common,
+      run_id: "run-private-budget",
+      policy_version: "budget-v1",
+      budget: { token_limit: 10, raw_prompt: "private prompt" },
+      policy_expires_at: "2026-07-27T21:00:00.000Z",
+    }),
+    /sensitive_field_forbidden/,
+  );
+  await assert.rejects(
+    store.saveRunBudget({
+      ...common,
+      run_id: "mario.rossi@example.test",
+      policy_version: "budget-v1",
+      budget: { token_limit: 10 },
+      policy_expires_at: "2026-07-27T21:00:00.000Z",
+    }),
+    /run_id_invalid/,
+  );
+  await assert.rejects(
+    store.saveRunBudget({
+      ...common,
+      run_id: "run_393331234567",
+      policy_version: "budget-v1",
+      budget: { token_limit: 10 },
+      policy_expires_at: "2026-07-27T21:00:00.000Z",
+    }),
+    /run_id_invalid/,
+  );
+  await assert.rejects(
+    store.recordUsage({
+      ...common,
+      run_id: "run-private-usage",
+      usage: normalizedUsage({ usage_source: "mario.rossi@example.test" }),
+    }),
+    /sensitive_content_forbidden/,
+  );
+  await assert.rejects(
+    store.recordBaseline({
+      ...common,
+      baseline_id: "baseline-private",
+      repository_snapshot: ARTIFACT,
+      rubric_digest: RECEIPT,
+      metrics: {
+        usage_kind: "estimated",
+        quality: 1,
+        currency: "+39 333 1234567",
+      },
+      usage_kind: "estimated",
+    }),
+    /sensitive_content_forbidden/,
+  );
+  await assert.rejects(
+    store.saveRateCardSnapshot({
+      ...common,
+      rate_card_version: "rate-private",
+      provider: "provider-a",
+      model_id: "model-a",
+      currency: "EUR",
+      rates: {
+        input_per_million: 1,
+        output_per_million: 2,
+        raw_prompt: "private prompt",
+      },
+      source_reference: "provider-rate-card",
+      provenance_digest: ARTIFACT,
+      effective_at: "2026-07-27T19:00:00.000Z",
+      expires_at: "2026-07-28T20:00:00.000Z",
+    }),
+    /sensitive_field_forbidden/,
+  );
+  await assert.rejects(
+    store.recordComparison({
+      ...common,
+      comparison_id: "comparison-private",
+      baseline_id: "baseline-a",
+      optimized_run_id: "run-a",
+      comparison: {
+        ...comparison(),
+        raw_prompt: "private prompt",
+      },
+    }),
+    /sensitive_field_forbidden/,
+  );
+  await assert.rejects(
+    store.recordSavingsClaim({
+      ...common,
+      claim_id: "claim-private",
+      comparison_id: "comparison-a",
+      claim_kind: "estimated",
+      reconciled: false,
+      amount: { value: 1, currency: "mario.rossi@example.test" },
+      quality_delta: { loss: 0 },
+    }),
+    /sensitive_content_forbidden/,
+  );
+
+  await assert.rejects(
+    store.recordBaseline({
+      ...common,
+      baseline_id: "baseline-kind-mismatch",
+      repository_snapshot: ARTIFACT,
+      rubric_digest: RECEIPT,
+      metrics: { usage_kind: "actual", quality: 1 },
+      usage_kind: "estimated",
+    }),
+    /usage_kind_mismatch/,
+  );
+  const actualUsage = normalizedUsage({
+    usage_kind: "actual",
+    reconciled: true,
+    provider_receipt_digest: RECEIPT,
+  });
+  await assert.rejects(
+    store.recordComparison({
+      ...common,
+      comparison_id: "comparison-kind-mismatch",
+      baseline_id: "baseline-a",
+      optimized_run_id: "run-a",
+      comparison: comparison({
+        baseline: actualUsage,
+        optimized: actualUsage,
+      }),
+    }),
+    /usage_binding_invalid/,
   );
 });
 

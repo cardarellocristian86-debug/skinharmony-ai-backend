@@ -13,9 +13,29 @@ function requireText(value, field, max = 160) {
   return normalized;
 }
 
+const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._:@/-]*$/i;
+const IDENTIFIER_EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+const IDENTIFIER_PHONE_PATTERN = /(?:^|[_:-])\+?\d[\d .()-]{7,}\d$/;
+const IDENTIFIER_SECRET_PATTERN = /\b(?:sk|gho|ghp|ghs|github_pat|akia)[-_a-z0-9]{12,}\b/i;
+const GENERATED_UUID_IDENTIFIER_PATTERN = /^[a-z][a-z0-9._:-]*[_:-][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function requireIdentifierText(value, field, max = 160) {
+  const normalized = requireText(value, field, max);
+  if (
+    !IDENTIFIER_PATTERN.test(normalized)
+    || IDENTIFIER_EMAIL_PATTERN.test(normalized)
+    || (
+      IDENTIFIER_PHONE_PATTERN.test(normalized)
+      && !GENERATED_UUID_IDENTIFIER_PATTERN.test(normalized)
+    )
+    || IDENTIFIER_SECRET_PATTERN.test(normalized)
+  ) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
 function normalizeTools(tools) {
   if (!Array.isArray(tools)) return [];
-  return [...new Set(tools.map((tool) => requireText(tool, "tool_id", 120)))].slice(0, 64);
+  return [...new Set(tools.map((tool) => requireIdentifierText(tool, "tool_id", 120)))].slice(0, 64);
 }
 
 function normalizeModelBudget(value) {
@@ -28,16 +48,16 @@ function normalizeModelBudget(value) {
 }
 
 function normalizeRunInput(input = {}) {
-  const tenantId = requireText(input.tenant_id, "tenant_id", 120);
-  const agentId = requireText(input.agent_id, "agent_id", 120);
-  const runId = input.run_id ? requireText(input.run_id, "run_id", 160) : `run_${crypto.randomUUID()}`;
+  const tenantId = requireIdentifierText(input.tenant_id, "tenant_id", 120);
+  const agentId = requireIdentifierText(input.agent_id, "agent_id", 120);
+  const runId = input.run_id ? requireIdentifierText(input.run_id, "run_id", 160) : `run_${crypto.randomUUID()}`;
   return {
     schema_version: "generic_agent_run_v1",
     run_id: runId,
     tenant_id: tenantId,
     agent_id: agentId,
-    session_id: input.session_id ? requireText(input.session_id, "session_id", 160) : null,
-    parent_run_id: input.parent_run_id ? requireText(input.parent_run_id, "parent_run_id", 160) : null,
+    session_id: input.session_id ? requireIdentifierText(input.session_id, "session_id", 160) : null,
+    parent_run_id: input.parent_run_id ? requireIdentifierText(input.parent_run_id, "parent_run_id", 160) : null,
     task: requireText(input.task, "task", 4_000),
     tools: normalizeTools(input.tools),
     metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? clone(input.metadata) : {},
@@ -57,7 +77,7 @@ function normalizeCheckpoint(input = {}) {
     schema_version: "generic_agent_checkpoint_v1",
     state,
     cursor: input.cursor === undefined || input.cursor === null ? null : requireText(input.cursor, "cursor", 1_000),
-    idempotency_key: input.idempotency_key ? requireText(input.idempotency_key, "idempotency_key", 160) : null,
+    idempotency_key: input.idempotency_key ? requireIdentifierText(input.idempotency_key, "idempotency_key", 160) : null,
   };
 }
 
@@ -79,9 +99,9 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
   }
 
   function getRun(runId, tenantId) {
-    const run = runs.get(requireText(runId, "run_id", 160));
+    const run = runs.get(requireIdentifierText(runId, "run_id", 160));
     if (!run) throw new Error("run_not_found");
-    if (tenantId && run.tenant_id !== requireText(tenantId, "tenant_id", 120)) throw new Error("cross_tenant_run_denied");
+    if (tenantId && run.tenant_id !== requireIdentifierText(tenantId, "tenant_id", 120)) throw new Error("cross_tenant_run_denied");
     return run;
   }
 
@@ -123,12 +143,12 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
 
     createHandoff({ run_id, tenant_id, to_agent_id, summary, idempotency_key = null }) {
       const run = getRun(run_id, tenant_id);
-      const normalizedIdempotencyKey = idempotency_key ? requireText(idempotency_key, "idempotency_key", 160) : null;
+      const normalizedIdempotencyKey = idempotency_key ? requireIdentifierText(idempotency_key, "idempotency_key", 160) : null;
       for (const existing of handoffs.values()) {
         if (normalizedIdempotencyKey && existing.tenant_id === run.tenant_id && existing.run_id === run.run_id && existing.idempotency_key === normalizedIdempotencyKey) return clone(existing);
       }
       if (run.status !== "running") throw new Error("run_not_handoffable");
-      const recipient = requireText(to_agent_id, "to_agent_id", 120);
+      const recipient = requireIdentifierText(to_agent_id, "to_agent_id", 120);
       const normalizedSummary = requireText(summary, "summary", 4_000);
       const scan = scanInterAgentHandoff({
         tenant_id: run.tenant_id,
@@ -180,10 +200,10 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
     },
 
     claimHandoff({ handoff_id, tenant_id, agent_id }) {
-      const handoff = handoffs.get(requireText(handoff_id, "handoff_id", 160));
+      const handoff = handoffs.get(requireIdentifierText(handoff_id, "handoff_id", 160));
       if (!handoff) throw new Error("handoff_not_found");
-      if (handoff.tenant_id !== requireText(tenant_id, "tenant_id", 120)) throw new Error("cross_tenant_handoff_denied");
-      if (handoff.to_agent_id !== requireText(agent_id, "agent_id", 120)) throw new Error("handoff_recipient_mismatch");
+      if (handoff.tenant_id !== requireIdentifierText(tenant_id, "tenant_id", 120)) throw new Error("cross_tenant_handoff_denied");
+      if (handoff.to_agent_id !== requireIdentifierText(agent_id, "agent_id", 120)) throw new Error("handoff_recipient_mismatch");
       if (handoff.status !== "open") throw new Error("handoff_not_claimable");
       handoff.status = "claimed";
       handoff.claimed_at = now();
@@ -254,7 +274,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
 
     reserveModelCall({ run_id, tenant_id, model_id, estimated_tokens }) {
       const run = getRun(run_id, tenant_id);
-      const model = requireText(model_id, "model_id", 160);
+      const model = requireIdentifierText(model_id, "model_id", 160);
       const tokens = Number(estimated_tokens);
       if (!Number.isInteger(tokens) || tokens < 1 || tokens > 10_000_000) throw new Error("estimated_tokens_invalid");
       const nextCalls = run.model_usage.model_calls + 1;
@@ -268,7 +288,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
 
     recordToolEvent({ run_id, tenant_id, tool_id, outcome = "success", retry_count = 0 }) {
       const run = getRun(run_id, tenant_id);
-      const normalizedTool = requireText(tool_id, "tool_id", 120);
+      const normalizedTool = requireIdentifierText(tool_id, "tool_id", 120);
       if (!run.tools.includes(normalizedTool)) throw new Error("tool_not_allowed_for_run");
       const normalizedOutcome = ["success", "failure", "retry"].includes(outcome) ? outcome : null;
       if (!normalizedOutcome) throw new Error("tool_outcome_invalid");
@@ -288,7 +308,7 @@ export function createGenericAgentRuntime({ now = () => new Date().toISOString()
     },
 
     getMetrics({ tenant_id }) {
-      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const tenantId = requireIdentifierText(tenant_id, "tenant_id", 120);
       const tenantRuns = [...runs.values()].filter((run) => run.tenant_id === tenantId);
       const status_counts = {};
       const tool_events = { success: 0, failure: 0, retry: 0 };

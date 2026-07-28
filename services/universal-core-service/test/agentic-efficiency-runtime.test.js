@@ -160,10 +160,41 @@ test("expired or injection-bearing work capsules fail closed without echoing hos
   assert.throws(() => validateWorkCapsule(hostile, { now: NOW }), /work_capsule_injection_detected/);
 });
 
+test("work capsules redact personal data from metadata and reject it in repository paths", () => {
+  const normalized = validateWorkCapsule(capsule({
+    goal: "Follow up mario.rossi@example.test on +39 333 123 4567",
+    decisions: ["Observed from 192.168.10.42"],
+  }), { now: NOW });
+  assert.equal(normalized.goal.includes("mario.rossi@example.test"), false);
+  assert.equal(normalized.goal.includes("333 123 4567"), false);
+  assert.match(normalized.goal, /REDACTED_EMAIL/);
+  assert.match(normalized.goal, /REDACTED_PHONE/);
+  assert.deepEqual(normalized.decisions, ["Observed from [REDACTED_IP]"]);
+  assert.throws(
+    () => validateWorkCapsule(capsule({
+      relevant_files: ["reports/mario.rossi@example.test.json"],
+    }), { now: NOW }),
+    /personal_data_forbidden/,
+  );
+});
+
+test("durable digest labels are preserved byte-for-byte even with phone-like hash segments", () => {
+  const digestLabel = "goal_digest:sha256:470def3717e05c8eabb797023523d05a0491dc6314f293e6f3470c3d0cadc878";
+  const normalized = validateWorkCapsule(capsule({
+    goal: digestLabel,
+    scope: [digestLabel.replace("goal_digest", "scope_digest")],
+    relevant_files: [digestLabel.replace("goal_digest", "path_digest")],
+    changed_files: [digestLabel.replace("goal_digest", "path_digest")],
+  }), { now: NOW });
+  assert.equal(normalized.goal, digestLabel);
+  assert.equal(normalized.scope[0], digestLabel.replace("goal_digest", "scope_digest"));
+  assert.equal(normalized.relevant_files[0], digestLabel.replace("goal_digest", "path_digest"));
+});
+
 test("simple deterministic task suppresses excessive fan-out, tools and reviewer context", () => {
   const plan = buildAgenticEfficiencyPlan({
     trustedContext: trustedContext(),
-    request: task(),
+    request: task({ goal: "Review account for mario.rossi@example.test" }),
     now: NOW,
   });
   assert.equal(plan.plan.agent_count, 1);
@@ -174,6 +205,10 @@ test("simple deterministic task suppresses excessive fan-out, tools and reviewer
   assert.equal(plan.plan.reviewer.context.repository_snapshot_included, false);
   assert.equal(plan.plan.model_routing.mode, "recommendation_only");
   assert.equal(plan.plan.model_routing.savings_claim_allowed, false);
+  assert.match(plan.work_capsule.capsule.goal, /REDACTED_EMAIL/);
+  assert.equal(JSON.stringify(plan.work_capsule).includes("mario.rossi@example.test"), false);
+  assert.equal(plan.audit.durable_capsule_free_text_persisted, false);
+  assert.equal(plan.audit.ephemeral_capsule_actionable, true);
   assert.equal(plan.execution_authorized, false);
 });
 
@@ -294,6 +329,21 @@ test("caller completion, quality and security booleans cannot authorize early st
     now: NOW,
   });
   assert.equal(verified.plan.early_stop.allowed, true);
+
+  const callerOptOut = buildAgenticEfficiencyPlan({
+    trustedContext: trustedContext(),
+    trustedVerification: {
+      receiptDigest: DIGEST_A,
+      acceptanceVerified: true,
+      testsVerified: true,
+      evidenceVerified: true,
+      securityTestsVerified: false,
+    },
+    request: { ...forged, security_tests_required: false },
+    now: NOW,
+  });
+  assert.equal(callerOptOut.plan.early_stop.allowed, false);
+  assert.equal(callerOptOut.plan.early_stop.safety_satisfied, false);
 });
 
 test("artifact reuse requires tenant, hash, version, verification, security and freshness", () => {
@@ -428,6 +478,32 @@ test("caller policy claims cannot replace trusted Core security, isolation or qu
   assert(forged.reasons.includes("security_checks_unverified"));
   assert(forged.reasons.includes("tenant_isolation_unverified"));
   assert(forged.reasons.includes("exposure_policy_unverified"));
+});
+
+test("caller cannot disable the mandatory security floor for an optimization", () => {
+  const plan = buildAgenticEfficiencyPlan({
+    trustedContext: trustedContext(),
+    request: task({ security_tests_required: false }),
+    now: NOW,
+  });
+  const verdict = evaluateAgenticBudgetGuard({
+    trustedContext: trustedContext(),
+    plan,
+    policy: safeBudgetPolicy({ security_checks_required: false }),
+    trustedVerifications: {
+      governanceReceiptDigest: DIGEST_A,
+      qualityVerified: true,
+      qualityBaseline: 0.98,
+      qualityPrediction: 0.98,
+      securityVerified: false,
+      tenantIsolationVerified: true,
+      exposurePolicyVerified: true,
+    },
+    now: NOW,
+  });
+  assert.equal(verdict.optimization_allowed, false);
+  assert(verdict.reasons.includes("security_policy_cannot_be_disabled"));
+  assert(verdict.reasons.includes("security_checks_unverified"));
 });
 
 test("critical budget exhaustion never hard-stops or declares an incomplete final outcome", () => {

@@ -318,6 +318,17 @@ function normalizeLearningOutcome(input) {
       owner_confirmed: requireBoolean(governance.owner_confirmed, "owner_confirmed"),
       audit_reference: requireIdentifier(governance.audit_reference, "audit_reference", 240),
       rollback_reference: requireIdentifier(governance.rollback_reference, "rollback_reference", 240),
+      outcome_attestation_verified: governance.outcome_attestation_verified === true,
+      outcome_attestation_receipt: optionalIdentifier(
+        governance.outcome_attestation_receipt,
+        "outcome_attestation_receipt",
+        240,
+      ),
+      outcome_binding_digest: optionalIdentifier(
+        governance.outcome_binding_digest,
+        "outcome_binding_digest",
+        240,
+      ),
     },
     raw_content_persisted: false,
     training_triggered: false,
@@ -490,8 +501,15 @@ export function evaluateAiLearningGovernanceGuard({
  * The optional adapter contract is deliberately narrow and receives tenant_id
  * on every load/save/list operation.
  */
-export function createAiLearningFactoryStore({ adapter = null, now = () => new Date().toISOString() } = {}) {
+export function createAiLearningFactoryStore({
+  adapter = null,
+  now = () => new Date().toISOString(),
+  verifyOutcomeEvidence = async () => ({ verified: false }),
+} = {}) {
   const persistence = validateAdapter(adapter);
+  if (typeof verifyOutcomeEvidence !== "function") {
+    throw new Error("learning_outcome_evidence_verifier_required");
+  }
   const memory = new Map();
   const idempotency = new Map();
   const writeQueues = new Map();
@@ -804,18 +822,60 @@ export function createAiLearningFactoryStore({ adapter = null, now = () => new D
     });
   };
 
-  api.recordLearningOutcome = ({
+  api.recordLearningOutcome = async ({
     tenant_id,
     record,
     authorization,
     idempotency_key,
     expected_revision = null,
   }) => {
+    const tenantId = requireTenant(tenant_id);
+    const requested = requireObject(record, "learning_outcome");
     const proof = governanceProof(authorization);
+    const expectedBindingDigest = requestDigest({
+      tenant_id: tenantId,
+      outcome_id: requested.outcome_id,
+      run_id: requested.run_id,
+      candidate_id: requested.candidate_id || null,
+      outcome_status: requested.outcome_status,
+      evidence_digest: requested.evidence_digest,
+      policy_snapshot: requested.policy_snapshot,
+      observed_at: requested.observed_at,
+    });
+    const attestation = await verifyOutcomeEvidence({
+      tenant_id: tenantId,
+      record: clone(requested),
+      expected_binding_digest: expectedBindingDigest,
+    });
+    const verified = Boolean(
+      attestation?.verified === true
+      && attestation?.binding_digest === expectedBindingDigest
+      && /^sha256:[a-f0-9]{64}$/.test(String(attestation?.receipt_digest || ""))
+    );
+    const canonical = verified && attestation?.canonical_outcome
+      ? requireObject(attestation.canonical_outcome, "canonical_learning_outcome")
+      : requested;
     return write({
-      tenantId: requireTenant(tenant_id),
+      tenantId,
       collection: "learning_outcomes",
-      value: { ...requireObject(record, "learning_outcome"), governance: proof },
+      value: {
+        ...canonical,
+        tenant_id: undefined,
+        outcome_id: requested.outcome_id,
+        run_id: requested.run_id,
+        candidate_id: requested.candidate_id || null,
+        outcome_verified: verified,
+        human_review_status: verified
+          ? canonical.human_review_status
+          : "pending",
+        learning_value: verified ? canonical.learning_value : 0,
+        governance: {
+          ...proof,
+          outcome_attestation_verified: verified,
+          outcome_attestation_receipt: verified ? attestation.receipt_digest : null,
+          outcome_binding_digest: expectedBindingDigest,
+        },
+      },
       idempotencyKey: idempotency_key,
       expectedRevision: expected_revision,
     });
