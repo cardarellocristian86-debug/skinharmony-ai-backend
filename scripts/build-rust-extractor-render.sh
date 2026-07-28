@@ -19,7 +19,9 @@ fi
 export PATH="$CARGO_HOME/bin:$PATH"
 mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
 
-if ! command -v rustup >/dev/null 2>&1; then
+# Check the selected CARGO_HOME, not merely PATH. A stale or offloaded host
+# rustup binary must not be mistaken for a complete isolated Render toolchain.
+if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
   curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --no-modify-path
 fi
 

@@ -27,17 +27,39 @@ function close() {
   return new Promise((resolve) => server.close(resolve));
 }
 
-async function api(base, method, pathName, body, key = "test-admin-key") {
+async function api(base, method, pathName, body, key = "test-admin-key", additionalHeaders = {}) {
   const response = await fetch(`${base}${pathName}`, {
     method,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${key}`,
+      ...additionalHeaders,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = await response.json();
   return { status: response.status, json };
+}
+
+function signedClientContext(secret, tenantId, overrides = {}) {
+  const context = {
+    version: "mcp_client_context_v1",
+    tenant_id: tenantId,
+    client_type: "admin",
+    audience: "admin_control_room",
+    entitlements: [],
+    role: "admin",
+    issued_at: new Date().toISOString(),
+    ...overrides,
+  };
+  const canonical = JSON.stringify(context);
+  const digest = crypto.createHmac("sha256", secret)
+    .update(`mcp-client-context\u0000${canonical}`)
+    .digest("hex");
+  return Buffer.from(JSON.stringify({
+    ...context,
+    assertion: `mcc_${digest}`,
+  })).toString("base64url");
 }
 
 function signedOwnerContext(secret, tenantId, overrides = {}) {
@@ -1313,7 +1335,12 @@ try {
       volatility: 70,
       commercial_relevance: 48,
     },
-  }, controlRoomKey);
+  }, controlRoomKey, {
+    "x-sh-client-context": signedClientContext(
+      ownerContextSigningSecret,
+      "tenant_demo_skinharmony",
+    ),
+  });
   assert(financeTestBranch.status === 200 && financeTestBranch.json.guardrail.mode === "test_only" && financeTestBranch.json.branch_output?.production_connected === false, "finance test branch failed");
   mark("branch_nyra_finance_test", true, {
     mode: financeTestBranch.json.guardrail.mode,
