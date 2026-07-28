@@ -104,6 +104,13 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
     ]).has(tool.name)
       ? "sandboxed_scoped_work"
       : "owner_confirmed_governed_action",
+    dry_run: new Set([
+      "nyra_research_envelope_authorize",
+      "nyra_research_workspace_open",
+      "nyra_research_workspace_attach",
+      "nyra_research_distill",
+      "nyra_research_workspace_close",
+    ]).has(tool.name),
     external_side_effect: tool.annotations?.openWorldHint === true,
     destructive: tool.annotations?.destructiveHint === true,
     bounded_scope: true,
