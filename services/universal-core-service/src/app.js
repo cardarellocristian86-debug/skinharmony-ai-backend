@@ -109,6 +109,7 @@ import { createGenericAgentCheckpointStore } from "./genericAgentCheckpointStore
 import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
 import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
 import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
+import { createWorkContinuityRuntime } from "./workContinuityRuntime.js";
 import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./governedAgentRegistry.js";
 import { createRelationalOrchestrationSupervisor } from "./relationalOrchestrationSupervisor.js";
 import { createDynamicTaskTreeRuntime } from "./dynamicTaskTree.js";
@@ -4144,6 +4145,9 @@ export function createUniversalCoreService(options = {}) {
   const genericAgentOrchestrationStore = options.genericAgentOrchestrationStore || createGenericAgentOrchestrationStore({
     root: path.join(storageRoot, "generic-agent-orchestrations"),
   });
+  const workContinuity = options.workContinuityRuntime || createWorkContinuityRuntime({
+    root: path.join(storageRoot, "work-continuity"),
+  });
   const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
   const relationalOrchestrationSupervisor = options.relationalOrchestrationSupervisor || createRelationalOrchestrationSupervisor();
   const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
@@ -4984,6 +4988,34 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) {
       return publicError(res, 400, error.message || "generic_agent_run_invalid");
     }
+  });
+
+  app.post("/v1/work-continuity/works", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try {
+      const work = workContinuity.create(req.body || {}, req.tenantId);
+      audit.append("work_continuity_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, work_id: work.identity.work_id });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, work, execution_authorized: false });
+    } catch (error) { return publicError(res, 400, error.message || "work_continuity_create_failed"); }
+  });
+  app.get("/v1/work-continuity/works/:workId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try { return res.json({ ok: true, tenant_id: req.tenantId, work: workContinuity.read({ tenant_id: req.tenantId, work_id: req.params.workId }), execution_authorized: false }); }
+    catch (error) { return publicError(res, error.message === "work_not_found" ? 404 : 403, error.message || "work_continuity_read_failed"); }
+  });
+  app.post("/v1/work-continuity/works/:workId/events", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try { return res.status(201).json(workContinuity.append({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId })); }
+    catch (error) { return publicError(res, 400, error.message || "work_continuity_event_failed"); }
+  });
+  app.post("/v1/work-continuity/works/:workId/checkpoints", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try { return res.status(201).json(workContinuity.checkpoint({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId })); }
+    catch (error) { return publicError(res, 400, error.message || "work_continuity_checkpoint_failed"); }
+  });
+  app.post("/v1/work-continuity/works/:workId/resume", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    try { return res.json(workContinuity.resume({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId })); }
+    catch (error) { return publicError(res, error.message === "continuity_drift_detected" ? 409 : 400, error.message || "work_continuity_resume_failed"); }
+  });
+  app.post("/v1/work-continuity/works/:workId/verified-memory", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+    try { return res.status(201).json({ ok: true, memory: workContinuity.verifyMemory({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId }) }); }
+    catch (error) { return publicError(res, 400, error.message || "work_continuity_memory_failed"); }
   });
 
   app.post("/v1/generic-agents/runs/:runId/checkpoint", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
