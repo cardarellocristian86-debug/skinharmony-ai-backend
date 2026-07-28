@@ -6343,8 +6343,19 @@ class DesktopMirrorService {
     const nextItems = [...current];
     skinHarmonyProtocolLibrary.forEach((protocol) => {
       const existing = currentById.get(protocol.id);
-      const nextProtocol = {
+      const canonicalFields = {
         ...protocol,
+        centerId: SKINHARMONY_LIBRARY_CENTER_ID,
+        libraryScope: "skinharmony",
+        source: "skinharmony_library",
+        status: "active"
+      };
+      const needsRepair = !existing || Object.entries(canonicalFields).some(([key, value]) =>
+        JSON.stringify(existing?.[key]) !== JSON.stringify(value)
+      );
+      if (existing && !needsRepair) return;
+      const nextProtocol = {
+        ...canonicalFields,
         createdAt: existing?.createdAt || now,
         updatedAt: now
       };
@@ -6353,10 +6364,6 @@ class DesktopMirrorService {
         nextItems[index] = {
           ...existing,
           ...nextProtocol,
-          centerId: SKINHARMONY_LIBRARY_CENTER_ID,
-          libraryScope: "skinharmony",
-          source: "skinharmony_library",
-          status: "active"
         };
         changed = true;
         return;
