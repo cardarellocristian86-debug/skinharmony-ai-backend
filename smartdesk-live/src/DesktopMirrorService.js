@@ -6318,6 +6318,7 @@ class DesktopMirrorService {
         { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
         { name: "gold_imports", filePath: path.join(DATA_DIR, "gold_imports.json"), defaultValue: [] },
         { name: "whatsapp_messages", filePath: path.join(DATA_DIR, "whatsapp_messages.json"), defaultValue: [] },
+        { name: "client_recall_profiles", filePath: path.join(DATA_DIR, "client_recall_profiles.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
@@ -6393,9 +6394,7 @@ class DesktopMirrorService {
       return;
     }
     const current = admin;
-    const next = {
-      ...current,
-      role: "superadmin",
+    const normalized = {
       username: current.username || DEFAULT_ADMIN_USERNAME,
       active: current.active !== false,
       centerId: current.centerId || DEFAULT_CENTER_ID,
@@ -6403,11 +6402,15 @@ class DesktopMirrorService {
       planType: current.planType || "active",
       accountStatus: current.accountStatus || "active",
       paymentStatus: current.paymentStatus || "paid",
-      activatedAt: current.activatedAt || nowIso(),
-      updatedAt: nowIso()
+      activatedAt: current.activatedAt || nowIso()
     };
-    const changed = Object.entries(next).some(([key, value]) => current[key] !== value);
-    if (changed) await this.usersRepository.updateDurable(admin.id, () => next);
+    const changed = Object.entries(normalized).some(([key, value]) => current[key] !== value);
+    if (!changed) return;
+    await this.usersRepository.updateDurable(admin.id, () => ({
+      ...current,
+      ...normalized,
+      updatedAt: nowIso()
+    }));
   }
 
   ensureDefaultStaffForCenter(centerId, centerName = DEFAULT_CENTER_NAME) {
@@ -11349,7 +11352,20 @@ class DesktopMirrorService {
       .filter((item) => String(item.clientId || "") === String(client.id || ""));
     const activeMessage = centerMessages.find((item) => activeStatuses.has(String(item.status || "")));
     const attempts = centerMessages.filter((item) => !["failed", "fallback_copy"].includes(String(item.status || ""))).length;
+    const whatsappGoldMode = String(this.getSettings(session).whatsappGoldMode || "").trim().toLowerCase();
     const blocks = [];
+    if (client.synthetic === true) {
+      blocks.push({
+        reason: "synthetic_profile",
+        message: "Profilo dimostrativo: invio esterno bloccato, usa solo anteprima o copia manuale."
+      });
+    }
+    if (whatsappGoldMode !== "active") {
+      blocks.push({
+        reason: "whatsapp_manual_mode",
+        message: "WhatsApp Gold non è attivo per questo centro: usa copia manuale."
+      });
+    }
     if (!phone || phone.length < 7) blocks.push({ reason: "invalid_phone", message: "Numero cliente non valido." });
     if (!client.marketingConsent && !suggestion?.hasMarketingConsent) blocks.push({ reason: "missing_consent", message: "Consenso marketing non presente." });
     if (!["ACT_NOW", "SUGGEST"].includes(action)) blocks.push({ reason: "decision_not_actionable", message: "Decision Matrix non autorizza un invio ora." });
