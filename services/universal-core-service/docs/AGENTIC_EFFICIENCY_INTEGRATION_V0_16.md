@@ -71,8 +71,11 @@ token, repository content or customer payload has a storage column.
 Runtime reads and writes additionally require a pre-existing, identifier-validated
 `runtimeRole` and `roleSeparationAttested=true`. Each operation executes under
 `SET LOCAL ROLE` in a transaction. If role separation is not attested, runtime
-access fails closed; this release does not create a role, credential or
-environment variable.
+access fails closed. The static migration creates a dedicated `NOLOGIN` role and
+grants it the minimum schema/table privileges; runtime code never creates roles,
+credentials or environment variables. Because both runtimes currently enter that
+role through the same `GOVERNED_AGENT_DATABASE_URL` session, this is privilege
+separation rather than independent database credentials.
 
 ## Required application integration
 

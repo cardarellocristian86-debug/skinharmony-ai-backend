@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -50,10 +51,29 @@ class FakePostgresPool {
       ["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)
       || sql.startsWith("CREATE ")
       || sql.startsWith("ALTER ")
+      || sql.startsWith("DO $role$")
+      || sql.startsWith("GRANT ")
       || sql.startsWith("UPDATE agentic_governance.agentic_work_capsule SET expires_at=")
       || sql.startsWith("SET LOCAL ROLE ")
     ) {
       return { rows: [], rowCount: 0 };
+    }
+    if (sql.startsWith("SELECT current_user::text AS current_user")) {
+      return {
+        rows: [{
+          current_user: "agentic_runtime",
+          session_user: "governance_service_owner",
+          schema_usage: true,
+          capsule_ready: true,
+          artifact_ready: true,
+          usage_ready: true,
+          comparison_ready: true,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.startsWith("SELECT state FROM agentic_governance.agentic_schema_migration_audit")) {
+      return { rows: [{ state: "active" }], rowCount: 1 };
     }
     if (sql.includes("INSERT INTO agentic_governance.agentic_schema_migration_audit")) {
       this.migrationAudit.push({
@@ -131,7 +151,10 @@ class FakePostgresPool {
 
 test("migration is additive, defines the eight required structures and rollback preserves audit", () => {
   const migration = agenticEfficiencyMigrationPlan();
-  const joined = migration.statements.join("\n");
+  const joined = readFileSync(
+    new URL("../migrations/0.16.0-agentic-efficiency.up.sql", import.meta.url),
+    "utf8",
+  );
   for (const table of [
     "agentic_run_budget",
     "agentic_usage_ledger",
@@ -149,7 +172,11 @@ test("migration is additive, defines the eight required structures and rollback 
   assert.equal(migration.preserves_audit, true);
   assert.equal(migration.creates_database, false);
   assert.equal(migration.creates_service, false);
+  assert.equal(migration.runtime_ddl, false);
+  assert.equal(migration.migration_artifact, "migrations/0.16.0-agentic-efficiency.up.sql");
   assert.equal(joined.includes("DROP "), false);
+  assert(joined.includes("CREATE ROLE nyra_agentic_runtime_v016 NOLOGIN"));
+  assert.equal(joined.includes("PASSWORD"), false);
 });
 
 test("store fails closed without the isolated governance database URL", () => {
@@ -163,7 +190,7 @@ test("fake-pool migration, checkpoint restart, tenant isolation and duplicate cl
     pool,
     now: () => new Date(NOW),
     runtimeRole: "agentic_runtime",
-    roleSeparationAttested: true,
+    roleSeparationAttested: false,
   };
   const first = createAgenticEfficiencyPostgresStore(options);
   const initialized = await first.initialize({
@@ -171,7 +198,10 @@ test("fake-pool migration, checkpoint restart, tenant isolation and duplicate cl
     rollback_reference: "git:rollback",
   });
   assert.equal(initialized.initialized, true);
-  assert(pool.calls.some(({ sql }) => sql.includes("CREATE TABLE IF NOT EXISTS agentic_governance.agentic_work_capsule")));
+  assert(pool.calls.some(({ sql }) => sql.startsWith(
+    "SELECT state FROM agentic_governance.agentic_schema_migration_audit",
+  )));
+  assert.equal(pool.calls.some(({ sql }) => /^(?:CREATE|ALTER|DO \\$role\\$|GRANT )/.test(sql)), false);
 
   const saved = await first.saveWorkCapsule({
     tenant_id: "tenant-a",
@@ -222,7 +252,7 @@ test("optimistic concurrency supports create-update and rejects stale capsule ve
     pool,
     now: () => new Date(NOW),
     runtimeRole: "agentic_runtime",
-    roleSeparationAttested: true,
+    roleSeparationAttested: false,
   });
   await store.saveWorkCapsule({
     tenant_id: "tenant-a",
@@ -256,6 +286,59 @@ test("optimistic concurrency supports create-update and rejects stale capsule ve
   );
 });
 
+test("an exact expired capsule can be verified and CAS-refreshed after restart", async () => {
+  const pool = new FakePostgresPool();
+  let clock = new Date("2026-07-27T20:00:00.000Z");
+  const options = {
+    connectionString: "postgres://governance:masked@localhost:5432/nyra",
+    pool,
+    now: () => new Date(clock),
+    runtimeRole: "agentic_runtime",
+    roleSeparationAttested: false,
+  };
+  const first = createAgenticEfficiencyPostgresStore(options);
+  await first.saveWorkCapsule({
+    tenant_id: "tenant-a",
+    capsule_id: "task-expiry",
+    capsule: capsule({ expires_at: "2026-07-27T20:01:00.000Z" }),
+    expected_version: 0,
+    actor_provenance: "agent-a",
+    receipt_digest: RECEIPT,
+  });
+
+  clock = new Date("2026-07-27T20:02:00.000Z");
+  const restarted = createAgenticEfficiencyPostgresStore(options);
+  await assert.rejects(
+    restarted.getWorkCapsule({ tenant_id: "tenant-a", capsule_id: "task-expiry" }),
+    /work_capsule_stale/,
+  );
+  const expired = await restarted.getWorkCapsule({
+    tenant_id: "tenant-a",
+    capsule_id: "task-expiry",
+    allow_expired: true,
+  });
+  assert.equal(expired.version, 1);
+  const refreshed = await restarted.saveWorkCapsule({
+    tenant_id: "tenant-a",
+    capsule_id: "task-expiry",
+    capsule: capsule({
+      created_at: "2026-07-27T20:02:00.000Z",
+      expires_at: "2026-07-27T21:02:00.000Z",
+    }),
+    expected_version: expired.version,
+    actor_provenance: "agent-a",
+    receipt_digest: RECEIPT,
+  });
+  assert.equal(refreshed.version, 2);
+  assert.equal(
+    (await restarted.getWorkCapsule({
+      tenant_id: "tenant-a",
+      capsule_id: "task-expiry",
+    })).capsule.expires_at,
+    "2026-07-27T21:02:00.000Z",
+  );
+});
+
 test("runtime writes fail closed until a pre-existing separated role is attested", async () => {
   const pool = new FakePostgresPool();
   const store = createAgenticEfficiencyPostgresStore({
@@ -263,11 +346,9 @@ test("runtime writes fail closed until a pre-existing separated role is attested
     pool,
     now: () => new Date(NOW),
   });
-  assert.deepEqual(store.roleSeparationStatus(), {
-    attested: false,
-    runtime_role_configured: false,
-    writes_allowed: false,
-  });
+  assert.equal(store.roleSeparationStatus().attested, false);
+  assert.equal(store.roleSeparationStatus().runtime_role_configured, false);
+  assert.equal(store.roleSeparationStatus().writes_allowed, false);
   await assert.rejects(
     store.saveWorkCapsule({
       tenant_id: "tenant-a",
@@ -277,6 +358,6 @@ test("runtime writes fail closed until a pre-existing separated role is attested
       actor_provenance: "agent-a",
       receipt_digest: RECEIPT,
     }),
-    /agentic_runtime_role_separation_required/,
+    /agentic_runtime_role_attestation_failed/,
   );
 });

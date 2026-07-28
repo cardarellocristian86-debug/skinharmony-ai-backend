@@ -68,8 +68,10 @@ function candidate(overrides = {}) {
     candidate_version: "v1",
     candidate_type: "prompt",
     status: "under_review",
+    dataset_id: "dataset-golden",
     dataset_version: "golden-v1",
     scorecard_id: "scorecard-v016",
+    experiment_id: "experiment-shadow",
     evidence_digest: "evd-candidate",
     rollback_reference: "rollback-candidate-v1",
     proposal_summary: "Evaluate offline and in shadow only.",
@@ -86,6 +88,10 @@ function authorization(overrides = {}) {
     scopes: ["core:govern"],
     audit_reference: "audit-core-gate-1",
     rollback_reference: "rollback-candidate-v1",
+    reviewer_reference: "reviewer-owner-1",
+    reviewed_at: timestamp,
+    review_expires_at: "2026-07-27T12:15:00.000Z",
+    independent_human_review_verified: true,
     ...overrides,
   };
 }
@@ -246,6 +252,24 @@ test("poisoning, train/eval leakage and autonomous execution are rejected", asyn
 
 test("learning candidate approval requires server-verified Core governance", async () => {
   const store = createAiLearningFactoryStore({ now: () => timestamp });
+  await store.recordDatasetMetadata({
+    tenant_id: "tenant-a",
+    idempotency_key: "approval-dataset",
+    expected_revision: 0,
+    record: dataset(),
+  });
+  await store.recordEvaluationScorecard({
+    tenant_id: "tenant-a",
+    idempotency_key: "approval-scorecard",
+    expected_revision: 0,
+    record: scorecard(),
+  });
+  await store.recordCausalExperiment({
+    tenant_id: "tenant-a",
+    idempotency_key: "approval-experiment",
+    expected_revision: 0,
+    record: experiment(),
+  });
   await assert.rejects(
     store.recordLearningCandidate({
       tenant_id: "tenant-a",
@@ -307,6 +331,8 @@ test("learning candidate approval requires server-verified Core governance", asy
   assert.equal(reviewed.revision, 2);
   assert.equal(reviewed.status, "approved_for_shadow");
   assert.equal(reviewed.human_review.audit_reference, "audit-core-gate-1");
+  assert.equal(reviewed.human_review.guard_attestations.ai_learning_governance_guard, "ALLOW");
+  assert.equal(reviewed.human_review.guard_attestations.ai_data_integrity_guard, "ALLOW");
   assert.equal(reviewed.live_mutation_authorized, false);
   assert.equal(reviewed.auto_promotion, false);
   const replay = await store.reviewLearningCandidate({
@@ -319,6 +345,76 @@ test("learning candidate approval requires server-verified Core governance", asy
     expected_revision: 1,
   });
   assert.deepEqual(replay, reviewed);
+});
+
+test("candidate approval fails closed on missing, poisoned, regressed, expired or unreviewed evidence", async () => {
+  const cases = [
+    {
+      label: "missing dataset reference",
+      candidate: { dataset_id: "missing-dataset" },
+      expected: /learning_candidate_dataset_not_found/,
+    },
+    {
+      label: "poisoned dataset",
+      dataset: { poisoning_status: "quarantined" },
+      expected: /ai_data_integrity_guard_blocked/,
+    },
+    {
+      label: "regressed scorecard",
+      scorecard: { regression_count: 1, regressions: ["routing regression"] },
+      expected: /ai_data_integrity_guard_blocked/,
+    },
+    {
+      label: "expired dataset",
+      dataset: { retention_expires_at: "2026-07-27T11:59:59.000Z" },
+      expected: /learning_candidate_dataset_expired/,
+    },
+    {
+      label: "missing independent human receipt",
+      authorization: { independent_human_review_verified: false },
+      expected: /independent_human_review_required/,
+    },
+  ];
+  for (const [index, fixture] of cases.entries()) {
+    const store = createAiLearningFactoryStore({ now: () => timestamp });
+    await store.recordDatasetMetadata({
+      tenant_id: "tenant-a",
+      idempotency_key: `dataset-${index}`,
+      expected_revision: 0,
+      record: dataset(fixture.dataset),
+    });
+    await store.recordEvaluationScorecard({
+      tenant_id: "tenant-a",
+      idempotency_key: `scorecard-${index}`,
+      expected_revision: 0,
+      record: scorecard(fixture.scorecard),
+    });
+    await store.recordCausalExperiment({
+      tenant_id: "tenant-a",
+      idempotency_key: `experiment-${index}`,
+      expected_revision: 0,
+      record: experiment(),
+    });
+    await store.recordLearningCandidate({
+      tenant_id: "tenant-a",
+      idempotency_key: `candidate-${index}`,
+      expected_revision: 0,
+      record: candidate(fixture.candidate),
+    });
+    await assert.rejects(
+      store.reviewLearningCandidate({
+        tenant_id: "tenant-a",
+        candidate_id: "candidate-prompt",
+        decision: "approved_for_shadow",
+        review_note: fixture.label,
+        authorization: authorization(fixture.authorization),
+        idempotency_key: `review-${index}`,
+        expected_revision: 1,
+      }),
+      fixture.expected,
+      fixture.label,
+    );
+  }
 });
 
 test("performance scorecards and governed outcomes remain bounded", async () => {

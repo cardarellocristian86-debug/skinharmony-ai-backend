@@ -4,6 +4,7 @@ import test from "node:test";
 import { mountAgenticEfficiencyRoutes } from "../src/agenticEfficiencyRoutes.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
+const DIGEST_B = `sha256:${"b".repeat(64)}`;
 
 function rateCard(overrides = {}) {
   return {
@@ -26,12 +27,12 @@ class FakeApp {
     this.routes = new Map();
   }
 
-  get(path, handler) {
-    this.routes.set(`GET ${path}`, handler);
+  get(path, ...handlers) {
+    this.routes.set(`GET ${path}`, handlers.at(-1));
   }
 
-  post(path, handler) {
-    this.routes.set(`POST ${path}`, handler);
+  post(path, ...handlers) {
+    this.routes.set(`POST ${path}`, handlers.at(-1));
   }
 }
 
@@ -76,7 +77,11 @@ function task(overrides = {}) {
 }
 
 function storeStub() {
+  const usage = [];
+  const comparisons = [];
   return {
+    usage,
+    comparisons,
     async status({ tenant_id }) {
       return { tenant_id, work_capsules: 1, active_claims: 0, reusable_artifacts: 0 };
     },
@@ -88,6 +93,14 @@ function storeStub() {
     },
     async checkArtifactReuse({ tenant_id, artifact_hash, artifact_version }) {
       return { tenant_id, artifact_hash, artifact_version, reusable: false, reasons: ["artifact_not_found"] };
+    },
+    async recordUsage(record) {
+      usage.push(record);
+      return record;
+    },
+    async recordComparison(record) {
+      comparisons.push(record);
+      return record;
     },
   };
 }
@@ -162,7 +175,7 @@ test("untrusted client/audience and missing Core scope fail closed", async () =>
     trustedContext: context({ audience: "smartdesk_runtime" }),
   });
   assert.equal(wrongAudience.statusCode, 403);
-  assert.equal(wrongAudience.payload.error, "agentic_audience_not_allowed");
+  assert.equal(wrongAudience.payload.error, "agentic_client_audience_pair_not_allowed");
 
   const noScope = await invoke(app, "GET /v1/agentic-efficiency/status", {
     trustedContext: context({ scopes: [], entitlements: [] }),
@@ -233,7 +246,7 @@ test("forged caller security and quality flags cannot authorize a budget preview
 
 test("forged caller rate card, quality and safety stay estimated and cannot authorize savings", async () => {
   const { app } = mount({
-    verifyProviderUsage: async () => ({ verified: true }),
+    verifyProviderUsage: async () => ({ verified: false }),
   });
   const res = await invoke(app, "POST /v1/agentic-efficiency/savings/compare", {
     body: {
@@ -264,7 +277,7 @@ test("forged caller rate card, quality and safety stay estimated and cannot auth
 
 test("caller rate card cannot authorize budget accounting without the server snapshot", async () => {
   const { app } = mount({
-    verifyProviderUsage: async () => ({ verified: true }),
+    verifyProviderUsage: async () => ({ verified: false }),
     verifyGovernanceEvidence: async () => ({
       governanceReceiptDigest: DIGEST,
       qualityVerified: true,
@@ -296,6 +309,77 @@ test("caller rate card cannot authorize budget accounting without the server sna
   assert(res.payload.data.reasons.includes("rate_card_unverified"));
   assert.equal(res.payload.data.usage.usage_kind, "estimated");
   assert.equal(res.payload.data.optimization_allowed, false);
+});
+
+test("actual usage ignores caller numbers and binds canonical server attestations to non-replayable receipts", async () => {
+  const store = storeStub();
+  const canonicalBySlot = {
+    baseline: {
+      usage_kind: "actual",
+      input_tokens: 1_000,
+      cached_input_tokens: 100,
+      output_tokens: 100,
+      provider_receipt_digest: DIGEST,
+    },
+    optimized: {
+      usage_kind: "actual",
+      input_tokens: 500,
+      cached_input_tokens: 50,
+      output_tokens: 50,
+      provider_receipt_digest: DIGEST_B,
+    },
+  };
+  const { app } = mount({
+    store,
+    verifyProviderUsage: async ({ slot }) => ({
+      verified: true,
+      canonicalUsage: canonicalBySlot[slot],
+      receiptDigest: canonicalBySlot[slot].provider_receipt_digest,
+      runId: slot === "baseline" ? "run-baseline" : "run-optimized",
+    }),
+    resolveRateCard: async () => ({ verified: true, rateCard: rateCard() }),
+    verifySavingsEvidence: async () => ({
+      qualitySafetyAttestationVerified: true,
+      receiptDigest: DIGEST_B,
+      baselineQuality: 0.99,
+      optimizedQuality: 0.99,
+      securityPreserved: true,
+    }),
+  });
+  const body = {
+    baseline: {
+      usage_kind: "actual",
+      input_tokens: 999_999_999,
+      output_tokens: 999_999_999,
+      provider_receipt_digest: DIGEST,
+    },
+    optimized: {
+      usage_kind: "actual",
+      input_tokens: 1,
+      output_tokens: 1,
+      provider_receipt_digest: DIGEST_B,
+    },
+    rate_card: rateCard({ input_per_million: 999_999 }),
+    baseline_quality: 0,
+    optimized_quality: 0,
+    security_preserved: false,
+  };
+  const res = await invoke(app, "POST /v1/agentic-efficiency/savings/compare", { body });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.payload.data.usage_kind, "actual");
+  assert.equal(res.payload.data.baseline.input_tokens, 1_000);
+  assert.equal(res.payload.data.optimized.input_tokens, 500);
+  assert.equal(res.payload.data.rate_card_verified, true);
+  assert.deepEqual(store.usage, []);
+  assert.deepEqual(store.comparisons, []);
+
+  canonicalBySlot.optimized = {
+    ...canonicalBySlot.optimized,
+    provider_receipt_digest: DIGEST,
+  };
+  const replay = await invoke(app, "POST /v1/agentic-efficiency/savings/compare", { body });
+  assert.equal(replay.statusCode, 409);
+  assert.equal(replay.payload.error, "agentic_provider_receipt_replayed");
 });
 
 test("capsule and artifact reads are tenant-bound by the server resolver", async () => {

@@ -313,6 +313,7 @@ export function verifyWorkCapsuleEnvelope(envelope, {
   now = new Date(),
   expectedHash = null,
   expectedVersion = null,
+  allowExpired = false,
 } = {}) {
   requireObject(envelope, "work_capsule_envelope");
   if (envelope.schema_version !== AGENTIC_WORK_CAPSULE_SCHEMA_VERSION) {
@@ -322,7 +323,7 @@ export function verifyWorkCapsuleEnvelope(envelope, {
   if (requireText(envelope.tenant_id, "work_capsule_tenant_id", 120) !== trustedTenant) {
     throw new Error("work_capsule_cross_tenant");
   }
-  const capsule = validateWorkCapsule(envelope.capsule, { now });
+  const capsule = validateWorkCapsule(envelope.capsule, { now, allowExpired });
   const digest = digestAgenticArtifact(capsule);
   if (digest !== envelope.capsule_hash || (expectedHash && digest !== expectedHash)) {
     throw new Error("work_capsule_tampered");
@@ -450,8 +451,11 @@ function taskComplexity(task) {
 }
 
 function minimumAgentCount(task, complexity) {
+  if (task.critical || task.reviewer_required) {
+    return Math.min(3, Math.max(2, task.independent_workstreams || 2));
+  }
   if (!task.separable || task.independent_workstreams < 2) return 1;
-  if (task.critical || complexity.level === "critical") return Math.min(3, Math.max(2, task.independent_workstreams));
+  if (complexity.level === "critical") return Math.min(3, Math.max(2, task.independent_workstreams));
   if (complexity.level === "complex") return Math.min(3, Math.max(2, task.independent_workstreams));
   if (complexity.level === "moderate" && task.independent_workstreams >= 2) return 2;
   return 1;

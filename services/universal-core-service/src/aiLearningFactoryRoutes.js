@@ -90,6 +90,26 @@ function requireObject(value, field) {
   return value;
 }
 
+const CANONICAL_CLIENT_AUDIENCE = Object.freeze({
+  chatgpt: "chatgpt_connector",
+  codex: "codex_internal",
+  api_agent: "api_agent",
+  admin: "admin_control_room",
+});
+
+function authorizeCapability(req, resolveRequestContext) {
+  const context = requireObject(resolveRequestContext(req), "ai_learning_factory_request_context");
+  const clientType = String(context.client_type || context.clientType || "");
+  const audience = String(context.audience || "");
+  if (
+    !Object.hasOwn(CANONICAL_CLIENT_AUDIENCE, clientType) ||
+    CANONICAL_CLIENT_AUDIENCE[clientType] !== audience
+  ) {
+    throw new Error("branch_not_available_for_client");
+  }
+  return Object.freeze({ client_type: clientType, audience });
+}
+
 function tenantId(req) {
   const value = String(req.tenantId || "").trim();
   if (!/^[a-z0-9][a-z0-9_-]{1,119}$/i.test(value)) throw new Error("tenant_scope_denied");
@@ -163,7 +183,12 @@ function idempotencyDigest(value) {
 
 function statusForError(error) {
   const code = String(error?.message || "ai_learning_factory_request_failed");
-  if (code === "tenant_scope_denied" || code.includes("govern") || code.includes("owner_confirmation")) return 403;
+  if (
+    code === "tenant_scope_denied" ||
+    code === "branch_not_available_for_client" ||
+    code.includes("govern") ||
+    code.includes("owner_confirmation")
+  ) return 403;
   if (code.includes("conflict")) return 409;
   if (code.endsWith("_not_found")) return 404;
   return 400;
@@ -216,17 +241,20 @@ export function mountAiLearningFactoryRoutes({
   learningStore,
   audit,
   resolveGovernanceProof,
+  resolveRequestContext,
 } = {}) {
   if (!app || typeof app.get !== "function" || typeof app.post !== "function") throw new Error("ai_learning_factory_app_required");
   const readMiddleware = requireFunction(readAuth, "ai_learning_factory_read_auth");
   const governMiddleware = requireFunction(governAuth, "ai_learning_factory_govern_auth");
   const proofForRequest = requireFunction(resolveGovernanceProof, "ai_learning_factory_governance_resolver");
+  const requestContextFor = requireFunction(resolveRequestContext, "ai_learning_factory_request_context_resolver");
   requireObject(telemetryStore, "telemetry_store");
   requireObject(learningStore, "learning_store");
   requireObject(audit, "audit");
   requireFunction(audit.append, "audit_append");
 
   app.get("/v1/ai-learning/eval/scorecards", readMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -240,6 +268,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.get("/v1/ai-learning/eval/datasets", readMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -253,6 +282,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.get("/v1/ai-learning/eval/traces", readMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     assertAllowedQuery(req, ["tenant_id", "trace_id", "run_id", "limit", "cursor"]);
     const scopedTenantId = tenantId(req);
     const requestedRunId = optionalQueryIdentifier(req, "run_id");
@@ -267,6 +297,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.get("/v1/ai-learning/performance/scorecards", readMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -280,6 +311,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.get("/v1/ai-learning/experiments", readMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -297,6 +329,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.get("/v1/ai-learning/candidates", readMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -314,6 +347,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.post("/v1/ai-learning/candidates/review", governMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const scopedTenantId = tenantId(req);
     const proof = await proofForRequest(req);
     const idempotency = idempotencyKey(req);
@@ -345,6 +379,7 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.post("/v1/ai-learning/outcomes", governMiddleware, asyncRoute(async (req, res) => {
+    authorizeCapability(req, requestContextFor);
     const scopedTenantId = tenantId(req);
     const proof = await proofForRequest(req);
     const idempotency = idempotencyKey(req);

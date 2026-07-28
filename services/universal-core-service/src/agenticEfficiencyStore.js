@@ -10,6 +10,7 @@ import {
 
 export const AGENTIC_EFFICIENCY_DATABASE_SCHEMA = "agentic_governance";
 export const AGENTIC_EFFICIENCY_MIGRATION_VERSION = "0.16.0-agentic-efficiency-v1";
+export const AGENTIC_EFFICIENCY_RUNTIME_ROLE = "nyra_agentic_runtime_v016";
 const require = createRequire(import.meta.url);
 
 function requireText(value, field, max = 500) {
@@ -67,139 +68,6 @@ function publicArtifact(row) {
   };
 }
 
-function migrationStatements(schema) {
-  const s = requireIdentifier(schema, "agentic_database_schema");
-  return [
-    `CREATE SCHEMA IF NOT EXISTS ${s}`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_schema_migration_audit (
-      migration_version TEXT NOT NULL,
-      state TEXT NOT NULL,
-      applied_at TIMESTAMPTZ NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      rollback_reference TEXT NOT NULL,
-      PRIMARY KEY (migration_version, state, applied_at)
-    )`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_run_budget (
-      tenant_id TEXT NOT NULL,
-      run_id TEXT NOT NULL,
-      policy_version TEXT NOT NULL,
-      budget JSONB NOT NULL,
-      policy_expires_at TIMESTAMPTZ NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, run_id)
-    )`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_usage_ledger (
-      ledger_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      run_id TEXT NOT NULL,
-      usage_kind TEXT NOT NULL CHECK (usage_kind IN ('actual','estimated')),
-      usage JSONB NOT NULL,
-      usage_source TEXT NOT NULL,
-      rate_card_version TEXT NOT NULL,
-      receipt_digest TEXT,
-      actor_provenance TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL
-    )`,
-    `CREATE INDEX IF NOT EXISTS agentic_usage_ledger_tenant_run_idx
-      ON ${s}.agentic_usage_ledger (tenant_id, run_id, created_at)`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_work_capsule (
-      capsule_id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      capsule_hash TEXT NOT NULL,
-      capsule JSONB NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      lease_owner TEXT,
-      lease_expires_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, capsule_id)
-    )`,
-    `ALTER TABLE ${s}.agentic_work_capsule
-      ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
-    `UPDATE ${s}.agentic_work_capsule
-      SET expires_at=(capsule->>'expires_at')::timestamptz
-      WHERE expires_at IS NULL`,
-    `ALTER TABLE ${s}.agentic_work_capsule
-      ALTER COLUMN expires_at SET NOT NULL`,
-    `CREATE INDEX IF NOT EXISTS agentic_work_capsule_expiry_idx
-      ON ${s}.agentic_work_capsule (tenant_id, expires_at)`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_artifact_reuse (
-      tenant_id TEXT NOT NULL,
-      artifact_hash TEXT NOT NULL,
-      artifact_version TEXT NOT NULL,
-      provenance_digest TEXT NOT NULL,
-      verified BOOLEAN NOT NULL DEFAULT FALSE,
-      security_checks_verified BOOLEAN NOT NULL DEFAULT FALSE,
-      expires_at TIMESTAMPTZ NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, artifact_hash, artifact_version)
-    )`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_efficiency_baseline (
-      tenant_id TEXT NOT NULL,
-      baseline_id TEXT NOT NULL,
-      repository_snapshot TEXT NOT NULL,
-      rubric_digest TEXT NOT NULL,
-      metrics JSONB NOT NULL,
-      usage_kind TEXT NOT NULL CHECK (usage_kind IN ('actual','estimated')),
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, baseline_id)
-    )`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_efficiency_comparison (
-      tenant_id TEXT NOT NULL,
-      comparison_id TEXT NOT NULL,
-      baseline_id TEXT NOT NULL,
-      optimized_run_id TEXT NOT NULL,
-      metrics JSONB NOT NULL,
-      usage_kind TEXT NOT NULL CHECK (usage_kind IN ('actual','estimated')),
-      quality_floor_preserved BOOLEAN NOT NULL,
-      safety_preserved BOOLEAN NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, comparison_id)
-    )`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_savings_claim (
-      tenant_id TEXT NOT NULL,
-      claim_id TEXT NOT NULL,
-      comparison_id TEXT NOT NULL,
-      claim_kind TEXT NOT NULL CHECK (claim_kind IN ('actual','estimated')),
-      reconciled BOOLEAN NOT NULL DEFAULT FALSE,
-      amount JSONB NOT NULL,
-      quality_delta JSONB NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, claim_id)
-    )`,
-    `CREATE TABLE IF NOT EXISTS ${s}.agentic_rate_card_snapshot (
-      tenant_id TEXT NOT NULL,
-      rate_card_version TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      currency TEXT NOT NULL,
-      rates JSONB NOT NULL,
-      source_reference TEXT NOT NULL,
-      provenance_digest TEXT NOT NULL,
-      effective_at TIMESTAMPTZ NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      actor_provenance TEXT NOT NULL,
-      receipt_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, rate_card_version)
-    )`,
-  ];
-}
-
 export function agenticEfficiencyMigrationPlan({
   schema = AGENTIC_EFFICIENCY_DATABASE_SCHEMA,
 } = {}) {
@@ -211,7 +79,9 @@ export function agenticEfficiencyMigrationPlan({
     preserves_audit: true,
     creates_database: false,
     creates_service: false,
-    statements: Object.freeze(migrationStatements(schema)),
+    runtime_ddl: false,
+    migration_artifact: "migrations/0.16.0-agentic-efficiency.up.sql",
+    rollback_artifact: "migrations/0.16.0-agentic-efficiency.down.sql",
     rollback_strategy: "record_disabled_state_and_retain_all_agentic_tables_for_audit_and_resume",
   });
 }
@@ -239,7 +109,18 @@ export function createAgenticEfficiencyPostgresStore({
   const databaseRuntimeRole = runtimeRole === null || runtimeRole === undefined || runtimeRole === ""
     ? null
     : requireIdentifier(runtimeRole, "agentic_runtime_role");
-  const runtimeRoleReady = databaseRuntimeRole !== null && roleSeparationAttested === true;
+  // A caller-provided boolean is not an attestation. PostgreSQL must prove
+  // SET LOCAL ROLE, a distinct session_user, and bounded table privileges.
+  void roleSeparationAttested;
+  let runtimeRoleState = {
+    configured: databaseRuntimeRole !== null,
+    attempted: false,
+    attested: false,
+    read_ready: false,
+    write_ready: false,
+    session_user_separated: false,
+    reason: databaseRuntimeRole ? "runtime_role_not_yet_attested" : "runtime_role_not_configured",
+  };
   const database = pool || (() => {
     const { Pool } = require("pg");
     return new Pool({
@@ -251,32 +132,96 @@ export function createAgenticEfficiencyPostgresStore({
   })();
   let initialized = false;
 
-  async function initialize({
-    actor_provenance = "universal-core:migration",
-    rollback_reference = "git:pre-v0.16",
-  } = {}) {
+  async function attestRuntimeRole() {
+    if (!databaseRuntimeRole) return runtimeRoleState;
+    runtimeRoleState = { ...runtimeRoleState, attempted: true };
+    try {
+      const attestation = await useClient(database, async (client) => {
+        await client.query("BEGIN");
+        try {
+          await client.query(`SET LOCAL ROLE ${databaseRuntimeRole}`);
+          const result = await client.query(
+            `SELECT
+               current_user::text AS current_user,
+               session_user::text AS session_user,
+               has_schema_privilege(current_user,$1,'USAGE') AS schema_usage,
+               has_table_privilege(current_user,$2,'SELECT,INSERT,UPDATE') AS capsule_ready,
+               has_table_privilege(current_user,$3,'SELECT,INSERT,UPDATE') AS artifact_ready,
+               has_table_privilege(current_user,$4,'SELECT,INSERT') AS usage_ready,
+               has_table_privilege(current_user,$5,'SELECT,INSERT') AS comparison_ready`,
+            [
+              databaseSchema,
+              `${databaseSchema}.agentic_work_capsule`,
+              `${databaseSchema}.agentic_artifact_reuse`,
+              `${databaseSchema}.agentic_usage_ledger`,
+              `${databaseSchema}.agentic_efficiency_comparison`,
+            ],
+          );
+          await client.query("ROLLBACK");
+          return result.rows[0] || {};
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        }
+      });
+      const sessionSeparated = Boolean(attestation.session_user)
+        && attestation.session_user !== databaseRuntimeRole;
+      const readReady = attestation.current_user === databaseRuntimeRole
+        && sessionSeparated
+        && attestation.schema_usage === true
+        && attestation.capsule_ready === true
+        && attestation.artifact_ready === true
+        && attestation.usage_ready === true
+        && attestation.comparison_ready === true;
+      const writeReady = readReady;
+      runtimeRoleState = {
+        configured: true,
+        attempted: true,
+        attested: writeReady,
+        read_ready: readReady,
+        write_ready: writeReady,
+        session_user_separated: sessionSeparated,
+        reason: writeReady
+          ? "verified_set_local_role_and_privileges"
+          : "runtime_role_privilege_or_separation_probe_failed",
+      };
+    } catch {
+      runtimeRoleState = {
+        configured: true,
+        attempted: true,
+        attested: false,
+        read_ready: false,
+        write_ready: false,
+        session_user_separated: false,
+        reason: "runtime_role_attestation_query_failed",
+      };
+    }
+    return runtimeRoleState;
+  }
+
+  async function initialize() {
     if (initialized) return { initialized: true, reused: true };
-    const actor = requireText(actor_provenance, "actor_provenance", 160);
-    const rollback = requireText(rollback_reference, "rollback_reference", 500);
-    const timestamp = now().toISOString();
-    await useClient(database, async (client) => {
-      await client.query("BEGIN");
-      try {
-        for (const statement of migrationStatements(databaseSchema)) await client.query(statement);
-        await client.query(
-          `INSERT INTO ${databaseSchema}.agentic_schema_migration_audit
-            (migration_version,state,applied_at,actor_provenance,rollback_reference)
-           VALUES ($1,'active',$2,$3,$4)`,
-          [AGENTIC_EFFICIENCY_MIGRATION_VERSION, timestamp, actor, rollback],
-        );
-        await client.query("COMMIT");
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      }
-    });
+    const migration = await database.query(
+      `SELECT state FROM ${databaseSchema}.agentic_schema_migration_audit
+       WHERE migration_version=$1
+       ORDER BY applied_at DESC
+       LIMIT 1`,
+      [AGENTIC_EFFICIENCY_MIGRATION_VERSION],
+    );
+    if (migration.rows[0]?.state !== "active") {
+      throw new Error("agentic_static_migration_not_active");
+    }
+    const attestation = await attestRuntimeRole();
+    if (!attestation.read_ready || !attestation.write_ready || !attestation.attested) {
+      throw new Error("agentic_runtime_role_attestation_failed");
+    }
     initialized = true;
-    return { initialized: true, reused: false, migration_version: AGENTIC_EFFICIENCY_MIGRATION_VERSION };
+    return {
+      initialized: true,
+      reused: false,
+      migration_version: AGENTIC_EFFICIENCY_MIGRATION_VERSION,
+      runtime_role: { ...runtimeRoleState },
+    };
   }
 
   async function ready() {
@@ -285,7 +230,9 @@ export function createAgenticEfficiencyPostgresStore({
 
   async function asRuntimeRole(callback) {
     await ready();
-    if (!runtimeRoleReady) throw new Error("agentic_runtime_role_separation_required");
+    if (!runtimeRoleState.read_ready || !runtimeRoleState.write_ready) {
+      throw new Error("agentic_runtime_role_separation_required");
+    }
     return useClient(database, async (client) => {
       await client.query("BEGIN");
       try {
@@ -394,7 +341,7 @@ export function createAgenticEfficiencyPostgresStore({
     return publicCapsule(result.rows[0]);
   }
 
-  async function getWorkCapsule({ tenant_id, capsule_id } = {}) {
+  async function getWorkCapsule({ tenant_id, capsule_id, allow_expired = false } = {}) {
     await ready();
     const tenantId = requireText(tenant_id, "tenant_id", 120);
     const capsuleId = requireText(capsule_id, "capsule_id", 160);
@@ -412,7 +359,7 @@ export function createAgenticEfficiencyPostgresStore({
       capsule_hash: record.capsule_hash,
       actor_provenance: record.actor_provenance,
       capsule: record.capsule,
-    }, { tenantId, now: now() });
+    }, { tenantId, now: now(), allowExpired: allow_expired === true });
     return record;
   }
 
@@ -550,6 +497,7 @@ export function createAgenticEfficiencyPostgresStore({
       `INSERT INTO ${databaseSchema}.agentic_usage_ledger
         (ledger_id,tenant_id,run_id,usage_kind,usage,usage_source,rate_card_version,receipt_digest,actor_provenance,created_at)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10)
+       ON CONFLICT (tenant_id,receipt_digest) WHERE receipt_digest IS NOT NULL DO NOTHING
        RETURNING ledger_id,tenant_id,run_id,usage_kind,usage_source,rate_card_version,created_at`,
       [
         ledgerId,
@@ -564,6 +512,51 @@ export function createAgenticEfficiencyPostgresStore({
         now().toISOString(),
       ],
     );
+    if (!result.rows[0]) throw new Error("agentic_provider_receipt_replayed");
+    return clone(result.rows[0]);
+  }
+
+  async function recordComparison({
+    tenant_id,
+    comparison_id,
+    baseline_id,
+    optimized_run_id,
+    comparison,
+    actor_provenance,
+    receipt_digest,
+  } = {}) {
+    await ready();
+    const tenantId = requireText(tenant_id, "tenant_id", 120);
+    const comparisonId = requireText(comparison_id, "comparison_id", 160);
+    const baselineId = requireText(baseline_id, "baseline_id", 160);
+    const optimizedRunId = requireText(optimized_run_id, "optimized_run_id", 160);
+    const actor = requireText(actor_provenance, "actor_provenance", 160);
+    const receipt = requireDigest(receipt_digest, "receipt_digest");
+    if (!comparison || typeof comparison !== "object" || Array.isArray(comparison)) {
+      throw new Error("agentic_comparison_invalid");
+    }
+    const usageKind = comparison.usage_kind === "actual" ? "actual" : "estimated";
+    const result = await runtimeQuery(
+      `INSERT INTO ${databaseSchema}.agentic_efficiency_comparison
+        (tenant_id,comparison_id,baseline_id,optimized_run_id,metrics,usage_kind,quality_floor_preserved,safety_preserved,actor_provenance,receipt_digest,created_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (tenant_id,comparison_id) DO NOTHING
+       RETURNING tenant_id,comparison_id,baseline_id,optimized_run_id,usage_kind,created_at`,
+      [
+        tenantId,
+        comparisonId,
+        baselineId,
+        optimizedRunId,
+        JSON.stringify(comparison),
+        usageKind,
+        comparison.quality?.within_floor === true,
+        comparison.security_preserved === true,
+        actor,
+        receipt,
+        now().toISOString(),
+      ],
+    );
+    if (!result.rows[0]) throw new Error("agentic_comparison_replayed");
     return clone(result.rows[0]);
   }
 
@@ -597,7 +590,7 @@ export function createAgenticEfficiencyPostgresStore({
       active_claims: Number(leases.rows[0]?.count || 0),
       reusable_artifacts: Number(artifacts.rows[0]?.count || 0),
       usage_by_kind: Object.fromEntries(usage.rows.map((row) => [row.usage_kind, Number(row.count)])),
-      runtime_role_separation_attested: runtimeRoleReady,
+      runtime_role_separation_attested: runtimeRoleState.attested,
       execution_authorized: false,
     };
   }
@@ -630,9 +623,13 @@ export function createAgenticEfficiencyPostgresStore({
 
   return Object.freeze({
     roleSeparationStatus: () => Object.freeze({
-      attested: runtimeRoleReady,
+      attested: runtimeRoleState.attested,
       runtime_role_configured: databaseRuntimeRole !== null,
-      writes_allowed: runtimeRoleReady,
+      probe_attempted: runtimeRoleState.attempted,
+      session_user_separated: runtimeRoleState.session_user_separated,
+      reads_allowed: runtimeRoleState.read_ready,
+      writes_allowed: runtimeRoleState.write_ready,
+      reason: runtimeRoleState.reason,
     }),
     initialize,
     rollbackMigration,
@@ -643,6 +640,7 @@ export function createAgenticEfficiencyPostgresStore({
     registerArtifact,
     checkArtifactReuse,
     recordUsage,
+    recordComparison,
     status,
     report,
     close,

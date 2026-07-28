@@ -34,6 +34,10 @@ function request({ tenantId = "tenant-a", query = {}, body = {}, headers = {} } 
   };
 }
 
+function horizontalRequestContext() {
+  return { clientType: "chatgpt", audience: "chatgpt_connector" };
+}
+
 async function invoke(app, method, path, req) {
   const route = app.routes.find((item) => item.method === method && item.path === path);
   assert(route, `${method} ${path}`);
@@ -48,14 +52,78 @@ function candidate() {
     candidate_version: "v1",
     candidate_type: "prompt",
     status: "under_review",
+    dataset_id: "dataset-golden",
     dataset_version: "golden-v1",
     scorecard_id: "scorecard-v016",
+    experiment_id: "experiment-shadow",
     evidence_digest: "evd-candidate",
     rollback_reference: "rollback-v1",
     proposal_summary: "Shadow only.",
     risk_review_status: "passed",
     cost_review_status: "passed",
   };
+}
+
+async function seedCandidateEvidence(store) {
+  await store.recordDatasetMetadata({
+    tenant_id: "tenant-a",
+    idempotency_key: "seed-dataset",
+    expected_revision: 0,
+    record: {
+      dataset_id: "dataset-golden",
+      dataset_version: "golden-v1",
+      case_count: 240,
+      provenance_digest: "sha256:provenance",
+      label_provenance_digest: "sha256:labels",
+      consent_eligible: true,
+      tenant_scope_validated: true,
+      redaction_status: "passed",
+      data_quality_status: "passed",
+      poisoning_status: "clean",
+      split_digests: { train: "sha256:train", eval: "sha256:eval" },
+      retention_expires_at: "2027-07-27T00:00:00.000Z",
+      evidence_refs: ["evidence-dataset"],
+    },
+  });
+  await store.recordEvaluationScorecard({
+    tenant_id: "tenant-a",
+    idempotency_key: "seed-scorecard",
+    expected_revision: 0,
+    record: {
+      scorecard_id: "scorecard-v016",
+      release_version: "0.16.0-ai-learning-factory",
+      dataset_version: "golden-v1",
+      benchmark_manifest_digest: "sha256:benchmark",
+      metrics: {
+        branch_selection_accuracy: 0.98,
+        tool_selection_accuracy: 0.97,
+        safety_compliance_score: 1,
+      },
+      regression_count: 0,
+      regressions: [],
+      evidence_refs: ["evidence-scorecard"],
+      confidence: 0.97,
+      limitations: ["shadow-only"],
+      proposal: "Keep in shadow.",
+    },
+  });
+  await store.recordCausalExperiment({
+    tenant_id: "tenant-a",
+    idempotency_key: "seed-experiment",
+    expected_revision: 0,
+    record: {
+      experiment_id: "experiment-shadow",
+      experiment_version: "v1",
+      hypothesis: "Shadow evaluation preserves all guardrails.",
+      status: "shadow",
+      assignment_integrity: "passed",
+      guardrail_metrics: { safety_compliance_score: 1 },
+      evidence_refs: ["evidence-experiment"],
+      rollback_reference: "rollback-experiment",
+      promotion_recommendation: "review",
+      causal_confidence: 0.9,
+    },
+  });
 }
 
 test("router exposes exactly eight dynamic endpoints without adding MCP tools", () => {
@@ -68,6 +136,7 @@ test("router exposes exactly eight dynamic endpoints without adding MCP tools", 
     learningStore: createAiLearningFactoryStore(),
     audit: { append() {} },
     resolveGovernanceProof() {},
+    resolveRequestContext: horizontalRequestContext,
   });
   assert.equal(app.routes.length, 8);
   assert.equal(mounted.routes.length, 8);
@@ -141,6 +210,7 @@ test("six read contracts apply canonical filters and bounded cursor pagination",
     learningStore,
     audit: { append() {} },
     resolveGovernanceProof() {},
+    resolveRequestContext: horizontalRequestContext,
   });
 
   const scorecard = await invoke(
@@ -226,6 +296,7 @@ test("read routes derive tenant scope server-side", async () => {
     learningStore,
     audit: { append() {} },
     resolveGovernanceProof() {},
+    resolveRequestContext: horizontalRequestContext,
   });
 
   const allowed = await invoke(app, "GET", "/v1/ai-learning/candidates", request());
@@ -242,10 +313,35 @@ test("read routes derive tenant scope server-side", async () => {
   assert.equal(denied.payload.error, "tenant_scope_denied");
 });
 
+test("direct AI Learning routes reject adjacent or mismatched client/audience pairs", async () => {
+  for (const context of [
+    { clientType: "analyzer", audience: "analyzer_runtime" },
+    { clientType: "chatgpt", audience: "analyzer_runtime" },
+  ]) {
+    const app = mockApp();
+    mountAiLearningFactoryRoutes({
+      app,
+      readAuth() {},
+      governAuth() {},
+      telemetryStore: createAiRuntimeTelemetryStore(),
+      learningStore: createAiLearningFactoryStore(),
+      audit: { append() {} },
+      resolveGovernanceProof() {},
+      resolveRequestContext() { return context; },
+    });
+    for (const route of app.routes) {
+      const denied = await invoke(app, route.method, route.path, request());
+      assert.equal(denied.statusCode, 403, route.path);
+      assert.equal(denied.payload.error, "branch_not_available_for_client", route.path);
+    }
+  }
+});
+
 test("mutating routes ignore caller authorization and use server Core proof", async () => {
   const app = mockApp();
   const events = [];
   const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  await seedCandidateEvidence(learningStore);
   await learningStore.recordLearningCandidate({
     tenant_id: "tenant-a",
     idempotency_key: "candidate-a",
@@ -266,8 +362,13 @@ test("mutating routes ignore caller authorization and use server Core proof", as
         scopes: ["core:govern"],
         audit_reference: "audit-server-proof",
         rollback_reference: "rollback-v1",
+        reviewer_reference: "reviewer-owner-1",
+        reviewed_at: "2026-07-27T12:00:00.000Z",
+        review_expires_at: "2026-07-27T12:15:00.000Z",
+        independent_human_review_verified: true,
       };
     },
+    resolveRequestContext: horizontalRequestContext,
   });
 
   const res = await invoke(
@@ -315,6 +416,7 @@ test("outcome recording requires optimistic concurrency and server proof", async
         rollback_reference: "rollback-v1",
       };
     },
+    resolveRequestContext: horizontalRequestContext,
   });
   const denied = await invoke(
     app,
@@ -366,6 +468,7 @@ test("audit failure happens before a governed mutation", async () => {
         rollback_reference: "rollback-v1",
       };
     },
+    resolveRequestContext: horizontalRequestContext,
   });
   const res = await invoke(
     app,

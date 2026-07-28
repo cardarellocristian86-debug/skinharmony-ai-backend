@@ -6,7 +6,20 @@ import {
   buildAgenticEfficiencyPlan,
   compareAgenticSavings,
   evaluateAgenticBudgetGuard,
+  digestAgenticArtifact,
 } from "./agenticEfficiencyRuntime.js";
+
+const CANONICAL_CLIENT_AUDIENCE = Object.freeze({
+  chatgpt: "chatgpt_connector",
+  codex: "codex_internal",
+  api_agent: "api_agent",
+  smartdesk: "smartdesk_runtime",
+  analyzer: "analyzer_runtime",
+  tricocamera: "analyzer_runtime",
+  suite: "suite_runtime",
+  waas: "suite_runtime",
+  admin: "admin_control_room",
+});
 
 function text(value, field, max = 160) {
   const normalized = String(value ?? "").trim();
@@ -35,6 +48,9 @@ function capabilityById(capabilityId) {
 
 function authorizeCapability(context, capabilityId) {
   const capability = capabilityById(capabilityId);
+  if (CANONICAL_CLIENT_AUDIENCE[context.clientType] !== context.audience) {
+    throw new Error("agentic_client_audience_pair_not_allowed");
+  }
   if (!capability.allowed_client_types.includes(context.clientType)) throw new Error("agentic_client_not_allowed");
   if (!capability.allowed_audiences.includes(context.audience)) throw new Error("agentic_audience_not_allowed");
   if (!capability.required_entitlements.every((entitlement) => context.entitlements.includes(entitlement))) {
@@ -54,7 +70,7 @@ function statusFor(error) {
   const code = String(error?.message || "agentic_request_failed");
   if (code.includes("not_allowed") || code.includes("scope_missing") || code.includes("entitlement_missing")) return 403;
   if (code.includes("not_found")) return 404;
-  if (code.includes("duplicate_execution")) return 409;
+  if (code.includes("duplicate_execution") || code.includes("receipt_replayed")) return 409;
   return 400;
 }
 
@@ -63,10 +79,63 @@ function safeError(error) {
   return /^[a-z0-9_]+$/i.test(code) ? code : "agentic_request_failed";
 }
 
+function canonicalVerifiedUsage(verification, declaredUsage, {
+  context,
+  slot,
+  receiptBindings,
+} = {}) {
+  if (verification?.verified !== true) {
+    return { usage: declaredUsage, verified: false, receiptDigest: null };
+  }
+  const canonicalUsage = verification.canonicalUsage;
+  if (!canonicalUsage || typeof canonicalUsage !== "object" || Array.isArray(canonicalUsage)) {
+    throw new Error("agentic_provider_usage_attestation_invalid");
+  }
+  assertNoUntrustedIdentity(canonicalUsage, "provider_usage_attestation");
+  const receiptDigest = String(
+    verification.receiptDigest || canonicalUsage.provider_receipt_digest || "",
+  ).trim();
+  if (
+    canonicalUsage.usage_kind !== "actual"
+    || !/^sha256:[a-f0-9]{64}$/.test(receiptDigest)
+    || canonicalUsage.provider_receipt_digest !== receiptDigest
+  ) {
+    throw new Error("agentic_provider_usage_attestation_invalid");
+  }
+  const runId = String(verification.runId || canonicalUsage.run_id || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(runId)) {
+    throw new Error("agentic_provider_usage_attestation_invalid");
+  }
+  for (const field of ["input_tokens", "cached_input_tokens", "output_tokens"]) {
+    const value = Number(canonicalUsage[field] || 0);
+    if (!Number.isSafeInteger(value) || value < 0 || value > 1_000_000_000) {
+      throw new Error("agentic_provider_usage_attestation_invalid");
+    }
+  }
+  const bindingDigest = digestAgenticArtifact({
+    tenant_id: context.tenantId,
+    slot,
+    usage: canonicalUsage,
+  });
+  const previous = receiptBindings.get(receiptDigest);
+  if (previous && previous !== bindingDigest) {
+    throw new Error("agentic_provider_receipt_replayed");
+  }
+  receiptBindings.set(receiptDigest, bindingDigest);
+  return {
+    usage: Object.freeze({ ...canonicalUsage }),
+    verified: true,
+    receiptDigest,
+    runId,
+  };
+}
+
 export function mountAgenticEfficiencyRoutes({
   app,
   store,
   resolveRequestContext,
+  readAuth = null,
+  governAuth = null,
   verifyProviderUsage = async () => ({ verified: false }),
   verifyAcceptanceEvidence = async () => ({}),
   verifyGovernanceEvidence = async () => ({}),
@@ -84,6 +153,18 @@ export function mountAgenticEfficiencyRoutes({
   if (typeof verifyGovernanceEvidence !== "function") throw new Error("agentic_route_governance_verifier_invalid");
   if (typeof verifySavingsEvidence !== "function") throw new Error("agentic_route_savings_verifier_invalid");
   if (typeof resolveRateCard !== "function") throw new Error("agentic_route_rate_card_resolver_invalid");
+  const receiptBindings = new Map();
+  const register = (method, path, capabilityId, handler) => {
+    const middleware = capabilityById(capabilityId).required_scopes.includes("core:govern")
+      ? governAuth
+      : readAuth;
+    if (middleware !== null && typeof middleware !== "function") {
+      throw new Error("agentic_route_auth_invalid");
+    }
+    const mounted = route(capabilityId, handler);
+    if (middleware) app[method](path, middleware, mounted);
+    else app[method](path, mounted);
+  };
 
   const route = (capabilityId, handler) => async (req, res) => {
     try {
@@ -127,7 +208,7 @@ export function mountAgenticEfficiencyRoutes({
     }
   };
 
-  app.post("/v1/agentic-efficiency/plan", route("agentic_efficiency_plan", async ({ req, context }) => {
+  register("post", "/v1/agentic-efficiency/plan", "agentic_efficiency_plan", async ({ req, context }) => {
     const verification = await verifyAcceptanceEvidence({ req, context, task: req.body });
     return buildAgenticEfficiencyPlan({
       trustedContext: context,
@@ -135,24 +216,31 @@ export function mountAgenticEfficiencyRoutes({
       request: req.body,
       mode: efficiencyMode,
     });
-  }));
+  });
 
-  app.get("/v1/agentic-efficiency/status", route("agentic_efficiency_status", async ({ context }) => ({
+  register("get", "/v1/agentic-efficiency/status", "agentic_efficiency_status", async ({ context }) => ({
     mode: efficiencyMode,
     budget_mode: budgetMode,
     hard_budget_stop: false,
     ...(await store.status({ tenant_id: context.tenantId })),
-  })));
+  }));
 
-  app.get("/v1/agentic-efficiency/report", route("agentic_efficiency_report", async ({ context }) => ({
+  register("get", "/v1/agentic-efficiency/report", "agentic_efficiency_report", async ({ context }) => ({
     mode: efficiencyMode,
     ...(await store.report({ tenant_id: context.tenantId })),
-  })));
+  }));
 
-  app.post("/v1/agentic-efficiency/budget/preview", route("agentic_budget_preview", async ({ req, context }) => {
+  register("post", "/v1/agentic-efficiency/budget/preview", "agentic_budget_preview", async ({ req, context }) => {
     const verification = req.body?.usage
       ? await verifyProviderUsage({ req, context, usage: req.body.usage, slot: "candidate" })
       : { verified: false };
+    const verifiedUsage = req.body?.usage
+      ? canonicalVerifiedUsage(verification, req.body.usage, {
+        context,
+        slot: "candidate",
+        receiptBindings,
+      })
+      : { usage: null, verified: false };
     const boundedPlan = buildAgenticEfficiencyPlan({
       trustedContext: context,
       request: req.body?.task,
@@ -169,7 +257,7 @@ export function mountAgenticEfficiencyRoutes({
       req,
       context,
       declaredRateCard: req.body?.rate_card || null,
-      usage: req.body?.usage || null,
+      usage: verifiedUsage.usage,
     });
     const canonicalRateCard = rateCardResolution?.verified === true
       ? rateCardResolution.rateCard
@@ -178,9 +266,9 @@ export function mountAgenticEfficiencyRoutes({
       trustedContext: context,
       plan: boundedPlan,
       policy: req.body?.policy,
-      usage: req.body?.usage || null,
+      usage: verifiedUsage.usage,
       rateCard: canonicalRateCard,
-      providerUsageVerified: verification?.verified === true,
+      providerUsageVerified: verifiedUsage.verified,
       rateCardVerified: rateCardResolution?.verified === true,
       auditReceiptVerified: governanceVerification?.auditOverrideVerified === true,
       trustedVerifications: {
@@ -189,26 +277,26 @@ export function mountAgenticEfficiencyRoutes({
       },
       mode: budgetMode,
     });
-  }));
+  });
 
-  app.get("/v1/agentic-efficiency/budget/status", route("agentic_budget_status", async ({ context }) => ({
+  register("get", "/v1/agentic-efficiency/budget/status", "agentic_budget_status", async ({ context }) => ({
     tenant_id: context.tenantId,
     mode: budgetMode,
     hard_budget_stop: false,
     critical_task_behavior: "escalate_or_safe_degraded_mode",
     execution_authorized: false,
-  })));
+  }));
 
-  app.get("/v1/agentic-efficiency/work-capsules/:capsule_id", route("agentic_work_capsule_read", async ({ req, context }) => {
+  register("get", "/v1/agentic-efficiency/work-capsules/:capsule_id", "agentic_work_capsule_read", async ({ req, context }) => {
     const capsule = await store.getWorkCapsule({
       tenant_id: context.tenantId,
       capsule_id: text(req.params?.capsule_id, "capsule_id", 160),
     });
     if (!capsule) throw new Error("work_capsule_not_found");
     return capsule;
-  }));
+  });
 
-  app.post("/v1/agentic-efficiency/savings/compare", route("agentic_savings_compare", async ({ req, context }) => {
+  register("post", "/v1/agentic-efficiency/savings/compare", "agentic_savings_compare", async ({ req, context }) => {
     const baselineVerification = await verifyProviderUsage({
       req,
       context,
@@ -221,6 +309,16 @@ export function mountAgenticEfficiencyRoutes({
       usage: req.body?.optimized,
       slot: "optimized",
     });
+    const verifiedBaseline = canonicalVerifiedUsage(baselineVerification, req.body?.baseline, {
+      context,
+      slot: "baseline",
+      receiptBindings,
+    });
+    const verifiedOptimized = canonicalVerifiedUsage(optimizedVerification, req.body?.optimized, {
+      context,
+      slot: "optimized",
+      receiptBindings,
+    });
     const savingsVerification = await verifySavingsEvidence({
       req,
       context,
@@ -231,19 +329,19 @@ export function mountAgenticEfficiencyRoutes({
       req,
       context,
       declaredRateCard: req.body?.rate_card || null,
-      baseline: req.body?.baseline,
-      optimized: req.body?.optimized,
+      baseline: verifiedBaseline.usage,
+      optimized: verifiedOptimized.usage,
     });
     const canonicalRateCard = rateCardResolution?.verified === true
       ? rateCardResolution.rateCard
       : req.body?.rate_card;
-    return compareAgenticSavings({
+    const comparison = compareAgenticSavings({
       trustedContext: context,
-      baseline: req.body?.baseline,
-      optimized: req.body?.optimized,
+      baseline: verifiedBaseline.usage,
+      optimized: verifiedOptimized.usage,
       rateCard: canonicalRateCard,
-      baselineProviderUsageVerified: baselineVerification?.verified === true,
-      optimizedProviderUsageVerified: optimizedVerification?.verified === true,
+      baselineProviderUsageVerified: verifiedBaseline.verified,
+      optimizedProviderUsageVerified: verifiedOptimized.verified,
       rateCardVerified: rateCardResolution?.verified === true,
       baselineQuality: req.body?.baseline_quality,
       optimizedQuality: req.body?.optimized_quality,
@@ -254,15 +352,18 @@ export function mountAgenticEfficiencyRoutes({
       attestedOptimizedQuality: savingsVerification?.optimizedQuality,
       attestedSecurityPreserved: savingsVerification?.securityPreserved === true,
     });
-  }));
+    // This capability is deliberately read-only in v0.16 shadow mode. Even
+    // verified receipts are compared in memory and never create ledger rows.
+    return comparison;
+  });
 
-  app.post("/v1/agentic-efficiency/artifacts/reuse-check", route("agentic_artifact_reuse_check", async ({ req, context }) => (
+  register("post", "/v1/agentic-efficiency/artifacts/reuse-check", "agentic_artifact_reuse_check", async ({ req, context }) => (
     store.checkArtifactReuse({
       tenant_id: context.tenantId,
       artifact_hash: text(req.body?.artifact_hash, "artifact_hash", 80),
       artifact_version: text(req.body?.artifact_version, "artifact_version", 160),
     })
-  )));
+  ));
 
   return Object.freeze({
     mounted: true,

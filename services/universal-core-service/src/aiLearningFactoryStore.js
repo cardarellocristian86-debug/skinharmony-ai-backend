@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9_-]{1,119}$/i;
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._:@/-]*$/i;
 const SENSITIVE_IDENTIFIER_PATTERN = /(?:\b(?:sk|gho|ghp|ghs|github_pat|akia)[-_a-z0-9]{12,}\b|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)/i;
@@ -218,6 +220,22 @@ function normalizeCandidate(input) {
         decision: enumValue(input.human_review.decision, "human_review_decision", ["approved_for_shadow", "deferred", "rejected"]),
         audit_reference: requireIdentifier(input.human_review.audit_reference, "audit_reference", 240),
         rollback_reference: requireIdentifier(input.human_review.rollback_reference, "rollback_reference", 240),
+        reviewer_reference: requireIdentifier(input.human_review.reviewer_reference, "reviewer_reference", 240),
+        reviewed_at: isoDate(input.human_review.reviewed_at, "reviewed_at"),
+        review_expires_at: isoDate(input.human_review.review_expires_at, "review_expires_at"),
+        independent_human_review_verified: input.human_review.independent_human_review_verified === true,
+        guard_attestations: {
+          ai_learning_governance_guard: enumValue(
+            input.human_review.guard_attestations?.ai_learning_governance_guard,
+            "ai_learning_governance_guard",
+            ["ALLOW", "NOT_REQUIRED"],
+          ),
+          ai_data_integrity_guard: enumValue(
+            input.human_review.guard_attestations?.ai_data_integrity_guard,
+            "ai_data_integrity_guard",
+            ["ALLOW", "NOT_REQUIRED"],
+          ),
+        },
         review_note: redact(input.human_review.review_note, "review_note", 500),
       }
     : null;
@@ -236,8 +254,10 @@ function normalizeCandidate(input) {
       "skill",
     ]),
     status: enumValue(input.status, "status", ["proposed", "under_review", "deferred", "rejected", "approved_for_shadow"]),
+    dataset_id: optionalIdentifier(input.dataset_id, "dataset_id"),
     dataset_version: optionalIdentifier(input.dataset_version, "dataset_version"),
     scorecard_id: requireIdentifier(input.scorecard_id, "scorecard_id"),
+    experiment_id: optionalIdentifier(input.experiment_id, "experiment_id"),
     evidence_digest: requireIdentifier(input.evidence_digest, "evidence_digest", 240),
     rollback_reference: requireIdentifier(input.rollback_reference, "rollback_reference", 240),
     proposal_summary: redact(input.proposal_summary, "proposal_summary", 1_000),
@@ -318,6 +338,10 @@ function clone(value) {
   return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
+function requestDigest(value) {
+  return `sha256:${crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
 function collectionContract(collection) {
   const contract = COLLECTIONS[collection];
   if (!contract) throw new Error("learning_factory_collection_invalid");
@@ -349,17 +373,116 @@ function validateStoredRecord(record, { tenantId, collection, recordId }) {
   };
 }
 
-function governanceProof(value) {
+function governanceProof(value, { humanReviewRequired = false, nowIso = null } = {}) {
   const proof = requireObject(value, "authorization");
   if (proof.core_verdict !== "ALLOW") throw new Error("core_governance_allow_required");
   if (proof.owner_confirmed !== true) throw new Error("owner_confirmation_required");
   if (!Array.isArray(proof.scopes) || !proof.scopes.includes("core:govern")) throw new Error("core_govern_scope_required");
-  return {
+  const normalized = {
     core_verdict: "ALLOW",
     owner_confirmed: true,
     audit_reference: requireIdentifier(proof.audit_reference, "audit_reference", 240),
     rollback_reference: requireIdentifier(proof.rollback_reference, "rollback_reference", 240),
   };
+  if (!humanReviewRequired) return normalized;
+  if (proof.independent_human_review_verified !== true) {
+    throw new Error("independent_human_review_required");
+  }
+  const reviewedAt = isoDate(proof.reviewed_at, "reviewed_at");
+  const reviewExpiresAt = isoDate(proof.review_expires_at, "review_expires_at");
+  if (new Date(reviewExpiresAt).getTime() <= new Date(nowIso).getTime()) {
+    throw new Error("human_review_expired");
+  }
+  return {
+    ...normalized,
+    reviewer_reference: requireIdentifier(proof.reviewer_reference, "reviewer_reference", 240),
+    reviewed_at: reviewedAt,
+    review_expires_at: reviewExpiresAt,
+    independent_human_review_verified: true,
+  };
+}
+
+export function evaluateAiDataIntegrityGuard({ candidate, dataset, scorecard, now }) {
+  if (!candidate?.dataset_id || !candidate?.dataset_version) throw new Error("learning_candidate_dataset_binding_missing");
+  if (!dataset || dataset.dataset_id !== candidate.dataset_id || dataset.dataset_version !== candidate.dataset_version) {
+    throw new Error("learning_candidate_dataset_not_found");
+  }
+  if (
+    dataset.tenant_scope_validated !== true
+    || dataset.consent_eligible !== true
+    || dataset.redaction_status !== "passed"
+    || dataset.data_quality_status !== "passed"
+    || dataset.poisoning_status !== "clean"
+    || dataset.train_eval_separation !== true
+    || !Array.isArray(dataset.evidence_refs)
+    || dataset.evidence_refs.length === 0
+  ) {
+    throw new Error("ai_data_integrity_guard_blocked");
+  }
+  if (new Date(dataset.retention_expires_at).getTime() <= new Date(now).getTime()) {
+    throw new Error("learning_candidate_dataset_expired");
+  }
+  if (
+    !scorecard
+    || scorecard.scorecard_id !== candidate.scorecard_id
+    || scorecard.dataset_version !== candidate.dataset_version
+    || scorecard.regression_count !== 0
+    || !Array.isArray(scorecard.evidence_refs)
+    || scorecard.evidence_refs.length === 0
+    || Number(scorecard.metrics?.branch_selection_accuracy) < 0.95
+    || Number(scorecard.metrics?.tool_selection_accuracy) < 0.95
+    || Number(scorecard.metrics?.safety_compliance_score) < 0.99
+  ) {
+    throw new Error("ai_data_integrity_guard_blocked");
+  }
+  return Object.freeze({
+    guard_id: "ai_data_integrity_guard",
+    verdict: "ALLOW",
+    dataset_id: dataset.dataset_id,
+    dataset_version: dataset.dataset_version,
+    scorecard_id: scorecard.scorecard_id,
+  });
+}
+
+export function evaluateAiLearningGovernanceGuard({
+  candidate,
+  experiment,
+  authorization,
+  now,
+}) {
+  if (
+    candidate.risk_review_status !== "passed"
+    || candidate.cost_review_status !== "passed"
+    || !candidate.rollback_reference
+    || !candidate.experiment_id
+  ) {
+    throw new Error("ai_learning_governance_guard_blocked");
+  }
+  if (
+    !experiment
+    || experiment.experiment_id !== candidate.experiment_id
+    || !["proposed", "shadow"].includes(experiment.status)
+    || experiment.assignment_integrity !== "passed"
+    || !Array.isArray(experiment.evidence_refs)
+    || experiment.evidence_refs.length === 0
+    || !experiment.rollback_reference
+    || experiment.external_execution !== false
+    || experiment.auto_activation !== false
+  ) {
+    throw new Error("ai_learning_governance_guard_blocked");
+  }
+  const proof = governanceProof(authorization, {
+    humanReviewRequired: true,
+    nowIso: now,
+  });
+  return Object.freeze({
+    guard_id: "ai_learning_governance_guard",
+    verdict: "ALLOW",
+    experiment_id: experiment.experiment_id,
+    reviewer_reference: proof.reviewer_reference,
+    review_expires_at: proof.review_expires_at,
+    proof,
+  });
 }
 
 /**
@@ -427,40 +550,70 @@ export function createAiLearningFactoryStore({ adapter = null, now = () => new D
     const normalized = contract.normalize(source);
     const recordId = normalized[contract.idField];
     const operationKey = `${tenantId}:${collection}:${requireIdentifier(idempotencyKey, "idempotency_key", 240)}`;
-    const requestDigest = JSON.stringify(normalized);
+    const normalizedRequestDigest = requestDigest(normalized);
     return serializeWrite(`${tenantId}:${collection}`, async () => {
       const priorOperation = idempotency.get(operationKey);
       if (priorOperation) {
-        if (priorOperation.record[contract.idField] !== recordId || priorOperation.request_digest !== requestDigest) {
+        if (
+          priorOperation.record[contract.idField] !== recordId ||
+          priorOperation.request_digest !== normalizedRequestDigest
+        ) {
           throw new Error("learning_factory_idempotency_conflict");
         }
         return clone(priorOperation.record);
       }
       const existing = await loadRecord({ tenantId, collection, recordId });
       const currentRevision = existing?.revision || 0;
-      if (expectedRevision !== null && expectedRevision !== currentRevision) throw new Error("learning_factory_revision_conflict");
+      const durableIdempotency = typeof persistence?.saveIdempotent === "function";
+      const writeRevision = expectedRevision === null ? currentRevision : expectedRevision;
+      if (!durableIdempotency && writeRevision !== currentRevision) {
+        throw new Error("learning_factory_revision_conflict");
+      }
       const timestamp = isoDate(now(), "updated_at");
       const record = {
         schema_version: contract.schemaVersion,
         tenant_id: tenantId,
         ...normalized,
-        revision: currentRevision + 1,
-        created_at: existing?.created_at || timestamp,
+        revision: writeRevision + 1,
+        created_at: writeRevision === 0 ? timestamp : existing?.created_at || timestamp,
         updated_at: timestamp,
         advisory_only: true,
         autonomous_execution_allowed: false,
       };
       if (persistence) {
-        await persistence.save({
-          tenant_id: tenantId,
-          collection,
-          record_id: recordId,
-          expected_revision: currentRevision,
-          record: clone(record),
-        });
+        const saved = typeof persistence.saveIdempotent === "function"
+          ? await persistence.saveIdempotent({
+              tenant_id: tenantId,
+              collection,
+              record_id: recordId,
+              expected_revision: writeRevision,
+              record: clone(record),
+              idempotency_key: idempotencyKey,
+              request_digest: normalizedRequestDigest,
+            })
+          : await persistence.save({
+              tenant_id: tenantId,
+              collection,
+              record_id: recordId,
+              expected_revision: writeRevision,
+              record: clone(record),
+            });
+        if (saved) {
+          const validated = validateStoredRecord(saved, {
+            tenantId,
+            collection,
+            recordId: saved[contract.idField],
+          });
+          collectionRecords(tenantId, collection).set(validated[contract.idField], validated);
+          idempotency.set(operationKey, {
+            request_digest: normalizedRequestDigest,
+            record: validated,
+          });
+          return clone(validated);
+        }
       }
       collectionRecords(tenantId, collection).set(recordId, record);
-      idempotency.set(operationKey, { request_digest: requestDigest, record });
+      idempotency.set(operationKey, { request_digest: normalizedRequestDigest, record });
       return clone(record);
     });
   }
@@ -556,21 +709,77 @@ export function createAiLearningFactoryStore({ adapter = null, now = () => new D
   }) => {
     const tenantId = requireTenant(tenant_id);
     const candidateId = requireIdentifier(candidate_id, "candidate_id");
-    const proof = governanceProof(authorization);
     const existing = await loadRecord({ tenantId, collection: "learning_candidates", recordId: candidateId });
     if (!existing) throw new Error("learning_candidate_not_found");
     const nextStatus = enumValue(decision, "decision", ["approved_for_shadow", "deferred", "rejected"]);
-    if (
-      nextStatus === "approved_for_shadow"
-      && (
+    const timestamp = isoDate(now(), "reviewed_at");
+    let proof = governanceProof(authorization);
+    let guardAttestations = {
+      ai_learning_governance_guard: "NOT_REQUIRED",
+      ai_data_integrity_guard: "NOT_REQUIRED",
+    };
+    if (nextStatus === "approved_for_shadow") {
+      if (
         existing.risk_review_status !== "passed"
         || existing.cost_review_status !== "passed"
+        || !existing.dataset_id
         || !existing.dataset_version
         || !existing.scorecard_id
+        || !existing.experiment_id
         || !existing.rollback_reference
-      )
-    ) {
-      throw new Error("learning_candidate_evidence_incomplete");
+      ) {
+        throw new Error("learning_candidate_evidence_incomplete");
+      }
+      const [dataset, scorecard, experiment] = await Promise.all([
+        existing.dataset_id
+          ? loadRecord({
+              tenantId,
+              collection: "dataset_metadata",
+              recordId: existing.dataset_id,
+            })
+          : null,
+        loadRecord({
+          tenantId,
+          collection: "evaluation_scorecards",
+          recordId: existing.scorecard_id,
+        }),
+        existing.experiment_id
+          ? loadRecord({
+              tenantId,
+              collection: "causal_experiments",
+              recordId: existing.experiment_id,
+            })
+          : null,
+      ]);
+      try {
+        const integrity = evaluateAiDataIntegrityGuard({
+          candidate: existing,
+          dataset,
+          scorecard,
+          now: timestamp,
+        });
+        const governance = evaluateAiLearningGovernanceGuard({
+          candidate: existing,
+          experiment,
+          authorization,
+          now: timestamp,
+        });
+        proof = governance.proof;
+        guardAttestations = {
+          [governance.guard_id]: governance.verdict,
+          [integrity.guard_id]: integrity.verdict,
+        };
+      } catch (error) {
+        if (
+          error.message.startsWith("ai_")
+          || error.message.startsWith("learning_candidate_")
+          || error.message.startsWith("independent_")
+          || error.message.startsWith("human_review_")
+        ) {
+          throw error;
+        }
+        throw new Error("learning_candidate_evidence_incomplete");
+      }
     }
     return write({
       tenantId,
@@ -584,6 +793,11 @@ export function createAiLearningFactoryStore({ adapter = null, now = () => new D
           decision: nextStatus,
           audit_reference: proof.audit_reference,
           rollback_reference: proof.rollback_reference,
+          reviewer_reference: proof.reviewer_reference || "core-governance-review",
+          reviewed_at: proof.reviewed_at || timestamp,
+          review_expires_at: proof.review_expires_at || new Date(new Date(timestamp).getTime() + 900_000).toISOString(),
+          independent_human_review_verified: proof.independent_human_review_verified === true,
+          guard_attestations: guardAttestations,
           review_note,
         },
       },

@@ -138,10 +138,26 @@ import { createTenantProviderCredentialStore } from "./tenantProviderCredentialS
 import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkStore.js";
 import { createTenantOpenAiMultiAgentRunner } from "./tenantOpenAiMultiAgentRunner.js";
 import { mountAdminControlRoom } from "./adminControlRoom.js";
+import { createAiLearningFactoryStore } from "./aiLearningFactoryStore.js";
+import { mountAiLearningFactoryRoutes } from "./aiLearningFactoryRoutes.js";
+import { createAiRuntimeTelemetryStore } from "./aiRuntimeTelemetry.js";
+import {
+  AI_LEARNING_FACTORY_RUNTIME_ROLE,
+  createAiLearningFactoryPostgresPersistence,
+} from "./aiLearningFactoryPostgres.js";
+import { mountAgenticEfficiencyRoutes } from "./agenticEfficiencyRoutes.js";
+import {
+  buildAgenticEfficiencyPlan,
+  digestAgenticArtifact,
+} from "./agenticEfficiencyRuntime.js";
+import {
+  AGENTIC_EFFICIENCY_RUNTIME_ROLE,
+  createAgenticEfficiencyPostgresStore,
+} from "./agenticEfficiencyStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.12.0-lexical-semantic-intelligence";
+const SERVICE_VERSION = "0.16.0-ai-learning-factory";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
@@ -150,6 +166,66 @@ const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
 const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
 const TRUSTED_PROVIDER_SETUP_ORIGIN = "https://skinharmony-universal-core.onrender.com";
 const TRUSTED_AGENT_PORTAL_URL = "https://skinharmony-core-mcp.onrender.com/agents";
+
+function createUnavailableAgenticEfficiencyStore(reason = "agentic_persistence_not_configured") {
+  return Object.freeze({
+    roleSeparationStatus: () => Object.freeze({
+      attested: false,
+      runtime_role_configured: false,
+      probe_attempted: false,
+      session_user_separated: false,
+      reads_allowed: false,
+      writes_allowed: false,
+      reason,
+    }),
+    async status({ tenant_id } = {}) {
+      return {
+        tenant_id,
+        available: false,
+        work_capsules: 0,
+        active_claims: 0,
+        reusable_artifacts: 0,
+        usage_by_kind: {},
+        execution_authorized: false,
+        reason,
+      };
+    },
+    async report({ tenant_id } = {}) {
+      return {
+        tenant_id,
+        available: false,
+        comparisons: 0,
+        actual_comparisons: 0,
+        safe_comparisons: 0,
+        actual_savings_claimed: false,
+        execution_authorized: false,
+        reason,
+      };
+    },
+    async getWorkCapsule() {
+      return null;
+    },
+    async checkArtifactReuse({ tenant_id, artifact_hash, artifact_version } = {}) {
+      return {
+        tenant_id,
+        artifact_hash,
+        artifact_version,
+        reusable: false,
+        reasons: [reason],
+        execution_authorized: false,
+      };
+    },
+    async saveWorkCapsule() {
+      throw new Error(reason);
+    },
+    async claimWork() {
+      throw new Error(reason);
+    },
+    async releaseClaim() {
+      return { released: false };
+    },
+  });
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -3618,12 +3694,10 @@ export function createUniversalCoreService(options = {}) {
         ...resolution,
         allowed_branches: resolution.allowed_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
         selected_branches: resolution.selected_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
-        denied_branches: [
-          ...new Set([
-            ...resolution.denied_branches,
-            ...resolution.allowed_branches.filter((branchId) => !visibleBranchIds.includes(branchId)),
-          ]),
-        ],
+        // Server-known hidden branches must never be enumerated as "denied";
+        // only caller-requested unavailable ids may be returned.
+        denied_branches: [...new Set(resolution.denied_branches)],
+        hidden_branch_count: resolution.allowed_branches.length - visibleBranchIds.length,
       },
       complete_registry: completeRegistry,
       registry,
@@ -3694,6 +3768,56 @@ export function createUniversalCoreService(options = {}) {
   const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
   const relationalOrchestrationSupervisor = options.relationalOrchestrationSupervisor || createRelationalOrchestrationSupervisor();
   const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
+  const requestedAiLearningFactoryMode = String(
+    options.aiLearningFactoryMode ?? process.env.NYRA_AI_LEARNING_FACTORY_MODE ?? "shadow",
+  ).trim().toLowerCase();
+  const aiLearningFactoryMode = ["off", "shadow", "active"].includes(requestedAiLearningFactoryMode)
+    ? requestedAiLearningFactoryMode
+    : "shadow";
+  const aiLearningFactoryDatabaseRole = String(
+    options.aiLearningFactoryDatabaseRole ?? process.env.AI_LEARNING_FACTORY_DATABASE_ROLE ?? "",
+  ).trim() || AI_LEARNING_FACTORY_RUNTIME_ROLE;
+  const aiLearningFactoryPersistence = options.aiLearningFactoryPersistence
+    || (governedAgentDatabaseUrl && aiLearningFactoryMode !== "off"
+      ? createAiLearningFactoryPostgresPersistence({
+        connectionString: governedAgentDatabaseUrl,
+        pool: options.aiLearningFactoryPostgresPool || null,
+        runtimeRole: aiLearningFactoryDatabaseRole,
+        allowUnattestedRuntimeWrites: options.allowUnattestedAiLearningRuntimeWrites === true,
+      })
+      : null);
+  const aiLearningStore = options.aiLearningFactoryStore || createAiLearningFactoryStore({
+    adapter: aiLearningFactoryPersistence?.learningAdapter || null,
+  });
+  const aiLearningTelemetryStore = options.aiRuntimeTelemetryStore || createAiRuntimeTelemetryStore({
+    adapter: aiLearningFactoryPersistence?.telemetryAdapter || null,
+  });
+  const requestedAgenticEfficiencyMode = String(
+    options.agenticEfficiencyMode ?? process.env.NYRA_AGENTIC_EFFICIENCY_MODE ?? "shadow",
+  ).trim().toLowerCase();
+  const agenticEfficiencyMode = ["off", "shadow", "active"].includes(requestedAgenticEfficiencyMode)
+    ? requestedAgenticEfficiencyMode
+    : "shadow";
+  const requestedAgenticBudgetMode = String(
+    options.agenticBudgetMode ?? process.env.CORE_AGENTIC_BUDGET_MODE ?? "observe",
+  ).trim().toLowerCase();
+  const agenticBudgetMode = ["off", "observe", "soft_enforce"].includes(requestedAgenticBudgetMode)
+    ? requestedAgenticBudgetMode
+    : "observe";
+  const agenticEfficiencyDatabaseRole = String(
+    options.agenticEfficiencyDatabaseRole ?? process.env.AGENTIC_EFFICIENCY_DATABASE_ROLE ?? "",
+  ).trim() || AGENTIC_EFFICIENCY_RUNTIME_ROLE;
+  const agenticEfficiencyStore = options.agenticEfficiencyStore || (
+    governedAgentDatabaseUrl && agenticEfficiencyMode !== "off"
+      ? createAgenticEfficiencyPostgresStore({
+        connectionString: governedAgentDatabaseUrl,
+        pool: options.agenticEfficiencyPostgresPool || null,
+        runtimeRole: agenticEfficiencyDatabaseRole || null,
+      })
+      : createUnavailableAgenticEfficiencyStore(
+        agenticEfficiencyMode === "off" ? "agentic_efficiency_disabled" : "agentic_governance_database_unavailable",
+      )
+  );
   const dynamicTaskTreeStateStore = options.dynamicTaskTreeStateStore || (governedAgentDatabaseUrl
     ? createPostgresDynamicTaskTreeStateStore({
         connectionString: governedAgentDatabaseUrl,
@@ -3806,6 +3930,389 @@ export function createUniversalCoreService(options = {}) {
     return genericAgentOrchestrationStore.save({ tenant_id: plan.tenant_id, plan_snapshot: plan });
   }
 
+  async function resolveAiLearningGovernanceProof(req) {
+    if (aiLearningFactoryMode === "off") throw new Error("ai_learning_factory_disabled");
+    const purpose = req.path === "/v1/ai-learning/candidates/review"
+      ? "ai_learning_candidate_review"
+      : req.path === "/v1/ai-learning/outcomes"
+        ? "ai_learning_outcome_record"
+        : "";
+    if (!purpose) throw new Error("ai_learning_governance_route_invalid");
+    const confirmationReference = String(req.body?.confirmation_reference || "").trim().slice(0, 240);
+    if (
+      req.body?.owner_confirmed !== true
+      || !confirmationReference
+      || /\b(?:password|passwd|secret|api[_ -]?key|token)\s*[:=]/i.test(confirmationReference)
+    ) {
+      throw new Error("owner_confirmation_required");
+    }
+    const bridgeAllowed = isMcpTenantGatewayRecord(req.coreKey)
+      || hasScope(req.coreKey, SCOPES.OWNER_ASSERTION)
+      || (req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX));
+    const requestBoundOwner = bridgeAllowed && verifyOwnerContextAssertion(
+      req.body?.owner_context,
+      readSecret(req),
+      req.tenantId,
+      ownerRequestBinding(purpose, req.body || {}),
+    );
+    if (!requestBoundOwner) throw new Error("owner_confirmation_required");
+
+    const targetId = purpose === "ai_learning_candidate_review"
+      ? String(req.body?.candidate_id || "").trim()
+      : String(req.body?.outcome?.outcome_id || "").trim();
+    const expectedRevision = Number(req.body?.expected_revision);
+    if (!targetId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+      throw new Error("ai_learning_governance_target_invalid");
+    }
+    const gateBody = {
+      action_label: purpose === "ai_learning_candidate_review"
+        ? "Review a tenant-scoped AI learning candidate"
+        : "Record a tenant-scoped verified AI learning outcome",
+      action_type: purpose,
+      operation_class: "owner_confirmed_governed_action",
+      external_side_effect: false,
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      destructive: false,
+      bypass_orchestrator: false,
+      configuration_changes: false,
+      provider_execution: false,
+      execution_enabled: false,
+      live_weight_mutation: false,
+      automatic_training: false,
+      rollback_ready: true,
+      audit_ready: true,
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      owner_confirmed: true,
+      owner_context_verified: true,
+      request_bound_owner_confirmation: true,
+      confirmation_reference: confirmationReference,
+      tenant_id: req.tenantId,
+      authenticated_tenant_id: req.tenantId,
+      authenticated_key_type: req.coreKey?.key_type || null,
+      target: targetId,
+      expected_revision: expectedRevision,
+    };
+    const riskClassification = classifyActionRisk(gateBody);
+    const gateReq = Object.create(req);
+    gateReq.body = gateBody;
+    const output = runUniversalCore(buildActionEvaluatorInput(gateReq, req.coreKey));
+    const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
+      action_type: purpose,
+      publish_intent: false,
+    }), riskClassification);
+    const authorization = buildActionAuthorization(decisionContract, gateBody);
+    if (!authorization.allowed) {
+      audit.append("ai_learning_core_governance_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey?.key_id,
+        capability_id: purpose,
+        target_id: targetId,
+        expected_revision: expectedRevision,
+        state: authorization.state,
+      });
+      throw new Error("core_governance_allow_required");
+    }
+    const event = audit.append("ai_learning_core_governance_allowed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey?.key_id,
+      capability_id: purpose,
+      target_id: targetId,
+      expected_revision: expectedRevision,
+      state: authorization.state,
+      autonomous_execution_allowed: false,
+    });
+    return {
+      core_verdict: "ALLOW",
+      owner_confirmed: true,
+      scopes: ["core:govern"],
+      audit_reference: `audit:${event.audit_id}`,
+      rollback_reference: `revision:${purpose}:${expectedRevision}:sha256:${crypto
+        .createHash("sha256")
+        .update(`${req.tenantId}\u0000${targetId}`)
+        .digest("hex")}`,
+      ...(purpose === "ai_learning_candidate_review" ? {
+        reviewer_reference: `key:${req.coreKey?.key_id || "authenticated-owner"}`,
+        reviewed_at: new Date().toISOString(),
+        review_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        independent_human_review_verified: true,
+      } : {}),
+    };
+  }
+
+  function resolveAgenticRequestContext(req) {
+    const resolution = resolveBranchesForKey(req.coreKey);
+    const exposure = deriveBranchAccessContext(
+      req,
+      req.coreKey,
+      ownerContextSigningSecret,
+      { allowed_branches: resolution.allowed_branches },
+    );
+    const scopes = [
+      ...(hasScope(req.coreKey, SCOPES.READ_DECISION) ? ["core:read"] : []),
+      ...(hasScope(req.coreKey, SCOPES.WRITE_DECISION) ? ["core:govern"] : []),
+    ];
+    return Object.freeze({
+      tenantId: req.tenantId,
+      clientType: exposure.client_type,
+      audience: exposure.audience,
+      actorId: String(req.coreKey?.key_id || "authenticated-core-key"),
+      entitlements: Object.freeze([...new Set([...(exposure.entitlements || []), ...scopes])]),
+      scopes: Object.freeze(scopes),
+    });
+  }
+
+  function agenticTaskFromRequest(req, overrides = {}) {
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const goal = String(
+      overrides.goal
+      || body.request
+      || body.task
+      || body.action_label
+      || "Prepare a bounded governed task",
+    ).trim().slice(0, 1_000);
+    const list = (value, limit = 100) => Array.isArray(value)
+      ? value.slice(0, limit).map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    return {
+      goal,
+      scope: list(overrides.scope || body.scope),
+      success_criteria: list(overrides.success_criteria || body.success_criteria).length
+        ? list(overrides.success_criteria || body.success_criteria)
+        : ["Produce verified tenant-scoped evidence without autonomous execution"],
+      relevant_files: list(overrides.relevant_files || body.relevant_files, 200),
+      changed_files: list(overrides.changed_files || body.changed_files, 200),
+      decisions: list(body.decisions),
+      completed: list(body.completed),
+      open_risks: list(body.open_risks),
+      acceptance_evidence: list(body.acceptance_evidence, 200),
+      requested_agent_count: Number(body.requested_agent_count || 1),
+      independent_workstreams: Number(body.independent_workstreams || 0),
+      separable: body.separable === true,
+      required_tools: list(overrides.required_tools || body.required_tools),
+      available_tools: list(overrides.available_tools || body.available_tools, 200),
+      risk: ["low", "medium", "high", "critical"].includes(body.risk) ? body.risk : "medium",
+      reversibility: ["easy", "bounded", "difficult", "irreversible"].includes(body.reversibility)
+        ? body.reversibility
+        : "bounded",
+      security_tests_required: body.security_tests_required !== false,
+      security_tests_passed: body.security_tests_passed === true,
+      test_state: body.test_state || { passed: 0, failed: 0, pending: 1 },
+      budget: body.budget || { token_limit: 0, invocation_limit: 0, retry_limit: 3 },
+      retry_count: Number(body.retry_count || 0),
+      checkpoint: body.checkpoint && typeof body.checkpoint === "object" ? body.checkpoint : null,
+      reviewer_required: body.reviewer_required === true,
+      critical: body.critical === true,
+      quality_baseline: Number(body.quality_baseline ?? 1),
+      quality_prediction: Number(body.quality_prediction ?? body.quality_baseline ?? 1),
+    };
+  }
+
+  function buildAgenticShadowForRequest(req, overrides = {}, trustedVerification = {}) {
+    try {
+      return buildAgenticEfficiencyPlan({
+        trustedContext: resolveAgenticRequestContext(req),
+        trustedVerification,
+        request: agenticTaskFromRequest(req, overrides),
+        mode: agenticEfficiencyMode,
+      });
+    } catch (error) {
+      return {
+        schema_version: "agentic_efficiency_runtime_v1",
+        mode: "shadow",
+        production_status: "advisory",
+        available: false,
+        reason: String(error?.message || "agentic_shadow_plan_unavailable").split(":")[0],
+        execution_authorized: false,
+        external_execution: false,
+      };
+    }
+  }
+
+  async function reserveAgenticWorkCapsule(req, runId, shadowPlan) {
+    if (agenticEfficiencyMode !== "active") {
+      return {
+        available: true,
+        claimed: false,
+        observation_only: true,
+        would_claim_in_active: Boolean(shadowPlan?.work_capsule?.capsule),
+        reason: "agentic_shadow_never_claims_or_blocks",
+        execution_authorized: false,
+      };
+    }
+    if (
+      shadowPlan?.available === false
+      || !shadowPlan?.work_capsule?.capsule
+      || typeof agenticEfficiencyStore.saveWorkCapsule !== "function"
+      || typeof agenticEfficiencyStore.claimWork !== "function"
+    ) {
+      return {
+        available: false,
+        claimed: false,
+        reason: "agentic_shadow_plan_or_store_unavailable",
+        execution_authorized: false,
+      };
+    }
+    const sourceCapsule = shadowPlan.work_capsule.capsule;
+    const contextDigest = digestAgenticArtifact({
+      tenant_id: req.tenantId,
+      goal: sourceCapsule.goal,
+      scope: sourceCapsule.scope,
+      success_criteria: sourceCapsule.success_criteria,
+      decisions: sourceCapsule.decisions,
+      completed: sourceCapsule.completed,
+      open_risks: sourceCapsule.open_risks,
+      relevant_files: sourceCapsule.relevant_files,
+      changed_files: sourceCapsule.changed_files,
+      diff_summary: sourceCapsule.diff_summary,
+      test_state: sourceCapsule.test_state,
+      next_action: sourceCapsule.next_action,
+      budget: sourceCapsule.budget,
+    });
+    const taskIdentityDigest = digestAgenticArtifact({
+      tenant_id: req.tenantId,
+      goal: sourceCapsule.goal,
+      scope: sourceCapsule.scope,
+      success_criteria: sourceCapsule.success_criteria,
+    });
+    const capsuleId = `awc_${taskIdentityDigest.slice("sha256:".length, "sha256:".length + 48)}`;
+    const digestLabel = (label, value) => `${label}:${digestAgenticArtifact(value)}`;
+    const persistedCapsule = {
+      goal: digestLabel("goal_digest", sourceCapsule.goal),
+      scope: (sourceCapsule.scope || []).map((value) => digestLabel("scope_digest", value)),
+      success_criteria: (sourceCapsule.success_criteria || []).map((value) => digestLabel("criterion_digest", value)),
+      decisions: (sourceCapsule.decisions || []).map((value) => digestLabel("decision_digest", value)),
+      completed: (sourceCapsule.completed || []).map((value) => digestLabel("completed_digest", value)),
+      open_risks: (sourceCapsule.open_risks || []).map((value) => digestLabel("risk_digest", value)),
+      relevant_files: (sourceCapsule.relevant_files || []).map((value) => digestLabel("path_digest", value)),
+      changed_files: (sourceCapsule.changed_files || []).map((value) => digestLabel("path_digest", value)),
+      diff_summary: digestLabel("diff_digest", sourceCapsule.diff_summary || "none"),
+      test_state: sourceCapsule.test_state,
+      artifact_hashes: [...new Set([contextDigest, ...(sourceCapsule.artifact_hashes || [])])],
+      reusable_results: [],
+      next_action: "Resume only after exact context-digest and tenant verification.",
+      budget: sourceCapsule.budget,
+      created_at: sourceCapsule.created_at,
+      expires_at: sourceCapsule.expires_at,
+    };
+    const receiptDigest = digestAgenticArtifact({
+      tenant_id: req.tenantId,
+      run_id: runId,
+      capsule_id: capsuleId,
+      context_digest: contextDigest,
+      actor_id: req.coreKey?.key_id,
+    });
+    let capsule;
+    try {
+      capsule = await agenticEfficiencyStore.saveWorkCapsule({
+        tenant_id: req.tenantId,
+        capsule_id: capsuleId,
+        capsule: persistedCapsule,
+        expected_version: 0,
+        actor_provenance: String(req.coreKey?.key_id || "authenticated-core-key"),
+        receipt_digest: receiptDigest,
+      });
+    } catch (error) {
+      if (!String(error?.message || "").includes("revision_conflict")) {
+        if (/unavailable|required$/.test(String(error?.message || ""))) {
+          return {
+            available: false,
+            claimed: false,
+            reason: String(error.message).split(":")[0],
+            execution_authorized: false,
+          };
+        }
+        throw error;
+      }
+      capsule = await agenticEfficiencyStore.getWorkCapsule({
+        tenant_id: req.tenantId,
+        capsule_id: capsuleId,
+        allow_expired: true,
+      });
+      if (!capsule) throw new Error("agentic_work_capsule_restart_recovery_failed");
+      if (!capsule.capsule?.artifact_hashes?.includes(contextDigest)) {
+        throw new Error("agentic_work_capsule_stale_context");
+      }
+      if (Date.parse(capsule.capsule.expires_at) <= Date.now()) {
+        capsule = await agenticEfficiencyStore.saveWorkCapsule({
+          tenant_id: req.tenantId,
+          capsule_id: capsuleId,
+          capsule: persistedCapsule,
+          expected_version: capsule.version,
+          actor_provenance: String(req.coreKey?.key_id || "authenticated-core-key"),
+          receipt_digest: receiptDigest,
+        });
+      }
+    }
+    const claim = await agenticEfficiencyStore.claimWork({
+      tenant_id: req.tenantId,
+      capsule_id: capsuleId,
+      claimant_id: runId,
+      lease_ms: 60_000,
+    });
+    return {
+      available: true,
+      claimed: true,
+      capsule_id: capsuleId,
+      capsule_hash: capsule.capsule_hash,
+      capsule_version: capsule.version,
+      lease_owner: claim.lease_owner || runId,
+      restart_recovered: Number(capsule.version) > 1 || capsule.receipt_digest !== receiptDigest,
+      receipt_digest: receiptDigest,
+      execution_authorized: false,
+    };
+  }
+
+  function selectAgenticWorkers(workers, plan) {
+    const source = Array.isArray(workers) ? workers : [];
+    const limit = Math.max(1, Number(plan?.agent_count || source.length || 1));
+    const reviewerRequired = plan?.reviewer?.mandatory === true;
+    if (agenticEfficiencyMode !== "active") {
+      return {
+        workers: source,
+        suppressed: [],
+        would_suppress: source.slice(limit).map((worker) => worker?.worker_id).filter(Boolean),
+        reviewer_required: reviewerRequired,
+      };
+    }
+    const byId = new Map(source.map((worker) => [String(worker?.worker_id || ""), worker]));
+    const selected = new Map();
+    const includeWithDependencies = (worker) => {
+      if (!worker) return;
+      for (const dependency of Array.isArray(worker.dependencies) ? worker.dependencies : []) {
+        const dependencyWorker = byId.get(String(dependency));
+        if (!dependencyWorker) throw new Error("agentic_worker_dependency_missing");
+        includeWithDependencies(dependencyWorker);
+      }
+      selected.set(String(worker.worker_id), worker);
+    };
+    if (reviewerRequired) {
+      const reviewer = source.find((worker) => worker?.role === "reviewer");
+      const author = source.find((worker) => worker?.role !== "reviewer");
+      if (!reviewer || !author || reviewer.agent_id === author.agent_id) {
+        throw new Error("agentic_independent_reviewer_required");
+      }
+      includeWithDependencies(author);
+      includeWithDependencies(reviewer);
+    } else {
+      includeWithDependencies(source[0]);
+    }
+    for (const worker of source) {
+      if (selected.size >= limit) break;
+      includeWithDependencies(worker);
+    }
+    if (selected.size > limit) throw new Error("agentic_worker_dependency_budget_conflict");
+    return {
+      workers: [...selected.values()],
+      suppressed: source.filter((worker) => !selected.has(String(worker?.worker_id || ""))),
+      would_suppress: [],
+      reviewer_required: reviewerRequired,
+    };
+  }
+
   function boundedProviderExecutionBody(req, purpose) {
     const raw = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
     if (raw.tenant_id !== undefined && String(raw.tenant_id) !== req.tenantId) throw new Error("tenant_scope_denied");
@@ -3873,6 +4380,57 @@ export function createUniversalCoreService(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
+  if (aiLearningFactoryPersistence && typeof aiLearningFactoryPersistence.initialize === "function") {
+    void aiLearningFactoryPersistence.initialize().catch((error) => {
+      audit.append("ai_learning_persistence_startup_unavailable", {
+        reason: String(error?.message || "ai_learning_persistence_startup_failed").split(":")[0],
+      });
+    });
+  }
+  if (typeof agenticEfficiencyStore.initialize === "function") {
+    void agenticEfficiencyStore.initialize().catch((error) => {
+      audit.append("agentic_persistence_startup_unavailable", {
+        reason: String(error?.message || "agentic_persistence_startup_failed").split(":")[0],
+      });
+    });
+  }
+  if (aiLearningFactoryMode !== "off") {
+    mountAiLearningFactoryRoutes({
+      app,
+      readAuth: createAuth(keyStore, audit, SCOPES.READ_DECISION, {
+        tenantContextSigningSecret: ownerContextSigningSecret,
+      }),
+      governAuth: createAuth(keyStore, audit, SCOPES.WRITE_DECISION, {
+        tenantContextSigningSecret: ownerContextSigningSecret,
+      }),
+      telemetryStore: aiLearningTelemetryStore,
+      learningStore: aiLearningStore,
+      audit,
+      resolveGovernanceProof: resolveAiLearningGovernanceProof,
+      resolveRequestContext: resolveAgenticRequestContext,
+    });
+  }
+  if (agenticEfficiencyMode !== "off") {
+    mountAgenticEfficiencyRoutes({
+      app,
+      store: agenticEfficiencyStore,
+      readAuth: createAuth(keyStore, audit, SCOPES.READ_DECISION, {
+        tenantContextSigningSecret: ownerContextSigningSecret,
+      }),
+      governAuth: createAuth(keyStore, audit, SCOPES.WRITE_DECISION, {
+        tenantContextSigningSecret: ownerContextSigningSecret,
+      }),
+      resolveRequestContext: resolveAgenticRequestContext,
+      verifyProviderUsage: options.verifyAgenticProviderUsage,
+      verifyAcceptanceEvidence: options.verifyAgenticAcceptanceEvidence,
+      verifyGovernanceEvidence: options.verifyAgenticGovernanceEvidence,
+      verifySavingsEvidence: options.verifyAgenticSavingsEvidence,
+      resolveRateCard: options.resolveAgenticRateCard,
+      efficiencyMode: agenticEfficiencyMode,
+      budgetMode: agenticBudgetMode,
+      audit: async ({ event, ...record }) => audit.append(event, record),
+    });
+  }
   mountDttAgentIdentityReceiptRoutes({
     app,
     auth: createAuth(keyStore, audit, SCOPES.WRITE_DECISION),
@@ -4333,13 +4891,99 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+    let agenticReservation = null;
     try {
-      const run = genericAgentRuntime.startRun({ ...(req.body || {}), tenant_id: req.tenantId });
-      audit.append("generic_agent_run_started", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, agent_id: run.agent_id });
+      const runId = req.body?.run_id || `run_${crypto.randomUUID()}`;
+      const agenticOverrides = {
+        goal: req.body?.task,
+        required_tools: req.body?.tools,
+        available_tools: req.body?.tools,
+      };
+      const trustedVerification = typeof options.verifyAgenticAcceptanceEvidence === "function"
+        ? await options.verifyAgenticAcceptanceEvidence({
+          req,
+          context: resolveAgenticRequestContext(req),
+          task: agenticTaskFromRequest(req, agenticOverrides),
+        })
+        : {};
+      const agenticShadow = buildAgenticShadowForRequest(req, agenticOverrides, trustedVerification);
+      if (agenticEfficiencyMode === "active" && agenticShadow?.plan?.early_stop?.allowed === true) {
+        audit.append("generic_agent_run_early_stopped", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          run_id: runId,
+          receipt_digest: trustedVerification?.receiptDigest || null,
+          execution_authorized: false,
+        });
+        return res.status(200).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          run: null,
+          agentic_efficiency: {
+            mode: "active",
+            early_stopped: true,
+            plan: agenticShadow,
+            execution_authorized: false,
+          },
+        });
+      }
+      agenticReservation = await reserveAgenticWorkCapsule(req, runId, agenticShadow);
+      const activeAgenticPlan = agenticEfficiencyMode === "active" ? agenticShadow?.plan : null;
+      const effectiveTools = activeAgenticPlan?.tools?.selected || req.body?.tools;
+      if (activeAgenticPlan && activeAgenticPlan.retry?.allowed === false) {
+        throw new Error(
+          req.body?.critical === true
+            ? "agentic_critical_retry_requires_safe_degraded_or_human_escalation"
+            : "agentic_retry_budget_exhausted",
+        );
+      }
+      const run = genericAgentRuntime.startRun({
+        ...(req.body || {}),
+        run_id: runId,
+        tenant_id: req.tenantId,
+        tools: effectiveTools,
+        metadata: {
+          ...(req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : {}),
+          agentic_efficiency_shadow: {
+            plan: agenticShadow,
+            persistence: agenticReservation,
+            execution_authorized: false,
+          },
+          agentic_control: {
+            applied: Boolean(activeAgenticPlan),
+            recommended_agent_count: activeAgenticPlan?.agent_count || null,
+            reviewer_required: activeAgenticPlan?.reviewer?.mandatory === true,
+            retry: activeAgenticPlan?.retry || null,
+            early_stop: activeAgenticPlan?.early_stop || null,
+            selected_tools: effectiveTools || [],
+            execution_authorized: false,
+          },
+        },
+      });
+      audit.append("generic_agent_run_started", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        run_id: run.run_id,
+        agent_id: run.agent_id,
+        agentic_capsule_id: agenticReservation?.capsule_id || null,
+        agentic_claimed: agenticReservation?.claimed === true,
+        execution_authorized: false,
+      });
       return res.status(201).json({ ok: true, tenant_id: req.tenantId, run });
     } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_run_invalid");
+      if (agenticReservation?.claimed && agenticReservation?.capsule_id) {
+        await agenticEfficiencyStore.releaseClaim({
+          tenant_id: req.tenantId,
+          capsule_id: agenticReservation.capsule_id,
+          claimant_id: agenticReservation.lease_owner,
+        }).catch(() => {});
+      }
+      return publicError(
+        res,
+        String(error?.message || "").includes("duplicate_execution") ? 409 : 400,
+        error.message || "generic_agent_run_invalid",
+      );
     }
   });
 
@@ -4432,10 +5076,44 @@ export function createUniversalCoreService(options = {}) {
   app.post("/v1/generic-agents/runs/:runId/orchestration", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
-      const plan = genericAgentOrchestrator.createPlan({ tenant_id: req.tenantId, run_id: run.run_id, workers: req.body?.workers });
+      const agenticPlan = run.metadata?.agentic_efficiency_shadow?.plan?.plan || null;
+      const workerSelection = selectAgenticWorkers(req.body?.workers, agenticPlan);
+      const recommendedConcurrency = agenticEfficiencyMode === "active"
+        ? Number(agenticPlan?.agent_count || 1)
+        : null;
+      const plan = genericAgentOrchestrator.createPlan({
+        tenant_id: req.tenantId,
+        run_id: run.run_id,
+        workers: workerSelection.workers,
+        max_concurrent: recommendedConcurrency,
+        review_policy: {
+          required: workerSelection.reviewer_required,
+          independent: true,
+          evidence_required: true,
+        },
+      });
       persistGenericOrchestration(plan);
-      audit.append("generic_agent_orchestration_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, plan });
+      audit.append("generic_agent_orchestration_created", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        run_id: run.run_id,
+        plan_id: plan.plan_id,
+        worker_count: plan.workers.length,
+        agentic_mode: agenticEfficiencyMode,
+        agentic_suppressed_worker_count: workerSelection.suppressed.length,
+        agentic_would_suppress_worker_count: workerSelection.would_suppress.length,
+      });
+      return res.status(201).json({
+        ok: true,
+        tenant_id: req.tenantId,
+        plan,
+        agentic_efficiency: {
+          mode: agenticEfficiencyMode,
+          suppressed_worker_ids: workerSelection.suppressed.map((worker) => worker.worker_id),
+          would_suppress_worker_ids: workerSelection.would_suppress,
+          execution_authorized: false,
+        },
+      });
     } catch (error) {
       return publicError(res, 400, error.message || "generic_agent_orchestration_invalid");
     }
@@ -4478,11 +5156,25 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/orchestration/:planId/join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/orchestration/:planId/join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       recoverGenericOrchestration(req.tenantId, req.params.planId);
       const joined = genericAgentOrchestrator.coreJoin({ tenant_id: req.tenantId, plan_id: req.params.planId });
       persistGenericOrchestration(genericAgentOrchestrator.getPlan({ tenant_id: req.tenantId, plan_id: req.params.planId }));
+      try {
+        const run = genericAgentRuntime.getRun({ tenant_id: req.tenantId, run_id: joined.run_id });
+        const reservation = run.metadata?.agentic_efficiency_shadow?.persistence;
+        if (reservation?.claimed && reservation?.capsule_id) {
+          await agenticEfficiencyStore.releaseClaim({
+            tenant_id: req.tenantId,
+            capsule_id: reservation.capsule_id,
+            claimant_id: joined.run_id,
+          });
+        }
+      } catch {
+        // Lease expiry remains the bounded fail-safe when recovery metadata is
+        // unavailable. Joining the run must not authorize external execution.
+      }
       audit.append("generic_agent_orchestration_core_joined", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: joined.plan_id, run_id: joined.run_id });
       return res.json({ ok: true, tenant_id: req.tenantId, joined, execution_allowed: false });
     } catch (error) {
@@ -4491,8 +5183,38 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/healthz", (req, res) => {
-    res.json({
-      ok: true,
+    const aiLearningPersistenceReadiness = aiLearningFactoryPersistence?.readiness?.() || {
+      persistence_read_ready: false,
+      persistence_write_ready: false,
+      runtime_role_attested: false,
+      reason: aiLearningFactoryPersistence ? "persistence_probe_unavailable" : "memory_only_shadow",
+    };
+    const agenticPersistenceReadiness = agenticEfficiencyStore.roleSeparationStatus?.() || {
+      attested: false,
+      reads_allowed: false,
+      writes_allowed: false,
+      reason: "agentic_persistence_probe_unavailable",
+    };
+    const aiLearningPersistenceRequired = Boolean(
+      governedAgentDatabaseUrl && aiLearningFactoryMode !== "off",
+    );
+    const agenticPersistenceRequired = Boolean(
+      governedAgentDatabaseUrl && agenticEfficiencyMode !== "off",
+    );
+    const releasePersistenceReady = (
+      (!aiLearningPersistenceRequired || (
+        aiLearningPersistenceReadiness.persistence_read_ready === true &&
+        aiLearningPersistenceReadiness.persistence_write_ready === true &&
+        aiLearningPersistenceReadiness.runtime_role_attested === true
+      )) &&
+      (!agenticPersistenceRequired || (
+        agenticPersistenceReadiness.reads_allowed === true &&
+        agenticPersistenceReadiness.writes_allowed === true &&
+        agenticPersistenceReadiness.attested === true
+      ))
+    );
+    res.status(releasePersistenceReady ? 200 : 503).json({
+      ok: releasePersistenceReady,
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       build: {
@@ -4501,7 +5223,7 @@ export function createUniversalCoreService(options = {}) {
         commit_verifiable: Boolean(BUILD_COMMIT_SHA),
       },
       mode: process.env.NODE_ENV || "development",
-      render_ready: true,
+      render_ready: releasePersistenceReady,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       dynamic_task_tree: {
@@ -4534,6 +5256,34 @@ export function createUniversalCoreService(options = {}) {
         execution_available: Boolean(tenantOpenAiMultiAgentRunner),
         execution_enabled: false,
         tenant_scoped: true,
+      },
+      ai_learning_factory: {
+        mode: aiLearningFactoryMode,
+        routes_mounted: aiLearningFactoryMode !== "off",
+        persistence: aiLearningFactoryPersistence ? "postgresql" : "memory_only",
+        persistence_read_ready: aiLearningPersistenceReadiness.persistence_read_ready === true,
+        persistence_write_ready: aiLearningPersistenceReadiness.persistence_write_ready === true,
+        runtime_role_attested: aiLearningPersistenceReadiness.runtime_role_attested === true,
+        persistence_reason: aiLearningPersistenceReadiness.reason,
+        runtime_write_mode: aiLearningFactoryPersistence?.runtime_write_mode || "memory_only_shadow",
+        execution_enabled: false,
+        autonomous_training_enabled: false,
+        live_weight_mutation_enabled: false,
+      },
+      agentic_efficiency: {
+        mode: agenticEfficiencyMode,
+        budget_mode: agenticBudgetMode,
+        routes_mounted: agenticEfficiencyMode !== "off",
+        persistence: governedAgentDatabaseUrl ? "postgresql" : "unavailable_shadow",
+        persistence_read_ready: agenticPersistenceReadiness.reads_allowed === true,
+        persistence_write_ready: agenticPersistenceReadiness.writes_allowed === true,
+        runtime_role_attested: agenticPersistenceReadiness.attested === true,
+        persistence_reason: agenticPersistenceReadiness.reason,
+        hard_budget_stop: false,
+        execution_enabled: false,
+        external_execution_enabled: false,
+        active_structures: ["work_capsules", "claim_leases", "artifact_reuse", "usage_ledger"],
+        shadow_future_structures: ["run_budgets", "baselines", "comparisons", "savings_claims", "rate_cards"],
       },
       provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
       provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
@@ -4879,6 +5629,9 @@ export function createUniversalCoreService(options = {}) {
       exposureContext: exposure.context,
       visibleBranchIds: exposure.visible_branch_ids,
     });
+    preflight.agentic_efficiency = buildAgenticShadowForRequest(req, {
+      available_tools: req.body?.available_capabilities || req.body?.available_tools || [],
+    });
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -4949,7 +5702,7 @@ export function createUniversalCoreService(options = {}) {
       keyRecord: req.coreKey,
       keyStore,
       snapshot: snapshots.latest(req.tenantId),
-      auditEvents: audit.recent(200),
+      auditEvents: audit.recentForTenant(req.tenantId, 200),
       evidenceEvents: evidence.recent(req.tenantId, 50),
     });
     audit.append("core_control_plane_overview_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
@@ -4966,7 +5719,7 @@ export function createUniversalCoreService(options = {}) {
       keyRecord: req.coreKey,
       keyStore,
       snapshot: snapshots.latest(req.tenantId),
-      auditEvents: audit.recent(200),
+      auditEvents: audit.recentForTenant(req.tenantId, 200),
       evidenceEvents: evidence.recent(req.tenantId, 50),
     });
     const riskEntities = graph.entities.filter((entity) => ["medium", "high", "critical"].includes(entity.risk_band));
@@ -5236,7 +5989,7 @@ export function createUniversalCoreService(options = {}) {
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
       snapshot: snapshots.latest(req.tenantId),
-      auditEvents: audit.recent(200),
+      auditEvents: audit.recentForTenant(req.tenantId, 200),
     });
     audit.append("core_ecosystem_pulse_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, risk_status: pulse.score.risk_status });
     res.json({ ok: true, pulse });
@@ -7304,7 +8057,7 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/audit/recent", createAuth(keyStore, audit, SCOPES.ADMIN_TENANT), (req, res) => {
-    res.json({ ok: true, audit: audit.recent(Number(req.query.limit || 50)).filter((event) => !req.tenantId || event.tenant_id === req.tenantId) });
+    res.json({ ok: true, audit: audit.recentForTenant(req.tenantId, Number(req.query.limit || 50)) });
   });
 
   app.use((req, res) => publicError(res, 404, "route_not_found"));

@@ -1,8 +1,20 @@
 -- Nyra/Core 0.16 Agentic Efficiency
 -- Additive only. Run with the isolated GOVERNED_AGENT_DATABASE_URL role.
--- No database, public endpoint, credential, or provider resource is created.
+-- Static release migration owns DDL/grants; runtime performs verification only.
 
 BEGIN;
+
+DO $role$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname='nyra_agentic_runtime_v016'
+  ) THEN
+    CREATE ROLE nyra_agentic_runtime_v016 NOLOGIN;
+  END IF;
+END
+$role$;
+
+GRANT nyra_agentic_runtime_v016 TO CURRENT_USER;
 
 CREATE SCHEMA IF NOT EXISTS agentic_governance;
 
@@ -43,6 +55,10 @@ CREATE TABLE IF NOT EXISTS agentic_governance.agentic_usage_ledger (
 
 CREATE INDEX IF NOT EXISTS agentic_usage_ledger_tenant_run_idx
   ON agentic_governance.agentic_usage_ledger (tenant_id, run_id, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS agentic_usage_ledger_receipt_unique_idx
+  ON agentic_governance.agentic_usage_ledger (tenant_id, receipt_digest)
+  WHERE receipt_digest IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS agentic_governance.agentic_work_capsule (
   capsule_id TEXT NOT NULL,
@@ -146,6 +162,17 @@ CREATE TABLE IF NOT EXISTS agentic_governance.agentic_rate_card_snapshot (
   created_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (tenant_id, rate_card_version)
 );
+
+GRANT USAGE ON SCHEMA agentic_governance
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT,UPDATE ON agentic_governance.agentic_work_capsule
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT,UPDATE ON agentic_governance.agentic_artifact_reuse
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT ON agentic_governance.agentic_usage_ledger
+  TO nyra_agentic_runtime_v016;
+GRANT SELECT,INSERT ON agentic_governance.agentic_efficiency_comparison
+  TO nyra_agentic_runtime_v016;
 
 INSERT INTO agentic_governance.agentic_schema_migration_audit
   (migration_version, state, applied_at, actor_provenance, rollback_reference)

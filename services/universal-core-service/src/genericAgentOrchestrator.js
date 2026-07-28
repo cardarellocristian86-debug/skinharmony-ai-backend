@@ -21,6 +21,9 @@ function normalizeWorkers(workers, maxWorkers, maxBranchDepth) {
     return {
       worker_id: workerId,
       agent_id: requireText(worker?.agent_id, "agent_id", 120),
+      role: ["author", "reviewer", "supervisor", "worker"].includes(worker?.role)
+        ? worker.role
+        : "worker",
       task: requireText(worker?.task, "task", 4_000),
       dependencies: Array.isArray(worker?.dependencies)
         ? [...new Set(worker.dependencies.map((id) => requireText(id, "dependency_id", 120)))]
@@ -63,9 +66,15 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
   }
 
   return {
-    createPlan({ tenant_id, run_id, workers }) {
+    createPlan({ tenant_id, run_id, workers, max_concurrent = null, review_policy = null }) {
       const tenantId = requireText(tenant_id, "tenant_id", 120);
       const normalized = normalizeWorkers(workers, workerLimit, depthLimit);
+      const requestedConcurrency = max_concurrent === null || max_concurrent === undefined
+        ? limit
+        : Number(max_concurrent);
+      if (!Number.isInteger(requestedConcurrency) || requestedConcurrency < 1 || requestedConcurrency > limit) {
+        throw new Error("max_concurrent_invalid");
+      }
       const ids = new Set(normalized.map((worker) => worker.worker_id));
       for (const worker of normalized) {
         if (worker.branch_depth < 0 || worker.branch_depth > depthLimit) throw new Error("branch_depth_exceeded");
@@ -78,9 +87,14 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
         tenant_id: tenantId,
         run_id: requireText(run_id, "run_id", 160),
         status: "pending",
-        max_concurrent: limit,
+        max_concurrent: Math.min(requestedConcurrency, normalized.length),
         max_workers: workerLimit,
         max_branch_depth: depthLimit,
+        review_policy: {
+          required: review_policy?.required === true,
+          independent: review_policy?.independent !== false,
+          evidence_required: review_policy?.evidence_required !== false,
+        },
         workers: normalized,
         created_at: now(),
         updated_at: now(),
@@ -150,6 +164,27 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
     coreJoin({ tenant_id, plan_id }) {
       const plan = planFor({ tenant_id, plan_id });
       if (plan.status !== "ready_for_core_join") throw new Error("plan_not_ready_for_core_join");
+      if (plan.review_policy?.required) {
+        const reviewers = plan.workers.filter((worker) => worker.role === "reviewer");
+        const authors = plan.workers.filter((worker) => worker.role !== "reviewer");
+        if (!reviewers.length || !authors.length) throw new Error("independent_reviewer_quorum_required");
+        if (
+          plan.review_policy.independent
+          && reviewers.some((reviewer) => authors.some((author) => reviewer.agent_id === author.agent_id))
+        ) {
+          throw new Error("independent_reviewer_identity_required");
+        }
+        if (
+          plan.review_policy.evidence_required
+          && reviewers.some((reviewer) => {
+            const evidence = reviewer.result?.evidence;
+            const digest = String(reviewer.result?.evidence_digest || "");
+            return !(Array.isArray(evidence) && evidence.length) && !/^sha256:[a-f0-9]{64}$/.test(digest);
+          })
+        ) {
+          throw new Error("independent_reviewer_evidence_required");
+        }
+      }
       plan.status = "completed";
       plan.core_joined_at = now();
       plan.updated_at = plan.core_joined_at;
@@ -207,6 +242,11 @@ export function createGenericAgentOrchestrator({ maxConcurrent = 6, maxWorkers =
         max_concurrent: Math.min(Number(plan_snapshot.max_concurrent || limit), limit),
         max_workers: workerLimit,
         max_branch_depth: depthLimit,
+        review_policy: {
+          required: plan_snapshot.review_policy?.required === true,
+          independent: plan_snapshot.review_policy?.independent !== false,
+          evidence_required: plan_snapshot.review_policy?.evidence_required !== false,
+        },
         workers,
         created_at: plan_snapshot.created_at || now(),
         updated_at: now(),
