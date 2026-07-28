@@ -5,30 +5,30 @@
     "short": {
       "case_count": 25,
       "expected": 25,
-      "digest": "sha256:612ae6a53932cfa7d8e61e8b4e54d63b2ed0580d2aac21eab8a8cab9325dc33c"
+      "digest": "sha256:2be74d76b51252aa0a65b4778b0c1b0e6d69619b75d7998d1bb4c38ab86b8263"
     },
     "medium": {
       "case_count": 30,
       "expected": 30,
-      "digest": "sha256:54f313f8372365256b44be9f239e399c6db731c4adfbc054ea61ca8a676a1f88"
+      "digest": "sha256:4ad5a5904f15733f7fca9ccd9c790b18f44cc975a321fb936951a912fc3b1d34"
     },
     "long": {
       "case_count": 25,
       "expected": 25,
-      "digest": "sha256:08532120907756e4605df38895ebf55b263834ce76c5f765be69329c380a0023"
+      "digest": "sha256:668b0addcc5f693912357f4fabeeb7c65718a5ae147dba01f207a56fa88ccb35"
     },
     "true_multi_agent": {
       "case_count": 10,
       "expected": 10,
-      "digest": "sha256:414b5d5d853cc3c2faec0d3b4dca1f101fe19d68ea9ec211ffae039a6129391f"
+      "digest": "sha256:7307505da7489fa42c7796c13cc88e2123f36ba50103346bc2b8be8069a70a2e"
     },
     "critical": {
       "case_count": 10,
       "expected": 10,
-      "digest": "sha256:bca615230dd095f8546a6d6b5569067e46b897242d787c36cd5f943e82b6c15e"
+      "digest": "sha256:6b3c89df2087648c85cb450f331b2d9ba44d029ad48e00d41fc35ae6cf986590"
     }
   },
-  "corpus_digest": "sha256:8e2b3a549c61bbdd29ec9cbef941eb506bc66c67e8f102743e03b561a523ec37",
+  "corpus_digest": "sha256:e0d86d73bc6079738c4f3c37093e134eb6fbb6dc38c67d10503dae24d27cfaff",
   "targets": {
     "quality_loss_maximum": 0.02,
     "median_overall_savings_percent_minimum": 25,

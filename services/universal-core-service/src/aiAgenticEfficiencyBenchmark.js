@@ -8,6 +8,80 @@ export const AI_AGENTIC_EFFICIENCY_COUNTS = Object.freeze({
   critical: 10,
 });
 
+const GENERIC_TOOLS = Object.freeze([
+  "checkpoint_read",
+  "search_files",
+  "read_file",
+  "inspect_diff",
+  "write_patch",
+  "run_tests",
+  "security_scan",
+  "artifact_read",
+  "review_evidence",
+  "benchmark_read",
+]);
+
+function taskShape(category, ordinal) {
+  const profile = {
+    short: { files: 2, criteria: 2, requestedAgents: 1, workstreams: 1, requiredTools: 2, history: 6 },
+    medium: { files: 8, criteria: 4, requestedAgents: 1, workstreams: 1, requiredTools: 4, history: 20 },
+    long: { files: 30, criteria: 8, requestedAgents: 1, workstreams: 1, requiredTools: 5, history: 80 },
+    true_multi_agent: { files: 16, criteria: 6, requestedAgents: 3, workstreams: 3, requiredTools: 5, history: 45 },
+    critical: { files: 12, criteria: 6, requestedAgents: 2, workstreams: 2, requiredTools: 6, history: 40 },
+  }[category];
+  const files = Array.from(
+    { length: profile.files },
+    (_, index) => `src/generic/module-${String(index + 1).padStart(2, "0")}.js`,
+  );
+  const successCriteria = Array.from(
+    { length: profile.criteria },
+    (_, index) => `criterion-${category}-${ordinal}-${index + 1}`,
+  );
+  const checkpointed = ordinal % 3 === 0;
+  const completed = ordinal % 5 === 0 ? [...successCriteria] : successCriteria.slice(0, Math.floor(successCriteria.length / 2));
+  const normalized = {
+    goal: `Verify bounded ${category.replaceAll("_", " ")} workload ${ordinal}`,
+    scope: files,
+    success_criteria: successCriteria,
+    decisions: [`reuse-checkpoint-${checkpointed}`, "preserve-quality-and-security"],
+    completed,
+    open_risks: category === "critical" ? ["independent-review-required"] : ["verify-regression-coverage"],
+    relevant_files: files,
+    changed_files: files.slice(0, Math.max(1, Math.ceil(files.length / 5))),
+    diff_summary: `Bounded generic diff ${category}-${ordinal}`,
+    test_state: { passed: 4 + ordinal, failed: 0, pending: completed.length === successCriteria.length ? 0 : 1 },
+    artifact_hashes: [],
+    reusable_results: checkpointed ? [`verified-checkpoint-${category}-${ordinal}`] : [],
+    next_action: completed.length === successCriteria.length ? "stop-after-verification" : "continue-bounded-work",
+    budget: {
+      token_limit: category === "long" ? 80_000 : 30_000,
+      invocation_limit: 20,
+      retry_limit: 3,
+    },
+    risk: category === "critical" ? "critical" : category === "long" ? "high" : "medium",
+    reversibility: category === "critical" ? "difficult" : "bounded",
+    separable: category === "true_multi_agent" || category === "critical",
+    independent_workstreams: profile.workstreams,
+    requested_agent_count: profile.requestedAgents,
+    required_tools: GENERIC_TOOLS.slice(0, profile.requiredTools),
+    available_tools: [...GENERIC_TOOLS],
+    checkpoint: checkpointed ? { checkpoint_id: `checkpoint-${category}-${ordinal}`, verified: true } : null,
+    retry_count: checkpointed ? 1 : 0,
+    reviewer_required: category === "critical",
+    security_tests_required: true,
+    security_tests_passed: true,
+    acceptance_evidence: [`evidence-${category}-${ordinal}`],
+    quality_baseline: 1,
+    quality_prediction: 1,
+    critical: category === "critical",
+    legacy_history: Array.from(
+      { length: profile.history },
+      (_, index) => `verified-history-event-${category}-${ordinal}-${index + 1}`,
+    ),
+  };
+  return normalized;
+}
+
 function buildCasesForCategory(category, count, offset) {
   return Array.from({ length: count }, (_, index) => {
     const ordinal = index + 1;
@@ -25,6 +99,7 @@ function buildCasesForCategory(category, count, offset) {
         evidence_required: category === "critical" || category === "true_multi_agent",
         minimum_independent_agents: category === "true_multi_agent" ? 2 : 1,
       },
+      task_snapshot: taskShape(category, ordinal),
       measurement_contract: {
         paired_same_input: true,
         baseline_first_alternation: ordinal % 2 === 1,
@@ -47,7 +122,7 @@ export function buildAgenticEfficiencyCorpus() {
 }
 
 export function buildAgenticEfficiencyManifest(corpus = buildAgenticEfficiencyCorpus()) {
-  return {
+  const normalized = {
     schema_version: "ai_agentic_efficiency_manifest_v0_16",
     total_cases: corpus.length,
     categories: Object.fromEntries(Object.entries(AI_AGENTIC_EFFICIENCY_COUNTS).map(([category, expected]) => {
@@ -71,6 +146,7 @@ export function buildAgenticEfficiencyManifest(corpus = buildAgenticEfficiencyCo
     contains_customer_data: false,
     contains_secrets: false,
   };
+  return normalized;
 }
 
 function requireObject(value, field) {
@@ -94,6 +170,12 @@ function reference(value, field, max = 240) {
   return normalized;
 }
 
+function digestReference(value, field) {
+  const normalized = String(value || "").trim();
+  if (!/^sha256:[a-f0-9]{64}$/.test(normalized)) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
 function rateCard(value) {
   const source = requireObject(value, "rate_card");
   const sourceUrl = String(source.source_url || "").trim();
@@ -101,7 +183,7 @@ function rateCard(value) {
   const effectiveAt = new Date(source.effective_at);
   const retrievedAt = new Date(source.retrieved_at);
   if (Number.isNaN(effectiveAt.getTime()) || Number.isNaN(retrievedAt.getTime())) throw new Error("rate_card_timestamp_invalid");
-  return {
+  const normalized = {
     provider: String(source.provider || "").trim(),
     model_id: String(source.model_id || "").trim(),
     currency: String(source.currency || "").trim().toUpperCase(),
@@ -113,6 +195,10 @@ function rateCard(value) {
     cached_input_per_million: number(source.cached_input_per_million, "cached_input_per_million"),
     output_per_million: number(source.output_per_million, "output_per_million"),
   };
+  if (!/^sha256:[a-f0-9]{64}$/.test(normalized.provenance_digest)) {
+    throw new Error("rate_card_provenance_digest_invalid");
+  }
+  return normalized;
 }
 
 function usage(value, field) {
@@ -177,7 +263,7 @@ function classifyUsage({ benchmarkCase, phase, usageRecord, trustedUsageResolver
         ...usageRecord,
         usage_source: "actual",
         provider_usage_reference: reference(attestation.provider_usage_reference, `${phase}_provider_usage_reference`),
-        provider_usage_digest: reference(attestation.provider_usage_digest, `${phase}_provider_usage_digest`),
+        provider_usage_digest: digestReference(attestation.provider_usage_digest, `${phase}_provider_usage_digest`),
         attestation_id: reference(attestation.attestation_id, `${phase}_attestation_id`),
         estimation_method: null,
       };

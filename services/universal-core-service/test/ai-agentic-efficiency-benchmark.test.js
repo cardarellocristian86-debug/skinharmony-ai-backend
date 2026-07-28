@@ -18,7 +18,7 @@ const rateCard = {
   effective_at: "2026-07-01T00:00:00.000Z",
   retrieved_at: "2026-07-27T00:00:00.000Z",
   source_url: "https://rates.example.test/fixture-model",
-  provenance_digest: "sha256:rate-card-fixture",
+  provenance_digest: `sha256:${"c".repeat(64)}`,
   input_per_million: 2,
   cached_input_per_million: 0.5,
   output_per_million: 8,
@@ -66,6 +66,10 @@ test("Agentic Efficiency corpus pins 25/30/25/10/10 cases", () => {
   assert.equal(corpus.length, 100);
   for (const [category, expected] of Object.entries(AI_AGENTIC_EFFICIENCY_COUNTS)) {
     assert.equal(corpus.filter((item) => item.category === category).length, expected);
+  }
+  const serialized = JSON.stringify(corpus).toLowerCase();
+  for (const forbidden of ["skinharmony", "beauty", "smartdesk", "tricocamera", "scalp_analyzer"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
   }
   assert.deepEqual(buildAgenticEfficiencyManifest(corpus), JSON.parse(fs.readFileSync(manifestFile, "utf8")));
 });
@@ -165,7 +169,9 @@ test("trusted resolver binds actual usage to the exact token digest", () => {
       verified: usage_digest === expected,
       usage_digest,
       provider_usage_reference: `provider-${case_id}-${phase}`,
-      provider_usage_digest: `sha256:${case_id}-${phase}`,
+      provider_usage_digest: agenticUsageDigest({
+        ...measured.find((row) => row.case_id === case_id)[phase],
+      }),
       attestation_id: `attestation-${case_id}-${phase}`,
     };
   };
