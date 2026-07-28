@@ -839,14 +839,23 @@ function compactBranch(branch) {
 function compactValidation(loaded) {
   const validation = loaded?.validation || {};
   const integrity = validation.integrity || {};
+  const checkedShards = Number(integrity.checked_shards || 0);
+  const uncheckedShards = Number(integrity.unchecked_shards || 0);
+  // The low-level integrity report deliberately tracks checked/unchecked
+  // descriptors; it does not carry a redundant shard_count field. Expose the
+  // exact total in the federation contract so consumers can audit the full
+  // lazy runtime without inferring it themselves.
+  const shardCount = Number.isFinite(Number(integrity.shard_count))
+    ? Number(integrity.shard_count)
+    : checkedShards + uncheckedShards;
   return {
     ok: validation.ok === true,
     branch_count: Number(validation.metrics?.branch_count || 0),
     subbranch_count: Number(validation.metrics?.subbranch_count || 0),
     node_count: Number(validation.metrics?.node_count || 0),
-    shard_count: Number(integrity.shard_count || 0),
-    checked_shards: Number(integrity.checked_shards || 0),
-    unchecked_shards: Number(integrity.unchecked_shards || 0),
+    shard_count: shardCount,
+    checked_shards: checkedShards,
+    unchecked_shards: uncheckedShards,
     errors: Array.isArray(validation.errors) ? validation.errors.slice(0, 12) : [],
   };
 }

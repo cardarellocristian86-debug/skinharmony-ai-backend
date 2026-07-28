@@ -612,6 +612,7 @@ test("federation evaluates only Core-opened topology and never leaks contracts",
   assert.equal(result.state, "shadow_v1_authoritative");
   assert.equal(result.execution_authorized, false);
   assert.equal(result.core_final_authority, true);
+  assert.equal(result.validation.shard_count, loaded.manifest.shards.length);
   assert.equal(result.validation.unchecked_shards, 0);
   assert.deepEqual(result.selected_branches.map((branch) => branch.id), branchAllowlist);
   assert.equal(result.evaluation.state, "not_requested_core_evidence_contract_unavailable");
