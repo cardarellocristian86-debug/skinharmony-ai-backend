@@ -1,5 +1,4 @@
 import { createApp, requiresGenericWorkPreflight } from "./app.js";
-import express from "express";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
@@ -10,8 +9,6 @@ import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
-import { createAuthenticator } from "./auth.js";
-import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 
@@ -29,7 +26,6 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
 });
-const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -39,16 +35,6 @@ const researchCortex = config.researchCortexRoot
     })
   : null;
 const suiteHandlers = createSuiteHandlers(config);
-
-const PROVIDER_ONBOARDING_EXEMPT_TOOLS = new Set([
-  "core_health",
-  "nyra_branch_catalog",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
-]);
 
 function summarizeToolRequest(toolName, args = {}) {
   return String(
@@ -133,12 +119,8 @@ const app = createApp(config, {
   toolSurface: "compact",
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
-    let providerStatus = null;
     try {
-      if (!PROVIDER_ONBOARDING_EXEMPT_TOOLS.has(toolName)) {
-        try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
-      }
-      if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext, providerStatus };
+      if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext };
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(toolName, args),
         operation_type: toolName,
@@ -157,9 +139,9 @@ const app = createApp(config, {
         reason_summary: preflight?.work_preflight?.state || preflight?.state || "preflight_completed",
         metadata: { execution_allowed: preflight?.work_preflight?.governance?.execution_allowed_by_preflight === true },
       });
-      return { preflight, ledgerContext, providerStatus };
+      return { preflight, ledgerContext };
     } catch (error) {
-      error.hookContext = { ledgerContext, providerStatus };
+      error.hookContext = { ledgerContext };
       throw error;
     }
   },
@@ -168,33 +150,15 @@ const app = createApp(config, {
     if (memoryFabric) await memoryFabric.recordToolActivity(event);
   },
 });
-const openAiPortal = createOpenAiConnectPortal({
-  config,
-  authenticate: browserAuthenticate,
-  issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
-  providerStatus: coreHandlers.tenant_provider_openai_status,
-  startMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_smoke_run,
-  readMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_read,
-  cancelMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_cancel,
-});
-app.get("/connect/openai", openAiPortal.start);
-app.get("/connect/openai/callback", openAiPortal.callback);
-app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
-app.get("/agents", openAiPortal.agentsHome);
-app.get("/agents/login", openAiPortal.agentsLogin);
-app.post("/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
-app.post("/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
-app.get("/agents/runs/:runId", openAiPortal.agentsRunRead);
-app.post("/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
-app.post("/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
+const disabledProviderPortal = (_req, res) => res
+  .status(410)
+  .set({
+    "cache-control": "no-store, max-age=0",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    "x-content-type-options": "nosniff",
+  })
+  .type("html")
+  .send('<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Funzione disattivata</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Funzione disattivata</h1><p>Il collegamento OpenAI non viene più usato. Nyra e Universal Core funzionano senza chiave API.</p><p>Puoi chiudere questa pagina e continuare normalmente in ChatGPT o Codex.</p></body></html>');
 
-// Preserve previously issued mobile-first links while keeping `/agents` as
-// the device- and client-neutral entrypoint for ChatGPT, Codex and browsers.
-app.get("/mobile/agents", openAiPortal.agentsHome);
-app.get("/mobile/agents/login", openAiPortal.agentsLogin);
-app.post("/mobile/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
-app.post("/mobile/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
-app.get("/mobile/agents/runs/:runId", openAiPortal.agentsRunRead);
-app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
-app.post("/mobile/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
+app.use(["/connect/openai", "/agents", "/mobile/agents"], disabledProviderPortal);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));
