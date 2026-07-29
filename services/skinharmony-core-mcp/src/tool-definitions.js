@@ -938,14 +938,20 @@ export const TOOLS = [
     subbranch_id: identifier,
     evidence_pack: nyraDeepV2EvidencePack,
     requirement_bindings: { type: "array", minItems: 1, maxItems: 64, items: nyraDeepV2RequirementBinding },
-  }, ["message", "branch_id", "subbranch_id", "evidence_pack", "requirement_bindings"]), ["core:govern"], false, false, { openWorld: true }),
+  }, ["message", "branch_id", "subbranch_id", "evidence_pack", "requirement_bindings"]), ["core:govern"], false, false, {
+    openWorld: true,
+    meta: { "skinharmony/externalSideEffect": false },
+  }),
   tool("nyra_v2_evaluate", "Evaluate a Deep V2 branch", "Ask Universal Core to resolve previously prepared tenant evidence, issue the operational attestation and call Nyra for a non-executing advisory evaluation. Raw evidence cannot be supplied here.", object({
     message: text(),
     request_id: nyraDeepV2RequestId,
     branch_id: identifier,
     subbranch_id: identifier,
     evidence_refs: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: nyraDeepV2EvidenceRef },
-  }, ["message", "branch_id", "subbranch_id", "evidence_refs"]), ["core:govern"], false, false, { openWorld: true }),
+  }, ["message", "branch_id", "subbranch_id", "evidence_refs"]), ["core:govern"], false, false, {
+    openWorld: true,
+    meta: { "skinharmony/externalSideEffect": false },
+  }),
   tool("skin_analyzer", "Interpret Skin Analyzer scores", "Read-only cosmetic interpretation of structured skin scores through the authenticated tenant Core branch; never diagnoses, prescribes or auto-publishes.", object({
     scores: { type: "array", minItems: 1, maxItems: 12, items: skinScore }, products: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, protocols: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, report_text: { type: "string", maxLength: 10_000 }, data_quality_score: score,
     acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier, focus_score: score, illumination_score: score, color_calibrated: { type: "boolean" }, polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] } }), previous_scores: { type: "array", maxItems: 12, items: skinScore }, previous_acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier }), learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }), session_id: identifier,
