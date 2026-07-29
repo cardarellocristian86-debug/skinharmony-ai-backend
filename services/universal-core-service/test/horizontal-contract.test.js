@@ -268,6 +268,30 @@ test("existing SkinHarmony keys retain their explicit horizontal guards and gain
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(existingKey.allowed_branches.includes(branchId));
 });
 
+test("MCP tenant gateway dynamically authorizes the complete current and future branch registry", () => {
+  const registryIds = Object.keys(deterministicBranchRegistry());
+  const gateway = resolveBranchesForKey({
+    tenant_id: "codexai",
+    key_type: "connector",
+    preset: null,
+    metadata: { bootstrap_kind: "mcp_tenant_gateway" },
+  });
+
+  assert.equal(gateway.tier, "omni_360");
+  assert.deepEqual(gateway.allowed_branches, registryIds);
+  assert.equal(gateway.allowed_branches.length, registryIds.length);
+  assert(VERTICAL_BRANCH_IDS.every((id) => gateway.allowed_branches.includes(id)));
+
+  const ordinaryConnector = resolveBranchesForKey({
+    tenant_id: "tenant-acme",
+    key_type: "connector",
+    preset: null,
+    metadata: {},
+  });
+  assert.equal(ordinaryConnector.tier, "base");
+  assert.equal(ordinaryConnector.allowed_branches.includes("smartdesk_operations_guard"), false);
+});
+
 test("domain and branch routing remains deterministic under repeated load", () => {
   const start = performance.now();
   for (let index = 0; index < 10_000; index += 1) {
