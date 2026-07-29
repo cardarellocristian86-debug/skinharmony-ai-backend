@@ -268,19 +268,30 @@ test("existing SkinHarmony keys retain their explicit horizontal guards and gain
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(existingKey.allowed_branches.includes(branchId));
 });
 
-test("MCP tenant gateway dynamically authorizes the complete current and future branch registry", () => {
+test("MCP gateway and codexai dynamically authorize the complete current and future branch registry", () => {
   const registryIds = Object.keys(deterministicBranchRegistry());
-  const gateway = resolveBranchesForKey({
-    tenant_id: "codexai",
-    key_type: "connector",
-    preset: null,
-    metadata: { bootstrap_kind: "mcp_tenant_gateway" },
-  });
+  const fullRegistryRecords = [
+    {
+      tenant_id: "__mcp_tenant_gateway__",
+      key_type: "connector",
+      preset: null,
+      metadata: { bootstrap_kind: "mcp_tenant_gateway" },
+    },
+    {
+      tenant_id: "codexai",
+      key_type: "automation",
+      preset: null,
+      metadata: {},
+    },
+  ];
 
-  assert.equal(gateway.tier, "omni_360");
-  assert.deepEqual(gateway.allowed_branches, registryIds);
-  assert.equal(gateway.allowed_branches.length, registryIds.length);
-  assert(VERTICAL_BRANCH_IDS.every((id) => gateway.allowed_branches.includes(id)));
+  for (const keyRecord of fullRegistryRecords) {
+    const resolution = resolveBranchesForKey(keyRecord);
+    assert.equal(resolution.tier, "omni_360");
+    assert.deepEqual(resolution.allowed_branches, registryIds);
+    assert.equal(resolution.allowed_branches.length, registryIds.length);
+    assert(VERTICAL_BRANCH_IDS.every((id) => resolution.allowed_branches.includes(id)));
+  }
 
   const ordinaryConnector = resolveBranchesForKey({
     tenant_id: "tenant-acme",
