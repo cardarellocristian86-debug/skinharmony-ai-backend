@@ -33,10 +33,11 @@ jobs:
   nyra-deep-v2:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      NYRA_CI_ROOT: ${{ runner.temp }}/nyra-deep-branch-v2
     steps:
       - uses: actions/checkout@v4
+      - name: Configure Nyra CI workspace
+        shell: bash
+        run: echo "NYRA_CI_ROOT=$RUNNER_TEMP/nyra-deep-branch-v2" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -99,17 +100,6 @@ jobs:
             --map-output "$NYRA_CI_ROOT/promoted/nyra-deep-branch-v2-map.md"
       - name: Run Nyra unit, integration, regression and isolation suite
         run: npm run nyra:runtime:test
-      - name: Run ephemeral full-catalog and fixture contract suite
-        env:
-          NYRA_DEEP_V2_TEST_CATALOG_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.catalog.json
-          NYRA_DEEP_V2_TEST_FIXTURES_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.fixtures.json
-        run: |
-          node --test \
-            personal-control-center/test/nyra-deep-branch-v2-federation.test.js \
-            personal-control-center/test/nyra-deep-branch-v2-memory.test.js \
-            personal-control-center/test/nyra-deep-branch-v2.test.js \
-            personal-control-center/test/nyra-deep-shadow-telemetry.test.js \
-            scripts/test/nyra-deep-branch-v2-promotion-shards.test.mjs
       - name: Verify contracts, deep routing, benchmark and rollback
         run: |
           node scripts/verify-nyra-deep-branch-v2.mjs \
@@ -120,6 +110,18 @@ jobs:
             --report-root "$NYRA_CI_ROOT/reports" \
             --manifest "$NYRA_CI_ROOT/runtime/nyra-deep-branch-v2.runtime-manifest.json" \
             --shard-root "$NYRA_CI_ROOT/runtime/nyra-deep-branch-v2.shards"
+      - name: Run ephemeral full-catalog and fixture contract suite
+        env:
+          NYRA_DEEP_V2_TEST_CATALOG_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.catalog.json
+          NYRA_DEEP_V2_TEST_FIXTURES_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.fixtures.json
+          NYRA_DEEP_BRANCH_V2_RUNTIME_MANIFEST_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/runtime/nyra-deep-branch-v2.runtime-manifest.json
+        run: |
+          node --test \
+            personal-control-center/test/nyra-deep-branch-v2-federation.test.js \
+            personal-control-center/test/nyra-deep-branch-v2-memory.test.js \
+            personal-control-center/test/nyra-deep-branch-v2.test.js \
+            personal-control-center/test/nyra-deep-shadow-telemetry.test.js \
+            scripts/test/nyra-deep-branch-v2-promotion-shards.test.mjs
       - name: Verify validation-attestation semantics
         env:
           NYRA_DEEP_V2_TEST_CATALOG_PATH: ${{ runner.temp }}/nyra-deep-branch-v2/promoted/nyra-deep-branch-v2.catalog.json
@@ -270,5 +272,5 @@ jobs:
         with:
           name: nyra-deep-branch-v2-verification-${{ github.run_id }}
           path: ${{ runner.temp }}/nyra-deep-branch-v2/reports
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 14

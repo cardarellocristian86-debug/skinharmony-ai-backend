@@ -1642,6 +1642,7 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
   const resolvedNyraNetwork = nyraNetwork || routeNyraBranches({
     text: requestText,
     requestedBranches: requestedNyraBranches,
+    authorizedCoreBranches: resolvedBranchContext.selected_branches,
     domainPackId: domainPack.id,
   });
   return buildWorkPreflight({
@@ -7694,6 +7695,7 @@ export function createUniversalCoreService(options = {}) {
         ...(Array.isArray(requestedNyraBranches) ? requestedNyraBranches : []),
         ...(signedDeepBranchId ? [signedDeepBranchId] : []),
       ],
+      authorizedCoreBranches: branchContext.selected_branches,
       domainPackId: domainPackAccess.pack.id,
     });
     const workPreflight = composeMandatoryWorkPreflight(req, {

@@ -30,11 +30,11 @@ const NYRA_DEEP_V2_RUNTIME_PATH = path.resolve(
   "../personal-control-center/lib/nyra-deep-branch-v2.js",
 );
 const V1_SOURCE_PIN = Object.freeze({
-  repository_commit: "54cd22b0ee3a82e80f0c109bf91fbbfeed5a6f94",
+  repository_commit: "b8cf5d4cf6cdaaec979f5c5d4e0d9c48119d8b54",
   horizontal_runtime_pre_v2_sha256:
     "eea4aef34164f3681433aca0b338c93ed8276d719a18e379d124bc0b60b2a6d3",
   core_branch_network_sha256:
-    "b5200c1068a49a29fe394a2c917a15be18278c11a2949b456672e5e28e7100c8",
+    "25bd1cc03fb77dbf265b7802929c129edf14ca6b35dddee43ba2f6dcef7aa106",
 });
 function parseArgs(argv) {
   const args = {};

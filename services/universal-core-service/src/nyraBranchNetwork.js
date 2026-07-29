@@ -128,6 +128,29 @@ const NYRA_BRANCHES = Object.freeze([
   ], ["analyzer", "skinharmony"], { workPhase: "domain", coreBranchBindings: ["skinharmony_analyzer", "scalp_analyzer", "beauty_protocol_guard"] }),
 ]);
 
+// This is deliberately narrower than reversing core_branch_bindings. Bindings
+// also describe shared Core dependencies: reversing all of them would, for
+// example, open software analysis for every generic quality request.
+const CORE_TO_NYRA_REQUEST_ROUTES = Object.freeze({
+  work_intake_intelligence: Object.freeze(["context_intelligence", "work_intake"]),
+  research_evidence_intelligence: Object.freeze(["research_evidence"]),
+  planning_priority_intelligence: Object.freeze(["decision_reasoning", "planning_prioritization"]),
+  execution_coordination_intelligence: Object.freeze(["execution_planning", "parallel_coordination"]),
+  quality_verification_intelligence: Object.freeze(["risk_governance", "quality_verification"]),
+  adaptive_learning_intelligence: Object.freeze(["learning_memory", "adaptive_learning"]),
+  workload_identity_delegation_guard: Object.freeze(["delegated_authority"]),
+  decision_provenance_intelligence: Object.freeze(["decision_provenance"]),
+  agent_orchestration: Object.freeze(["relational_supervision", "agent_orchestration"]),
+  ai_orchestration: Object.freeze(["relational_supervision", "ai_orchestration"]),
+  software_systems_intelligence: Object.freeze(["software_intelligence"]),
+  software_binary_intelligence: Object.freeze(["software_intelligence"]),
+  suite_governance: Object.freeze(["suite_domain"]),
+  smartdesk_operations_guard: Object.freeze(["smartdesk_domain"]),
+  skinharmony_analyzer: Object.freeze(["analyzer_domain"]),
+  scalp_analyzer: Object.freeze(["analyzer_domain"]),
+  beauty_protocol_guard: Object.freeze(["analyzer_domain"]),
+});
+
 function normalizeList(value, max = 50) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.slice(0, max).map((item) => String(item || "").trim()).filter(Boolean))];
@@ -170,14 +193,26 @@ export function nyraBranchCatalog(packId = "generic") {
   };
 }
 
-export function routeNyraBranches({ text = "", requestedBranches = [], domainPackId = "generic" } = {}) {
+export function routeNyraBranches({
+  text = "",
+  requestedBranches = [],
+  authorizedCoreBranches = [],
+  domainPackId = "generic",
+} = {}) {
   const available = NYRA_BRANCHES.filter((item) => availableForPack(item, domainPackId));
   const availableIds = new Set(available.map((item) => item.id));
   const requested = normalizeList(requestedBranches);
+  const authorizedCore = normalizeList(authorizedCoreBranches);
+  const mappedFromCore = [...new Set(authorizedCore
+    .flatMap((id) => CORE_TO_NYRA_REQUEST_ROUTES[id] || [])
+    .filter((id) => availableIds.has(id)))];
+  const mappedCoreIds = new Set(authorizedCore.filter((id) =>
+    (CORE_TO_NYRA_REQUEST_ROUTES[id] || []).some((nyraId) => availableIds.has(nyraId))));
+  const coreOnly = authorizedCore.filter((id) => !mappedCoreIds.has(id));
   const inferred = available
     .filter((item) => item.triggers.some((trigger) => String(text || "").toLowerCase().includes(trigger)))
     .map((item) => item.id);
-  const orchestrationSupervisionRequired = [...requested, ...inferred]
+  const orchestrationSupervisionRequired = [...requested, ...mappedFromCore, ...inferred]
     .some((id) => id === "agent_orchestration" || id === "ai_orchestration");
   const candidates = [...new Set([
     "context_intelligence",
@@ -185,6 +220,7 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
     "risk_governance",
     ...(orchestrationSupervisionRequired ? ["relational_supervision"] : []),
     ...requested,
+    ...mappedFromCore,
     ...inferred,
   ])];
   const opened = candidates.filter((id) => availableIds.has(id));
@@ -209,6 +245,12 @@ export function routeNyraBranches({ text = "", requestedBranches = [], domainPac
     })),
     denied_branches: denied,
     unknown_or_unentitled_branch_count: denied.length,
+    core_branch_mapping: {
+      authorized_core_branches: authorizedCore,
+      mapped_core_branches: authorizedCore.filter((id) => mappedCoreIds.has(id)),
+      core_only_branches: coreOnly,
+      mapped_nyra_branches: mappedFromCore,
+    },
     parallel_analysis: {
       enabled: opened.length > 1,
       mode: "bounded_parallel_advisory",

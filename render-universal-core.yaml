@@ -101,12 +101,13 @@ services:
         value: codexai
       - key: CORE_NYRA_DEEP_BRANCH_V2_BRANCHES
         value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
-      # Set these to the exact generated 21/299 artifact bindings before the
-      # Render rollout; missing values keep the Core client fail-closed.
+      # Public, non-secret bindings pin Core preview requests to the verified
+      # 21-branch / 299-shard runtime artifact. Artifact changes must update
+      # these values in the same reviewed release.
       - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_CATALOG_FINGERPRINT
-        sync: false
+        value: c7b0b87765cac28c1fc5bd1ecf8fee5ddef97806c5da80f1a37e4bbab5d8c503
       - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_ROOT_BINDING_HASH
-        sync: false
+        value: 7231267d7ed3bee804289b21baf7246c558efd9e4f29439121ebc89458e836ec
       - key: CORE_NYRA_DEEP_BRANCH_V2_TIMEOUT_MS
         value: "2500"
       - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_FAILURE_THRESHOLD
