@@ -174,6 +174,21 @@ test("loads the separate owner-context signing secret without exposing it throug
   assert.equal(loadConfig({ CORE_OWNER_CONTEXT_SIGNING_SECRET: "too-short" }).ownerContextSigningSecret, "");
 });
 
+test("loads Deep V2 MCP signing material only when it is strong enough", () => {
+  const signingSecret = "test-nyra-deep-v2-signing-secret-0123456789";
+  const config = loadConfig({
+    CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET: signingSecret,
+  });
+
+  assert.equal(config.nyraDeepV2McpRequestSigningSecret, signingSecret);
+  assert.equal(
+    loadConfig({
+      CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET: "too-short",
+    }).nyraDeepV2McpRequestSigningSecret,
+    "",
+  );
+});
+
 test("requires a full immutable build identity for the strict provider binding", () => {
   assert.equal(loadConfig({ RENDER_GIT_COMMIT: "a".repeat(40) }).runtimeBuildCommit, "a".repeat(40));
   assert.throws(() => loadConfig({ RENDER_GIT_COMMIT: "a".repeat(7) }), /full 40-character commit SHA/);
