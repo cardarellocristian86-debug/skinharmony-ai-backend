@@ -9,7 +9,6 @@ databases:
   - name: skinharmony-mcp-twg-staging-db
     plan: free
     region: oregon
-    diskSizeGB: 1
     connectionPool: none
     storageAutoscalingEnabled: false
     # Render services in the private network remain able to connect. Public
