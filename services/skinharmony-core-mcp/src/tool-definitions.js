@@ -177,6 +177,43 @@ const researchPlanPolicy = object({
     allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
   }, ["minimum_independent_sources", "freshness_days"]),
 }, ["source_policy"]);
+const nyraDeepV2RequestId = {
+  type: "string",
+  minLength: 1,
+  maxLength: 160,
+  pattern: "^[a-zA-Z0-9_.:-]+$",
+};
+const nyraDeepV2EvidenceRef = {
+  type: "string",
+  pattern: "^[a-f0-9]{64}$",
+};
+const nyraDeepV2Source = object({
+  id: identifier,
+  registry_source_id: identifier,
+  url: { type: "string", format: "uri", maxLength: 2_048 },
+  title: text(500),
+  source_type: sourceType,
+  excerpt: { type: "string", minLength: 16, maxLength: 1_200 },
+  published_at: { type: "string", format: "date-time" },
+}, ["id", "registry_source_id", "url", "title", "source_type", "excerpt"]);
+const nyraDeepV2Claim = object({
+  id: identifier,
+  kind: { type: "string", enum: ["fact", "inference", "hypothesis"] },
+  text: text(2_000),
+  source_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
+  confidence: probability,
+}, ["id", "kind", "text", "source_ids"]);
+const nyraDeepV2EvidencePack = object({
+  research_question: text(2_000),
+  sources: { type: "array", minItems: 1, maxItems: 20, items: nyraDeepV2Source },
+  claims: { type: "array", minItems: 1, maxItems: 30, items: nyraDeepV2Claim },
+}, ["sources", "claims"]);
+const nyraDeepV2RequirementBinding = object({
+  id: identifier,
+  requirement_ref: { type: "string", pattern: "^req_[a-f0-9]{64}$" },
+  source_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
+  claim_ids: { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: identifier },
+}, ["id", "requirement_ref", "source_ids", "claim_ids"]);
 const searchOutputSchema = object({
   results: {
     type: "array",
@@ -488,7 +525,7 @@ export const TOOLS = [
     project_id: identifier,
     agent_id: identifier,
     response_mode: { type: "string", enum: ["compact", "full"] },
-    nyra_branches: { type: "array", maxItems: 64, items: identifier },
+    nyra_branches: { type: "array", maxItems: 20, items: identifier },
     available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } },
     evidence_state: {
       type: "object",
@@ -785,7 +822,7 @@ export const TOOLS = [
   tool("orchestration_dtt_core_join", "Join a verified DTT through Core", "Request the Universal Core endpoint to join a fully verified tenant-bound tree. The caller cannot nominate the authority; Core produces the authority field and the join never executes an agent, model, tool or external action.", object({
     tree_id: dttReference,
   }, ["tree_id"]), ["core:govern"], false, true, { ownerConfirmationRequired: false }),
-  tool("nyra_interpret_request", "Interpret a Nyra request", "Use this when a request needs Nyra routing, bounded cognition, dialogue validation or owner protection. It returns a compact fast result by default; choose deep for scenarios and hypotheses, or full only for diagnostics. Universal Core remains final authority and execution stays disabled.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, response_mode: { type: "string", enum: ["fast", "deep", "full"] }, nyra_branches: { type: "array", maxItems: 64, items: identifier }, available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } } }, ["message"]), ["core:read"]),
+  tool("nyra_interpret_request", "Interpret a Nyra request", "Use this when a request needs Nyra routing, bounded cognition, dialogue validation or owner protection. It returns a compact fast result by default; choose deep for scenarios and hypotheses, or full only for diagnostics. Universal Core remains final authority and execution stays disabled.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, response_mode: { type: "string", enum: ["fast", "deep", "full"] }, nyra_branches: { type: "array", maxItems: 20, items: identifier }, available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } } }, ["message"]), ["core:read"]),
   tool("nyra_fetch_analysis", "Fetch Nyra analysis details", "Use this after nyra_interpret_request when the compact result indicates that deeper or diagnostic details are relevant. Results are tenant-scoped and expire after five minutes; execution remains disabled.", object({ analysis_id: { type: "string", pattern: "^nyra_[a-f0-9]{24}$" }, response_mode: { type: "string", enum: ["deep", "full"] }, session_id: identifier, agent_id: identifier }, ["analysis_id"]), ["core:read"]),
   tool("core_gate_action", "Evaluate and authorize a scoped action", "Ask Universal Core to evaluate an action and, only for supported fail-closed operation classes, return a scoped authorization. This tool never executes the action.", { type: "object", required: ["action_label", "action_type"], properties: { action_label: text(500), action_type: text(120), operation_class: text(120), target_commit: { type: "string", pattern: "^[a-fA-F0-9]{40}$" }, read_only: { type: "boolean" }, dry_run: { type: "boolean" }, external_side_effect: { type: "boolean" }, contains_customer_data: { type: "boolean" }, contains_secret: { type: "boolean" }, cross_tenant: { type: "boolean" }, destructive: { type: "boolean" }, verified_outcome: { type: "boolean" }, bypass_orchestrator: { type: "boolean" }, rollback_ready: { type: "boolean" }, audit_ready: { type: "boolean" }, configuration_changes: { type: "boolean" } }, additionalProperties: true }, ["core:govern"], false, true),
   tool("suite_status", "Read Suite connection status", "Use this when the authenticated tenant needs WordPress node freshness, Render connectivity, module coverage and branch readiness without loading the full Cockpit.", object({ node_id: suiteResourceId }), ["core:read"], true, true, {
@@ -883,6 +920,32 @@ export const TOOLS = [
     allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
     search_context_size: { type: "string", enum: ["low", "medium", "high"] },
   }, ["query"]), ["core:govern"], false, false, { openWorld: true }),
+  tool("nyra_v2_preview", "Preview Deep Branch V2", "Ask Universal Core to route Nyra V1 first, issue a signed bounded Deep V2 preview request and return only a non-executing Core-authoritative preview.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    nyra_branches: { type: "array", maxItems: 64, uniqueItems: true, items: identifier },
+  }, ["message"]), ["core:read"], true, false),
+  tool("nyra_v2_requirements", "Read Deep V2 evidence requirements", "Ask Universal Core for the opaque evidence requirements of one Core-opened Deep V2 branch and subbranch. It never authorizes execution.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    branch_id: identifier,
+    subbranch_id: identifier,
+  }, ["message", "branch_id", "subbranch_id"]), ["core:read"], true, false),
+  tool("nyra_v2_evidence_prepare", "Prepare governed Deep V2 evidence", "Send a bounded evidence pack to Universal Core. MCP computes and signs the exact pack binding; Core retrieves only registry-authorized sources and returns opaque evidence references. No Nyra execution is authorized.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    branch_id: identifier,
+    subbranch_id: identifier,
+    evidence_pack: nyraDeepV2EvidencePack,
+    requirement_bindings: { type: "array", minItems: 1, maxItems: 64, items: nyraDeepV2RequirementBinding },
+  }, ["message", "branch_id", "subbranch_id", "evidence_pack", "requirement_bindings"]), ["core:govern"], false, false, { openWorld: true }),
+  tool("nyra_v2_evaluate", "Evaluate a Deep V2 branch", "Ask Universal Core to resolve previously prepared tenant evidence, issue the operational attestation and call Nyra for a non-executing advisory evaluation. Raw evidence cannot be supplied here.", object({
+    message: text(),
+    request_id: nyraDeepV2RequestId,
+    branch_id: identifier,
+    subbranch_id: identifier,
+    evidence_refs: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: nyraDeepV2EvidenceRef },
+  }, ["message", "branch_id", "subbranch_id", "evidence_refs"]), ["core:govern"], false, false, { openWorld: true }),
   tool("skin_analyzer", "Interpret Skin Analyzer scores", "Read-only cosmetic interpretation of structured skin scores through the authenticated tenant Core branch; never diagnoses, prescribes or auto-publishes.", object({
     scores: { type: "array", minItems: 1, maxItems: 12, items: skinScore }, products: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, protocols: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, report_text: { type: "string", maxLength: 10_000 }, data_quality_score: score,
     acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier, focus_score: score, illumination_score: score, color_calibrated: { type: "boolean" }, polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] } }), previous_scores: { type: "array", maxItems: 12, items: skinScore }, previous_acquisition: object({ device_model: { type: "string", maxLength: 120 }, capture_protocol_id: identifier }), learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }), session_id: identifier,
