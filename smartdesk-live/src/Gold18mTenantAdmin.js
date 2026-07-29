@@ -2396,7 +2396,37 @@ function verifyGold18mCollections(
         && runtimeTimestampsValid
         && stableStringify(projected) === stableStringify(expected);
     });
-  const settingsDatasetExact = !dataset || stableStringify(settings) === stableStringify(dataset.settings);
+  // Gold rebuild persists a bounded server-generated cache in settings. Do not
+  // weaken the dataset guard: every configured business field remains exact,
+  // and only the cache plus its server timestamp may differ at runtime.
+  const settingsDatasetExact = !dataset || (() => {
+    const expectedSettings = dataset.settings || {};
+    const actualSettings = settings;
+    if (!actualSettings || typeof actualSettings !== "object" || Array.isArray(actualSettings)) return false;
+    const allowedRuntimeKeys = new Set(["progressiveIntelligenceStatus"]);
+    const expectedKeys = Object.keys(expectedSettings);
+    const actualKeysAllowed = Object.keys(actualSettings).every((key) => expectedKeys.includes(key) || allowedRuntimeKeys.has(key));
+    const expectedStatic = { ...expectedSettings };
+    const actualStatic = { ...actualSettings };
+    // updatedAt is written by the repository when it persists the derived
+    // cache; require a canonical timestamp rather than a seed-time literal.
+    if (Object.prototype.hasOwnProperty.call(expectedStatic, "updatedAt")) {
+      const timestampChanged = actualStatic.updatedAt !== expectedStatic.updatedAt;
+      if (timestampChanged && !isCanonicalIsoTimestamp(actualStatic.updatedAt)) return false;
+      if (timestampChanged && !actualSettings.progressiveIntelligenceStatus) return false;
+      delete expectedStatic.updatedAt;
+      delete actualStatic.updatedAt;
+    }
+    delete actualStatic.progressiveIntelligenceStatus;
+    const cache = actualSettings.progressiveIntelligenceStatus;
+    const cacheValid = cache === undefined || (
+      cache && typeof cache === "object" && !Array.isArray(cache)
+      && cache.cached === true
+      && ["gold", "enterprise"].includes(String(cache.currentPlan || "").toLowerCase())
+      && isCanonicalIsoTimestamp(cache.persistedAt)
+    );
+    return actualKeysAllowed && cacheValid && stableStringify(actualStatic) === stableStringify(expectedStatic);
+  })();
   const marketingPayloadExact = !dataset || (
     stableStringify(marketingActions.slice().sort((left, right) => String(left.id || "").localeCompare(String(right.id || ""))))
       === stableStringify(dataset.history.aiMarketingActions.slice().sort((left, right) => String(left.id || "").localeCompare(String(right.id || ""))))
