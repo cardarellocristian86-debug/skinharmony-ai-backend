@@ -2007,6 +2007,28 @@ app.get("/api/ai-gold/state/signals", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({}), () => service.getGoldState(req.session).signals || {});
 });
 
+// Gold's landing view is one tenant-scoped persisted read model.  It is
+// deliberately local and does not contact Nyra/Core; those calls remain opt-in
+// from explicit analysis actions, never a side effect of opening AI Gold.
+app.get("/api/ai-gold/overview", requirePlan("gold"), (req, res) => {
+  try {
+    const payload = service.getGoldOverviewReadModel(req.session);
+    const etag = service.getGoldOverviewEtag(req.session?.centerId, payload.eventSeq);
+    res.set("Cache-Control", "private, max-age=0, must-revalidate");
+    res.set("ETag", etag);
+    res.set("Vary", "Cookie");
+    if (String(req.headers["if-none-match"] || "") === etag) return res.status(304).end();
+    return res.json({ ...payload, etag });
+  } catch (error) {
+    return res.status(503).json({
+      goldEnabled: false,
+      sourceLayer: "persisted_gold_state_unavailable",
+      code: "gold_overview_unavailable",
+      message: error instanceof Error ? error.message : "Overview Gold temporaneamente non disponibile."
+    });
+  }
+});
+
 app.get("/api/corelia/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,

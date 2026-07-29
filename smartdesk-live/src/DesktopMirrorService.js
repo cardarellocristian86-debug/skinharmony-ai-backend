@@ -2229,6 +2229,10 @@ class DesktopMirrorService {
     this.sessions = new Map();
     this.businessSnapshotCache = new Map();
     this.goldStateReadCache = new Map();
+    // The Gold landing page is intentionally a read model.  Keep it separate
+    // from the analytical caches: opening the page must never fan out into
+    // Core/Nyra calls or rebuild a tenant's historical state.
+    this.goldOverviewReadCache = new Map();
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
@@ -2642,6 +2646,7 @@ class DesktopMirrorService {
     ];
     if (!centerId) {
       this.businessSnapshotCache.clear();
+      this.goldOverviewReadCache.clear();
       this.analyticsCache.clear();
       this.analyticsDirtyBlocks.clear();
       return;
@@ -2656,6 +2661,7 @@ class DesktopMirrorService {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
     });
     this.goldStateReadCache.delete(normalizedCenterId);
+    this.goldOverviewReadCache.delete(normalizedCenterId);
   }
 
   getGoldStateRecordId(centerId = "") {
@@ -2803,6 +2809,129 @@ class DesktopMirrorService {
     if (bootstrapped) return bootstrapped;
     this.goldStateRepository.create(state);
     return this.refreshGoldDerivedState(state, session);
+  }
+
+  getGoldOverviewEtag(centerId = "", eventSeq = 0) {
+    // Do not expose the tenant id itself in a cache validator.
+    const tenantDigest = crypto.createHash("sha256").update(String(centerId || "")).digest("base64url").slice(0, 16);
+    return `\"gold-overview-${tenantDigest}-${Math.max(0, Number(eventSeq || 0))}\"`;
+  }
+
+  buildGoldOverviewReadModel(state = {}, session = null) {
+    const business = state.snapshots?.business || {};
+    const profitability = state.snapshots?.profitability || {};
+    const report = state.snapshots?.report || {};
+    const marketing = state.snapshots?.marketing || {};
+    const inventory = state.snapshots?.inventory || {};
+    const cachedProgressive = this.getSettings(session).progressiveIntelligenceStatus || null;
+    const progressive = this.shouldUseCachedProgressiveIntelligence(cachedProgressive, state)
+      ? { ...cachedProgressive, cached: true, source: "persisted_gold_state" }
+      : {
+          cached: false,
+          source: "not_loaded_on_overview",
+          activation: { code: "snapshot_read" },
+          message: "Apri Forecast o aggiorna esplicitamente per ricalcolare la lettura progressiva."
+        };
+    const decision = state.decision || null;
+    const priorityClients = Array.isArray(marketing.priorityClients)
+      ? marketing.priorityClients
+      : Array.isArray(marketing.suggestions)
+        ? marketing.suggestions
+        : [];
+    return {
+      goldEnabled: true,
+      version: "gold_overview_read_model_v1",
+      sourceLayer: "persisted_gold_state",
+      generatedAt: nowIso(),
+      eventSeq: Number(state.eventSeq || 0),
+      updatedAt: state.updatedAt || "",
+      tenant: {
+        // The client receives a boolean plan assertion only; the server owns
+        // the center binding and no request parameter is used to choose it.
+        plan: this.getPlanLevel(session)
+      },
+      freshness: {
+        mode: "event_seq",
+        dirty: Boolean(
+          state.dirty?.components?.length
+          || state.dirty?.snapshots?.length
+          || state.dirty?.signals?.length
+        ),
+        refresh: "Ricalcola solo dopo una modifica del centro o con Aggiorna."
+      },
+      summary: {
+        revenueCents: Number(business.revenueCents || state.counters?.revenueTotalCents || 0),
+        paymentCount: Number(business.paymentCount || state.counters?.paymentCount || 0),
+        clientsTotal: Number(state.counters?.clientsTotal || 0),
+        activeClients: Number(state.counters?.activeClients || 0),
+        agendaSaturation: Number(business.agendaSaturation || 0),
+        confidence: Number(state.components?.Conf || business.confidence || 0),
+        centerStatus: report.centerHealth?.status || business.status || ""
+      },
+      decision: decision ? {
+        primaryAction: decision.primaryAction || null,
+        secondaryActions: Array.isArray(decision.secondaryActions) ? decision.secondaryActions.slice(0, 5) : [],
+        blockedActions: Array.isArray(decision.blockedActions) ? decision.blockedActions.slice(0, 5) : [],
+        globalConfidence: Number(decision.globalConfidence || state.components?.Conf || 0),
+        systemRisk: Number(decision.systemRisk || 0)
+      } : null,
+      snapshots: {
+        business,
+        profitability,
+        report,
+        marketing: {
+          summary: marketing.summary || {},
+          priorityClients: priorityClients.slice(0, 10)
+        },
+        inventory: {
+          summary: inventory.summary || {},
+          lowStock: Array.isArray(inventory.lowStock) ? inventory.lowStock.slice(0, 10) : []
+        }
+      },
+      progressive,
+      guardrails: {
+        readOnly: true,
+        automaticExecutionAllowed: false,
+        externalAiCalled: false,
+        operatorConfirmationRequired: true
+      }
+    };
+  }
+
+  getGoldOverviewReadModel(session = null) {
+    this.assertCanOperate(session);
+    if (!this.hasGoldIntelligence(session)) {
+      return {
+        goldEnabled: false,
+        requiredPlan: "gold",
+        currentPlan: this.getPlanLevel(session),
+        sourceLayer: "plan_gate"
+      };
+    }
+    const centerId = this.getCenterId(session);
+    // Do not call getGoldState() here: that method is allowed to repair legacy
+    // state and is therefore not appropriate for an ordinary page view. The
+    // overview must be a pure persisted read, never a bootstrap/rebuild path.
+    const state = this.goldStateRepository.findById(this.getGoldStateRecordId(centerId));
+    const eventSeq = Number(state?.eventSeq || 0);
+    if (!state || eventSeq <= 0) {
+      // Do not fall back to raw repositories here. A missing persisted state is
+      // an operational condition, not a reason for page-open recomputation.
+      return {
+        goldEnabled: true,
+        sourceLayer: "persisted_gold_state_unavailable",
+        eventSeq: 0,
+        retryable: true,
+        message: "Lo snapshot Gold è in preparazione. Riprova tra poco o usa Aggiorna."
+      };
+    }
+    const cached = this.goldOverviewReadCache.get(centerId);
+    if (cached && cached.eventSeq === eventSeq) {
+      return { ...cached.payload, cache: { hit: true, eventSeq } };
+    }
+    const payload = this.buildGoldOverviewReadModel(state, session);
+    this.goldOverviewReadCache.set(centerId, { eventSeq, payload });
+    return { ...payload, cache: { hit: false, eventSeq } };
   }
 
   bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
