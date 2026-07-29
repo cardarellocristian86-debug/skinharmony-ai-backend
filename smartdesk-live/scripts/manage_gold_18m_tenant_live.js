@@ -562,14 +562,37 @@ async function runApplyAll(args) {
       { requireCompleteImportManifest: false }
     );
     const snapshots = dashboardSnapshotsForDataset(service, runtime.session, dataset);
-    const finalized = planFinalizeCollections(
+    const provisionalFinalized = planFinalizeCollections(
       collectionsForService(service),
       centerId,
       dataset,
       snapshots,
       preliminaryVerification
     );
-    await commitCollections(service, finalized, ["dashboard_snapshots", "gold_imports"]);
+    await commitCollections(service, provisionalFinalized, ["dashboard_snapshots", "gold_imports"]);
+    await assertLockAlive(lockClient);
+    assertSuperadminsUnchanged();
+    assertTenantAuthUnchanged();
+    // Certification is derived from the committed candidate, not the earlier
+    // pre-final snapshot. Runtime repositories may expose a different active
+    // check set after dashboard finalization. The candidate is never accepted:
+    // it only supplies the authoritative check cardinality for the final,
+    // strict manifest and is immediately replaced below.
+    const candidateVerification = verifyGold18mCollections(
+      collectionsForService(service),
+      centerId,
+      dataset,
+      backup.superadminDigest,
+      expectedTenantAuthDigest
+    );
+    const certifiedFinalized = planFinalizeCollections(
+      collectionsForService(service),
+      centerId,
+      dataset,
+      snapshots,
+      candidateVerification
+    );
+    await commitCollections(service, certifiedFinalized, ["gold_imports"]);
     await assertLockAlive(lockClient);
     assertSuperadminsUnchanged();
     assertTenantAuthUnchanged();
