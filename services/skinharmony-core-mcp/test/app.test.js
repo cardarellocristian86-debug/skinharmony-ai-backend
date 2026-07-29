@@ -244,6 +244,32 @@ test("production compact mode exposes only the stable connector surface", async 
       assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
       assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
+
+      const resources = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `compact-resources-test-${index}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 220 + index, method: "resources/list" }),
+      }).then((result) => result.json());
+      assert.deepEqual(resources.result.resources, []);
+
+      const retiredTool = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `compact-retired-tool-test-${index}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 240 + index, method: "tools/call", params: {
+          name: "tenant_provider_openai_setup_panel",
+          arguments: {},
+        } }),
+      }).then((result) => result.json());
+      assert.equal(retiredTool.error.code, -32602);
+      assert.equal(retiredTool.error.message, "Unknown tool");
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -264,15 +290,13 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /installed as a ChatGPT connector/);
   assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
   assert.match(body.result.instructions, /Nyra and Universal Core operate without an OpenAI API key/);
-  assert.match(body.result.instructions, /Do not call provider status or open setup panels unless the user explicitly asks/);
+  assert.match(body.result.instructions, /Never call provider tools, open setup panels/);
+  assert.match(body.result.instructions, /Old provider links are retired/);
   assert.doesNotMatch(body.result.instructions, /protected one-time Core page/);
+  assert.doesNotMatch(body.result.instructions, /provider test/);
   assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
   assert.match(body.result.instructions, /AUTOMATIC/);
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
-  assert.match(body.result.instructions, /manual_dry_run/);
-  assert.match(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
-  assert.match(body.result.instructions, /Never call work_preflight before provider status/i);
-  assert.match(body.result.instructions, /bounded_execution_ready=true/);
 }));
 
 test("keeps native Core-governed controls outside generic shared-memory preflight", () => {
