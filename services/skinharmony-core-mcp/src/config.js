@@ -154,6 +154,13 @@ export function loadConfig(env = process.env) {
   const dttAgentIdentitySigningSecret = dttAgentIdentitySigningSecretCandidate.length >= 32
     ? dttAgentIdentitySigningSecretCandidate
     : "";
+  const nyraDeepV2McpRequestSigningSecretCandidate = String(
+    env.CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET || "",
+  ).trim();
+  const nyraDeepV2McpRequestSigningSecret =
+    nyraDeepV2McpRequestSigningSecretCandidate.length >= 32
+      ? nyraDeepV2McpRequestSigningSecretCandidate
+      : "";
   const ownerContextSigningSecretCandidate = String(env.CORE_OWNER_CONTEXT_SIGNING_SECRET || "").trim();
   // Keep this independent from Core bearer credentials. A short value is not
   // a usable signature key and therefore deliberately behaves as missing.
@@ -244,6 +251,7 @@ export function loadConfig(env = process.env) {
     suiteControlPlaneCacheTtlMs: integer(env.SUITE_CONTROL_PLANE_CACHE_TTL_MS, 5_000, 0, 60_000),
     agentSignatureSecret,
     dttAgentIdentitySigningSecret,
+    nyraDeepV2McpRequestSigningSecret,
     ownerContextSigningSecret,
     runtimeBuildCommit,
     defaultTenantId,
