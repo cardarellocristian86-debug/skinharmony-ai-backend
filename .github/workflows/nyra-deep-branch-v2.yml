@@ -33,10 +33,11 @@ jobs:
   nyra-deep-v2:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      NYRA_CI_ROOT: ${{ runner.temp }}/nyra-deep-branch-v2
     steps:
       - uses: actions/checkout@v4
+      - name: Configure Nyra CI workspace
+        shell: bash
+        run: echo "NYRA_CI_ROOT=$RUNNER_TEMP/nyra-deep-branch-v2" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
