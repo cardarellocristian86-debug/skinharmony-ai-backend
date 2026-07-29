@@ -209,17 +209,45 @@ function challenge(
   return `Bearer resource_metadata="${metadata}", error="${error}", error_description="${safeDescription}"${scope ? `, scope="${scope}"` : ""}`;
 }
 
+const TOOL_FAILURE_STATUS_BY_CODE = Object.freeze({
+  dynamic_capability_arguments_invalid: 422,
+  dynamic_capability_query_required: 422,
+  dynamic_capability_candidates_empty: 422,
+  dynamic_capability_id_invalid: 422,
+  dynamic_capability_reserved_argument: 422,
+  dynamic_capability_arguments_too_large: 413,
+  dynamic_capability_arguments_too_deep: 413,
+  dynamic_capability_catalog_revision_mismatch: 409,
+  dynamic_capability_unavailable: 404,
+  dynamic_capability_read_only_required: 409,
+  dynamic_capability_mutation_required: 409,
+  dynamic_capability_not_authorized: 403,
+  owner_confirmation_required: 403,
+  idempotency_key_required: 422,
+});
+
 function toolFailure(error) {
   const raw = String(error?.code || error?.message || "tool_execution_failed");
   const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
-  const status = Number(error?.status || (core ? core[1] : 500));
+  const mappedStatus = TOOL_FAILURE_STATUS_BY_CODE[raw];
+  const status = Number(error?.status ?? (core ? core[1] : mappedStatus ?? 500));
   const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
-  const retryable = error?.retryable === true || status === 429 || status >= 500;
+  const retryable = error?.retryable === true ||
+    status === 429 ||
+    [502, 503, 504].includes(status) ||
+    (Boolean(core) && status >= 500);
+  const message = code === "dynamic_capability_arguments_invalid"
+    ? "The capability arguments failed schema validation."
+    : retryable
+      ? "The governed backend is temporarily unavailable."
+      : status >= 500
+        ? "The governed request failed."
+        : "The governed request was rejected.";
   const payload = {
     ok: false,
     error: {
       code,
-      message: retryable ? "The governed backend is temporarily unavailable." : "The governed request was rejected.",
+      message,
       retryable,
       ...(Number.isFinite(status) ? { status } : {}),
     },
