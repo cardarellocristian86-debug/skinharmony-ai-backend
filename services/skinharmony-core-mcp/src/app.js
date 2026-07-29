@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import express from "express";
-import { OPENAI_PROVIDER_SETUP_WIDGET, OPENAI_PROVIDER_SETUP_WIDGET_URI } from "./openai-provider-setup-widget.js";
 import { createAuthenticator, ownerRequestBinding, requireScopes } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
@@ -8,7 +7,7 @@ import { validateToolArguments } from "./schema-validation.js";
 import { compactMcpTools } from "./dynamic-capability-router.js";
 
 const SERVER_VERSION = "0.15.0-stable-dynamic-capabilities";
-const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. OPENAI PROVIDER DISABLED: Nyra and Universal Core operate without an OpenAI API key. Never call provider tools, open setup panels or direct the user to /connect/openai or /agents. Old provider links are retired. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. OPENAI PROVIDER DISABLED: Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or direct the user to /connect/openai or /agents. Old provider links are retired. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use governed shared memory and tenant-isolated Core controls. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
@@ -381,22 +380,8 @@ export function createApp(config, options = {}) {
         return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [{
-        uri: OPENAI_PROVIDER_SETUP_WIDGET_URI,
-        name: "Collega OpenAI a Nyra",
-        title: "Collega OpenAI",
-        description: "Pannello fisso per creare un link monouso e inserire la chiave solo nella pagina protetta.",
-        mimeType: "text/html;profile=mcp-app",
-      }] } });
-      if (method === "resources/read") {
-        if (params.uri !== OPENAI_PROVIDER_SETUP_WIDGET_URI) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
-        return res.json({ jsonrpc: "2.0", id, result: { contents: [{
-          uri: OPENAI_PROVIDER_SETUP_WIDGET_URI,
-          mimeType: "text/html;profile=mcp-app",
-          text: OPENAI_PROVIDER_SETUP_WIDGET,
-          _meta: { "openai/widgetDescription": "A fixed secure setup panel for the user's own OpenAI API key.", "openai/widgetPrefersBorder": true },
-        }] } });
-      }
+      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [] } });
+      if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
         const schemes = securitySchemes(scopes);
         const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
@@ -417,7 +402,7 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const tool = TOOLS.find((item) => item.name === params.name);
+        const tool = visibleTools.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
