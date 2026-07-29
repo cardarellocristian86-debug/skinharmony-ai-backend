@@ -174,6 +174,21 @@ test("loads the separate owner-context signing secret without exposing it throug
   assert.equal(loadConfig({ CORE_OWNER_CONTEXT_SIGNING_SECRET: "too-short" }).ownerContextSigningSecret, "");
 });
 
+test("loads Deep V2 MCP signing material only when it is strong enough", () => {
+  const signingSecret = "test-nyra-deep-v2-signing-secret-0123456789";
+  const config = loadConfig({
+    CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET: signingSecret,
+  });
+
+  assert.equal(config.nyraDeepV2McpRequestSigningSecret, signingSecret);
+  assert.equal(
+    loadConfig({
+      CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET: "too-short",
+    }).nyraDeepV2McpRequestSigningSecret,
+    "",
+  );
+});
+
 test("requires a full immutable build identity for the strict provider binding", () => {
   assert.equal(loadConfig({ RENDER_GIT_COMMIT: "a".repeat(40) }).runtimeBuildCommit, "a".repeat(40));
   assert.throws(() => loadConfig({ RENDER_GIT_COMMIT: "a".repeat(7) }), /full 40-character commit SHA/);
@@ -224,6 +239,35 @@ test("loads OAuth owner tenant bindings only from server-side configuration", ()
   assert.deepEqual(config.oauthOwnerTenantBindings, { "oauth-owner-fixture": "codexai" });
   assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
+});
+
+test("loads only bounded server-side OAuth tenant memberships", () => {
+  const config = loadConfig({
+    AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({
+      "oauth|member-a": { tenant_id: "codexai", role: "member" },
+      "oauth|member-b": { tenant_id: "codexai", role: "reviewer" },
+      "oauth|member-c": { tenant_id: "codexai", role: "operator" },
+    }),
+  });
+  assert.deepEqual(config.oauthTenantMemberships, {
+    "oauth|member-a": { tenantId: "codexai", role: "member" },
+    "oauth|member-b": { tenantId: "codexai", role: "reviewer" },
+    "oauth|member-c": { tenantId: "codexai", role: "operator" },
+  });
+  assert.throws(
+    () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": { tenant_id: "../other", role: "member" } }) }),
+    /invalid tenant id/,
+  );
+  for (const role of ["tenant_owner", "owner_root", "admin"]) {
+    assert.throws(
+      () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": { tenant_id: "codexai", role } }) }),
+      /invalid membership role/,
+    );
+  }
+  assert.throws(
+    () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": "codexai" }) }),
+    /must contain tenant_id and role/,
+  );
 });
 
 test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {

@@ -451,6 +451,32 @@ function run() {
   assert.strictEqual(verification.checks.find((item) => item.name === "gold_marketing_history_coherent")?.ok, true);
   assert.strictEqual(verification.checks.find((item) => item.name === "profitability_product_roles_separated")?.ok, true);
 
+  // A pre-final runtime snapshot can expose fewer checks than the committed
+  // candidate. The manifest must be recertified from that candidate; otherwise
+  // a safe live apply would roll back despite the dataset being coherent.
+  const staleVerification = {
+    ...preliminaryVerification,
+    checks: preliminaryVerification.checks.slice(0, -1)
+  };
+  const staleFinalized = planFinalizeCollections(wave3, "center_keep_gold", dataset, [], staleVerification);
+  const candidateVerification = verifyGold18mCollections(
+    staleFinalized,
+    "center_keep_gold",
+    dataset,
+    expectedSuperadminDigest,
+    expectedTenantAuthDigest
+  );
+  assert.strictEqual(candidateVerification.checks.find((item) => item.name === "gold_import_manifest_exact")?.ok, false);
+  const recertified = planFinalizeCollections(staleFinalized, "center_keep_gold", dataset, [], candidateVerification);
+  const recertifiedVerification = verifyGold18mCollections(
+    recertified,
+    "center_keep_gold",
+    dataset,
+    expectedSuperadminDigest,
+    expectedTenantAuthDigest
+  );
+  assert.strictEqual(recertifiedVerification.ok, true, "Il manifest deve usare il conteggio del candidato committed");
+
   [
     ["status", "verification_failed"],
     ["datasetVersion", "forged_version"],

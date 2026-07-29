@@ -6,7 +6,9 @@ import {
   buildImpactMap,
   createWorkContinuityRuntime,
   digest,
+  normalizeSurfaces,
   stable,
+  surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
 import { WORK_CONTINUITY_TOOLS as TOOLS } from "../src/work-continuity-tools.js";
 
@@ -67,4 +69,75 @@ test("continuity capabilities expose correct read/write and confirmation boundar
   }
   const resumeHashes = tools.work_continuity_resume.inputSchema.properties.current_state_hashes;
   assert.deepEqual(resumeHashes.required.sort(), ["live_state_hash", "policy_hash", "repository_hash"]);
+});
+
+test("work gallery normalizes bounded surfaces and detects file ancestry overlap", () => {
+  assert.deepEqual(normalizeSurfaces([
+    { kind: "component", value: "runtime" },
+    { kind: "file", value: "./services/core" },
+    { kind: "file", value: "services/core" },
+  ]), [
+    { kind: "component", value: "runtime" },
+    { kind: "file", value: "services/core" },
+  ]);
+  assert.equal(surfacesOverlap(
+    { kind: "file", value: "services/core" },
+    { kind: "file", value: "services/core/server.js" },
+  ), true);
+  assert.equal(surfacesOverlap(
+    { kind: "component", value: "core" },
+    { kind: "component", value: "core-api" },
+  ), false);
+  assert.equal(surfacesOverlap(
+    { kind: "file", value: "services/core" },
+    { kind: "dependency", value: "services/core" },
+  ), false);
+  assert.throws(() => normalizeSurfaces([{ kind: "file", value: "../secret" }]),
+    /continuity_lease_surface_invalid/);
+});
+
+test("work gallery schema is tenant/work scoped and uses temporary leases", () => {
+  const runtime = createWorkContinuityRuntime({}, { pool: { query: async () => ({ rows: [] }), end() {} } });
+  for (const table of [
+    "core_continuity_branches",
+    "core_continuity_participants",
+    "core_continuity_leases",
+    "core_continuity_lease_surfaces",
+    "core_continuity_messages",
+  ]) assert.match(runtime.schemaSql, new RegExp(table));
+  assert.match(runtime.schemaSql, /PRIMARY KEY \(tenant_id, work_id, session_id\)/);
+  assert.match(runtime.schemaSql, /expires_at timestamptz NOT NULL/);
+  assert.match(runtime.schemaSql, /WHERE status='active'/);
+  assert.doesNotMatch(runtime.schemaSql, /owner_id/);
+  for (const event of [
+    "participant_joined", "lease_acquired", "lease_renewed", "lease_released",
+    "lease_expired", "message_posted",
+  ]) assert.ok(WORK_EVENT_TYPES.has(event));
+});
+
+test("work gallery tools preserve read/write and owner-confirmation boundaries", () => {
+  const readTools = new Set(["tenant_work_gallery_list", "tenant_work_inbox"]);
+  const names = [
+    ...readTools,
+    "tenant_work_gallery_join",
+    "tenant_work_gallery_heartbeat",
+    "tenant_work_branch_open",
+    "tenant_work_lease_acquire",
+    "tenant_work_lease_renew",
+    "tenant_work_lease_release",
+    "tenant_work_message_post",
+  ];
+  const tools = Object.fromEntries(TOOLS.filter((tool) => names.includes(tool.name))
+    .map((tool) => [tool.name, tool]));
+  assert.deepEqual(Object.keys(tools).sort(), names.sort());
+  for (const name of names) {
+    assert.equal(tools[name].annotations.readOnlyHint, readTools.has(name));
+    if (!readTools.has(name)) {
+      assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], true);
+    }
+  }
+  assert.deepEqual(
+    tools.tenant_work_lease_acquire.inputSchema.properties.surfaces.items.properties.kind.enum,
+    ["file", "component", "dependency"],
+  );
 });

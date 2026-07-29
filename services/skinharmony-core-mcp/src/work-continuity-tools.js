@@ -18,6 +18,10 @@ const hash = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const uuid = { type: "string", format: "uuid" };
 const stateHashes = object({ repository_hash: hash, policy_hash: hash, live_state_hash: hash },
   ["repository_hash", "policy_hash", "live_state_hash"]);
+const leaseSurface = object({
+  kind: { type: "string", enum: ["file", "component", "dependency"] },
+  value: { type: "string", minLength: 1, maxLength: 500 },
+}, ["kind", "value"]);
 
 function tool(name, title, description, inputSchema, readOnly) {
   const schema = {
@@ -80,4 +84,66 @@ export const WORK_CONTINUITY_TOOLS = [
     "Mark a capsule as verified memory only after test evidence and prior Supervisor approval.",
     object({ work_id: uuid, capsule_id: uuid, test_evidence: text(4_000), idempotency_key: text(160) },
       ["work_id", "capsule_id", "test_evidence", "idempotency_key"]), false),
+  tool("tenant_work_gallery_list", "Browse tenant work gallery",
+    "List and search tenant-scoped work with project, status, participant, branch and active-lease summaries.",
+    object({
+      project_id: identifier,
+      status: { type: "string", maxLength: 40 },
+      query: { type: "string", maxLength: 240 },
+      limit: { type: "integer", minimum: 1, maximum: 200 },
+    }), true),
+  tool("tenant_work_gallery_join", "Join shared tenant work",
+    "Join an existing tenant work as a temporary participant session; no user or agent becomes permanent owner.",
+    object({
+      work_id: uuid, branch_id: uuid,
+      ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
+      metadata: { type: "object", additionalProperties: true },
+      idempotency_key: text(160),
+    }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false),
+  tool("tenant_work_gallery_heartbeat", "Renew participant presence",
+    "Renew a participant session and recover expired work leases transactionally.",
+    object({
+      work_id: uuid,
+      ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
+      idempotency_key: text(160),
+    }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false),
+  tool("tenant_work_branch_open", "Open a work-aware branch",
+    "Create or join a named branch inside one work and correlate it to the active participant session.",
+    object({
+      work_id: uuid, branch_key: identifier, parent_branch_id: uuid,
+      title: text(240), objective: text(4_000), idempotency_key: text(160),
+    }, ["work_id", "session_id", "agent_id", "branch_key", "title", "objective", "idempotency_key"]), false),
+  tool("tenant_work_lease_acquire", "Acquire bounded work lease",
+    "Acquire a temporary lease over files, components or dependencies after transactional overlap detection.",
+    object({
+      work_id: uuid, branch_id: uuid, purpose: text(2_000),
+      surfaces: { type: "array", minItems: 1, maxItems: 100, items: leaseSurface },
+      ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
+      idempotency_key: text(160),
+    }, ["work_id", "session_id", "agent_id", "purpose", "surfaces", "idempotency_key"]), false),
+  tool("tenant_work_lease_renew", "Renew bounded work lease",
+    "Renew only an active temporary lease held by the same authenticated participant session.",
+    object({
+      work_id: uuid, lease_id: uuid,
+      ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
+      idempotency_key: text(160),
+    }, ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false),
+  tool("tenant_work_lease_release", "Release bounded work lease",
+    "Release a temporary work lease held by the same authenticated participant session.",
+    object({ work_id: uuid, lease_id: uuid, idempotency_key: text(160) },
+      ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false),
+  tool("tenant_work_message_post", "Post structured work message",
+    "Post a tenant- and work-scoped structured update to one participant or broadcast it inside the work.",
+    object({
+      work_id: uuid, branch_id: uuid, to_session_id: identifier,
+      message_type: { type: "string", enum: ["update", "handoff", "conflict", "decision", "test", "blocker"] },
+      subject: text(240), payload: { type: "object", additionalProperties: true },
+      idempotency_key: text(160),
+    }, ["work_id", "session_id", "agent_id", "message_type", "subject", "payload", "idempotency_key"]), false),
+  tool("tenant_work_inbox", "Read structured work inbox",
+    "Read direct and broadcast structured messages visible to an authenticated participant within one work.",
+    object({
+      work_id: uuid, branch_id: uuid, since: { type: "string", format: "date-time" },
+      limit: { type: "integer", minimum: 1, maximum: 200 },
+    }, ["work_id", "session_id", "agent_id"]), true),
 ];

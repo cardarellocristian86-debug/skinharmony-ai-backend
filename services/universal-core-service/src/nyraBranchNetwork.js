@@ -87,6 +87,14 @@ const NYRA_BRANCHES = Object.freeze([
     "concurrency_limit", "handoff_protocol", "progress_checkpoint", "conflict_detection", "merge_strategy",
     "duplicate_work_prevention", "blocked_lane_recovery", "cross_lane_evidence", "join_readiness", "coordination_summary",
   ], ["*"], { workPhase: "coordination", coreBranchBindings: ["execution_coordination_intelligence"] }),
+  branch("tenant_work_coordination", "Tenant Work Coordination", [
+    "galleria", "work gallery", "lavori condivisi", "sessioni", "stesso tenant", "lease", "sovrappos", "conflitti", "riprendi lavoro",
+  ], [
+    "gallery_intake", "work_discovery", "session_presence", "work_branch_routing", "task_claim_coordination",
+    "lease_acquisition", "lease_renewal", "lease_release", "surface_overlap_detection", "conflict_arbitration",
+    "dependency_coordination", "regression_watch", "checkpoint_handoff", "stale_session_recovery",
+    "duplicate_action_prevention", "drift_revalidation", "tenant_visibility_policy", "verified_memory_promotion",
+  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["tenant_work_coordination"] }),
   branch("quality_verification", "Quality & Verification", ["test", "qualita", "verifica", "collaudo", "accettazione", "regression", "evidence", "qa"], [
     "acceptance_criteria", "test_scope", "happy_path", "negative_path", "boundary_cases", "security_checks",
     "tenant_isolation_checks", "regression_matrix", "performance_checks", "observability_checks", "evidence_capture",

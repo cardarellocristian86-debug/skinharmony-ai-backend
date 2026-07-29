@@ -95,6 +95,16 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.openai_research_fallback_configured, false);
   assert.equal(health.provider_setup_link_source_configured, false);
   assert.equal(health.owner_context_signing_configured, false);
+  assert.equal(health.tenant_membership_bindings, 0);
+  assert.deepEqual(health.work_continuity, {
+    configured: false,
+    backend: "disabled",
+    persistent: false,
+    schema_version: "tenant_work_gallery_v1",
+    tenant_isolated: true,
+    bounded_leases: true,
+    agent_ownership_allowed: false,
+  });
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
@@ -115,6 +125,18 @@ test("reports only the dedicated provider setup-link source readiness", async ()
   assert.equal(Object.hasOwn(health, "universalCoreProviderSetupLinkKeys"), false);
   assert.equal(Object.hasOwn(health, "provider_setup_link_source_tenant"), false);
 }, { providerSetupLinkSourceConfigured: true, ownerContextSigningSecret: "test-owner-context-signing-secret" }));
+
+test("health reports only the tenant membership binding count", async () => serve(async (base) => {
+  const health = await fetch(`${base}/healthz`).then((response) => response.json());
+  assert.equal(health.tenant_membership_bindings, 2);
+  assert.equal(JSON.stringify(health).includes("oauth|member-a"), false);
+  assert.equal(JSON.stringify(health).includes("codexai"), false);
+}, {
+  oauthTenantMemberships: {
+    "oauth|member-a": { tenantId: "codexai", role: "member" },
+    "oauth|member-b": { tenantId: "codexai", role: "reviewer" },
+  },
+}));
 
 test("returns RFC 9728 challenge when bearer is absent", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });

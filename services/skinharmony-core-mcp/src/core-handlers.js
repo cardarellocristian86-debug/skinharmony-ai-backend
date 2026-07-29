@@ -9,8 +9,18 @@ import {
   buildProviderSetupLinkBindingEnvelope,
   providerSetupLinkBindingApprovalDigest,
 } from "../../universal-core-service/src/providerSetupLinkBinding.js";
+import {
+  nyraDeepV2EvidencePackHash,
+  signNyraDeepV2McpRequest,
+} from "./nyra-deep-v2-mcp-request.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
+  preview: "nyra_v2_preview",
+  requirements: "nyra_v2_requirements",
+  prepare_evidence: "nyra_v2_evidence_prepare",
+  evaluate: "nyra_v2_evaluate",
+});
 
 function tenantContextHeader(tenantId, signingSecret) {
   if (!signingSecret || signingSecret.length < 32) return "";
@@ -335,13 +345,21 @@ export function createCoreHandlers(config, options = {}) {
       : body;
   }
 
-  async function coreRequest(path, tenantId, { method = "GET", body, additionalHeaders = {} } = {}) {
+  async function coreRequest(path, tenantId, {
+    method = "GET",
+    body,
+    additionalHeaders = {},
+    useTenantGateway = false,
+  } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
-    headers.authorization = `Bearer ${coreKey(tenantId)}`;
+    const selectedKey = useTenantGateway && config.tenantGatewayKey
+      ? config.tenantGatewayKey
+      : coreKey(tenantId);
+    headers.authorization = `Bearer ${selectedKey}`;
     Object.assign(headers, additionalHeaders);
-    if (config.tenantGatewayKey && coreKey(tenantId) === config.tenantGatewayKey) {
+    if (config.tenantGatewayKey && selectedKey === config.tenantGatewayKey) {
       // The gateway key has a synthetic tenant. Core therefore needs the
       // requested tenant alongside the signed context even for body-less GET
       // requests. The header is not trusted by itself: Core accepts it only
@@ -385,7 +403,9 @@ export function createCoreHandlers(config, options = {}) {
     const approvalDigest = approvalEnvelope
       ? providerSetupLinkBindingApprovalDigest(approvalEnvelope, identity.tenantId)
       : "";
-    const signingKey = providerSetup ? config.ownerContextSigningSecret : coreKey(identity.tenantId);
+    const signingKey = providerSetup
+      ? config.ownerContextSigningSecret
+      : (config.tenantGatewayKey || coreKey(identity.tenantId));
     const context = {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
       audience: "nira_core_bridge",
@@ -514,6 +534,86 @@ export function createCoreHandlers(config, options = {}) {
         intelligence_path: { core_analyzed: true, nyra_interpreted: false, execution_allowed: false },
       });
     }
+  }
+
+  async function nyraDeepV2Request(args, identity, operation) {
+    const operationType = NYRA_DEEP_V2_PREFLIGHT_OPERATION[operation];
+    if (!operationType) throw new Error("nyra_deep_v2_mcp_operation_invalid");
+    const requestId = String(
+      args.request_id || `mcp-nyra-v2-${crypto.randomUUID()}`,
+    ).slice(0, 160);
+    const branchId = operation === "preview" ? null : String(args.branch_id || "");
+    const subbranchId = operation === "preview" ? null : String(args.subbranch_id || "");
+    const evidenceRefs = operation === "evaluate"
+      ? [...(Array.isArray(args.evidence_refs) ? args.evidence_refs : [])]
+      : [];
+    const evidencePackHash = operation === "prepare_evidence"
+      ? nyraDeepV2EvidencePackHash(args.evidence_pack, args.requirement_bindings)
+      : null;
+    const requestAttestation = signNyraDeepV2McpRequest({
+      secret: config.nyraDeepV2McpRequestSigningSecret,
+      tenantId: identity.tenantId,
+      requestId,
+      operation,
+      branchId,
+      subbranchId,
+      evidenceRefs,
+      evidencePackHash,
+    });
+    const sharedContext = await memoryContext({
+      query: args.message,
+      project_id: args.project_id,
+      session_id: args.session_id,
+      agent_id: args.agent_id || "nyra",
+    }, identity);
+    const deepBranchV2 = {
+      operation,
+      ...(branchId ? { branch_id: branchId, subbranch_id: subbranchId } : {}),
+      evidence_refs: evidenceRefs,
+      ...(operation === "prepare_evidence"
+        ? {
+          evidence_pack: args.evidence_pack,
+          requirement_bindings: args.requirement_bindings,
+          evidence_pack_hash: evidencePackHash,
+        }
+        : {}),
+      request_attestation: requestAttestation,
+    };
+    const payload = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+      method: "POST",
+      body: {
+        text: args.message,
+        request_id: requestId,
+        source_tool: operationType,
+        operation_type: operationType,
+        nyra_branches: branchId
+          ? [branchId]
+          : [...(Array.isArray(args.nyra_branches) ? args.nyra_branches : [])],
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        deep_branch_v2: deepBranchV2,
+        tenant_id: identity.tenantId,
+      },
+    });
+    const runtime = payload?.result?.deep_branch_v2;
+    if (
+      !runtime
+      || typeof runtime !== "object"
+      || runtime.execution_authorized !== false
+      || runtime.core_final_authority !== true
+    ) {
+      throw new Error("nyra_deep_v2_core_authority_binding_mismatch");
+    }
+    return {
+      ok: payload?.ok === true,
+      tenant_id: identity.tenantId,
+      request_id: requestId,
+      operation,
+      core_runtime: coreRuntimeFromBridge(payload),
+      work_preflight: compactWorkPreflight(
+        payload?.result?.work_preflight || payload?.work_preflight,
+      ),
+      deep_branch_v2: runtime,
+    };
   }
 
   const handlers = {
@@ -928,6 +1028,18 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
     })),
+    nyra_v2_preview: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "preview"),
+    ),
+    nyra_v2_requirements: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "requirements"),
+    ),
+    nyra_v2_evidence_prepare: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "prepare_evidence"),
+    ),
+    nyra_v2_evaluate: async (args, identity) => textResult(
+      await nyraDeepV2Request(args, identity, "evaluate"),
+    ),
     nyra_interpret_request: async (args, identity) => {
       // The Core bridge evaluates the runtime hierarchy internally. Keeping
       // that decision server-side avoids duplicate routing and ensures that
@@ -1182,6 +1294,7 @@ export function createCoreHandlers(config, options = {}) {
       });
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           ...requestBody,
           owner_context: ownerContext(identity, ownerRequestBinding("core_action_evaluator", requestBody)),

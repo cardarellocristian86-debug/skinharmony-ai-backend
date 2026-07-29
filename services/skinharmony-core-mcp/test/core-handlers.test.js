@@ -167,10 +167,11 @@ test("Core gate overwrites caller confirmation and tenant fields with verified i
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: "tenant-gateway-key",
     ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
   }, {
     fetchImpl: async (_url, init) => {
-      calls.push(JSON.parse(init.body));
+      calls.push({ body: JSON.parse(init.body), headers: init.headers });
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
     },
   });
@@ -184,15 +185,18 @@ test("Core gate overwrites caller confirmation and tenant fields with verified i
   };
 
   await handlers.core_gate_action(untrusted, { tenantId: "tenant-a", godMode: false, ownerConfirmed: false });
-  assert.equal(calls[0].tenant_id, "tenant-a");
-  assert.equal(calls[0].authenticated_tenant_id, undefined);
-  assert.equal(calls[0].owner_confirmed, false);
-  assert.equal(calls[0].confirmation_reference, undefined);
-  assert.equal(calls[0].owner_context.owner_verified, false);
+  assert.equal(calls[0].body.tenant_id, "tenant-a");
+  assert.equal(calls[0].body.authenticated_tenant_id, undefined);
+  assert.equal(calls[0].body.owner_confirmed, false);
+  assert.equal(calls[0].body.confirmation_reference, undefined);
+  assert.equal(calls[0].body.owner_context.owner_verified, false);
+  assert.equal(calls[0].headers.authorization, "Bearer tenant-gateway-key");
+  assert.equal(calls[0].headers["x-sh-tenant-id"], "tenant-a");
+  assert.ok(calls[0].headers["x-sh-tenant-context"]);
 
   await handlers.core_gate_action(untrusted, { tenantId: "tenant-a", godMode: true, ownerConfirmed: false });
-  assert.equal(calls[1].owner_confirmed, false);
-  assert.equal(calls[1].confirmation_reference, undefined);
+  assert.equal(calls[1].body.owner_confirmed, false);
+  assert.equal(calls[1].body.confirmation_reference, undefined);
 
   await handlers.core_gate_action(untrusted, {
     tenantId: "tenant-a",
@@ -202,11 +206,11 @@ test("Core gate overwrites caller confirmation and tenant fields with verified i
     ownerConfirmed: true,
     confirmationReference: "verified owner confirmation",
   });
-  assert.equal(calls[2].tenant_id, "tenant-a");
-  assert.equal(calls[2].owner_confirmed, true);
-  assert.equal(calls[2].confirmation_reference, "verified owner confirmation");
-  assert.equal(calls[2].owner_context.tenant_id, "tenant-a");
-  assert.match(calls[2].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.equal(calls[2].body.tenant_id, "tenant-a");
+  assert.equal(calls[2].body.owner_confirmed, true);
+  assert.equal(calls[2].body.confirmation_reference, "verified owner confirmation");
+  assert.equal(calls[2].body.owner_context.tenant_id, "tenant-a");
+  assert.match(calls[2].body.owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
 });
 
 test("Core gate preserves governed memory and agent presence for the exact admin bootstrap envelope", async () => {

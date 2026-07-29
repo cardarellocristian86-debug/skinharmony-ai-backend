@@ -122,31 +122,79 @@ const baseHandlers = {
       const payload = { ok: true, result: await workContinuityRuntime.verifyMemory(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
+    tenant_work_gallery_list: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.gallery(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_gallery_join: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_gallery_heartbeat: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_branch_open: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_lease_acquire: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_lease_renew: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_lease_release: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_message_post: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_inbox: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
   } : {}),
 };
 const dynamicHandlers = createDynamicCapabilityHandlers({
   tools: TOOLS,
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
-  gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => coreHandlers.core_gate_action({
-    action_label: `Invoke dynamic capability ${tool.name}`,
-    action_type: "dynamic_capability.invoke",
-    target: tool.name,
-    operation_class: "owner_confirmed_governed_action",
-    external_side_effect: tool.annotations?.openWorldHint === true,
-    destructive: tool.annotations?.destructiveHint === true,
-    bounded_scope: true,
-    low_impact: tool.annotations?.destructiveHint !== true,
-    idempotent_or_compensable: tool.annotations?.idempotentHint === true,
-    rollback_ready: tool.annotations?.idempotentHint === true,
-    audit_ready: Boolean(decisionLedger),
-    target_authority_verified: true,
-    actor_authorized_for_target: true,
-    catalog_revision: catalogRevision,
-    idempotency_key: idempotencyKey,
-    owner_confirmed: identity.ownerConfirmed === true,
-    confirmation_reference: identity.confirmationReference,
-  }, identity),
+  gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
+    const externalSideEffect = tool._meta?.["skinharmony/externalSideEffect"] ??
+      (tool.annotations?.openWorldHint === true);
+    return coreHandlers.core_gate_action({
+      action_label: `Invoke dynamic capability ${tool.name}`,
+      action_type: "dynamic_capability.invoke",
+      target: tool.name,
+      operation_class: "owner_confirmed_governed_action",
+      external_side_effect: externalSideEffect === true,
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      configuration_changes: false,
+      destructive: tool.annotations?.destructiveHint === true,
+      bypass_orchestrator: false,
+      legal_violation: false,
+      provider_execution: false,
+      bounded_scope: true,
+      low_impact: tool.annotations?.destructiveHint !== true,
+      idempotent_or_compensable: tool.annotations?.idempotentHint === true,
+      rollback_ready: externalSideEffect !== true || tool.annotations?.idempotentHint === true,
+      audit_ready: Boolean(decisionLedger),
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      catalog_revision: catalogRevision,
+      idempotency_key: idempotencyKey,
+      owner_confirmed: identity.ownerConfirmed === true,
+      confirmation_reference: identity.confirmationReference,
+    }, identity);
+  }
 });
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
