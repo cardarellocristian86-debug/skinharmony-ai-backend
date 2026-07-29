@@ -40,7 +40,7 @@ function applyOwnerRoot(identity, config) {
     // owner. It must never elevate every user of that application. OAuth
     // owner-root therefore requires the authenticated subject to be allowlisted
     // explicitly; an empty subject allowlist fails closed.
-    : (config.godModeSubjects || []).includes(identity.subject);
+    : identity.oauthOwnerBound === true && (config.godModeSubjects || []).includes(identity.subject);
   if (!enabled || !tenantMatch || !subjectAllowed) return identity;
   return {
     ...identity,
@@ -127,12 +127,18 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   const claimedTenantId = String(payload[config.tenantClaim] || "").trim();
   const tenantRole = String(payload[config.tenantOwnerRoleClaim] || "").trim();
   const ownerTenantId = config.oauthOwnerTenantBindings?.[subject] || "";
+  // A membership is a collaboration grant, not an ownership grant. If a
+  // subject is deliberately present in both maps, the owner binding remains
+  // authoritative and the bounded membership role is ignored.
+  const membership = ownerTenantId ? undefined : config.oauthTenantMemberships?.[subject];
+  const memberTenantId = String(membership?.tenantId || "").trim();
+  const membershipRole = String(membership?.role || "").trim();
   // Consumer users do not need an Auth0 administrator to pre-provision a
   // tenant or role. When the feature is enabled, an unprivileged login is
   // assigned a stable personal tenant derived only from its verified subject.
-  // Only the server-side owner binding may select the shared codexai tenant.
-  const selfServiceTenant = !ownerTenantId && config.selfServiceTenantsEnabled === true;
-  const tenantId = ownerTenantId || (selfServiceTenant
+  // Only server-side owner or membership bindings may select a shared tenant.
+  const selfServiceTenant = !ownerTenantId && !memberTenantId && config.selfServiceTenantsEnabled === true;
+  const tenantId = ownerTenantId || memberTenantId || (selfServiceTenant
     ? `chatgpt_${crypto.createHash("sha256").update(`self-service-tenant\u0000${subject}`).digest("hex").slice(0, 32)}`
     : claimedTenantId);
   if (!tenantId) throw new Error("jwt_tenant_missing");
@@ -141,9 +147,10 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     subject,
     ...(payload.azp || payload.client_id ? { clientId: String(payload.azp || payload.client_id) } : {}),
     tenantId,
-    role: "member",
+    role: membershipRole || "member",
     ...(selfServiceTenant ? { selfServiceTenant: true } : {}),
     ...(ownerTenantId ? { oauthOwnerBound: true } : {}),
+    ...(memberTenantId ? { oauthTenantMemberBound: true, tenantMembershipRole: membershipRole } : {}),
     ...(tenantRole ? { tenantRole } : {}),
     ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
     ...(Number.isFinite(Number(payload.iat)) ? { tokenIssuedAt: Number(payload.iat) } : {}),

@@ -241,6 +241,35 @@ test("loads OAuth owner tenant bindings only from server-side configuration", ()
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 
+test("loads only bounded server-side OAuth tenant memberships", () => {
+  const config = loadConfig({
+    AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({
+      "oauth|member-a": { tenant_id: "codexai", role: "member" },
+      "oauth|member-b": { tenant_id: "codexai", role: "reviewer" },
+      "oauth|member-c": { tenant_id: "codexai", role: "operator" },
+    }),
+  });
+  assert.deepEqual(config.oauthTenantMemberships, {
+    "oauth|member-a": { tenantId: "codexai", role: "member" },
+    "oauth|member-b": { tenantId: "codexai", role: "reviewer" },
+    "oauth|member-c": { tenantId: "codexai", role: "operator" },
+  });
+  assert.throws(
+    () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": { tenant_id: "../other", role: "member" } }) }),
+    /invalid tenant id/,
+  );
+  for (const role of ["tenant_owner", "owner_root", "admin"]) {
+    assert.throws(
+      () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": { tenant_id: "codexai", role } }) }),
+      /invalid membership role/,
+    );
+  }
+  assert.throws(
+    () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": "codexai" }) }),
+    /must contain tenant_id and role/,
+  );
+});
+
 test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {
   const config = loadConfig({});
   assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);

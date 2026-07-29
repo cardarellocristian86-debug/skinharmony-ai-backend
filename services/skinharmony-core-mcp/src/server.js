@@ -122,6 +122,42 @@ const baseHandlers = {
       const payload = { ok: true, result: await workContinuityRuntime.verifyMemory(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
+    tenant_work_gallery_list: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.gallery(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_gallery_join: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_gallery_heartbeat: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_branch_open: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_lease_acquire: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_lease_renew: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_lease_release: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_message_post: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_inbox: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
   } : {}),
 };
 const dynamicHandlers = createDynamicCapabilityHandlers({

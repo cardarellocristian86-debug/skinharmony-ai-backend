@@ -27,6 +27,11 @@ services:
         generateValue: true
       - key: AUTH0_OWNER_TENANT_BINDINGS_JSON
         sync: false
+      # Server-side subject memberships for shared tenant collaboration.
+      # Values must be {"tenant_id":"...","role":"member|reviewer|operator"}.
+      # This map never grants owner or provider-setup capabilities.
+      - key: AUTH0_TENANT_MEMBERSHIPS_JSON
+        sync: false
       - key: AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS
         value: "300"
       - key: MCP_TENANT_CLAIM

@@ -62,6 +62,7 @@ import { branchWorkIntakeIntelligence } from "./branch-work-intake-intelligence.
 import { branchResearchEvidenceIntelligence } from "./branch-research-evidence-intelligence.js";
 import { branchPlanningPriorityIntelligence } from "./branch-planning-priority-intelligence.js";
 import { branchExecutionCoordinationIntelligence } from "./branch-execution-coordination-intelligence.js";
+import { branchTenantWorkCoordination } from "./branch-tenant-work-coordination.js";
 import { branchQualityVerificationIntelligence } from "./branch-quality-verification-intelligence.js";
 import { branchAdaptiveLearningIntelligence } from "./branch-adaptive-learning-intelligence.js";
 import { branchLexicalSemanticIntelligence } from "./branch-lexical-semantic-intelligence.js";
@@ -135,6 +136,7 @@ const BRANCHES = [
   branchResearchEvidenceIntelligence,
   branchPlanningPriorityIntelligence,
   branchExecutionCoordinationIntelligence,
+  branchTenantWorkCoordination,
   branchQualityVerificationIntelligence,
   branchAdaptiveLearningIntelligence,
   branchLexicalSemanticIntelligence,
@@ -226,6 +228,7 @@ export const HORIZONTAL_WORK_BRANCHES = Object.freeze([
   "lexical_semantic_intelligence",
   "planning_priority_intelligence",
   "execution_coordination_intelligence",
+  "tenant_work_coordination",
   "quality_verification_intelligence",
   "adaptive_learning_intelligence",
   "decision_provenance_intelligence",
@@ -399,6 +402,7 @@ export const BRANCH_GROUPS = Object.freeze({
       "agent_orchestration_guard",
       "workload_identity_delegation_guard",
       "execution_coordination_intelligence",
+      "tenant_work_coordination",
       "quality_verification_intelligence",
       "decision_provenance_intelligence",
       "observability_roi_guard",
