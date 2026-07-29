@@ -12,6 +12,12 @@
   let renderToken = 0;
   let goldRenderTimers = [];
   let settingsRenderTimers = [];
+  // The bridge is mounted alongside the React application. Keep its read model in
+  // this tab instead of rebuilding it for every DOM mutation React emits.
+  const GOLD_OVERVIEW_TTL_MS = 2 * 60 * 1000;
+  let goldOverviewCache = null;
+  let goldOverviewInFlight = null;
+  let goldRenderInFlight = null;
   let observerStarted = false;
   let mutationLockDepth = 0;
   let uiLanguage = "it";
@@ -530,6 +536,12 @@
 
   function bindBridgeNavigation(panel) {
     panel.addEventListener("click", (event) => {
+      const refresh = event.target?.closest?.("[data-gold-refresh]");
+      if (refresh) {
+        event.preventDefault();
+        void renderGoldBridge({ force: true, revalidate: true });
+        return;
+      }
       const target = event.target?.closest?.("[data-gold-route],[data-enterprise-card-target],[data-enterprise-nav]");
       if (!target) return;
       navigateTo(target.getAttribute("data-gold-route") || target.getAttribute("data-enterprise-card-target") || target.getAttribute("data-enterprise-nav"));
@@ -611,7 +623,7 @@
 
   async function isEnterpriseControlSession() {
     try {
-      return isEnterpriseControlSessionPayload(await fetchJson("/api/auth/session"));
+      return (await getSessionRole()) === "superadmin";
     } catch (_error) {
       return false;
     }
@@ -1369,6 +1381,53 @@
     return response.json();
   }
 
+  function goldOverviewIsFresh() {
+    return Boolean(goldOverviewCache && goldOverviewCache.expiresAt > Date.now());
+  }
+
+  async function buildGoldOverview(state) {
+    const [capabilities, context] = await Promise.all([
+      fetchJson("/api/ai-gold/capabilities"),
+      fetchJson("/api/ai-gold/decision-context")
+    ]);
+    return {
+      state,
+      tenantKey: String(state?.centerId || state?.tenantId || ""),
+      eventSeq: Number(state?.eventSeq || 0),
+      capabilities,
+      context,
+      // Customer intelligence is intentionally lazy. It is an expensive Core
+      // read and belongs to an explicit customer action, not to page opening.
+      customerIntelligence: null,
+      expiresAt: Date.now() + GOLD_OVERVIEW_TTL_MS
+    };
+  }
+
+  async function getGoldOverview(options = {}) {
+    const force = Boolean(options.force);
+    const revalidate = Boolean(options.revalidate);
+    if (!force && !revalidate && goldOverviewIsFresh()) return goldOverviewCache;
+    if (goldOverviewInFlight) return goldOverviewInFlight;
+
+    goldOverviewInFlight = (async () => {
+      // State is the small tenant-scoped version marker. We only re-read the
+      // full Gold projections when its event sequence actually changes.
+      const state = await fetchJson("/api/ai-gold/state");
+      const tenantKey = String(state?.centerId || state?.tenantId || "");
+      const eventSeq = Number(state?.eventSeq || 0);
+      if (!force && goldOverviewCache && goldOverviewCache.tenantKey === tenantKey && goldOverviewCache.eventSeq === eventSeq) {
+        goldOverviewCache.expiresAt = Date.now() + GOLD_OVERVIEW_TTL_MS;
+        return goldOverviewCache;
+      }
+      const overview = await buildGoldOverview(state);
+      goldOverviewCache = overview;
+      return overview;
+    })().finally(() => {
+      goldOverviewInFlight = null;
+    });
+    return goldOverviewInFlight;
+  }
+
   async function refreshUiLanguage(settingsPayload = null, options = {}) {
     const now = Date.now();
     if (!settingsPayload && isPublicAuthRoute()) {
@@ -1517,7 +1576,10 @@
           <div class="gold-bridge-title">${copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")}</div>
           <div class="gold-bridge-subtitle">${copy("Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.", "The management system says what is happening. AI Gold says what to do, what is missing and which control to open.", "Das Managementsystem zeigt, was passiert. AI Gold sagt, was zu tun ist, was fehlt und welche Kontrolle zu öffnen ist.")}</div>
         </div>
-        <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button type="button" class="sh-topbar-menu-toggle" data-gold-refresh aria-label="${copy("Aggiorna AI Gold", "Refresh AI Gold", "AI Gold aktualisieren")}">${copy("Aggiorna", "Refresh", "Aktualisieren")}</button>
+          <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
+        </div>
       </div>
       <div class="gold-bridge-grid">
         <div class="gold-bridge-metric" data-gold-route="${primaryRoute}" role="button" tabindex="0" aria-label="${copy("Apri modulo collegato alla priorita AI", "Open the module linked to the AI priority")}">
@@ -1576,47 +1638,49 @@
     return panel;
   }
 
-  async function renderGoldBridge() {
+  async function renderGoldBridge(options = {}) {
+    if (goldRenderInFlight) return goldRenderInFlight;
     renderToken += 1;
     const token = renderToken;
-    if (!shouldRender()) {
-      runWithMutationLock(() => removePanel());
-      return;
-    }
-    injectStyle();
-
-    try {
-      await refreshUiLanguage();
-      if (await isEnterpriseControlSession()) {
+    goldRenderInFlight = (async () => {
+      if (!shouldRender()) {
         runWithMutationLock(() => removePanel());
         return;
       }
-      const [capabilities, context, customerIntelligence] = await Promise.all([
-        fetchJson("/api/ai-gold/capabilities"),
-        fetchJson("/api/ai-gold/decision-context"),
-        fetchJson("/api/ai-gold/customer-intelligence").catch(() => null)
-      ]);
-      if (token !== renderToken) return;
+      injectStyle();
 
-      const anchor = findAnchor();
-      if (!anchor) return;
-      sanitizeGoldUiText();
-      const panel = buildPanel(context, capabilities, customerIntelligence);
-      const existing = document.getElementById(PANEL_ID);
-      runWithMutationLock(() => {
-        if (existing) {
-          existing.replaceWith(panel);
-        } else {
-          anchor.insertAdjacentElement("afterend", panel);
+      try {
+        await refreshUiLanguage();
+        if (await isEnterpriseControlSession()) {
+          runWithMutationLock(() => removePanel());
+          return;
         }
-      });
-      sanitizeGoldUiText(panel);
-    } catch (_error) {
-      sanitizeGoldUiText();
-      if (!shouldRender()) {
-        runWithMutationLock(() => removePanel());
+        const overview = await getGoldOverview(options);
+        if (token !== renderToken) return;
+
+        const anchor = findAnchor();
+        if (!anchor) return;
+        sanitizeGoldUiText();
+        const panel = buildPanel(overview.context, overview.capabilities, overview.customerIntelligence);
+        const existing = document.getElementById(PANEL_ID);
+        runWithMutationLock(() => {
+          if (existing) {
+            existing.replaceWith(panel);
+          } else {
+            anchor.insertAdjacentElement("afterend", panel);
+          }
+        });
+        sanitizeGoldUiText(panel);
+      } catch (_error) {
+        sanitizeGoldUiText();
+        if (!shouldRender()) {
+          runWithMutationLock(() => removePanel());
+        }
       }
-    }
+    })().finally(() => {
+      goldRenderInFlight = null;
+    });
+    return goldRenderInFlight;
   }
 
   function isSettingsRoute() {
@@ -2156,17 +2220,22 @@
     }
   }
 
-  function scheduleRender() {
+  function scheduleRender(options = {}) {
     clearTimers(goldRenderTimers);
     clearTimers(settingsRenderTimers);
     window.setTimeout(enhanceTopbarMenu, 80);
-    window.setTimeout(enhanceTopbarMenu, 360);
+    // React produces several mutations for a single navigation. One debounced
+    // reconciliation is enough; getGoldOverview single-flights the network read.
     goldRenderTimers = [
-      window.setTimeout(() => refreshLanguageAndSanitize({ force: true }), 40),
-      window.setTimeout(renderGoldBridge, 180),
-      window.setTimeout(() => refreshLanguageAndSanitize(), 420),
-      window.setTimeout(renderGoldBridge, 900),
-      window.setTimeout(() => refreshLanguageAndSanitize({ force: true }), 1400)
+      window.setTimeout(() => refreshLanguageAndSanitize({ force: Boolean(options.forceLanguage) }), 40),
+      window.setTimeout(() => {
+        void renderGoldBridge({
+          // A route/session transition checks the tenant event marker. DOM
+          // mutations only reattach the cached panel and never re-read Gold.
+          revalidate: !options.fromMutation,
+          force: Boolean(options.forceGold)
+        });
+      }, 180)
     ];
     settingsRenderTimers = [
       window.setTimeout(renderEnterprisePanels, 180),
@@ -2178,30 +2247,35 @@
 
   const observer = new MutationObserver(() => {
     if (mutationLockDepth > 0) return;
-    refreshLanguageAndSanitize();
-    scheduleRender();
+    scheduleRender({ fromMutation: true });
   });
 
   const originalPushState = history.pushState;
   history.pushState = function () {
     const result = originalPushState.apply(this, arguments);
-    scheduleRender();
+    scheduleRender({ revalidate: true });
     return result;
   };
 
   const originalReplaceState = history.replaceState;
   history.replaceState = function () {
     const result = originalReplaceState.apply(this, arguments);
-    scheduleRender();
+    scheduleRender({ revalidate: true });
     return result;
   };
 
-  window.addEventListener("popstate", scheduleRender);
-  window.addEventListener("load", scheduleRender);
+  window.addEventListener("popstate", () => scheduleRender({ revalidate: true }));
+  window.addEventListener("load", () => scheduleRender({ revalidate: true }));
+  // Data writers may dispatch this after a successful local mutation. The
+  // next render validates the event marker instead of polling the whole suite.
+  window.addEventListener("smartdesk-data-changed", () => {
+    goldOverviewCache = null;
+    scheduleRender({ revalidate: true });
+  });
   window.addEventListener("app-settings-updated", (event) => {
     void refreshUiLanguage(event?.detail || null).then(() => {
       sanitizeGoldUiText();
-      scheduleRender();
+      scheduleRender({ revalidate: true });
     });
   });
 
@@ -2218,5 +2292,5 @@
   }
 
   startObserver();
-  scheduleRender();
+  scheduleRender({ revalidate: true, forceLanguage: true });
 })();
