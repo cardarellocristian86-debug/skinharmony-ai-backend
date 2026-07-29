@@ -9,15 +9,20 @@ import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
+import { createWorkContinuityRuntime } from "./work-continuity-runtime.js";
+import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 
+TOOLS.push(...WORK_CONTINUITY_TOOLS);
+
 const config = loadConfig();
 const cloudMemoryStore = createCloudMemoryStore(config);
 const decisionLedger = createDecisionLedger(config);
+const workContinuityRuntime = createWorkContinuityRuntime(config);
 if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
@@ -79,6 +84,45 @@ const baseHandlers = {
     const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
     return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
   } } : {}),
+  ...(workContinuityRuntime ? {
+    work_continuity_create: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_record_change: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_checkpoint: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_read: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.read(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_resume: async (args, identity) => {
+      const gate = await coreHandlers.core_gate_action({
+        action_label: "Resume persistent Work Continuity work",
+        action_type: "work_continuity.resume",
+        target: args.work_id,
+        operation_class: "owner_confirmed_governed_action",
+        external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
+        idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
+        target_authority_verified: true, actor_authorized_for_target: true,
+        owner_confirmed: identity.ownerConfirmed === true,
+        confirmation_reference: identity.confirmationReference,
+      }, identity);
+      const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
+        gate.structuredContent?.result?.authorization || {};
+      const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_verify_memory: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.verifyMemory(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+  } : {}),
 };
 const dynamicHandlers = createDynamicCapabilityHandlers({
   tools: TOOLS,
