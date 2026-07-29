@@ -49,26 +49,35 @@ export const WORK_CONTINUITY_TOOLS = [
         function_id: { type: "string", maxLength: 160 }, reason: text(2_000),
         components: { type: "array", maxItems: 100, items: { type: "string", maxLength: 160 } },
         dependencies: { type: "array", maxItems: 100, items: { type: "string", maxLength: 160 } },
-        links: { type: "array", maxR][\ÎˆL][\ÎˆÈ\Nˆœİš[™È‹X^[™İˆMŒHKˆ™YÜ™\ÜÚ[Û—İ\™Ù]ÎˆÈ\Nˆ˜\œ˜^H‹X^][\ÎˆL][\ÎˆÈ\Nˆœİš[™È‹X^[™İˆMŒHKˆ\Ù[NˆÈ\Nˆš[YÙ\ˆ‹Z[š[][NˆLM‹X^[][NˆMˆKˆKÈœ™X\ÛÛˆ—JKˆ]™[İ\NˆÈ\Nˆœİš[™È‹[[NˆÈ˜œ˜[˜ÚÛÜ[™Y‹™[˜İ[Û—ØYY‹™[˜İ[Û—ØÚ[™ÙY‹™\[™[˜ŞWØÚ[™ÙY‹\İØÛÛ\]Y‹™Y™XİÙ›İ[™‹˜ÛÜœ™Xİ[Û—İ™\šYšYY‹œ›Û˜XÚ×Ü™\\™Y—HKˆ™^ØXİ[Ûˆ^
-Ì
-KY[\İ[˜ŞWÚÙ^Nˆ^
-MŒ
-KˆKÈÛÜš×ÚY‹™^XİYİ™\œÚ[Ûˆ‹˜\˜Ú]Xİ\™H‹˜Ú[™ÙH‹›™^ØXİ[Ûˆ‹šY[\İ[˜ŞWÚÙ^H—JK˜[ÙJKˆÛÛ
-ÛÜš×ØÛÛ[Z]WØÚXÚÜÚ[‹Ü™X]HÛÛ[Z]HØ\İ[H‹ˆÜ™X]HHYÙ\İ]™\šYšXX›HÛÛ[Z]HØ\İ[HÚ]Û˜\Úİ]šY[˜ÙKÛÛ[Z]\İË]]Üš^˜][Û‹›Û˜XÚÈ[™™^Xİ[Û‹ˆ‹ˆØš™Xİ
-ÂˆÛÜš×ÚYˆ]ZY]šY[˜ÙNˆÈ\Nˆ˜\œ˜^H‹X^][\ÎˆL][\ÎˆÈ\Nˆ›Øš™Xİ‹Y][Û˜[›Ü\Y\ÎˆYHHKˆÛÛ[Z]Ü]ÚˆÈ\Nˆ›Øš™Xİ‹Y][Û˜[›Ü\Y\ÎˆYHKˆ\İÎˆÈ\Nˆ˜\œ˜^H‹X^][\ÎˆL][\ÎˆÈ\Nˆ›Øš™Xİ‹Y][Û˜[›Ü\Y\ÎˆYHHKˆ]]Üš^˜][ÛœÎˆÈ\Nˆ˜\œ˜^H‹X^][\ÎˆL][\ÎˆÈ\Nˆ›Øš™Xİ‹Y][Û˜[›Ü\Y\ÎˆYHHKˆ›Û˜XÚÎˆÈ\Nˆ›Øš™Xİ‹Y][Û˜[›Ü\Y\ÎˆYHK™^ØXİ[Ûˆ^
-Ì
-Kˆ›İ™[˜[˜ÙNˆÈ\Nˆ›Øš™Xİ‹Y][Û˜[›Ü\Y\ÎˆYHKˆ™\ÜÚ]ÜWÚ\Úˆ\ÚÛXŞWÚ\Úˆ\Ú]™WÜİ]WÚ\Úˆ\Úˆİ\\š\ÛÜ—Ø\›İ™YˆÈ\Nˆ˜›ÛÛX[ˆˆK[™Ù™—İÎˆÈ\Nˆœİš[™È‹X^[™İˆLŒKˆY[\İ[˜ŞWÚÙ^Nˆ^
-MŒ
-KˆKÈÛÜš×ÚY‹›™^ØXİ[Ûˆ‹œ›Û˜XÚÈ‹œ›İ™[˜[˜ÙH‹šY[\İ[˜ŞWÚÙ^H—JK˜[ÙJKˆÛÛ
-ÛÜš×ØÛÛ[Z]WÜ™XY‹”™XY\œÚ\İ[ÛÜšÈÛÛ[Z]H‹ˆ”™XYÛ™H[˜[\ØÛÜYÛÜšÈY[]K]\İ\˜Ú]Xİ\™KØ\İ[H[™\ÚXÚZ[™Y]™[Ëˆ‹ˆØš™Xİ
-ÈÛÜš×ÚYˆ]ZY]™[Û[Z]ˆÈ\Nˆš[YÙ\ˆ‹Z[š[][NˆKX^[][NˆŒHKÈÛÜš×ÚY—JKYJKˆÛÛ
-ÛÜš×ØÛÛ[Z]WÜ™\İ[YH‹”™\İ[YH™\šYšYY\œÚ\İ[ÛÜšÈ‹ˆ”™\İ[YHÛ›HY\ˆØ\İ[HYÙ\İšYÚXÚÜÈ[™Hœ™\Ú[š]™\œØ[ÛÜ™H]]Üš^˜][Ûˆ™XØ[İ[][Û‹ˆ‹ˆØš™Xİ
-ÈÛÜš×ÚYˆ]ZYÙ\ÜÚ[Û—ÚYˆY[YšY\‹İ\œ™[Üİ]WÚ\Ú\Îˆİ]R\Ú\ËY[\İ[˜ŞWÚÙ^Nˆ^
-MŒ
-HKˆÈÛÜš×ÚY‹œÙ\ÜÚ[Û—ÚY‹˜İ\œ™[Üİ]WÚ\Ú\È‹šY[\İ[˜ŞWÚÙ^H—JK˜[ÙJKˆÛÛ
-ÛÜš×ØÛÛ[Z]Wİ™\šYWÛY[[ÜH‹”›Û[İH™\šYšYYÛÛ[Z]HY[[ÜH‹ˆ“X\šÈHØ\İ[H\È™\šYšYYY[[ÜHÛ›HY\ˆ\İ]šY[˜ÙH[™š[Üˆİ\\š\ÛÜˆ\›İ˜[ˆ‹ˆØš™Xİ
-ÈÛÜš×ÚYˆ]ZYØ\İ[WÚYˆ]ZY\İÙ]šY[˜ÙNˆ^
-Ì
-KY[\İ[˜ŞWÚÙ^Nˆ^
-MŒ
-HKˆÈÛÜš×ÚY‹˜Ø\İ[WÚY‹\İÙ]šY[˜ÙH‹šY[\İ[˜ŞWÚÙ^H—JK˜[ÙJK—NÂ
+        links: { type: "array", maxItems: 100, items: { type: "string", maxLength: 160 } },
+        regression_targets: { type: "array", maxItems: 100, items: { type: "string", maxLength: 160 } },
+        depth_delta: { type: "integer", minimum: -16, maximum: 16 },
+      }, ["reason"]),
+      event_type: { type: "string", enum: ["branch_opened", "function_added", "function_changed", "dependency_changed", "test_completed", "defect_found", "correction_verified", "rollback_prepared"] },
+      next_action: text(4_000), idempotency_key: text(160),
+    }, ["work_id", "expected_version", "architecture", "change", "next_action", "idempotency_key"]), false),
+  tool("work_continuity_checkpoint", "Create continuity capsule",
+    "Create a digest-verifiable Continuity Capsule with snapshot, evidence, commit, tests, authorization, rollback and next action.",
+    object({
+      work_id: uuid, evidence: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
+      commit_patch: { type: "object", additionalProperties: true },
+      tests: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
+      authorizations: { type: "array", maxItems: 50, items: { type: "object", additionalProperties: true } },
+      rollback: { type: "object", additionalProperties: true }, next_action: text(4_000),
+      provenance: { type: "object", additionalProperties: true },
+      repository_hash: hash, policy_hash: hash, live_state_hash: hash,
+      supervisor_approved: { type: "boolean" }, handoff_to: { type: "string", maxLength: 120 },
+      idempotency_key: text(160),
+    }, ["work_id", "next_action", "rollback", "provenance", "idempotency_key"]), false),
+  tool("work_continuity_read", "Read persistent work continuity",
+    "Read one tenant-scoped work identity, latest architecture, capsule and hash-chained events.",
+    object({ work_id: uuid, event_limit: { type: "integer", minimum: 1, maximum: 200 } }, ["work_id"]), true),
+  tool("work_continuity_resume", "Resume verified persistent work",
+    "Resume only after capsule digest, drift checks and a fresh Universal Core authorization recalculation.",
+    object({ work_id: uuid, session_id: identifier, current_state_hashes: stateHashes, idempotency_key: text(160) },
+      ["work_id", "session_id", "current_state_hashes", "idempotency_key"]), false),
+  tool("work_continuity_verify_memory", "Promote verified continuity memory",
+    "Mark a capsule as verified memory only after test evidence and prior Supervisor approval.",
+    object({ work_id: uuid, capsule_id: uuid, test_evidence: text(4_000), idempotency_key: text(160) },
+      ["work_id", "capsule_id", "test_evidence", "idempotency_key"]), false),
+];

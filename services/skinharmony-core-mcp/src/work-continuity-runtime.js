@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS core_continuity_events (
 CREATE OR REPLACE FUNCTION core_continuity_events_append_only() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'core_continuity_events_append_only'; END;
 $$ LANGUAGE plpgsql;
-DROP TRIGGGER IF EXISTS core_continuity_events_no_mutation ON core_continuity_events;
+DROP TRIGGER IF EXISTS core_continuity_events_no_mutation ON core_continuity_events;
 CREATE TRIGGER core_continuity_events_no_mutation BEFORE UPDATE OR DELETE ON core_continuity_events
 FOR EACH ROW EXECUTE FUNCTION core_continuity_events_append_only();
 
@@ -141,11 +141,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function appendEvent(client, context, eventType, payload = {}) {
     if (!WORK_EVENT_TYPES.has(eventType)) throw new Error("continuity_event_type_invalid");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [context.tenantId, context.workId]);
-    const previous = await client.quert(`SELECT sequence_number,event_hash FROM core_continuity_events
+    const previous = await client.query(`SELECT sequence_number,event_hash FROM core_continuity_events
       WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
     [context.tenantId, context.workId]);
     const sequence = Number(previous.rows[0]?.sequence_number || 0) + 1;
-    const cleanPayload = cleanSon(payload);
+    const cleanPayload = cleanJson(payload);
     const event = {
       tenant_id: context.tenantId, work_id: context.workId, sequence_number: sequence,
       event_type: eventType, payload: cleanPayload, previous_event_hash: previous.rows[0]?.event_hash || null,
