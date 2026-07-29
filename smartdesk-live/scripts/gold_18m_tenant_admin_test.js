@@ -477,6 +477,26 @@ function run() {
   );
   assert.strictEqual(recertifiedVerification.ok, true, "Il manifest deve usare il conteggio del candidato committed");
 
+  // The Gold rebuild persists only this bounded runtime cache. Its timestamp
+  // must not invalidate immutable business settings, while arbitrary fields
+  // must still be rejected.
+  const runtimeSettings = JSON.parse(JSON.stringify(finalized));
+  runtimeSettings.settings.center_keep_gold.updatedAt = "2026-07-29T17:24:00.000Z";
+  runtimeSettings.settings.center_keep_gold.progressiveIntelligenceStatus = {
+    cached: true,
+    currentPlan: "gold",
+    persistedAt: "2026-07-29T17:24:00.000Z"
+  };
+  const runtimeSettingsVerification = verifyGold18mCollections(
+    runtimeSettings, "center_keep_gold", dataset, expectedSuperadminDigest, expectedTenantAuthDigest
+  );
+  assert.strictEqual(runtimeSettingsVerification.checks.find((item) => item.name === "settings_dataset_exact")?.ok, true);
+  runtimeSettings.settings.center_keep_gold.untrustedRuntimeField = true;
+  const injectedRuntimeSettingsVerification = verifyGold18mCollections(
+    runtimeSettings, "center_keep_gold", dataset, expectedSuperadminDigest, expectedTenantAuthDigest
+  );
+  assert.strictEqual(injectedRuntimeSettingsVerification.checks.find((item) => item.name === "settings_dataset_exact")?.ok, false);
+
   [
     ["status", "verification_failed"],
     ["datasetVersion", "forged_version"],
