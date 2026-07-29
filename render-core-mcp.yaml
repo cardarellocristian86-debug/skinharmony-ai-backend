@@ -69,6 +69,10 @@ services:
         generateValue: true
       - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
         generateValue: true
+      # Dedicated MCP-to-Core Deep V2 request signature. This is not an
+      # OpenAI key and must match the value configured on Universal Core.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+        generateValue: true
       - key: SUITE_CONTROL_PLANE_URL
         value: https://skinharmony-suite-control.onrender.com
       - key: SUITE_CONTROL_PLANE_KEYS_JSON
