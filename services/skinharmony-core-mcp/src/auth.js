@@ -78,7 +78,10 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   if (consumed.has(key)) throw new Error("owner_confirmation_replayed");
   consumed.set(key, now);
   while (consumed.size > 2_048) consumed.delete(consumed.keys().next().value);
-  const role = identity.godMode === true && identity.role === "owner_root"\n    ? "owner_root"\n    : "tenant_owner";\n  return { ...identity, role, providerSetupOwner: true, oauthOwnerElevated: true, ownerConfirmationReference: reference };
+  const role = identity.godMode === true && identity.role === "owner_root"
+    ? "owner_root"
+    : "tenant_owner";
+  return { ...identity, role, providerSetupOwner: true, oauthOwnerElevated: true, ownerConfirmationReference: reference };
 }
 
 export class JwksCache {
