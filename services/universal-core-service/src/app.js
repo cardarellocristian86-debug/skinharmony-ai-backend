@@ -17,6 +17,7 @@ import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./lang
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
 import { buildCodexGuardResponse, normalizeDecisionContract } from "./decisionContract.js";
 import { createCollaborationCoreGateIssuer } from "./collaborationCoreGateEvidence.js";
+import { createRenderStagingCoreReceiptIssuer } from "./renderStagingCoreReceiptIssuer.js";
 import {
   BRANCH_PACKAGES,
   composeBranchContext,
@@ -3490,6 +3491,30 @@ export function createUniversalCoreService(options = {}) {
       targetCommit: collaborationCoreGateTargetCommit,
     });
   }
+  const renderStagingReceiptPrivateJwk =
+    options.renderStagingCoreReceiptPrivateJwk ??
+    process.env.CORE_RENDER_STAGING_RECEIPT_PRIVATE_JWK ??
+    "";
+  const renderStagingReceiptKid = String(
+    options.renderStagingCoreReceiptKid ??
+    process.env.CORE_RENDER_STAGING_RECEIPT_KID ??
+    "",
+  ).trim();
+  const renderStagingServiceId = String(
+    options.renderStagingServiceId ??
+    process.env.CORE_RENDER_STAGING_SERVICE_ID ??
+    "",
+  ).trim();
+  const renderStagingReceiptConfigured = Boolean(
+    renderStagingReceiptPrivateJwk || renderStagingReceiptKid || renderStagingServiceId,
+  );
+  const renderStagingCoreReceiptIssuer = renderStagingReceiptConfigured
+    ? createRenderStagingCoreReceiptIssuer({
+        privateJwk: renderStagingReceiptPrivateJwk,
+        kid: renderStagingReceiptKid,
+        serviceId: renderStagingServiceId,
+      })
+    : null;
   const keyStore = createKeyStore(storageRoot, audit);
   const providerSetupLinkBootstrapKey = String(
     options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
@@ -5468,6 +5493,22 @@ export function createUniversalCoreService(options = {}) {
       owner_context_approval_bound: providerSetupLinkApprovalBound,
     };
     const authorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
+    let renderStagingCoreReceipt = null;
+    if (authorization.allowed === true &&
+        authorization.scope === "request_bound_owner_confirmed_staging_deploy") {
+      if (!renderStagingCoreReceiptIssuer) {
+        return publicError(res, 503, "render_staging_core_receipt_issuer_unavailable");
+      }
+      try {
+        renderStagingCoreReceipt = renderStagingCoreReceiptIssuer.issue({
+          tenantId: req.tenantId,
+          body: evaluatedActionBody,
+          authorization,
+        });
+      } catch {
+        return publicError(res, 403, "render_staging_core_receipt_denied");
+      }
+    }
     let collaborationCoreGate = null;
     if (authorization.allowed === true && evaluatedActionBody.collaboration_binding_digest) {
       if (!collaborationCoreGateIssuer) {
@@ -5531,14 +5572,18 @@ export function createUniversalCoreService(options = {}) {
             "CORE_ADMIN_BOOTSTRAP_PASSWORD",
           ]
         : [],
+      render_staging_deploy_authorized: Boolean(renderStagingCoreReceipt),
     });
+    const responseAuthorization = renderStagingCoreReceipt
+      ? { ...authorization, core_receipt: renderStagingCoreReceipt }
+      : authorization;
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       decision_contract: decisionContract,
       output,
       work_preflight: workPreflight,
-      authorization,
+      authorization: responseAuthorization,
       ...(collaborationCoreGate ? { collaboration_core_gate: collaborationCoreGate } : {}),
       risk_classification: riskClassification,
       guardrail: {

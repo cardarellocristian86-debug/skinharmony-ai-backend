@@ -161,6 +161,50 @@ export function loadConfig(env = process.env) {
     ? ownerContextSigningSecretCandidate
     : "";
   const runtimeBuildCommit = optionalFullCommit(env.RENDER_GIT_COMMIT || env.GIT_COMMIT, "RENDER_GIT_COMMIT");
+  const renderStagingDeployEnabled = flag(env.RENDER_STAGING_DEPLOY_ENABLED, false);
+  const renderApiKey = String(env.RENDER_API_KEY || "").trim();
+  const renderUniversalCoreStagingServiceId = String(env.RENDER_UNIVERSAL_CORE_STAGING_SERVICE_ID || "").trim();
+  const renderUniversalCoreStagingEnvironmentId =
+    String(env.RENDER_UNIVERSAL_CORE_STAGING_ENVIRONMENT_ID || "").trim();
+  const renderUniversalCoreStagingHealthUrl = url(
+    env.RENDER_UNIVERSAL_CORE_STAGING_HEALTH_URL ||
+      "https://skinharmony-universal-core-staging.onrender.com/healthz",
+    "RENDER_UNIVERSAL_CORE_STAGING_HEALTH_URL",
+  );
+  const renderStagingGithubToken = String(env.RENDER_STAGING_GITHUB_READ_TOKEN || "").trim();
+  const renderStagingCoreReceiptJwk = jsonObject(
+    env.RENDER_STAGING_CORE_RECEIPT_PUBLIC_JWK,
+    "RENDER_STAGING_CORE_RECEIPT_PUBLIC_JWK",
+  );
+  const renderStagingCoreReceiptKid = String(env.RENDER_STAGING_CORE_RECEIPT_KID || "").trim();
+  const renderStagingCoreReceiptIssuer =
+    String(env.RENDER_STAGING_CORE_RECEIPT_ISSUER || "universal-core-staging").trim();
+  const renderStagingCoreReceiptAudience =
+    String(env.RENDER_STAGING_CORE_RECEIPT_AUDIENCE || `${publicUrl}/mcp`).trim();
+  if (renderStagingDeployEnabled) {
+    if (renderApiKey.length < 20) throw new Error("RENDER_API_KEY is required for staging deploy");
+    if (!/^srv-[a-z0-9]{8,64}$/.test(renderUniversalCoreStagingServiceId)) {
+      throw new Error("RENDER_UNIVERSAL_CORE_STAGING_SERVICE_ID must be a Render service id");
+    }
+    if (!/^evm-[a-z0-9]{8,64}$/.test(renderUniversalCoreStagingEnvironmentId)) {
+      throw new Error("RENDER_UNIVERSAL_CORE_STAGING_ENVIRONMENT_ID must be a Render environment id");
+    }
+    if (!renderStagingGithubToken) {
+      throw new Error("RENDER_STAGING_GITHUB_READ_TOKEN is required for staging deploy");
+    }
+    if (renderStagingCoreReceiptJwk.kty !== "OKP" || renderStagingCoreReceiptJwk.crv !== "Ed25519" ||
+        !renderStagingCoreReceiptJwk.x || renderStagingCoreReceiptJwk.d) {
+      throw new Error("RENDER_STAGING_CORE_RECEIPT_PUBLIC_JWK must be a public Ed25519 JWK");
+    }
+    if (!renderStagingCoreReceiptKid || !renderStagingCoreReceiptIssuer || !renderStagingCoreReceiptAudience) {
+      throw new Error("Render staging Core receipt trust binding is incomplete");
+    }
+    const health = new URL(renderUniversalCoreStagingHealthUrl);
+    if (health.protocol !== "https:" || health.hostname !== "skinharmony-universal-core-staging.onrender.com" ||
+        health.pathname !== "/healthz" || health.search || health.hash) {
+      throw new Error("RENDER_UNIVERSAL_CORE_STAGING_HEALTH_URL must be the fixed staging health endpoint");
+    }
+  }
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
   const chatgptProviderSetupLinkKey = String(env.CORE_PROVIDER_SETUP_LINK_KEY || "").trim();
@@ -302,6 +346,23 @@ export function loadConfig(env = process.env) {
     dttAgentIdentitySigningSecret,
     ownerContextSigningSecret,
     runtimeBuildCommit,
+    renderStagingDeployEnabled,
+    renderApiKey,
+    renderUniversalCoreStagingServiceId,
+    renderUniversalCoreStagingEnvironmentId,
+    renderUniversalCoreStagingHealthUrl,
+    renderStagingGithubToken,
+    renderStagingCoreReceiptJwk,
+    renderStagingCoreReceiptKid,
+    renderStagingCoreReceiptIssuer,
+    renderStagingCoreReceiptAudience,
+    renderStagingCoreReceiptTtlMs: integer(
+      env.RENDER_STAGING_CORE_RECEIPT_TTL_MS,
+      30_000,
+      1_000,
+      30_000,
+    ),
+    renderStagingDeployTimeoutMs: integer(env.RENDER_STAGING_DEPLOY_TIMEOUT_MS, 10_000, 1_000, 30_000),
     defaultTenantId,
     tenantClaim,
     oauthOwnerTenantBindings,

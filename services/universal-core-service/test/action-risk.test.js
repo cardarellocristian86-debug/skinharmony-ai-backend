@@ -131,6 +131,21 @@ test("hard-blocks destructive changes without rollback", () => {
   assert(result.reason_codes.includes("destructive_without_rollback"));
 });
 
+test("classifies the exact staging receipt deploy as high-risk confirmation", () => {
+  const result = classifyActionRisk({
+    operation_class: "request_bound_owner_confirmed_staging_deploy",
+    action_type: "render_staging_deploy",
+    destructive: true,
+    rollback_ready: false,
+  });
+  assert.equal(result.classification, "request_bound_owner_confirmed_staging_deploy");
+  assert.equal(result.risk_band, "high");
+  assert.equal(result.control_level, "confirm");
+  assert.equal(result.confirmation_required, true);
+  assert.equal(result.hard_block, false);
+  assert(result.reason_codes.includes("single_use_signed_receipt_required"));
+});
+
 test("requires confirmation for deploy, pricing and publishing", () => {
   for (const action_type of ["deploy", "change_license_price", "publish_marketing_claim"]) {
     const result = classifyActionRisk({ action_type });

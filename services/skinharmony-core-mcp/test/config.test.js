@@ -140,6 +140,73 @@ test("requires the decision ledger by default only in production", () => {
   assert.equal(loadConfig({ ...production, CORE_DECISION_LEDGER_REQUIRED: "false" }).decisionLedgerRequired, false);
 });
 
+test("keeps the Render staging deploy executor disabled and fail-closed by default", () => {
+  const config = loadConfig({});
+  assert.equal(config.renderStagingDeployEnabled, false);
+  assert.equal(config.renderApiKey, "");
+  assert.equal(config.renderUniversalCoreStagingServiceId, "");
+  assert.equal(config.renderUniversalCoreStagingEnvironmentId, "");
+  assert.equal(
+    config.renderUniversalCoreStagingHealthUrl,
+    "https://skinharmony-universal-core-staging.onrender.com/healthz",
+  );
+});
+
+test("enables the Render executor only with its exact staging bindings", () => {
+  const base = {
+    RENDER_STAGING_DEPLOY_ENABLED: "true",
+    RENDER_API_KEY: "render-test-key-0123456789abcdef",
+    RENDER_UNIVERSAL_CORE_STAGING_SERVICE_ID: "srv-abcdefgh12345678",
+    RENDER_UNIVERSAL_CORE_STAGING_ENVIRONMENT_ID: "evm-abcdefgh12345678",
+    RENDER_STAGING_GITHUB_READ_TOKEN: "github-read-token",
+    RENDER_STAGING_CORE_RECEIPT_PUBLIC_JWK: JSON.stringify({
+      kty: "OKP",
+      crv: "Ed25519",
+      x: "11qYAYdk9JQp7b2KZVJf4pJtFj_kVZqR7tJ8V1xJZ3A",
+    }),
+    RENDER_STAGING_CORE_RECEIPT_KID: "core-staging-2026-07",
+  };
+  const config = loadConfig(base);
+  assert.equal(config.renderStagingDeployEnabled, true);
+  assert.equal(config.renderStagingDeployTimeoutMs, 10_000);
+  assert.equal(config.renderStagingCoreReceiptTtlMs, 30_000);
+  assert.throws(
+    () => loadConfig({ ...base, RENDER_API_KEY: "" }),
+    /RENDER_API_KEY is required/,
+  );
+  assert.throws(
+    () => loadConfig({ ...base, RENDER_UNIVERSAL_CORE_STAGING_SERVICE_ID: "srv-other!" }),
+    /must be a Render service id/,
+  );
+  assert.throws(
+    () => loadConfig({ ...base, RENDER_UNIVERSAL_CORE_STAGING_ENVIRONMENT_ID: "production" }),
+    /must be a Render environment id/,
+  );
+  assert.throws(
+    () => loadConfig({ ...base, RENDER_STAGING_GITHUB_READ_TOKEN: "" }),
+    /RENDER_STAGING_GITHUB_READ_TOKEN is required/,
+  );
+  assert.throws(
+    () => loadConfig({
+      ...base,
+      RENDER_STAGING_CORE_RECEIPT_PUBLIC_JWK: JSON.stringify({
+        kty: "OKP",
+        crv: "Ed25519",
+        x: "public",
+        d: "private-must-not-be-accepted",
+      }),
+    }),
+    /must be a public Ed25519 JWK/,
+  );
+  assert.throws(
+    () => loadConfig({
+      ...base,
+      RENDER_UNIVERSAL_CORE_STAGING_HEALTH_URL: "https://skinharmony-universal-core.onrender.com/healthz",
+    }),
+    /fixed staging health endpoint/,
+  );
+});
+
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {
   const config = loadConfig({
     NODE_ENV: "production",

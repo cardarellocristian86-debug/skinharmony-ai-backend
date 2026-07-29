@@ -59,6 +59,7 @@ function sha256(value) {
 
 function capabilityGroup(name) {
   const prefixes = [
+    ["render_", "render"],
     ["orchestration_dtt_", "orchestration"],
     ["generic_agent_", "agents"],
     ["tenant_provider_", "provider"],
@@ -305,16 +306,23 @@ export function createDynamicCapabilityHandlers({
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
       const callArgs = targetArguments(tool, args);
+      const argumentsDigest = sha256(callArgs);
       if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
       const gate = await gateAction({
         tool,
         args: callArgs,
+        argumentsDigest,
         identity,
         catalogRevision: state.revision,
         idempotencyKey: args.idempotency_key,
       });
       if (!authorizationAllowed(gate)) throw new Error("dynamic_capability_not_authorized");
-      const result = await handlers[tool.name](callArgs, identity);
+      const result = await handlers[tool.name](callArgs, identity, {
+        argumentsDigest,
+        catalogRevision: state.revision,
+        idempotencyKey: args.idempotency_key,
+        gate,
+      });
       return {
         ...result,
         structuredContent: {
@@ -324,6 +332,7 @@ export function createDynamicCapabilityHandlers({
             catalog_revision: state.revision,
             access_mode: "invoke",
             gate_allowed: true,
+            arguments_digest: argumentsDigest,
             idempotency_key: args.idempotency_key,
           },
         },

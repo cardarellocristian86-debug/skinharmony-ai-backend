@@ -1,4 +1,5 @@
 import { createApp, requiresGenericWorkPreflight } from "./app.js";
+import crypto from "node:crypto";
 import express from "express";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
@@ -23,6 +24,10 @@ import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
+import {
+  createRenderStagingDeployHandlers,
+  renderStagingActorDigest,
+} from "./render-staging-deploy.js";
 
 const config = loadConfig();
 const receiptConfiguration = [
@@ -141,6 +146,9 @@ const researchCortex = config.researchCortexRoot
     })
   : null;
 const suiteHandlers = createSuiteHandlers(config);
+const renderStagingDeployHandlers = createRenderStagingDeployHandlers(config, {
+  pool: collaborationPool,
+});
 
 const PROVIDER_ONBOARDING_EXEMPT_TOOLS = new Set([
   "core_health",
@@ -176,6 +184,7 @@ const baseHandlers = {
   ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
   ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
   ...suiteHandlers,
+  ...renderStagingDeployHandlers,
   ...collaborationHandlers,
   ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
     const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
@@ -186,25 +195,64 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   tools: TOOLS,
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
-  gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => coreHandlers.core_gate_action({
-    action_label: `Invoke dynamic capability ${tool.name}`,
-    action_type: "dynamic_capability.invoke",
-    target: tool.name,
-    operation_class: "owner_confirmed_governed_action",
-    external_side_effect: tool.annotations?.openWorldHint === true,
-    destructive: tool.annotations?.destructiveHint === true,
-    bounded_scope: true,
-    low_impact: tool.annotations?.destructiveHint !== true,
-    idempotent_or_compensable: tool.annotations?.idempotentHint === true,
-    rollback_ready: tool.annotations?.idempotentHint === true,
-    audit_ready: Boolean(decisionLedger),
-    target_authority_verified: true,
-    actor_authorized_for_target: true,
-    catalog_revision: catalogRevision,
-    idempotency_key: idempotencyKey,
-    owner_confirmed: identity.ownerConfirmed === true,
-    confirmation_reference: identity.confirmationReference,
-  }, identity),
+  gateAction: ({ tool, args, argumentsDigest, identity, catalogRevision, idempotencyKey }) => {
+    const stagingDeploy = tool.name === "render_staging_deploy";
+    return coreHandlers.core_gate_action({
+      action_label: `Invoke dynamic capability ${tool.name}`,
+      action_type: stagingDeploy ? "render_staging_deploy" : "dynamic_capability.invoke",
+      target: tool.name,
+      operation_class: stagingDeploy
+        ? "request_bound_owner_confirmed_staging_deploy"
+        : "owner_confirmed_governed_action",
+      external_side_effect: tool.annotations?.openWorldHint === true,
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: stagingDeploy ? false : undefined,
+      configuration_changes: stagingDeploy ? false : undefined,
+      provider_execution: stagingDeploy,
+      deploy: stagingDeploy,
+      production_deploy: stagingDeploy ? false : undefined,
+      merge: stagingDeploy ? false : undefined,
+      delete: stagingDeploy ? false : undefined,
+      auth0_changes: stagingDeploy ? false : undefined,
+      database_changes: stagingDeploy ? false : undefined,
+      modify_environment_variables: stagingDeploy ? false : undefined,
+      clear_build_cache: stagingDeploy ? false : undefined,
+      destructive: stagingDeploy || tool.annotations?.destructiveHint === true,
+      bounded_scope: true,
+      low_impact: stagingDeploy ? false : tool.annotations?.destructiveHint !== true,
+      idempotent_or_compensable: stagingDeploy ? false : tool.annotations?.idempotentHint === true,
+      rollback_ready: stagingDeploy ? false : tool.annotations?.idempotentHint === true,
+      audit_ready: Boolean(decisionLedger),
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      receipt_required: stagingDeploy,
+      receipt_type: stagingDeploy ? "render_staging_core_receipt_v1" : undefined,
+      receipt_single_use: stagingDeploy,
+      actor_subject_sha256: stagingDeploy ? renderStagingActorDigest(identity) : undefined,
+      confirmation_reference_sha256: stagingDeploy
+        ? crypto.createHash("sha256")
+          .update(String(identity.confirmationReference || ""))
+          .digest("hex")
+        : undefined,
+      catalog_revision: catalogRevision,
+      dynamic_capability_arguments_digest: argumentsDigest,
+      target_service: args.target_service,
+      target_service_id: stagingDeploy
+        ? config.renderUniversalCoreStagingServiceId
+        : undefined,
+      target_environment: args.target_environment,
+      target_branch: args.target_branch,
+      target_commit: args.target_commit,
+      idempotency_key_sha256: stagingDeploy
+        ? crypto.createHash("sha256").update(idempotencyKey).digest("hex")
+        : undefined,
+      idempotency_key: stagingDeploy ? undefined : idempotencyKey,
+      owner_confirmed: identity.ownerConfirmed === true,
+      confirmation_reference: identity.confirmationReference,
+    }, identity);
+  },
 });
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 

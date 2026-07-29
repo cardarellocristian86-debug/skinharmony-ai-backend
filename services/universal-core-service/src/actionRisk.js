@@ -170,6 +170,29 @@ export function classifyActionRisk(body = {}) {
     });
   }
 
+  // A Render deploy is not semantically reversible, so this one operation
+  // cannot pass through the generic destructive-without-rollback rule. It is
+  // still high risk and owner-confirmed; the authorization layer separately
+  // requires the exact staging-only shape and a single-use signed receipt.
+  if (operationClass === "request_bound_owner_confirmed_staging_deploy" &&
+      actionType === "render_staging_deploy") {
+    return profile({
+      classification: "request_bound_owner_confirmed_staging_deploy",
+      operationClass,
+      state: "attention",
+      riskBand: "high",
+      riskScore: 90,
+      controlLevel: "confirm",
+      confirmationRequired: true,
+      reasonCodes: [
+        "owner_confirmation_required",
+        "request_bound_owner_proof_required",
+        "staging_only_target_binding_required",
+        "single_use_signed_receipt_required",
+      ],
+    });
+  }
+
   const destructive = body.destructive === true || /\b(delete|drop|truncate|erase|destroy|cancell|elimin|irrevers)\w*/i.test(text);
   if (destructive && body.rollback_ready !== true) {
     return profile({

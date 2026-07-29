@@ -134,9 +134,12 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   const tool = writeTool();
   let writes = 0;
   let gateAllowed = true;
+  let gateInput;
+  let invocationContext;
   const handlers = {
-    [tool.name]: async () => {
+    [tool.name]: async (_args, _identity, invocation) => {
       writes += 1;
+      invocationContext = invocation;
       return { structuredContent: { ok: true } };
     },
   };
@@ -144,9 +147,10 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     tools: [tool],
     handlers,
     semanticSelect: async () => ({}),
-    gateAction: async () => ({
-      structuredContent: { authorization: { allowed: gateAllowed } },
-    }),
+    gateAction: async (input) => {
+      gateInput = input;
+      return { structuredContent: { authorization: { allowed: gateAllowed } } };
+    },
   });
   const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
   const args = {
@@ -158,8 +162,13 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     arguments: { value: "safe" },
   };
 
-  await router.core_capability_invoke(args, identity);
+  const result = await router.core_capability_invoke(args, identity);
   assert.equal(writes, 1);
+  assert.match(gateInput.argumentsDigest, /^[a-f0-9]{64}$/);
+  assert.equal(gateInput.argumentsDigest, invocationContext.argumentsDigest);
+  assert.equal(invocationContext.idempotencyKey, "write-1");
+  assert.equal(invocationContext.gate.structuredContent.authorization.allowed, true);
+  assert.equal(result.structuredContent.dynamic_capability.arguments_digest, gateInput.argumentsDigest);
 
   gateAllowed = false;
   await assert.rejects(
