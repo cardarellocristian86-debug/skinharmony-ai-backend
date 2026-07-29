@@ -4622,6 +4622,12 @@ export function createUniversalCoreService(options = {}) {
       audit,
       resolveGovernanceProof: resolveAiLearningGovernanceProof,
       resolveRequestContext: resolveAgenticRequestContext,
+      persistenceRequired: aiLearningPersistenceRequired,
+      resolvePersistenceReadiness: () => aiLearningFactoryPersistence?.readiness?.() || {
+        persistence_read_ready: false,
+        persistence_write_ready: false,
+        runtime_role_attested: false,
+      },
     });
   }
   if (agenticEfficiencyMode !== "off") {

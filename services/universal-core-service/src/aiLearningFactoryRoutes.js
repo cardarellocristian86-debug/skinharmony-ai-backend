@@ -183,6 +183,7 @@ function idempotencyDigest(value) {
 
 function statusForError(error) {
   const code = String(error?.message || "ai_learning_factory_request_failed");
+  if (code === "ai_learning_persistence_required") return 503;
   if (
     code === "tenant_scope_denied" ||
     code === "branch_not_available_for_client" ||
@@ -242,6 +243,12 @@ export function mountAiLearningFactoryRoutes({
   audit,
   resolveGovernanceProof,
   resolveRequestContext,
+  persistenceRequired = false,
+  resolvePersistenceReadiness = () => ({
+    persistence_read_ready: false,
+    persistence_write_ready: false,
+    runtime_role_attested: false,
+  }),
 } = {}) {
   if (!app || typeof app.get !== "function" || typeof app.post !== "function") throw new Error("ai_learning_factory_app_required");
   const readMiddleware = requireFunction(readAuth, "ai_learning_factory_read_auth");
@@ -252,9 +259,25 @@ export function mountAiLearningFactoryRoutes({
   requireObject(learningStore, "learning_store");
   requireObject(audit, "audit");
   requireFunction(audit.append, "audit_append");
+  if (typeof resolvePersistenceReadiness !== "function") {
+    throw new Error("ai_learning_factory_persistence_readiness_resolver_required");
+  }
+
+  function requirePersistenceReady(write = false) {
+    if (persistenceRequired !== true) return;
+    const readiness = resolvePersistenceReadiness();
+    const ready = readiness
+      && readiness.persistence_read_ready === true
+      && (!write || (
+        readiness.persistence_write_ready === true
+        && readiness.runtime_role_attested === true
+      ));
+    if (!ready) throw new Error("ai_learning_persistence_required");
+  }
 
   app.get("/v1/ai-learning/eval/scorecards", readMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -269,6 +292,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.get("/v1/ai-learning/eval/datasets", readMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -283,6 +307,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.get("/v1/ai-learning/eval/traces", readMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
     assertAllowedQuery(req, ["tenant_id", "trace_id", "run_id", "limit", "cursor"]);
     const scopedTenantId = tenantId(req);
     const requestedRunId = optionalQueryIdentifier(req, "run_id");
@@ -298,6 +323,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.get("/v1/ai-learning/performance/scorecards", readMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -312,6 +338,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.get("/v1/ai-learning/experiments", readMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -330,6 +357,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.get("/v1/ai-learning/candidates", readMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
     const page = await listOrRead({
       req,
       store: learningStore,
@@ -348,6 +376,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.post("/v1/ai-learning/candidates/review", governMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(true);
     const scopedTenantId = tenantId(req);
     const proof = await proofForRequest(req);
     const idempotency = idempotencyKey(req);
@@ -380,6 +409,7 @@ export function mountAiLearningFactoryRoutes({
 
   app.post("/v1/ai-learning/outcomes", governMiddleware, asyncRoute(async (req, res) => {
     authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(true);
     const scopedTenantId = tenantId(req);
     const proof = await proofForRequest(req);
     const idempotency = idempotencyKey(req);

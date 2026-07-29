@@ -196,3 +196,82 @@ test("off mode removes Learning Factory routes without affecting the service", a
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error, "route_not_found");
 });
+
+test("required persistence blocks AI Learning reads and writes instead of reporting memory-only success", async (t) => {
+  const service = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `ai-learning-required-${Date.now()}-${Math.random()}`),
+    mcpTenantGatewayKey: GATEWAY_KEY,
+    ownerContextSigningSecret: SIGNING_SECRET,
+    aiLearningFactoryMode: "shadow",
+    v016PersistenceRequired: true,
+  });
+  const { server, base } = await listen(service.app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const headers = {
+    authorization: `Bearer ${GATEWAY_KEY}`,
+    "content-type": "application/json",
+    "x-sh-tenant-id": "tenant-a",
+    "x-sh-tenant-context": signedTenantContext("tenant-a"),
+  };
+
+  const read = await fetch(`${base}/v1/ai-learning/candidates`, { headers });
+  assert.equal(read.status, 503);
+  assert.equal((await read.json()).error, "ai_learning_persistence_required");
+
+  const write = await fetch(`${base}/v1/ai-learning/outcomes`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      outcome: {
+        outcome_id: "outcome-no-db",
+        run_id: "run-no-db",
+        outcome_status: "succeeded",
+        outcome_verified: true,
+        human_review_status: "approved",
+        evidence_digest: "evidence-no-db",
+        policy_snapshot: "policy-no-db",
+        observed_at: "2026-07-27T12:00:00.000Z",
+        learning_value: 1,
+      },
+      expected_revision: 0,
+    }),
+  });
+  assert.equal(write.status, 503);
+  assert.equal((await write.json()).error, "ai_learning_persistence_required");
+});
+
+test("adapter initialization failure keeps required AI Learning routes unavailable", async (t) => {
+  const persistence = {
+    learningAdapter: null,
+    telemetryAdapter: null,
+    initialize: async () => {
+      throw new Error("database_unavailable");
+    },
+    readiness: () => ({
+      initialized: false,
+      persistence_read_ready: false,
+      persistence_write_ready: false,
+      runtime_role_attested: false,
+      reason: "runtime_role_attestation_query_failed",
+    }),
+  };
+  const service = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `ai-learning-init-failure-${Date.now()}-${Math.random()}`),
+    mcpTenantGatewayKey: GATEWAY_KEY,
+    ownerContextSigningSecret: SIGNING_SECRET,
+    aiLearningFactoryMode: "shadow",
+    v016PersistenceRequired: true,
+    aiLearningFactoryPersistence: persistence,
+  });
+  const { server, base } = await listen(service.app);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const headers = {
+    authorization: `Bearer ${GATEWAY_KEY}`,
+    "x-sh-tenant-id": "tenant-a",
+    "x-sh-tenant-context": signedTenantContext("tenant-a"),
+  };
+  await new Promise((resolve) => setImmediate(resolve));
+  const read = await fetch(`${base}/v1/ai-learning/eval/scorecards`, { headers });
+  assert.equal(read.status, 503);
+  assert.equal((await read.json()).error, "ai_learning_persistence_required");
+});
