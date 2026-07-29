@@ -24,6 +24,15 @@ function isExactOrderedList(value, expected) {
     value.every((item, index) => String(item) === expected[index]);
 }
 
+function isAllowedDraftPullRequestBase(value) {
+  const branch = String(value || "");
+  return branch === "main" || (
+    /^codex\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/i.test(branch) &&
+    !branch.includes("..") &&
+    !branch.endsWith(".lock")
+  );
+}
+
 function isBoundedInternalCoordinationWrite(body = {}) {
   const allowedActionTypes = new Set([
     "agent.heartbeat",
@@ -607,7 +616,8 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     body.audit_ready === true &&
     exactCommit &&
     /^agent\/[a-z0-9._/-]+$/i.test(String(body.target_branch || "")) &&
-    String(body.base_branch || "") === "main" &&
+    isAllowedDraftPullRequestBase(body.base_branch) &&
+    String(body.confirmation_base_branch || "") === String(body.base_branch || "") &&
     body.draft === true &&
     body.merge === false &&
     body.deploy === false &&

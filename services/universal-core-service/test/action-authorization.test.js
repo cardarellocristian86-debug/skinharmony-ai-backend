@@ -493,6 +493,7 @@ const draftPullRequest = {
   target_commit: "66023353621801f54336f282a0b42c545adab32d",
   target_branch: "agent/smartdesk-durable-completion",
   base_branch: "main",
+  confirmation_base_branch: "main",
   repository: "cardarellocristian86-debug/skinharmony-ai-backend",
   draft: true,
   merge: false,
@@ -507,12 +508,29 @@ test("authorizes only an exact owner-confirmed GitHub draft pull request", () =>
   const allowed = buildActionAuthorization(contract({ risk_band: "high" }), { ...draftPullRequest, owner_confirmed: true });
   assert.equal(allowed.allowed, true);
   assert.equal(allowed.scope, "reversible_owner_confirmed_draft_pull_request");
+  const codexBase = {
+    ...draftPullRequest,
+    owner_confirmed: true,
+    base_branch: "codex/nyra-autonomy-render-20260727",
+    confirmation_base_branch: "codex/nyra-autonomy-render-20260727",
+  };
+  assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), codexBase).allowed, true);
   for (const unsafe of [
     { draft: false }, { merge: true }, { deploy: true }, { delete: true },
-    { base_branch: "release" }, { target_branch: "main" }, { configuration_changes: true },
+    { base_branch: "release", confirmation_base_branch: "release" },
+    { base_branch: "feature/example", confirmation_base_branch: "feature/example" },
+    { base_branch: "agent/example", confirmation_base_branch: "agent/example" },
+    { base_branch: "codex/", confirmation_base_branch: "codex/" },
+    { base_branch: "codex//invalid", confirmation_base_branch: "codex//invalid" },
+    { base_branch: "codex/../main", confirmation_base_branch: "codex/../main" },
+    { target_branch: "main" }, { configuration_changes: true },
     { contains_secret: true }, { cross_tenant: true }, { rollback_ready: false },
   ]) assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), { ...draftPullRequest, owner_confirmed: true, ...unsafe }).allowed, false);
-  for (const changedConfirmationBinding of [{ draft: false }, { merge: true }, { base_branch: "release" }]) {
+  for (const changedConfirmationBinding of [
+    { draft: false },
+    { merge: true },
+    { base_branch: "codex/nyra-autonomy-render-20260727" },
+  ]) {
     const result = buildActionAuthorization(contract({ risk_band: "high" }), { ...draftPullRequest, owner_confirmed: true, ...changedConfirmationBinding });
     assert.equal(result.confirmation_satisfied, false);
   }
